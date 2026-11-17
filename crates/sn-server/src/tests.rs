@@ -819,6 +819,65 @@ async fn настройки_ядра_оплаты_и_remnawave_через_http()
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["username"], "stealth_vpn_bot");
+    assert_eq!(body["status"], json!({ "state": "off" }));
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/settings/bot/restart",
+            &owner,
+            json!({ "take_over": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "bot.takeover_not_needed");
+    h.services()
+        .bot_runtime()
+        .set(sn_services::BotState::Failed {
+            problem: sn_services::BotProblem::Webhook,
+            detail: Some("old.example.com".into()),
+            at: Utc::now(),
+            retry_at: None,
+        });
+    let support = h.admin("bot-support@example.com", AdminRole::Support).await;
+    let (status, _) = h
+        .write(
+            Method::POST,
+            "/api/admin/settings/bot/restart",
+            &support,
+            json!({ "take_over": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/settings/bot/restart",
+            &owner,
+            json!({ "take_over": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"]["problem"], "webhook");
+    assert_eq!(body["status"]["detail"], "old.example.com");
+    assert!(h.services().bot_runtime().take_takeover());
+    let marks = {
+        let mut conn = h.db.store.conn().await.unwrap();
+        conn.audit()
+            .recent_by_action("settings.bot_takeover", 5)
+            .await
+            .unwrap()
+    };
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0].details["from"], "old.example.com");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/settings/bot/restart",
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, _) = h
         .write(
             Method::PUT,

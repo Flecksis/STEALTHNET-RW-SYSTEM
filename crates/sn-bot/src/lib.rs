@@ -17,7 +17,7 @@ mod tests;
 use handler::BotCtx;
 use sn_domain::settings::keys;
 use sn_modules::ModuleError;
-use sn_services::{ServiceError, Services};
+use sn_services::{BotProblem, BotState, ServiceError, Services};
 use sn_store::{Db, StoreError};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +32,11 @@ pub use telegram::{TelegramApi, TelegramError, Update};
 pub const OFFSET_KEY: &str = "telegram.offset";
 
 const SAVE_RETRY: Duration = Duration::from_secs(1);
+const IDLE_RECHECK: Duration = Duration::from_secs(30);
+const RETRY_PAUSE: Duration = Duration::from_secs(30);
+const WEBHOOK_PAUSE: Duration = Duration::from_secs(120);
+const BAD_TOKEN_PAUSE: Duration = Duration::from_secs(600);
+const UNREACHABLE_AFTER: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct BotConfig {
@@ -66,6 +71,10 @@ pub enum BotError {
     Module(#[from] ModuleError),
     #[error("функция бота ещё не реализована: {0}")]
     NotImplemented(&'static str),
+    #[error("бот подключён вебхуком к другому адресу")]
+    Webhook(Option<String>),
+    #[error("этот токен уже опрашивает другая программа")]
+    Conflict,
 }
 
 enum Stop {
@@ -83,19 +92,74 @@ pub fn shard_for(chat_key: i64, workers: usize) -> usize {
     chat_key.rem_euclid(workers) as usize
 }
 
-async fn load_offset(services: &Services) -> Result<Option<i64>, StoreError> {
+fn is_webhook_conflict(description: &str) -> bool {
+    description.to_ascii_lowercase().contains("webhook")
+}
+
+fn webhook_host(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+}
+
+fn diagnose(err: &BotError) -> (BotProblem, Option<String>, Duration) {
+    match err {
+        BotError::Telegram(TelegramError::Api {
+            code: 401 | 404, ..
+        }) => (BotProblem::BadToken, None, BAD_TOKEN_PAUSE),
+        BotError::Telegram(TelegramError::Api {
+            code: 409,
+            description,
+            ..
+        }) if is_webhook_conflict(description) => (BotProblem::Webhook, None, WEBHOOK_PAUSE),
+        BotError::Telegram(TelegramError::Api { code: 409, .. }) | BotError::Conflict => {
+            (BotProblem::Conflict, None, RETRY_PAUSE)
+        }
+        BotError::Webhook(host) => (BotProblem::Webhook, host.clone(), WEBHOOK_PAUSE),
+        BotError::Telegram(TelegramError::Transport(_)) => {
+            (BotProblem::Unreachable, None, RETRY_PAUSE)
+        }
+        BotError::Telegram(TelegramError::Api { description, .. }) => {
+            (BotProblem::Telegram, Some(description.clone()), RETRY_PAUSE)
+        }
+        BotError::Telegram(TelegramError::Decode(_)) => (BotProblem::Telegram, None, RETRY_PAUSE),
+        BotError::Service(_)
+        | BotError::Store(_)
+        | BotError::Module(_)
+        | BotError::NotImplemented(_) => (BotProblem::Internal, None, RETRY_PAUSE),
+    }
+}
+
+fn later(services: &Services, pause: Duration) -> chrono::DateTime<chrono::Utc> {
+    services.now() + chrono::Duration::from_std(pause).unwrap_or_else(|_| chrono::Duration::zero())
+}
+
+fn offset_for(value: &serde_json::Value, bot: i64) -> Option<i64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::Object(map) if map.get("bot").and_then(|b| b.as_i64()) == Some(bot) => {
+            map.get("offset").and_then(|o| o.as_i64())
+        }
+        _ => None,
+    }
+}
+
+async fn load_offset(services: &Services, bot: i64) -> Result<Option<i64>, StoreError> {
     let mut conn = services.store().conn().await?;
     Ok(conn
         .bot_state()
         .get(OFFSET_KEY)
         .await?
-        .and_then(|v| v.as_i64()))
+        .and_then(|v| offset_for(&v, bot)))
 }
 
-async fn save_offset(services: &Services, offset: i64) -> Result<(), StoreError> {
+async fn save_offset(services: &Services, bot: i64, offset: i64) -> Result<(), StoreError> {
     let mut conn = services.store().conn().await?;
     conn.bot_state()
-        .set(OFFSET_KEY, &serde_json::json!(offset))
+        .set(
+            OFFSET_KEY,
+            &serde_json::json!({ "bot": bot, "offset": offset }),
+        )
         .await
 }
 
@@ -132,32 +196,42 @@ impl Bot {
     }
 
     pub async fn run(self, cancel: CancellationToken) -> Result<(), BotError> {
-        let mut announced = false;
+        let runtime = self.services.bot_runtime();
         loop {
             if cancel.is_cancelled() {
                 return Ok(());
             }
             let Some(token) = self.services.bot_token() else {
-                if !announced {
+                if runtime.state() != BotState::NoToken {
                     tracing::info!("бот выключен: не задан токен");
-                    announced = true;
+                    runtime.set(BotState::NoToken);
                 }
                 tokio::select! {
                     _ = cancel.cancelled() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(30)) => continue,
+                    _ = runtime.woken() => {}
+                    _ = tokio::time::sleep(IDLE_RECHECK) => {}
                 }
+                continue;
             };
-            announced = false;
+            runtime.set(BotState::Starting);
             match self.serve(&token, &cancel).await {
                 Ok(Stop::Cancelled) => return Ok(()),
                 Ok(Stop::TokenChanged) => {
                     tracing::info!("токен бота сменился, переподключаемся");
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "бот не запустился, повтор через 30 секунд");
+                    let (problem, detail, pause) = diagnose(&err);
+                    runtime.set(BotState::Failed {
+                        problem,
+                        detail,
+                        at: self.services.now(),
+                        retry_at: Some(later(&self.services, pause)),
+                    });
+                    tracing::warn!(error = %err, ?problem, "бот не запустился, повторим позже");
                     tokio::select! {
                         _ = cancel.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                        _ = runtime.woken() => {}
+                        _ = tokio::time::sleep(pause) => {}
                     }
                 }
             }
@@ -165,6 +239,8 @@ impl Bot {
     }
 
     async fn serve(&self, token: &str, cancel: &CancellationToken) -> Result<Stop, BotError> {
+        let runtime = self.services.bot_runtime();
+        let takeover = runtime.take_takeover();
         let api = Arc::new(TelegramApi::new(&self.config.api_base, token));
         let me = api.get_me().await?;
         if let Some(username) = me.username.as_deref()
@@ -172,9 +248,18 @@ impl Bot {
         {
             tracing::warn!(error = %err, "имя бота не сохранено");
         }
-        tracing::info!(username = %me.username.clone().unwrap_or_default(), "бот подключён");
-        if let Err(err) = api.delete_webhook().await {
-            tracing::debug!(error = %err, "вебхук бота не снят");
+        match api.get_webhook_info().await {
+            Ok(hook) if !hook.url.is_empty() && !takeover => {
+                return Err(BotError::Webhook(webhook_host(&hook.url)));
+            }
+            Ok(_) | Err(_) if takeover => {
+                api.delete_webhook().await?;
+                tracing::info!("вебхук бота снят: администратор забрал бота сюда");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!(error = %err, "сведения о вебхуке бота не получены");
+            }
         }
         if let Err(err) = api
             .set_commands(&[
@@ -185,13 +270,14 @@ impl Bot {
         {
             tracing::debug!(error = %err, "команды бота не обновлены");
         }
+        let mut offset = load_offset(&self.services, me.id).await?;
+        tracing::info!(username = %me.username.clone().unwrap_or_default(), "бот подключён");
         let ctx = BotCtx {
             services: self.services.clone(),
             api: api.clone(),
             username: me.username.clone(),
         };
         let (senders, handles) = spawn_workers(&ctx, self.config.workers);
-        let mut offset = load_offset(&self.services).await?;
         let keeper_stop = cancel.child_token();
         let keeper_guard = keeper_stop.clone().drop_guard();
         let keeper = tokio::spawn(
@@ -205,17 +291,30 @@ impl Bot {
             )
             .run(keeper_stop),
         );
-        let stop = loop {
+        let since = self.services.now();
+        let running = |at| BotState::Running {
+            username: me.username.clone(),
+            since,
+            last_ok_at: at,
+        };
+        runtime.set(running(since));
+        let mut failures = 0u32;
+        let outcome: Result<Stop, BotError> = loop {
             if self.services.bot_token().as_deref() != Some(token) {
-                break Stop::TokenChanged;
+                break Ok(Stop::TokenChanged);
             }
             let polled = tokio::select! {
-                _ = cancel.cancelled() => break Stop::Cancelled,
+                _ = cancel.cancelled() => break Ok(Stop::Cancelled),
+                _ = runtime.woken() => continue,
                 polled = api.get_updates(offset, self.config.poll_timeout) => polled,
             };
             match polled {
-                Ok(updates) if updates.is_empty() => {}
                 Ok(updates) => {
+                    failures = 0;
+                    runtime.set(running(self.services.now()));
+                    if updates.is_empty() {
+                        continue;
+                    }
                     let payments = stars::from_updates(&updates);
                     if !payments.is_empty()
                         && let Err(err) = stars::record(&self.services, &payments).await
@@ -225,7 +324,7 @@ impl Bot {
                             "оплаты звёздами не сохранены, апдейты будут прочитаны заново"
                         );
                         tokio::select! {
-                            _ = cancel.cancelled() => break Stop::Cancelled,
+                            _ = cancel.cancelled() => break Ok(Stop::Cancelled),
                             _ = tokio::time::sleep(SAVE_RETRY) => {}
                         }
                         continue;
@@ -244,19 +343,45 @@ impl Bot {
                         }
                     }
                     offset = Some(next);
-                    if let Err(err) = save_offset(&self.services, next).await {
+                    if let Err(err) = save_offset(&self.services, me.id, next).await {
                         tracing::warn!(error = %err, "смещение апдейтов не сохранено");
                     }
                 }
                 Err(err) => {
-                    let pause = match &err {
-                        TelegramError::Api { code: 401, .. } => return Err(err.into()),
-                        TelegramError::Api { code: 409, .. } => Duration::from_secs(10),
-                        other => Duration::from_secs(other.retry_after().unwrap_or(3)),
-                    };
+                    match &err {
+                        TelegramError::Api {
+                            code: 401 | 404, ..
+                        } => break Err(err.into()),
+                        TelegramError::Api {
+                            code: 409,
+                            description,
+                            ..
+                        } if is_webhook_conflict(description) => {
+                            break Err(BotError::Webhook(None));
+                        }
+                        TelegramError::Api { code: 409, .. } => break Err(BotError::Conflict),
+                        _ => {}
+                    }
+                    failures += 1;
+                    let pause = Duration::from_secs(err.retry_after().unwrap_or(3));
+                    if failures >= UNREACHABLE_AFTER {
+                        let (problem, detail) = match &err {
+                            TelegramError::Transport(_) => (BotProblem::Unreachable, None),
+                            TelegramError::Api { description, .. } => {
+                                (BotProblem::Telegram, Some(description.clone()))
+                            }
+                            TelegramError::Decode(_) => (BotProblem::Telegram, None),
+                        };
+                        runtime.set(BotState::Failed {
+                            problem,
+                            detail,
+                            at: self.services.now(),
+                            retry_at: Some(later(&self.services, pause)),
+                        });
+                    }
                     tracing::warn!(error = %err, "getUpdates не удался");
                     tokio::select! {
-                        _ = cancel.cancelled() => break Stop::Cancelled,
+                        _ = cancel.cancelled() => break Ok(Stop::Cancelled),
                         _ = tokio::time::sleep(pause) => {}
                     }
                 }
@@ -278,6 +403,6 @@ impl Bot {
         {
             tracing::warn!("сверка оплат звёздами не завершилась за 8 секунд");
         }
-        Ok(stop)
+        outcome
     }
 }

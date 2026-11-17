@@ -1,6 +1,7 @@
 use crate::admin::AdminOps;
 use crate::auth::Auth;
 use crate::autorenew::AutoRenew;
+use crate::bot_runtime::BotRuntime;
 use crate::checkout::Checkout;
 use crate::clients::ClientOps;
 use crate::clock::Clock;
@@ -65,6 +66,7 @@ struct Inner {
     env: EnvFallbacks,
     instance: Uuid,
     runtime: RwLock<Runtime>,
+    bot: BotRuntime,
 }
 
 #[derive(Clone)]
@@ -97,6 +99,7 @@ impl Services {
                 env: deps.env,
                 instance: Uuid::new_v4(),
                 runtime: RwLock::new(runtime),
+                bot: BotRuntime::default(),
             }),
         }
     }
@@ -184,6 +187,10 @@ impl Services {
         self.read(|r| r.bot_token.clone())
     }
 
+    pub fn bot_runtime(&self) -> &BotRuntime {
+        &self.inner.bot
+    }
+
     pub fn module_context(&self) -> ModuleContext {
         ModuleContext {
             store: self.inner.store.clone(),
@@ -237,12 +244,16 @@ impl Services {
                     }
                 }
             };
+        let token_changed = self.bot_token() != bot_token;
         self.write(|r| {
             r.settings = Arc::new(core);
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;
         });
+        if token_changed {
+            self.inner.bot.wake();
+        }
         Ok(())
     }
 

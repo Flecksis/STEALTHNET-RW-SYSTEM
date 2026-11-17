@@ -255,6 +255,12 @@ struct Envelope<T> {
     parameters: Option<ResponseParameters>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct WebhookInfo {
+    #[serde(default)]
+    pub url: String,
+}
+
 pub struct TelegramApi {
     http: reqwest::Client,
     base: String,
@@ -313,6 +319,10 @@ impl TelegramApi {
 
     pub async fn get_me(&self) -> Result<BotUser, TelegramError> {
         self.call("getMe", &serde_json::json!({})).await
+    }
+
+    pub async fn get_webhook_info(&self) -> Result<WebhookInfo, TelegramError> {
+        self.call("getWebhookInfo", &serde_json::json!({})).await
     }
 
     pub async fn delete_webhook(&self) -> Result<bool, TelegramError> {

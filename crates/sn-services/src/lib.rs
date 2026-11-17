@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod autorenew;
+pub mod bot_runtime;
 pub mod checkout;
 pub mod clients;
 pub mod clock;
@@ -22,6 +23,7 @@ pub mod tariffs;
 pub mod totp;
 pub mod two_factor;
 
+pub use bot_runtime::{BotProblem, BotRuntime, BotState};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use error::{ServiceError, ServiceResult};
 pub use services::{EnvFallbacks, RemnaConnection, ServiceDeps, Services};

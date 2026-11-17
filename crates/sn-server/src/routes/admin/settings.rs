@@ -19,6 +19,7 @@ use sn_services::settings::{
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/{section}", get(read).put(write))
+        .route("/settings/bot/restart", post(restart_bot))
         .route("/settings/remnawave/check", post(check_remnawave))
         .route("/settings/remnawave/webhook-secret", post(webhook_secret))
         .route("/settings/remnawave/page-configs", get(page_configs))
@@ -101,6 +102,28 @@ async fn write(
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RestartBot {
+    #[serde(default)]
+    take_over: bool,
+}
+
+async fn restart_bot(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    body: Option<ApiJson<RestartBot>>,
+) -> ApiResult<Json<sn_services::settings::BotSettingsView>> {
+    admin.require(Permission::Settings)?;
+    let body = body.map(|b| b.0).unwrap_or_default();
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .restart_bot(body.take_over, admin.0.admin_id)
+            .await?,
+    ))
 }
 
 async fn webhook_env(

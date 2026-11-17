@@ -53,10 +53,17 @@ fn module_registry() -> Result<ModuleRegistry> {
     ModuleRegistry::new(sn_modules::catalog::all()).context("реестр модулей не собран")
 }
 
-fn worker(services: Services) -> Worker {
+fn bot_config(config: &Config) -> BotConfig {
+    BotConfig {
+        api_base: config.telegram_api.clone(),
+        ..BotConfig::default()
+    }
+}
+
+fn worker(services: Services, config: &Config) -> Worker {
     Worker::new(services, WorkerConfig::default()).with_kind_handler(
         JobKind::Notify,
-        Arc::new(NotifyHandler::new(&BotConfig::default())),
+        Arc::new(NotifyHandler::new(&bot_config(config))),
     )
 }
 
@@ -128,18 +135,20 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         cancel.clone(),
     ))];
     if config.run_worker {
-        background.push(tokio::spawn(worker(services.clone()).run(cancel.clone())));
+        background.push(tokio::spawn(
+            worker(services.clone(), &config).run(cancel.clone()),
+        ));
     }
     if config.run_bot {
         background.push(tokio::spawn(
             sn_bot::photos::PhotoKeeper::new(
                 services.clone(),
-                sn_bot::telegram::DEFAULT_API,
+                &config.telegram_api,
                 sn_bot::photos::ROUND_EVERY,
             )
             .run(cancel.clone()),
         ));
-        let bot = Bot::new(services.clone(), BotConfig::default());
+        let bot = Bot::new(services.clone(), bot_config(&config));
         let token = cancel.clone();
         background.push(tokio::spawn(async move {
             if let Err(err) = bot.run(token).await {

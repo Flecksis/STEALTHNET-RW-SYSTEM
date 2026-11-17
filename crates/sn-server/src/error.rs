@@ -6,6 +6,7 @@ use sn_remnawave::RemnaError;
 use sn_services::ServiceError;
 use sn_services::auth::{TOTP_INVALID, TOTP_REQUIRED};
 use sn_services::limits::RATE_LIMITED;
+use sn_services::settings::BOT_TAKEOVER_NOT_NEEDED;
 use sn_store::StoreError;
 
 pub type ApiResult<T> = Result<T, ApiError>;
@@ -63,6 +64,9 @@ impl From<ServiceError> for ApiError {
                 if *code == TOTP_REQUIRED || *code == TOTP_INVALID =>
             {
                 StatusCode::UNAUTHORIZED
+            }
+            ServiceError::Rejected { code, .. } if *code == BOT_TAKEOVER_NOT_NEEDED => {
+                StatusCode::CONFLICT
             }
             ServiceError::NotFound(_)
             | ServiceError::Store(StoreError::NotFound(_))

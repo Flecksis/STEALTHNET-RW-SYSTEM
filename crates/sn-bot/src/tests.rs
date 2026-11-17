@@ -20,6 +20,7 @@ use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod photos;
+mod runtime;
 mod stars;
 mod stars_review;
 
@@ -51,6 +52,14 @@ async fn telegram() -> MockServer {
             .mount(&server)
             .await;
     }
+    Mock::given(method("POST"))
+        .and(path_regex(r"/getWebhookInfo$"))
+        .respond_with(ok(
+            serde_json::json!({ "url": "", "pending_update_count": 0 }),
+        ))
+        .with_priority(5)
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path_regex(r"/getMe$"))
         .respond_with(ok(serde_json::json!({
@@ -787,7 +796,7 @@ async fn бот_читает_апдейты_и_хранит_смещение() {
     let mut conn = db.store.conn().await.unwrap();
     assert_eq!(
         conn.bot_state().get(OFFSET_KEY).await.unwrap(),
-        Some(serde_json::json!(42))
+        Some(serde_json::json!({"bot": 1, "offset": 42}))
     );
     assert_eq!(
         conn.settings().get(keys::BOT_USERNAME).await.unwrap(),

@@ -326,7 +326,7 @@ async fn сбой_базы_при_проведении_оплаты_звёзда
     let mut conn = db.store.conn().await.unwrap();
     assert_eq!(
         conn.bot_state().get(OFFSET_KEY).await.unwrap(),
-        Some(serde_json::json!(62))
+        Some(serde_json::json!({"bot": 1, "offset": 62}))
     );
     drop(conn);
     let event = stars_event(paid_update(61, 730, &payment, "stx-730"));
@@ -447,7 +447,7 @@ async fn оплата_звёздами_сохраняется_до_сдвига_
     let mut conn = db.store.conn().await.unwrap();
     assert_eq!(
         conn.bot_state().get(OFFSET_KEY).await.unwrap(),
-        Some(serde_json::json!(72))
+        Some(serde_json::json!({"bot": 1, "offset": 72}))
     );
     drop(conn);
     assert_eq!(

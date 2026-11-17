@@ -530,3 +530,46 @@
   gap: 6px 12px;
   padding-top: 10px;
 }
+
+.bot-state .muted {
+  color: var(--ink-2);
+}
+
+.bot-ok {
+  color: var(--ink);
+}
+
+.bot-quiet {
+  color: var(--muted);
+}
+
+.bot-bad {
+  color: var(--bad);
+}
+
+.bot-warn {
+  color: var(--warn);
+}
+
+.bot-open {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.bot-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.bot-ask-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

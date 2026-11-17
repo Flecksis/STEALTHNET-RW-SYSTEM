@@ -21,9 +21,12 @@ pub struct Config {
     pub migrate_on_start: bool,
     pub run_worker: bool,
     pub run_bot: bool,
+    pub telegram_api: String,
     pub server: ServerConfig,
     pub env: EnvFallbacks,
 }
+
+const TELEGRAM_API: &str = "https://api.telegram.org";
 
 fn flag(vars: &HashMap<String, String>, key: &str, default: bool) -> Result<bool> {
     match vars.get(key).map(|v| v.trim().to_ascii_lowercase()) {
@@ -80,6 +83,12 @@ impl Config {
             .transpose()?
             .unwrap_or(16)
             .clamp(2, 200);
+        let telegram_api = text(vars, "SN_TELEGRAM_API")
+            .map(|u| u.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| TELEGRAM_API.into());
+        if !(telegram_api.starts_with("https://") || telegram_api.starts_with("http://")) {
+            bail!("SN_TELEGRAM_API: ожидается адрес Bot API вида https://api.telegram.org");
+        }
         let log_format = match text(vars, "SN_LOG_FORMAT").as_deref() {
             None | Some("text") => LogFormat::Text,
             Some("json") => LogFormat::Json,
@@ -109,6 +118,7 @@ impl Config {
             migrate_on_start: flag(vars, "SN_MIGRATE_ON_START", true)?,
             run_worker: flag(vars, "SN_RUN_WORKER", true)?,
             run_bot: flag(vars, "SN_RUN_BOT", true)?,
+            telegram_api,
             server: ServerConfig {
                 bind,
                 public_url: public_url.clone(),
@@ -151,6 +161,24 @@ mod tests {
         assert_eq!(config.log_format, LogFormat::Text);
         assert!(config.env.remna.is_none());
         assert!(config.secret_key.is_none());
+        assert_eq!(config.telegram_api, "https://api.telegram.org");
+    }
+
+    #[test]
+    fn адрес_bot_api_можно_заменить() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_TELEGRAM_API", "http://telegram-bot-api:8081/"),
+        ]))
+        .unwrap();
+        assert_eq!(config.telegram_api, "http://telegram-bot-api:8081");
+        assert!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_TELEGRAM_API", "api.telegram.org")
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

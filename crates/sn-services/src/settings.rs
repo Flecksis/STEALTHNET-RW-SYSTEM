@@ -556,11 +556,14 @@ pub struct WebhookSecret {
     pub env: String,
 }
 
+pub const BOT_TAKEOVER_NOT_NEEDED: &str = "bot.takeover_not_needed";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BotSettingsView {
     pub token_set: bool,
     pub token_from_env: bool,
     pub username: Option<String>,
+    pub status: crate::BotState,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -1522,7 +1525,44 @@ impl<'a> SettingsOps<'a> {
             token_set: stored.is_some() || env,
             token_from_env: stored.is_none() && env,
             username,
+            status: self.services.bot_runtime().state(),
         })
+    }
+
+    pub async fn restart_bot(
+        &self,
+        take_over: bool,
+        admin: AdminId,
+    ) -> ServiceResult<BotSettingsView> {
+        let runtime = self.services.bot_runtime();
+        if take_over {
+            let state = runtime.state();
+            let crate::BotState::Failed {
+                problem: crate::BotProblem::Webhook,
+                detail,
+                ..
+            } = state
+            else {
+                return Err(ServiceError::rejected(
+                    BOT_TAKEOVER_NOT_NEEDED,
+                    "бот не подключён к другому сайту, забирать нечего",
+                ));
+            };
+            let mut conn = self.services.store().conn().await?;
+            conn.audit()
+                .record(&Actor::Admin(admin).audit(
+                    "settings.bot_takeover",
+                    "settings",
+                    None,
+                    serde_json::json!({ "from": detail }),
+                ))
+                .await?;
+            drop(conn);
+            runtime.request_takeover();
+        } else {
+            runtime.wake();
+        }
+        self.bot().await
     }
 
     pub async fn update_bot(
