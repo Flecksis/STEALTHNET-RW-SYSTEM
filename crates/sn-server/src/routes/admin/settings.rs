@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::module::ModuleId;
-use sn_domain::settings::{Appearance, AutoRenewSettings, TrialSettings};
+use sn_domain::settings::{Appearance, AutoRenewSettings, ConnectSettings, TrialSettings};
 use sn_modules::ModuleView;
 use sn_services::settings::{
     BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
@@ -21,6 +21,8 @@ pub fn routes() -> Router<AppState> {
         .route("/settings/{section}", get(read).put(write))
         .route("/settings/remnawave/check", post(check_remnawave))
         .route("/settings/remnawave/webhook-secret", post(webhook_secret))
+        .route("/settings/remnawave/page-configs", get(page_configs))
+        .route("/settings/remnawave/webhook-env", get(webhook_env))
         .route("/payments/providers", get(providers))
         .route(
             "/payments/providers/{id}",
@@ -44,6 +46,7 @@ async fn read(
     let value = match section.as_str() {
         "core" => json(&ops.core())?,
         "appearance" => json(&ops.appearance())?,
+        "connect" => json(&ops.connect())?,
         "payments" => json(&ops.payments())?,
         "trial" => json(&ops.trial())?,
         "autorenew" => json(&ops.autorenew())?,
@@ -70,6 +73,10 @@ async fn write(
             &ops.update_appearance(&decode::<Appearance>(body)?, by)
                 .await?,
         )?,
+        "connect" => json(
+            &ops.update_connect(&decode::<ConnectSettings>(body)?, by)
+                .await?,
+        )?,
         "payments" => json(
             &ops.update_payments(&decode::<PaymentsUpdate>(body)?, by)
                 .await?,
@@ -94,6 +101,24 @@ async fn write(
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
+}
+
+async fn webhook_env(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        serde_json::json!({ "env": state.services.settings_ops().webhook_env_full() }),
+    ))
+}
+
+async fn page_configs(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<sn_services::settings::PageConfig>>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.settings_ops().page_configs().await?))
 }
 
 async fn check_remnawave(

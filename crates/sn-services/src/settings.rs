@@ -10,8 +10,8 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::Currency;
 use sn_domain::payment::providers;
 use sn_domain::settings::{
-    Appearance, AutoRenewSettings, CoreSettings, FieldKind, PaymentOrder, SettingField,
-    TopUpSettings, TrialSettings, keys, secret_keys,
+    Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, PaymentOrder,
+    SettingField, TopUpSettings, TrialSettings, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -96,6 +96,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::APPEARANCE => {
                 if let Some(v) = parse::<Appearance>(&key, value) {
                     settings.appearance = v;
+                }
+            }
+            keys::CONNECT => {
+                if let Some(v) = parse::<ConnectSettings>(&key, value) {
+                    settings.connect = v;
                 }
             }
             _ => {}
@@ -539,6 +544,13 @@ pub struct RemnaCheck {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PageConfig {
+    pub uuid: String,
+    pub name: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WebhookSecret {
     pub secret: String,
     pub env: String,
@@ -873,6 +885,69 @@ impl<'a> SettingsOps<'a> {
         Ok(self.appearance())
     }
 
+    pub fn connect(&self) -> ConnectSettings {
+        self.services.settings().connect.clone()
+    }
+
+    pub async fn update_connect(
+        &self,
+        update: &ConnectSettings,
+        admin: AdminId,
+    ) -> ServiceResult<ConnectSettings> {
+        let page_config = update
+            .page_config
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                uuid::Uuid::parse_str(v)
+                    .map(|id| id.to_string())
+                    .map_err(|_| {
+                        field_error("page_config", "нужен идентификатор оформления страницы")
+                    })
+            })
+            .transpose()?;
+        let next = ConnectSettings {
+            mode: update.mode,
+            page_config,
+        };
+        let current = self.connect();
+        if next == current {
+            return Ok(current);
+        }
+        let mut tx = self.services.store().begin().await?;
+        tx.settings()
+            .set_as(keys::CONNECT, &next, Some(admin))
+            .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "settings.connect",
+                "settings",
+                None,
+                serde_json::json!({ "from": current, "to": next }),
+            ))
+            .await?;
+        tx.commit().await?;
+        self.saved().await?;
+        Ok(self.connect())
+    }
+
+    pub async fn page_configs(&self) -> ServiceResult<Vec<PageConfig>> {
+        let remna = self.services.remna()?;
+        let configs = remna.subscription_page_configs().await?;
+        let mut list: Vec<PageConfig> = configs
+            .configs
+            .into_iter()
+            .map(|c| PageConfig {
+                uuid: c.uuid.to_string(),
+                name: c.name,
+                position: c.view_position,
+            })
+            .collect();
+        list.sort_by_key(|c| c.position);
+        Ok(list)
+    }
+
     pub fn trial(&self) -> TrialSettings {
         self.services.settings().trial.clone()
     }
@@ -1197,6 +1272,14 @@ impl<'a> SettingsOps<'a> {
                 .map(|secret| webhook_env(public_url.as_deref(), &mask_secret(secret))),
             utc_offset_minutes: self.services.settings().remna_utc_offset_minutes,
         })
+    }
+
+    pub fn webhook_env_full(&self) -> Option<String> {
+        let public_url = self.services.settings().public_url.clone();
+        self.services
+            .remna_webhook_secret()
+            .as_deref()
+            .map(|secret| webhook_env(public_url.as_deref(), secret))
     }
 
     pub async fn update_remnawave(

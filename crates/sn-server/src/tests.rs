@@ -1441,3 +1441,53 @@ async fn без_каталога_интерфейса_любой_путь_отв
             .contains("json")
     );
 }
+
+#[tokio::test]
+async fn способ_подключения_и_оформления_страницы_remnawave() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    h.remna.set_subpage_configs(vec![
+        sn_remnawave::SubpageConfigRef {
+            uuid: second,
+            name: "Для белых списков".into(),
+            view_position: 2,
+        },
+        sn_remnawave::SubpageConfigRef {
+            uuid: first,
+            name: "Основное".into(),
+            view_position: 1,
+        },
+    ]);
+    let (status, list) = h
+        .get("/api/admin/settings/remnawave/page-configs", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list[0]["name"], "Основное");
+    assert_eq!(list[1]["uuid"], second.to_string());
+    let (_, connect) = h.get("/api/admin/settings/connect", &owner).await;
+    assert_eq!(connect, json!({ "mode": "ours", "page_config": null }));
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/connect",
+            &owner,
+            json!({ "mode": "remnawave", "page_config": second.to_string() }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "remnawave");
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(site["connect"]["page_config"], second.to_string());
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/connect",
+            &owner,
+            json!({ "mode": "remnawave", "page_config": "не-идентификатор" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    h.db.cleanup().await;
+}

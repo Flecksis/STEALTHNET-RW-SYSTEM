@@ -31,6 +31,7 @@ async fn site(State(state): State<AppState>) -> Response {
         "support_url": settings.support_url,
         "bot_username": bot_username,
         "appearance": settings.appearance,
+        "connect": settings.connect,
     }))
     .into_response()
 }

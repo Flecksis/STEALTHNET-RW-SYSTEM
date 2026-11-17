@@ -8,6 +8,7 @@ import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
+import { SettingsRemna } from './pages/SettingsRemna';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
 
@@ -126,6 +127,7 @@ export function AdminApp() {
           <Route path="modules" element={<Pending title="Модули" />} />
           <Route path="m/:module/*" element={<Pending title="Модуль" />} />
           <Route path="settings/look" element={<SettingsLook />} />
+          <Route path="settings/remnawave" element={<SettingsRemna />} />
           <Route
             path="settings/*"
             element={

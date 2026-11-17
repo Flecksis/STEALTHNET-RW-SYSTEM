@@ -255,6 +255,22 @@ pub struct Appearance {
     pub client_theme: ClientTheme,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectMode {
+    #[default]
+    Ours,
+    Remnawave,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectSettings {
+    #[serde(default)]
+    pub mode: ConnectMode,
+    #[serde(default)]
+    pub page_config: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreSettings {
     pub currency: Currency,
@@ -269,6 +285,8 @@ pub struct CoreSettings {
     pub invoice_ttl_minutes: u32,
     #[serde(default)]
     pub appearance: Appearance,
+    #[serde(default)]
+    pub connect: ConnectSettings,
 }
 
 impl Default for CoreSettings {
@@ -285,6 +303,7 @@ impl Default for CoreSettings {
             payment_order: PaymentOrder::default(),
             invoice_ttl_minutes: 60,
             appearance: Appearance::default(),
+            connect: ConnectSettings::default(),
         }
     }
 }
@@ -316,6 +335,7 @@ pub mod keys {
     pub const PAYMENT_ORDER: &str = "billing.payment_order";
     pub const INVOICE_TTL: &str = "billing.invoice_ttl_minutes";
     pub const APPEARANCE: &str = "core.appearance";
+    pub const CONNECT: &str = "core.connect";
     pub const BOT_USERNAME: &str = "bot.username";
 
     pub fn provider(id: &str) -> String {
