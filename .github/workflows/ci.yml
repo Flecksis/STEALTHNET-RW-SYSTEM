@@ -58,10 +58,45 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
-  docker:
+  install:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - run: docker build --tag stealthnet:ci .
+      - name: install
+        run: SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+      - name: sign in with the generated password
+        run: |
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/install.log" | tail -n 1)
+          test "${#password}" -eq 20
+          curl -fsS http://127.0.0.1:8080/api/health
+          curl -fsS -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
+          printf '%s' "$password" > "$RUNNER_TEMP/password.txt"
+      - name: rerun keeps secrets and the owner
+        run: |
+          cp deploy/.env "$RUNNER_TEMP/before.env"
+          SN_OWNER_EMAIL=other@example.com ./install.sh | tee "$RUNNER_TEMP/rerun.log"
+          cmp deploy/.env "$RUNNER_TEMP/before.env"
+          grep -q 'уже создан: owner@example.com' "$RUNNER_TEMP/rerun.log"
+          if grep -q 'Пароль владельца:' "$RUNNER_TEMP/rerun.log"; then exit 1; fi
+          curl -fsS -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$(cat "$RUNNER_TEMP/password.txt")\"}" "$LOGIN_URL"
+      - name: reset the owner password
+        run: |
+          ./install.sh --reset-password | tee "$RUNNER_TEMP/reset.log"
+          old=$(cat "$RUNNER_TEMP/password.txt")
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/reset.log" | tail -n 1)
+          test "${#password}" -eq 20
+          test "$password" != "$old"
+          curl -fsS -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$old\"}" "$LOGIN_URL")
+          test "$status" = 401
