@@ -7,6 +7,7 @@ import type { Referral } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 import { siteInviteLink } from '../lib/referral';
+import { supportLink, supportTickets } from '../lib/support';
 
 export function MiniProfile() {
   const { me, site } = useMini();
@@ -18,6 +19,9 @@ export function MiniProfile() {
       .then(setReferral)
       .catch(() => setReferral(null));
   }, []);
+
+  const link = supportLink(site);
+  const ticketsBot = supportTickets(site) ? site.bot_username : null;
 
   const copy = async (text: string, key: string) => {
     try {
@@ -77,10 +81,17 @@ export function MiniProfile() {
           {me.payments_count ? <span className="mn-row-val num">{me.payments_count}</span> : null}
           <Icon name="chevron-right" size={16} />
         </Link>
-        {site.support_url ? (
-          <button type="button" className="mn-row press" onClick={() => openExternal(site.support_url ?? '')}>
+        {ticketsBot ? (
+          <button type="button" className="mn-row press" onClick={() => openExternal(`https://t.me/${ticketsBot}?start=support`)}>
             <Icon name="chat" size={21} />
-            <span className="mn-row-name">Поддержка</span>
+            <span className="mn-row-name">{link ? 'Написать в поддержку' : 'Поддержка'}</span>
+            <Icon name="chevron-right" size={16} />
+          </button>
+        ) : null}
+        {link ? (
+          <button type="button" className="mn-row press" onClick={() => openExternal(link)}>
+            <Icon name="chat" size={21} />
+            <span className="mn-row-name">{ticketsBot ? 'Чат поддержки' : 'Поддержка'}</span>
             <Icon name="chevron-right" size={16} />
           </button>
         ) : null}

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, days, money, type Money } from '../lib/format';
@@ -6,11 +6,11 @@ import { countryName } from '../lib/geo';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { siteInviteLink } from '../lib/referral';
+import { supportLink, supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
+import { DevicesCard } from './DevicesCard';
 import {
   APPS,
-  appName,
-  deviceIcon,
   explanation,
   guessPlatform,
   periodTitle,
@@ -118,22 +118,6 @@ export function SubscriptionPage() {
     }
   };
 
-  const disconnect = async (device: Device) => {
-    if (!view) {
-      return;
-    }
-    setBusy(true);
-    try {
-      await api(`/api/client/subscriptions/${view.subscription.id}/devices/${encodeURIComponent(device.hwid)}`, { method: 'DELETE' });
-      setDevices((list) => (list ?? []).filter((d) => d.hwid !== device.hwid));
-      setAsk('');
-    } catch (err) {
-      setError(failText(err, 'Устройство не отключилось'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const toggleAuto = async () => {
     if (!view) {
       return;
@@ -188,7 +172,6 @@ export function SubscriptionPage() {
   const mode = site.connect?.mode ?? 'ours';
   const url = view?.subscription_url ?? null;
   const app = APPS[plat];
-  const limit = view?.subscription.mirror.hwid_limit ?? view?.tariff?.devices.included ?? null;
   const offer = view && catalog ? catalog.tariffs.find((t) => t.tariff.id === view.subscription.tariff_id) : null;
   const renewPeriod = offer?.periods.find((p) => p.period_id === view?.subscription.autorenew.period_id) ?? offer?.periods.find((p) => p.days === view?.subscription.period_days) ?? null;
   const renewPrice: Money | null = renewPeriod?.price ?? null;
@@ -244,7 +227,6 @@ export function SubscriptionPage() {
       ];
 
   const mayReissue = site.client_access?.reissue !== false;
-  const mayDisconnect = site.client_access?.devices !== false;
   const reissueBlock = !mayReissue ? null : reissued ? (
     <p role="status" className="cb-result">
       <strong>Новая ссылка выпущена.</strong> Подключите нужные устройства заново.
@@ -457,87 +439,7 @@ export function SubscriptionPage() {
     </Card>
   ) : null;
 
-  const devicesCard = !view ? (
-    <Card id="devices" className="cb-devices" label="Устройства">
-      <h2 className="cb-h2">Устройства</h2>
-      <p className="cb-ink2">Подключить телефон или компьютер можно сразу после покупки подписки.</p>
-      <div className="cb-btns">
-        <Link to="/cabinet/pay" className="cb-second">
-          Выбрать тариф
-        </Link>
-      </div>
-    </Card>
-  ) : (
-    <Card id="devices" className="cb-devices" label="Устройства">
-      <div className="cb-row">
-        <h2 className="cb-h2">
-          Устройства{' '}
-          <span className="cb-count">
-            {devices ? devices.length : (view.subscription.mirror.devices_count ?? 0)}
-            {limit ? ` из ${limit}` : ''}
-          </span>
-        </h2>
-        {!phone ? (
-          <Link to="/cabinet/pay" className="cb-accent-link">
-            Добавить ещё
-          </Link>
-        ) : null}
-      </div>
-      {devices && devices.length === 0 ? <p className="cb-muted">Устройств нет: появятся, когда вы добавите подписку в приложение.</p> : null}
-      {devices === null ? <p className="cb-muted">Список устройств сейчас недоступен</p> : null}
-      {devices?.map((d) => (
-        <Fragment key={d.hwid}>
-          <div className="cb-device">
-            <Icon name={deviceIcon(d)} size={22} />
-            <span className="cb-device-text">
-              {phone ? (
-                <span>
-                  <strong>{d.title ?? d.platform ?? 'Устройство'}</strong>
-                  {appName(d) ? <span className="cb-ink2"> · {appName(d)}</span> : null}
-                </span>
-              ) : (
-                <strong>{d.title ?? d.platform ?? 'Устройство'}</strong>
-              )}
-              <span className="cb-small cb-muted">
-                {phone
-                  ? d.added_at
-                    ? `Добавлено ${dateLong(d.added_at, false)}`
-                    : ''
-                  : [appName(d), d.added_at ? `добавлено ${dateLong(d.added_at, false)}` : null].filter(Boolean).join(' · ')}
-              </span>
-            </span>
-            {mayDisconnect ? (
-              <button
-                type="button"
-                className={phone ? 'cb-text' : 'cb-second sm'}
-                aria-label={`Отключить ${d.title ?? 'устройство'}`}
-                aria-expanded={ask === d.hwid}
-                onClick={() => setAsk(ask === d.hwid ? '' : d.hwid)}
-                disabled={busy}
-              >
-                Отключить
-              </button>
-            ) : null}
-          </div>
-          {ask === d.hwid ? (
-            <div className="cb-ask">
-              <p>
-                <strong>Отключить {d.title ?? 'устройство'}?</strong> Место освободится, но если подписка на нём осталась, при обновлении он займёт его снова. Чтобы закрыть доступ, выпустите новую ссылку.
-              </p>
-              <span className="cb-ask-btns">
-                <button type="button" className="cb-main sm" onClick={() => void disconnect(d)} disabled={busy}>
-                  Отключить
-                </button>
-                <button type="button" className="cb-cancel" onClick={() => setAsk('')} disabled={busy}>
-                  Отменить
-                </button>
-              </span>
-            </div>
-          ) : null}
-        </Fragment>
-      ))}
-    </Card>
-  );
+  const devicesCard = <DevicesCard view={view} devices={devices} onDevices={setDevices} onError={setError} addLink />;
 
   const autoSwitch = view ? (
     <button type="button" role="switch" className={phone ? 'cb-switch big' : 'cb-switch'} aria-checked={autoOn} aria-label="Автопродление" onClick={() => void toggleAuto()} disabled={blocked}>
@@ -613,7 +515,12 @@ export function SubscriptionPage() {
         ) : null}
         {referral ? (
           <Card id="friends" className="cb-friends" label="Друзья">
-            <h2 className="cb-h2">Друзья</h2>
+            <div className="cb-row">
+              <h2 className="cb-h2">Друзья</h2>
+              <Link to="/cabinet/friends" className="cb-accent-link cb-small">
+                Подробнее
+              </Link>
+            </div>
             <p className="cb-ink2">Пригласите друга и получайте {referral.levels[0] ?? 0}% от его оплат на баланс.</p>
             <span className="cb-small cb-muted">Ссылка на сайт</span>
             <div className="cb-linkrow">
@@ -638,8 +545,16 @@ export function SubscriptionPage() {
             </span>
           </Card>
         ) : null}
-        {site.support_url ? (
-          <a id="help" className="cb-card cb-help hov" href={site.support_url}>
+        {supportTickets(site) ? (
+          <Link id="help" className="cb-card cb-help hov" to="/cabinet/help">
+            <span>
+              <strong>Нужна помощь?</strong>
+              <span className="cb-small cb-muted">Напишите нам — ответ появится здесь, в кабинете</span>
+            </span>
+            <Icon name="chevron-right" size={20} />
+          </Link>
+        ) : supportLink(site) ? (
+          <a id="help" className="cb-card cb-help hov" href={supportLink(site) ?? undefined} target="_blank" rel="noreferrer">
             <span>
               <strong>Нужна помощь?</strong>
               <span className="cb-small cb-muted">Откроется чат поддержки</span>

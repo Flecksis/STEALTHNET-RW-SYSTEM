@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { count, dateLong, money, MINUS, type Money } from '../lib/format';
+import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { gb, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type SubscriptionView, type TariffOffer } from './model';
 
@@ -507,8 +508,12 @@ export function Pay() {
               </p>
             ) : null}
             {blocked ? (
-              site.support_url ? (
-                <a className="cb-main big" href={site.support_url}>
+              supportTickets(site) ? (
+                <Link className="cb-main big" to="/cabinet/help">
+                  Написать в поддержку
+                </Link>
+              ) : site.support_url ? (
+                <a className="cb-main big" href={site.support_url} target="_blank" rel="noreferrer">
                   Написать в поддержку
                 </a>
               ) : null

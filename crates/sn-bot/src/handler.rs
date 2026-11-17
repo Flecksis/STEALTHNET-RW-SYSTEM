@@ -12,6 +12,7 @@ use sn_domain::format;
 use sn_domain::ids::TariffId;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
+use sn_domain::settings::CoreSettings;
 use sn_domain::subscription::Subscription;
 use sn_modules::catalog::{broadcast, options, promo, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
@@ -405,6 +406,7 @@ async fn after_start(
     turn.session.awaiting = None;
     match param {
         Some(param) if param.starts_with(login::PREFIX) => login_screen(turn, client, param).await,
+        Some(SUPPORT_START) => Ok(account::support_prompt(turn)),
         _ => main_menu(turn.ctx, client).await,
     }
 }
@@ -764,24 +766,37 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
     if !c.documents.is_empty() {
         buttons.extend(ui::button(c, "menu.btn.documents", &[], "docs"));
     }
-    buttons.extend(ui::button(c, "menu.btn.support", &[], "sup"));
+    let settings = services.settings();
+    match support_link(&settings) {
+        Some(url) if !settings.support_tickets() => {
+            buttons.extend(ui::link(c, "menu.btn.support", &[], url));
+        }
+        _ => buttons.extend(ui::button(c, "menu.btn.support", &[], "sup")),
+    }
     Ok(Screen::new(lines.text())
         .keyboard(Keyboard::new().grid(buttons, c.content.menu_columns()))
         .section(Section::Menu))
+}
+
+pub const SUPPORT_START: &str = "support";
+
+pub fn support_link(settings: &CoreSettings) -> Option<&str> {
+    settings
+        .support_link()
+        .filter(|u| u.starts_with("https://"))
 }
 
 fn paysupport(ctx: &BotCtx) -> Screen {
     let content = ctx.services.bot_content();
     let settings = ctx.services.settings();
     let mut keyboard = Keyboard::new();
-    if let Some(url) = settings
-        .support_url
-        .as_deref()
-        .filter(|u| u.starts_with("http"))
-    {
+    let link = support_link(&settings);
+    if let Some(url) = link {
         keyboard = keyboard.push(ui::link(&content, "pay.btn.write_support", &[], url));
     }
-    keyboard = keyboard.push(ui::button(&content, "pay.btn.support_bot", &[], "sup"));
+    if settings.support_tickets() || link.is_none() {
+        keyboard = keyboard.push(ui::button(&content, "pay.btn.support_bot", &[], "sup"));
+    }
     Screen::new(ui::text(&content, "pay.paysupport", &[]))
         .keyboard(keyboard)
         .section(Section::Support)

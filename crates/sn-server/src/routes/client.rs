@@ -662,6 +662,13 @@ async fn open_ticket(
     ApiJson(body): ApiJson<OpenTicketBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     client.require_full()?;
+    if !state.services.settings().support_tickets() {
+        return Err(ApiError::new(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "support.tickets_off",
+            "Обращения здесь не принимаются: напишите в поддержку по ссылке",
+        ));
+    }
     let channel = match client.channel() {
         ClientChannel::Cabinet => TicketChannel::Cabinet,
         ClientChannel::Miniapp => TicketChannel::Miniapp,

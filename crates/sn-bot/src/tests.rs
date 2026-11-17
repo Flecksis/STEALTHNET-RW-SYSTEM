@@ -31,6 +31,7 @@ mod single_subscription;
 mod stars;
 mod stars_review;
 mod support_followup;
+mod support_mode;
 
 const TOKEN: &str = "123456:TEST-secret-token";
 

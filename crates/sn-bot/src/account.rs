@@ -632,14 +632,22 @@ pub fn support_prompt(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::SupportMessage);
     let content = turn.services().bot_content();
     let c = &*content;
-    let mut keyboard = Keyboard::new();
-    if let Some(url) = turn
-        .services()
-        .settings()
-        .support_url
-        .as_deref()
-        .filter(|u| u.starts_with("http"))
+    let settings = turn.services().settings();
+    let link = crate::handler::support_link(&settings);
+    if let Some(url) = link
+        && !settings.support_tickets()
     {
+        turn.session.awaiting = None;
+        return Screen::new(ui::text(c, "sup.link", &[]))
+            .keyboard(
+                Keyboard::new()
+                    .push(ui::link(c, "sup.btn.write", &[], url))
+                    .push(ui::menu(c)),
+            )
+            .section(Section::Support);
+    }
+    let mut keyboard = Keyboard::new();
+    if let Some(url) = link {
         keyboard = keyboard.push(ui::link(c, "sup.btn.other", &[], url));
     }
     Screen::new(ui::text(c, "sup.prompt", &[]))

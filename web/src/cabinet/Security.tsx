@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong } from '../lib/format';
 import { QrCode } from '../lib/qr';
+import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import type { TwoFactor } from './model';
 
@@ -225,8 +227,12 @@ export function SecurityPage() {
         ) : null}
         <p className="cb-small cb-muted">
           Если телефон с приложением потерян,{' '}
-          {site.support_url ? (
-            <a className="cb-accent-link" href={site.support_url}>
+          {supportTickets(site) ? (
+            <Link className="cb-accent-link" to="/cabinet/help">
+              напишите в поддержку
+            </Link>
+          ) : site.support_url ? (
+            <a className="cb-accent-link" href={site.support_url} target="_blank" rel="noreferrer">
               напишите в поддержку
             </a>
           ) : (

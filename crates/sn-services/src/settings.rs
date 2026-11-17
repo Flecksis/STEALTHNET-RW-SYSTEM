@@ -13,8 +13,8 @@ use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{PaymentChannels, providers};
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
-    ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, TopUpSettings,
-    TrialSettings, keys, secret_keys,
+    ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, SupportMode,
+    TopUpSettings, TrialSettings, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -58,6 +58,7 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
     let rows = db.settings().with_prefix("").await?;
     let mut settings = CoreSettings::default();
     let mut topup: Option<TopUpSettings> = None;
+    let mut support_mode: Option<SupportMode> = None;
     for (key, value) in rows {
         match key.as_str() {
             keys::CURRENCY => {
@@ -72,6 +73,7 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             }
             keys::PUBLIC_URL => settings.public_url = parse(&key, value),
             keys::SUPPORT_URL => settings.support_url = parse(&key, value),
+            keys::SUPPORT_MODE => support_mode = parse(&key, value),
             keys::REMNA_UTC_OFFSET => {
                 if let Some(minutes) = parse::<i32>(&key, value) {
                     settings.remna_utc_offset_minutes = minutes;
@@ -134,6 +136,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
         }
     }
     settings.topup = topup.unwrap_or_else(|| TopUpSettings::default_for(settings.currency));
+    settings.support_mode = support_mode.unwrap_or(if settings.support_url.is_some() {
+        SupportMode::Both
+    } else {
+        SupportMode::Tickets
+    });
     Ok(settings)
 }
 
@@ -485,6 +492,8 @@ pub struct CoreUpdate {
     #[serde(default)]
     pub support_url: Option<String>,
     #[serde(default)]
+    pub support_mode: Option<SupportMode>,
+    #[serde(default)]
     pub invoice_ttl_minutes: Option<u32>,
     #[serde(default)]
     pub remna_utc_offset_minutes: Option<i32>,
@@ -822,6 +831,28 @@ impl<'a> SettingsOps<'a> {
                 .set_as(keys::BRAND_NAME, &name, Some(admin))
                 .await?;
             changed.insert("brand_name".into(), Value::String(name.to_string()));
+        }
+        let next_url = match &update.support_url {
+            Some(url) => optional_text(Some(url)),
+            None => current.support_url.clone(),
+        };
+        let next_mode = update.support_mode.unwrap_or(current.support_mode);
+        if next_mode.needs_link() && next_url.is_none() {
+            return Err(field_error(
+                "support_url",
+                "укажите ссылку на чат или бота поддержки",
+            ));
+        }
+        if update.support_mode.is_some() || update.support_url.is_some() {
+            tx.settings()
+                .set_as(keys::SUPPORT_MODE, &next_mode, Some(admin))
+                .await?;
+            if next_mode != current.support_mode {
+                changed.insert(
+                    "support_mode".into(),
+                    Value::String(next_mode.as_str().into()),
+                );
+            }
         }
         if let Some(url) = &update.support_url {
             match optional_text(Some(url)) {

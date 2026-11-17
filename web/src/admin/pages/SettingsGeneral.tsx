@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { BrandMark } from '../../lib/brand';
+import { telegramLink } from '../../lib/support';
 import type { Currency } from '../../lib/types';
 import { useSession } from '../session';
 import { fromRaw, toRaw } from '../tariffs/model';
@@ -12,6 +13,7 @@ type Core = {
   settings: {
     brand_name: string;
     support_url: string | null;
+    support_mode: SupportMode;
     public_url: string | null;
     invoice_ttl_minutes: number;
     remna_utc_offset_minutes: number;
@@ -20,11 +22,26 @@ type Core = {
   };
 };
 
+type SupportMode = 'tickets' | 'link' | 'both';
+
+const SUPPORT_MODES: Array<[SupportMode, string]> = [
+  ['tickets', 'Обращения'],
+  ['link', 'Своя ссылка'],
+  ['both', 'Обращения и ссылка'],
+];
+
+const SUPPORT_TEXT: Record<SupportMode, string> = {
+  tickets: 'Клиенты пишут в боте, кабинете и мини-приложении, а вы отвечаете в разделе «Поддержка».',
+  link: 'Кнопки «Поддержка» и «Помощь» везде открывают вашу ссылку. Новые обращения не принимаются.',
+  both: 'Обращения работают как обычно, а рядом с ними — кнопка с вашей ссылкой.',
+};
+
 type SiteData = { title: string | null; description: string | null; indexing: boolean; title_max: number; description_max: number };
 
 type Work = {
   brand: string;
   support: string;
+  supportMode: SupportMode;
   ttl: string;
   offset: number;
   min: string;
@@ -77,6 +94,7 @@ export function SettingsGeneral() {
       const next: Work = {
         brand: s.brand_name,
         support: s.support_url ?? '',
+        supportMode: s.support_mode ?? (s.support_url ? 'both' : 'tickets'),
         ttl: String(s.invoice_ttl_minutes),
         offset: s.remna_utc_offset_minutes,
         min: toRaw(s.topup.min_minor, s.currency),
@@ -120,7 +138,9 @@ export function SettingsGeneral() {
     setStatus(null);
   };
   const brandBad = work.brand.trim().length === 0;
-  const supportBad = work.support.trim() !== '' && !/^(https:\/\/|tg:\/\/)\S+$/.test(work.support.trim());
+  const supportUrl = telegramLink(work.support);
+  const needsLink = work.supportMode !== 'tickets';
+  const supportBad = needsLink ? supportUrl === null : work.support.trim() !== '' && supportUrl === null;
   const ttl = Number.parseInt(work.ttl, 10);
   const ttlBad = Number.isNaN(ttl) || ttl < 5 || ttl > 24 * 60;
   const min = fromRaw(work.min, currency);
@@ -148,7 +168,10 @@ export function SettingsGeneral() {
         body.brand_name = work.brand.trim();
       }
       if (work.support !== base.support) {
-        body.support_url = work.support.trim();
+        body.support_url = supportUrl ?? '';
+      }
+      if (work.supportMode !== base.supportMode) {
+        body.support_mode = work.supportMode;
       }
       if (work.ttl !== base.ttl) {
         body.invoice_ttl_minutes = ttl;
@@ -201,27 +224,6 @@ export function SettingsGeneral() {
           </div>
         </div>
         <div className="row">
-          <label htmlFor="gen-support" className="rl">
-            Ссылка на поддержку
-          </label>
-          <div className="rc">
-            <input
-              id="gen-support"
-              className="field"
-              maxLength={300}
-              value={work.support}
-              placeholder="https://t.me/… или tg://resolve?domain=…"
-              aria-invalid={supportBad}
-              aria-describedby="gen-support-hint"
-              onChange={(e) => edit({ support: e.target.value })}
-              disabled={busy}
-            />
-            <span id="gen-support-hint" className={supportBad ? 'err' : 'cap'}>
-              {supportBad ? 'Ссылка начинается с https:// или tg://' : 'Пусто — клиенты пишут в поддержку только через бота и кабинет'}
-            </span>
-          </div>
-        </div>
-        <div className="row">
           <span className="rl">Адрес сервиса</span>
           <div className="rc">
             <span className="mono" style={{ paddingTop: 10 }}>
@@ -230,6 +232,57 @@ export function SettingsGeneral() {
             <span className="cap">Задаётся при установке вместе с сертификатом</span>
           </div>
         </div>
+      </section>
+
+      <section className="sec" aria-labelledby="sup-h">
+        <div className="sec-head">
+          <h2 id="sup-h" className="section-title">
+            Поддержка
+          </h2>
+          <span className="muted">Куда ведут кнопки «Поддержка» и «Помощь» в боте, кабинете и мини-приложении</span>
+        </div>
+        <div className="row">
+          <span className="rl">Как клиенты пишут</span>
+          <div className="rc">
+            <span role="group" aria-label="Как клиенты пишут в поддержку" className="segs">
+              {SUPPORT_MODES.map(([key, label]) => (
+                <button key={key} type="button" aria-pressed={work.supportMode === key} onClick={() => edit({ supportMode: key })} disabled={busy}>
+                  {label}
+                </button>
+              ))}
+            </span>
+            <span className="cap">{SUPPORT_TEXT[work.supportMode]}</span>
+          </div>
+        </div>
+        {needsLink ? (
+          <div className="row">
+            <label htmlFor="gen-support" className="rl">
+              Ссылка
+            </label>
+            <div className="rc">
+              <input
+                id="gen-support"
+                className="field"
+                maxLength={300}
+                value={work.support}
+                placeholder="@support_chat или https://t.me/support_bot"
+                aria-invalid={supportBad}
+                aria-describedby="gen-support-hint"
+                onChange={(e) => edit({ support: e.target.value })}
+                disabled={busy}
+              />
+              <span id="gen-support-hint" className={supportBad ? 'err' : 'cap'}>
+                {supportBad
+                  ? work.support.trim() === ''
+                    ? 'Укажите чат, бота или сайт поддержки'
+                    : 'Подойдёт @имя, ссылка t.me/… или адрес сайта с https://'
+                  : supportUrl && supportUrl !== work.support.trim()
+                    ? `Сохранится как ${supportUrl}`
+                    : 'Чат или бот в Telegram, можно страница на сайте'}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="sec" aria-labelledby="seo-h">

@@ -7,6 +7,7 @@ import { Icon, type IconName } from '../lib/icons';
 import { resetWhen, trafficMeter, type Referral } from '../cabinet/model';
 import { ThemeCirc, useMini } from './MiniApp';
 import { openExternal } from './telegram';
+import { supportLink, supportTickets } from '../lib/support';
 
 const R = 90;
 const LEN = 2 * Math.PI * R;
@@ -52,11 +53,13 @@ export function MiniHome() {
       ? { label: 'Открыть страницу подключения', icon: 'external' as IconName, run: () => openExternal(url), to: undefined }
       : { label: 'Подключить', icon: 'zap' as IconName, run: undefined, to: '/app/connect' };
 
+  const support = supportTickets(site) && site.bot_username ? `https://t.me/${site.bot_username}?start=support` : supportLink(site);
+
   type Btn = { label: string; icon: IconName; to?: string; run?: () => void; href?: string };
   const main: Btn = !view
     ? { label: 'Выбрать тариф', icon: 'tag', to: '/app/plans' }
     : blocked
-      ? { label: 'Написать в поддержку', icon: 'chat', run: site.support_url ? () => openExternal(site.support_url ?? '') : undefined }
+      ? { label: 'Написать в поддержку', icon: 'chat', run: support ? () => openExternal(support) : undefined }
       : expired
         ? { label: 'Продлить', icon: 'refresh', to: '/app/plans' }
         : connect;
@@ -82,8 +85,8 @@ export function MiniHome() {
   rows.push({ label: 'Промокод', icon: 'percent', to: '/app/plans' });
   rows.push({ label: 'История оплат', icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });
   rows.push({ label: 'Инструкции', icon: 'book', to: '/app/connect' });
-  if (site.support_url) {
-    rows.push({ label: 'Поддержка', icon: 'chat', run: () => openExternal(site.support_url ?? '') });
+  if (support) {
+    rows.push({ label: 'Поддержка', icon: 'chat', run: () => openExternal(support) });
   }
 
   return (

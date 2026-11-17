@@ -90,7 +90,32 @@ export function transitionText(current: string | null): string {
   return `Текущая подписка (${current ?? 'без тарифа'}) будет удалена, новая станет доступна сразу после оплаты. Оставшиеся дни не переносятся, ссылка подписки останется прежней.`;
 }
 
-export type Referral = { code: string; bot_link: string | null; invited: number; earned: Money; levels: number[] };
+export type WithdrawalStatus = 'holding' | 'pending' | 'paid' | 'rejected' | 'canceled';
+
+export type PayoutMethod = 'sbp' | 'card' | 'usdt_trc20';
+
+export type Withdrawal = {
+  id: number;
+  amount: Money;
+  method: PayoutMethod;
+  details: string;
+  status: WithdrawalStatus;
+  comment: string | null;
+  created_at: string;
+  decided_at: string | null;
+};
+
+export type Referral = {
+  code: string;
+  bot_link: string | null;
+  invited: number;
+  earned: Money;
+  balance?: Money;
+  levels: number[];
+  withdraw_min?: Money | null;
+  withdrawals_enabled?: boolean;
+  withdrawals?: Withdrawal[];
+};
 
 export const GB = 1024 ** 3;
 

@@ -355,6 +355,8 @@ pub struct CoreSettings {
     pub brand_name: String,
     pub public_url: Option<String>,
     pub support_url: Option<String>,
+    #[serde(default)]
+    pub support_mode: SupportMode,
     pub remna_utc_offset_minutes: i32,
     pub autorenew: AutoRenewSettings,
     pub trial: TrialSettings,
@@ -377,6 +379,29 @@ pub struct CoreSettings {
     pub multi_subscriptions: bool,
     #[serde(default)]
     pub client_access: ClientAccess,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportMode {
+    #[default]
+    Tickets,
+    Link,
+    Both,
+}
+
+impl SupportMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SupportMode::Tickets => "tickets",
+            SupportMode::Link => "link",
+            SupportMode::Both => "both",
+        }
+    }
+
+    pub const fn needs_link(self) -> bool {
+        matches!(self, SupportMode::Link | SupportMode::Both)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +443,7 @@ impl Default for CoreSettings {
             brand_name: "STEALTHNET".into(),
             public_url: None,
             support_url: None,
+            support_mode: SupportMode::Tickets,
             remna_utc_offset_minutes: 0,
             autorenew: AutoRenewSettings::default(),
             trial: TrialSettings::default(),
@@ -448,6 +474,20 @@ impl CoreSettings {
         self.logo.as_ref().map(|logo| logo.path(SiteImage::Logo))
     }
 
+    pub fn support_link(&self) -> Option<&str> {
+        if !self.support_mode.needs_link() {
+            return None;
+        }
+        self.support_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+    }
+
+    pub fn support_tickets(&self) -> bool {
+        self.support_mode != SupportMode::Link || self.support_link().is_none()
+    }
+
     pub fn miniapp_url(&self) -> Option<String> {
         if !self.client_access.miniapp {
             return None;
@@ -476,6 +516,7 @@ pub mod keys {
     pub const BRAND_NAME: &str = "core.brand_name";
     pub const PUBLIC_URL: &str = "core.public_url";
     pub const SUPPORT_URL: &str = "core.support_url";
+    pub const SUPPORT_MODE: &str = "core.support_mode";
     pub const REMNA_URL: &str = "remnawave.url";
     pub const REMNA_UTC_OFFSET: &str = "remnawave.utc_offset_minutes";
     pub const AUTORENEW: &str = "billing.autorenew";
@@ -520,6 +561,30 @@ pub mod secret_keys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ссылка_поддержки_видна_только_в_режимах_со_ссылкой() {
+        let with = |mode, url: Option<&str>| CoreSettings {
+            support_mode: mode,
+            support_url: url.map(str::to_string),
+            ..CoreSettings::default()
+        };
+        let chat = Some("https://t.me/help_chat");
+        let tickets = with(SupportMode::Tickets, chat);
+        assert_eq!(
+            (tickets.support_link(), tickets.support_tickets()),
+            (None, true)
+        );
+        let link = with(SupportMode::Link, chat);
+        assert_eq!((link.support_link(), link.support_tickets()), (chat, false));
+        let both = with(SupportMode::Both, chat);
+        assert_eq!((both.support_link(), both.support_tickets()), (chat, true));
+        let empty = with(SupportMode::Link, None);
+        assert_eq!(
+            (empty.support_link(), empty.support_tickets()),
+            (None, true)
+        );
+    }
 
     #[test]
     fn обязательные_поля_ищутся_по_схеме() {

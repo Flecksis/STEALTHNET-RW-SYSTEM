@@ -1621,3 +1621,212 @@
 a.cb-card[id] {
   scroll-margin-top: 16px;
 }
+
+.cb-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.cb-tabdot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.cb-menu-btn {
+  position: relative;
+}
+
+.cb-tabdot.on-btn {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  margin: 0;
+}
+
+.cb-status.accent {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.cb-status.ok {
+  color: var(--ink-2);
+}
+
+.cb-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  margin-bottom: 6px;
+}
+
+.cb-field textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.45;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.cb-field textarea:focus,
+.cb-field input:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.cb-newticket,
+.cb-withdraw {
+  gap: 14px;
+}
+
+.cb-wamount {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-wamount input {
+  flex: 1 1 auto;
+}
+
+.cb-wamount .cb-text,
+.cb-reply .cb-text {
+  align-self: center;
+  margin-left: 0;
+}
+
+.cb-reply .cb-btns {
+  align-items: center;
+}
+
+.cb-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.cb-facts div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cb-facts dt {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.cb-facts dd {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.cb-payrow.cb-ticketrow {
+  display: block;
+  padding: 0;
+}
+
+.cb-ticketlink {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 16px 0;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.cb-ticketlink:hover strong {
+  text-decoration: underline;
+}
+
+.cb-thread {
+  gap: 16px;
+}
+
+.cb-msgs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cb-msg {
+  align-self: flex-start;
+  max-width: min(560px, 86%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+}
+
+.cb-msg.mine {
+  align-self: flex-end;
+  border-color: transparent;
+  background: var(--accent-soft);
+}
+
+.cb-msg-who {
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.cb-msg-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.cb-reply,
+.cb-thread-end {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.cb-thread-end p {
+  margin: 0;
+}
+
+.cb-phone .cb-facts {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.cb-phone .cb-facts div {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.cb-phone .cb-facts dd {
+  font-size: 18px;
+}
+
+.cb-phone .cb-msg {
+  max-width: 92%;
+}

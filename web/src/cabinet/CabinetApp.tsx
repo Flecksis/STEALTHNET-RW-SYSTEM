@@ -6,8 +6,12 @@ import { avatarColor, money } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
+import { supportLink, supportTickets } from '../lib/support';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
+import { DevicesPage } from './Devices';
+import { FriendsPage } from './Friends';
+import { HelpPage, type TicketBrief } from './Help';
 import { Login } from './Login';
 import type { ClientMe } from './model';
 import { Pay } from './Pay';
@@ -142,6 +146,10 @@ export function CabinetApp() {
             <Route path="topup" element={<TopUpPage />} />
             <Route path="payments" element={<PaymentsHistory />} />
             <Route path="security" element={<SecurityPage />} />
+            <Route path="devices" element={<DevicesPage />} />
+            <Route path="friends" element={<FriendsPage />} />
+            <Route path="help" element={<HelpPage />} />
+            <Route path="help/:id" element={<HelpPage />} />
             <Route path="*" element={<SubscriptionPage />} />
           </Routes>
         </main>
@@ -154,9 +162,9 @@ export function CabinetApp() {
 const TABS: Array<{ key: string; label: string; to: string }> = [
   { key: 'sub', label: 'Подписка', to: '/cabinet' },
   { key: 'pay', label: 'Тарифы', to: '/cabinet/pay' },
-  { key: 'devices', label: 'Устройства', to: '/cabinet#devices' },
-  { key: 'friends', label: 'Друзья', to: '/cabinet#friends' },
-  { key: 'help', label: 'Помощь', to: '/cabinet#help' },
+  { key: 'devices', label: 'Устройства', to: '/cabinet/devices' },
+  { key: 'friends', label: 'Друзья', to: '/cabinet/friends' },
+  { key: 'help', label: 'Помощь', to: '/cabinet/help' },
 ];
 
 let referralKnown: boolean | null = null;
@@ -186,19 +194,58 @@ function useTabs() {
       alive = false;
     };
   }, []);
-  const help = Boolean(site.support_url || site.bot_username);
+  const help = supportTickets(site) || supportLink(site) !== null;
   return TABS.filter((t) => (t.key === 'friends' ? referral === true : t.key === 'help' ? help : true));
 }
 
-function jump(to: string, location: { pathname: string; hash: string }) {
-  const [path, hash] = to.split('#');
-  if (!hash || location.pathname !== path || location.hash !== `#${hash}`) {
-    return;
-  }
-  document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+function useAnswered(): number {
+  const { site } = useCabinet();
+  const location = useLocation();
+  const [answered, setAnswered] = useState(0);
+  const on = supportTickets(site);
+  useEffect(() => {
+    if (!on) {
+      setAnswered(0);
+      return;
+    }
+    let alive = true;
+    const check = () => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      api<TicketBrief[]>('/api/client/support/tickets')
+        .then((list) => {
+          if (alive) {
+            setAnswered(list.filter((t) => t.status === 'open' && t.last_author !== 'client').length);
+          }
+        })
+        .catch(() => undefined);
+    };
+    check();
+    const timer = window.setInterval(check, 60_000);
+    document.addEventListener('visibilitychange', check);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', check);
+    };
+  }, [on, location.pathname]);
+  return answered;
 }
 
-function currentTab(path: string, hash: string): string {
+function TabLabel({ tab, answered }: { tab: { key: string; label: string }; answered: number }) {
+  if (tab.key !== 'help' || answered === 0) {
+    return <>{tab.label}</>;
+  }
+  return (
+    <>
+      {tab.label}
+      <span className="cb-tabdot" aria-label={answered === 1 ? ', есть ответ поддержки' : `, ответов поддержки: ${answered}`} />
+    </>
+  );
+}
+
+function currentTab(path: string): string {
   if (path.startsWith('/cabinet/security')) {
     return 'security';
   }
@@ -208,13 +255,13 @@ function currentTab(path: string, hash: string): string {
   if (path.startsWith('/cabinet/pay')) {
     return 'pay';
   }
-  if (hash === '#devices') {
+  if (path.startsWith('/cabinet/devices')) {
     return 'devices';
   }
-  if (hash === '#friends') {
+  if (path.startsWith('/cabinet/friends')) {
     return 'friends';
   }
-  if (hash === '#help') {
+  if (path.startsWith('/cabinet/help')) {
     return 'help';
   }
   return 'sub';
@@ -262,16 +309,17 @@ function Header() {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
-  const tab = currentTab(location.pathname, location.hash);
+  const tab = currentTab(location.pathname);
   const tabs = useTabs();
+  const answered = useAnswered();
   return (
     <header className="cb-head">
       <div className="cb-head-in">
         <Brand />
         <nav aria-label="Кабинет" className="cb-tabs">
           {tabs.map((t) => (
-            <Link key={t.key} to={t.to} className="cb-tab hov" aria-current={tab === t.key ? 'page' : undefined} onClick={() => jump(t.to, location)}>
-              {t.label}
+            <Link key={t.key} to={t.to} className="cb-tab hov" aria-current={tab === t.key ? 'page' : undefined}>
+              <TabLabel tab={t} answered={answered} />
             </Link>
           ))}
         </nav>
@@ -322,8 +370,9 @@ function PhoneHeader() {
   useEffect(() => {
     setOpen(false);
   }, [location.pathname, location.hash]);
-  const tab = currentTab(location.pathname, location.hash);
+  const tab = currentTab(location.pathname);
   const tabs = useTabs();
+  const answered = useAnswered();
   return (
     <header className="cb-phead">
       <Brand small />
@@ -334,8 +383,9 @@ function PhoneHeader() {
         </Link>
       ) : null}
       <ThemeButton className="cb-circ" />
-      <button type="button" className="cb-circ" aria-label="Меню" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="cb-circ cb-menu-btn" aria-label={answered > 0 ? 'Меню, есть ответ поддержки' : 'Меню'} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <Icon name={open ? 'close' : 'menu'} size={20} />
+        {answered > 0 && !open ? <span className="cb-tabdot on-btn" aria-hidden="true" /> : null}
       </button>
       {open ? (
         <nav aria-label="Разделы кабинета" className="cb-menu">
@@ -345,12 +395,9 @@ function PhoneHeader() {
               to={t.to}
               className="cb-menu-item"
               aria-current={tab === t.key ? 'page' : undefined}
-              onClick={() => {
-                setOpen(false);
-                jump(t.to, location);
-              }}
+              onClick={() => setOpen(false)}
             >
-              {t.label}
+              <TabLabel tab={t} answered={answered} />
             </Link>
           ))}
           <Link to="/cabinet/payments" className="cb-menu-item" aria-current={location.pathname.startsWith('/cabinet/payments') ? 'page' : undefined}>
@@ -370,10 +417,15 @@ function PhoneHeader() {
 
 function Footer() {
   const { site } = useCabinet();
+  const link = supportLink(site);
   return (
     <footer className="cb-foot">
-      {site.support_url ? (
-        <a href={site.support_url}>Помощь</a>
+      {supportTickets(site) ? (
+        <Link to="/cabinet/help">Помощь</Link>
+      ) : link ? (
+        <a href={link} target="_blank" rel="noreferrer">
+          Помощь
+        </a>
       ) : site.bot_username ? (
         <a href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
           Помощь
