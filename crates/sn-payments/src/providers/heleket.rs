@@ -12,11 +12,11 @@ use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
 use uuid::Uuid;
 
-const API: &str = "https://api.heleket.com";
+const API: &str = "https://api.heleket.hk";
 
 pub struct Heleket {
     http: reqwest::Client,
-    api_base: String,
+    api_base: Option<String>,
 }
 
 impl Default for Heleket {
@@ -27,13 +27,28 @@ impl Default for Heleket {
 
 impl Heleket {
     pub fn new() -> Self {
-        Self::with_api_base(API)
+        Heleket {
+            http: http_client(),
+            api_base: None,
+        }
     }
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Heleket {
             http: http_client(),
-            api_base: api_base.into().trim_end_matches('/').to_string(),
+            api_base: Some(api_base.into()),
+        }
+    }
+
+    fn base(&self, config: &ProviderConfig) -> String {
+        match &self.api_base {
+            Some(base) => base.trim_end_matches('/').to_string(),
+            None => config
+                .get("api_url")
+                .filter(|url| util::is_https(url))
+                .unwrap_or(API)
+                .trim_end_matches('/')
+                .to_string(),
         }
     }
 
@@ -43,7 +58,7 @@ impl Heleket {
         let bytes = body.to_bytes();
         let reply = util::send(
             self.http
-                .post(format!("{}{path}", self.api_base))
+                .post(format!("{}{path}", self.base(config)))
                 .header("merchant", merchant)
                 .header("sign", signature(&bytes, key))
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -54,9 +69,37 @@ impl Heleket {
         let accepted = parsed.get("state").and_then(Json::scalar_text) == Some("0");
         match parsed.get("result") {
             Some(result) if reply.is_success() && accepted => Ok(result.clone()),
-            _ => Err(reply.failure(parsed.get("message").and_then(Json::as_str))),
+            _ => Err(reply.failure(error_text(&parsed).as_deref())),
         }
     }
+}
+
+fn error_text(parsed: &Json) -> Option<String> {
+    if let Some(message) = parsed
+        .get("message")
+        .and_then(Json::as_str)
+        .filter(|m| !m.trim().is_empty())
+    {
+        return Some(message.to_string());
+    }
+    let mut texts = Vec::new();
+    if let Some(Json::Object(fields)) = parsed.get("errors") {
+        for (_, value) in fields {
+            match value {
+                Json::String(text) => texts.push(text.clone()),
+                Json::Array(items) => {
+                    texts.extend(items.iter().filter_map(Json::as_str).map(str::to_string))
+                }
+                _ => {}
+            }
+        }
+    }
+    let texts: Vec<&str> = texts
+        .iter()
+        .map(|t| t.trim().trim_end_matches('.'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("; "))
 }
 
 pub fn signature(body: &[u8], api_key: &str) -> String {
@@ -98,9 +141,9 @@ fn verify(api_key: &str, raw: &[u8]) -> bool {
             .any(|variant| util::secret_eq(&signature(variant, api_key), &received))
 }
 
-fn map_status(status: &str, is_final: Option<bool>) -> ProviderStatus {
+fn map_status(status: &str) -> ProviderStatus {
     match status {
-        "paid" | "paid_over" if is_final != Some(false) => ProviderStatus::Paid,
+        "paid" | "paid_over" => ProviderStatus::Paid,
         "wrong_amount" | "fail" | "system_fail" => ProviderStatus::Failed,
         "cancel" => ProviderStatus::Canceled,
         "refund_paid" => ProviderStatus::Refunded,
@@ -119,7 +162,7 @@ fn outcome(info: &Json) -> PaymentResult<WebhookOutcome> {
         .or_else(|| info.get("payment_status"))
         .and_then(Json::as_str)
         .ok_or_else(|| util::bad("нет статуса счёта"))?;
-    let mapped = map_status(status, info.get("is_final").and_then(Json::as_bool));
+    let mapped = map_status(status);
     let amount = match mapped {
         ProviderStatus::Paid => Some(util::json_amount(info.get("amount"), info.get("currency"))?),
         _ => None,
@@ -169,6 +212,12 @@ impl PaymentProvider for Heleket {
                 "Платёжный API-ключ",
                 "Личный кабинет Heleket → API",
             ),
+            SettingField::url(
+                "api_url",
+                "Адрес API",
+                "Оставьте пустым, тогда используется https://api.heleket.hk. Меняйте, только если Heleket объявит новый адрес",
+            )
+            .optional(),
         ]
     }
 
@@ -178,6 +227,14 @@ impl PaymentProvider for Heleket {
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
         util::require_fields(&self.settings_schema(), config)?;
+        if config
+            .get("api_url")
+            .is_some_and(|url| !util::is_https(url))
+        {
+            return Err(PaymentError::NotConfigured(
+                "адрес API Heleket должен начинаться с https://".into(),
+            ));
+        }
         match config.get("merchant_id").map(Uuid::parse_str) {
             Some(Ok(_)) => Ok(()),
             _ => Err(PaymentError::NotConfigured(
@@ -204,7 +261,7 @@ impl PaymentProvider for Heleket {
                 Json::from(request.payment_public_id.to_string()),
             ),
             ("url_callback", Json::from(request.webhook_url.clone())),
-            ("is_payment_multiple", Json::from(false)),
+            ("is_payment_multiple", Json::from(true)),
             (
                 "lifetime",
                 Json::from(request.expires_in.num_seconds().clamp(300, 43_200)),
@@ -380,10 +437,14 @@ mod tests {
             &data("paid", "6.99", "USD").replace("\"is_final\":true", "\"is_final\":false"),
             KEY,
         );
-        assert_eq!(
-            parse(not_final).await.unwrap().status,
-            ProviderStatus::Pending
+        assert_eq!(parse(not_final).await.unwrap().status, ProviderStatus::Paid);
+        let over_not_final = signed(
+            &data("paid_over", "7.10", "USD").replace("\"is_final\":true", "\"is_final\":false"),
+            KEY,
         );
+        let over = parse(over_not_final).await.unwrap();
+        assert_eq!(over.status, ProviderStatus::Paid);
+        assert_eq!(over.amount, Some(usd(710)));
         let wallet = signed(
             &data("paid", "6.99", "USD").replace("\"type\":\"payment\"", "\"type\":\"wallet\""),
             KEY,
@@ -479,7 +540,7 @@ mod tests {
         assert_eq!(body["currency"], "USD");
         assert_eq!(body["order_id"], PAYMENT.to_string());
         assert_eq!(body["lifetime"], 3600);
-        assert_eq!(body["is_payment_multiple"], false);
+        assert_eq!(body["is_payment_multiple"], true);
         assert!(matches!(
             provider
                 .create_invoice(&settings(), &invoice(rub(49_900), None))
@@ -508,6 +569,44 @@ mod tests {
                 "The amount field must be at least 1".into()
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn ошибки_полей_heleket_видны_оператору() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "state": 1,
+                "errors": {
+                    "amount": ["The amount field must be at least 1."],
+                    "url_callback": ["The url callback format is invalid."]
+                }
+            })))
+            .mount(&server)
+            .await;
+        let result = Heleket::with_api_base(server.uri())
+            .create_invoice(&settings(), &invoice(usd(50), None))
+            .await;
+        assert_eq!(
+            result,
+            Err(PaymentError::Rejected(
+                "The amount field must be at least 1; The url callback format is invalid".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn адрес_api_новый_и_меняется_в_настройках() {
+        let heleket = Heleket::new();
+        assert_eq!(heleket.base(&settings()), "https://api.heleket.hk");
+        let mut custom = settings();
+        custom.set("api_url", json!("https://api.heleket.example/"));
+        assert_eq!(heleket.base(&custom), "https://api.heleket.example");
+        assert!(heleket.is_configured(&custom));
+        custom.set("api_url", json!("http://api.heleket.example"));
+        assert!(!heleket.is_configured(&custom));
+        assert_eq!(heleket.base(&custom), "https://api.heleket.hk");
     }
 
     #[tokio::test]
