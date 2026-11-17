@@ -124,6 +124,15 @@ pub struct AutoRenewState {
     pub period_id: Option<PeriodId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtraTraffic {
+    pub subscription_id: SubscriptionId,
+    pub bytes: u64,
+    pub window_started_at: Option<DateTime<Utc>>,
+    pub window_lifetime: Option<u64>,
+    pub window_ends_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscription {
     pub id: SubscriptionId,

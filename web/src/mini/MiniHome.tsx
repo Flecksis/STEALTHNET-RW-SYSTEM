@@ -82,6 +82,9 @@ export function MiniHome() {
   if (referral) {
     rows.push({ label: 'Друзья', icon: 'share', value: referral.invited ? `${referral.invited} ${plural(referral.invited, 'пришёл', 'пришли', 'пришли')}` : undefined, to: '/app/profile' });
   }
+  if (view && !expired && !blocked && !view.subscription.ended_at) {
+    rows.push({ label: 'Докупить устройства или трафик', icon: 'plus', to: '/app/addons' });
+  }
   rows.push({ label: 'Промокод', icon: 'percent', to: '/app/plans' });
   rows.push({ label: 'История оплат', icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });
   rows.push({ label: 'Инструкции', icon: 'book', to: '/app/connect' });
@@ -141,6 +144,11 @@ export function MiniHome() {
           <span className="mn-traffic-sub">
             {meter.used} из {meter.limit} · {meter.tail}
           </span>
+          {tight ? (
+            <Link to="/app/addons?kind=traffic" className="mn-link press">
+              Докупить трафик
+            </Link>
+          ) : null}
         </section>
       ) : null}
 

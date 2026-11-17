@@ -156,6 +156,7 @@ pub(super) async fn stars_invoice(db: &TestDb, services: &Services, telegram_id:
     let tariff = tx
         .tariffs()
         .create(&NewTariff {
+            traffic_addon: None,
             category_id: category.id,
             name: format!("Стандарт {telegram_id}"),
             description: None,

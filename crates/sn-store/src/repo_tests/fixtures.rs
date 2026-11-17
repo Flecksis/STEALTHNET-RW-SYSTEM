@@ -88,6 +88,7 @@ pub fn period(days: u32, usd: i64, rub: i64, stars: i64) -> NewPeriod {
 
 pub fn tariff(category: CategoryId, periods: Vec<NewPeriod>, squads: &[u128]) -> NewTariff {
     NewTariff {
+        traffic_addon: None,
         category_id: category,
         name: "Unblock".into(),
         description: None,

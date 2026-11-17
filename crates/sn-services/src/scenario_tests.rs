@@ -938,6 +938,7 @@ async fn tariff_with(services: &Services, prices: CurrencyPrices) -> Tariff {
     let tariff = tx
         .tariffs()
         .create(&sn_store::NewTariff {
+            traffic_addon: None,
             category_id: category.id,
             name: "Стандарт".into(),
             description: None,
@@ -1840,6 +1841,7 @@ async fn тариф_из_админки_проверяет_сквады_в_remna
         .await
         .unwrap();
     let mut input = TariffInput {
+        traffic_addon: None,
         category_id: category.id,
         name: "Стандарт".into(),
         description: None,

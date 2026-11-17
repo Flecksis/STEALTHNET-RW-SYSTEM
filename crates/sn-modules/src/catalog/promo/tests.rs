@@ -53,6 +53,7 @@ fn checkout() -> Purpose {
 
 fn tariff() -> Tariff {
     Tariff {
+        traffic_addon: None,
         id: TariffId(1),
         category_id: CategoryId(1),
         name: "Стандарт".into(),

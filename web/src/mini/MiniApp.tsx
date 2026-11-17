@@ -11,6 +11,7 @@ import { initData, loadTelegram } from './telegram';
 import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
 import { MiniPayments } from './MiniPayments';
+import { MiniAddons } from './MiniAddons';
 import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
 import { MiniTopUp } from './MiniTopUp';
@@ -198,6 +199,7 @@ export function MiniApp() {
           <Route path="profile" element={<MiniProfile />} />
           <Route path="topup" element={<MiniTopUp />} />
           <Route path="payments" element={<MiniPayments />} />
+          <Route path="addons" element={<MiniAddons />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />

@@ -3,7 +3,7 @@ use crate::ids::{CategoryId, RemnaUserId, SquadId, SubscriptionId};
 use crate::order::OrderKind;
 use crate::subscription::{SubscriptionKind, SubscriptionStatus};
 use crate::tariff::TariffSnapshot;
-use crate::traffic::{TrafficReset, TrafficStrategy};
+use crate::traffic::{TrafficReset, TrafficStrategy, unused_extra};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +86,7 @@ pub struct PlanInput<'a> {
     pub snapshot: &'a TariffSnapshot,
     pub extra_devices: u32,
     pub held_devices: Option<HeldDevices>,
+    pub extra_traffic: u64,
     pub paid_at: DateTime<Utc>,
     pub current: Option<&'a RemnaUserState>,
     pub keep_squads: &'a [SquadId],
@@ -131,6 +132,10 @@ pub struct FulfillmentPlan {
     pub base_expire_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub device_hold: Option<DeviceHold>,
+    #[serde(default)]
+    pub extra_traffic_bytes: u64,
+    #[serde(default)]
+    pub keep_traffic_window: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +226,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
             period_days: snapshot.days,
             base_expire_at: None,
             device_hold: None,
+            extra_traffic_bytes: 0,
+            keep_traffic_window: false,
         });
     };
 
@@ -238,23 +245,48 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
     };
     let traffic_mode_changed =
         current.traffic_limit_bytes == 0 || current.traffic_strategy != strategy;
-    let (traffic_limit_bytes, reset_traffic) = if !renewal {
-        (tariff_limit, true)
+    let carry = snapshot.traffic_leftover.carries();
+    let unused = unused_extra(
+        current.traffic_limit_bytes,
+        current.traffic_used_bytes,
+        input.extra_traffic,
+    );
+    let kept = if carry { unused } else { 0 };
+    let (traffic_limit_bytes, reset_traffic, extra_traffic_bytes, keep_traffic_window) = if !renewal
+    {
+        (tariff_limit, true, 0, false)
     } else if tariff_limit == 0 {
-        (0, false)
+        (0, false, 0, false)
     } else if traffic_mode_changed {
-        (tariff_limit, true)
+        (tariff_limit, true, 0, false)
     } else {
         match traffic.reset {
-            TrafficReset::OnPayment => (tariff_limit, true),
+            TrafficReset::OnPayment => (
+                tariff_limit
+                    .checked_add(kept)
+                    .ok_or(DomainError::AmountOverflow)?,
+                true,
+                kept,
+                false,
+            ),
             TrafficReset::NoReset => (
                 current
                     .traffic_limit_bytes
+                    .saturating_sub(unused - kept)
                     .checked_add(tariff_limit)
                     .ok_or(DomainError::AmountOverflow)?,
                 false,
+                kept,
+                false,
             ),
-            _ => (tariff_limit, false),
+            _ => (
+                tariff_limit
+                    .checked_add(input.extra_traffic)
+                    .ok_or(DomainError::AmountOverflow)?,
+                false,
+                input.extra_traffic,
+                true,
+            ),
         }
     };
     let device_hold = input
@@ -301,6 +333,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
         period_days: period_days as u32,
         base_expire_at: Some(current.expire_at),
         device_hold,
+        extra_traffic_bytes,
+        keep_traffic_window,
     })
 }
 
@@ -388,6 +422,7 @@ mod tests {
         let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Active, expire);
         let p = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
             extra_devices: 2,
@@ -416,6 +451,7 @@ mod tests {
         let expired = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Expired, expired);
         let p = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -438,6 +474,7 @@ mod tests {
         let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Limited, expire);
         let p = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::Change,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -462,6 +499,7 @@ mod tests {
         let tariff = standard();
         let snapshot = tariff.snapshot(tariff.period(PeriodId(12)).unwrap());
         let p = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::New,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -480,6 +518,7 @@ mod tests {
 
     fn renewal(snapshot: &TariffSnapshot, state: &RemnaUserState) -> FulfillmentPlan {
         plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot,
             extra_devices: 0,
@@ -600,6 +639,7 @@ mod tests {
         let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Active, expire);
         plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
             extra_devices,
@@ -665,6 +705,7 @@ mod tests {
             until: expire,
         });
         let change = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::Change,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -680,6 +721,7 @@ mod tests {
         assert_eq!(change.device_hold, None);
         assert_eq!(change.base_expire_at, Some(expire));
         let fresh = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::New,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -752,6 +794,7 @@ mod tests {
         let paid = paid_with_microseconds();
         let target = paid_at() + Duration::seconds(1) + Duration::days(30);
         let fresh = plan(&PlanInput {
+            extra_traffic: 0,
             kind: PlanKind::New,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -772,6 +815,7 @@ mod tests {
         );
         for kind in [PlanKind::Renewal, PlanKind::Change] {
             let p = plan(&PlanInput {
+                extra_traffic: 0,
                 kind,
                 snapshot: &snapshot,
                 extra_devices: 0,
@@ -797,6 +841,7 @@ mod tests {
         let snapshot = tariff.snapshot(tariff.period(PeriodId(12)).unwrap());
         assert!(
             plan(&PlanInput {
+                extra_traffic: 0,
                 kind: PlanKind::New,
                 snapshot: &snapshot,
                 extra_devices: 0,
@@ -809,5 +854,89 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    fn with_bought_traffic(
+        kind: PlanKind,
+        reset: TrafficReset,
+        leftover: crate::tariff::TrafficLeftover,
+        (limit, used, extra): (u64, u64, u64),
+    ) -> FulfillmentPlan {
+        let mut tariff = unblock();
+        tariff.traffic.reset = reset;
+        tariff.traffic_addon.as_mut().unwrap().leftover = leftover;
+        let snapshot = tariff.snapshot(tariff.period(PeriodId(31)).unwrap());
+        let expire = Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap();
+        let mut state = current(SubscriptionStatus::Active, expire);
+        state.traffic_strategy = reset.strategy();
+        state.traffic_limit_bytes = limit * GIB;
+        state.traffic_used_bytes = used * GIB;
+        plan(&PlanInput {
+            kind,
+            snapshot: &snapshot,
+            extra_devices: 0,
+            held_devices: None,
+            extra_traffic: extra * GIB,
+            paid_at: paid_at(),
+            current: Some(&state),
+            keep_squads: &[],
+            profile: &profile(),
+            tag: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn сброс_при_оплате_сжигает_или_переносит_докупленный_остаток() {
+        use crate::tariff::TrafficLeftover::{Burn, Carry};
+        let renewal = PlanKind::Renewal;
+        let burn = with_bought_traffic(renewal, TrafficReset::OnPayment, Burn, (350, 320, 50));
+        assert_eq!(burn.target.traffic_limit_bytes, 300 * GIB);
+        assert_eq!(burn.extra_traffic_bytes, 0);
+        assert!(burn.reset_traffic);
+        let carry = with_bought_traffic(renewal, TrafficReset::OnPayment, Carry, (350, 320, 50));
+        assert_eq!(carry.target.traffic_limit_bytes, 330 * GIB);
+        assert_eq!(carry.extra_traffic_bytes, 30 * GIB);
+        assert!(!carry.keep_traffic_window);
+        let spent = with_bought_traffic(renewal, TrafficReset::OnPayment, Carry, (350, 360, 50));
+        assert_eq!(spent.target.traffic_limit_bytes, 300 * GIB);
+        assert_eq!(spent.extra_traffic_bytes, 0);
+    }
+
+    #[test]
+    fn без_сброса_сгорает_только_докупленный_остаток() {
+        use crate::tariff::TrafficLeftover::{Burn, Carry};
+        let renewal = PlanKind::Renewal;
+        let burn = with_bought_traffic(renewal, TrafficReset::NoReset, Burn, (350, 100, 50));
+        assert_eq!(burn.target.traffic_limit_bytes, 600 * GIB);
+        assert_eq!(burn.extra_traffic_bytes, 0);
+        assert!(!burn.reset_traffic);
+        let carry = with_bought_traffic(renewal, TrafficReset::NoReset, Carry, (350, 100, 50));
+        assert_eq!(carry.target.traffic_limit_bytes, 650 * GIB);
+        assert_eq!(carry.extra_traffic_bytes, 50 * GIB);
+    }
+
+    #[test]
+    fn при_сбросе_по_расписанию_докупленное_доживает_до_сброса() {
+        use crate::tariff::TrafficLeftover::Burn;
+        let p = with_bought_traffic(PlanKind::Renewal, TrafficReset::Month, Burn, (350, 100, 50));
+        assert_eq!(p.target.traffic_limit_bytes, 350 * GIB);
+        assert_eq!(p.extra_traffic_bytes, 50 * GIB);
+        assert!(p.keep_traffic_window);
+        assert!(!p.reset_traffic);
+    }
+
+    #[test]
+    fn смена_тарифа_сжигает_докупленный_трафик() {
+        use crate::tariff::TrafficLeftover::Carry;
+        let p = with_bought_traffic(
+            PlanKind::Change,
+            TrafficReset::OnPayment,
+            Carry,
+            (350, 100, 50),
+        );
+        assert_eq!(p.target.traffic_limit_bytes, 300 * GIB);
+        assert_eq!(p.extra_traffic_bytes, 0);
+        assert!(!p.keep_traffic_window);
     }
 }

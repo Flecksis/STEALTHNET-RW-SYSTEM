@@ -68,7 +68,7 @@ export function DevicesCard({
           </span>
         </h2>
         {addLink && !phone ? (
-          <Link to="/cabinet/pay" className="cb-accent-link">
+          <Link to={view.status === 'expired' ? '/cabinet/pay' : '/cabinet/addons?kind=devices'} className="cb-accent-link">
             Добавить ещё
           </Link>
         ) : null}

@@ -338,6 +338,9 @@ export function SubscriptionPage() {
             <Link to="/cabinet/pay" className="cb-second">
               Продлить
             </Link>
+            <Link to="/cabinet/addons" className="cb-second">
+              Докупить
+            </Link>
           </>
         )}
       </div>

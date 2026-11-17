@@ -5,10 +5,12 @@ use sn_domain::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use sn_domain::money::Stars;
 use sn_domain::tariff::{
     Category, CurrencyPrices, DevicePolicy, ExtraDevices, Tariff, TariffChannels, TariffPeriod,
+    TrafficAddon,
 };
 use sn_domain::traffic::{TrafficPolicy, TrafficReset};
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryScalar;
+use sqlx::types::Json;
 use sqlx::{PgConnection, Postgres};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -38,6 +40,7 @@ pub struct NewTariff {
     pub sort: i32,
     pub devices: DevicePolicy,
     pub traffic: TrafficPolicy,
+    pub traffic_addon: Option<TrafficAddon>,
     pub squads: Vec<SquadId>,
     pub external_squad: Option<SquadId>,
     pub periods: Vec<NewPeriod>,
@@ -60,6 +63,7 @@ struct TariffRow {
     traffic_limit_bytes: Option<i64>,
     traffic_reset: String,
     external_squad_uuid: Option<Uuid>,
+    traffic_addon: Option<Json<TrafficAddon>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -76,7 +80,7 @@ struct PeriodRow {
 
 const TARIFF_COLUMNS: &str = "id, category_id, name, description, on_sale, sort, devices_included, extra_devices_enabled, \
                               extra_devices_max, extra_device_usd_minor, extra_device_rub_minor, extra_device_stars, \
-                              traffic_limit_bytes, traffic_reset, external_squad_uuid";
+                              traffic_limit_bytes, traffic_reset, external_squad_uuid, traffic_addon";
 
 const PERIOD_COLUMNS: &str =
     "id, tariff_id, days, price_usd_minor, price_rub_minor, stars, sort, active";
@@ -127,6 +131,7 @@ fn tariff_from(
                 .transpose()?,
             reset: TrafficReset::parse(&row.traffic_reset)?,
         },
+        traffic_addon: row.traffic_addon.map(|addon| addon.0),
         squads,
         external_squad: row.external_squad_uuid.map(SquadId),
     })
@@ -156,7 +161,8 @@ fn with_tariff<'q>(query: TariffQuery<'q>, tariff: &'q NewTariff) -> StoreResult
                 .transpose()?,
         )
         .bind(tariff.traffic.reset.as_str())
-        .bind(tariff.external_squad.map(|s| s.0)))
+        .bind(tariff.external_squad.map(|s| s.0))
+        .bind(tariff.traffic_addon.clone().map(Json)))
 }
 
 fn check_periods(periods: &[NewPeriod]) -> StoreResult<()> {
@@ -362,8 +368,8 @@ impl<'c> TariffsRepo<'c> {
             sqlx::query_scalar(
                 "INSERT INTO tariffs (category_id, name, description, on_sale, sort, devices_included, \
                  extra_devices_enabled, extra_devices_max, extra_device_usd_minor, extra_device_rub_minor, \
-                 extra_device_stars, traffic_limit_bytes, traffic_reset, external_squad_uuid) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
+                 extra_device_stars, traffic_limit_bytes, traffic_reset, external_squad_uuid, traffic_addon) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id",
             ),
             tariff,
         )?
@@ -383,8 +389,8 @@ impl<'c> TariffsRepo<'c> {
                 "UPDATE tariffs SET category_id = $1, name = $2, description = $3, on_sale = $4, sort = $5, \
                  devices_included = $6, extra_devices_enabled = $7, extra_devices_max = $8, \
                  extra_device_usd_minor = $9, extra_device_rub_minor = $10, extra_device_stars = $11, \
-                 traffic_limit_bytes = $12, traffic_reset = $13, external_squad_uuid = $14 \
-                 WHERE id = $15 AND deleted_at IS NULL RETURNING id",
+                 traffic_limit_bytes = $12, traffic_reset = $13, external_squad_uuid = $14, \
+                 traffic_addon = $15 WHERE id = $16 AND deleted_at IS NULL RETURNING id",
             ),
             tariff,
         )?

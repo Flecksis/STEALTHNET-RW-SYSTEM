@@ -4,18 +4,27 @@ use crate::session::{Awaiting, WithdrawalDraft};
 use crate::telegram::{Button, Keyboard};
 use crate::text;
 use crate::ui::{self, Html, Lines, Text};
+use sn_domain::access::ClientChannel;
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::format;
 use sn_domain::ids::SubscriptionId;
 use sn_domain::module::ModuleId;
+use sn_domain::payment::providers;
+use sn_domain::tariff::TrafficLeftover;
+use sn_domain::traffic::TrafficReset;
 use sn_modules::ModuleError;
-use sn_modules::catalog::options::{self, OptionsError};
+use sn_modules::catalog::options::{
+    self, AddonsOffer, DevicesOffer, DevicesRequest, ITEM_DEVICES, ITEM_TRAFFIC, OptionsError,
+    TrafficOffer, TrafficRequest,
+};
 use sn_modules::catalog::promo::{self, PromoError, PromoRejection, Purpose};
 use sn_modules::catalog::referral::{
     self, PayoutMethod, ReferralError, WithdrawalRequest, WithdrawalStatus,
 };
+use sn_payments::Unavailable;
 use sn_services::ServiceError;
+use sn_services::checkout::{Channel, CheckoutResult, ItemCheckoutRequest, ItemRequest};
 
 fn module_error(err: ModuleError) -> String {
     text::user_error(&ServiceError::Module(err))
@@ -421,7 +430,7 @@ async fn options_start(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, B
         .collect();
     match subscriptions.as_slice() {
         [] => Ok(Screen::notice(ui::text(c, "opt.no_subscription", &[])).section(Section::Options)),
-        [only] => options_offer(turn, client, only.id).await,
+        [only] => options_menu(turn, client, only.id).await,
         many => {
             let mut keyboard = Keyboard::new();
             for sub in many {
@@ -440,14 +449,76 @@ async fn options_start(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, B
     }
 }
 
-async fn offer(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Addon {
+    Devices(u32),
+    Traffic(u32),
+}
+
+impl Addon {
+    fn parse(kind: &str, arg: &str) -> Option<Addon> {
+        let value = arg.parse::<u32>().ok().filter(|v| *v > 0)?;
+        match kind {
+            "d" => Some(Addon::Devices(value)),
+            "t" => Some(Addon::Traffic(value)),
+            _ => None,
+        }
+    }
+
+    fn code(self) -> String {
+        match self {
+            Addon::Devices(count) => format!("d:{count}"),
+            Addon::Traffic(gb) => format!("t:{gb}"),
+        }
+    }
+
+    fn item(self, subscription_id: SubscriptionId) -> ItemRequest {
+        let (kind, payload) = match self {
+            Addon::Devices(count) => (
+                ITEM_DEVICES,
+                DevicesRequest {
+                    subscription_id,
+                    count,
+                }
+                .payload(),
+            ),
+            Addon::Traffic(gb) => (
+                ITEM_TRAFFIC,
+                TrafficRequest {
+                    subscription_id,
+                    gb,
+                }
+                .payload(),
+            ),
+        };
+        ItemRequest {
+            module: ModuleId::Options,
+            kind: kind.into(),
+            payload,
+            subscription_id: Some(subscription_id),
+        }
+    }
+
+    fn what(self, c: &sn_services::bot_content::BotContent) -> String {
+        match self {
+            Addon::Devices(count) => ui::text(
+                c,
+                "pay.what_devices",
+                &[("count", Text(&count.to_string()))],
+            ),
+            Addon::Traffic(gb) => ui::text(c, "pay.what_traffic", &[("gb", Text(&gb.to_string()))]),
+        }
+    }
+}
+
+async fn addons(
     turn: &Turn<'_>,
     client: &Client,
     subscription_id: SubscriptionId,
-) -> Result<Result<options::DevicesOffer, String>, BotError> {
+) -> Result<Result<AddonsOffer, String>, BotError> {
     let services = turn.services();
     let mut conn = services.store().conn().await?;
-    let result = options::offer(
+    let result = options::addons_offer(
         &mut conn,
         client.id,
         subscription_id,
@@ -456,28 +527,77 @@ async fn offer(
     )
     .await;
     Ok(match result {
-        Ok(offer) => Ok(offer),
+        Ok(view) => Ok(view),
         Err(OptionsError::Rejected(rejection)) => Err(rejection.message()),
         Err(OptionsError::Module(err)) => Err(module_error(err)),
     })
 }
 
-async fn options_offer(
+async fn options_menu(
     turn: &mut Turn<'_>,
     client: &Client,
     subscription_id: SubscriptionId,
 ) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
-    let c = &*content;
-    let offer = match offer(turn, client, subscription_id).await? {
-        Ok(offer) => offer,
+    let view = match addons(turn, client, subscription_id).await? {
+        Ok(view) => view,
         Err(message) => return Ok(Screen::notice(message).section(Section::Options)),
     };
+    let content = turn.services().bot_content();
+    let c = &*content;
+    match (view.devices.offer, view.traffic.offer) {
+        (Some(devices), None) => Ok(devices_screen(c, &devices, false)),
+        (None, Some(traffic)) => Ok(traffic_screen(turn, &traffic, false)),
+        (Some(devices), Some(_)) => {
+            let offset = turn.services().settings().remna_offset();
+            let date = text::date(devices.expire_at, offset);
+            let mut keyboard = Keyboard::new();
+            for (key, code) in [("opt.btn.devices", "d"), ("opt.btn.traffic", "t")] {
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    key,
+                    &[],
+                    format!("opt:{subscription_id}:{code}"),
+                ));
+            }
+            Ok(
+                Screen::new(ui::text(c, "opt.menu", &[("date", Text(&date))]))
+                    .keyboard(keyboard.push(ui::menu(c)))
+                    .section(Section::Options),
+            )
+        }
+        (None, None) => {
+            let message = view
+                .devices
+                .unavailable
+                .or(view.traffic.unavailable)
+                .map(|u| u.message)
+                .unwrap_or_else(|| ui::text(c, "opt.no_subscription", &[]));
+            Ok(Screen::notice(message).section(Section::Options))
+        }
+    }
+}
+
+fn back_or_menu(c: &sn_services::bot_content::BotContent, back: Option<String>) -> Keyboard {
+    match back {
+        Some(target) => Keyboard::new().pair(ui::back(c, target), ui::menu(c)),
+        None => Keyboard::new().push(ui::menu(c)),
+    }
+}
+
+fn devices_screen(
+    c: &sn_services::bot_content::BotContent,
+    offer: &DevicesOffer,
+    both: bool,
+) -> Screen {
+    let sub = offer.subscription_id;
+    let back = both.then(|| format!("opt:{sub}"));
     if offer.can_add == 0 {
-        return Ok(Screen::notice(ui::text(c, "opt.max", &[])).section(Section::Options));
+        return Screen::new(ui::text(c, "opt.max", &[]))
+            .keyboard(back_or_menu(c, back))
+            .section(Section::Options);
     }
     let stars = offer
-        .monthly_stars
+        .per_device_stars
         .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s)))]))
         .unwrap_or_default();
     let message = ui::text(
@@ -487,9 +607,9 @@ async fn options_offer(
             ("included", Text(&offer.included.to_string())),
             ("extra", Text(&offer.extra_now.to_string())),
             ("can_add", Text(&offer.can_add.to_string())),
-            ("price", Text(&format::money(offer.monthly))),
+            ("days", Text(&format::days(offer.days))),
+            ("price", Text(&format::money(offer.per_device))),
             ("stars", Html(&stars)),
-            ("months", Text(&offer.months.to_string())),
         ],
     );
     let buttons: Vec<_> = (1..=offer.can_add)
@@ -498,12 +618,149 @@ async fn options_offer(
                 c,
                 "opt.btn.count",
                 &[("count", Text(&n.to_string()))],
-                format!("opt:{subscription_id}:{n}"),
+                format!("opt:{sub}:d:{n}"),
             )
         })
         .collect();
-    Ok(Screen::new(message)
-        .keyboard(Keyboard::new().grid(buttons, 4).push(ui::menu(c)))
+    let keyboard = Keyboard::new().grid(buttons, 4);
+    let keyboard = match back {
+        Some(target) => keyboard.pair(ui::back(c, target), ui::menu(c)),
+        None => keyboard.push(ui::menu(c)),
+    };
+    Screen::new(message)
+        .keyboard(keyboard)
+        .section(Section::Options)
+}
+
+fn leftover_key(reset: TrafficReset, leftover: TrafficLeftover) -> &'static str {
+    match (leftover, reset.periodic()) {
+        (TrafficLeftover::Burn, true) => "opt.traffic_burn_reset",
+        (TrafficLeftover::Burn, false) => "opt.traffic_burn_payment",
+        (TrafficLeftover::Carry, true) => "opt.traffic_carry_reset",
+        (TrafficLeftover::Carry, false) => "opt.traffic_carry_payment",
+    }
+}
+
+fn traffic_screen(turn: &Turn<'_>, offer: &TrafficOffer, both: bool) -> Screen {
+    let content = turn.services().bot_content();
+    let c = &*content;
+    let sub = offer.subscription_id;
+    let note = ui::text(c, leftover_key(offer.reset, offer.leftover), &[]);
+    let message = ui::text(
+        c,
+        "opt.traffic",
+        &[
+            (
+                "used",
+                Text(&format::traffic(offer.used_bytes.unwrap_or(0))),
+            ),
+            (
+                "limit",
+                Text(&format::traffic(offer.limit_bytes.unwrap_or(0))),
+            ),
+            ("note", Html(&note)),
+        ],
+    );
+    let mut keyboard = Keyboard::new();
+    for pack in &offer.packs {
+        keyboard = keyboard.push(ui::button(
+            c,
+            "opt.btn.pack",
+            &[
+                ("gb", Text(&pack.gb.to_string())),
+                ("price", Text(&format::money(pack.price))),
+            ],
+            format!("opt:{sub}:t:{}", pack.gb),
+        ));
+    }
+    let keyboard = if both {
+        keyboard.pair(ui::back(c, format!("opt:{sub}")), ui::menu(c))
+    } else {
+        keyboard.push(ui::menu(c))
+    };
+    Screen::new(message)
+        .keyboard(keyboard)
+        .section(Section::Options)
+}
+
+async fn addon_summary(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    subscription_id: SubscriptionId,
+    addon: Addon,
+) -> Result<Screen, BotError> {
+    let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
+    let view = match services
+        .checkout()
+        .quote_item_in(
+            client.id,
+            &addon.item(subscription_id),
+            Some(ClientChannel::Bot),
+        )
+        .await
+    {
+        Ok(view) => view,
+        Err(err) => return Ok(Screen::notice(text::user_error(&err)).section(Section::Options)),
+    };
+    let quote = &view.quote;
+    let stars = quote
+        .stars
+        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s.total)))]))
+        .unwrap_or_default();
+    let label = quote
+        .lines
+        .first()
+        .map(|line| line.label.clone())
+        .unwrap_or_default();
+    let mut lines = Lines::new();
+    lines.add(ui::text(
+        c,
+        "opt.quote",
+        &[
+            ("label", Text(&label)),
+            ("total", Text(&format::money(quote.total))),
+            ("stars", Html(&stars)),
+        ],
+    ));
+    let code = addon.code();
+    let mut keyboard = Keyboard::new();
+    for method in &view.methods {
+        match (&method.unavailable, method.amount) {
+            (None, Some(amount)) => {
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "buy.btn.method",
+                    &[
+                        ("method", Text(method.title)),
+                        ("amount", Text(&text::amount(amount))),
+                    ],
+                    format!("op:{subscription_id}:{code}:{}", method.provider),
+                ));
+            }
+            (Some(Unavailable::InsufficientBalance { balance, missing }), _) => {
+                lines.add(ui::text(
+                    c,
+                    "buy.balance_short",
+                    &[
+                        ("missing", Text(&format::money(*missing))),
+                        ("balance", Text(&format::money(*balance))),
+                    ],
+                ));
+            }
+            _ => {}
+        }
+    }
+    if view.methods.iter().all(|m| m.unavailable.is_some()) {
+        lines.add(ui::text(c, "buy.no_methods", &[]));
+    }
+    let back = match addon {
+        Addon::Devices(_) => format!("opt:{subscription_id}:d"),
+        Addon::Traffic(_) => format!("opt:{subscription_id}:t"),
+    };
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard.pair(ui::back(c, back), ui::menu(c)))
         .section(Section::Options))
 }
 
@@ -515,53 +772,90 @@ pub async fn options_action(
     if !turn.services().modules().is_enabled(ModuleId::Options) {
         return main_menu(turn.ctx, client).await;
     }
-    let (sub, count) = rest.split_once(':').unwrap_or((rest, ""));
-    let Some(sub) = id_arg(sub).map(SubscriptionId) else {
+    let mut parts = rest.splitn(3, ':');
+    let Some(sub) = parts.next().and_then(id_arg).map(SubscriptionId) else {
         return options_start(turn, client).await;
     };
-    let Ok(count) = count.parse::<u32>() else {
-        return options_offer(turn, client, sub).await;
-    };
-    let content = turn.services().bot_content();
-    let c = &*content;
-    let offer = match offer(turn, client, sub).await? {
-        Ok(offer) => offer,
+    let kind = parts.next().unwrap_or("");
+    let arg = parts.next().unwrap_or("");
+    if let Some(addon) = Addon::parse(kind, arg) {
+        return addon_summary(turn, client, sub, addon).await;
+    }
+    if kind.is_empty() {
+        return options_menu(turn, client, sub).await;
+    }
+    let view = match addons(turn, client, sub).await? {
+        Ok(view) => view,
         Err(message) => return Ok(Screen::notice(message).section(Section::Options)),
     };
-    let quote = match options::devices_quote(&offer, count) {
-        Ok(quote) => quote,
-        Err(OptionsError::Rejected(rejection)) => {
-            return Ok(Screen::notice(rejection.message()).section(Section::Options));
-        }
-        Err(OptionsError::Module(err)) => return Ok(Screen::notice(module_error(err))),
+    let both = view.devices.offer.is_some() && view.traffic.offer.is_some();
+    let content = turn.services().bot_content();
+    match kind {
+        "d" => Ok(match &view.devices.offer {
+            Some(offer) => devices_screen(&content, offer, both),
+            None => unavailable_screen(view.devices.unavailable.map(|u| u.message)),
+        }),
+        "t" => Ok(match &view.traffic.offer {
+            Some(offer) => traffic_screen(turn, offer, both),
+            None => unavailable_screen(view.traffic.unavailable.map(|u| u.message)),
+        }),
+        _ => options_menu(turn, client, sub).await,
+    }
+}
+
+fn unavailable_screen(message: Option<String>) -> Screen {
+    Screen::notice(message.unwrap_or_default()).section(Section::Options)
+}
+
+pub async fn options_pay(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    rest: &str,
+) -> Result<Screen, BotError> {
+    let mut parts = rest.splitn(4, ':');
+    let sub = parts.next().and_then(id_arg).map(SubscriptionId);
+    let addon = match (parts.next(), parts.next()) {
+        (Some(kind), Some(arg)) => Addon::parse(kind, arg),
+        _ => None,
     };
-    let stars = quote
-        .stars
-        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s.total)))]))
-        .unwrap_or_default();
-    let label = quote
-        .lines
-        .first()
-        .map(|line| line.label.clone())
-        .unwrap_or_default();
-    Ok(Screen::new(ui::text(
-        c,
-        "opt.quote",
-        &[
-            ("label", Text(&label)),
-            ("total", Text(&format::money(quote.total))),
-            ("stars", Html(&stars)),
-        ],
-    ))
-    .keyboard(
-        Keyboard::new()
-            .push(ui::button(
-                c,
-                "opt.btn.extend_with",
-                &[],
-                format!("buy:{sub}"),
-            ))
-            .push(ui::menu(c)),
-    )
-    .section(Section::Options))
+    let provider = parts.next().unwrap_or("");
+    let (Some(sub), Some(addon)) = (sub, addon) else {
+        return options_start(turn, client).await;
+    };
+    if provider.is_empty() {
+        return addon_summary(turn, client, sub, addon).await;
+    }
+    let services = turn.services().clone();
+    let content = services.bot_content();
+    let result = services
+        .checkout()
+        .start_item(
+            client.id,
+            &ItemCheckoutRequest {
+                item: addon.item(sub),
+                provider: provider.to_string(),
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await;
+    let what = addon.what(&content);
+    match result {
+        Ok(result) => {
+            if let CheckoutResult::Redirect { payment_id, .. } = &result
+                && provider == providers::GRAM
+                && crate::buy::send_gram_widget(turn, *payment_id, &what).await?
+            {
+                return Ok(Screen::new(ui::text(
+                    &content,
+                    "pay.gram_ready",
+                    &[("what", Html(&what))],
+                ))
+                .keyboard(Keyboard::new().push(ui::menu(&content)))
+                .section(Section::Payment));
+            }
+            Ok(crate::account::payment_screen(&content, &result, &what))
+        }
+        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+    }
 }

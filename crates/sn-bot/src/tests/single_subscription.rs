@@ -23,6 +23,7 @@ async fn tariff_in(db: &TestDb, category: &str, name: &str) -> Tariff {
     let tariff = tx
         .tariffs()
         .create(&NewTariff {
+            traffic_addon: None,
             category_id: category.id,
             name: name.into(),
             description: None,

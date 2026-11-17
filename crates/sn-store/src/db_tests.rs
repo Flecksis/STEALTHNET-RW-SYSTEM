@@ -30,6 +30,7 @@ async fn new_client(db: &mut impl Db) -> ClientId {
 
 fn sample_tariff(category: sn_domain::ids::CategoryId) -> NewTariff {
     NewTariff {
+        traffic_addon: None,
         category_id: category,
         name: "Unblock".into(),
         description: Some("Для мобильного интернета".into()),

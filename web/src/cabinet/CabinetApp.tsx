@@ -9,6 +9,7 @@ import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportLink, supportTickets } from '../lib/support';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
+import { AddonsPage } from './Addons';
 import { DevicesPage } from './Devices';
 import { FriendsPage } from './Friends';
 import { HelpPage, type TicketBrief } from './Help';
@@ -144,6 +145,7 @@ export function CabinetApp() {
             <Route index element={<SubscriptionPage />} />
             <Route path="pay" element={<Pay />} />
             <Route path="topup" element={<TopUpPage />} />
+            <Route path="addons" element={<AddonsPage />} />
             <Route path="payments" element={<PaymentsHistory />} />
             <Route path="security" element={<SecurityPage />} />
             <Route path="devices" element={<DevicesPage />} />

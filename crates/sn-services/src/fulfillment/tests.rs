@@ -83,6 +83,7 @@ fn new_tariff(
     included: u32,
 ) -> NewTariff {
     NewTariff {
+        traffic_addon: None,
         category_id,
         name: name.into(),
         description: None,

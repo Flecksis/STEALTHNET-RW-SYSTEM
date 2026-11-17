@@ -46,6 +46,28 @@ pub trait CoreApi: Send + Sync {
 
     async fn enqueue(&self, job: JobPayload) -> Result<(), ModuleError>;
 
+    async fn apply_device_addon(
+        &self,
+        _order_id: OrderId,
+        _subscription_id: SubscriptionId,
+        _devices_after: u32,
+    ) -> Result<(), ModuleError> {
+        Err(ModuleError::NotImplemented(
+            "ядро не умеет добавлять устройства",
+        ))
+    }
+
+    async fn apply_traffic_addon(
+        &self,
+        _order_id: OrderId,
+        _subscription_id: SubscriptionId,
+        _bytes: u64,
+    ) -> Result<(), ModuleError> {
+        Err(ModuleError::NotImplemented(
+            "ядро не умеет добавлять трафик",
+        ))
+    }
+
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
         None
     }

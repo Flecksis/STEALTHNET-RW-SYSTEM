@@ -160,6 +160,7 @@ async fn tariff(services: &Services) -> Tariff {
         .unwrap();
     conn.tariffs()
         .create(&NewTariff {
+            traffic_addon: None,
             category_id: category.id,
             name: "Стандарт".into(),
             description: None,
@@ -1305,6 +1306,7 @@ async fn брошенная_выдача_заказа_на_проверке_не
         let mut conn = services.store().conn().await.unwrap();
         conn.tariffs()
             .create(&NewTariff {
+                traffic_addon: None,
                 category_id: standard.category_id,
                 name: "Стандарт плюс".into(),
                 description: None,

@@ -505,7 +505,11 @@ pub async fn promo_entered(
     }
 }
 
-async fn send_gram_widget(turn: &Turn<'_>, payment_id: Uuid, what: &str) -> Result<bool, BotError> {
+pub(crate) async fn send_gram_widget(
+    turn: &Turn<'_>,
+    payment_id: Uuid,
+    what: &str,
+) -> Result<bool, BotError> {
     let services = turn.services();
     let payment = {
         let mut conn = services.store().conn().await?;

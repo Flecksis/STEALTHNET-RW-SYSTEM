@@ -2,7 +2,7 @@ use crate::DomainError;
 use crate::access::ClientChannel;
 use crate::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use crate::money::{Currency, Money, Stars, div_round_half_up};
-use crate::traffic::TrafficPolicy;
+use crate::traffic::{GIB, TrafficPolicy};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -108,6 +108,111 @@ impl DevicePolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrafficLeftover {
+    #[default]
+    Burn,
+    Carry,
+}
+
+impl TrafficLeftover {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TrafficLeftover::Burn => "burn",
+            TrafficLeftover::Carry => "carry",
+        }
+    }
+
+    pub const fn carries(self) -> bool {
+        matches!(self, TrafficLeftover::Carry)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficPack {
+    pub gb: u32,
+    pub prices: CurrencyPrices,
+    #[serde(default)]
+    pub stars: Option<Stars>,
+}
+
+impl TrafficPack {
+    pub const fn bytes(&self) -> u64 {
+        self.gb as u64 * GIB
+    }
+
+    pub const fn price(&self, currency: Currency) -> Option<Money> {
+        self.prices.get(currency)
+    }
+}
+
+pub const MAX_TRAFFIC_PACKS: usize = 8;
+pub const MAX_PACK_GB: u32 = 100_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TrafficAddon {
+    pub packs: Vec<TrafficPack>,
+    #[serde(default)]
+    pub leftover: TrafficLeftover,
+}
+
+impl TrafficAddon {
+    pub fn offered(&self, currency: Currency) -> Vec<&TrafficPack> {
+        let mut packs: Vec<&TrafficPack> = self
+            .packs
+            .iter()
+            .filter(|p| p.price(currency).is_some())
+            .collect();
+        packs.sort_by_key(|p| p.gb);
+        packs
+    }
+
+    pub fn pack(&self, gb: u32) -> Option<&TrafficPack> {
+        self.packs.iter().find(|p| p.gb == gb)
+    }
+
+    pub fn validate(&self, limited: bool) -> Result<(), DomainError> {
+        if self.packs.is_empty() {
+            return Ok(());
+        }
+        if !limited {
+            return Err(DomainError::invalid(
+                "traffic_addon",
+                "докупка трафика есть только у тарифов с лимитом трафика",
+            ));
+        }
+        if self.packs.len() > MAX_TRAFFIC_PACKS {
+            return Err(DomainError::invalid(
+                "traffic_addon",
+                "пакетов трафика может быть не больше восьми",
+            ));
+        }
+        for (index, pack) in self.packs.iter().enumerate() {
+            if pack.gb == 0 || pack.gb > MAX_PACK_GB {
+                return Err(DomainError::invalid(
+                    "traffic_addon",
+                    "размер пакета — от 1 до 100 000 ГБ",
+                ));
+            }
+            if self.packs[..index].iter().any(|p| p.gb == pack.gb) {
+                return Err(DomainError::invalid(
+                    "traffic_addon",
+                    "два пакета одного размера: оставьте один",
+                ));
+            }
+            pack.prices.validate("traffic_pack_price")?;
+            if matches!(pack.stars, Some(Stars(n)) if n <= 0) {
+                return Err(DomainError::invalid(
+                    "traffic_pack_stars",
+                    "цена в звёздах должна быть больше нуля",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tariff {
     pub id: TariffId,
@@ -119,6 +224,8 @@ pub struct Tariff {
     pub periods: Vec<TariffPeriod>,
     pub devices: DevicePolicy,
     pub traffic: TrafficPolicy,
+    #[serde(default)]
+    pub traffic_addon: Option<TrafficAddon>,
     pub squads: Vec<SquadId>,
     pub external_squad: Option<SquadId>,
 }
@@ -170,9 +277,27 @@ impl Tariff {
             devices_included: self.devices.included,
             max_extra_devices: self.devices.max_extra(),
             traffic: self.traffic,
+            traffic_leftover: self.traffic_leftover(),
             squads: self.squads.clone(),
             external_squad: self.external_squad,
         }
+    }
+
+    pub fn traffic_leftover(&self) -> TrafficLeftover {
+        self.traffic_addon
+            .as_ref()
+            .map(|a| a.leftover)
+            .unwrap_or_default()
+    }
+
+    pub fn traffic_packs(&self, currency: Currency) -> Vec<&TrafficPack> {
+        if !self.traffic.is_limited() {
+            return Vec::new();
+        }
+        self.traffic_addon
+            .as_ref()
+            .map(|a| a.offered(currency))
+            .unwrap_or_default()
     }
 
     pub fn validate(&self) -> Result<(), DomainError> {
@@ -195,6 +320,9 @@ impl Tariff {
         if let Some(extra) = &self.devices.extra {
             extra.monthly.validate("extra_device_price")?;
         }
+        if let Some(addon) = &self.traffic_addon {
+            addon.validate(self.traffic.is_limited())?;
+        }
         Ok(())
     }
 }
@@ -209,6 +337,8 @@ pub struct TariffSnapshot {
     pub devices_included: u32,
     pub max_extra_devices: u32,
     pub traffic: TrafficPolicy,
+    #[serde(default)]
+    pub traffic_leftover: TrafficLeftover,
     pub squads: Vec<SquadId>,
     pub external_squad: Option<SquadId>,
 }
@@ -305,7 +435,7 @@ pub fn period_offers(tariff: &Tariff, currency: Currency) -> Vec<PeriodOffer> {
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
-    use crate::traffic::{GIB, TrafficReset};
+    use crate::traffic::TrafficReset;
     use uuid::Uuid;
 
     pub fn period(id: i64, days: u32, usd: i64, rub: i64, stars: i64) -> TariffPeriod {
@@ -351,6 +481,7 @@ pub(crate) mod fixtures {
                 extra: extra(),
             },
             traffic: TrafficPolicy::UNLIMITED,
+            traffic_addon: None,
             squads: vec![SquadId(Uuid::from_u128(1)), SquadId(Uuid::from_u128(2))],
             external_squad: None,
         }
@@ -377,6 +508,17 @@ pub(crate) mod fixtures {
                 limit_bytes: Some(300 * GIB),
                 reset: TrafficReset::Month,
             },
+            traffic_addon: Some(TrafficAddon {
+                packs: vec![TrafficPack {
+                    gb: 50,
+                    prices: CurrencyPrices {
+                        usd: Some(199),
+                        rub: Some(15_000),
+                    },
+                    stars: Some(Stars(100)),
+                }],
+                leftover: TrafficLeftover::Burn,
+            }),
             squads: vec![SquadId(Uuid::from_u128(3)), SquadId(Uuid::from_u128(1))],
             external_squad: None,
         }
@@ -445,5 +587,23 @@ mod tests {
             Err(DomainError::ExtraDevicesNotSold)
         );
         assert_eq!(devices.max_total(), 5);
+    }
+    #[test]
+    fn пакеты_трафика_только_при_лимите() {
+        let mut tariff = unblock();
+        assert!(tariff.validate().is_ok());
+        assert_eq!(tariff.traffic_packs(Currency::Rub).len(), 1);
+        assert_eq!(tariff.traffic_packs(Currency::Rub)[0].bytes(), 50 * GIB);
+        tariff.traffic = TrafficPolicy::UNLIMITED;
+        assert!(tariff.validate().is_err());
+        assert!(tariff.traffic_packs(Currency::Rub).is_empty());
+        let mut twins = unblock();
+        let pack = twins.traffic_addon.as_ref().unwrap().packs[0].clone();
+        twins.traffic_addon.as_mut().unwrap().packs.push(pack);
+        assert!(twins.validate().is_err());
+        let mut empty = standard();
+        empty.traffic_addon = Some(TrafficAddon::default());
+        assert!(empty.validate().is_ok());
+        assert_eq!(unblock().traffic_leftover(), TrafficLeftover::Burn);
     }
 }

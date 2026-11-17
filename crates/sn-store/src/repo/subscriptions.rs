@@ -4,8 +4,8 @@ use chrono::{DateTime, Days, Duration, FixedOffset, NaiveDate, NaiveTime, Offset
 use sn_domain::ids::{ClientId, PeriodId, RemnaUserId, SubscriptionId, TariffId};
 use sn_domain::money::{Currency, Stars};
 use sn_domain::subscription::{
-    AutoRenewState, EXPIRING_SOON_DAYS, RemnaLink, RemnaMirror, Subscription, SubscriptionKind,
-    SubscriptionStatus,
+    AutoRenewState, EXPIRING_SOON_DAYS, ExtraTraffic, RemnaLink, RemnaMirror, Subscription,
+    SubscriptionKind, SubscriptionStatus,
 };
 use sn_domain::traffic::TrafficStrategy;
 use sqlx::PgConnection;
@@ -221,6 +221,14 @@ impl TryFrom<SubscriptionRow> for Subscription {
             ended_at: row.ended_at,
         })
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct ExtraTrafficRow {
+    bytes: i64,
+    window_started_at: Option<DateTime<Utc>>,
+    window_lifetime: Option<i64>,
+    window_ends_at: Option<DateTime<Utc>>,
 }
 
 pub struct SubscriptionsRepo<'c> {
@@ -483,6 +491,90 @@ impl<'c> SubscriptionsRepo<'c> {
         .execute(&mut *self.conn)
         .await?;
         Ok(())
+    }
+
+    pub async fn set_extra_devices(&mut self, id: SubscriptionId, extra: u32) -> StoreResult<()> {
+        sqlx::query("UPDATE subscriptions SET extra_devices = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(to_i32(extra, "extra_devices")?)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn extra_traffic(&mut self, id: SubscriptionId) -> StoreResult<Option<ExtraTraffic>> {
+        let row: Option<ExtraTrafficRow> = sqlx::query_as(
+            "SELECT bytes, window_started_at, window_lifetime, window_ends_at \
+             FROM subscription_extra_traffic WHERE subscription_id = $1",
+        )
+        .bind(id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.map(|row| {
+            Ok(ExtraTraffic {
+                subscription_id: id,
+                bytes: non_negative_u64(row.bytes, "extra_traffic_bytes")?,
+                window_started_at: row.window_started_at,
+                window_lifetime: row
+                    .window_lifetime
+                    .map(|v| non_negative_u64(v, "window_lifetime"))
+                    .transpose()?,
+                window_ends_at: row.window_ends_at,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn set_extra_traffic(&mut self, value: &ExtraTraffic) -> StoreResult<()> {
+        if value.bytes == 0 {
+            return self.clear_extra_traffic(value.subscription_id).await;
+        }
+        sqlx::query(
+            "INSERT INTO subscription_extra_traffic \
+             (subscription_id, bytes, window_started_at, window_lifetime, window_ends_at) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (subscription_id) DO UPDATE SET bytes = EXCLUDED.bytes, \
+             window_started_at = EXCLUDED.window_started_at, window_lifetime = EXCLUDED.window_lifetime, \
+             window_ends_at = EXCLUDED.window_ends_at, updated_at = now()",
+        )
+        .bind(value.subscription_id.0)
+        .bind(to_i64(value.bytes, "extra_traffic_bytes")?)
+        .bind(value.window_started_at)
+        .bind(
+            value
+                .window_lifetime
+                .map(|v| to_i64(v, "window_lifetime"))
+                .transpose()?,
+        )
+        .bind(value.window_ends_at)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_extra_traffic(&mut self, id: SubscriptionId) -> StoreResult<()> {
+        sqlx::query("DELETE FROM subscription_extra_traffic WHERE subscription_id = $1")
+            .bind(id.0)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn extra_traffic_due(
+        &mut self,
+        now: DateTime<Utc>,
+        limit: i64,
+    ) -> StoreResult<Vec<SubscriptionId>> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT subscription_id FROM subscription_extra_traffic \
+             WHERE window_ends_at IS NOT NULL AND window_ends_at <= $1 \
+             ORDER BY window_ends_at, subscription_id LIMIT $2",
+        )
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(ids.into_iter().map(SubscriptionId).collect())
     }
 
     pub async fn set_autorenew(

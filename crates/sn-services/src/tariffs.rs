@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sn_domain::ids::{AdminId, CategoryId, PeriodId, RemnaUserId, SquadId, TariffId};
 use sn_domain::money::{Currency, Stars};
 use sn_domain::tariff::{
-    Category, CurrencyPrices, DevicePolicy, Tariff, TariffChannels, TariffPeriod,
+    Category, CurrencyPrices, DevicePolicy, Tariff, TariffChannels, TariffPeriod, TrafficAddon,
 };
 use sn_domain::traffic::TrafficPolicy;
 use sn_remnawave::{BulkSquadsRequest, BulkUpdateRequest, BulkUserFields};
@@ -43,6 +43,8 @@ pub struct TariffInput {
     pub devices: DevicePolicy,
     #[serde(default)]
     pub traffic: TrafficPolicy,
+    #[serde(default)]
+    pub traffic_addon: Option<TrafficAddon>,
     pub squads: Vec<SquadId>,
     #[serde(default)]
     pub external_squad: Option<SquadId>,
@@ -163,6 +165,12 @@ impl TariffInput {
             check_stars("Цена устройства в звёздах", extra.monthly_stars)?;
         }
         self.traffic.validate()?;
+        if let Some(addon) = &self.traffic_addon {
+            for pack in &addon.packs {
+                check_prices("Цена пакета трафика", &pack.prices)?;
+                check_stars("Цена пакета в звёздах", pack.stars)?;
+            }
+        }
         if self.squads.is_empty() {
             return Err(invalid(
                 "Сквады",
@@ -181,6 +189,7 @@ impl TariffInput {
 
     fn preview(&self) -> Tariff {
         Tariff {
+            traffic_addon: self.addon(),
             id: TariffId(0),
             category_id: self.category_id,
             name: self.name.trim().to_string(),
@@ -206,8 +215,15 @@ impl TariffInput {
         }
     }
 
+    fn addon(&self) -> Option<TrafficAddon> {
+        self.traffic_addon
+            .clone()
+            .filter(|addon| !addon.packs.is_empty() && self.traffic.is_limited())
+    }
+
     pub fn to_new(&self) -> NewTariff {
         NewTariff {
+            traffic_addon: self.addon(),
             category_id: self.category_id,
             name: self.name.trim().to_string(),
             description: self
@@ -651,6 +667,7 @@ mod tests {
 
     fn input() -> TariffInput {
         TariffInput {
+            traffic_addon: None,
             category_id: CategoryId(1),
             name: " Стандарт ".into(),
             description: None,

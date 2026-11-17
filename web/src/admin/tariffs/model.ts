@@ -6,6 +6,9 @@ export type Period = { id: number; days: number; prices: Prices; stars: number |
 export type Devices = { included: number; extra: { max: number; monthly: Prices; monthly_stars: number | null } | null };
 export type TrafficReset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
 export type Traffic = { limit_bytes: number | null; reset: TrafficReset };
+export type Leftover = 'burn' | 'carry';
+export type TrafficPack = { gb: number; prices: Prices; stars: number | null };
+export type TrafficAddon = { packs: TrafficPack[]; leftover: Leftover };
 export type Tariff = {
   id: number;
   category_id: number;
@@ -16,6 +19,7 @@ export type Tariff = {
   periods: Period[];
   devices: Devices;
   traffic: Traffic;
+  traffic_addon?: TrafficAddon | null;
   squads: string[];
   external_squad: string | null;
 };
@@ -119,6 +123,8 @@ export function salesWord(n: number): string {
 
 export type DraftPeriod = { key: string; id: number | null; days: string; price: string; stars: string; other: number | null; sort: number; active: boolean };
 
+export type DraftPack = { key: string; gb: string; price: string; stars: string; other: number | null };
+
 export type Draft = {
   id: number | null;
   category_id: number;
@@ -135,6 +141,8 @@ export type Draft = {
   extraMax: string;
   gb: string;
   reset: TrafficReset;
+  packs: DraftPack[];
+  leftover: Leftover;
   squads: string[];
   external_squad: string | null;
   channels: Channels;
@@ -175,6 +183,14 @@ export function draftOf(tariff: Tariff, channels: Channels, currency: Currency):
     extraMax: tariff.devices.extra ? String(tariff.devices.extra.max) : '2',
     gb: tariff.traffic.limit_bytes ? String(Math.round(tariff.traffic.limit_bytes / GIB)) : '',
     reset: tariff.traffic.reset,
+    packs: (tariff.traffic_addon?.packs ?? []).map((pack) => ({
+      key: nextKey(),
+      gb: String(pack.gb),
+      price: toRaw(priceOf(pack.prices, currency), currency),
+      stars: pack.stars === null ? '' : String(pack.stars),
+      other: other(pack.prices),
+    })),
+    leftover: tariff.traffic_addon?.leftover ?? 'burn',
     squads: [...tariff.squads],
     external_squad: tariff.external_squad,
     channels: { ...channels },
@@ -199,6 +215,8 @@ export function blankDraft(categoryId: number, squads: Squad[], currency: Curren
     extraMax: '2',
     gb: '',
     reset: 'no_reset',
+    packs: [],
+    leftover: 'burn',
     squads: squads[0] ? [squads[0].uuid] : [],
     external_squad: null,
     channels: { bot: true, cabinet: true, miniapp: true },
@@ -252,6 +270,28 @@ export function inputOf(draft: Draft, currency: Currency): { body: unknown; erro
   if (gb !== null && (!Number.isInteger(gb) || gb < 1)) {
     return { body: null, error: 'Лимит трафика: целое число гигабайт' };
   }
+  const packs: TrafficPack[] = [];
+  if (gb !== null) {
+    for (const pack of draft.packs) {
+      const size = Number(pack.gb);
+      if (!Number.isInteger(size) || size < 1 || size > 100000) {
+        return { body: null, error: 'Пакет трафика: от 1 до 100 000 ГБ' };
+      }
+      if (packs.some((p) => p.gb === size)) {
+        return { body: null, error: `Пакет ${size} ГБ указан дважды` };
+      }
+      const price = fromRaw(pack.price, currency);
+      if (price === 'bad' || price === null) {
+        return { body: null, error: `Пакет ${size} ГБ: укажите цену` };
+      }
+      const stars = pack.stars.trim() ? Number(pack.stars) : null;
+      if (stars !== null && (!Number.isInteger(stars) || stars <= 0)) {
+        return { body: null, error: 'Цена пакета в звёздах: целое число больше нуля' };
+      }
+      const prices = currency === 'RUB' ? { rub: price, usd: pack.other } : { usd: price, rub: pack.other };
+      packs.push({ gb: size, prices, stars });
+    }
+  }
   return {
     error: null,
     body: {
@@ -262,6 +302,7 @@ export function inputOf(draft: Draft, currency: Currency): { body: unknown; erro
       sort: draft.sort,
       devices: { included, extra },
       traffic: { limit_bytes: gb === null ? null : gb * GIB, reset: gb === null ? 'no_reset' : draft.reset },
+      traffic_addon: packs.length ? { packs, leftover: draft.leftover } : null,
       squads: draft.squads,
       external_squad: draft.external_squad,
       periods,

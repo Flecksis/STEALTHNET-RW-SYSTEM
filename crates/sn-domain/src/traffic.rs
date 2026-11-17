@@ -59,6 +59,16 @@ impl TrafficReset {
         matches!(self, TrafficReset::OnPayment)
     }
 
+    pub const fn periodic(self) -> bool {
+        matches!(
+            self,
+            TrafficReset::Day
+                | TrafficReset::Week
+                | TrafficReset::Month
+                | TrafficReset::MonthRolling
+        )
+    }
+
     pub const fn title_ru(self) -> &'static str {
         match self {
             TrafficReset::Month => "Каждый месяц, 1-го числа",
@@ -154,6 +164,11 @@ impl TrafficPolicy {
     }
 }
 
+pub const fn unused_extra(limit: u64, used: u64, extra: u64) -> u64 {
+    let left = limit.saturating_sub(used);
+    if left < extra { left } else { extra }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "at", rename_all = "snake_case")]
 pub enum NextReset {
@@ -244,6 +259,14 @@ pub fn next_reset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn сначала_тратится_основной_трафик() {
+        assert_eq!(unused_extra(110 * GIB, 50 * GIB, 10 * GIB), 10 * GIB);
+        assert_eq!(unused_extra(110 * GIB, 104 * GIB, 10 * GIB), 6 * GIB);
+        assert_eq!(unused_extra(110 * GIB, 120 * GIB, 10 * GIB), 0);
+        assert_eq!(unused_extra(110 * GIB, 0, 0), 0);
+    }
 
     fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap()

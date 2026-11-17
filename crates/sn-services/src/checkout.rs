@@ -467,6 +467,7 @@ fn trusted_return_url(url: &str, public_url: Option<&str>) -> bool {
 
 pub(crate) fn trial_snapshot(trial: &TrialSettings) -> TariffSnapshot {
     TariffSnapshot {
+        traffic_leftover: Default::default(),
         tariff_id: TariffId(0),
         category_id: CategoryId(0),
         name: "Пробный период".into(),
@@ -1124,7 +1125,16 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         item: &ItemRequest,
     ) -> ServiceResult<ItemQuoteView> {
-        let (_, quote, methods) = self.prepare_item(client_id, item, None).await?;
+        self.quote_item_in(client_id, item, None).await
+    }
+
+    pub async fn quote_item_in(
+        &self,
+        client_id: ClientId,
+        item: &ItemRequest,
+        channel: Option<ClientChannel>,
+    ) -> ServiceResult<ItemQuoteView> {
+        let (_, quote, methods) = self.prepare_item(client_id, item, channel).await?;
         Ok(ItemQuoteView { quote, methods })
     }
 

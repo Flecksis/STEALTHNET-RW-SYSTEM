@@ -386,6 +386,7 @@ impl<'a> Applier<'a> {
                     monthly_stars: None,
                 });
             let new = NewTariff {
+                traffic_addon: None,
                 category_id: sn_domain::ids::CategoryId(category_id),
                 name: trimmed(&tariff.name, 64),
                 description: tariff.description.as_deref().map(|d| trimmed(d, 2000)),

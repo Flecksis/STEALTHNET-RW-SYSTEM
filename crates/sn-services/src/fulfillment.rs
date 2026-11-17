@@ -18,7 +18,7 @@ use sn_domain::plan::{
     classify, plan,
 };
 use sn_domain::subscription::{
-    AutoRenewState, NameSource, RemnaLink, Subscription, SubscriptionKind, TRIAL_TAG,
+    AutoRenewState, ExtraTraffic, NameSource, RemnaLink, Subscription, SubscriptionKind, TRIAL_TAG,
     remna_description, remna_name, remna_name_base, remna_spare_name, remna_username,
 };
 use sn_domain::tariff::TariffSnapshot;
@@ -34,6 +34,8 @@ use sqlx::types::Json;
 use std::collections::HashSet;
 use std::time::Duration;
 
+#[cfg(test)]
+mod addon_tests;
 #[cfg(test)]
 pub(crate) mod naming_tests;
 #[cfg(test)]
@@ -1266,7 +1268,15 @@ impl<'a> Fulfillment<'a> {
         };
         let state = current.as_ref().map(RemnaUser::state);
         let tag = matches!(context.order.intent, PurchaseIntent::Trial).then_some(TRIAL_TAG);
+        let extra_traffic = {
+            let mut conn = self.services.store().conn().await?;
+            conn.subscriptions()
+                .extra_traffic(context.subscription.id)
+                .await?
+                .map_or(0, |extra| extra.bytes)
+        };
         let computed = plan(&PlanInput {
+            extra_traffic,
             kind,
             snapshot: &context.snapshot,
             extra_devices,
@@ -1538,6 +1548,17 @@ impl<'a> Fulfillment<'a> {
                     .execute(tx.conn())
                     .await?;
             }
+        }
+        if !plan.keep_traffic_window {
+            tx.subscriptions()
+                .set_extra_traffic(&ExtraTraffic {
+                    subscription_id: subscription.id,
+                    bytes: plan.extra_traffic_bytes,
+                    window_started_at: None,
+                    window_lifetime: None,
+                    window_ends_at: None,
+                })
+                .await?;
         }
         if let PurchaseIntent::Subscription { period_id, .. } = &order.intent {
             let enabled = if subscription.kind == SubscriptionKind::Trial {

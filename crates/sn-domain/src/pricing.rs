@@ -2,8 +2,9 @@ use crate::DomainError;
 use crate::format;
 use crate::ids::{PeriodId, TariffId};
 use crate::module::ModuleId;
-use crate::money::{Amount, Currency, Money, PayCurrency, Stars};
+use crate::money::{Amount, Currency, Money, PayCurrency, Stars, div_round_half_up};
 use crate::tariff::Tariff;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,13 @@ pub enum QuoteLineKind {
     ExtraDevices {
         count: u32,
         months: u32,
+    },
+    DeviceAddon {
+        count: u32,
+        days: u32,
+    },
+    TrafficAddon {
+        gb: u32,
     },
     Adjustment {
         source: AdjustmentSource,
@@ -86,6 +94,42 @@ impl Quote {
             _ => None,
         }
     }
+}
+
+pub const MONTH_DAYS: u32 = 30;
+
+pub fn days_left(expire_at: DateTime<Utc>, now: DateTime<Utc>) -> u32 {
+    let seconds = (expire_at - now).num_seconds();
+    if seconds <= 0 {
+        return 0;
+    }
+    u32::try_from((seconds + 86_399) / 86_400).unwrap_or(u32::MAX)
+}
+
+pub fn prorated(monthly: Money, units: u32, days: u32) -> Result<Money, DomainError> {
+    if monthly.is_negative() {
+        return Err(DomainError::NegativeAmount);
+    }
+    if monthly.is_zero() || units == 0 || days == 0 {
+        return Ok(Money::zero(monthly.currency));
+    }
+    let step = i128::from(monthly.currency.rounding_step());
+    let numerator = i128::from(monthly.minor) * i128::from(units) * i128::from(days);
+    let steps = div_round_half_up(numerator, i128::from(MONTH_DAYS) * step).max(1);
+    let minor = i64::try_from(steps * step).map_err(|_| DomainError::AmountOverflow)?;
+    Ok(Money::new(minor, monthly.currency))
+}
+
+pub fn prorated_stars(monthly: Stars, units: u32, days: u32) -> Result<Stars, DomainError> {
+    if monthly.0 <= 0 || units == 0 || days == 0 {
+        return Ok(Stars::ZERO);
+    }
+    let numerator = i128::from(monthly.0) * i128::from(units) * i128::from(days);
+    let month = i128::from(MONTH_DAYS);
+    let stars = ((numerator + month - 1) / month).max(1);
+    Ok(Stars(
+        i64::try_from(stars).map_err(|_| DomainError::AmountOverflow)?,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -440,5 +484,40 @@ mod tests {
         assert_eq!(rub.len(), 4);
         assert!(rub.iter().all(|money| money.currency == Currency::Rub));
         assert_eq!(rub[0].minor, 30_000);
+    }
+}
+
+#[cfg(test)]
+mod proration_tests {
+    use super::*;
+    use chrono::{Duration, TimeZone};
+
+    #[test]
+    fn устройство_за_полмесяца_стоит_половину() {
+        let rub = |r: i64| Money::new(r * 100, Currency::Rub);
+        assert_eq!(prorated(rub(50), 1, 15).unwrap(), rub(25));
+        assert_eq!(prorated(rub(50), 2, 15).unwrap(), rub(50));
+        assert_eq!(prorated(rub(50), 1, 30).unwrap(), rub(50));
+        assert_eq!(prorated(rub(50), 1, 45).unwrap(), rub(75));
+        assert_eq!(prorated(rub(50), 1, 14).unwrap(), rub(23));
+        assert_eq!(prorated(rub(1), 1, 1).unwrap(), rub(1));
+        let usd = |c: i64| Money::new(c, Currency::Usd);
+        assert_eq!(prorated(usd(99), 1, 15).unwrap(), usd(50));
+        assert_eq!(prorated(usd(99), 1, 0).unwrap(), usd(0));
+        assert_eq!(prorated_stars(Stars(50), 1, 15).unwrap(), Stars(25));
+        assert_eq!(prorated_stars(Stars(40), 1, 1).unwrap(), Stars(2));
+        assert_eq!(prorated_stars(Stars(1), 1, 1).unwrap(), Stars(1));
+    }
+
+    #[test]
+    fn оставшиеся_дни_округляются_вверх() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
+        assert_eq!(days_left(now + Duration::days(15), now), 15);
+        assert_eq!(days_left(now + Duration::hours(5), now), 1);
+        assert_eq!(
+            days_left(now + Duration::days(14) + Duration::hours(1), now),
+            15
+        );
+        assert_eq!(days_left(now - Duration::hours(1), now), 0);
     }
 }

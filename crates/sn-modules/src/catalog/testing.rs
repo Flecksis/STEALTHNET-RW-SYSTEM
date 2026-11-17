@@ -19,6 +19,7 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct Calls {
     pub days: Vec<(SubscriptionId, u32, String)>,
+    pub addons: Vec<(OrderId, SubscriptionId, String, u64)>,
     pub notifications: Vec<(ClientId, Notification)>,
     pub jobs: Vec<JobPayload>,
 }
@@ -44,6 +45,13 @@ impl TestCore {
         self.calls
             .lock()
             .map(|c| c.days.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn addons(&self) -> Vec<(OrderId, SubscriptionId, String, u64)> {
+        self.calls
+            .lock()
+            .map(|c| c.addons.clone())
             .unwrap_or_default()
     }
 
@@ -116,6 +124,37 @@ impl CoreApi for TestCore {
     async fn enqueue(&self, job: JobPayload) -> Result<(), ModuleError> {
         if let Ok(mut calls) = self.calls.lock() {
             calls.jobs.push(job);
+        }
+        Ok(())
+    }
+
+    async fn apply_device_addon(
+        &self,
+        order_id: OrderId,
+        subscription_id: SubscriptionId,
+        devices_after: u32,
+    ) -> Result<(), ModuleError> {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.addons.push((
+                order_id,
+                subscription_id,
+                "devices".into(),
+                u64::from(devices_after),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn apply_traffic_addon(
+        &self,
+        order_id: OrderId,
+        subscription_id: SubscriptionId,
+        bytes: u64,
+    ) -> Result<(), ModuleError> {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls
+                .addons
+                .push((order_id, subscription_id, "traffic".into(), bytes));
         }
         Ok(())
     }

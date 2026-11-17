@@ -1240,6 +1240,7 @@ async fn давно_истёкшие_подписки_завершаются_п�
 #[test]
 fn удалённый_срок_заменяется_ближайшим_по_дням() {
     let tariff = Tariff {
+        traffic_addon: None,
         id: sn_domain::ids::TariffId(1),
         category_id: sn_domain::ids::CategoryId(1),
         name: "Стандарт".into(),

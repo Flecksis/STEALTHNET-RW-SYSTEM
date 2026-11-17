@@ -23,6 +23,8 @@ import {
   type Applied,
   type Channels,
   type Draft,
+  type DraftPack,
+  type Leftover,
   type Squad,
   type Tariff,
   type TrafficReset,
@@ -299,7 +301,15 @@ export function Tariffs() {
         const st = stats.get(tariff.id);
         const sales = st?.sales_30d ?? 0;
         const opened = draft?.id === tariff.id;
-        const meta = [devicesText(tariff.devices), trafficText(tariff.traffic), `сквады: ${tariff.squads.map(squadName).join(', ')}`].join(' · ');
+        const packs = tariff.traffic.limit_bytes ? (tariff.traffic_addon?.packs ?? []) : [];
+        const meta = [
+          devicesText(tariff.devices),
+          trafficText(tariff.traffic),
+          packs.length ? `докупка трафика по ${packs.map((p) => p.gb).join(', ')} ГБ` : null,
+          `сквады: ${tariff.squads.map(squadName).join(', ')}`,
+        ]
+          .filter(Boolean)
+          .join(' · ');
         return (
           <section key={tariff.id} aria-label={tariff.name} className="tf-sec">
             <div className="tf-row">
@@ -449,6 +459,20 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onS
 
   const setPeriod = (key: string, patch: Partial<Draft['periods'][number]>) =>
     onEdit({ periods: draft.periods.map((p) => (p.key === key ? { ...p, ...patch } : p)) });
+  const setPack = (key: string, patch: Partial<DraftPack>) => onEdit({ packs: draft.packs.map((p) => (p.key === key ? { ...p, ...patch } : p)) });
+  const periodic = draft.reset === 'day' || draft.reset === 'week' || draft.reset === 'month' || draft.reset === 'month_rolling';
+  const leftovers: Array<[Leftover, string]> = [
+    ['burn', 'Сгорает'],
+    ['carry', 'Переносится'],
+  ];
+  const leftoverHint =
+    draft.leftover === 'carry'
+      ? periodic
+        ? 'Что клиент не израсходовал из докупленного, остаётся и после сброса трафика.'
+        : 'Что клиент не израсходовал из докупленного, добавится к лимиту после продления.'
+      : periodic
+        ? 'Докупленный трафик действует до ближайшего сброса трафика.'
+        : 'Докупленный трафик действует до продления подписки.';
   const toggleSquad = (uuid: string) => {
     const on = draft.squads.includes(uuid);
     if (on && draft.squads.length === 1) {
@@ -620,6 +644,62 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onS
             ) : null}
           </div>
         </div>
+        {draft.gb.trim() ? (
+          <div className="tf-col" style={{ gap: 8, marginTop: 8 }}>
+            <span className="tf-bt">Докупка трафика</span>
+            <span className="muted">Пакеты, которые клиент покупает к действующей подписке. Цена пакета не зависит от того, сколько дней осталось.</span>
+            {draft.packs.map((pack) => (
+              <div key={pack.key} className="tf-period">
+                <label className="tf-inline">
+                  <span className="sr-only">Размер пакета</span>
+                  <input className="field num" inputMode="numeric" value={pack.gb} onChange={(e) => setPack(pack.key, { gb: e.target.value.replace(/\D/g, '').slice(0, 6) })} style={{ width: 88 }} disabled={busy} />
+                  <span className="muted" style={{ minWidth: 36 }}>
+                    ГБ
+                  </span>
+                </label>
+                <label className="tf-inline">
+                  <span className="sr-only">Цена пакета</span>
+                  {currency === 'USD' ? <span className="muted">{sym}</span> : null}
+                  <input className="field num" inputMode="decimal" value={pack.price} onChange={(e) => setPack(pack.key, { price: e.target.value })} style={{ width: 104 }} disabled={busy} />
+                  {currency === 'RUB' ? <span className="muted">{sym}</span> : null}
+                </label>
+                <label className="tf-inline">
+                  <span className="sr-only">Цена пакета в звёздах Telegram</span>
+                  <input className="field num" inputMode="numeric" value={pack.stars} onChange={(e) => setPack(pack.key, { stars: e.target.value.replace(/\D/g, '').slice(0, 7) })} style={{ width: 96 }} disabled={busy} />
+                  <span className="muted" style={{ minWidth: 48 }}>
+                    {plural(Number(pack.stars) || 0, 'звезда', 'звезды', 'звёзд')}
+                  </span>
+                </label>
+                <button type="button" className="tf-x hov" aria-label={`Убрать пакет ${pack.gb || ''} ГБ`} onClick={() => onEdit({ packs: draft.packs.filter((x) => x.key !== pack.key) })} disabled={busy}>
+                  <Icon name="close" size={16} stroke={2} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="tf-add"
+              onClick={() => onEdit({ packs: [...draft.packs, { key: nextKey(), gb: '', price: '', stars: '', other: null }] })}
+              disabled={busy || draft.packs.length >= 8}
+            >
+              Добавить пакет
+            </button>
+            {draft.packs.length ? (
+              <div className="tf-col" style={{ gap: 6 }}>
+                <span id={`${ids}-left`} style={{ fontWeight: 600 }}>
+                  Неизрасходованный докупленный трафик
+                </span>
+                <span role="group" aria-labelledby={`${ids}-left`} className="segs" style={{ alignSelf: 'flex-start' }}>
+                  {leftovers.map(([value, label]) => (
+                    <button key={value} type="button" aria-pressed={draft.leftover === value} onClick={() => onEdit({ leftover: value })} disabled={busy}>
+                      {label}
+                    </button>
+                  ))}
+                </span>
+                <span className="cap">{leftoverHint}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="tf-block">

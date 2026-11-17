@@ -12,7 +12,10 @@ use sn_domain::access::ClientChannel;
 use sn_domain::ids::{PeriodId, SubscriptionId, TicketId};
 use sn_domain::money::{Money, parse_units};
 use sn_domain::support::{Ticket, TicketChannel};
-use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult};
+use sn_services::checkout::{
+    CartRequest, Channel, CheckoutRequest, CheckoutResult, ItemCheckoutRequest, ItemQuoteView,
+    ItemRequest,
+};
 use sn_services::login::TelegramLoginStatus;
 use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
 use sn_services::two_factor::{CabinetLogin, TwoFactor};
@@ -37,6 +40,8 @@ pub fn routes() -> Router<AppState> {
         .route("/catalog", get(catalog))
         .route("/quote", post(quote))
         .route("/checkout", post(checkout))
+        .route("/items/quote", post(item_quote))
+        .route("/items/checkout", post(item_checkout))
         .route("/topup", get(topup_options).post(topup))
         .route("/trial", post(trial))
         .route("/payments", get(payments))
@@ -409,6 +414,49 @@ async fn checkout(
             .services
             .checkout()
             .start_from(client.0.client_id, &request, address)
+            .await?,
+    ))
+}
+
+async fn item_quote(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(item): ApiJson<ItemRequest>,
+) -> ApiResult<Json<ItemQuoteView>> {
+    Ok(Json(
+        state
+            .services
+            .checkout()
+            .quote_item_in(client.0.client_id, &item, Some(client.channel()))
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct ItemCheckoutBody {
+    item: ItemRequest,
+    provider: String,
+    #[serde(default)]
+    return_url: Option<String>,
+}
+
+async fn item_checkout(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<ItemCheckoutBody>,
+) -> ApiResult<Json<CheckoutResult>> {
+    client.require_full()?;
+    let request = ItemCheckoutRequest {
+        item: body.item,
+        provider: body.provider,
+        channel: channel(&client),
+        return_url: body.return_url,
+    };
+    Ok(Json(
+        state
+            .services
+            .checkout()
+            .start_item(client.0.client_id, &request)
             .await?,
     ))
 }
@@ -1133,6 +1181,7 @@ mod tests {
                 .unwrap();
             conn.tariffs()
                 .create(&NewTariff {
+                    traffic_addon: None,
                     category_id: category.id,
                     name: "Стандарт".into(),
                     description: None,

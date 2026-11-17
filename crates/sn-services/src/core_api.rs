@@ -1,7 +1,8 @@
+use crate::error::ServiceError;
 use crate::services::Services;
 use async_trait::async_trait;
 use sn_domain::events::DomainEvent;
-use sn_domain::ids::{ClientId, SubscriptionId};
+use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::Money;
@@ -89,11 +90,48 @@ impl CoreApi for Services {
         Ok(())
     }
 
+    async fn apply_device_addon(
+        &self,
+        order_id: OrderId,
+        subscription_id: SubscriptionId,
+        devices_after: u32,
+    ) -> Result<(), ModuleError> {
+        self.subscriptions()
+            .apply_device_addon(order_id, subscription_id, devices_after)
+            .await
+            .map_err(addon_error)
+    }
+
+    async fn apply_traffic_addon(
+        &self,
+        order_id: OrderId,
+        subscription_id: SubscriptionId,
+        bytes: u64,
+    ) -> Result<(), ModuleError> {
+        self.subscriptions()
+            .apply_traffic_addon(order_id, subscription_id, bytes)
+            .await
+            .map_err(addon_error)
+    }
+
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
         Services::bot_sender(self)
     }
 
     fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
         Some(Arc::new(crate::mail::MailBridge::new(self.clone())))
+    }
+}
+
+fn addon_error(err: ServiceError) -> ModuleError {
+    match err {
+        ServiceError::Rejected {
+            code: "addon.wait",
+            message,
+        } => ModuleError::Core(message),
+        ServiceError::Rejected { message, .. } => ModuleError::Invalid(message),
+        ServiceError::NotFound(what) => ModuleError::NotFound(what),
+        ServiceError::Domain(err) => ModuleError::Invalid(err.to_string()),
+        other => ModuleError::Core(other.to_string()),
     }
 }

@@ -474,17 +474,25 @@ impl Worker {
                 .await
                 .and_then(|report| serde_json::to_value(report).map_err(json_error)),
         );
-        let devices = if self.services.remna().is_ok() {
-            step(
+        let (devices, traffic) = if self.services.remna().is_ok() {
+            let subscriptions = self.services.subscriptions();
+            let devices = step(
                 "release_held_devices",
-                self.services
-                    .subscriptions()
+                subscriptions
                     .release_held_devices(self.services.now())
                     .await
                     .map(serde_json::Value::from),
-            )
+            );
+            let traffic = step(
+                "settle_extra_traffic",
+                subscriptions
+                    .settle_extra_traffic(self.services.now())
+                    .await
+                    .map(serde_json::Value::from),
+            );
+            (devices, traffic)
         } else {
-            serde_json::Value::Null
+            (serde_json::Value::Null, serde_json::Value::Null)
         };
         Ok(serde_json::json!({
             "expired_payments": expired.len(),
@@ -492,6 +500,7 @@ impl Worker {
             "purged_webhooks": purged,
             "refunds": refunds,
             "released_devices": devices,
+            "settled_traffic": traffic,
         }))
     }
 

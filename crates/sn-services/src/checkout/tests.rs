@@ -184,6 +184,7 @@ async fn бесплатный_заказ_сразу_оплачен() {
     let free = conn
         .tariffs()
         .create(&sn_store::NewTariff {
+            traffic_addon: None,
             category_id: tariff.category_id,
             name: "Подарочный".into(),
             description: None,

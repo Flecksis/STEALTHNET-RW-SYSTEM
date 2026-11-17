@@ -108,6 +108,7 @@ async fn tariff(services: &Services, category: &str) -> Tariff {
     let tariff = tx
         .tariffs()
         .create(&NewTariff {
+            traffic_addon: None,
             category_id: category.id,
             name: "Стандарт".into(),
             description: None,

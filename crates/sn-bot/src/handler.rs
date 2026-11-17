@@ -500,6 +500,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         },
         "ref" => extras::referral_action(turn, client, rest).await?,
         "opt" => extras::options_action(turn, client, rest).await?,
+        "op" => extras::options_pay(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
         "docs" => documents_screen(&turn.services().bot_content()),
         _ => main_menu(turn.ctx, client).await?,

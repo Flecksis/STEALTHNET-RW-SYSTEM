@@ -20,6 +20,8 @@ use sn_store::{ActorKind, AuditEntry, Db, LockSpace, PurchaseApplied, StoreError
 use std::collections::BTreeSet;
 use std::future::Future;
 
+mod addons;
+
 pub const MAX_ADD_DAYS: u32 = 3650;
 pub const MAX_UNDO_STEPS: u32 = 50;
 const CONNECTION_POLLS: u32 = 4;
@@ -44,6 +46,9 @@ pub mod actions {
     pub const RELEASE_DEVICES: &str = "subscription.release_devices";
     pub const BLOCKED_DELIVERY: &str = "subscription.blocked_delivery";
     pub const DELETED: &str = "subscription.deleted";
+    pub const DEVICE_ADDON: &str = "subscription.device_addon";
+    pub const TRAFFIC_ADDON: &str = "subscription.traffic_addon";
+    pub const EXTRA_TRAFFIC_SETTLED: &str = "subscription.extra_traffic_settled";
 }
 
 pub(crate) async fn with_subscription_lock<T, E, F>(
@@ -1591,6 +1596,10 @@ impl<'a> SubscriptionOps<'a> {
                     .execute(conn.conn())
                     .await?;
             }
+            if traffic_limit.is_some() {
+                let mut conn = self.services.store().conn().await?;
+                conn.subscriptions().clear_extra_traffic(id).await?;
+            }
             self.record(Change {
                 subscription: &subscription,
                 actor,
@@ -2331,6 +2340,7 @@ pub(crate) mod tests {
         let tariff = tx
             .tariffs()
             .create(&NewTariff {
+                traffic_addon: None,
                 category_id: category.id,
                 name: "Стандарт".into(),
                 description: None,

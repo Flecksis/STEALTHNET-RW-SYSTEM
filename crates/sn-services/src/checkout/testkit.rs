@@ -287,6 +287,7 @@ pub(crate) async fn tariff(
     let mut conn = services.store().conn().await.unwrap();
     conn.tariffs()
         .create(&NewTariff {
+            traffic_addon: None,
             category_id,
             name: name.into(),
             description: None,

@@ -19,6 +19,7 @@ use sn_worker::{JobHandler, JobResult};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod addons;
 mod balance_off;
 mod broadcast;
 mod content;
@@ -381,6 +382,7 @@ async fn покупка_тарифа_доходит_до_выставления_
         let tariff = tx
             .tariffs()
             .create(&NewTariff {
+                traffic_addon: None,
                 category_id: category.id,
                 name: "Стандарт".into(),
                 description: None,

@@ -439,9 +439,13 @@ const CAN_ADD: Var = Var {
     name: "can_add",
     hint: "сколько ещё можно добавить",
 };
-const MONTHS: Var = Var {
-    name: "months",
-    hint: "месяцев до конца подписки",
+const GB: Var = Var {
+    name: "gb",
+    hint: "гигабайт в пакете",
+};
+const NOTE: Var = Var {
+    name: "note",
+    hint: "что будет с неизрасходованным остатком",
 };
 const WHO: Var = Var {
     name: "who",
@@ -598,12 +602,7 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка приглашения друзей",
         "Пригласить друга",
     ),
-    hideable(
-        "menu.btn.options",
-        Menu,
-        "Кнопка доп. устройств",
-        "Докупить устройства",
-    ),
+    hideable("menu.btn.options", Menu, "Кнопка докупки", "Докупить"),
     hideable(
         "menu.btn.documents",
         Menu,
@@ -1584,16 +1583,31 @@ pub static CATALOG: &[Entry] = &[
         "opt.no_subscription",
         Options,
         "Нет подписки",
-        "Докупить устройства можно к действующей подписке.",
+        "Докупить устройства или трафик можно к действующей подписке.",
         &[],
     ),
     text(
         "opt.which_sub",
         Options,
-        "К какой подписке добавить",
-        "К какой подписке добавить устройства?",
+        "К какой подписке докупить",
+        "К какой подписке докупить?",
         &[],
     ),
+    text(
+        "opt.menu",
+        Options,
+        "Что докупить",
+        "Подписка действует до {date}. Что докупить?",
+        &[DATE],
+    ),
+    button(
+        "opt.btn.devices",
+        Options,
+        "Кнопка устройств",
+        "Устройства",
+        &[],
+    ),
+    button("opt.btn.traffic", Options, "Кнопка трафика", "Трафик", &[]),
     text(
         "opt.max",
         Options,
@@ -1604,9 +1618,9 @@ pub static CATALOG: &[Entry] = &[
     text(
         "opt.offer",
         Options,
-        "Предложение",
-        "Сейчас: {included} в тарифе и {extra} докуплено. Можно добавить ещё {can_add}.\nЦена: {price}{stars} в месяц за устройство, до конца подписки — {months} мес.",
-        &[INCLUDED, EXTRA, CAN_ADD, PRICE, STARS, MONTHS],
+        "Устройства",
+        "Сейчас {included} в тарифе и {extra} докуплено, можно добавить ещё {can_add}.\nДо конца подписки {days}, одно устройство на этот срок стоит {price}{stars}.",
+        &[INCLUDED, EXTRA, CAN_ADD, DAYS, PRICE, STARS],
     ),
     text(
         "opt.stars",
@@ -1615,13 +1629,6 @@ pub static CATALOG: &[Entry] = &[
         " или {stars}",
         &[STARS],
     ),
-    text(
-        "opt.quote",
-        Options,
-        "Расчёт",
-        "{label} — {total}{stars}.\nОплата доп. устройств в боте появится позже. Сейчас их можно добавить при продлении подписки.",
-        &[LABEL, TOTAL, STARS],
-    ),
     button(
         "opt.btn.count",
         Options,
@@ -1629,12 +1636,68 @@ pub static CATALOG: &[Entry] = &[
         "+{count}",
         &[COUNT],
     ),
-    button(
-        "opt.btn.extend_with",
+    text(
+        "opt.traffic",
         Options,
-        "Кнопка продления с устройствами",
-        "Продлить с устройствами",
+        "Трафик",
+        "Израсходовано {used} из {limit}. Докупленный трафик расходуется после основного.\n{note}\nВыберите пакет:",
+        &[USED, LIMIT, NOTE],
+    ),
+    text(
+        "opt.traffic_burn_payment",
+        Options,
+        "Остаток сгорает при продлении",
+        "Что не израсходуете до продления, сгорит.",
         &[],
+    ),
+    text(
+        "opt.traffic_carry_payment",
+        Options,
+        "Остаток переносится при продлении",
+        "Неизрасходованный остаток сохранится после продления.",
+        &[],
+    ),
+    text(
+        "opt.traffic_burn_reset",
+        Options,
+        "Остаток сгорает при сбросе",
+        "Что не израсходуете до сброса трафика, сгорит.",
+        &[],
+    ),
+    text(
+        "opt.traffic_carry_reset",
+        Options,
+        "Остаток переносится после сброса",
+        "Неизрасходованный остаток перейдёт на следующий период после сброса трафика.",
+        &[],
+    ),
+    button(
+        "opt.btn.pack",
+        Options,
+        "Кнопка пакета трафика",
+        "+{gb} ГБ · {price}",
+        &[GB, PRICE],
+    ),
+    text(
+        "opt.quote",
+        Options,
+        "Расчёт",
+        "{label} — {total}{stars}.\nКак оплатить?",
+        &[LABEL, TOTAL, STARS],
+    ),
+    text(
+        "pay.what_devices",
+        Payment,
+        "Что оплачивается: устройства",
+        "доп. устройства: +{count}",
+        &[COUNT],
+    ),
+    text(
+        "pay.what_traffic",
+        Payment,
+        "Что оплачивается: трафик",
+        "трафик: +{gb} ГБ",
+        &[GB],
     ),
     text(
         "login.title",
