@@ -73,7 +73,7 @@ export function DevicesPage() {
               Как подключить
             </Link>
             {extra && !ended ? (
-              <Link to="/cabinet/pay" className="cb-second">
+              <Link to="/cabinet/addons?kind=devices" className="cb-second">
                 Добавить устройства
               </Link>
             ) : null}
