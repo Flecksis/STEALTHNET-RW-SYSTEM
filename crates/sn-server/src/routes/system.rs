@@ -32,6 +32,8 @@ async fn site(State(state): State<AppState>) -> Response {
         "bot_username": bot_username,
         "appearance": settings.appearance,
         "connect": settings.connect,
+        "autorenew_days_before": settings.autorenew.charge_days_before,
+        "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
     }))
     .into_response()
 }

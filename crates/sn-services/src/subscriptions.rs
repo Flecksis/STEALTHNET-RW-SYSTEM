@@ -89,6 +89,27 @@ pub struct SubscriptionView {
     pub progress: Option<PeriodProgress>,
     pub subscription_url: Option<String>,
     pub countries: Vec<String>,
+    pub tariff: Option<crate::clients::TariffBrief>,
+}
+
+async fn tariff_brief(
+    db: &mut impl sn_store::Db,
+    id: Option<sn_domain::ids::TariffId>,
+) -> ServiceResult<Option<crate::clients::TariffBrief>> {
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    match db.tariffs().get(id).await {
+        Ok(t) => Ok(Some(crate::clients::TariffBrief {
+            id: t.id,
+            name: t.name,
+            on_sale: t.on_sale,
+            devices: t.devices,
+            traffic: t.traffic,
+        })),
+        Err(sn_store::StoreError::NotFound(_)) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -478,6 +499,7 @@ impl<'a> SubscriptionOps<'a> {
         let subscription = conn.subscriptions().get(id).await?;
         let client = conn.clients().get(subscription.client_id).await?;
         let now = self.services.now();
+        let tariff = tariff_brief(&mut conn, subscription.tariff_id).await?;
         Ok(SubscriptionView {
             status: admin_status(Some(&subscription), client.is_blocked(), now),
             progress: period_progress(&subscription, now),
@@ -485,6 +507,7 @@ impl<'a> SubscriptionOps<'a> {
                 .map(|u| u.subscription_url.clone())
                 .filter(|url| !url.is_empty()),
             countries,
+            tariff,
             subscription,
         })
     }
@@ -528,19 +551,20 @@ impl<'a> SubscriptionOps<'a> {
         let mut conn = self.services.store().conn().await?;
         let client = conn.clients().get(client_id).await?;
         let now = self.services.now();
-        Ok(conn
-            .subscriptions()
-            .by_client(client_id)
-            .await?
-            .into_iter()
-            .map(|subscription| SubscriptionView {
+        let subscriptions = conn.subscriptions().by_client(client_id).await?;
+        let mut views = Vec::with_capacity(subscriptions.len());
+        for subscription in subscriptions {
+            let tariff = tariff_brief(&mut conn, subscription.tariff_id).await?;
+            views.push(SubscriptionView {
                 status: admin_status(Some(&subscription), client.is_blocked(), now),
                 progress: period_progress(&subscription, now),
                 subscription_url: None,
                 countries: Vec::new(),
+                tariff,
                 subscription,
-            })
-            .collect())
+            });
+        }
+        Ok(views)
     }
 
     pub async fn view(

@@ -93,24 +93,7 @@ export function personName(person: Person | null, fallbackId?: number | null): s
   return fallbackId ? `Клиент ${fallbackId}` : 'Клиент';
 }
 
-const REGIONS = (() => {
-  try {
-    return new Intl.DisplayNames(['ru'], { type: 'region' });
-  } catch {
-    return null;
-  }
-})();
-
-export function countryName(code: string): string {
-  if (!code || code.toUpperCase() === 'XX') {
-    return '';
-  }
-  try {
-    return REGIONS?.of(code.toUpperCase()) ?? code;
-  } catch {
-    return code;
-  }
-}
+export { countryName } from '../../lib/geo';
 
 export function minutesSince(iso: string | null, now = Date.now()): number | null {
   if (!iso) {
