@@ -47,6 +47,9 @@ export function methodText(provider: string, method: string | null): string {
   if (provider === 'stars') {
     return 'Звёзды Telegram';
   }
+  if (provider === 'gram') {
+    return 'GRAM';
+  }
   if (CRYPTO.has(provider)) {
     return method ? `Криптовалюта, ${method.toUpperCase()}` : 'Криптовалюта';
   }

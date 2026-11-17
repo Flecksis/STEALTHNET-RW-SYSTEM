@@ -86,6 +86,12 @@ pub struct ClientLabel {
     pub hint: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderIssue {
+    pub at: DateTime<Utc>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientRef {
     pub client_id: ClientId,
@@ -263,6 +269,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
 
     fn polls_status(&self) -> bool {
         false
+    }
+
+    fn issue(&self) -> Option<ProviderIssue> {
+        None
     }
 
     fn supports_recurring(&self) -> bool {

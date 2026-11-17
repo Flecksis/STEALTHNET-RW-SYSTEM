@@ -18,7 +18,7 @@ use uuid::Uuid;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const WALLET: &str = "UQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG";
+const WALLET: &str = "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI";
 
 struct Setup {
     db: sn_store::testing::TestDb,
@@ -228,5 +228,106 @@ async fn без_внешнего_адреса_gram_ведёт_сразу_в_ко
         )),
         "{pay_url}"
     );
+    db.cleanup().await;
+}
+
+async fn gram_payment(
+    services: &Services,
+    client_id: sn_domain::ids::ClientId,
+    tariff: &sn_domain::tariff::Tariff,
+) -> sn_domain::payment::Payment {
+    let CheckoutResult::Redirect { payment_id, .. } = services
+        .checkout()
+        .start(client_id, &gram_request(tariff))
+        .await
+        .unwrap()
+    else {
+        panic!("ожидалась ссылка на оплату");
+    };
+    let mut conn = services.store().conn().await.unwrap();
+    conn.payments().by_public_id(payment_id).await.unwrap()
+}
+
+async fn expire(services: &Services, payment: &sn_domain::payment::Payment, ago: &str) {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query(&format!(
+        "UPDATE payments SET expires_at = now() - interval '{ago}' WHERE id = $1"
+    ))
+    .bind(payment.id.0)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    conn.payments()
+        .expire_stale(services.now(), 10)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ровная_проверка_находит_оплату_и_поздний_перевод_после_истечения_курса() {
+    let Some(Setup {
+        db,
+        services,
+        chain,
+        client_id,
+        tariff,
+    }) = setup(Some(PUBLIC_URL)).await
+    else {
+        return;
+    };
+    let alive = gram_payment(&services, client_id, &tariff).await;
+    let late = gram_payment(&services, client_id, &tariff).await;
+    let old = gram_payment(&services, client_id, &tariff).await;
+    expire(&services, &late, "1 minute").await;
+    expire(&services, &old, "2 days").await;
+    let comment = |payment: &sn_domain::payment::Payment| {
+        GramInvoice::parse(payment.provider_txid.as_deref().unwrap())
+            .unwrap()
+            .comment
+    };
+    let transfers: Vec<serde_json::Value> = [&alive, &late, &old]
+        .iter()
+        .enumerate()
+        .map(|(n, payment)| {
+            serde_json::json!({
+                "transaction_id": {"lt": format!("{n}"), "hash": format!("dHg{n}")},
+                "in_msg": {"source": "EQSender", "value": "1400000000", "message": comment(payment)}
+            })
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/getTransactions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"ok": true, "result": transfers})),
+        )
+        .mount(&chain)
+        .await;
+    assert_eq!(
+        services.inbox().check_chain(old.id).await.unwrap(),
+        PollResult::Unsupported
+    );
+    let report = services.inbox().watch_chain(services.now()).await.unwrap();
+    assert_eq!((report.checked, report.settled, report.failed), (2, 2, 0));
+    let mut conn = db.store.conn().await.unwrap();
+    for (payment, status) in [
+        (&alive, PaymentStatus::Paid),
+        (&late, PaymentStatus::Paid),
+        (&old, PaymentStatus::Canceled),
+    ] {
+        assert_eq!(
+            conn.payments().get(payment.id).await.unwrap().status,
+            status
+        );
+    }
+    let order = conn.orders().get(late.order_id).await.unwrap();
+    assert_eq!(order.status, sn_domain::order::OrderStatus::Paid);
+    drop(conn);
+    assert_eq!(
+        services.inbox().check_chain(late.id).await.unwrap(),
+        PollResult::Settled
+    );
+    let again = services.inbox().watch_chain(services.now()).await.unwrap();
+    assert_eq!(again.checked, 0);
     db.cleanup().await;
 }

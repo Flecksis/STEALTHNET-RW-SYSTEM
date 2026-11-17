@@ -25,6 +25,15 @@ type PayView = {
     tonkeeper_link: string;
   };
   back: { bot: string | null; cabinet: string | null };
+  checked?: 'found' | 'not_found' | 'failed' | 'too_often';
+};
+
+const CHECK_PAUSE_MS = 5000;
+
+const CHECK_TEXT: Record<'not_found' | 'failed' | 'too_often', string> = {
+  not_found: 'Перевод пока не найден. Если вы только что отправили GRAM, подождите минуту: сеть подтверждает перевод, страница проверит его сама.',
+  failed: 'Сеть TON сейчас не ответила. Попробуйте через минуту, проверка идёт и без вас.',
+  too_often: 'Проверяем не чаще раза в 5 секунд. Нажмите чуть позже.',
 };
 
 const POLL_MS = 5000;
@@ -77,6 +86,41 @@ function CopyRow({ label, value, shown, warn }: { label: string; value: string; 
       <span className="gp-value mono">{shown ?? value}</span>
       {warn ? <span className="gp-warn">{warn}</span> : null}
       {failed ? <span className="gp-muted">Браузер не дал скопировать: выделите текст вручную</span> : null}
+    </div>
+  );
+}
+
+function CheckPaid({ id, onView }: { id: string; onView: (view: PayView) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [resting, setResting] = useState(false);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setAnswer(null);
+    try {
+      const data = await api<PayView>(`/api/public/pay/${encodeURIComponent(id)}/check`, { method: 'POST' });
+      onView(data);
+      if (data.checked && data.checked !== 'found') {
+        setAnswer(CHECK_TEXT[data.checked]);
+      }
+    } catch (err) {
+      setAnswer(err instanceof ApiError ? err.message : 'Не получилось проверить. Проверьте интернет.');
+    } finally {
+      setBusy(false);
+      setResting(true);
+      window.setTimeout(() => setResting(false), CHECK_PAUSE_MS);
+    }
+  };
+  return (
+    <div className="gp-check">
+      <button type="button" className="gp-btn line" onClick={() => void run()} disabled={busy || resting}>
+        {busy ? 'Проверяем…' : 'Я оплатил, проверить'}
+      </button>
+      {answer ? (
+        <p className="gp-muted" role="status">
+          {answer}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -134,7 +178,7 @@ export function PayPage() {
     void load();
   }, [load]);
 
-  const pending = view?.status === 'pending';
+  const pending = view?.status === 'pending' || view?.status === 'expired';
   useEffect(() => {
     if (!pending) {
       return;
@@ -201,10 +245,11 @@ export function PayPage() {
             <h1 className="gp-title">{view.status === 'expired' ? 'Срок счёта истёк' : 'Счёт закрыт'}</h1>
             <p className="gp-sub">
               {view.status === 'expired'
-                ? 'Курс для этого счёта больше не действует. Оформите оплату заново. Если GRAM уже отправлены, напишите в поддержку и приложите комментарий к переводу.'
+                ? 'Курс для этого счёта больше не действует. Если GRAM с этим комментарием уже отправлены, мы всё равно засчитаем перевод: сеть проверяется ещё сутки, а кнопка ниже проверит сразу. Если не отправляли, оформите оплату заново.'
                 : 'По этому счёту оплатить уже нельзя. Оформите оплату заново в боте или кабинете.'}
             </p>
             <span className="gp-value mono">{view.gram.comment}</span>
+            {view.status === 'expired' ? <CheckPaid id={id} onView={setView} /> : null}
             <BackLinks back={view.back} />
           </section>
         </div>
@@ -240,6 +285,7 @@ export function PayPage() {
               Открыть в Tonkeeper
             </a>
           </div>
+          <CheckPaid id={id} onView={setView} />
         </section>
         <section className="gp-card gp-list" aria-label="Данные для перевода вручную">
           <CopyRow label="Сумма" value={view.gram.amount} shown={`${grams(view.gram.amount)} GRAM`} />

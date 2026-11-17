@@ -33,6 +33,7 @@ pub struct WorkerConfig {
     pub module_tasks_interval: Duration,
     pub redeliver_interval: Duration,
     pub end_expired_interval: Duration,
+    pub chain_watch_interval: Duration,
     pub reconcile_batch: usize,
 }
 
@@ -49,6 +50,7 @@ impl Default for WorkerConfig {
             module_tasks_interval: Duration::from_secs(15),
             redeliver_interval: Duration::from_secs(300),
             end_expired_interval: Duration::from_secs(3_600),
+            chain_watch_interval: Duration::from_secs(20),
             reconcile_batch: 500,
         }
     }
@@ -62,16 +64,18 @@ pub enum Periodic {
     ModuleTasks,
     Redeliver,
     EndExpired,
+    ChainWatch,
 }
 
 impl Periodic {
-    pub const ALL: [Periodic; 6] = [
+    pub const ALL: [Periodic; 7] = [
         Periodic::Housekeeping,
         Periodic::AutoRenew,
         Periodic::Reconcile,
         Periodic::ModuleTasks,
         Periodic::Redeliver,
         Periodic::EndExpired,
+        Periodic::ChainWatch,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -82,6 +86,7 @@ impl Periodic {
             Periodic::ModuleTasks => "module_tasks",
             Periodic::Redeliver => "redeliver",
             Periodic::EndExpired => "end_expired",
+            Periodic::ChainWatch => "chain_watch",
         }
     }
 
@@ -97,6 +102,7 @@ impl Periodic {
             Periodic::ModuleTasks => 4,
             Periodic::Redeliver => 5,
             Periodic::EndExpired => 6,
+            Periodic::ChainWatch => 7,
         }
     }
 }
@@ -321,6 +327,7 @@ impl Worker {
             Periodic::ModuleTasks => self.config.module_tasks_interval,
             Periodic::Redeliver => self.config.redeliver_interval,
             Periodic::EndExpired => self.config.end_expired_interval,
+            Periodic::ChainWatch => self.config.chain_watch_interval,
         }
     }
 
@@ -397,6 +404,12 @@ impl Worker {
                 .services
                 .autorenew()
                 .end_expired(self.services.now())
+                .await
+                .and_then(|report| serde_json::to_value(report).map_err(json_error)),
+            Periodic::ChainWatch => self
+                .services
+                .inbox()
+                .watch_chain(self.services.now())
                 .await
                 .and_then(|report| serde_json::to_value(report).map_err(json_error)),
         };
@@ -591,6 +604,7 @@ impl Worker {
         let mut module_tasks = interval(self.config.module_tasks_interval);
         let mut redeliver = interval(self.config.redeliver_interval);
         let mut end_expired = interval(self.config.end_expired_interval);
+        let mut chain_watch = interval(self.config.chain_watch_interval);
         for timer in [
             &mut jobs,
             &mut events,
@@ -600,6 +614,7 @@ impl Worker {
             &mut module_tasks,
             &mut redeliver,
             &mut end_expired,
+            &mut chain_watch,
         ] {
             timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
         }
@@ -623,6 +638,7 @@ impl Worker {
                 _ = module_tasks.tick() => self.periodic(Periodic::ModuleTasks).await,
                 _ = redeliver.tick() => self.periodic(Periodic::Redeliver).await,
                 _ = end_expired.tick() => self.periodic(Periodic::EndExpired).await,
+                _ = chain_watch.tick() => self.periodic(Periodic::ChainWatch).await,
             }
         }
         tracing::info!("фоновые задачи остановлены");

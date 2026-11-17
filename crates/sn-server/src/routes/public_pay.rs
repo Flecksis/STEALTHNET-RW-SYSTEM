@@ -1,7 +1,7 @@
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -18,14 +18,28 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const POLL_EVERY: Duration = Duration::from_secs(10);
+const CHECK_EVERY: Duration = Duration::from_secs(5);
 const POLL_TIMEOUT: Duration = Duration::from_secs(8);
 const REMEMBERED_MAX: usize = 2_000;
 
 static LAST_POLL: LazyLock<Mutex<HashMap<PaymentId, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static LAST_CHECK: LazyLock<Mutex<HashMap<PaymentId, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/public/pay/{payment}", get(status))
+    Router::new()
+        .route("/api/public/pay/{payment}", get(status))
+        .route("/api/public/pay/{payment}/check", post(check))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Checked {
+    Found,
+    NotFound,
+    Failed,
+    TooOften,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -61,33 +75,64 @@ struct PayView {
     expires_at: Option<DateTime<Utc>>,
     gram: GramDetails,
     back: Back,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checked: Option<Checked>,
 }
 
 fn state_of(payment: &Payment, now: DateTime<Utc>) -> PayState {
+    let expired = payment.expires_at.is_some_and(|at| at <= now);
     if payment.status.is_paid_like() {
         PayState::Paid
+    } else if expired
+        && matches!(
+            payment.status,
+            PaymentStatus::Pending | PaymentStatus::Canceled
+        )
+    {
+        PayState::Expired
     } else if payment.status != PaymentStatus::Pending {
         PayState::Closed
-    } else if payment.expires_at.is_some_and(|at| at <= now) {
-        PayState::Expired
     } else {
         PayState::Pending
     }
 }
 
-fn due_for_poll(id: PaymentId) -> bool {
-    let mut guard = match LAST_POLL.lock() {
+fn due(map: &LazyLock<Mutex<HashMap<PaymentId, Instant>>>, id: PaymentId, every: Duration) -> bool {
+    let mut guard = match map.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
     if guard.len() > REMEMBERED_MAX {
-        guard.retain(|_, at| at.elapsed() < POLL_EVERY * 6);
+        guard.retain(|_, at| at.elapsed() < every * 6);
     }
     match guard.get(&id) {
-        Some(at) if at.elapsed() < POLL_EVERY => false,
+        Some(at) if at.elapsed() < every => false,
         _ => {
             guard.insert(id, Instant::now());
             true
+        }
+    }
+}
+
+fn due_for_poll(id: PaymentId) -> bool {
+    due(&LAST_POLL, id, POLL_EVERY)
+}
+
+fn due_for_check(id: PaymentId) -> bool {
+    due(&LAST_CHECK, id, CHECK_EVERY)
+}
+
+async fn look(state: &AppState, payment: &Payment) -> Checked {
+    match tokio::time::timeout(POLL_TIMEOUT, state.services.inbox().check_chain(payment.id)).await {
+        Ok(Ok(sn_services::inbox::PollResult::Settled)) => Checked::Found,
+        Ok(Ok(_)) => Checked::NotFound,
+        Ok(Err(err)) => {
+            tracing::debug!(payment = %payment.id, error = %err, "оплата GRAM не проверена");
+            Checked::Failed
+        }
+        Err(_) => {
+            tracing::debug!(payment = %payment.id, "проверка оплаты GRAM не уложилась во время");
+            Checked::Failed
         }
     }
 }
@@ -109,7 +154,18 @@ async fn status(
     State(state): State<AppState>,
     Path(payment): Path<Uuid>,
 ) -> ApiResult<Json<PayView>> {
-    let mut found = load(&state, payment).await?;
+    view(&state, payment, false).await.map(Json)
+}
+
+async fn check(
+    State(state): State<AppState>,
+    Path(payment): Path<Uuid>,
+) -> ApiResult<Json<PayView>> {
+    view(&state, payment, true).await.map(Json)
+}
+
+async fn view(state: &AppState, payment: Uuid, asked: bool) -> ApiResult<PayView> {
+    let mut found = load(state, payment).await?;
     if found.provider.as_str() != providers::GRAM {
         return Err(ApiError::not_found());
     }
@@ -117,18 +173,24 @@ async fn status(
         return Err(ApiError::not_found());
     };
     let now = state.services.now();
-    if state_of(&found, now) == PayState::Pending && due_for_poll(found.id) {
-        match tokio::time::timeout(POLL_TIMEOUT, state.services.inbox().poll_payment(found.id))
-            .await
-        {
-            Ok(Ok(_)) => found = load(&state, payment).await?,
-            Ok(Err(err)) => {
-                tracing::debug!(payment = %found.id, error = %err, "оплата GRAM не проверена")
-            }
-            Err(_) => {
-                tracing::debug!(payment = %found.id, "проверка оплаты GRAM не уложилась во время")
-            }
-        }
+    let open = matches!(state_of(&found, now), PayState::Pending | PayState::Expired);
+    let mut checked = None;
+    if asked {
+        checked = Some(if !open {
+            Checked::NotFound
+        } else if due_for_check(found.id) {
+            let result = look(state, &found).await;
+            found = load(state, payment).await?;
+            result
+        } else {
+            Checked::TooOften
+        });
+    } else if open && due_for_poll(found.id) {
+        look(state, &found).await;
+        found = load(state, payment).await?;
+    }
+    if found.status.is_paid_like() && asked {
+        checked = Some(Checked::Found);
     }
     let settings = state.services.settings();
     let bot = match state.services.store().conn().await {
@@ -147,7 +209,7 @@ async fn status(
         .public_url
         .as_deref()
         .map(|base| format!("{}/cabinet", base.trim_end_matches('/')));
-    Ok(Json(PayView {
+    Ok(PayView {
         status: state_of(&found, state.services.now()),
         provider: providers::GRAM,
         amount: found.amount,
@@ -161,7 +223,8 @@ async fn status(
             comment: invoice.comment,
         },
         back: Back { bot, cabinet },
-    }))
+        checked,
+    })
 }
 
 #[cfg(test)]

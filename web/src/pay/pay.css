@@ -128,6 +128,24 @@
   text-decoration: none;
 }
 
+button.gp-btn {
+  width: 100%;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.gp-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.gp-check {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .gp-btn.line {
   background: var(--fill, var(--surface-2));
   color: var(--ink);

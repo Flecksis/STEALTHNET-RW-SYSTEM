@@ -1,4 +1,4 @@
-use crate::provider::{PaymentProvider, ProviderConfig, ProviderKind};
+use crate::provider::{PaymentProvider, ProviderConfig, ProviderIssue, ProviderKind};
 use serde::Serialize;
 use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
@@ -59,6 +59,7 @@ pub struct ProviderView {
     pub supports_recurring: bool,
     pub channels: PaymentChannels,
     pub settings: serde_json::Map<String, serde_json::Value>,
+    pub issue: Option<ProviderIssue>,
 }
 
 pub struct ProviderRegistry {
@@ -191,6 +192,7 @@ impl ProviderRegistry {
                     supports_recurring: p.supports_recurring(),
                     channels: state.channels,
                     settings: state.config.public_view(&p.settings_schema()),
+                    issue: p.issue(),
                 }
             })
             .collect()

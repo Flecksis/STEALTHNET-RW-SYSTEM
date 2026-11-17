@@ -6,7 +6,7 @@ use sn_payments::providers::{Balance, Gram, GramInvoice, comment_payload};
 use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult};
 use wiremock::matchers::path;
 
-const WALLET: &str = "UQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG";
+const WALLET: &str = "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI";
 
 async fn gram_setup(chain: &MockServer) -> Option<(TestDb, Services, MockServer, BotCtx)> {
     let db = test_store().await?;

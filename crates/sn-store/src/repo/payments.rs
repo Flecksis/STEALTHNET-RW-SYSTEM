@@ -303,6 +303,9 @@ const COLUMNS: &str = "id, public_id, order_id, client_id, provider, method, amo
 
 pub(crate) const TRANSITION_ATTEMPTS: usize = 4;
 
+const CHAIN_WATCHED: &str = "provider_txid IS NOT NULL AND (status = 'pending' \
+     OR (status = 'canceled' AND failure_reason = 'expired' AND expires_at > $2))";
+
 pub const TXID_CONSTRAINT: &str = "payments_provider_txid_key";
 
 impl TryFrom<PaymentRow> for Payment {
@@ -501,6 +504,40 @@ impl<'c> PaymentsRepo<'c> {
             .map(TryInto::try_into)
             .collect::<StoreResult<Vec<Payment>>>()?;
         Ok(Page::from_overfetch(items, page, |p| p.id.0))
+    }
+
+    pub async fn chain_watch(
+        &mut self,
+        providers: &[&str],
+        late_since: DateTime<Utc>,
+        limit: i64,
+    ) -> StoreResult<Vec<Payment>> {
+        let providers: Vec<String> = providers.iter().map(|p| (*p).to_string()).collect();
+        let rows: Vec<PaymentRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM payments WHERE provider = ANY($1) AND {CHAIN_WATCHED} \
+             ORDER BY id DESC LIMIT $3"
+        ))
+        .bind(&providers)
+        .bind(late_since)
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn chain_candidate(
+        &mut self,
+        id: PaymentId,
+        late_since: DateTime<Utc>,
+    ) -> StoreResult<Option<Payment>> {
+        let row: Option<PaymentRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM payments WHERE id = $1 AND {CHAIN_WATCHED}"
+        ))
+        .bind(id.0)
+        .bind(late_since)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.map(TryInto::try_into).transpose()
     }
 
     pub async fn expire_stale(

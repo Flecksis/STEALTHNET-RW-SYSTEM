@@ -24,7 +24,13 @@ type Provider = {
   supports_recurring: boolean;
   channels?: Channels;
   settings: Record<string, unknown>;
+  issue?: { at: string; message: string } | null;
 };
+
+function issueTime(iso: string): string {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? '' : at.toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+}
 
 const ALL_CHANNELS: Channels = { cabinet: true, bot: true, miniapp: true };
 
@@ -331,6 +337,12 @@ export function SettingsPayments() {
                 </button>
               </div>
               {channelLine(p.id, p.title)}
+              {p.issue ? (
+                <p className="pay-issue" role="status">
+                  <span className="pay-issue-at">Проверка оплат, {issueTime(p.issue.at)}</span>
+                  {p.issue.message}
+                </p>
+              ) : null}
               {setup === p.id ? <ProviderSetup provider={p} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
             </Fragment>
           );

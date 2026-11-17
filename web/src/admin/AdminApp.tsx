@@ -18,6 +18,7 @@ import { Modules } from './modules/Modules';
 import { ModulePage } from './modules/ModulePage';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
+import { Money } from './money/Money';
 import { SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
 import { SettingsRemna } from './pages/SettingsRemna';
@@ -205,7 +206,7 @@ export function AdminApp() {
           <Route path="clients" element={<Clients />} />
           <Route path="clients/:id" element={<ClientPage />} />
           <Route path="support" element={<Support />} />
-          <Route path="money/*" element={<Pending title="Деньги" />} />
+          <Route path="money/*" element={<Money />} />
           <Route path="tariffs" element={<Tariffs />} />
           <Route path="infra" element={<InfraNodes />} />
           <Route path="infra/squads" element={<InfraSquads />} />

@@ -409,6 +409,25 @@
   cursor: pointer;
 }
 
+.pay-issue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 760px;
+  margin: -2px 20px 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warn-bg, var(--surface-2));
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pay-issue-at {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 .pay-ghost {
   visibility: hidden;
 }

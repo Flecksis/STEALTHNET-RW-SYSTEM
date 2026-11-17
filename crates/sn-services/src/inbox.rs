@@ -1,7 +1,7 @@
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::{RATE_LIMITED, RateRule, Strike, UNKNOWN_ADDRESS, ip_key};
 use crate::services::Services;
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sn_domain::events::DomainEvent;
@@ -144,6 +144,16 @@ pub enum PollResult {
     Settled,
     Pending,
     Unsupported,
+}
+
+pub const CHAIN_LATE_HOURS: i64 = 24;
+const CHAIN_WATCH_LIMIT: i64 = 200;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ChainWatchReport {
+    pub checked: usize,
+    pub settled: usize,
+    pub failed: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -1859,6 +1869,70 @@ impl<'a> PaymentInbox<'a> {
             return Ok(PollResult::Pending);
         };
         self.confirm_by_txid(payment.id, &txid).await
+    }
+
+    fn chain_providers(&self) -> Vec<&'static str> {
+        self.services
+            .payments()
+            .providers()
+            .iter()
+            .filter(|p| p.polls_status() && p.kind() == ProviderKind::External)
+            .map(|p| p.id())
+            .collect()
+    }
+
+    pub async fn watch_chain(&self, now: DateTime<Utc>) -> ServiceResult<ChainWatchReport> {
+        let providers = self.chain_providers();
+        let mut report = ChainWatchReport::default();
+        if providers.is_empty() {
+            return Ok(report);
+        }
+        let payments = {
+            let mut conn = self.services.store().conn().await?;
+            conn.payments()
+                .chain_watch(
+                    &providers,
+                    now - Duration::hours(CHAIN_LATE_HOURS),
+                    CHAIN_WATCH_LIMIT,
+                )
+                .await?
+        };
+        for payment in payments {
+            let Some(txid) = payment.provider_txid.as_deref() else {
+                continue;
+            };
+            report.checked += 1;
+            match self.confirm_by_txid(payment.id, txid).await {
+                Ok(PollResult::Settled) => report.settled += 1,
+                Ok(_) => {}
+                Err(err) => {
+                    report.failed += 1;
+                    tracing::debug!(payment = %payment.id, error = %err, "перевод в блокчейне не проверен");
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    pub async fn check_chain(&self, payment_id: PaymentId) -> ServiceResult<PollResult> {
+        let late_since = self.services.now() - Duration::hours(CHAIN_LATE_HOURS);
+        let found = {
+            let mut conn = self.services.store().conn().await?;
+            let payment = conn.payments().get(payment_id).await?;
+            if payment.status.is_paid_like() {
+                return Ok(PollResult::Settled);
+            }
+            if !self.chain_providers().contains(&payment.provider.as_str()) {
+                return Ok(PollResult::Unsupported);
+            }
+            conn.payments()
+                .chain_candidate(payment_id, late_since)
+                .await?
+        };
+        match found.as_ref().and_then(|p| p.provider_txid.as_deref()) {
+            Some(txid) => self.confirm_by_txid(payment_id, txid).await,
+            None => Ok(PollResult::Unsupported),
+        }
     }
 
     pub async fn track_pending(

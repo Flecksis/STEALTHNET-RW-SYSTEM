@@ -3,7 +3,7 @@ use sn_payments::providers::{Balance, Gram, GramInvoice};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const WALLET: &str = "UQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG";
+const WALLET: &str = "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI";
 
 async fn gram_http(chain: &MockServer) -> Option<Http> {
     let db = test_store().await?;
@@ -48,6 +48,7 @@ async fn gram_payment(
     h: &Http,
     client: ClientId,
     tariff: &Tariff,
+    comment: &str,
 ) -> (sn_domain::payment::Payment, GramInvoice) {
     let period = &tariff.periods[0];
     let q = quote(&QuoteRequest {
@@ -94,7 +95,7 @@ async fn gram_payment(
         payment
     };
     let invoice = GramInvoice {
-        comment: "SN-ABCDEFGH".into(),
+        comment: comment.into(),
         nano: 1_400_000_000,
         address: WALLET.into(),
         amount: payment.amount,
@@ -136,7 +137,7 @@ async fn страница_оплаты_gram_показывает_счёт_и_и�
     let tariff = h.tariff().await;
     let client = h.client(5_093_118_422).await;
     let other = h.pending_payment(client, &tariff).await;
-    let (payment, _) = gram_payment(&h, client, &tariff).await;
+    let (payment, _) = gram_payment(&h, client, &tariff, "SN-ABCDEFGH").await;
     let url = format!("/api/public/pay/{}", payment.public_id);
     let (status, _, body) = h.send(Method::GET, &url, None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -205,7 +206,7 @@ async fn счёт_gram_отправляется_в_чат_с_ботом_для_�
     };
     let tariff = h.tariff().await;
     let client = h.client(5_093_118_422).await;
-    let (payment, _) = gram_payment(&h, client, &tariff).await;
+    let (payment, _) = gram_payment(&h, client, &tariff, "SN-TELEGRAM").await;
     let token = h.client_token(client).await;
     let url = format!("/api/client/payments/{}/telegram", payment.public_id);
     let (status, body) = h.write(Method::POST, &url, &token, json!({})).await;
@@ -256,5 +257,73 @@ async fn счёт_gram_отправляется_в_чат_с_ботом_для_�
     let (status, refused) = h.write(Method::POST, &url, &token, json!({})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["error"]["code"], "gram.wallet_unavailable");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn кнопка_я_оплатил_проверяет_сразу_и_находит_поздний_перевод() {
+    let chain = MockServer::start().await;
+    let Some(h) = gram_http(&chain).await else {
+        return;
+    };
+    Mock::given(method("GET"))
+        .and(path("/getTransactions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": []})))
+        .with_priority(5)
+        .mount(&chain)
+        .await;
+    let tariff = h.tariff().await;
+    let client = h.client(5_093_118_424).await;
+    let (waiting, _) = gram_payment(&h, client, &tariff, "SN-WAITING").await;
+    let check = |payment: &sn_domain::payment::Payment| {
+        format!("/api/public/pay/{}/check", payment.public_id)
+    };
+    let (status, _, body) = h.send(Method::POST, &check(&waiting), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["checked"], "not_found");
+    let (_, _, again) = h.send(Method::POST, &check(&waiting), None, None).await;
+    assert_eq!(again["checked"], "too_often");
+
+    let (late, invoice) = gram_payment(&h, client, &tariff, "SN-WLPDQ6GT").await;
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.payments()
+            .attach_invoice(
+                late.id,
+                &sn_store::InvoiceUpdate {
+                    pay_url: None,
+                    provider_txid: None,
+                    expires_at: Some(start() - Duration::minutes(1)),
+                    payload: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        conn.payments()
+            .expire_stale(h.services().now(), 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            conn.payments().get(late.id).await.unwrap().status,
+            sn_domain::payment::PaymentStatus::Canceled
+        );
+    }
+    Mock::given(method("GET"))
+        .and(path("/getTransactions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "result": [{
+                "transaction_id": {"lt": "11", "hash": "bGF0ZQ=="},
+                "in_msg": {"source": "EQDGrR9gCY0r", "value": "1400000000", "message": invoice.comment}
+            }]
+        })))
+        .with_priority(1)
+        .mount(&chain)
+        .await;
+    let (status, _, found) = h.send(Method::POST, &check(&late), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["checked"], "found");
+    assert_eq!(found["status"], "paid");
     h.db.cleanup().await;
 }
