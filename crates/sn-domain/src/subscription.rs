@@ -228,6 +228,76 @@ pub fn remna_username(subscription_public_id: Uuid) -> String {
     format!("sn_{}", subscription_public_id.simple())
 }
 
+pub const REMNA_USERNAME_MIN: usize = 3;
+pub const REMNA_USERNAME_MAX: usize = 36;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NameSource<'a> {
+    pub telegram_username: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub telegram_id: Option<i64>,
+    pub client_id: ClientId,
+}
+
+fn name_part(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.trim().trim_start_matches('@').chars() {
+        let next = match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' => ch,
+            _ if ch.is_ascii() => '_',
+            _ => continue,
+        };
+        if next == '_' && (out.is_empty() || out.ends_with('_')) {
+            continue;
+        }
+        out.push(next);
+    }
+    let head: String = out
+        .trim_matches(['_', '-'])
+        .chars()
+        .take(REMNA_USERNAME_MAX)
+        .collect();
+    head.trim_end_matches(['_', '-']).to_string()
+}
+
+pub fn remna_name_base(source: &NameSource<'_>) -> String {
+    let telegram = source.telegram_username.map(name_part);
+    let email = source
+        .email
+        .and_then(|email| email.split('@').next())
+        .map(name_part);
+    if let Some(base) = [telegram, email]
+        .into_iter()
+        .flatten()
+        .find(|base| base.len() >= REMNA_USERNAME_MIN)
+    {
+        return base;
+    }
+    match source.telegram_id {
+        Some(id) => format!("tg{id}"),
+        None => format!("id{}", source.client_id.0),
+    }
+}
+
+fn with_suffix(base: &str, suffix: &str) -> String {
+    let room = REMNA_USERNAME_MAX.saturating_sub(suffix.len());
+    let head: String = base.chars().take(room).collect();
+    format!("{}{suffix}", head.trim_end_matches(['_', '-']))
+}
+
+pub fn remna_name(base: &str, ordinal: u32) -> String {
+    if ordinal <= 1 {
+        with_suffix(base, "")
+    } else {
+        with_suffix(base, &format!("_{ordinal}"))
+    }
+}
+
+pub fn remna_spare_name(base: &str, subscription_public_id: Uuid) -> String {
+    let tail = subscription_public_id.simple().to_string();
+    with_suffix(base, &format!("_{}", &tail[..10]))
+}
+
 pub fn remna_description(client_public_id: Uuid) -> String {
     format!("stealthnet client {client_public_id}")
 }
@@ -312,5 +382,114 @@ mod tests {
         let name = remna_username(id);
         assert_eq!(name, "sn_0123456789abcdef0123456789abcdef");
         assert!(name.len() <= 36);
+    }
+
+    fn source<'a>(
+        telegram_username: Option<&'a str>,
+        email: Option<&'a str>,
+        telegram_id: Option<i64>,
+    ) -> NameSource<'a> {
+        NameSource {
+            telegram_username,
+            email,
+            telegram_id,
+            client_id: ClientId(42),
+        }
+    }
+
+    fn valid(name: &str) -> bool {
+        (REMNA_USERNAME_MIN..=REMNA_USERNAME_MAX).contains(&name.len())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }
+
+    #[test]
+    fn основа_имени_из_ника_telegram() {
+        let base = remna_name_base(&source(
+            Some("Ivan_Petrov"),
+            Some("other@mail.ru"),
+            Some(5_093_118_422),
+        ));
+        assert_eq!(base, "Ivan_Petrov");
+        assert_eq!(
+            remna_name_base(&source(Some("@durov"), None, Some(1))),
+            "durov"
+        );
+    }
+
+    #[test]
+    fn без_ника_основа_из_почты() {
+        let base = remna_name_base(&source(
+            None,
+            Some("ivan.petrov+vpn@mail.ru"),
+            Some(5_093_118_422),
+        ));
+        assert_eq!(base, "ivan_petrov_vpn");
+        assert_eq!(
+            remna_name_base(&source(Some("  "), Some("anna-k@example.com"), None)),
+            "anna-k"
+        );
+    }
+
+    #[test]
+    fn без_ника_и_почты_понятная_замена() {
+        assert_eq!(
+            remna_name_base(&source(None, None, Some(5_093_118_422))),
+            "tg5093118422"
+        );
+        assert_eq!(remna_name_base(&source(None, None, None)), "id42");
+        assert_eq!(
+            remna_name_base(&source(None, Some("иван@почта.рф"), Some(7))),
+            "tg7"
+        );
+        assert_eq!(
+            remna_name_base(&source(None, Some("ab@x.io"), None)),
+            "id42"
+        );
+    }
+
+    #[test]
+    fn вторая_и_третья_подписки_с_номером() {
+        let base = remna_name_base(&source(Some("ivan"), None, None));
+        assert_eq!(remna_name(&base, 1), "ivan");
+        assert_eq!(remna_name(&base, 2), "ivan_2");
+        assert_eq!(remna_name(&base, 3), "ivan_3");
+        assert_eq!(remna_name(&base, 12), "ivan_12");
+    }
+
+    #[test]
+    fn длинное_имя_укорачивается_до_36_с_номером() {
+        let long = "a".repeat(30) + "_bcdefghijk";
+        let base = remna_name_base(&source(None, Some(&format!("{long}@mail.ru")), None));
+        assert_eq!(base.len(), REMNA_USERNAME_MAX);
+        for ordinal in [1, 2, 3, 10, 125] {
+            let name = remna_name(&base, ordinal);
+            assert!(valid(&name), "{name}");
+        }
+        assert_eq!(remna_name(&base, 2), format!("{}_bcd_2", "a".repeat(30)));
+        let spare = remna_spare_name(&base, Uuid::from_u128(0xabcdef));
+        assert!(valid(&spare), "{spare}");
+        assert!(spare.ends_with("_0000000000"), "{spare}");
+    }
+
+    #[test]
+    fn в_имени_только_допустимые_символы() {
+        for raw in [
+            "Иван Петров",
+            "__x__y__",
+            "a..b",
+            "-dash-",
+            "o'brien",
+            "very.long.name.with.dots.and+plus@x",
+        ] {
+            let base = remna_name_base(&source(None, Some(&format!("{raw}@mail.ru")), Some(9)));
+            assert!(valid(&base), "{raw} → {base}");
+            assert!(valid(&remna_name(&base, 2)), "{raw} → {base}");
+        }
+        assert_eq!(
+            remna_name_base(&source(None, Some("o'brien@mail.ru"), None)),
+            "o_brien"
+        );
     }
 }

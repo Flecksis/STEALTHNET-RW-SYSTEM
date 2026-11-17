@@ -82,7 +82,12 @@ export type Quote = {
   kind: 'new' | 'renewal' | 'change';
   expire_preview: string | null;
   methods: CheckoutMethod[];
+  current?: { subscription_id: number; tariff: string | null; trial: boolean; expire_at: string | null } | null;
 };
+
+export function transitionText(current: string | null): string {
+  return `Текущая подписка (${current ?? 'без тарифа'}) будет удалена, новая станет доступна сразу после оплаты. Оставшиеся дни не переносятся, ссылка подписки останется прежней.`;
+}
 
 export type Referral = { code: string; bot_link: string | null; invited: number; earned: Money; levels: number[] };
 

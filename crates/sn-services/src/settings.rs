@@ -13,7 +13,8 @@ use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{PaymentChannels, providers};
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, ImageMeta,
-    PaymentOrder, SettingField, SiteSettings, TopUpSettings, TrialSettings, keys, secret_keys,
+    MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, TopUpSettings, TrialSettings,
+    keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -110,6 +111,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::SITE => {
                 if let Some(v) = parse::<SiteSettings>(&key, value) {
                     settings.site = v;
+                }
+            }
+            keys::MULTI_SUBSCRIPTIONS => {
+                if let Some(v) = parse::<MultiSubscriptions>(&key, value) {
+                    settings.multi_subscriptions = v.enabled;
                 }
             }
             keys::LOGO => settings.logo = parse::<ImageMeta>(&key, value),
@@ -1020,6 +1026,34 @@ impl<'a> SettingsOps<'a> {
         tx.commit().await?;
         self.saved().await?;
         Ok(self.trial())
+    }
+
+    pub fn multi_subscriptions(&self) -> MultiSubscriptions {
+        MultiSubscriptions {
+            enabled: self.services.settings().multi_subscriptions,
+        }
+    }
+
+    pub async fn update_multi_subscriptions(
+        &self,
+        value: &MultiSubscriptions,
+        admin: AdminId,
+    ) -> ServiceResult<MultiSubscriptions> {
+        let mut tx = self.services.store().begin().await?;
+        tx.settings()
+            .set_as(keys::MULTI_SUBSCRIPTIONS, value, Some(admin))
+            .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "settings.multi_subscriptions",
+                "settings",
+                None,
+                serde_json::json!({ "enabled": value.enabled }),
+            ))
+            .await?;
+        tx.commit().await?;
+        self.saved().await?;
+        Ok(self.multi_subscriptions())
     }
 
     pub fn autorenew(&self) -> AutoRenewSettings {

@@ -19,6 +19,8 @@ use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResul
 use sn_store::Db;
 use uuid::Uuid;
 
+const CURRENT_FALLBACK: &str = "без тарифа";
+
 fn back_target(cart: &Cart) -> String {
     match cart.subscription_id {
         Some(id) => format!("buy:{id}"),
@@ -28,15 +30,16 @@ fn back_target(cart: &Cart) -> String {
 
 pub async fn start(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let multi = services.settings().multi_subscriptions;
     let subscriptions = live(services.subscriptions().list_for_client(client.id).await?);
-    let target = if rest == "new" {
+    let target = if rest == "new" && (multi || subscriptions.is_empty()) {
         None
     } else if let Some(id) = id_arg(rest) {
         subscriptions.iter().find(|s| s.id.0 == id).map(|s| s.id)
     } else {
         match subscriptions.as_slice() {
             [] => None,
-            [only] => Some(only.id),
+            [only] if !multi => Some(only.id),
             many => {
                 let content = services.bot_content();
                 let c = &*content;
@@ -63,12 +66,11 @@ pub async fn start(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<S
                         ),
                     });
                 }
+                if multi {
+                    keyboard = keyboard.push(ui::button(c, "buy.btn.new", &[], "buy:new"));
+                }
                 return Ok(Screen::new(ui::text(c, "buy.which", &[]))
-                    .keyboard(
-                        keyboard
-                            .push(ui::button(c, "buy.btn.new", &[], "buy:new"))
-                            .push(ui::menu(c)),
-                    )
+                    .keyboard(keyboard.push(ui::menu(c)))
                     .section(Section::Buy));
             }
         }
@@ -353,8 +355,34 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     };
     let offset = services.settings().remna_offset();
     let quote = &view.quote;
+    let until = text::date(view.expire_preview, offset);
+    let tariff = tariff_name(&services, cart.tariff_id).await;
+    let current = view
+        .current
+        .as_ref()
+        .and_then(|current| current.tariff.clone())
+        .unwrap_or_else(|| CURRENT_FALLBACK.to_string());
+    let plan_text = ui::text(
+        c,
+        match (view.kind, view.current.as_ref().is_some_and(|s| s.trial)) {
+            (PlanKind::Renewal, _) => "buy.summary_renewal",
+            (PlanKind::Change, true) => "buy.summary_from_trial",
+            (PlanKind::Change, false) => "buy.summary_change",
+            (PlanKind::New, _) => "buy.summary_new",
+        },
+        &[
+            ("date", Text(&until)),
+            ("tariff", Text(&tariff)),
+            ("current", Text(&current)),
+        ],
+    );
+    let (before, after) = match view.kind {
+        PlanKind::Change => (plan_text, String::new()),
+        PlanKind::New | PlanKind::Renewal => (String::new(), plan_text),
+    };
     let mut lines = Lines::new();
     lines.add(ui::text(c, "buy.summary_title", &[]));
+    lines.add(before);
     for line in &quote.lines {
         lines.add(ui::text(
             c,
@@ -377,16 +405,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         ),
         None => ui::text(c, "buy.summary_total", &[("total", Text(&total))]),
     });
-    let until = text::date(view.expire_preview, offset);
-    lines.add(ui::text(
-        c,
-        match view.kind {
-            PlanKind::Renewal => "buy.summary_renewal",
-            PlanKind::Change => "buy.summary_change",
-            PlanKind::New => "buy.summary_new",
-        },
-        &[("date", Text(&until))],
-    ));
+    lines.add(after);
     let mut keyboard = Keyboard::new();
     for method in &view.methods {
         match (&method.unavailable, method.amount) {

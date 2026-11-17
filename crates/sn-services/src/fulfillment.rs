@@ -1,4 +1,5 @@
 use crate::Actor;
+use crate::checkout::single_subscription;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use crate::subscriptions::{
@@ -17,8 +18,8 @@ use sn_domain::plan::{
     classify, plan,
 };
 use sn_domain::subscription::{
-    AutoRenewState, RemnaLink, Subscription, SubscriptionKind, TRIAL_TAG, remna_description,
-    remna_username,
+    AutoRenewState, NameSource, RemnaLink, Subscription, SubscriptionKind, TRIAL_TAG,
+    remna_description, remna_name, remna_name_base, remna_spare_name, remna_username,
 };
 use sn_domain::tariff::TariffSnapshot;
 use sn_modules::ModuleError;
@@ -34,12 +35,18 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 #[cfg(test)]
+pub(crate) mod naming_tests;
+#[cfg(test)]
 mod tests;
 
 const MIN_RETRY: Duration = Duration::from_secs(15);
 const REFUND_WAIT: Duration = Duration::from_secs(300);
 const USERNAME_TAKEN: &str = "A019";
 const FINISH_ATTEMPTS: usize = 3;
+const RESERVE_ATTEMPTS: usize = 5;
+const NAME_CANDIDATES: u32 = 20;
+const USERNAME_KEY: &str = "subscriptions_remna_username_key";
+pub const ORDER_ATTACHED: &str = "order.attached";
 const REFUND_PENDING_REASON: &str =
     "по платежу заказа ждём решения платёжной системы о возврате: выдача отложена";
 
@@ -249,6 +256,46 @@ fn traffic_bytes(value: u64) -> Result<i64, Halt> {
 
 fn owned_by(user: &RemnaUser, profile: &NewUserProfile) -> bool {
     user.description.as_deref() == Some(profile.description.as_str())
+}
+
+enum Found {
+    User(Box<RemnaUser>),
+    Missing,
+    Foreign,
+}
+
+fn foreign_name(username: &str) -> Halt {
+    Halt::Review(format!(
+        "имя {username} в Remnawave занято чужим пользователем"
+    ))
+}
+
+fn name_reserved_elsewhere(err: &StoreError) -> bool {
+    err.constraint() == Some(USERNAME_KEY)
+}
+
+pub(crate) async fn name_base(db: &mut impl Db, client_id: ClientId) -> Result<String, StoreError> {
+    let identities = db.clients().identities(client_id).await?;
+    let telegram = identities.iter().find(|i| i.kind == IdentityKind::Telegram);
+    let telegram_username = telegram
+        .and_then(|i| i.meta.get("username"))
+        .and_then(|v| v.as_str());
+    let email = identities
+        .iter()
+        .find(|i| i.kind == IdentityKind::Email)
+        .map(|i| i.value.as_str());
+    Ok(remna_name_base(&NameSource {
+        telegram_username,
+        email,
+        telegram_id: telegram.and_then(|i| i.value.parse().ok()),
+        client_id,
+    }))
+}
+
+fn name_candidates(base: &str, ordinal: u32) -> Vec<String> {
+    (ordinal..ordinal.saturating_add(NAME_CANDIDATES))
+        .map(|n| remna_name(base, n))
+        .collect()
 }
 
 struct Context {
@@ -628,7 +675,10 @@ impl<'a> Fulfillment<'a> {
         match &order.plan {
             Some(plan) if matches!(plan.action, PlanAction::Create { .. }) => {
                 let context = self.context(order.clone()).await?;
-                Ok(self.current_user(remna, &context).await?.is_some())
+                Ok(matches!(
+                    self.find_user(remna, &context).await?,
+                    Found::User(_)
+                ))
             }
             _ => Ok(false),
         }
@@ -801,8 +851,16 @@ impl<'a> Fulfillment<'a> {
         let mut conn = self.services.store().conn().await?;
         let client = conn.clients().get(order.client_id).await?;
         let identities = conn.clients().identities(order.client_id).await?;
+        let username = match &subscription.remna {
+            Some(link) => link.username.clone(),
+            None => conn
+                .subscriptions()
+                .reserved_username(subscription.id)
+                .await?
+                .unwrap_or_else(|| remna_username(subscription.public_id)),
+        };
         let profile = NewUserProfile {
-            username: remna_username(subscription.public_id),
+            username,
             telegram_id: identities
                 .iter()
                 .find(|i| i.kind == IdentityKind::Telegram)
@@ -833,12 +891,75 @@ impl<'a> Fulfillment<'a> {
             let mut conn = self.services.store().conn().await?;
             return Ok(conn.subscriptions().get(id).await?);
         }
+        for _ in 0..RESERVE_ATTEMPTS {
+            if let Some(subscription) = self.create_subscription(order, snapshot).await? {
+                return Ok(subscription);
+            }
+        }
+        Err(Halt::Retry(
+            "имя пользователя Remnawave заняли параллельно, повторим".into(),
+        ))
+    }
+
+    async fn attach_single(
+        &self,
+        tx: &mut Tx,
+        order: &Order,
+        snapshot: &TariffSnapshot,
+    ) -> Result<Option<Subscription>, Halt> {
+        if self.services.settings().multi_subscriptions
+            || !matches!(
+                order.intent,
+                PurchaseIntent::Subscription { target: None, .. }
+            )
+        {
+            return Ok(None);
+        }
+        let Some((existing, category)) =
+            single_subscription(tx, order.client_id, snapshot.category_id).await?
+        else {
+            return Ok(None);
+        };
+        let kind = classify(
+            snapshot.category_id,
+            Some(CurrentTariff {
+                kind: existing.kind,
+                category_id: category,
+            }),
+        );
+        tx.orders()
+            .attach(order.id, existing.id, kind.order_kind())
+            .await?;
+        tx.audit()
+            .record(&Actor::System.audit(
+                ORDER_ATTACHED,
+                audit_entity::ORDER,
+                Some(order.id.0),
+                serde_json::json!({
+                    "subscription_id": existing.id,
+                    "order_kind": kind.order_kind(),
+                    "reason": "у клиента может быть только одна подписка",
+                }),
+            ))
+            .await?;
+        Ok(Some(existing))
+    }
+
+    async fn create_subscription(
+        &self,
+        order: &Order,
+        snapshot: &TariffSnapshot,
+    ) -> Result<Option<Subscription>, Halt> {
         let mut tx = self.services.store().begin().await?;
         let locked = tx.orders().lock(order.id).await?;
         if let Some(id) = locked.subscription_id {
             let subscription = tx.subscriptions().get(id).await?;
             tx.commit().await?;
-            return Ok(subscription);
+            return Ok(Some(subscription));
+        }
+        if let Some(existing) = self.attach_single(&mut tx, &locked, snapshot).await? {
+            tx.commit().await?;
+            return Ok(Some(existing));
         }
         let settings = self.services.settings();
         let (kind, tariff_id, autorenew, extra_devices) = match &order.intent {
@@ -879,12 +1000,90 @@ impl<'a> Fulfillment<'a> {
                 autorenew,
             })
             .await?;
-        tx.subscriptions()
-            .reserve_username(created.id, &remna_username(created.public_id))
+        let base = name_base(&mut tx, order.client_id).await?;
+        let ordinal = tx
+            .subscriptions()
+            .ordinal(order.client_id, Some(created.id))
             .await?;
+        let candidates = name_candidates(&base, ordinal);
+        let taken = tx.subscriptions().taken_usernames(&candidates).await?;
+        let name = candidates
+            .into_iter()
+            .find(|name| !taken.contains(name))
+            .unwrap_or_else(|| remna_spare_name(&base, created.public_id));
+        match tx.subscriptions().reserve_username(created.id, &name).await {
+            Ok(()) => {}
+            Err(err) if name_reserved_elsewhere(&err) => {
+                tx.rollback().await?;
+                return Ok(None);
+            }
+            Err(err) => return Err(err.into()),
+        }
         tx.orders().set_subscription(order.id, created.id).await?;
         tx.commit().await?;
-        Ok(created)
+        Ok(Some(created))
+    }
+
+    async fn free_name(
+        &self,
+        remna: &dyn RemnawaveApi,
+        subscription: &Subscription,
+    ) -> Result<String, Halt> {
+        let mut conn = self.services.store().conn().await?;
+        let base = name_base(&mut conn, subscription.client_id).await?;
+        let ordinal = conn
+            .subscriptions()
+            .ordinal(subscription.client_id, Some(subscription.id))
+            .await?;
+        let candidates = name_candidates(&base, ordinal);
+        let taken = conn.subscriptions().taken_usernames(&candidates).await?;
+        drop(conn);
+        for name in candidates.into_iter().filter(|name| !taken.contains(name)) {
+            match remna.get_user_by_username(&name).await {
+                Err(err) if err.is_not_found() => return Ok(name),
+                Ok(_) => {}
+                Err(err) => return Err(remna_halt("поиск свободного имени", err)),
+            }
+        }
+        Ok(remna_spare_name(&base, subscription.public_id))
+    }
+
+    async fn rename(
+        &self,
+        remna: &dyn RemnawaveApi,
+        subscription: &Subscription,
+        from: &str,
+    ) -> Result<String, Halt> {
+        if subscription.remna.is_some() {
+            return Err(foreign_name(from));
+        }
+        for _ in 0..RESERVE_ATTEMPTS {
+            let name = self.free_name(remna, subscription).await?;
+            let mut conn = self.services.store().conn().await?;
+            match conn
+                .subscriptions()
+                .rename_reserved(subscription.id, from, &name)
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(
+                        subscription = %subscription.id,
+                        from,
+                        to = %name,
+                        "имя в Remnawave занято чужим пользователем, выбрано следующее свободное"
+                    );
+                    return Ok(name);
+                }
+                Ok(false) => {
+                    return Err(Halt::Retry(
+                        "резерв имени подписки изменился, повторим".into(),
+                    ));
+                }
+                Err(err) if name_reserved_elsewhere(&err) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Err(foreign_name(from))
     }
 
     async fn wait_for_others(&self, context: &Context) -> Result<(), Halt> {
@@ -964,26 +1163,31 @@ impl<'a> Fulfillment<'a> {
             }))
     }
 
-    async fn current_user(
-        &self,
-        remna: &dyn RemnawaveApi,
-        context: &Context,
-    ) -> Result<Option<RemnaUser>, Halt> {
+    async fn find_user(&self, remna: &dyn RemnawaveApi, context: &Context) -> Result<Found, Halt> {
         if let Some(link) = &context.subscription.remna {
             match remna.get_user(link.user_id).await {
-                Ok(user) => return Ok(Some(user)),
+                Ok(user) => return Ok(Found::User(Box::new(user))),
                 Err(err) if err.is_not_found() => {}
                 Err(err) => return Err(remna_halt("чтение пользователя", err)),
             }
         }
         match remna.get_user_by_username(&context.profile.username).await {
-            Ok(user) if owned_by(&user, &context.profile) => Ok(Some(user)),
-            Ok(_) => Err(Halt::Review(format!(
-                "имя {} в Remnawave занято чужим пользователем",
-                context.profile.username
-            ))),
-            Err(err) if err.is_not_found() => Ok(None),
+            Ok(user) if owned_by(&user, &context.profile) => Ok(Found::User(Box::new(user))),
+            Ok(_) => Ok(Found::Foreign),
+            Err(err) if err.is_not_found() => Ok(Found::Missing),
             Err(err) => Err(remna_halt("поиск пользователя по имени", err)),
+        }
+    }
+
+    async fn current_user(
+        &self,
+        remna: &dyn RemnawaveApi,
+        context: &Context,
+    ) -> Result<Option<RemnaUser>, Halt> {
+        match self.find_user(remna, context).await? {
+            Found::User(user) => Ok(Some(*user)),
+            Found::Missing => Ok(None),
+            Found::Foreign => Err(foreign_name(&context.profile.username)),
         }
     }
 
@@ -1028,7 +1232,17 @@ impl<'a> Fulfillment<'a> {
         context: &Context,
     ) -> Result<FulfillmentPlan, Halt> {
         self.wait_for_others(context).await?;
-        let current = self.current_user(remna, context).await?;
+        let mut profile = context.profile.clone();
+        let current = match self.find_user(remna, context).await? {
+            Found::User(user) => Some(*user),
+            Found::Missing => None,
+            Found::Foreign => {
+                profile.username = self
+                    .rename(remna, &context.subscription, &context.profile.username)
+                    .await?;
+                None
+            }
+        };
         let kind = self.plan_kind(context, current.as_ref()).await?;
         let paid_at = context.order.paid_at.unwrap_or_else(|| self.services.now());
         let (keep_squads, held_devices) = match &current {
@@ -1052,7 +1266,7 @@ impl<'a> Fulfillment<'a> {
             paid_at,
             current: state.as_ref(),
             keep_squads: &keep_squads,
-            profile: &context.profile,
+            profile: &profile,
             tag,
         })
         .map_err(|e| Halt::Review(format!("план выдачи не построен: {e}")))?;
@@ -1112,9 +1326,7 @@ impl<'a> Fulfillment<'a> {
                             .await
                             .map_err(|e| remna_halt("поиск занятого имени", e))?;
                         if existing.description.as_deref() != Some(description.as_str()) {
-                            return Err(Halt::Review(format!(
-                                "имя {username} в Remnawave занято чужим пользователем"
-                            )));
+                            return Err(self.taken_meanwhile(remna, context, username).await);
                         }
                         self.patch(remna, existing.id, context, plan).await
                     }
@@ -1122,6 +1334,28 @@ impl<'a> Fulfillment<'a> {
                 }
             }
             PlanAction::Update { user_id } => self.patch(remna, *user_id, context, plan).await,
+        }
+    }
+
+    async fn taken_meanwhile(
+        &self,
+        remna: &dyn RemnawaveApi,
+        context: &Context,
+        username: &str,
+    ) -> Halt {
+        let renamed = match self.rename(remna, &context.subscription, username).await {
+            Ok(renamed) => renamed,
+            Err(halt) => return halt,
+        };
+        let mut conn = match self.services.store().conn().await {
+            Ok(conn) => conn,
+            Err(err) => return Halt::Failed(err.into()),
+        };
+        match conn.orders().reset_plan(context.order.id).await {
+            Ok(_) => Halt::Retry(format!(
+                "имя {username} в Remnawave заняли во время выдачи, выдаём под именем {renamed}"
+            )),
+            Err(err) => Halt::Failed(err.into()),
         }
     }
 

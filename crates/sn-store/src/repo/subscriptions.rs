@@ -350,6 +350,58 @@ impl<'c> SubscriptionsRepo<'c> {
         Ok(())
     }
 
+    pub async fn reserved_username(&mut self, id: SubscriptionId) -> StoreResult<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT remna_username FROM subscriptions WHERE id = $1")
+                .bind(id.0)
+                .fetch_optional(&mut *self.conn)
+                .await?
+                .flatten(),
+        )
+    }
+
+    pub async fn taken_usernames(&mut self, names: &[String]) -> StoreResult<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT remna_username FROM subscriptions WHERE remna_username = ANY($1)",
+        )
+        .bind(names)
+        .fetch_all(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn rename_reserved(
+        &mut self,
+        id: SubscriptionId,
+        from: &str,
+        to: &str,
+    ) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE subscriptions SET remna_username = $3 \
+             WHERE id = $1 AND remna_user_id IS NULL AND remna_username = $2",
+        )
+        .bind(id.0)
+        .bind(from)
+        .bind(to)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn ordinal(
+        &mut self,
+        client_id: ClientId,
+        before: Option<SubscriptionId>,
+    ) -> StoreResult<u32> {
+        let earlier: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM subscriptions WHERE client_id = $1 AND ($2::bigint IS NULL OR id < $2)",
+        )
+        .bind(client_id.0)
+        .bind(before.map(|id| id.0))
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok(u32::try_from(earlier).unwrap_or(u32::MAX - 1) + 1)
+    }
+
     pub async fn link_remna(&mut self, id: SubscriptionId, link: &RemnaLink) -> StoreResult<()> {
         sqlx::query(
             "UPDATE subscriptions SET remna_user_id = $2, remna_username = $3, short_uuid = $4 WHERE id = $1",

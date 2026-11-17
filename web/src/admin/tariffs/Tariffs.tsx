@@ -32,6 +32,7 @@ import '../form.css';
 import './tariffs.css';
 
 type Trial = { enabled: boolean; days: number; squads: string[]; traffic: { limit_bytes: number | null; reset: TrafficReset }; devices: number };
+type Multi = { enabled: boolean };
 
 const DEFAULT_CHANNELS: Channels = { bot: true, cabinet: true, miniapp: true };
 
@@ -52,7 +53,8 @@ export function Tariffs() {
   const [formError, setFormError] = useState<string | null>(null);
   const [hwidOff, setHwidOff] = useState(false);
   const [trial, setTrial] = useState<Trial | null>(null);
-  const [dialog, setDialog] = useState<'' | 'category' | 'trial' | 'delete'>('');
+  const [multi, setMulti] = useState<Multi | null>(null);
+  const [dialog, setDialog] = useState<'' | 'category' | 'trial' | 'multi' | 'delete'>('');
 
   const load = useCallback(async () => {
     try {
@@ -79,6 +81,9 @@ export function Tariffs() {
       api<Trial>('/api/admin/settings/trial')
         .then(setTrial)
         .catch(() => setTrial(null));
+      api<Multi>('/api/admin/settings/multi_subscriptions')
+        .then(setMulti)
+        .catch(() => setMulti(null));
     }
   }, [load, settingsOk]);
 
@@ -206,6 +211,11 @@ export function Tariffs() {
           <h1 className="page-title">Тарифы</h1>
           <span className="muted">{subtitle}</span>
         </div>
+        {settingsOk && multi ? (
+          <button type="button" className="b44 hov tf-trial" onClick={() => setDialog('multi')}>
+            Подписок у клиента <span className="muted">{multi.enabled ? 'несколько' : 'одна'}</span>
+          </button>
+        ) : null}
         {settingsOk && trial ? (
           <button type="button" className="b44 hov tf-trial" onClick={() => setDialog('trial')}>
             Пробный период <span className="muted">{trial.enabled ? `${trial.days}${NBSP}${plural(trial.days, 'день', 'дня', 'дней')}` : 'выключен'}</span>
@@ -357,6 +367,16 @@ export function Tariffs() {
             setDialog('');
             await load();
             pickCategory(id);
+          }}
+        />
+      ) : null}
+      {dialog === 'multi' && multi ? (
+        <MultiDialog
+          value={multi}
+          onClose={() => setDialog('')}
+          onDone={(next) => {
+            setMulti(next);
+            setDialog('');
           }}
         />
       ) : null}
@@ -717,6 +737,55 @@ function CategoryDialog({ onClose, onDone }: { onClose: () => void; onDone: (id:
       <div className="dialog-actions">
         <button type="button" className="btn-main btn" onClick={() => void create()} disabled={busy || !name.trim()}>
           {busy ? 'Создаём…' : 'Создать'}
+        </button>
+        <button type="button" className="btn-line hov" onClick={onClose} disabled={busy}>
+          Отменить
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
+function MultiDialog({ value, onClose, onDone }: { value: Multi; onClose: () => void; onDone: (value: Multi) => void }) {
+  const [enabled, setEnabled] = useState(value.enabled);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await api<Multi>('/api/admin/settings/multi_subscriptions', { method: 'PUT', body: { enabled } }));
+    } catch (err) {
+      setError(failText(err, 'Настройка не сохранилась'));
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog title="Подписки клиента" busy={busy} onClose={onClose} wide>
+      <span className="tf-switchrow">
+        <Switch on={enabled} onToggle={() => setEnabled(!enabled)} label="Несколько подписок у клиента" disabled={busy} />
+        <span style={{ fontWeight: 600 }} aria-hidden="true">
+          Несколько подписок у клиента
+        </span>
+      </span>
+      {enabled ? (
+        <p className="cap">
+          Клиент может держать несколько подписок. В боте при покупке он выбирает, какую продлить, или оформляет новую. Тариф той же категории продлевает выбранную подписку, другой категории — переводит её на новый тариф.
+        </p>
+      ) : (
+        <p className="cap">
+          У клиента одна подписка. Покупка тарифа той же категории продлевает её. Тариф другой категории — переход: перед оплатой клиент видит, что текущая подписка будет удалена, а новая станет доступна сразу. Оставшиеся дни не переносятся, ссылка подписки остаётся прежней. Если у клиента уже несколько подписок, они сохранятся, новые не появятся.
+        </p>
+      )}
+      <p className="cap">Имя в Remnawave — ник Telegram или имя из почты: у первой подписки без номера, у второй с _2, у третьей с _3. Если имя занято, берётся следующий свободный номер.</p>
+      {error ? (
+        <p className="err" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="dialog-actions">
+        <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy || enabled === value.enabled}>
+          {busy ? 'Сохраняем…' : 'Сохранить'}
         </button>
         <button type="button" className="btn-line hov" onClick={onClose} disabled={busy}>
           Отменить

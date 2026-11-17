@@ -144,6 +144,7 @@ const AUDIT_TEXT: Record<string, string> = {
   'order.mark_fulfilled': 'Заказ отмечен выданным',
   'order.recalculate': 'Заказ пересчитан',
   'order.review': 'Заказ отправлен на проверку',
+  'order.attached': 'Оплата зачтена в текущую подписку: у клиента может быть только одна',
 };
 
 const SOURCE_TEXT: Record<string, string> = {

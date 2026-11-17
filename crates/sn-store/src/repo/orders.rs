@@ -354,6 +354,23 @@ impl<'c> OrdersRepo<'c> {
         Ok(())
     }
 
+    pub async fn attach(
+        &mut self,
+        id: OrderId,
+        subscription_id: SubscriptionId,
+        kind: OrderKind,
+    ) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE orders SET subscription_id = $2, kind = $3 WHERE id = $1 AND subscription_id IS NULL",
+        )
+        .bind(id.0)
+        .bind(subscription_id.0)
+        .bind(kind.as_str())
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn mark_review(&mut self, id: OrderId, reason: &str) -> StoreResult<()> {
         let (order, _) = self.transition(id, OrderStatus::Review).await?;
         sqlx::query(

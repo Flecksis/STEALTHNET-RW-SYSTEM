@@ -11,7 +11,9 @@ use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::SiteImage;
-use sn_domain::settings::{Appearance, AutoRenewSettings, ConnectSettings, TrialSettings};
+use sn_domain::settings::{
+    Appearance, AutoRenewSettings, ConnectSettings, MultiSubscriptions, TrialSettings,
+};
 use sn_modules::ModuleView;
 use sn_services::branding::{ImageView, SiteUpdate};
 use sn_services::settings::{
@@ -67,6 +69,7 @@ async fn read(
         "payments" => json(&ops.payments().await?)?,
         "trial" => json(&ops.trial())?,
         "autorenew" => json(&ops.autorenew())?,
+        "multi_subscriptions" => json(&ops.multi_subscriptions())?,
         "remnawave" => json(&ops.remnawave().await?)?,
         "subscription" => json(&ops.subscription_settings().await?)?,
         "bot" => json(&ops.bot().await?)?,
@@ -105,6 +108,10 @@ async fn write(
         )?,
         "autorenew" => json(
             &ops.update_autorenew(&decode::<AutoRenewSettings>(body)?, by)
+                .await?,
+        )?,
+        "multi_subscriptions" => json(
+            &ops.update_multi_subscriptions(&decode::<MultiSubscriptions>(body)?, by)
                 .await?,
         )?,
         "remnawave" => json(

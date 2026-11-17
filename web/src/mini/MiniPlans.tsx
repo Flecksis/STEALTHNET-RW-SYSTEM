@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { count, money, MINUS, type Money } from '../lib/format';
-import { gb, resetPlan, stars, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
+import { gb, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 
@@ -104,7 +104,11 @@ export function MiniPlans() {
   const balanceShort = methods.find((m) => m.kind === 'balance' && m.unavailable?.type === 'insufficient_balance');
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
-  const change = !!current && !!offer && current.category.id !== offer.category.id;
+  const fromTrial = !!view && view.subscription.kind === 'trial';
+  const sameCategory = current && offer ? current.category.id === offer.category.id : null;
+  const change = !!view && !!offer && (fromTrial || (sameCategory === null ? quote?.kind === 'change' : !sameCategory));
+  const transition = change && !fromTrial;
+  const currentName = current?.tariff.name ?? view?.tariff?.name ?? null;
   const limitBytes = offer?.tariff.traffic.limit_bytes ?? 0;
   const extraMonthly: Money | null = extra && catalog ? { minor: catalog.currency === 'RUB' ? (extra.monthly.rub ?? 0) : (extra.monthly.usd ?? 0), currency: catalog.currency } : null;
 
@@ -150,7 +154,7 @@ export function MiniPlans() {
 
   return (
     <main className="mn-page plans">
-      <BackHead title={view ? 'Продление' : 'Тарифы'} />
+      <BackHead title={!view ? 'Тарифы' : transition ? 'Переход' : fromTrial ? 'Оплата' : 'Продление'} />
       {!catalog ? <p className="mn-muted">{error ?? 'Загружаем тарифы…'}</p> : null}
       {catalog && offers.length === 0 ? <p className="mn-muted">Тарифов пока нет.</p> : null}
       {categories.length > 1 ? (
@@ -175,13 +179,15 @@ export function MiniPlans() {
           ))}
         </div>
       ) : null}
-      {change || limitBytes ? (
+      {transition && offer ? (
+        <div className="mn-card mn-move" role="note">
+          <strong>Будет переход на тариф «{offer.tariff.name}»</strong>
+          <span>{transitionText(currentName)}</span>
+        </div>
+      ) : null}
+      {(fromTrial && offer) || limitBytes ? (
         <div className="mn-notes">
-          {change && offer ? (
-            <span>
-              Смена тарифа: {offer.tariff.name} начнётся с даты оплаты, оставшиеся дни тарифа {current?.tariff.name} не переносятся
-            </span>
-          ) : null}
+          {fromTrial && offer ? <span>Пробный период закончится сразу после оплаты, тариф «{offer.tariff.name}» начнёт действовать с даты оплаты</span> : null}
           {limitBytes ? (
             <span>
               Трафик: {gb(limitBytes)} ГБ {resetPlan(offer?.tariff.traffic.reset ?? 'no_reset')}
@@ -301,7 +307,7 @@ export function MiniPlans() {
         ) : null}
       </div>
       <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
-        {busy ? 'Открываем оплату…' : inTelegramWallet ? `Оплатить ${totalText} в Telegram` : `Оплатить ${totalText}`}
+        {busy ? 'Открываем оплату…' : `${transition ? 'Перейти и оплатить' : 'Оплатить'} ${totalText}${inTelegramWallet ? ' в Telegram' : ''}`}
       </button>
     </main>
   );

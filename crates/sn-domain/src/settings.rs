@@ -373,6 +373,13 @@ pub struct CoreSettings {
     pub favicon: Option<ImageMeta>,
     #[serde(default)]
     pub landing: LandingConfig,
+    #[serde(default)]
+    pub multi_subscriptions: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiSubscriptions {
+    pub enabled: bool,
 }
 
 impl Default for CoreSettings {
@@ -394,6 +401,7 @@ impl Default for CoreSettings {
             logo: None,
             favicon: None,
             landing: LandingConfig::standard(),
+            multi_subscriptions: false,
         }
     }
 }
@@ -437,6 +445,7 @@ pub mod keys {
     pub const TOPUP: &str = "billing.topup";
     pub const PAYMENT_ORDER: &str = "billing.payment_order";
     pub const INVOICE_TTL: &str = "billing.invoice_ttl_minutes";
+    pub const MULTI_SUBSCRIPTIONS: &str = "billing.multi_subscriptions";
     pub const APPEARANCE: &str = "core.appearance";
     pub const CONNECT: &str = "core.connect";
     pub const BOT_USERNAME: &str = "bot.username";

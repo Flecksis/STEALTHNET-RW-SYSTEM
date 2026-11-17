@@ -14,7 +14,9 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency};
 use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId, providers};
-use sn_domain::plan::{CurrentTariff, PlanKind, classify, new_expire_at};
+use sn_domain::plan::{
+    CurrentTariff, HeldSubscription, PlanKind, classify, new_expire_at, single_target,
+};
 use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
 use sn_domain::settings::{TrialSettings, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
@@ -40,6 +42,8 @@ mod gram_tests;
 mod pool_tests;
 #[cfg(test)]
 mod promo_tests;
+#[cfg(test)]
+mod single_tests;
 #[cfg(test)]
 pub(crate) mod testkit;
 #[cfg(test)]
@@ -95,6 +99,15 @@ pub struct QuoteView {
     pub kind: PlanKind,
     pub expire_preview: DateTime<Utc>,
     pub methods: Vec<CheckoutMethod>,
+    pub current: Option<CurrentSubscription>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CurrentSubscription {
+    pub subscription_id: SubscriptionId,
+    pub tariff: Option<String>,
+    pub trial: bool,
+    pub expire_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -179,6 +192,7 @@ struct Basis {
     client: Client,
     tariff: Tariff,
     current: Option<Subscription>,
+    current_tariff: Option<Tariff>,
     kind: PlanKind,
     balance: Money,
 }
@@ -187,9 +201,55 @@ struct Prepared {
     client: Client,
     tariff: Tariff,
     current: Option<Subscription>,
+    current_tariff: Option<Tariff>,
     kind: PlanKind,
     quote: Quote,
     methods: Vec<CheckoutMethod>,
+}
+
+pub(crate) async fn held_subscriptions(
+    db: &mut impl Db,
+    live: &[Subscription],
+) -> ServiceResult<Vec<HeldSubscription>> {
+    let mut held = Vec::with_capacity(live.len());
+    for subscription in live {
+        let category_id = match subscription.tariff_id {
+            Some(id) => match db.tariffs().get(id).await {
+                Ok(tariff) => Some(tariff.category_id),
+                Err(StoreError::NotFound(_)) => None,
+                Err(err) => return Err(err.into()),
+            },
+            None => None,
+        };
+        held.push(HeldSubscription {
+            id: subscription.id,
+            category_id,
+        });
+    }
+    Ok(held)
+}
+
+pub(crate) async fn single_subscription(
+    db: &mut impl Db,
+    client_id: ClientId,
+    category: CategoryId,
+) -> ServiceResult<Option<(Subscription, Option<CategoryId>)>> {
+    let live: Vec<Subscription> = db
+        .subscriptions()
+        .by_client(client_id)
+        .await?
+        .into_iter()
+        .filter(|s| s.ended_at.is_none())
+        .collect();
+    let held = held_subscriptions(db, &live).await?;
+    let Some(id) = single_target(&held, category) else {
+        return Ok(None);
+    };
+    let category = held.iter().find(|h| h.id == id).and_then(|h| h.category_id);
+    Ok(live
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|subscription| (subscription, category)))
 }
 
 pub(crate) struct PaidOrder {
@@ -562,12 +622,15 @@ impl<'a> Checkout<'a> {
                 }
                 Some(subscription)
             }
-            None => conn
+            None if self.services.settings().multi_subscriptions => conn
                 .subscriptions()
                 .by_client(client_id)
                 .await?
                 .into_iter()
                 .find(|s| s.kind == SubscriptionKind::Trial && s.ended_at.is_none()),
+            None => single_subscription(&mut conn, client_id, tariff.category_id)
+                .await?
+                .map(|(subscription, _)| subscription),
         };
         if current
             .as_ref()
@@ -578,15 +641,15 @@ impl<'a> Checkout<'a> {
                 "Подписка заблокирована, оплата недоступна. Напишите в поддержку.",
             ));
         }
-        let current_category = match current.as_ref().and_then(|s| s.tariff_id) {
-            Some(id) => conn.tariffs().get(id).await.ok().map(|t| t.category_id),
+        let current_tariff = match current.as_ref().and_then(|s| s.tariff_id) {
+            Some(id) => conn.tariffs().get(id).await.ok(),
             None => None,
         };
         let kind = classify(
             tariff.category_id,
             current.as_ref().map(|s| CurrentTariff {
                 kind: s.kind,
-                category_id: current_category,
+                category_id: current_tariff.as_ref().map(|t| t.category_id),
             }),
         );
         let balance = conn
@@ -597,6 +660,7 @@ impl<'a> Checkout<'a> {
             client,
             tariff,
             current,
+            current_tariff,
             kind,
             balance,
         })
@@ -621,6 +685,7 @@ impl<'a> Checkout<'a> {
             client,
             tariff,
             current,
+            current_tariff,
             kind,
             balance,
         } = self.basis(client_id, cart, currency).await?;
@@ -654,6 +719,7 @@ impl<'a> Checkout<'a> {
             client,
             tariff,
             current,
+            current_tariff,
             kind,
             quote,
             methods,
@@ -699,11 +765,18 @@ impl<'a> Checkout<'a> {
             self.services.now(),
             prepared.quote.days,
         );
+        let current = prepared.current.as_ref().map(|s| CurrentSubscription {
+            subscription_id: s.id,
+            tariff: prepared.current_tariff.as_ref().map(|t| t.name.clone()),
+            trial: s.kind == SubscriptionKind::Trial,
+            expire_at: s.mirror.expire_at,
+        });
         Ok(QuoteView {
             quote: prepared.quote,
             kind: prepared.kind,
             expire_preview,
             methods: prepared.methods,
+            current,
         })
     }
 

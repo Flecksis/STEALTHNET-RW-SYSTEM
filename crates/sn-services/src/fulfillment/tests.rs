@@ -193,7 +193,7 @@ async fn покупка_с_баланса_доходит_до_пользоват
     assert_eq!(subscription.mirror.status, Some(SubscriptionStatus::Active));
     assert!(subscription.autorenew.enabled);
     let link = subscription.remna.clone().unwrap();
-    assert_eq!(link.username, remna_username(subscription.public_id));
+    assert_eq!(link.username, "user201");
     let user = remna_user(&kit, &subscription).await;
     assert_eq!(user.username, link.username);
     assert_eq!(user.expire_at, term(order.paid_at, 90));
@@ -486,29 +486,6 @@ async fn сквада_нет_в_панели_заказ_уходит_на_руч
     assert_eq!(order.status, OrderStatus::Review);
     assert_eq!(order.plan, None);
     assert!(kit.remna.users().is_empty());
-    kit.db.cleanup().await;
-}
-
-#[tokio::test]
-async fn имя_занятое_чужим_пользователем_уходит_на_проверку() {
-    let Some(kit) = kit().await else { return };
-    let client_id = client(&kit.services, 209).await;
-    let tariff = standard(&kit.services).await;
-    credit(&kit.services, client_id, 1_000).await;
-    let order = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
-    let fulfillment = kit.services.fulfillment();
-    let Ok(context) = fulfillment.context(order.clone()).await else {
-        panic!("контекст выдачи не собран");
-    };
-    let mut stranger = sn_remnawave::fake::sample_user(500, &context.profile.username);
-    stranger.description = Some("чужой".into());
-    kit.remna.insert_user(stranger);
-    let outcome = fulfillment.run(order.id).await.unwrap();
-    assert!(
-        matches!(&outcome, FulfillmentOutcome::Review { reason } if reason.contains("занято")),
-        "{outcome:?}"
-    );
-    assert_eq!(kit.remna.users().len(), 1);
     kit.db.cleanup().await;
 }
 

@@ -1,5 +1,5 @@
 use crate::DomainError;
-use crate::ids::{CategoryId, RemnaUserId, SquadId};
+use crate::ids::{CategoryId, RemnaUserId, SquadId, SubscriptionId};
 use crate::order::OrderKind;
 use crate::subscription::{SubscriptionKind, SubscriptionStatus};
 use crate::tariff::TariffSnapshot;
@@ -29,6 +29,20 @@ impl PlanKind {
 pub struct CurrentTariff {
     pub kind: SubscriptionKind,
     pub category_id: Option<CategoryId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldSubscription {
+    pub id: SubscriptionId,
+    pub category_id: Option<CategoryId>,
+}
+
+pub fn single_target(held: &[HeldSubscription], target: CategoryId) -> Option<SubscriptionId> {
+    held.iter()
+        .filter(|h| h.category_id == Some(target))
+        .map(|h| h.id)
+        .max()
+        .or_else(|| held.iter().map(|h| h.id).max())
 }
 
 pub fn classify(target_category: CategoryId, current: Option<CurrentTariff>) -> PlanKind {
@@ -339,6 +353,32 @@ mod tests {
             category_id: None,
         };
         assert_eq!(classify(CategoryId(1), Some(trial)), PlanKind::Change);
+    }
+
+    #[test]
+    fn одна_подписка_берётся_по_категории_иначе_последняя() {
+        let held = [
+            HeldSubscription {
+                id: SubscriptionId(3),
+                category_id: Some(CategoryId(1)),
+            },
+            HeldSubscription {
+                id: SubscriptionId(7),
+                category_id: Some(CategoryId(2)),
+            },
+            HeldSubscription {
+                id: SubscriptionId(5),
+                category_id: None,
+            },
+        ];
+        assert_eq!(single_target(&held, CategoryId(1)), Some(SubscriptionId(3)));
+        assert_eq!(single_target(&held, CategoryId(2)), Some(SubscriptionId(7)));
+        assert_eq!(single_target(&held, CategoryId(9)), Some(SubscriptionId(7)));
+        assert_eq!(
+            single_target(&held[2..], CategoryId(1)),
+            Some(SubscriptionId(5))
+        );
+        assert_eq!(single_target(&[], CategoryId(1)), None);
     }
 
     #[test]

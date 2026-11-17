@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { count, dateLong, money, MINUS, type Money } from '../lib/format';
 import { Card, useCabinet } from './CabinetApp';
-import { gb, resetPlan, stars, type Catalog, type CheckoutMethod, type Quote, type SubscriptionView, type TariffOffer } from './model';
+import { gb, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type SubscriptionView, type TariffOffer } from './model';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
 
@@ -197,28 +197,33 @@ export function Pay() {
   }
 
   const blocked = me.client.status === 'blocked' || live?.status === 'blocked';
-  const change = !!current && !!offer && current.category.id !== offer.category.id;
+  const fromTrial = !!live && live.subscription.kind === 'trial';
+  const sameCategory = current && offer ? current.category.id === offer.category.id : null;
+  const change = !!live && !!offer && (fromTrial || (sameCategory === null ? quote?.kind === 'change' : !sameCategory));
+  const transition = change && !fromTrial;
   const expired = live?.status === 'expired';
   const expire = live?.subscription.mirror.expire_at ?? null;
-  const title = !live ? 'Покупка подписки' : change ? 'Смена тарифа' : 'Продление подписки';
-  const currentName = current?.tariff.name ?? live?.tariff?.name ?? 'текущий';
-  const lead = blocked
+  const title = !live ? 'Покупка подписки' : fromTrial ? 'Оплата подписки' : transition ? 'Переход на другой тариф' : 'Продление подписки';
+  const currentName = current?.tariff.name ?? live?.tariff?.name ?? null;
+  const nextName = offer?.tariff.name ?? 'новый тариф';
+  const lead: { text: ReactNode; tone: string } = blocked
     ? { text: 'Подписка заблокирована, оплата недоступна. Напишите в поддержку.', tone: 'bad' }
     : !live
       ? { text: 'Подписка начнёт работать сразу после оплаты.', tone: 'muted' }
-      : expired
-        ? {
-            text: change
-              ? `Подписка закончилась ${expire ? dateLong(expire, false) : ''}. ${offer?.tariff.name ?? 'Новый тариф'} начнётся с даты оплаты.`
-              : `Подписка закончилась ${expire ? dateLong(expire, false) : ''}. Новый срок начнётся с даты оплаты.`,
-            tone: 'muted',
-          }
-        : change
+      : fromTrial
+        ? { text: `Пробный период закончится сразу после оплаты, тариф «${nextName}» начнёт действовать с даты оплаты.`, tone: 'muted' }
+        : transition
           ? {
-              text: `Сейчас: ${currentName}${expire ? ` до ${dateLong(expire, true)}` : ''}. ${offer?.tariff.name ?? 'Новый тариф'} начнётся с даты оплаты, оставшиеся дни тарифа ${currentName} не переносятся.`,
+              text: (
+                <>
+                  <strong>Будет переход на тариф «{nextName}».</strong> {transitionText(currentName)}
+                </>
+              ),
               tone: 'warn',
             }
-          : { text: `Сейчас: ${currentName}${expire ? ` до ${dateLong(expire, true)}` : ''}. Новый срок добавится к текущему.`, tone: 'muted' };
+          : expired
+            ? { text: `Подписка закончилась ${expire ? dateLong(expire, false) : ''}. Новый срок начнётся с даты оплаты.`, tone: 'muted' }
+            : { text: `Сейчас: ${currentName ?? 'текущий тариф'}${expire ? ` до ${dateLong(expire, true)}` : ''}. Новый срок добавится к текущему.`, tone: 'muted' };
 
   const limit = offer?.tariff.traffic.limit_bytes ?? 0;
   const trafficNote = limit ? `Трафик: ${gb(limit)} ГБ ${resetPlan(offer?.tariff.traffic.reset ?? 'no_reset')}.` : null;
@@ -509,7 +514,7 @@ export function Pay() {
               ) : null
             ) : (
               <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || !chosen || !q}>
-                {busy ? 'Открываем оплату…' : `Оплатить ${totalText}`}
+                {busy ? 'Открываем оплату…' : transition ? `Перейти и оплатить ${totalText}` : `Оплатить ${totalText}`}
               </button>
             )}
             {after ? <p className="cb-small cb-muted">{after}</p> : null}

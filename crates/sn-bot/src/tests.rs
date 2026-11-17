@@ -25,6 +25,7 @@ mod gram_wallet;
 mod photos;
 mod referral_login;
 mod runtime;
+mod single_subscription;
 mod stars;
 mod stars_review;
 mod support_followup;
