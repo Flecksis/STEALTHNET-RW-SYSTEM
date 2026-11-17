@@ -3,8 +3,9 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { dateNumeric, dayMonthNumeric, days, daysLeft, groupDigits, money, NBSP, periodLabel } from '../../lib/format';
 import { Icon } from '../../lib/icons';
-import { Dialog } from '../client/dialogs';
+import { BalanceDialog, BlockDialog, Dialog, GrantDialog, MessageDialog } from '../client/dialogs';
 import { useSession } from '../session';
+import { RowMenu, type RowAction, type RowItem } from './RowMenu';
 import { displayName, STATUS_WORD, type ClientRow, type Segment, type SegmentCounts } from './types';
 import './clients.css';
 import { Avatar } from '../Avatar';
@@ -23,6 +24,19 @@ const SEGMENTS: Array<[Segment, string, keyof SegmentCounts]> = [
 type Page = { items: ClientRow[]; next: number | null };
 
 type Bulk = 'extend' | 'reset' | 'block' | 'unblock' | 'message';
+
+type Notice = { text: string; undo?: () => void };
+
+const EXTEND_DAYS = 30;
+
+function failText(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+function rowPrint(row: ClientRow): string {
+  const sub = row.subscription;
+  return sub ? `${sub.id}:${sub.tariff_id ?? ''}:${sub.mirror.expire_at ?? ''}:${sub.period_days ?? ''}:${sub.kind}` : '';
+}
 
 const BULK_TEXT: Record<Bulk, { title: string; confirm: string; text: string }> = {
   extend: { title: 'Продлить на 7 дней', confirm: 'Продлить', text: 'Каждому выбранному клиенту с подпиской добавится 7 дней.' },
@@ -131,7 +145,7 @@ function rowView(row: ClientRow) {
 }
 
 export function Clients() {
-  const { can } = useSession();
+  const { can, me } = useSession();
   const [params, setParams] = useSearchParams();
   const segment = (params.get('segment') as Segment | null) ?? 'all';
   const query = params.get('q') ?? '';
@@ -143,11 +157,13 @@ export function Clients() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulk, setBulk] = useState<Bulk | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkResult, setBulkResult] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [bulkText, setBulkText] = useState('');
   const [picking, setPicking] = useState(false);
+  const [act, setAct] = useState<{ kind: RowAction; row: ClientRow } | null>(null);
   const requestRef = useRef(0);
   const writable = can('clients_write');
+  const moneyOk = can('money');
 
   const url = useCallback(
     (after?: number | null) => {
@@ -166,7 +182,7 @@ export function Clients() {
     [segment, query],
   );
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (): Promise<Page | null> => {
     const id = ++requestRef.current;
     setError(null);
     try {
@@ -175,10 +191,12 @@ export function Clients() {
         setPage(list);
         setCounts(segs);
       }
+      return list;
     } catch (err) {
       if (id === requestRef.current) {
         setError(err instanceof ApiError ? err.message : 'Список не загрузился');
       }
+      return null;
     }
   }, [url]);
 
@@ -280,15 +298,96 @@ export function Clients() {
     }
     setBulkBusy(false);
     setBulk(null);
-    setBulkResult(
-      failed
+    setNotice({
+      text: failed
         ? `Готово: ${groupDigits(done)}, не получилось: ${groupDigits(failed)}${firstError ? ` (${firstError})` : ''}`
         : `Готово: ${groupDigits(done)}`,
-    );
+    });
     setBulkText('');
     setSelected(new Set());
     void reload();
   };
+
+  const rowItems = (row: ClientRow): RowItem[] => {
+    const sub = row.subscription && !row.subscription.ended_at ? row.subscription : null;
+    const blocked = row.client.status === 'blocked';
+    const items: RowItem[] = [];
+    if (writable && sub) {
+      items.push({ key: 'extend', label: `Продлить на ${days(EXTEND_DAYS)}`, icon: 'plus' });
+      items.push({ key: 'change', label: 'Сменить тариф', icon: 'tag' });
+    }
+    if (writable && !sub && !blocked) {
+      items.push({ key: 'grant', label: 'Выдать подписку', icon: 'gift' });
+    }
+    if (writable && row.telegram_id) {
+      items.push({ key: 'message', label: 'Написать', icon: 'send' });
+    }
+    if (moneyOk && row.balance) {
+      items.push({ key: 'balance', label: 'Пополнить баланс', icon: 'wallet' });
+    }
+    if (writable) {
+      items.push(blocked ? { key: 'unblock', label: 'Разблокировать', icon: 'refresh' } : { key: 'block', label: 'Заблокировать', icon: 'close', bad: true });
+    }
+    return items;
+  };
+
+  const undoExtend = async (subId: number, name: string) => {
+    setNotice({ text: `${name}: отменяем продление…` });
+    try {
+      await api(`/api/admin/subscriptions/${subId}/actions/undo-extend`, { method: 'POST', body: { count: 1 } });
+      setNotice({ text: `${name}: продление отменено` });
+      void reload();
+    } catch (err) {
+      setNotice({ text: `${name}: ${failText(err, 'отменить не получилось')}` });
+    }
+  };
+
+  const waitGrant = async (clientId: number, name: string, before: string) => {
+    setNotice({ text: `${name}: выдаём подписку…` });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      const list = await reload();
+      if (!list) {
+        continue;
+      }
+      const row = list.items.find((item) => item.client.id === clientId);
+      if (!row || rowPrint(row) !== before) {
+        setNotice({ text: `${name}: подписка обновлена` });
+        return;
+      }
+    }
+    setNotice({ text: `${name}: заказ на выдачу создан, подписка появится в течение пары минут` });
+  };
+
+  const runRow = async (kind: RowAction, row: ClientRow) => {
+    const name = displayName(row);
+    const sub = row.subscription && !row.subscription.ended_at ? row.subscription : null;
+    if (kind === 'extend' && sub) {
+      try {
+        await api(`/api/admin/subscriptions/${sub.id}/actions/extend`, { method: 'POST', body: { days: EXTEND_DAYS } });
+        setNotice({ text: `${name}: добавлено ${days(EXTEND_DAYS)}`, undo: () => void undoExtend(sub.id, name) });
+        void reload();
+      } catch (err) {
+        setNotice({ text: `${name}: ${failText(err, 'дни не добавились')}` });
+      }
+      return;
+    }
+    if (kind === 'unblock') {
+      try {
+        await api(`/api/admin/clients/${row.client.id}/unblock`, { method: 'POST' });
+        setNotice({ text: `${name}: доступ снова открыт` });
+        void reload();
+      } catch (err) {
+        setNotice({ text: `${name}: ${failText(err, 'разблокировать не получилось')}` });
+      }
+      return;
+    }
+    setAct({ kind, row });
+  };
+
+  const closeAct = () => setAct(null);
+  const actName = act ? displayName(act.row) : '';
+  const actSub = act?.row.subscription && !act.row.subscription.ended_at ? act.row.subscription : null;
 
   return (
     <>
@@ -353,11 +452,16 @@ export function Clients() {
             </button>
           </div>
         ) : null}
-        {bulkResult ? (
+        {notice ? (
           <div className="cl-bulk" role="status">
-            <span>{bulkResult}</span>
+            <span>{notice.text}</span>
             <span style={{ flex: 1 }} />
-            <button type="button" className="quiet hov" onClick={() => setBulkResult(null)}>
+            {notice.undo ? (
+              <button type="button" className="b3 hov" onClick={notice.undo}>
+                Отменить
+              </button>
+            ) : null}
+            <button type="button" className="quiet hov" onClick={() => setNotice(null)}>
               Скрыть
             </button>
           </div>
@@ -421,9 +525,7 @@ export function Clients() {
                     {money(row.paid_total)}
                   </span>
                   <span role="cell">
-                    <Link to={`/admin/clients/${row.client.id}`} className="dots-btn hov" aria-label={`Действия: ${view.name}`}>
-                      <Icon name="dots" size={18} stroke={2.6} />
-                    </Link>
+                    <RowMenu name={view.name} href={`/admin/clients/${row.client.id}`} items={rowItems(row)} onPick={(key) => void runRow(key, row)} />
                   </span>
                 </div>
               );
@@ -487,6 +589,56 @@ export function Clients() {
         </div>
       ) : null}
       {picking ? <PickClient onClose={() => setPicking(false)} /> : null}
+      {act?.kind === 'message' ? (
+        <MessageDialog
+          clientId={act.row.client.id}
+          blockedReason={act.row.client.bot_unreachable ? 'Клиент остановил бота, сообщение не дойдёт.' : null}
+          onClose={closeAct}
+          onSent={() => {
+            closeAct();
+            setNotice({ text: `${actName}: сообщение в очереди, бот отправит его в течение минуты` });
+          }}
+        />
+      ) : null}
+      {act?.kind === 'balance' && act.row.balance ? (
+        <BalanceDialog
+          clientId={act.row.client.id}
+          currency={me.currency}
+          balance={act.row.balance}
+          initial="add"
+          onClose={closeAct}
+          onDone={(next) => {
+            closeAct();
+            setNotice({ text: `${actName}: баланс теперь ${money(next)}` });
+            void reload();
+          }}
+        />
+      ) : null}
+      {act && (act.kind === 'grant' || act.kind === 'change') ? (
+        <GrantDialog
+          clientId={act.row.client.id}
+          subscriptionId={act.kind === 'change' && actSub ? actSub.id : null}
+          currentTariffId={act.kind === 'change' && actSub ? actSub.tariff_id : null}
+          currentTrial={act.kind === 'change' && actSub?.kind === 'trial'}
+          onClose={closeAct}
+          onDone={() => {
+            const { row } = act;
+            closeAct();
+            void waitGrant(row.client.id, actName, rowPrint(row));
+          }}
+        />
+      ) : null}
+      {act?.kind === 'block' ? (
+        <BlockDialog
+          clientId={act.row.client.id}
+          onClose={closeAct}
+          onDone={() => {
+            closeAct();
+            setNotice({ text: `${actName}: доступ заблокирован` });
+            void reload();
+          }}
+        />
+      ) : null}
     </>
   );
 }
