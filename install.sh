@@ -6,6 +6,9 @@ DEPLOY="$ROOT/deploy"
 ENV_FILE="$DEPLOY/.env"
 IMAGE_REPO=${SN_IMAGE_REPO:-ghcr.io/stealthnet-app/stealthnet-rw-system}
 HEALTH_TIMEOUT=${SN_HEALTH_TIMEOUT:-300}
+BIN_DIR=${SN_BIN_DIR:-/usr/local/bin}
+WRAPPER="$BIN_DIR/stealthnet"
+SHORT=""
 USE_PREBUILT=0
 TTY_SAVED=""
 
@@ -44,19 +47,55 @@ die() {
     exit 1
 }
 
+detect_short() {
+    SHORT=""
+    if [ -f "$WRAPPER" ] && grep -Fq "\"$ROOT/install.sh\"" "$WRAPPER" 2>/dev/null; then
+        case ":$PATH:" in
+            *":$BIN_DIR:"*) SHORT=stealthnet ;;
+            *) SHORT=$WRAPPER ;;
+        esac
+    fi
+}
+
+install_short() {
+    case "$ROOT" in
+        *\"*|*\$*|*\`*|*\\*) return 0 ;;
+    esac
+    if [ ! -d "$BIN_DIR" ] || [ ! -w "$BIN_DIR" ]; then
+        return 0
+    fi
+    if [ -e "$WRAPPER" ] && ! grep -Fq 'install.sh" "$@"' "$WRAPPER" 2>/dev/null; then
+        return 0
+    fi
+    if printf '#!/bin/sh\nexec "%s/install.sh" "$@"\n' "$ROOT" > "$WRAPPER" 2>/dev/null; then
+        chmod 755 "$WRAPPER" 2>/dev/null || true
+    fi
+    detect_short
+}
+
+command_for() {
+    if [ -n "$SHORT" ]; then
+        if [ "$1" = "install" ]; then
+            printf '%s' "$SHORT"
+        else
+            printf '%s %s' "$SHORT" "$1"
+        fi
+    elif [ "$1" = "install" ]; then
+        printf '%s' "$ROOT/install.sh"
+    else
+        printf '%s --%s' "$ROOT/install.sh" "$1"
+    fi
+}
+
 usage() {
-    cat <<'EOF'
-STEALTHNET RW SYSTEM — установка
-
-  ./install.sh                   установить или продолжить установку
-  ./install.sh --domain          указать или сменить домен панели
-  ./install.sh --owner-email     сменить почту владельца
-  ./install.sh --reset-password  выдать владельцу новый пароль
-  ./install.sh --help            эта справка
-
-Без вопросов: задайте SN_OWNER_EMAIL и, если нужно, SN_DOMAIN.
-Собрать из исходников вместо готовой сборки: SN_BUILD=1 ./install.sh
-EOF
+    printf 'STEALTHNET RW SYSTEM\n\n'
+    printf '  %s\n      установить или продолжить установку\n' "$(command_for install)"
+    printf '  %s\n      указать или сменить домен панели\n' "$(command_for domain)"
+    printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
+    printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
+    printf '  %s\n      скачать новую версию и обновить систему\n' "$(command_for update)"
+    printf '\nБез вопросов: задайте SN_OWNER_EMAIL и, если нужно, SN_DOMAIN.\n'
+    printf 'Собрать из исходников вместо готовой сборки: SN_BUILD=1 %s\n' "$(command_for install)"
 }
 
 can_ask() {
@@ -169,7 +208,7 @@ check_docker() {
     if ! docker info >/dev/null 2>&1; then
         die "Docker не отвечает" \
             "Если он не запущен: sudo systemctl start docker" \
-            "Если не хватает прав: sudo ./install.sh"
+            "Если не хватает прав: sudo $ROOT/install.sh"
     fi
     done_line "готов"
 }
@@ -242,7 +281,7 @@ prepare_domain() {
         domain=""
     fi
     if [ -z "$domain" ]; then
-        done_line "без домена; указать позже: ./install.sh --domain"
+        done_line "без домена; указать позже: $(command_for domain)"
         return 0
     fi
     if ! valid_domain "$domain"; then
@@ -273,7 +312,7 @@ prepare_port() {
         port=$((port + 1))
         if [ "$port" -gt 8099 ]; then
             die "все порты с 8080 по 8099 заняты" \
-                "Освободите один из них или впишите свободный порт в deploy/.env, строка SN_HTTP_PORT."
+                "Освободите один из них или впишите свободный порт в $ENV_FILE, строка SN_HTTP_PORT."
         fi
     done
     set_env SN_HTTP_PORT "$port"
@@ -379,15 +418,15 @@ start_stack() {
     if [ "$USE_PREBUILT" -eq 1 ]; then
         if ! compose up -d --no-build; then
             die "запуск не прошёл" \
-                "Сообщение об ошибке — выше. После исправления запустите ./install.sh ещё раз:" \
-                "установка продолжится, созданные секреты сохранятся."
+                "Сообщение об ошибке — выше. После исправления запустите установку ещё раз: $(command_for install)" \
+                "Она продолжится с этого места, созданные секреты сохранятся."
         fi
     else
         hint "Ниже ход сборки."
         if ! compose up -d --build; then
             die "сборка или запуск не прошли" \
-                "Сообщение об ошибке — выше. После исправления запустите ./install.sh ещё раз:" \
-                "установка продолжится, созданные секреты сохранятся."
+                "Сообщение об ошибке — выше. После исправления запустите установку ещё раз: $(command_for install)" \
+                "Она продолжится с этого места, созданные секреты сохранятся."
         fi
     fi
 }
@@ -408,7 +447,7 @@ wait_healthy() {
         if [ "$waited" -ge "$HEALTH_TIMEOUT" ]; then
             compose logs --tail 40 app >&2 || true
             die "система не ответила за $HEALTH_TIMEOUT секунд" \
-                "Последние строки журнала — выше. Полный журнал: cd deploy && docker compose logs app"
+                "Последние строки журнала — выше. Полный журнал: cd $DEPLOY && docker compose logs app"
         fi
         sleep 3
         waited=$((waited + 3))
@@ -417,7 +456,7 @@ wait_healthy() {
 
 find_owner() {
     if ! EXISTING_OWNER=$(database "SELECT email FROM admins WHERE role = 'owner' ORDER BY id LIMIT 1"); then
-        die "не удалось прочитать базу" "Журнал: cd deploy && docker compose logs postgres app"
+        die "не удалось прочитать базу" "Журнал: cd $DEPLOY && docker compose logs postgres app"
     fi
 }
 
@@ -450,10 +489,18 @@ set_owner_password() {
         die "не удалось создать пароль"
     fi
     if ! printf '%s\n' "$password" | compose exec -T app stealthnet create-admin --email "$email" >/dev/null; then
-        die "не удалось сохранить владельца" "Журнал: cd deploy && docker compose logs app"
+        die "не удалось сохранить владельца" "Журнал: cd $DEPLOY && docker compose logs app"
     fi
     OWNER_EMAIL=$email
     OWNER_PASSWORD=$password
+}
+
+commands_list() {
+    printf '\n%s\n' "$1"
+    printf '  %s\n      указать или сменить домен\n' "$(command_for domain)"
+    printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
+    printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
+    printf '  %s\n      обновить систему\n' "$(command_for update)"
 }
 
 summary() {
@@ -463,19 +510,22 @@ summary() {
     if [ -n "$url" ]; then
         printf '  Адрес панели:      %s\n' "$url"
     else
-        printf '  Адрес панели:      не задан, указать: ./install.sh --domain\n'
+        printf '  Адрес панели:      не задан\n'
     fi
     printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
     if [ -n "${OWNER_PASSWORD:-}" ]; then
         printf '  Почта владельца:   %s\n' "$OWNER_EMAIL"
         printf '  Пароль владельца:  %s\n' "$OWNER_PASSWORD"
         printf '\n%sПароль показан один раз — сохраните его.%s\n' "$BOLD" "$RESET"
-        printf 'Если потеряете: ./install.sh --reset-password\n'
     elif [ -n "${OWNER_EMAIL:-}" ]; then
         printf '  Владелец:          %s (уже создан, пароль не менялся)\n' "$OWNER_EMAIL"
-        printf '\nНовый пароль владельцу: ./install.sh --reset-password\n'
     fi
-    printf '\nСекреты лежат в deploy/.env. Сохраните копию этого файла:\n'
+    if [ -n "$SHORT" ]; then
+        commands_list "Дальше — этими командами, из любой папки:"
+    else
+        commands_list "Дальше — этими командами:"
+    fi
+    printf '\nСекреты лежат в %s. Сохраните копию этого файла:\n' "$ENV_FILE"
     printf 'без него не расшифровать ключи платёжных систем и токены из админки.\n'
 }
 
@@ -499,19 +549,20 @@ install() {
         set_owner_password "$NEW_EMAIL"
         done_line "создан, пароль сгенерирован"
     fi
+    install_short
     summary
 }
 
 reset_password() {
     printf '%sSTEALTHNET RW SYSTEM — новый пароль владельца%s\n\n' "$BOLD" "$RESET"
     if [ ! -f "$ENV_FILE" ]; then
-        die "система ещё не установлена" "Запустите ./install.sh"
+        die "система ещё не установлена" "Запустите $(command_for install)"
     fi
     wait_healthy
     step "Владелец"
     find_owner
     if [ -z "$EXISTING_OWNER" ]; then
-        die "владелец ещё не создан" "Запустите ./install.sh"
+        die "владелец ещё не создан" "Запустите $(command_for install)"
     fi
     set_owner_password "$EXISTING_OWNER"
     done_line "пароль заменён, прежние сессии закрыты"
@@ -523,7 +574,7 @@ reset_password() {
 change_domain() {
     printf '%sSTEALTHNET RW SYSTEM — домен панели%s\n\n' "$BOLD" "$RESET"
     if [ ! -f "$ENV_FILE" ]; then
-        die "система ещё не установлена" "Запустите ./install.sh"
+        die "система ещё не установлена" "Запустите $(command_for install)"
     fi
     step "Адрес панели"
     current=$(env_value SN_PUBLIC_URL)
@@ -552,13 +603,13 @@ change_domain() {
 change_owner_email() {
     printf '%sSTEALTHNET RW SYSTEM — почта владельца%s\n\n' "$BOLD" "$RESET"
     if [ ! -f "$ENV_FILE" ]; then
-        die "система ещё не установлена" "Запустите ./install.sh"
+        die "система ещё не установлена" "Запустите $(command_for install)"
     fi
     wait_healthy
     step "Владелец"
     find_owner
     if [ -z "$EXISTING_OWNER" ]; then
-        die "владелец ещё не создан" "Запустите ./install.sh"
+        die "владелец ещё не создан" "Запустите $(command_for install)"
     fi
     hint "Сейчас: $EXISTING_OWNER"
     read_email
@@ -570,11 +621,27 @@ change_owner_email() {
     printf '\n  Почта владельца:   %s\n' "$NEW_EMAIL"
 }
 
+update() {
+    printf '%sSTEALTHNET RW SYSTEM — обновление%s\n\n' "$BOLD" "$RESET"
+    step "Новая версия"
+    if ! command -v git >/dev/null 2>&1 || [ ! -d "$ROOT/.git" ]; then
+        die "эта команда обновляет только установку, сделанную через git clone"
+    fi
+    if ! git -C "$ROOT" pull --ff-only; then
+        die "не удалось скачать новую версию" "Сообщение об ошибке — выше."
+    fi
+    done_line "скачана"
+    exec "$ROOT/install.sh"
+}
+
+detect_short
+
 case "${1:-}" in
-    "") install ;;
-    --domain) change_domain ;;
-    --owner-email) change_owner_email ;;
-    --reset-password) reset_password ;;
+    ""|install) install ;;
+    domain|--domain) change_domain ;;
+    owner-email|--owner-email) change_owner_email ;;
+    reset-password|--reset-password) reset_password ;;
+    update|--update) update ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
 esac

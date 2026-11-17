@@ -1,0 +1,8 @@
+#!/bin/sh
+STATE=${FAKE_STATE:?}
+printf '%s\n' "$*" >> "$STATE/git.log"
+case "$*" in
+    *" pull --ff-only") exit "${FAKE_GIT_PULL_EXIT:-0}" ;;
+    *" status --porcelain"*) printf '%s' "${FAKE_GIT_STATUS:-}"; exit 0 ;;
+esac
+exit 0

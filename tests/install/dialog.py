@@ -18,6 +18,7 @@ def fresh():
     work = tempfile.mkdtemp(prefix='work.', dir=TMP_ROOT)
     os.makedirs(work + '/repo/deploy')
     os.makedirs(work + '/state')
+    os.makedirs(work + '/bin')
     shutil.copy(SRC + '/install.sh', work + '/repo/')
     for name in ['.env.example', 'docker-compose.yml', 'compose.remnawave.yml']:
         shutil.copy(SRC + '/deploy/' + name, work + '/repo/deploy/')
@@ -26,7 +27,7 @@ def fresh():
 
 def drive(shell, answers, typed_early='', typed_on=None, extra_env=None):
     work = fresh()
-    env = dict(os.environ, FAKE_STATE=work + '/state', PATH=HERE + '/bin:' + os.environ['PATH'], TERM='xterm')
+    env = dict(os.environ, FAKE_STATE=work + '/state', SN_BIN_DIR=work + '/bin', PATH=HERE + '/bin:' + os.environ['PATH'], TERM='xterm')
     for key in ['SN_OWNER_EMAIL', 'SN_DOMAIN', 'NO_COLOR', 'SN_BUILD']:
         env.pop(key, None)
     env.update(extra_env or {})
@@ -128,7 +129,7 @@ for shell in shells:
         ('пустой ответ вызывает вопрос о подтверждении', text.count('Продолжить без него?') == 2),
         ('после отказа домен спрашивается снова', text.count('Домен:') == 2),
         ('после подтверждения домен пуст', 'SN_PUBLIC_URL=\n' in env),
-        ('в итоге сказано, как указать домен', 'не задан, указать: ./install.sh --domain' in text),
+        ('в итоге сказано, как указать домен', 'Адрес панели:      не задан' in text and '/bin/stealthnet domain' in text),
         ('владелец создан', read(work + '/state/owner.txt') == 'owner@example.com'),
     ], text, failed)
 

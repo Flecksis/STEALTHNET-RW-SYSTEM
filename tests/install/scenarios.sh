@@ -4,6 +4,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=$(cd "$HERE/../.." && pwd)
 SHELL_BIN=${1:-sh}
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sn-install-scenarios.XXXXXX")
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 fail=0
 
 check() {
@@ -17,7 +18,7 @@ check() {
 
 fresh() {
     WORK=$(mktemp -d "$TMP_ROOT/work.XXXXXX")
-    mkdir -p "$WORK/repo/deploy" "$WORK/state"
+    mkdir -p "$WORK/repo/deploy" "$WORK/state" "$WORK/bin"
     cp "$SRC/install.sh" "$WORK/repo/"
     cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$WORK/repo/deploy/"
     R="$WORK/repo"
@@ -27,7 +28,7 @@ fresh() {
 }
 
 run() {
-    env FAKE_STATE="$S" PATH="$HERE/bin:$PATH" "$@"
+    env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$PATH" "$@"
 }
 
 INST() {
@@ -114,7 +115,7 @@ fresh
 run FAKE_UP_EXIT=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 code=$?
 [ "$code" -eq 1 ] && check ok "код выхода 1" || check no "код выхода $code"
-grep -q 'запустите ./install.sh ещё раз' "$WORK/out.txt" && check ok "сказано, как продолжить" || check no "нет подсказки"
+grep -q "запустите установку ещё раз: $R/install.sh" "$WORK/out.txt" && check ok "сказано, как продолжить, с полным путём" || check no "нет подсказки"
 cp "$R/deploy/.env" "$WORK/before.env"
 run SN_OWNER_EMAIL=owner@example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out2.txt" 2>&1 </dev/null
 code=$?
@@ -134,7 +135,7 @@ fresh
 run FAKE_INFO_EXIT=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 code=$?
 [ "$code" -eq 1 ] && check ok "код выхода 1" || check no "код выхода $code"
-grep -q 'sudo ./install.sh' "$WORK/out.txt" && check ok "подсказка про права" || check no "нет подсказки"
+grep -q "sudo $R/install.sh" "$WORK/out.txt" && check ok "подсказка про права с полным путём" || check no "нет подсказки"
 [ ! -f "$R/deploy/.env" ] && check ok ".env не создавался" || check no ".env создан до проверки Docker"
 
 echo "=== J. неверные домен и почта из окружения"
@@ -259,7 +260,7 @@ grep -q -- '--build' "$S/calls.log" && check no "собирал из исход�
 echo "=== U. смена домена после установки"
 fresh
 run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN= "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
-grep -q 'не задан, указать: ./install.sh --domain' "$WORK/out1.txt" && check ok "в итоге сказано, как указать домен" || check no "нет подсказки про домен"
+grep -q 'Адрес панели:      не задан' "$WORK/out1.txt" && grep -q "$WORK/bin/stealthnet domain" "$WORK/out1.txt" && check ok "в итоге сказано, как указать домен" || check no "нет подсказки про домен"
 : > "$S/calls.log"
 run SN_DOMAIN=https://new.example.org/ "$SHELL_BIN" "$R/install.sh" --domain > "$WORK/out2.txt" 2>&1 </dev/null
 code=$?
@@ -284,6 +285,59 @@ run "$SHELL_BIN" "$R/install.sh" --domain > "$WORK/out.txt" 2>&1 </dev/null
 [ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "смена домена до установки объяснена" || check no "смена домена до установки"
 run "$SHELL_BIN" "$R/install.sh" --owner-email > "$WORK/out.txt" 2>&1 </dev/null
 [ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "смена почты до установки объяснена" || check no "смена почты до установки"
+
+echo "=== X. короткая команда"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+[ -x "$WORK/bin/stealthnet" ] && check ok "команда stealthnet установлена" || check no "команда не установлена"
+grep -q "$WORK/bin/stealthnet reset-password" "$WORK/out.txt" && check ok "в итоге команды показаны через неё" || check no "в итоге нет коротких команд"
+grep -q '\./install\.sh' "$WORK/out.txt" && check no "в выводе остался относительный путь" || check ok "относительных путей в выводе нет"
+run "$WORK/bin/stealthnet" --help > "$WORK/help.txt" 2>&1 </dev/null
+[ $? -eq 0 ] && grep -q 'сменить почту владельца' "$WORK/help.txt" && check ok "короткая команда запускает установщик" || check no "короткая команда не работает"
+: > "$S/calls.log"
+env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" SN_DOMAIN=short.example.org stealthnet domain > "$WORK/short.txt" 2>&1 </dev/null
+[ $? -eq 0 ] && grep -q '^SN_PUBLIC_URL=https://short.example.org$' "$R/deploy/.env" && check ok "stealthnet domain работает из любой папки" || check no "stealthnet domain не сработал: $(tail -2 "$WORK/short.txt")"
+env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help2.txt" 2>&1 </dev/null
+grep -q '^  stealthnet domain$' "$WORK/help2.txt" && check ok "в справке короткие команды" || check no "в справке нет коротких команд"
+
+echo "=== Y. короткую команду поставить нельзя"
+fresh
+run SN_BIN_DIR="$WORK/missing" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "установка прошла" || check no "код выхода $code"
+grep -q "$R/install.sh --reset-password" "$WORK/out.txt" && check ok "команды показаны с полным путём" || check no "нет команд с полным путём"
+fresh
+printf 'чужой файл\n' > "$WORK/bin/stealthnet"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+[ "$(cat "$WORK/bin/stealthnet")" = "чужой файл" ] && check ok "чужой файл с тем же именем не тронут" || check no "чужой файл перезаписан"
+grep -q "$R/install.sh --domain" "$WORK/out.txt" && check ok "команды показаны с полным путём" || check no "нет команд с полным путём"
+
+echo "=== Z. обновление"
+fresh
+mkdir -p "$R/.git"
+printf '%s\n' "$SHA" > "$R/.git/HEAD"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" update > "$WORK/out2.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "обновление прошло" || check no "код выхода $code: $(tail -2 "$WORK/out2.txt")"
+grep -q "^-C $R pull --ff-only\$" "$S/git.log" && check ok "новая версия скачивается" || check no "git pull не вызван"
+grep -q '^compose up -d' "$S/calls.log" && check ok "после скачивания система перезапущена" || check no "нет перезапуска"
+grep -q 'уже создан: owner@example.com' "$WORK/out2.txt" && check ok "владелец сохранён" || check no "владелец не распознан"
+: > "$S/calls.log"
+run FAKE_GIT_PULL_EXIT=1 "$SHELL_BIN" "$R/install.sh" update > "$WORK/out3.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && ! grep -q '^compose up' "$S/calls.log" && check ok "при сбое скачивания система не трогается" || check no "сбой скачивания не остановил обновление"
+fresh
+run "$SHELL_BIN" "$R/install.sh" update > "$WORK/out.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'git clone' "$WORK/out.txt" && check ok "без git обновление объяснено" || check no "без git нет объяснения"
+
+echo "=== AA. изменённые исходники"
+fresh
+mkdir -p "$R/.git"
+printf '%s\n' "$SHA" > "$R/.git/HEAD"
+run FAKE_GIT_STATUS=" M crates/x.rs" FAKE_PULL_EXIT=0 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^pull' "$S/calls.log" && check no "скачал сборку при изменённых исходниках" || check ok "при изменённых исходниках сборку не скачивает"
+grep -q '^compose up -d --build' "$S/calls.log" && check ok "собирает из исходников" || check no "нет сборки"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi
