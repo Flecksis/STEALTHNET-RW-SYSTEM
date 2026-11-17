@@ -395,6 +395,18 @@ impl<T: RemnawaveApi> RemnawaveApi for GuardedRemnawave<T> {
         self.write(|| self.inner.update_host(request)).await
     }
 
+    async fn create_host(&self, request: &CreateHostRequest) -> RemnaResult<Host> {
+        self.write(|| self.inner.create_host(request)).await
+    }
+
+    async fn delete_host(&self, uuid: Uuid) -> RemnaResult<()> {
+        self.write(|| self.inner.delete_host(uuid)).await
+    }
+
+    async fn reorder_hosts(&self, positions: &[HostPosition]) -> RemnaResult<()> {
+        self.write(|| self.inner.reorder_hosts(positions)).await
+    }
+
     async fn enable_hosts(&self, uuids: &[Uuid]) -> RemnaResult<()> {
         self.write(|| self.inner.enable_hosts(uuids)).await
     }
@@ -884,6 +896,23 @@ mod tests {
             ("enable_hosts", unsupported(g.enable_hosts(&[node]).await)),
             ("disable_hosts", unsupported(g.disable_hosts(&[node]).await)),
             (
+                "create_host",
+                unsupported(
+                    g.create_host(&CreateHostRequest::new(
+                        HostInboundTarget {
+                            config_profile_uuid: node,
+                            config_profile_inbound_uuid: node,
+                        },
+                        "H",
+                        "198.51.100.1",
+                        443,
+                    ))
+                    .await,
+                ),
+            ),
+            ("delete_host", unsupported(g.delete_host(node).await)),
+            ("reorder_hosts", unsupported(g.reorder_hosts(&[]).await)),
+            (
                 "create_squad",
                 unsupported(
                     g.create_internal_squad(&CreateInternalSquadRequest {
@@ -1055,7 +1084,7 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert!(missing.is_empty(), "не проброшены: {missing:?}");
-        assert_eq!(checks.len(), 77);
+        assert_eq!(checks.len(), 80);
         let created = g
             .create_user(&CreateUserRequest {
                 username: "sn_new".into(),

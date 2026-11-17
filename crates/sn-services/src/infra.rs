@@ -6,13 +6,14 @@ use sn_domain::ids::{AdminId, SquadId, TariffId};
 use sn_domain::money::Money;
 use sn_remnawave::{
     BillingAmount, BillingHistoryQuery, CreateBillingNodeRequest, CreateBillingRecordRequest,
-    CreateInfraProviderRequest, CreateInternalSquadRequest, CreateNodeRequest, Host,
-    HostSquadFilter, InfraBillingNodes, InternalSquad, Node, NodeMetadata, NodeProfileSelection,
+    CreateHostRequest, CreateInfraProviderRequest, CreateInternalSquadRequest, CreateNodeRequest,
+    HOST_ALPN, HOST_SECURITY_LAYERS, Host, HostInboundTarget, HostPosition, HostSquadFilter,
+    InfraBillingNodes, InternalSquad, Node, NodeDetails, NodeMetadata, NodeProfileSelection,
     NodeState, NodeSystem, SquadAccessibleNodes, UpdateBillingNodesRequest, UpdateHostRequest,
     UpdateInfraProviderRequest, UpdateInternalSquadRequest, UpdateNodeRequest,
 };
 use sn_store::Db;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -149,6 +150,93 @@ pub struct CreatedNode {
 pub const NODE_PORT: i64 = 2222;
 pub const PRICES_KEY: &str = "infra.prices";
 pub const HOST_REMARK_MAX: usize = 100;
+pub const HOST_ADDRESS_MAX: usize = 253;
+pub const HOST_HEADER_MAX: usize = 512;
+pub const HOST_PATH_MAX: usize = 512;
+const SECURITY_DEFAULT: &str = "DEFAULT";
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct HostInput {
+    #[serde(default)]
+    pub inbound: Option<Uuid>,
+    pub remark: String,
+    pub address: String,
+    pub port: i64,
+    #[serde(default)]
+    pub sni: Option<String>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub alpn: Option<String>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub security_layer: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostAction {
+    Enable,
+    Disable,
+}
+
+impl HostAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "enable" => Some(HostAction::Enable),
+            "disable" => Some(HostAction::Disable),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostNodeView {
+    pub uuid: Uuid,
+    pub name: String,
+    pub country_code: String,
+    pub address: String,
+    pub state: NodeState,
+    pub inbounds: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostInboundView {
+    #[serde(flatten)]
+    pub inbound: InboundBrief,
+    pub profile_uuid: Option<Uuid>,
+    pub profile_name: String,
+    pub nodes: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostSquadRef {
+    pub uuid: Uuid,
+    pub name: String,
+    pub shown: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostRow {
+    pub host: Host,
+    pub nodes: Vec<Uuid>,
+    pub squads: Vec<HostSquadRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostsView {
+    pub hosts: Vec<HostRow>,
+    pub nodes: Vec<HostNodeView>,
+    pub inbounds: Vec<HostInboundView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct HostOrderInput {
+    pub uuids: Vec<Uuid>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct HostChange {
@@ -220,17 +308,192 @@ fn country_code(raw: Option<&str>) -> Option<String> {
         .map(str::to_uppercase)
 }
 
-fn host_remark(change: &HostChange) -> ServiceResult<Option<&str>> {
-    let Some(remark) = change.remark.as_deref().map(str::trim) else {
-        return Ok(None);
-    };
+fn valid_remark(raw: &str) -> ServiceResult<&str> {
+    let remark = raw.trim();
     if remark.is_empty() || remark.chars().count() > HOST_REMARK_MAX {
         return Err(ServiceError::rejected(
             "host.remark",
             format!("название сервера от 1 до {HOST_REMARK_MAX} символов"),
         ));
     }
-    Ok(Some(remark))
+    Ok(remark)
+}
+
+fn host_remark(change: &HostChange) -> ServiceResult<Option<&str>> {
+    change.remark.as_deref().map(valid_remark).transpose()
+}
+
+fn host_text(
+    raw: Option<&str>,
+    code: &'static str,
+    label: &str,
+    max: usize,
+) -> ServiceResult<Option<String>> {
+    let Some(value) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    if value.chars().count() > max || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(ServiceError::rejected(
+            code,
+            format!("{label}: без пробелов, до {max} символов"),
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostFields {
+    remark: String,
+    address: String,
+    port: i64,
+    sni: Option<String>,
+    host: Option<String>,
+    path: Option<String>,
+    alpn: Option<String>,
+    fingerprint: Option<String>,
+    security_layer: String,
+}
+
+fn host_fields(input: &HostInput) -> ServiceResult<HostFields> {
+    let remark = valid_remark(&input.remark)?.to_string();
+    let address = input.address.trim();
+    if address.is_empty()
+        || address.chars().count() > HOST_ADDRESS_MAX
+        || address.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(ServiceError::rejected(
+            "host.address",
+            "укажите IP или домен без пробелов",
+        ));
+    }
+    if !(1..=65535).contains(&input.port) {
+        return Err(ServiceError::rejected("host.port", "порт от 1 до 65535"));
+    }
+    let alpn = input
+        .alpn
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.replace(' ', ""));
+    if alpn.as_deref().is_some_and(|v| !HOST_ALPN.contains(&v)) {
+        return Err(ServiceError::rejected(
+            "host.alpn",
+            format!("ALPN: один из вариантов {}", HOST_ALPN.join("; ")),
+        ));
+    }
+    let fingerprint = input
+        .fingerprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    if fingerprint.is_some_and(|v| {
+        v.len() > 32
+            || !v
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    }) {
+        return Err(ServiceError::rejected(
+            "host.fingerprint",
+            "отпечаток: латиница, цифры, - и _, до 32 символов",
+        ));
+    }
+    let security_layer = input
+        .security_layer
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| SECURITY_DEFAULT.to_string(), str::to_uppercase);
+    if !HOST_SECURITY_LAYERS.contains(&security_layer.as_str()) {
+        return Err(ServiceError::rejected(
+            "host.security",
+            "безопасность: как у входа, TLS или без TLS",
+        ));
+    }
+    Ok(HostFields {
+        remark,
+        address: address.to_string(),
+        port: input.port,
+        sni: host_text(input.sni.as_deref(), "host.sni", "SNI", HOST_ADDRESS_MAX)?,
+        host: host_text(input.host.as_deref(), "host.host", "Host", HOST_HEADER_MAX)?,
+        path: host_text(input.path.as_deref(), "host.path", "Path", HOST_PATH_MAX)?,
+        alpn,
+        fingerprint: fingerprint.map(str::to_string),
+        security_layer,
+    })
+}
+
+fn current_text(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+fn changed_text(current: Option<&str>, next: &Option<String>) -> Option<Option<String>> {
+    (current_text(current) != next.as_deref()).then(|| next.clone())
+}
+
+fn host_patch(host: &Host, fields: &HostFields) -> UpdateHostRequest {
+    let mut request = UpdateHostRequest::new(host.uuid);
+    if host.remark != fields.remark {
+        request.remark = Some(fields.remark.clone());
+    }
+    if host.address != fields.address {
+        request.address = Some(fields.address.clone());
+    }
+    if host.port != fields.port {
+        request.port = Some(fields.port);
+    }
+    request.sni = changed_text(host.sni.as_deref(), &fields.sni);
+    request.host = changed_text(host.host.as_deref(), &fields.host);
+    request.path = changed_text(host.path.as_deref(), &fields.path);
+    request.alpn = changed_text(host.alpn.as_deref(), &fields.alpn);
+    request.fingerprint = changed_text(host.fingerprint.as_deref(), &fields.fingerprint);
+    let layer = current_text(host.security_layer.as_deref()).unwrap_or(SECURITY_DEFAULT);
+    if layer != fields.security_layer {
+        request.security_layer = Some(fields.security_layer.clone());
+    }
+    request
+}
+
+fn same_address(a: &str, b: &str) -> bool {
+    let a = a.trim();
+    !a.is_empty() && a.eq_ignore_ascii_case(b.trim())
+}
+
+pub fn host_nodes(host: &Host, nodes: &[HostNodeView]) -> Vec<Uuid> {
+    let inbound = host.inbound.config_profile_inbound_uuid;
+    let serving: Vec<&HostNodeView> = nodes
+        .iter()
+        .filter(|n| inbound.is_some_and(|i| n.inbounds.contains(&i)))
+        .collect();
+    let uuids = |list: Vec<&HostNodeView>| list.into_iter().map(|n| n.uuid).collect::<Vec<_>>();
+    let bound: Vec<&HostNodeView> = nodes
+        .iter()
+        .filter(|n| host.nodes.contains(&n.uuid))
+        .collect();
+    if !bound.is_empty() {
+        let both: Vec<&HostNodeView> = bound
+            .iter()
+            .copied()
+            .filter(|n| serving.iter().any(|s| s.uuid == n.uuid))
+            .collect();
+        return uuids(if both.is_empty() { bound } else { both });
+    }
+    if serving.len() == 1 {
+        return uuids(serving);
+    }
+    let pool: Vec<&HostNodeView> = if serving.is_empty() {
+        nodes.iter().collect()
+    } else {
+        serving.clone()
+    };
+    let by_address: Vec<&HostNodeView> = pool
+        .into_iter()
+        .filter(|n| same_address(&n.address, &host.address))
+        .collect();
+    if by_address.is_empty() {
+        uuids(serving)
+    } else {
+        uuids(by_address)
+    }
 }
 
 fn host_update(host: &Host, squad: Uuid, change: &HostChange) -> ServiceResult<UpdateHostRequest> {
@@ -640,10 +903,285 @@ impl<'a> InfraOps<'a> {
             .collect())
     }
 
-    pub async fn hosts(&self) -> ServiceResult<Vec<Host>> {
-        let mut hosts = self.services.remna()?.hosts().await?;
+    pub async fn hosts(&self) -> ServiceResult<HostsView> {
+        let remna = self.services.remna()?;
+        let mut hosts = remna.hosts().await?;
         hosts.sort_by_key(|h| h.view_position);
-        Ok(hosts)
+        let details = match remna.nodes_detailed().await {
+            Ok(details) => details,
+            Err(err) => {
+                tracing::warn!(error = %err, "подробности нод для хостов не получены, беру краткий список");
+                match remna.nodes().await {
+                    Ok(list) => list.into_iter().map(NodeDetails::from).collect(),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "ноды для хостов не получены");
+                        Vec::new()
+                    }
+                }
+            }
+        };
+        let profiles = match remna.config_profiles().await {
+            Ok(list) => {
+                let mut profiles = list.config_profiles;
+                profiles.sort_by_key(|p| p.view_position);
+                profiles
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "профили конфигурации для хостов не получены");
+                Vec::new()
+            }
+        };
+        let squads = match remna.internal_squads().await {
+            Ok(list) => list.internal_squads,
+            Err(err) => {
+                tracing::warn!(error = %err, "сквады для хостов не получены");
+                Vec::new()
+            }
+        };
+        let nodes: Vec<HostNodeView> = details
+            .iter()
+            .map(|d| HostNodeView {
+                uuid: d.node.uuid,
+                name: d.node.name.clone(),
+                country_code: d.node.country_code.clone(),
+                address: d.node.address.clone(),
+                state: d.node.state(),
+                inbounds: d
+                    .config_profile
+                    .as_ref()
+                    .map(|p| p.active_inbounds.iter().map(|i| i.uuid).collect())
+                    .unwrap_or_default(),
+            })
+            .collect();
+        let serving = |inbound: Uuid| -> Vec<Uuid> {
+            nodes
+                .iter()
+                .filter(|n| n.inbounds.contains(&inbound))
+                .map(|n| n.uuid)
+                .collect()
+        };
+        let mut inbounds: Vec<HostInboundView> = Vec::new();
+        for profile in &profiles {
+            for inbound in &profile.inbounds {
+                if inbounds.iter().all(|i| i.inbound.uuid != inbound.uuid) {
+                    inbounds.push(HostInboundView {
+                        inbound: inbound_brief(inbound),
+                        profile_uuid: Some(profile.uuid),
+                        profile_name: profile.name.clone(),
+                        nodes: serving(inbound.uuid),
+                    });
+                }
+            }
+        }
+        for detail in &details {
+            let Some(config) = &detail.config_profile else {
+                continue;
+            };
+            for inbound in &config.active_inbounds {
+                if inbounds.iter().all(|i| i.inbound.uuid != inbound.uuid) {
+                    inbounds.push(HostInboundView {
+                        inbound: inbound_brief(inbound),
+                        profile_uuid: inbound.profile_uuid.or(config.active_config_profile_uuid),
+                        profile_name: String::new(),
+                        nodes: serving(inbound.uuid),
+                    });
+                }
+            }
+        }
+        let hosts = hosts
+            .into_iter()
+            .map(|host| {
+                let inbound = host.inbound.config_profile_inbound_uuid;
+                let squads = squads
+                    .iter()
+                    .filter(|s| inbound.is_some_and(|i| s.inbounds.iter().any(|x| x.uuid == i)))
+                    .map(|s| HostSquadRef {
+                        uuid: s.uuid,
+                        name: s.name.clone(),
+                        shown: host
+                            .internal_squads
+                            .as_ref()
+                            .is_none_or(|filter| filter.allows(s.uuid)),
+                    })
+                    .collect();
+                HostRow {
+                    nodes: host_nodes(&host, &nodes),
+                    squads,
+                    host,
+                }
+            })
+            .collect();
+        Ok(HostsView {
+            hosts,
+            nodes,
+            inbounds,
+        })
+    }
+
+    pub async fn create_host(&self, input: &HostInput, admin: AdminId) -> ServiceResult<Host> {
+        let fields = host_fields(input)?;
+        let inbound = input
+            .inbound
+            .ok_or_else(|| ServiceError::rejected("host.inbound", "выберите вход"))?;
+        let remna = self.services.remna()?;
+        let profiles = remna.config_profiles().await?;
+        let profile = profiles
+            .config_profiles
+            .iter()
+            .find(|p| p.inbounds.iter().any(|i| i.uuid == inbound))
+            .ok_or(ServiceError::NotFound("вход"))?;
+        let mut request = CreateHostRequest::new(
+            HostInboundTarget {
+                config_profile_uuid: profile.uuid,
+                config_profile_inbound_uuid: inbound,
+            },
+            fields.remark,
+            fields.address,
+            fields.port,
+        );
+        request.sni = fields.sni;
+        request.host = fields.host;
+        request.path = fields.path;
+        request.alpn = fields.alpn;
+        request.fingerprint = fields.fingerprint;
+        request.security_layer = Some(fields.security_layer);
+        let host = remna.create_host(&request).await?;
+        let mut conn = self.services.store().conn().await?;
+        conn.audit()
+            .record(&Actor::Admin(admin).audit(
+                "host.create",
+                "host",
+                None,
+                serde_json::json!({
+                    "host": host.uuid,
+                    "remark": host.remark,
+                    "address": host.address,
+                    "port": host.port,
+                    "inbound": inbound,
+                }),
+            ))
+            .await?;
+        Ok(host)
+    }
+
+    pub async fn update_host(
+        &self,
+        uuid: Uuid,
+        input: &HostInput,
+        admin: AdminId,
+    ) -> ServiceResult<Host> {
+        let fields = host_fields(input)?;
+        let remna = self.services.remna()?;
+        let current = remna
+            .hosts()
+            .await?
+            .into_iter()
+            .find(|h| h.uuid == uuid)
+            .ok_or(ServiceError::NotFound("хост"))?;
+        let request = host_patch(&current, &fields);
+        if request.is_empty() {
+            return Ok(current);
+        }
+        let changed: Vec<&str> = [
+            ("remark", request.remark.is_some()),
+            ("address", request.address.is_some()),
+            ("port", request.port.is_some()),
+            ("sni", request.sni.is_some()),
+            ("host", request.host.is_some()),
+            ("path", request.path.is_some()),
+            ("alpn", request.alpn.is_some()),
+            ("fingerprint", request.fingerprint.is_some()),
+            ("security_layer", request.security_layer.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect();
+        let updated = remna.update_host(&request).await?;
+        let mut conn = self.services.store().conn().await?;
+        conn.audit()
+            .record(&Actor::Admin(admin).audit(
+                "host.update",
+                "host",
+                None,
+                serde_json::json!({ "host": uuid, "remark": updated.remark, "changed": changed }),
+            ))
+            .await?;
+        Ok(updated)
+    }
+
+    pub async fn host_action(
+        &self,
+        uuid: Uuid,
+        action: HostAction,
+        admin: AdminId,
+    ) -> ServiceResult<Host> {
+        let mut request = UpdateHostRequest::new(uuid);
+        request.is_disabled = Some(action == HostAction::Disable);
+        let host = self.services.remna()?.update_host(&request).await?;
+        let mut conn = self.services.store().conn().await?;
+        conn.audit()
+            .record(&Actor::Admin(admin).audit(
+                match action {
+                    HostAction::Enable => "host.enable",
+                    HostAction::Disable => "host.disable",
+                },
+                "host",
+                None,
+                serde_json::json!({ "host": uuid, "remark": host.remark }),
+            ))
+            .await?;
+        Ok(host)
+    }
+
+    pub async fn delete_host(&self, uuid: Uuid, admin: AdminId) -> ServiceResult<()> {
+        self.services.remna()?.delete_host(uuid).await?;
+        let mut conn = self.services.store().conn().await?;
+        conn.audit()
+            .record(&Actor::Admin(admin).audit(
+                "host.delete",
+                "host",
+                None,
+                serde_json::json!({ "host": uuid }),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn reorder_hosts(&self, order: &[Uuid], admin: AdminId) -> ServiceResult<()> {
+        let mut seen = HashSet::with_capacity(order.len());
+        if order.iter().any(|uuid| !seen.insert(*uuid)) {
+            return Err(ServiceError::rejected(
+                "host.order",
+                "хост повторяется в списке",
+            ));
+        }
+        let remna = self.services.remna()?;
+        let hosts = remna.hosts().await?;
+        if hosts.len() != order.len() || hosts.iter().any(|h| !seen.contains(&h.uuid)) {
+            return Err(ServiceError::rejected(
+                "host.order",
+                "список хостов изменился: обновите страницу",
+            ));
+        }
+        let positions: Vec<HostPosition> = order
+            .iter()
+            .zip(0_i64..)
+            .map(|(uuid, view_position)| HostPosition {
+                uuid: *uuid,
+                view_position,
+            })
+            .collect();
+        remna.reorder_hosts(&positions).await?;
+        let mut conn = self.services.store().conn().await?;
+        conn.audit()
+            .record(&Actor::Admin(admin).audit(
+                "host.reorder",
+                "host",
+                None,
+                serde_json::json!({ "hosts": order }),
+            ))
+            .await?;
+        Ok(())
     }
 
     pub async fn update_node(
@@ -1124,5 +1662,406 @@ impl<'a> InfraOps<'a> {
 
     pub async fn billing(&self) -> ServiceResult<InfraBillingNodes> {
         Ok(self.services.remna()?.infra_billing_nodes().await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EnvFallbacks, FixedClock, ServiceDeps};
+    use chrono::TimeZone;
+    use sn_modules::ModuleRegistry;
+    use sn_payments::ProviderRegistry;
+    use sn_remnawave::fake::{FakeRemnawave, sample_node};
+    use sn_remnawave::{ConfigProfile, HostInbound, Inbound, NodeConfigProfile, SquadInfo};
+    use sn_store::testing::test_store;
+    use std::sync::Arc;
+
+    const PROFILE: Uuid = Uuid::from_u128(10);
+    const REALITY: Uuid = Uuid::from_u128(11);
+    const XHTTP: Uuid = Uuid::from_u128(12);
+    const DE: Uuid = Uuid::from_u128(21);
+    const NL: Uuid = Uuid::from_u128(22);
+    const MAIN: Uuid = Uuid::from_u128(31);
+    const RESERVE: Uuid = Uuid::from_u128(32);
+    const ADMIN: AdminId = AdminId(1);
+
+    fn inbound(uuid: Uuid, tag: &str, network: &str, security: &str, port: i64) -> Inbound {
+        Inbound {
+            uuid,
+            profile_uuid: Some(PROFILE),
+            tag: tag.into(),
+            kind: "vless".into(),
+            network: Some(network.into()),
+            security: Some(security.into()),
+            port: Some(port),
+        }
+    }
+
+    fn node(
+        uuid: Uuid,
+        name: &str,
+        country: &str,
+        address: &str,
+        inbounds: &[Uuid],
+    ) -> HostNodeView {
+        HostNodeView {
+            uuid,
+            name: name.into(),
+            country_code: country.into(),
+            address: address.into(),
+            state: NodeState::Online,
+            inbounds: inbounds.to_vec(),
+        }
+    }
+
+    fn host(n: u128, remark: &str, inbound: Uuid, address: &str) -> Host {
+        Host {
+            uuid: Uuid::from_u128(n),
+            view_position: n as i64,
+            remark: remark.into(),
+            address: address.into(),
+            port: 443,
+            inbound: HostInbound {
+                config_profile_uuid: Some(PROFILE),
+                config_profile_inbound_uuid: Some(inbound),
+            },
+            ..Host::default()
+        }
+    }
+
+    fn input(remark: &str, address: &str, port: i64) -> HostInput {
+        HostInput {
+            inbound: Some(REALITY),
+            remark: remark.into(),
+            address: address.into(),
+            port,
+            sni: None,
+            host: None,
+            path: None,
+            alpn: None,
+            fingerprint: None,
+            security_layer: None,
+        }
+    }
+
+    #[test]
+    fn нода_хоста_по_входу_привязке_и_адресу() {
+        let nodes = [
+            node(DE, "DE-1", "DE", "203.0.113.41", &[REALITY, XHTTP]),
+            node(NL, "NL-1", "NL", "198.51.100.21", &[REALITY]),
+        ];
+        assert_eq!(
+            host_nodes(&host(1, "Германия XHTTP", XHTTP, "de.example.com"), &nodes),
+            vec![DE]
+        );
+        assert_eq!(
+            host_nodes(&host(2, "Германия", REALITY, " 203.0.113.41 "), &nodes),
+            vec![DE]
+        );
+        let mut bound = host(3, "Нидерланды", REALITY, "nl.example.com");
+        bound.nodes = vec![NL];
+        assert_eq!(host_nodes(&bound, &nodes), vec![NL]);
+        assert_eq!(
+            host_nodes(&host(4, "Общий", REALITY, "cdn.example.com"), &nodes),
+            vec![DE, NL]
+        );
+        let stray = Uuid::from_u128(99);
+        assert!(host_nodes(&host(5, "Старый", stray, "old.example.com"), &nodes).is_empty());
+        assert_eq!(
+            host_nodes(&host(6, "Старый", stray, "198.51.100.21"), &nodes),
+            vec![NL]
+        );
+        let mut unbound = host(7, "Без входа", REALITY, "x.example.com");
+        unbound.inbound = HostInbound::default();
+        assert!(host_nodes(&unbound, &nodes).is_empty());
+    }
+
+    #[test]
+    fn поля_хоста_проверяются_и_приводятся() {
+        let mut raw = input("  Германия  ", " de.example.com ", 443);
+        raw.sni = Some("  ".into());
+        raw.path = Some(" /xhttp ".into());
+        raw.alpn = Some("h2, http/1.1".into());
+        raw.fingerprint = Some("chrome".into());
+        raw.security_layer = Some("tls".into());
+        let fields = host_fields(&raw).unwrap();
+        assert_eq!(fields.remark, "Германия");
+        assert_eq!(fields.address, "de.example.com");
+        assert_eq!(fields.sni, None);
+        assert_eq!(fields.path.as_deref(), Some("/xhttp"));
+        assert_eq!(fields.alpn.as_deref(), Some("h2,http/1.1"));
+        assert_eq!(fields.security_layer, "TLS");
+        assert_eq!(
+            host_fields(&input("Германия", "de.example.com", 443))
+                .unwrap()
+                .security_layer,
+            "DEFAULT"
+        );
+        let code = |input: HostInput| host_fields(&input).unwrap_err().code();
+        assert_eq!(code(input(" ", "de.example.com", 443)), "host.remark");
+        assert_eq!(
+            code(input(&"я".repeat(101), "de.example.com", 443)),
+            "host.remark"
+        );
+        assert_eq!(
+            code(input("Германия", "de example.com", 443)),
+            "host.address"
+        );
+        assert_eq!(code(input("Германия", "", 443)), "host.address");
+        assert_eq!(code(input("Германия", "de.example.com", 0)), "host.port");
+        assert_eq!(
+            code(input("Германия", "de.example.com", 65536)),
+            "host.port"
+        );
+        let mut bad = input("Германия", "de.example.com", 443);
+        bad.sni = Some("www example.com".into());
+        assert_eq!(code(bad.clone()), "host.sni");
+        bad.sni = None;
+        bad.alpn = Some("h4".into());
+        assert_eq!(code(bad.clone()), "host.alpn");
+        bad.alpn = None;
+        bad.fingerprint = Some("chrome; rm".into());
+        assert_eq!(code(bad.clone()), "host.fingerprint");
+        bad.fingerprint = Some("randomizednoalpn".into());
+        assert!(host_fields(&bad).is_ok());
+        bad.security_layer = Some("REALITY".into());
+        assert_eq!(code(bad), "host.security");
+    }
+
+    #[test]
+    fn правка_хоста_шлёт_только_изменённые_поля() {
+        let mut current = host(1, "Германия", REALITY, "de.example.com");
+        current.sni = Some("www.example.com".into());
+        current.fingerprint = Some("chrome".into());
+        current.path = Some(String::new());
+        current.security_layer = None;
+        let mut same = input("Германия", "de.example.com", 443);
+        same.sni = Some("www.example.com".into());
+        same.fingerprint = Some("chrome".into());
+        same.security_layer = Some("DEFAULT".into());
+        assert!(host_patch(&current, &host_fields(&same).unwrap()).is_empty());
+        let mut next = same.clone();
+        next.port = 8443;
+        next.sni = None;
+        next.alpn = Some("h3".into());
+        next.security_layer = Some("TLS".into());
+        let patch = host_patch(&current, &host_fields(&next).unwrap());
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({
+                "uuid": Uuid::from_u128(1), "port": 8443, "sni": null, "alpn": "h3", "securityLayer": "TLS"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn хосты_через_сервис_против_подделки() {
+        let Some(db) = test_store().await else { return };
+        let services = Services::new(ServiceDeps {
+            store: db.store.clone(),
+            payments: Arc::new(ProviderRegistry::builtin()),
+            modules: Arc::new(ModuleRegistry::catalog_only()),
+            secrets: None,
+            clock: Arc::new(FixedClock::new(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 11, 17, 12, 0, 0)
+                    .unwrap(),
+            )),
+            env: EnvFallbacks::default(),
+        });
+        services.reload().await.unwrap();
+        let remna = Arc::new(FakeRemnawave::new());
+        services.set_remna(Some(remna.clone()));
+        remna.set_config_profiles(vec![ConfigProfile {
+            uuid: PROFILE,
+            name: "Default-Profile".into(),
+            view_position: 0,
+            inbounds: vec![
+                inbound(REALITY, "VLESS_REALITY", "tcp", "reality", 443),
+                inbound(XHTTP, "VLESS_XHTTP", "xhttp", "none", 8443),
+            ],
+            nodes: Vec::new(),
+        }]);
+        let detail =
+            |uuid: Uuid, name: &str, country: &str, address: &str, active: Vec<Inbound>| {
+                let mut node = sample_node(uuid, name, country);
+                node.address = address.into();
+                let mut detail = NodeDetails::from(node);
+                detail.config_profile = Some(NodeConfigProfile {
+                    active_config_profile_uuid: Some(PROFILE),
+                    active_inbounds: active,
+                });
+                detail
+            };
+        remna.set_node_details(vec![
+            detail(
+                DE,
+                "Germany",
+                "DE",
+                "203.0.113.41",
+                vec![
+                    inbound(REALITY, "VLESS_REALITY", "tcp", "reality", 443),
+                    inbound(XHTTP, "VLESS_XHTTP", "xhttp", "none", 8443),
+                ],
+            ),
+            detail(
+                NL,
+                "NL-1",
+                "NL",
+                "198.51.100.21",
+                vec![inbound(REALITY, "VLESS_REALITY", "tcp", "reality", 443)],
+            ),
+        ]);
+        remna.set_squads(vec![
+            InternalSquad {
+                uuid: MAIN,
+                name: "Default-Squad".into(),
+                view_position: 0,
+                info: SquadInfo::default(),
+                inbounds: vec![inbound(REALITY, "VLESS_REALITY", "tcp", "reality", 443)],
+            },
+            InternalSquad {
+                uuid: RESERVE,
+                name: "Reserve".into(),
+                view_position: 1,
+                info: SquadInfo::default(),
+                inbounds: vec![
+                    inbound(REALITY, "VLESS_REALITY", "tcp", "reality", 443),
+                    inbound(XHTTP, "VLESS_XHTTP", "xhttp", "none", 8443),
+                ],
+            },
+        ]);
+        let mut hidden = host(3, "Нидерланды", REALITY, "198.51.100.21");
+        hidden.internal_squads = Some(HostSquadFilter::exclude(vec![MAIN]));
+        remna.set_hosts(vec![
+            host(5, "Германия XHTTP", XHTTP, "de.example.com"),
+            hidden,
+            host(1, "Германия", REALITY, "203.0.113.41"),
+        ]);
+        let infra = services.infra();
+
+        let view = infra.hosts().await.unwrap();
+        let remarks: Vec<&str> = view.hosts.iter().map(|r| r.host.remark.as_str()).collect();
+        assert_eq!(remarks, ["Германия", "Нидерланды", "Германия XHTTP"]);
+        assert_eq!(view.hosts[0].nodes, vec![DE]);
+        assert_eq!(view.hosts[1].nodes, vec![NL]);
+        assert_eq!(view.hosts[2].nodes, vec![DE]);
+        let squads = |row: &HostRow| -> Vec<(String, bool)> {
+            row.squads
+                .iter()
+                .map(|s| (s.name.clone(), s.shown))
+                .collect()
+        };
+        assert_eq!(
+            squads(&view.hosts[1]),
+            [
+                ("Default-Squad".to_string(), false),
+                ("Reserve".to_string(), true)
+            ]
+        );
+        assert_eq!(squads(&view.hosts[2]), [("Reserve".to_string(), true)]);
+        assert_eq!(view.inbounds.len(), 2);
+        assert_eq!(view.inbounds[0].nodes, vec![DE, NL]);
+        assert_eq!(view.inbounds[1].profile_name, "Default-Profile");
+        assert_eq!(view.nodes[0].inbounds, vec![REALITY, XHTTP]);
+
+        let mut raw = input("Финляндия", "fi.example.com", 443);
+        raw.inbound = Some(Uuid::from_u128(77));
+        assert!(matches!(
+            infra.create_host(&raw, ADMIN).await,
+            Err(ServiceError::NotFound(_))
+        ));
+        raw.inbound = None;
+        assert_eq!(
+            infra.create_host(&raw, ADMIN).await.unwrap_err().code(),
+            "host.inbound"
+        );
+        raw.inbound = Some(XHTTP);
+        raw.path = Some("/xhttp".into());
+        raw.security_layer = Some("TLS".into());
+        let created = infra.create_host(&raw, ADMIN).await.unwrap();
+        assert_eq!(created.inbound.config_profile_uuid, Some(PROFILE));
+        assert_eq!(created.inbound.config_profile_inbound_uuid, Some(XHTTP));
+        assert_eq!(created.view_position, 6);
+        let sent = remna.calls_of("create_host");
+        assert_eq!(sent[0]["path"], "/xhttp");
+        assert_eq!(sent[0]["securityLayer"], "TLS");
+        assert!(sent[0].get("sni").is_none());
+
+        let mut edit = raw.clone();
+        edit.port = 8443;
+        edit.path = None;
+        edit.sni = Some("www.example.com".into());
+        let updated = infra.update_host(created.uuid, &edit, ADMIN).await.unwrap();
+        assert_eq!(updated.port, 8443);
+        assert_eq!(updated.path, None);
+        assert_eq!(updated.sni.as_deref(), Some("www.example.com"));
+        let patch = remna.calls_of("update_host").pop().unwrap();
+        assert_eq!(
+            patch,
+            serde_json::json!({"uuid": created.uuid, "port": 8443, "sni": "www.example.com", "path": null})
+        );
+        let before = remna.calls_of("update_host").len();
+        infra.update_host(created.uuid, &edit, ADMIN).await.unwrap();
+        assert_eq!(remna.calls_of("update_host").len(), before);
+        assert!(matches!(
+            infra.update_host(Uuid::from_u128(404), &edit, ADMIN).await,
+            Err(ServiceError::NotFound(_))
+        ));
+
+        let off = infra
+            .host_action(created.uuid, HostAction::Disable, ADMIN)
+            .await
+            .unwrap();
+        assert!(off.is_disabled);
+        let on = infra
+            .host_action(created.uuid, HostAction::Enable, ADMIN)
+            .await
+            .unwrap();
+        assert!(!on.is_disabled);
+
+        let order = [
+            created.uuid,
+            Uuid::from_u128(1),
+            Uuid::from_u128(5),
+            Uuid::from_u128(3),
+        ];
+        infra.reorder_hosts(&order, ADMIN).await.unwrap();
+        let view = infra.hosts().await.unwrap();
+        let uuids: Vec<Uuid> = view.hosts.iter().map(|r| r.host.uuid).collect();
+        assert_eq!(uuids, order);
+        assert_eq!(
+            infra
+                .reorder_hosts(&order[..3], ADMIN)
+                .await
+                .unwrap_err()
+                .code(),
+            "host.order"
+        );
+        assert_eq!(
+            infra
+                .reorder_hosts(&[order[0], order[0], order[1], order[2]], ADMIN)
+                .await
+                .unwrap_err()
+                .code(),
+            "host.order"
+        );
+
+        infra.delete_host(created.uuid, ADMIN).await.unwrap();
+        assert_eq!(remna.host_list().len(), 3);
+        assert!(infra.delete_host(created.uuid, ADMIN).await.is_err());
+        let mut conn = services.store().conn().await.unwrap();
+        let actions: Vec<String> = conn
+            .audit()
+            .recent_by_action("host.delete", 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
+        assert_eq!(actions, ["host.delete"]);
+        drop(conn);
+        db.cleanup().await;
     }
 }

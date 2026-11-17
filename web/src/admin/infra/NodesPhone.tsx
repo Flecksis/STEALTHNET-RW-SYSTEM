@@ -1,7 +1,9 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { count, dateLong, groupDigits, money, NBSP, plural } from '../../lib/format';
 import { Flag } from '../../lib/Flag';
+import { Icon } from '../../lib/icons';
 import { minutesSince, spanText } from '../home/model';
 import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
@@ -282,6 +284,25 @@ export function NodesPhone() {
                 </li>
               );
             })}
+          </ul>
+        </section>
+      ) : null}
+
+      {data ? (
+        <section aria-labelledby="np-more" className="hp-group">
+          <h2 id="np-more" className="hp-h2">
+            Что видят клиенты
+          </h2>
+          <ul className="hp-card hp-list np-ul">
+            <li>
+              <Link to="/admin/infra/hosts" className="hs-plink press">
+                <span className="hp-text">
+                  <span className="hp-title">Хосты</span>
+                  <span className="hp-note muted">Названия серверов в приложении, адреса и порядок</span>
+                </span>
+                <Icon name="chevron-right" size={18} />
+              </Link>
+            </li>
           </ul>
         </section>
       ) : null}

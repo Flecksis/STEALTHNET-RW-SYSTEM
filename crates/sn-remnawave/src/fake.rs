@@ -1171,6 +1171,30 @@ impl RemnawaveApi for FakeRemnawave {
             if let Some(v) = &request.remark {
                 host.remark = v.clone();
             }
+            if let Some(v) = &request.address {
+                host.address = v.clone();
+            }
+            if let Some(v) = request.port {
+                host.port = v;
+            }
+            if let Some(v) = &request.sni {
+                host.sni = v.clone();
+            }
+            if let Some(v) = &request.host {
+                host.host = v.clone();
+            }
+            if let Some(v) = &request.path {
+                host.path = v.clone();
+            }
+            if let Some(v) = &request.alpn {
+                host.alpn = v.clone();
+            }
+            if let Some(v) = &request.fingerprint {
+                host.fingerprint = v.clone();
+            }
+            if let Some(v) = &request.security_layer {
+                host.security_layer = Some(v.clone());
+            }
             if let Some(v) = request.is_disabled {
                 host.is_disabled = v;
             }
@@ -1181,6 +1205,81 @@ impl RemnawaveApi for FakeRemnawave {
                 host.internal_squads = Some(v.clone());
             }
             Ok(host.clone())
+        })
+    }
+
+    async fn create_host(&self, request: &CreateHostRequest) -> RemnaResult<Host> {
+        self.run("create_host", args(request), |state| {
+            let target = request.inbound;
+            let known = state.config_profiles.iter().any(|p| {
+                p.uuid == target.config_profile_uuid
+                    && p.inbounds
+                        .iter()
+                        .any(|i| i.uuid == target.config_profile_inbound_uuid)
+            });
+            if !known {
+                return Err(not_found("Config profile inbound"));
+            }
+            let host = Host {
+                uuid: Uuid::new_v4(),
+                view_position: state
+                    .hosts
+                    .iter()
+                    .map(|h| h.view_position + 1)
+                    .max()
+                    .unwrap_or(0),
+                remark: request.remark.clone(),
+                address: request.address.clone(),
+                port: request.port,
+                is_disabled: request.is_disabled.unwrap_or(false),
+                inbound: HostInbound {
+                    config_profile_uuid: Some(target.config_profile_uuid),
+                    config_profile_inbound_uuid: Some(target.config_profile_inbound_uuid),
+                },
+                internal_squads: Some(HostSquadFilter::exclude(Vec::new())),
+                sni: request.sni.clone(),
+                host: request.host.clone(),
+                path: request.path.clone(),
+                alpn: request.alpn.clone(),
+                fingerprint: request.fingerprint.clone(),
+                security_layer: Some(
+                    request
+                        .security_layer
+                        .clone()
+                        .unwrap_or_else(|| "DEFAULT".into()),
+                ),
+                ..Host::default()
+            };
+            state.hosts.push(host.clone());
+            Ok(host)
+        })
+    }
+
+    async fn delete_host(&self, uuid: Uuid) -> RemnaResult<()> {
+        self.run("delete_host", json!({ "uuid": uuid }), |state| {
+            let before = state.hosts.len();
+            state.hosts.retain(|h| h.uuid != uuid);
+            if state.hosts.len() == before {
+                return Err(not_found("Host"));
+            }
+            Ok(())
+        })
+    }
+
+    async fn reorder_hosts(&self, positions: &[HostPosition]) -> RemnaResult<()> {
+        self.run("reorder_hosts", json!({ "hosts": positions }), |state| {
+            if positions
+                .iter()
+                .any(|p| !state.hosts.iter().any(|h| h.uuid == p.uuid))
+            {
+                return Err(not_found("Host"));
+            }
+            for position in positions {
+                if let Some(host) = state.hosts.iter_mut().find(|h| h.uuid == position.uuid) {
+                    host.view_position = position.view_position;
+                }
+            }
+            Ok(())
         })
     }
 

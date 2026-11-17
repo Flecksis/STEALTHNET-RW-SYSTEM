@@ -105,6 +105,18 @@ pub trait RemnawaveApi: Send + Sync {
         Err(RemnaError::Unsupported("hosts.update"))
     }
 
+    async fn create_host(&self, _request: &CreateHostRequest) -> RemnaResult<Host> {
+        Err(RemnaError::Unsupported("hosts.create"))
+    }
+
+    async fn delete_host(&self, _uuid: Uuid) -> RemnaResult<()> {
+        Err(RemnaError::Unsupported("hosts.delete"))
+    }
+
+    async fn reorder_hosts(&self, _positions: &[HostPosition]) -> RemnaResult<()> {
+        Err(RemnaError::Unsupported("hosts.reorder"))
+    }
+
     async fn enable_hosts(&self, _uuids: &[Uuid]) -> RemnaResult<()> {
         Err(RemnaError::Unsupported("hosts.bulk_enable"))
     }

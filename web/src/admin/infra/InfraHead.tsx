@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { api } from '../../lib/api';
 import { useSession } from '../session';
 
-type Props = { current: 'nodes' | 'squads' | 'billing'; nodes?: number; squads?: number; action?: ReactNode };
+type Props = { current: 'nodes' | 'squads' | 'hosts' | 'billing'; nodes?: number; squads?: number; hosts?: number; action?: ReactNode };
 
 let panelCache: string | null | undefined;
 
@@ -26,10 +26,11 @@ export function useRemnaPanel(): string | null {
   return panel;
 }
 
-export function InfraHead({ current, nodes, squads, action }: Props) {
+export function InfraHead({ current, nodes, squads, hosts, action }: Props) {
   const panel = useRemnaPanel();
   const [squadCount, setSquadCount] = useState<number | null>(squads ?? null);
   const [nodeCount, setNodeCount] = useState<number | null>(nodes ?? null);
+  const [hostCount, setHostCount] = useState<number | null>(hosts ?? null);
 
   useEffect(() => {
     if (squads !== undefined) {
@@ -51,9 +52,23 @@ export function InfraHead({ current, nodes, squads, action }: Props) {
       .catch(() => setNodeCount(null));
   }, [nodes]);
 
+  useEffect(() => {
+    if (hosts !== undefined) {
+      setHostCount(hosts);
+      return;
+    }
+    if (current === 'hosts') {
+      return;
+    }
+    api<{ hosts: unknown[] }>('/api/admin/infra/hosts')
+      .then((r) => setHostCount(r.hosts.length))
+      .catch(() => setHostCount(null));
+  }, [hosts, current]);
+
   const tabs: Array<[Props['current'], string, string, number | null]> = [
     ['nodes', 'Ноды', '/admin/infra', nodeCount],
     ['squads', 'Сквады', '/admin/infra/squads', squadCount],
+    ['hosts', 'Хосты', '/admin/infra/hosts', hostCount],
     ['billing', 'Оплата серверов', '/admin/infra/billing', null],
   ];
 

@@ -12,6 +12,7 @@ import { Home } from './home/Home';
 import { Support } from './support/Support';
 import { InfraNodes } from './infra/InfraNodes';
 import { InfraSquads } from './infra/InfraSquads';
+import { InfraHosts } from './infra/InfraHosts';
 import { InfraBilling } from './infra/InfraBilling';
 import { Modules } from './modules/Modules';
 import { ModulePage } from './modules/ModulePage';
@@ -207,6 +208,7 @@ export function AdminApp() {
           <Route path="tariffs" element={<Tariffs />} />
           <Route path="infra" element={<InfraNodes />} />
           <Route path="infra/squads" element={<InfraSquads />} />
+          <Route path="infra/hosts" element={<InfraHosts />} />
           <Route path="infra/billing" element={<InfraBilling />} />
           <Route path="modules" element={<Modules />} />
           <Route path="modules/:id" element={<ModulePage />} />

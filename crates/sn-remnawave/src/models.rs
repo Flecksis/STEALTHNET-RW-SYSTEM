@@ -1145,7 +1145,7 @@ impl Host {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
     pub uuid: Uuid,
@@ -1170,7 +1170,30 @@ pub struct Host {
     pub server_description: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
     pub internal_squads: Option<HostSquadFilter>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub sni: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub host: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub path: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub alpn: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub fingerprint: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub security_layer: Option<String>,
 }
+
+pub const HOST_ALPN: [&str; 6] = [
+    "h3",
+    "h2",
+    "http/1.1",
+    "h2,http/1.1",
+    "h3,h2,http/1.1",
+    "h3,h2",
+];
+
+pub const HOST_SECURITY_LAYERS: [&str; 3] = ["DEFAULT", "TLS", "NONE"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1178,6 +1201,22 @@ pub struct UpdateHostRequest {
     pub uuid: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sni: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_layer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_disabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1191,6 +1230,14 @@ impl UpdateHostRequest {
         UpdateHostRequest {
             uuid,
             remark: None,
+            address: None,
+            port: None,
+            sni: None,
+            host: None,
+            path: None,
+            alpn: None,
+            fingerprint: None,
+            security_layer: None,
             is_disabled: None,
             is_hidden: None,
             internal_squads: None,
@@ -1199,10 +1246,85 @@ impl UpdateHostRequest {
 
     pub const fn is_empty(&self) -> bool {
         self.remark.is_none()
+            && self.address.is_none()
+            && self.port.is_none()
+            && self.sni.is_none()
+            && self.host.is_none()
+            && self.path.is_none()
+            && self.alpn.is_none()
+            && self.fingerprint.is_none()
+            && self.security_layer.is_none()
             && self.is_disabled.is_none()
             && self.is_hidden.is_none()
             && self.internal_squads.is_none()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInboundTarget {
+    pub config_profile_uuid: Uuid,
+    pub config_profile_inbound_uuid: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateHostRequest {
+    pub inbound: HostInboundTarget,
+    pub remark: String,
+    pub address: String,
+    pub port: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sni: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_layer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_disabled: Option<bool>,
+}
+
+impl CreateHostRequest {
+    pub fn new(
+        inbound: HostInboundTarget,
+        remark: impl Into<String>,
+        address: impl Into<String>,
+        port: i64,
+    ) -> Self {
+        CreateHostRequest {
+            inbound,
+            remark: remark.into(),
+            address: address.into(),
+            port,
+            sni: None,
+            host: None,
+            path: None,
+            alpn: None,
+            fingerprint: None,
+            security_layer: None,
+            is_disabled: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostPosition {
+    pub uuid: Uuid,
+    pub view_position: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostsReordered {
+    #[serde(default, deserialize_with = "nullable")]
+    pub is_updated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1873,6 +1995,79 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(empty, SystemConfiguration::default());
+    }
+
+    #[test]
+    fn хост_с_null_вместо_строк_и_списков_разбирается() {
+        let host: Host = serde_json::from_value(serde_json::json!({
+            "uuid": "00000000-0000-4000-8000-000000000071", "viewPosition": null, "remark": "Германия",
+            "address": null, "port": null, "path": null, "sni": null, "host": null, "alpn": null,
+            "fingerprint": null, "isDisabled": null, "securityLayer": null, "xhttpExtraParams": null,
+            "muxParams": null, "sockoptParams": null, "finalMask": null,
+            "inbound": {"configProfileUuid": null, "configProfileInboundUuid": null},
+            "serverDescription": null, "tags": null, "isHidden": null, "nodes": null,
+            "xrayJsonTemplateUuid": null, "excludeFromSubscriptionTypes": null, "mapper": null,
+            "includeInSrrRules": null, "internalSquads": null
+        }))
+        .unwrap();
+        assert_eq!(host.remark, "Германия");
+        assert_eq!(host.address, "");
+        assert_eq!(host.port, 0);
+        assert!(host.nodes.is_empty() && host.tags.is_empty());
+        assert_eq!(host.inbound, HostInbound::default());
+        assert_eq!(
+            (host.sni, host.alpn, host.security_layer),
+            (None, None, None)
+        );
+        let empty: Host = serde_json::from_value(serde_json::json!({
+            "uuid": "00000000-0000-4000-8000-000000000072", "remark": "Нидерланды", "inbound": null
+        }))
+        .unwrap();
+        assert!(!empty.is_disabled && !empty.is_hidden);
+        assert!(empty.internal_squads.is_none());
+        let full: Host = serde_json::from_value(serde_json::json!({
+            "uuid": "00000000-0000-4000-8000-000000000073", "viewPosition": 4, "remark": "Финляндия",
+            "address": "fi.example.com", "port": 8443, "sni": "www.example.com", "host": "cdn.example.com",
+            "path": "/xhttp", "alpn": "h3,h2", "fingerprint": "chrome", "securityLayer": "TLS",
+            "isDisabled": true, "inbound": {"configProfileUuid": "00000000-0000-4000-8000-000000000021",
+            "configProfileInboundUuid": "00000000-0000-4000-8000-000000000031"}
+        }))
+        .unwrap();
+        assert_eq!(full.port, 8443);
+        assert_eq!(full.sni.as_deref(), Some("www.example.com"));
+        assert_eq!(full.alpn.as_deref(), Some("h3,h2"));
+        assert_eq!(full.security_layer.as_deref(), Some("TLS"));
+        let back = serde_json::to_value(&full).unwrap();
+        assert_eq!(back["securityLayer"], "TLS");
+        assert_eq!(back["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn правка_хоста_отличает_null_от_отсутствия_поля() {
+        let mut req = UpdateHostRequest::new(Uuid::from_u128(7));
+        assert!(req.is_empty());
+        req.sni = Some(None);
+        req.port = Some(8443);
+        req.alpn = Some(Some("h2".into()));
+        assert!(!req.is_empty());
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            serde_json::json!({"uuid": "00000000-0000-0000-0000-000000000007", "port": 8443, "sni": null, "alpn": "h2"})
+        );
+        let target = HostInboundTarget {
+            config_profile_uuid: Uuid::from_u128(1),
+            config_profile_inbound_uuid: Uuid::from_u128(2),
+        };
+        let mut create = CreateHostRequest::new(target, "Германия", "de.example.com", 443);
+        create.fingerprint = Some("chrome".into());
+        assert_eq!(
+            serde_json::to_value(&create).unwrap(),
+            serde_json::json!({
+                "inbound": {"configProfileUuid": "00000000-0000-0000-0000-000000000001",
+                            "configProfileInboundUuid": "00000000-0000-0000-0000-000000000002"},
+                "remark": "Германия", "address": "de.example.com", "port": 443, "fingerprint": "chrome"
+            })
+        );
     }
 
     #[test]

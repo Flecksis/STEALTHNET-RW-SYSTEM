@@ -8,8 +8,9 @@ use axum::{Json, Router};
 use sn_domain::access::Permission;
 use sn_remnawave::{Host, InfraBillingNodes, Node, SquadAccessibleNodes};
 use sn_services::infra::{
-    BillingView, CreatedNode, NewNodeInput, NodeAction, NodeActionResult, NodeEditInput,
-    PaymentHistory, ProfileView, ProviderInput, ProviderView, SquadInput, SquadView,
+    BillingView, CreatedNode, HostAction, HostInput, HostOrderInput, HostsView, NewNodeInput,
+    NodeAction, NodeActionResult, NodeEditInput, PaymentHistory, ProfileView, ProviderInput,
+    ProviderView, SquadInput, SquadView,
 };
 use uuid::Uuid;
 
@@ -18,7 +19,13 @@ pub fn routes() -> Router<AppState> {
         .route("/remnawave/status", get(remna_status))
         .route("/infra/nodes", get(nodes).post(create_node))
         .route("/infra/nodes/{uuid}", axum::routing::put(update_node))
-        .route("/infra/hosts", get(hosts))
+        .route("/infra/hosts", get(hosts).post(create_host))
+        .route("/infra/hosts/order", axum::routing::put(reorder_hosts))
+        .route(
+            "/infra/hosts/{uuid}",
+            axum::routing::put(update_host).delete(delete_host),
+        )
+        .route("/infra/hosts/{uuid}/actions/{action}", post(host_action))
         .route("/infra/profiles", get(profiles))
         .route("/infra/providers", get(providers).post(create_provider))
         .route("/infra/nodes/{uuid}/actions/{action}", post(node_action))
@@ -133,9 +140,84 @@ async fn update_node(
     ))
 }
 
-async fn hosts(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<Vec<Host>>> {
+async fn hosts(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<HostsView>> {
     admin.require(Permission::Infrastructure)?;
     Ok(Json(state.services.infra().hosts().await?))
+}
+
+async fn create_host(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<HostInput>,
+) -> ApiResult<Json<Host>> {
+    admin.require(Permission::Infrastructure)?;
+    Ok(Json(
+        state
+            .services
+            .infra()
+            .create_host(&body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn update_host(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(uuid): Path<Uuid>,
+    ApiJson(body): ApiJson<HostInput>,
+) -> ApiResult<Json<Host>> {
+    admin.require(Permission::Infrastructure)?;
+    Ok(Json(
+        state
+            .services
+            .infra()
+            .update_host(uuid, &body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn host_action(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path((uuid, action)): Path<(Uuid, String)>,
+) -> ApiResult<Json<Host>> {
+    admin.require(Permission::Infrastructure)?;
+    let action = HostAction::parse(&action).ok_or_else(ApiError::not_found)?;
+    Ok(Json(
+        state
+            .services
+            .infra()
+            .host_action(uuid, action, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn delete_host(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(uuid): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Infrastructure)?;
+    state
+        .services
+        .infra()
+        .delete_host(uuid, admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn reorder_hosts(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<HostOrderInput>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Infrastructure)?;
+    state
+        .services
+        .infra()
+        .reorder_hosts(&body.uuids, admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn profiles(

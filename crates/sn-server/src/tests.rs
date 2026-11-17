@@ -28,6 +28,7 @@ mod balance_off;
 mod bot_content;
 mod channels;
 mod gram;
+mod hosts;
 mod photos;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
@@ -2620,6 +2621,7 @@ async fn инфраструктура_сквады_провайдеры_и_оп�
         tags: Vec::new(),
         server_description: None,
         internal_squads: None,
+        ..Default::default()
     };
     let mut excluded = host(46, "Финляндия", false);
     excluded.internal_squads = Some(sn_remnawave::HostSquadFilter::exclude(vec![
@@ -2633,8 +2635,8 @@ async fn инфраструктура_сквады_провайдеры_и_оп�
     ]);
     let (status, hosts) = h.get("/api/admin/infra/hosts", &owner).await;
     assert_eq!(status, StatusCode::OK, "{hosts}");
-    assert_eq!(hosts.as_array().unwrap().len(), 3);
-    assert_eq!(hosts[0]["remark"], "Нидерланды");
+    assert_eq!(hosts["hosts"].as_array().unwrap().len(), 3);
+    assert_eq!(hosts["hosts"][0]["host"]["remark"], "Нидерланды");
 
     let (status, body) = h
         .write(

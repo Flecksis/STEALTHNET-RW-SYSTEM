@@ -224,6 +224,11 @@ struct HostUuids<'a> {
 }
 
 #[derive(Serialize)]
+struct HostOrder<'a> {
+    hosts: &'a [HostPosition],
+}
+
+#[derive(Serialize)]
 struct TimezoneQuery<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tz: Option<&'a str>,
@@ -486,6 +491,31 @@ impl RemnawaveApi for RemnawaveClient {
 
     async fn update_host(&self, request: &UpdateHostRequest) -> RemnaResult<Host> {
         self.patch("/api/hosts", request).await
+    }
+
+    async fn create_host(&self, request: &CreateHostRequest) -> RemnaResult<Host> {
+        self.post("/api/hosts", request).await
+    }
+
+    async fn delete_host(&self, uuid: Uuid) -> RemnaResult<()> {
+        self.delete(&format!("/api/hosts/{uuid}")).await
+    }
+
+    async fn reorder_hosts(&self, positions: &[HostPosition]) -> RemnaResult<()> {
+        let result: HostsReordered = self
+            .post(
+                "/api/hosts/actions/reorder",
+                &HostOrder { hosts: positions },
+            )
+            .await?;
+        if result.is_updated {
+            Ok(())
+        } else {
+            Err(RemnaError::BadRequest {
+                code: None,
+                message: "порядок хостов не изменился".into(),
+            })
+        }
     }
 
     async fn enable_hosts(&self, uuids: &[Uuid]) -> RemnaResult<()> {
@@ -1056,6 +1086,104 @@ mod tests {
         assert_eq!(api.update_host(&update).await.unwrap().uuid, uuid(HOST));
         api.enable_hosts(&[uuid(HOST)]).await.unwrap();
         api.disable_hosts(&[uuid(HOST)]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn хост_создаётся_правится_удаляется_и_меняет_порядок() {
+        let server = MockServer::start().await;
+        let created = serde_json::json!({
+            "uuid": HOST, "viewPosition": 3, "remark": "Германия", "address": "de.example.com", "port": 8443,
+            "path": "/xhttp", "sni": null, "host": null, "alpn": "h3,h2", "fingerprint": "chrome",
+            "isDisabled": false, "securityLayer": "TLS", "xhttpExtraParams": null, "muxParams": null,
+            "sockoptParams": null, "finalMask": null,
+            "inbound": {"configProfileUuid": PROFILE, "configProfileInboundUuid": INBOUND},
+            "serverDescription": null, "tags": [], "isHidden": false, "overrideSniFromAddress": false,
+            "keepSniBlank": false, "vlessRouteId": null, "pinnedPeerCertSha256": null,
+            "verifyPeerCertByName": null, "shuffleHost": false, "mihomoX25519": false,
+            "mihomoIpVersion": null, "nodes": [], "xrayJsonTemplateUuid": null,
+            "excludeFromSubscriptionTypes": [], "mapper": {}, "includeInSrrRules": [],
+            "internalSquads": {"mode": "EXCLUDE", "squads": []}
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/hosts"))
+            .and(body_json(serde_json::json!({
+                "inbound": {"configProfileUuid": PROFILE, "configProfileInboundUuid": INBOUND},
+                "remark": "Германия", "address": "de.example.com", "port": 8443,
+                "path": "/xhttp", "alpn": "h3,h2", "fingerprint": "chrome", "securityLayer": "TLS"
+            })))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(serde_json::json!({ "response": created })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/hosts"))
+            .and(body_json(serde_json::json!({
+                "uuid": HOST, "address": "203.0.113.41", "port": 443, "sni": null, "path": null
+            })))
+            .respond_with(wrapped(created.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!("/api/hosts/{HOST}")))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/hosts/actions/reorder"))
+            .and(body_json(serde_json::json!({"hosts": [
+                {"uuid": HOST, "viewPosition": 0},
+                {"uuid": NODE, "viewPosition": 1}
+            ]})))
+            .respond_with(wrapped(serde_json::json!({"isUpdated": true})))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/hosts/actions/reorder"))
+            .respond_with(wrapped(serde_json::json!({"isUpdated": false})))
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        let target = HostInboundTarget {
+            config_profile_uuid: uuid(PROFILE),
+            config_profile_inbound_uuid: uuid(INBOUND),
+        };
+        let mut request = CreateHostRequest::new(target, "Германия", "de.example.com", 8443);
+        request.path = Some("/xhttp".into());
+        request.alpn = Some("h3,h2".into());
+        request.fingerprint = Some("chrome".into());
+        request.security_layer = Some("TLS".into());
+        let host = api.create_host(&request).await.unwrap();
+        assert_eq!(host.uuid, uuid(HOST));
+        assert_eq!(host.view_position, 3);
+        assert_eq!(host.path.as_deref(), Some("/xhttp"));
+        assert!(host.sni.is_none());
+        let mut update = UpdateHostRequest::new(uuid(HOST));
+        update.address = Some("203.0.113.41".into());
+        update.port = Some(443);
+        update.sni = Some(None);
+        update.path = Some(None);
+        api.update_host(&update).await.unwrap();
+        api.delete_host(uuid(HOST)).await.unwrap();
+        let order = [
+            HostPosition {
+                uuid: uuid(HOST),
+                view_position: 0,
+            },
+            HostPosition {
+                uuid: uuid(NODE),
+                view_position: 1,
+            },
+        ];
+        api.reorder_hosts(&order).await.unwrap();
+        let refused = api.reorder_hosts(&order).await.unwrap_err();
+        assert!(matches!(refused, RemnaError::BadRequest { .. }));
+        assert!(!refused.outcome_unknown());
     }
 
     #[tokio::test]

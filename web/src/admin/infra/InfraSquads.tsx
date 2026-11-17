@@ -5,6 +5,7 @@ import { count, groupDigits, plural } from '../../lib/format';
 import { Flag } from '../../lib/Flag';
 import { InfraHead } from './InfraHead';
 import { inboundLabel } from './InfraNodes';
+import type { HostData, HostNode, HostRow, HostsData } from './hosts';
 import '../form.css';
 import './infra.css';
 
@@ -20,17 +21,6 @@ type NodeLite = {
   city: string | null;
   inbounds: Inbound[];
   profile_uuid: string | null;
-};
-type Host = {
-  uuid: string;
-  viewPosition: number;
-  remark: string;
-  address: string;
-  isDisabled: boolean;
-  isHidden: boolean;
-  inbound: { configProfileUuid: string | null; configProfileInboundUuid: string | null };
-  nodes: string[];
-  internalSquads: { mode: string; squads: string[] } | null;
 };
 type HostDraft = { remark?: string; shown?: boolean };
 
@@ -51,7 +41,7 @@ function normal(inbound: RawInbound): Inbound {
   };
 }
 
-function shownTo(host: Host, squad: string | null): boolean {
+function shownTo(host: HostData, squad: string | null): boolean {
   if (host.isDisabled || host.isHidden) {
     return false;
   }
@@ -63,21 +53,13 @@ function shownTo(host: Host, squad: string | null): boolean {
   return filter.mode === 'ALLOW_ONLY' ? listed : !listed;
 }
 
-function hostOf(host: Host, inbounds: Set<string>): boolean {
-  return host.inbound.configProfileInboundUuid !== null && inbounds.has(host.inbound.configProfileInboundUuid);
+function hostOf(row: HostRow, inbounds: Set<string>): boolean {
+  const inbound = row.host.inbound.configProfileInboundUuid;
+  return inbound !== null && inbounds.has(inbound);
 }
 
-function nodesOfHost(host: Host, nodes: NodeLite[]): NodeLite[] {
-  const bound = nodes.filter((n) => host.nodes.includes(n.node.uuid));
-  if (bound.length) {
-    return bound;
-  }
-  const byAddress = nodes.filter((n) => n.node.address === host.address);
-  if (byAddress.length) {
-    return byAddress;
-  }
-  const serving = nodes.filter((n) => n.inbounds.some((i) => i.uuid === host.inbound.configProfileInboundUuid));
-  return serving.length === 1 ? serving : [];
+function hostNodes(row: HostRow, nodes: HostNode[]): HostNode[] {
+  return row.nodes.map((uuid) => nodes.find((n) => n.uuid === uuid)).filter((n): n is HostNode => Boolean(n));
 }
 
 function joinAnd(items: string[]): string {
@@ -91,7 +73,8 @@ function people(n: number): string {
 export function InfraSquads() {
   const [squads, setSquads] = useState<SquadData[] | null>(null);
   const [nodes, setNodes] = useState<NodeLite[]>([]);
-  const [hosts, setHosts] = useState<Host[] | null>([]);
+  const [hosts, setHosts] = useState<HostRow[] | null>([]);
+  const [hostNodeList, setHostNodeList] = useState<HostNode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ uuid: string; created: boolean } | null>(null);
@@ -101,11 +84,12 @@ export function InfraSquads() {
       const [list, nodeData, hostList] = await Promise.all([
         api<SquadData[]>('/api/admin/infra/squads'),
         api<{ nodes: NodeLite[] }>('/api/admin/infra/nodes').catch(() => ({ nodes: [] as NodeLite[] })),
-        api<Host[]>('/api/admin/infra/hosts').catch(() => null),
+        api<HostsData>('/api/admin/infra/hosts').catch(() => null),
       ]);
       setSquads(list);
       setNodes(nodeData.nodes);
-      setHosts(hostList ? [...hostList].sort((a, b) => a.viewPosition - b.viewPosition) : null);
+      setHosts(hostList ? hostList.hosts : null);
+      setHostNodeList(hostList ? hostList.nodes : []);
       setError(null);
       if (first && list[0]) {
         setEditing((current) => current ?? list[0]?.squad.uuid ?? null);
@@ -135,6 +119,7 @@ export function InfraSquads() {
       <InfraHead
         current="squads"
         squads={squads?.length}
+        hosts={hosts?.length}
         action={
           <button type="button" className={editing === 'new' ? 'btn-line hov' : 'btn-main btn'} aria-expanded={editing === 'new'} onClick={() => open('new')}>
             Новый сквад
@@ -153,7 +138,7 @@ export function InfraSquads() {
             <div className="sq-row">
               <h2 className="inf-h2">Новый сквад</h2>
             </div>
-            <SquadEditor squad={null} nodes={nodes} hosts={hosts} onCancel={() => setEditing(null)} onSaved={(uuid) => finish(uuid, true)} />
+            <SquadEditor squad={null} nodes={nodes} hosts={hosts} hostNodes={hostNodeList} onCancel={() => setEditing(null)} onSaved={(uuid) => finish(uuid, true)} />
           </div>
         ) : null}
         {squads === null && !error ? <p className="inf-empty">Загружаем сквады…</p> : null}
@@ -162,7 +147,7 @@ export function InfraSquads() {
           const inbSet = new Set(item.squad.inbounds.map((i) => i.uuid));
           const own = nodes.filter((n) => n.inbounds.some((i) => inbSet.has(i.uuid)));
           const squadHosts = (hosts ?? []).filter((h) => hostOf(h, inbSet));
-          const visible = [...new Set(squadHosts.filter((h) => shownTo(h, item.squad.uuid)).map((h) => h.remark.trim()).filter(Boolean))];
+          const visible = [...new Set(squadHosts.filter((h) => shownTo(h.host, item.squad.uuid)).map((h) => h.host.remark.trim()).filter(Boolean))];
           const inbounds = item.squad.inbounds.length || item.squad.info.inboundsCount;
           const clients = item.squad.info.membersCount;
           const app =
@@ -218,7 +203,7 @@ export function InfraSquads() {
                   </p>
                 </div>
               ) : null}
-              {isOpen ? <SquadEditor squad={item} nodes={nodes} hosts={hosts} onCancel={() => setEditing(null)} onSaved={(uuid) => finish(uuid, false)} /> : null}
+              {isOpen ? <SquadEditor squad={item} nodes={nodes} hosts={hosts} hostNodes={hostNodeList} onCancel={() => setEditing(null)} onSaved={(uuid) => finish(uuid, false)} /> : null}
             </div>
           );
         })}
@@ -230,12 +215,13 @@ export function InfraSquads() {
 type EditorProps = {
   squad: SquadData | null;
   nodes: NodeLite[];
-  hosts: Host[] | null;
+  hosts: HostRow[] | null;
+  hostNodes: HostNode[];
   onCancel: () => void;
   onSaved: (uuid: string) => Promise<void>;
 };
 
-function SquadEditor({ squad, nodes, hosts, onCancel, onSaved }: EditorProps) {
+function SquadEditor({ squad, nodes, hosts, hostNodes: knownNodes, onCancel, onSaved }: EditorProps) {
   const squadId = squad?.squad.uuid ?? null;
   const original = useMemo(() => (squad?.squad.inbounds ?? []).map(normal), [squad]);
   const [name, setName] = useState(squad?.squad.name ?? '');
@@ -269,13 +255,13 @@ function SquadEditor({ squad, nodes, hosts, onCancel, onSaved }: EditorProps) {
 
   const chosenSet = new Set(chosen);
   const hostRows = (hosts ?? [])
-    .filter((h) => hostOf(h, chosenSet))
-    .map((host) => {
+    .filter((row) => hostOf(row, chosenSet))
+    .map((row) => {
+      const host = row.host;
       const draft = drafts[host.uuid] ?? {};
-      const label = nodesOfHost(host, nodes)
-        .map((n) => n.node.name)
-        .join(', ');
-      return { host, label: label || host.address, remark: draft.remark ?? host.remark, shown: draft.shown ?? shownTo(host, squadId) };
+      const owners = hostNodes(row, knownNodes);
+      const label = owners.map((n) => n.name).join(', ');
+      return { host, owners, label: label || host.address, remark: draft.remark ?? host.remark, shown: draft.shown ?? shownTo(host, squadId) };
     });
 
   const toggle = (uuid: string) => setChosen(chosenSet.has(uuid) ? chosen.filter((x) => x !== uuid) : [...chosen, uuid]);
@@ -409,9 +395,12 @@ function SquadEditor({ squad, nodes, hosts, onCancel, onSaved }: EditorProps) {
         </fieldset>
         <fieldset className="sq-set sq-hosts">
           <legend className="sq-legend">Что видят клиенты</legend>
-          {hostRows.map(({ host, label, remark, shown }) => (
+          {hostRows.map(({ host, owners, label, remark, shown }) => (
             <div key={host.uuid} className="sq-host">
-              <span className="sq-code">{label}</span>
+              <span className="sq-code">
+                {owners.length === 1 ? <Flag code={owners[0]?.country_code} /> : null}
+                {label}
+              </span>
               <label className="sq-remark">
                 <span className="sr-only">Название сервера {label} в приложении</span>
                 <input className="field" value={remark} maxLength={100} onChange={(e) => patchHost(host.uuid, { remark: e.target.value })} aria-invalid={remark.trim() === ''} disabled={busy} />
@@ -433,6 +422,12 @@ function SquadEditor({ squad, nodes, hosts, onCancel, onSaved }: EditorProps) {
             </div>
           ))}
           {hostNote ? <p className={hostNote.warn ? 'sq-foot sq-warn' : 'sq-foot muted'}>{hostNote.text}</p> : null}
+          <p className="sq-foot cap">
+            Адрес, порт, SNI и порядок серверов —{' '}
+            <Link to="/admin/infra/hosts" className="hm-link">
+              во вкладке «Хосты»
+            </Link>
+          </p>
         </fieldset>
       </div>
       {error ? (
