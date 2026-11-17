@@ -1,0 +1,7 @@
+services:
+  app:
+    environment:
+      SN_UPDATER_DIR: /run/stealthnet-updater
+    volumes:
+      - ${SN_UPDATER_STATE:?}/ipc/request:/run/stealthnet-updater/request
+      - ${SN_UPDATER_STATE:?}/ipc/status:/run/stealthnet-updater/status:ro

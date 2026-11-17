@@ -55,6 +55,7 @@ struct Runtime {
     remna: Option<Arc<dyn RemnawaveApi>>,
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
+    updates: Option<Arc<crate::updates::UpdateConfig>>,
 }
 
 struct Inner {
@@ -88,6 +89,7 @@ impl Services {
                 .as_ref()
                 .and_then(|r| r.webhook_secret.clone()),
             bot_token: deps.env.bot_token.clone(),
+            updates: None,
         };
         Services {
             inner: Arc::new(Inner {
@@ -307,6 +309,18 @@ impl Services {
 
     pub fn tariffs(&self) -> TariffAdmin<'_> {
         TariffAdmin::new(self)
+    }
+
+    pub fn update_config(&self) -> Option<Arc<crate::updates::UpdateConfig>> {
+        self.read(|r| r.updates.clone())
+    }
+
+    pub fn set_update_config(&self, config: Option<crate::updates::UpdateConfig>) {
+        self.write(|r| r.updates = config.map(Arc::new));
+    }
+
+    pub fn updates(&self) -> crate::updates::Updates<'_> {
+        crate::updates::Updates::new(self)
     }
 
     pub fn infra(&self) -> InfraOps<'_> {

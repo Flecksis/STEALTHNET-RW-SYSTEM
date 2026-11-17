@@ -11,6 +11,7 @@ mod review_tests;
 mod settings;
 mod stars;
 mod support;
+mod system;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -32,6 +33,7 @@ pub fn routes() -> Router<AppState> {
         .merge(infra::routes())
         .merge(support::routes())
         .merge(settings::routes())
+        .merge(system::routes())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

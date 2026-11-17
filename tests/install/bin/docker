@@ -1,6 +1,99 @@
 #!/bin/sh
 STATE=${FAKE_STATE:?}
 printf '%s\n' "$*" >> "$STATE/calls.log"
+
+label_of() {
+    ref=$1
+    column=$2
+    if [ -f "$STATE/labels" ]; then
+        awk -F'|' -v ref="$ref" -v col="$column" '$1 == ref { print $col; exit }' "$STATE/labels"
+    fi
+}
+
+dbs() {
+    if [ ! -f "$STATE/dbs" ]; then
+        printf 'stealthnet|\n' > "$STATE/dbs"
+    fi
+}
+
+db_has() {
+    dbs
+    grep -q "^$1|" "$STATE/dbs"
+}
+
+db_set() {
+    dbs
+    grep -v "^$1|" "$STATE/dbs" > "$STATE/dbs.tmp"
+    printf '%s|%s\n' "$1" "$2" >> "$STATE/dbs.tmp"
+    mv "$STATE/dbs.tmp" "$STATE/dbs"
+}
+
+db_drop() {
+    dbs
+    grep -v "^$1|" "$STATE/dbs" > "$STATE/dbs.tmp"
+    mv "$STATE/dbs.tmp" "$STATE/dbs"
+}
+
+db_rename() {
+    comment=$(grep "^$1|" "$STATE/dbs" | sed 's/^[^|]*|//')
+    db_drop "$1"
+    db_set "$2" "$comment"
+}
+
+sql() {
+    q=$1
+    dbs
+    case "$q" in
+        "SELECT 1 FROM pg_database WHERE datname = '"*)
+            name=${q#*datname = \'}
+            name=${name%\'}
+            if db_has "$name"; then echo 1; fi
+            ;;
+        "SELECT coalesce(shobj_description"*)
+            name=${q#*datname = \'}
+            name=${name%\'}
+            grep "^$name|" "$STATE/dbs" | sed 's/^[^|]*|//'
+            ;;
+        "SELECT pg_database_size"*)
+            echo "${FAKE_DB_SIZE:-1048576}"
+            ;;
+        "CREATE DATABASE stealthnet_next TEMPLATE stealthnet")
+            [ "${FAKE_CLONE_EXIT:-0}" -eq 0 ] || return 1
+            db_has stealthnet_next && return 1
+            db_set stealthnet_next ""
+            ;;
+        "COMMENT ON DATABASE "*" IS NULL")
+            name=${q#COMMENT ON DATABASE }
+            name=${name%% *}
+            db_set "$name" ""
+            ;;
+        "COMMENT ON DATABASE "*)
+            name=${q#COMMENT ON DATABASE }
+            name=${name%% *}
+            text=${q#*IS \'}
+            text=${text%\'}
+            db_set "$name" "$text"
+            ;;
+        "BEGIN; ALTER DATABASE stealthnet RENAME TO stealthnet_prev; ALTER DATABASE stealthnet_next RENAME TO stealthnet; COMMIT;")
+            [ "${FAKE_SWAP_EXIT:-0}" -eq 0 ] || return 1
+            db_rename stealthnet stealthnet_prev
+            db_rename stealthnet_next stealthnet
+            ;;
+        "BEGIN; ALTER DATABASE stealthnet RENAME TO stealthnet_next; ALTER DATABASE stealthnet_prev RENAME TO stealthnet; COMMIT;")
+            db_rename stealthnet stealthnet_next
+            db_rename stealthnet_prev stealthnet
+            ;;
+        "DROP DATABASE "*)
+            db_drop "${q#DROP DATABASE }"
+            ;;
+        *)
+            echo "fake psql: неизвестный запрос: $q" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 case "$*" in
     "compose version"*) exit 0 ;;
     "info -f"*) echo "${FAKE_HOST_ARCH:-x86_64}"; exit 0 ;;
@@ -22,6 +115,15 @@ case "$*" in
         exit "$ok" ;;
     "image inspect -f {{.Architecture}}"*) echo "${FAKE_IMAGE_ARCH:-amd64}"; exit 0 ;;
     "image inspect -f {{index .RepoDigests 0}}"*) echo "${FAKE_DIGEST:-ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:1111}"; exit 0 ;;
+    "image inspect -f {{index .Config.Labels \"org.opencontainers.image.revision\"}} "*)
+        all="$*"
+        label_of "${all##* }" 2
+        exit 0 ;;
+    "image inspect -f {{index .Config.Labels \"org.opencontainers.image.created\"}} "*)
+        all="$*"
+        label_of "${all##* }" 3
+        exit 0 ;;
+    "image inspect -f {{.Created}} "*) exit 0 ;;
     "image inspect"*)
         all="$*"
         ref=${all##* }
@@ -32,16 +134,57 @@ case "$*" in
         ref=${all##* }
         if [ -f "$STATE/images" ]; then grep -Fxv "$ref" "$STATE/images" > "$STATE/images.tmp"; mv "$STATE/images.tmp" "$STATE/images"; fi
         exit 0 ;;
-    "compose up -d --no-build"*) echo "[fake] starting prebuilt image"; exit "${FAKE_UP_EXIT:-0}" ;;
+    "compose up -d --no-build"*)
+        echo "[fake] starting prebuilt image"
+        if [ "${FAKE_UP_EXIT:-0}" -eq 0 ]; then
+            : > "$STATE/started"
+            sed -n 's/^SN_IMAGE=//p' .env 2>/dev/null | tail -n 1 >> "$STATE/started_images"
+        fi
+        exit "${FAKE_UP_EXIT:-0}" ;;
     "network inspect remnawave-network"*) exit "${FAKE_REMNA_EXIT:-1}" ;;
-    "compose up -d --build"*) echo "[fake] building image"; sleep "${FAKE_UP_SLEEP:-0}"; exit "${FAKE_UP_EXIT:-0}" ;;
-    "compose ps -q app"*) echo "abc123"; exit 0 ;;
+    "compose up -d --build"*)
+        echo "[fake] building image"
+        sleep "${FAKE_UP_SLEEP:-0}"
+        if [ "${FAKE_UP_EXIT:-0}" -eq 0 ]; then
+            : > "$STATE/started"
+            printf 'commit=%s date=%s\n' "${SN_BUILD_COMMIT:-}" "${SN_BUILD_DATE:-}" >> "$STATE/builds"
+        fi
+        exit "${FAKE_UP_EXIT:-0}" ;;
+    "compose ps -q app"*)
+        if [ -f "$STATE/started" ]; then echo "abc123"; fi
+        exit 0 ;;
+    "compose ps -q postgres"*)
+        if [ -f "$STATE/started" ]; then echo "pg123"; fi
+        exit 0 ;;
+    "compose stop -t 60 app")
+        if [ "${FAKE_STOP_EXIT:-0}" -eq 0 ]; then rm -f "$STATE/started"; fi
+        exit "${FAKE_STOP_EXIT:-0}" ;;
+    "compose run --rm --no-deps -T "*" app migrate")
+        printf 'image=%s %s\n' "${SN_IMAGE:-}" "$*" >> "$STATE/migrations"
+        exit "${FAKE_MIGRATE_EXIT:-0}" ;;
+    "exec abc123 curl -fsS http://127.0.0.1:8080/api/health")
+        exit "${FAKE_APP_HEALTH:-0}" ;;
+    "inspect -f {{.RestartCount}} "*) echo "${FAKE_RESTARTS:-0}"; exit 0 ;;
+    "inspect -f {{.Config.Image}} "*)
+        sed -n 's/^SN_IMAGE=//p' .env 2>/dev/null | tail -n 1
+        exit 0 ;;
     inspect*)
         n=$(cat "$STATE/health_calls" 2>/dev/null || echo 0)
         n=$((n + 1))
         echo "$n" > "$STATE/health_calls"
         if [ "$n" -le "${FAKE_STARTING:-0}" ]; then echo starting; else echo "${FAKE_HEALTH:-healthy}"; fi
         exit 0 ;;
+    "compose exec -T postgres pg_dump"*)
+        [ "${FAKE_DUMP_EXIT:-0}" -eq 0 ] || exit 1
+        printf 'PGDMP fake dump\n'
+        exit 0 ;;
+    "compose exec -T postgres pg_restore --list"*)
+        cat > /dev/null
+        exit 0 ;;
+    "compose exec -T postgres psql -U stealthnet -d postgres "*)
+        all="$*"
+        sql "${all#* -c }"
+        exit $? ;;
     "compose exec -T postgres psql"*" -f -")
         all="$*"
         email=${all##*email=}

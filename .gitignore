@@ -5,3 +5,5 @@ deploy/proxy-snippet.txt
 *.log
 .DS_Store
 /.claude/
+deploy/backups/
+deploy/.update/

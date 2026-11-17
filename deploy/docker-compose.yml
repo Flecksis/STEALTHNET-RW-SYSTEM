@@ -22,6 +22,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        SN_COMMIT: ${SN_BUILD_COMMIT:-}
+        SN_BUILT_AT: ${SN_BUILD_DATE:-}
     image: ${SN_IMAGE:-stealthnet:local}
     restart: unless-stopped
     depends_on:

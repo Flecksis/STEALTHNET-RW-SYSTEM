@@ -20,7 +20,7 @@ fresh() {
     WORK=$(mktemp -d "$TMP_ROOT/work.XXXXXX")
     mkdir -p "$WORK/repo/deploy" "$WORK/state" "$WORK/bin"
     cp "$SRC/install.sh" "$WORK/repo/"
-    cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$SRC/deploy/compose.https.yml" "$SRC/deploy/Caddyfile" "$WORK/repo/deploy/"
+    cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$SRC/deploy/compose.https.yml" "$SRC/deploy/compose.updater.yml" "$SRC/deploy/Caddyfile" "$WORK/repo/deploy/"
     R="$WORK/repo"
     S="$WORK/state"
     FAKE_STATE="$S"
@@ -28,7 +28,7 @@ fresh() {
 }
 
 run() {
-    env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" SN_TEST_BUSY_PORTS="" PATH="$HERE/bin:$PATH" "$@"
+    env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" SN_TEST_BUSY_PORTS="" SN_UPDATER_STATE="$WORK/updater" SN_SYSTEMD_DIR="$WORK/systemd" SN_VERIFY_PAUSE=0 PATH="$HERE/bin:$PATH" "$@"
 }
 
 INST() {
@@ -388,6 +388,197 @@ echo "=== AG. адрес с портом"
 fresh
 run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org:8443 "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 grep -q '^SN_HTTPS=manual$' "$R/deploy/.env" && check ok "для адреса с портом свой веб-сервер не ставится" || check no "SN_HTTPS: $(grep '^SN_HTTPS' "$R/deploy/.env")"
+
+NEW=fedcba9876543210fedcba9876543210fedcba98
+NEWDIGEST=ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:2222
+ME=$(id -u)
+U="$WORK/updater"
+
+helper_install() {
+    fresh
+    U="$WORK/updater"
+    mkdir -p "$R/.git"
+    printf '%s\n' "$SHA" > "$R/.git/HEAD"
+    printf '%s|%s|%s\n' "$REPO:sha-$SHA" "$SHA" "2026-11-17T10:00:00Z" "$NEWDIGEST" "$NEW" "2026-11-17T13:00:00Z" > "$S/labels"
+    run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" FAKE_PULL_OK=":sha-$SHA" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/install.txt" 2>&1 </dev/null
+}
+
+request() {
+    printf '{"id":"%s","action":"update","target":"%s","requested_at":"%s","admin_id":1}\n' "$1" "$2" "${3:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" > "$U/ipc/request/.tmp"
+    mv "$U/ipc/request/.tmp" "$U/ipc/request/request.json"
+}
+
+updater() {
+    run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" "$@" "$SHELL_BIN" "$R/install.sh" updater run > "$WORK/updater.txt" 2>&1 </dev/null
+}
+
+field() {
+    grep -o "\"$1\":\"[^\"]*\"" "$U/ipc/status/update.json" 2>/dev/null | sed -n '1p' | sed 's/^"[a-z_]*":"//; s/"$//'
+}
+
+echo "=== AH. помощник ставится вместе с системой"
+helper_install
+code=$?
+[ "$code" -eq 0 ] && check ok "установка прошла" || check no "код выхода $code: $(tail -3 "$WORK/install.txt")"
+grep -q 'Обновление из админки' "$WORK/install.txt" && grep -q 'включено, обновлять может только владелец с паролем' "$WORK/install.txt" && check ok "человеку сказано, что обновление из админки включено" || check no "нет сообщения о помощнике"
+grep -qx "PathExists=$U/ipc/request/request.json" "$WORK/systemd/stealthnet-rw-update.path" && check ok "слежение за заявкой записано" || check no "нет unit-файла слежения"
+grep -qx "ExecStart=/bin/sh $R/install.sh updater run" "$WORK/systemd/stealthnet-rw-update.service" && grep -qx "ExecStopPost=/bin/sh $R/install.sh updater recover" "$WORK/systemd/stealthnet-rw-update.service" && check ok "служба обновления и страховка записаны" || check no "служба обновления"
+grep -qx 'StartLimitIntervalSec=0' "$WORK/systemd/stealthnet-rw-update.service" && check ok "у службы нет предела частоты запусков" || check no "предел частоты"
+grep -qx "ExecStart=/bin/sh $R/install.sh updater recover" "$WORK/systemd/stealthnet-rw-recover.service" && check ok "восстановление при загрузке сервера записано" || check no "нет службы восстановления"
+grep -qx 'enable --now stealthnet-rw-update.path' "$S/systemctl.log" && grep -qx 'enable stealthnet-rw-recover.service' "$S/systemctl.log" && check ok "службы включены" || check no "systemctl: $(tr '\n' ';' < "$S/systemctl.log")"
+grep -q '^COMPOSE_FILE=.*compose.updater.yml$' "$R/deploy/.env" && grep -qx "SN_UPDATER_STATE=$U" "$R/deploy/.env" && check ok "папки обмена подключены к приложению" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
+grep -q '"panel_updates":true' "$U/ipc/status/helper.json" && check ok "приложение видит, что помощник включён" || check no "helper.json"
+[ "$(ls -ld "$U/ipc/request" | cut -c1-10)" = "drwx------" ] && [ "$(ls -ld "$U/ipc/status" | cut -c1-10)" = "drwxr-xr-x" ] && [ "$(ls -ld "$U/run" | cut -c1-10)" = "drwx------" ] && check ok "права на папки обмена" || check no "права: $(ls -ld "$U/ipc/request" "$U/ipc/status" "$U/run")"
+grep -qx "SN_IMAGE=$REPO:sha-$SHA" "$R/deploy/.env" && check ok "стоит сборка своего коммита" || check no "SN_IMAGE: $(grep '^SN_IMAGE' "$R/deploy/.env")"
+
+echo "=== AI. без root помощник не ставится"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'не включено: нужны права root' "$WORK/out.txt" && check ok "объяснено, почему обновление из админки не включено" || check no "нет объяснения"
+[ ! -e "$WORK/systemd/stealthnet-rw-update.path" ] && ! grep -q 'compose.updater.yml' "$R/deploy/.env" && check ok "unit-файлов и папок обмена нет" || check no "помощник поставлен без root"
+
+echo "=== AJ. обновление по заявке из админки"
+helper_install
+ID=0b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10
+request "$ID" "$NEW"
+: > "$S/calls.log"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST"
+code=$?
+[ "$code" -eq 0 ] && check ok "помощник отработал" || check no "код выхода $code: $(tail -3 "$WORK/updater.txt")"
+[ "$(field state)" = "done" ] && check ok "итог: обновлено" || check no "итог: $(cat "$U/ipc/status/update.json")"
+[ "$(field id)" = "$ID" ] && [ "$(field from)" = "$SHA" ] && [ "$(field to)" = "$NEW" ] && check ok "в ходе номер заявки и версии" || check no "ход: $(cat "$U/ipc/status/update.json")"
+[ "$(grep -o '"state":"done"' "$U/ipc/status/update.json" | wc -l | tr -d ' ')" = "7" ] && check ok "все шесть шагов сделаны" || check no "шаги: $(cat "$U/ipc/status/update.json")"
+[ ! -e "$U/ipc/request/request.json" ] && check ok "заявка забрана" || check no "заявка осталась"
+grep -qx "SN_IMAGE=$NEWDIGEST" "$R/deploy/.env" && check ok "запущена новая сборка, закреплённая по отпечатку" || check no "SN_IMAGE: $(grep '^SN_IMAGE' "$R/deploy/.env")"
+grep -q "image=$NEWDIGEST .*@postgres:5432/stealthnet_next" "$S/migrations" && check ok "миграции новой версии шли на копии базы" || check no "миграции: $(cat "$S/migrations" 2>/dev/null)"
+grep -qx 'stealthnet|' "$S/dbs" && grep -qx "stealthnet_prev|stealthnet-update:$ID:prev" "$S/dbs" && ! grep -q '^stealthnet_next|' "$S/dbs" && check ok "базы переставлены, прежняя сохранена с меткой" || check no "базы: $(tr '\n' ';' < "$S/dbs")"
+grep -n '^compose stop -t 60 app$' "$S/calls.log" > /dev/null && [ "$(grep -n 'pg_dump' "$S/calls.log" | cut -d: -f1)" -gt "$(grep -n '^compose stop -t 60 app$' "$S/calls.log" | cut -d: -f1)" ] && check ok "копия базы снята после остановки панели" || check no "порядок остановки и копии"
+dump=$(ls "$R/deploy/backups"/*.dump 2>/dev/null | head -n 1)
+[ -n "$dump" ] && [ -f "${dump%.dump}.env" ] && [ "$(ls -l "$dump" | cut -c1-10)" = "-rw-------" ] && check ok "копия базы и файла с ключами лежит рядом, только для root" || check no "копия: $(ls -l "$R/deploy/backups" 2>&1)"
+grep -q "\"id\":\"$ID\".*\"state\":\"done\"" "$U/ipc/status/history.jsonl" && check ok "попытка записана в историю" || check no "история: $(cat "$U/ipc/status/history.jsonl" 2>/dev/null)"
+[ ! -e "$U/run/journal" ] && [ ! -e "$U/run/current" ] && [ ! -e "$U/run/lock" ] && check ok "журнал шагов и блокировка убраны" || check no "остались: $(ls "$U/run")"
+grep -q '"downtime":[0-9]' "$U/ipc/status/update.json" && check ok "записано, сколько панель была недоступна" || check no "нет простоя"
+
+echo "=== AK. пока владелец подтверждал, вышла другая сборка"
+helper_install
+request 1b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10 abcdefabcdefabcdefabcdefabcdefabcdefabcd
+: > "$S/calls.log"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST"
+[ "$(field state)" = "failed" ] && [ "$(field error)" = "stale_request" ] && check ok "отказ: заявка устарела" || check no "итог: $(cat "$U/ipc/status/update.json")"
+! grep -q '^compose stop' "$S/calls.log" && grep -qx "SN_IMAGE=$REPO:sha-$SHA" "$R/deploy/.env" && check ok "панель не останавливалась, сборка прежняя" || check no "панель тронута"
+
+echo "=== AL. миграция не прошла"
+helper_install
+ID=2b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10
+request "$ID" "$NEW"
+: > "$S/calls.log"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST" FAKE_MIGRATE_EXIT=1
+[ "$(field state)" = "rolled_back" ] && [ "$(field error)" = "migrate_failed" ] && check ok "итог: возвращена прежняя версия" || check no "итог: $(cat "$U/ipc/status/update.json")"
+grep -qx 'stealthnet|' "$S/dbs" && [ "$(wc -l < "$S/dbs" | tr -d ' ')" = "1" ] && check ok "база не тронута, копия удалена" || check no "базы: $(tr '\n' ';' < "$S/dbs")"
+grep -qx "SN_IMAGE=$REPO:sha-$SHA" "$R/deploy/.env" && [ -f "$S/started" ] && [ "$(tail -n 1 "$S/started_images")" = "$REPO:sha-$SHA" ] && check ok "прежняя сборка снова запущена" || check no "запущено: $(tail -n 1 "$S/started_images")"
+grep -q "\"blocked\":\"$NEW\"" "$U/ipc/status/helper.json" && check ok "версия помечена как не подошедшая серверу" || check no "helper.json: $(cat "$U/ipc/status/helper.json")"
+request 3b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10 "$NEW"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST"
+[ "$(field state)" = "failed" ] && [ "$(field error)" = "rate_limited" ] && check ok "повтор сразу после простоя отклонён" || check no "итог повтора: $(cat "$U/ipc/status/update.json")"
+rm -f "$U/run/last_failure"
+request 4b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10 "$NEW"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST"
+[ "$(field error)" = "blocked" ] && check ok "не подошедшая версия из админки не ставится" || check no "итог: $(cat "$U/ipc/status/update.json")"
+
+echo "=== AM. новая версия запустилась, но не отвечает"
+helper_install
+ID=5b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10
+request "$ID" "$NEW"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST" FAKE_APP_HEALTH=1 SN_VERIFY_TIMEOUT=6
+[ "$(field state)" = "attention" ] && [ "$(field error)" = "unhealthy" ] && check ok "итог: нужно внимание" || check no "итог: $(cat "$U/ipc/status/update.json")"
+grep -qx "stealthnet_prev|stealthnet-update:$ID:prev" "$S/dbs" && grep -qx "SN_IMAGE=$NEWDIGEST" "$R/deploy/.env" && check ok "после запуска база сама не возвращается" || check no "базы: $(tr '\n' ';' < "$S/dbs")"
+grep -q "\"blocked\":\"$NEW\"" "$U/ipc/status/helper.json" && check ok "версия помечена как не подошедшая" || check no "helper.json"
+
+echo "=== AN. неверные заявки"
+helper_install
+ln -s /etc/passwd "$U/ipc/request/request.json"
+updater
+[ ! -e "$U/ipc/request/request.json" ] && [ ! -L "$U/ipc/request/request.json" ] && [ ! -e "$U/ipc/status/update.json" ] && check ok "ссылка вместо файла убрана и не исполнена" || check no "ссылка: $(ls -l "$U/ipc/request")"
+printf '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10","action":"rollback","target":"%s"}\n' "$NEW" > "$U/ipc/request/request.json"
+: > "$S/calls.log"
+updater FAKE_PULL_OK=":main"
+[ "$(field state)" = "failed" ] && [ "$(field error)" = "invalid_request" ] && ! grep -q '^pull' "$S/calls.log" && check ok "заявка неверного вида отклонена до любых действий" || check no "итог: $(cat "$U/ipc/status/update.json" 2>/dev/null)"
+request 7b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10 "$NEW" "2020-01-01T00:00:00Z"
+updater FAKE_PULL_OK=":main"
+[ "$(field error)" = "expired" ] && check ok "старая заявка отклонена" || check no "итог: $(cat "$U/ipc/status/update.json")"
+mkdir "$U/ipc/request/request.json"
+updater
+[ ! -e "$U/ipc/request/request.json" ] && check ok "папка вместо заявки убрана" || check no "папка осталась"
+
+echo "=== AO. обновление прервалось"
+helper_install
+ID=8b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10
+printf 'stealthnet|stealthnet-update:%s:copy\nstealthnet_prev|stealthnet-update:%s:prev\n' "$ID" "$ID" > "$S/dbs"
+printf 'begin\napp_stopped\nbackup_written\ndb_cloned\ndb_swapping\ndb_swapped\n' > "$U/run/journal"
+printf 'U_ID=%s\nU_ORIGIN=panel\nU_ADMIN=1\nU_FROM=%s\nU_TO=%s\nU_STATE=running\nFROM_IMAGE=%s\nTO_IMAGE=%s\nSTART_EPOCH=%s\nDOWN_EPOCH=%s\nS_check=done\nS_download=done\nS_backup=done\nS_migrate=done\nS_start=running\n' "$ID" "$SHA" "$NEW" "$REPO:sha-$SHA" "$NEWDIGEST" "$(date +%s)" "$(date +%s)" > "$U/run/current"
+rm -f "$S/started"
+run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" updater recover > "$WORK/recover.txt" 2>&1 </dev/null
+[ "$(field state)" = "rolled_back" ] && [ "$(field error)" = "interrupted" ] && check ok "итог: прерванное обновление откатано" || check no "итог: $(cat "$U/ipc/status/update.json" 2>/dev/null)"
+grep -qx 'stealthnet|' "$S/dbs" && [ "$(wc -l < "$S/dbs" | tr -d ' ')" = "1" ] && check ok "базы возвращены по меткам, копия удалена" || check no "базы: $(tr '\n' ';' < "$S/dbs")"
+[ -f "$S/started" ] && [ ! -e "$U/run/current" ] && check ok "прежняя версия запущена, журнал убран" || check no "не запущено"
+printf 'begin\napp_stopped\nbackup_written\ndb_cloned\ndb_swapping\ndb_swapped\napp_starting\n' > "$U/run/journal"
+printf 'U_ID=%s\nU_ORIGIN=panel\nU_TO=%s\nTO_IMAGE=%s\n' "$ID" "$NEW" "$NEWDIGEST" > "$U/run/current"
+run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" updater recover > "$WORK/recover2.txt" 2>&1 </dev/null
+[ "$(field state)" = "done" ] && check ok "если новая версия успела запуститься и отвечает — обновление засчитано" || check no "итог: $(cat "$U/ipc/status/update.json")"
+run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" updater recover > "$WORK/recover3.txt" 2>&1 </dev/null
+[ $? -eq 0 ] && check ok "без незаконченного обновления восстановление ничего не делает" || check no "recover без журнала"
+
+echo "=== AP. выключение и включение обновления из админки"
+helper_install
+: > "$S/systemctl.log"
+run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" helper off > "$WORK/off.txt" 2>&1 </dev/null
+grep -qx 'disable --now stealthnet-rw-update.path' "$S/systemctl.log" && [ ! -e "$WORK/systemd/stealthnet-rw-update.path" ] && check ok "слежение выключено и убрано" || check no "systemctl: $(tr '\n' ';' < "$S/systemctl.log")"
+grep -q '"panel_updates":false' "$U/ipc/status/helper.json" && grep -qx 'SN_UPDATER=off' "$R/deploy/.env" && check ok "приложение видит, что обновление выключено" || check no "helper.json: $(cat "$U/ipc/status/helper.json")"
+run SN_HELPER_TEST=1 SN_OWNER_EMAIL=owner@example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/rerun.txt" 2>&1 </dev/null
+grep -q 'выключено. Включить:' "$WORK/rerun.txt" && [ ! -e "$WORK/systemd/stealthnet-rw-update.path" ] && check ok "повторная установка не включает его тайком" || check no "включилось само"
+run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" helper on > "$WORK/on.txt" 2>&1 </dev/null
+[ -e "$WORK/systemd/stealthnet-rw-update.path" ] && grep -q '"panel_updates":true' "$U/ipc/status/helper.json" && grep -qx 'SN_UPDATER=1' "$R/deploy/.env" && check ok "включается обратно командой" || check no "не включилось: $(tail -3 "$WORK/on.txt")"
+
+echo "=== AQ. обновление командой идёт тем же путём"
+helper_install
+printf '%s|%s|%s\n' "$REPO:sha-$SHA" "$SHA" "2026-11-17T10:00:00Z" "$REPO:sha-$NEW" "$NEW" "2026-11-17T13:00:00Z" > "$S/labels"
+printf '%s\n' "$NEW" > "$R/.git/HEAD"
+: > "$S/calls.log"
+: > "$S/migrations"
+run SN_HELPER_TEST=1 FAKE_PULL_OK=":sha-$NEW" SN_OWNER_EMAIL=owner@example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/cli.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "обновление командой прошло" || check no "код выхода $code: $(tail -5 "$WORK/cli.txt")"
+grep -q 'Резервная копия' "$WORK/cli.txt" && grep -q 'Обновление базы' "$WORK/cli.txt" && check ok "человек видит шаги" || check no "нет шагов"
+grep -q "image=$REPO:sha-$NEW .*stealthnet_next" "$S/migrations" && grep -qx "SN_IMAGE=$REPO:sha-$NEW" "$R/deploy/.env" && check ok "миграции на копии, запущена новая сборка" || check no "миграции: $(cat "$S/migrations")"
+grep -q '"origin":"command".*"state":"done"' "$U/ipc/status/history.jsonl" && check ok "в истории записано, что обновляли командой" || check no "история: $(tail -1 "$U/ipc/status/history.jsonl")"
+
+echo "=== AR. более старая сборка клона не ставится поверх новой"
+helper_install
+printf '%s|%s|%s\n' "$REPO:sha-$SHA" "$SHA" "2026-11-17T10:00:00Z" "$NEWDIGEST" "$NEW" "2026-11-17T13:00:00Z" > "$S/labels"
+sed "s|^SN_IMAGE=.*|SN_IMAGE=$NEWDIGEST|" "$R/deploy/.env" > "$WORK/env.tmp" && cat "$WORK/env.tmp" > "$R/deploy/.env"
+printf '%s\n' "$NEWDIGEST" >> "$S/images"
+: > "$S/calls.log"
+run SN_HELPER_TEST=1 FAKE_PULL_OK=":sha-$SHA" SN_OWNER_EMAIL=owner@example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/old.txt" 2>&1 </dev/null
+grep -qx "SN_IMAGE=$NEWDIGEST" "$R/deploy/.env" && grep -q 'на сервере уже стоит сборка новее, оставляю её' "$WORK/old.txt" && check ok "новая сборка осталась" || check no "SN_IMAGE: $(grep '^SN_IMAGE' "$R/deploy/.env")"
+! grep -q '^compose stop' "$S/calls.log" && check ok "панель не останавливалась" || check no "панель останавливалась"
+
+echo "=== AS. состояние и сборка из исходников"
+helper_install
+request 9b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10 "$NEW"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST" FAKE_MIGRATE_EXIT=1
+run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" status > "$WORK/status.txt" 2>&1 </dev/null
+grep -q 'Панель:            работает' "$WORK/status.txt" && grep -q 'Обновление из админки: включено' "$WORK/status.txt" && grep -q 'не установлено (migrate_failed), прежняя версия работает' "$WORK/status.txt" && check ok "status рассказывает про панель и последнее обновление" || check no "status: $(cat "$WORK/status.txt")"
+grep -q "Копии базы:        1" "$WORK/status.txt" && check ok "status показывает копии базы" || check no "нет копий в status"
+fresh
+mkdir -p "$R/.git"
+printf '%s\n' "$SHA" > "$R/.git/HEAD"
+run SN_BUILD=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q "^commit=$SHA date=20[0-9-]*T[0-9:]*Z$" "$S/builds" && check ok "при сборке из исходников в образ уходят коммит и дата" || check no "builds: $(cat "$S/builds" 2>/dev/null)"
+fresh
+mkdir -p "$R/.git"
+printf '%s\n' "$SHA" > "$R/.git/HEAD"
+run FAKE_GIT_STATUS=" M crates/x.rs" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q "^commit= date=" "$S/builds" && check ok "изменённые исходники не выдаются за опубликованный коммит" || check no "builds: $(cat "$S/builds" 2>/dev/null)"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi

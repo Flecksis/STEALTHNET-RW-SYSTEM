@@ -12,7 +12,7 @@ const SECTIONS: Array<{ label: string; to?: string }> = [
   { label: 'Почта и уведомления' },
   { label: 'Администраторы' },
   { label: 'API-ключи' },
-  { label: 'Обновления и резервные копии' },
+  { label: 'Обновления и резервные копии', to: '/admin/settings/updates' },
 ];
 
 export function SettingsLayout({ children }: { children: ReactNode }) {

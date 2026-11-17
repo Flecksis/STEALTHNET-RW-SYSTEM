@@ -14,6 +14,17 @@ WRAPPER="$BIN_DIR/stealthnet"
 SHORT=""
 USE_PREBUILT=0
 TTY_SAVED=""
+UPDATER_STATE=${SN_UPDATER_STATE:-/var/lib/stealthnet-rw}
+SYSTEMD_DIR=${SN_SYSTEMD_DIR:-/etc/systemd/system}
+APP_UID=${SN_UPDATER_APP_UID:-10001}
+VERIFY_TIMEOUT=${SN_VERIFY_TIMEOUT:-90}
+VERIFY_PAUSE=${SN_VERIFY_PAUSE:-2}
+BACKUPS_DIR="$DEPLOY/backups"
+IPC_DIR="$UPDATER_STATE/ipc"
+STATUS_DIR="$IPC_DIR/status"
+REQUEST_DIR="$IPC_DIR/request"
+RUN_DIR="$UPDATER_STATE/run"
+CLI_UPDATE=""
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$(printf '\033[1m')
@@ -97,6 +108,8 @@ usage() {
     printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
     printf '  %s\n      скачать новую версию и обновить систему\n' "$(command_for update)"
+    printf '  %s\n      показать версию, состояние и итог последнего обновления\n' "$(command_for status)"
+    printf '  %s\n      разрешить или запретить обновление из админки\n' "$(command_for 'helper on|off')"
     printf '\nБез вопросов: задайте SN_OWNER_EMAIL и, если нужно, SN_DOMAIN.\n'
     printf 'Собрать из исходников вместо готовой сборки: SN_BUILD=1 %s\n' "$(command_for install)"
 }
@@ -407,6 +420,13 @@ write_compose_files() {
     if [ "$(env_value SN_REMNAWAVE_NETWORK)" = "1" ]; then
         files="$files:compose.remnawave.yml"
     fi
+    case "$(env_value SN_UPDATER)" in
+        1|off)
+            if [ -n "$(env_value SN_UPDATER_STATE)" ]; then
+                files="$files:compose.updater.yml"
+            fi
+            ;;
+    esac
     set_env COMPOSE_FILE "$files"
 }
 
@@ -485,6 +505,19 @@ use_image() {
     USE_PREBUILT=1
 }
 
+keep_installed() {
+    chosen=$(env_value SN_IMAGE)
+    if [ -z "$1" ] || [ "$1" = "$chosen" ] || ! docker image inspect "$1" >/dev/null 2>&1; then
+        return 1
+    fi
+    if later_than "$(image_created "$1")" "$(image_created "$chosen")"; then
+        set_env SN_IMAGE "$1"
+        done_line "на сервере уже стоит сборка новее, оставляю её"
+        return 0
+    fi
+    return 1
+}
+
 prepare_image() {
     step "Сборка"
     WRONG_ARCH=0
@@ -494,8 +527,13 @@ prepare_image() {
         return 0
     fi
     hint "Скачиваю готовую сборку."
+    before=$(env_value SN_IMAGE)
+    repo=$(image_repo)
     commit=$(source_commit | tr -d ' \n')
-    if printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$' && use_image "$IMAGE_REPO:sha-$commit"; then
+    if printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$' && use_image "$repo:sha-$commit"; then
+        if keep_installed "$before"; then
+            return 0
+        fi
         done_line "готовая сборка скачана"
         return 0
     fi
@@ -505,7 +543,7 @@ prepare_image() {
         done_line "новой сборки пока нет, оставляю установленную"
         return 0
     fi
-    if use_image "$IMAGE_REPO:main" pin; then
+    if use_image "$repo:main" pin; then
         done_line "готовая сборка скачана"
         return 0
     fi
@@ -526,6 +564,12 @@ start_stack() {
         fi
     else
         hint "Ниже ход сборки."
+        SN_BUILD_COMMIT=""
+        if ! source_changed; then
+            SN_BUILD_COMMIT=$(source_commit | tr -d ' \n')
+        fi
+        SN_BUILD_DATE=$(now_iso)
+        export SN_BUILD_COMMIT SN_BUILD_DATE
         if ! compose up -d --build; then
             die "сборка или запуск не прошли" \
                 "Сообщение об ошибке — выше. После исправления запустите установку ещё раз: $(command_for install)" \
@@ -604,6 +648,7 @@ commands_list() {
     printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
     printf '  %s\n      обновить систему\n' "$(command_for update)"
+    printf '  %s\n      состояние и итог последнего обновления\n' "$(command_for status)"
 }
 
 summary() {
@@ -647,9 +692,16 @@ install() {
     prepare_port
     link_remnawave
     prepare_https
+    prepare_helper
     write_compose_files
+    OLD_IMAGE=$(env_value SN_IMAGE)
+    RUNNING_APP=$(compose ps -q app 2>/dev/null || true)
     prepare_image
-    start_stack
+    if [ "$USE_PREBUILT" -eq 1 ] && [ -n "$RUNNING_APP" ] && [ "$(env_value SN_IMAGE)" != "$OLD_IMAGE" ]; then
+        cli_update
+    else
+        start_stack
+    fi
     wait_healthy
     check_site
     install_short || true
@@ -760,6 +812,961 @@ update() {
     exec "$ROOT/install.sh"
 }
 
+now_iso() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+iso_epoch() {
+    date -u -d "$1" +%s 2>/dev/null || TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || true
+}
+
+json_str() {
+    if [ -n "$1" ]; then
+        printf '"%s"' "$1"
+    else
+        printf 'null'
+    fi
+}
+
+json_num() {
+    if [ -n "$1" ]; then
+        printf '%s' "$1"
+    else
+        printf 'null'
+    fi
+}
+
+image_repo() {
+    if [ -n "${SN_IMAGE_REPO:-}" ]; then
+        printf '%s' "$SN_IMAGE_REPO"
+    elif [ -f "$ENV_FILE" ] && [ -n "$(env_value SN_IMAGE_REPO)" ]; then
+        env_value SN_IMAGE_REPO
+    else
+        printf '%s' "$IMAGE_REPO"
+    fi
+}
+
+image_label() {
+    docker image inspect -f "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null | sed -n '1p' || true
+}
+
+image_commit() {
+    rev=$(image_label "$1" org.opencontainers.image.revision)
+    if printf '%s' "$rev" | grep -Eqx '[0-9a-f]{40}'; then
+        printf '%s' "$rev"
+    fi
+    return 0
+}
+
+image_created() {
+    created=$(image_label "$1" org.opencontainers.image.created)
+    case "$created" in
+        ""|"<no value>") created=$(docker image inspect -f '{{.Created}}' "$1" 2>/dev/null | sed -n '1p' || true) ;;
+    esac
+    printf '%.19s' "$created"
+}
+
+later_than() {
+    [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] \
+        && [ "$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C sort | tail -n 1)" = "$1" ]
+}
+
+owned_by_root() {
+    info=$(ls -ldn "$1" 2>/dev/null) || return 1
+    set -- $info
+    [ "${3:-}" = "0" ] || return 1
+    case "${1:-}" in
+        ?????w*|????????w*) return 1 ;;
+    esac
+    return 0
+}
+
+helper_possible() {
+    HELPER_WHY=""
+    if [ -n "${SN_HELPER_TEST:-}" ]; then
+        return 0
+    fi
+    if [ "$(id -u)" -ne 0 ]; then
+        HELPER_WHY="нужны права root"
+        return 1
+    fi
+    if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
+        HELPER_WHY="на сервере нет systemd"
+        return 1
+    fi
+    case "$ROOT$UPDATER_STATE" in
+        *[!A-Za-z0-9._/-]*)
+            HELPER_WHY="в пути к папке системы есть пробелы или особые знаки"
+            return 1
+            ;;
+    esac
+    if ! owned_by_root "$ROOT" || ! owned_by_root "$ROOT/install.sh" || ! owned_by_root "$DEPLOY"; then
+        HELPER_WHY="папку $ROOT может менять не только root"
+        return 1
+    fi
+    return 0
+}
+
+helper_blocked() {
+    sed -n 's/.*"blocked":"\([0-9a-f]\{40\}\)".*/\1/p' "$STATUS_DIR/helper.json" 2>/dev/null | sed -n '1p' || true
+}
+
+write_helper_json() {
+    enabled=$1
+    blocked=${2-$(helper_blocked)}
+    tmp="$STATUS_DIR/.helper.json.$$"
+    printf '{"schema":1,"panel_updates":%s,"blocked":%s}\n' "$enabled" "$(json_str "$blocked")" > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$STATUS_DIR/helper.json"
+}
+
+helper_enabled() {
+    grep -q '"panel_updates":true' "$STATUS_DIR/helper.json" 2>/dev/null
+}
+
+write_units() {
+    mkdir -p "$SYSTEMD_DIR"
+    {
+        printf '[Unit]\nDescription=STEALTHNET RW: заявки на обновление из админки\n\n'
+        printf '[Path]\nPathExists=%s/request.json\nUnit=stealthnet-rw-update.service\n\n' "$REQUEST_DIR"
+        printf '[Install]\nWantedBy=multi-user.target\n'
+    } > "$SYSTEMD_DIR/stealthnet-rw-update.path"
+    {
+        printf '[Unit]\nDescription=STEALTHNET RW: обновление\nAfter=docker.service\nWants=docker.service\nStartLimitIntervalSec=0\n\n'
+        printf '[Service]\nType=oneshot\nEnvironment=SN_UPDATER_STATE=%s\n' "$UPDATER_STATE"
+        printf 'ExecStart=/bin/sh %s/install.sh updater run\n' "$ROOT"
+        printf 'ExecStopPost=/bin/sh %s/install.sh updater recover\n' "$ROOT"
+        printf 'TimeoutStartSec=30min\nUMask=0077\nNoNewPrivileges=yes\nPrivateTmp=yes\n'
+    } > "$SYSTEMD_DIR/stealthnet-rw-update.service"
+    {
+        printf '[Unit]\nDescription=STEALTHNET RW: завершение прерванного обновления\nAfter=docker.service\nWants=docker.service\n\n'
+        printf '[Service]\nType=oneshot\nEnvironment=SN_UPDATER_STATE=%s\n' "$UPDATER_STATE"
+        printf 'ExecStart=/bin/sh %s/install.sh updater recover\n\n' "$ROOT"
+        printf '[Install]\nWantedBy=multi-user.target\n'
+    } > "$SYSTEMD_DIR/stealthnet-rw-recover.service"
+    chmod 644 "$SYSTEMD_DIR/stealthnet-rw-update.path" "$SYSTEMD_DIR/stealthnet-rw-update.service" "$SYSTEMD_DIR/stealthnet-rw-recover.service"
+}
+
+helper_dirs() {
+    mkdir -p "$REQUEST_DIR" "$STATUS_DIR" "$RUN_DIR"
+    chmod 755 "$UPDATER_STATE" "$IPC_DIR" "$STATUS_DIR"
+    chmod 700 "$RUN_DIR" "$REQUEST_DIR"
+    if [ -z "${SN_HELPER_TEST:-}" ]; then
+        chown "$APP_UID:$APP_UID" "$REQUEST_DIR"
+    fi
+}
+
+helper_on() {
+    helper_possible || return 1
+    helper_dirs
+    write_helper_json true
+    write_units
+    set_env SN_UPDATER_STATE "$UPDATER_STATE"
+    set_env SN_UPDATER 1
+    if [ -n "${SN_IMAGE_REPO:-}" ]; then
+        set_env SN_IMAGE_REPO "$SN_IMAGE_REPO"
+    fi
+    write_compose_files
+    if ! systemctl daemon-reload >/dev/null 2>&1 \
+        || ! systemctl enable --now stealthnet-rw-update.path >/dev/null 2>&1 \
+        || ! systemctl enable stealthnet-rw-recover.service >/dev/null 2>&1; then
+        HELPER_WHY="systemd не принял службу обновления"
+        write_helper_json false
+        return 1
+    fi
+    return 0
+}
+
+prepare_helper() {
+    case "$(env_value SN_UPDATER)" in
+        off)
+            step "Обновление из админки"
+            done_line "выключено. Включить: $(command_for 'helper on')"
+            return 0
+            ;;
+    esac
+    step "Обновление из админки"
+    if helper_on; then
+        done_line "включено, обновлять может только владелец с паролем"
+    else
+        hint "не включено: $HELPER_WHY. Обновлять можно командой $(command_for update)"
+    fi
+}
+
+helper_command() {
+    printf '%sSTEALTHNET RW SYSTEM — обновление из админки%s\n\n' "$BOLD" "$RESET"
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите $(command_for install)"
+    fi
+    case "${1:-}" in
+        on)
+            set_env SN_UPDATER ""
+            if ! helper_on; then
+                die "не включилось: $HELPER_WHY"
+            fi
+            step "Перезапуск"
+            if ! compose up -d --no-build; then
+                die "перезапуск не прошёл" "Сообщение об ошибке — выше."
+            fi
+            wait_healthy
+            done_line "Обновление из админки включено. Обновлять сможет только владелец, с паролем."
+            ;;
+        off)
+            if helper_possible || [ "$(id -u)" -eq 0 ]; then
+                systemctl disable --now stealthnet-rw-update.path >/dev/null 2>&1 || true
+                systemctl disable stealthnet-rw-recover.service >/dev/null 2>&1 || true
+                rm -f "$SYSTEMD_DIR/stealthnet-rw-update.path" "$SYSTEMD_DIR/stealthnet-rw-update.service" "$SYSTEMD_DIR/stealthnet-rw-recover.service"
+                systemctl daemon-reload >/dev/null 2>&1 || true
+            else
+                die "нужны права root" "Запустите: sudo $(command_for 'helper off')"
+            fi
+            if [ -d "$STATUS_DIR" ]; then
+                write_helper_json false
+                rm -f "$REQUEST_DIR/request.json"
+            fi
+            set_env SN_UPDATER off
+            done_line "Обновление из админки выключено. Обновлять можно командой: sudo $(command_for update)"
+            ;;
+        *)
+            die "нужно слово on или off" "Включить: $(command_for 'helper on')" "Выключить: $(command_for 'helper off')"
+            ;;
+    esac
+}
+
+log_line() {
+    printf '%s %s\n' "$(now_iso)" "$1" >> "$RUN_DIR/updater.log" 2>/dev/null || true
+}
+
+pg() {
+    compose exec -T postgres psql -U stealthnet -d postgres -v ON_ERROR_STOP=1 -Atq -c "$1"
+}
+
+pg_retry() {
+    tries=0
+    while ! pg "$1" >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 5 ]; then
+            return 1
+        fi
+        sleep 1
+    done
+    return 0
+}
+
+db_exists() {
+    [ "$(pg "SELECT 1 FROM pg_database WHERE datname = '$1'" 2>/dev/null || true)" = "1" ]
+}
+
+db_label() {
+    pg "SELECT coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = '$1'" 2>/dev/null || true
+}
+
+save_run() {
+    {
+        for key in U_ID U_ORIGIN U_ADMIN U_FROM U_TO U_STATE U_ERROR U_STARTED U_FINISHED U_BACKUP START_EPOCH DOWN_EPOCH FROM_IMAGE TO_IMAGE \
+            S_check S_download S_backup S_migrate S_start S_verify T_check T_download T_backup T_migrate T_start T_verify; do
+            eval "value=\${$key:-}"
+            printf '%s=%s\n' "$key" "$value"
+        done
+    } > "$RUN_DIR/current.tmp"
+    mv -f "$RUN_DIR/current.tmp" "$RUN_DIR/current"
+}
+
+load_run() {
+    while IFS='=' read -r key value; do
+        case "$key" in
+            U_ID|U_ORIGIN|U_ADMIN|U_FROM|U_TO|U_STATE|U_ERROR|U_STARTED|U_FINISHED|U_BACKUP|START_EPOCH|DOWN_EPOCH|FROM_IMAGE|TO_IMAGE|S_*|T_*)
+                case "$value" in
+                    *[!A-Za-z0-9:._@/+-]*) value="" ;;
+                esac
+                eval "$key=\$value"
+                ;;
+        esac
+    done < "$RUN_DIR/current"
+}
+
+reset_run() {
+    U_ID=""
+    U_ORIGIN=""
+    U_ADMIN=""
+    U_FROM=""
+    U_TO=""
+    U_STATE=""
+    U_ERROR=""
+    U_STARTED=""
+    U_FINISHED=""
+    U_BACKUP=""
+    START_EPOCH=""
+    DOWN_EPOCH=""
+    FROM_IMAGE=""
+    TO_IMAGE=""
+    for key in check download backup migrate start verify; do
+        eval "S_$key=pending; T_$key=''; B_$key=''"
+    done
+}
+
+status_json() {
+    printf '{"schema":1,"id":%s,"origin":"%s","admin_id":%s,"from":%s,"to":%s,"state":"%s","steps":[' \
+        "$(json_str "$U_ID")" "$U_ORIGIN" "$(json_num "$U_ADMIN")" "$(json_str "$U_FROM")" "$(json_str "$U_TO")" "$U_STATE"
+    sep=""
+    for key in check download backup migrate start verify; do
+        eval "st=\${S_$key:-pending}; sec=\${T_$key:-}"
+        printf '%s{"key":"%s","state":"%s","seconds":%s}' "$sep" "$key" "$st" "$(json_num "$sec")"
+        sep=","
+    done
+    seconds=""
+    downtime=""
+    if [ -n "$U_FINISHED" ] && [ -n "$START_EPOCH" ]; then
+        seconds=$(( $(date +%s) - START_EPOCH ))
+    fi
+    if [ -n "$DOWN_EPOCH" ]; then
+        downtime=$(( ${UP_EPOCH:-$(date +%s)} - DOWN_EPOCH ))
+    fi
+    printf '],"started_at":%s,"finished_at":%s,"error":%s,"seconds":%s,"downtime":%s,"backup":%s}\n' \
+        "$(json_str "$U_STARTED")" "$(json_str "$U_FINISHED")" "$(json_str "$U_ERROR")" "$(json_num "$seconds")" "$(json_num "$downtime")" "$(json_str "$U_BACKUP")"
+}
+
+write_status() {
+    save_run
+    if [ ! -d "$STATUS_DIR" ]; then
+        return 0
+    fi
+    tmp="$STATUS_DIR/.update.json.$$"
+    status_json > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$STATUS_DIR/update.json"
+}
+
+append_history() {
+    if [ ! -d "$STATUS_DIR" ]; then
+        return 0
+    fi
+    file="$STATUS_DIR/history.jsonl"
+    tmp="$STATUS_DIR/.history.$$"
+    {
+        if [ -f "$file" ]; then
+            tail -n 19 "$file"
+        fi
+        status_json
+    } > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$file"
+}
+
+step_begin() {
+    eval "S_$1=running; B_$1=$(date +%s)"
+    if [ -n "${CLI_UPDATE:-}" ]; then
+        case "$1" in
+            check) step "Проверка выпуска" ;;
+            download) step "Загрузка" ;;
+            backup) step "Резервная копия" ;;
+            migrate) step "Обновление базы" ;;
+            start) step "Запуск новой версии" ;;
+            verify) step "Проверка работы" ;;
+        esac
+    fi
+    write_status
+}
+
+step_end() {
+    eval "began=\${B_$1:-}"
+    eval "S_$1=$2; T_$1=$(( $(date +%s) - ${began:-$(date +%s)} ))"
+    if [ -n "${CLI_UPDATE:-}" ] && [ "$2" = "done" ]; then
+        eval "spent=\$T_$1"
+        done_line "готово за $spent с"
+    fi
+    write_status
+}
+
+journal() {
+    printf '%s\n' "$1" >> "$RUN_DIR/journal"
+    sync 2>/dev/null || true
+}
+
+journal_has() {
+    grep -qx "$1" "$RUN_DIR/journal" 2>/dev/null
+}
+
+fail_step() {
+    FAIL_KIND=$1
+    FAIL_CODE=$2
+    for key in check download backup migrate start verify; do
+        eval "st=\${S_$key:-pending}"
+        if [ "$st" = "running" ]; then
+            step_end "$key" failed
+        fi
+    done
+    log_line "заявка $U_ID: шаг не прошёл, код $FAIL_CODE"
+    return 1
+}
+
+lock_take() {
+    lockdir="$RUN_DIR/lock"
+    waited=0
+    while ! mkdir "$lockdir" 2>/dev/null; do
+        holder=$(cat "$lockdir/pid" 2>/dev/null || true)
+        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+            rm -rf "$lockdir"
+            continue
+        fi
+        if [ "$waited" -ge "$1" ]; then
+            return 1
+        fi
+        if [ -n "$U_ID" ] && [ "$U_STATE" != "waiting" ]; then
+            U_STATE=waiting
+            write_status
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    printf '%s\n' "$$" > "$lockdir/pid"
+    return 0
+}
+
+lock_release() {
+    holder=$(cat "$RUN_DIR/lock/pid" 2>/dev/null || true)
+    if [ "$holder" = "$$" ]; then
+        rm -rf "$RUN_DIR/lock"
+    fi
+}
+
+space_ok() {
+    size=$(pg "SELECT pg_database_size('stealthnet')" 2>/dev/null || true)
+    case "$size" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    need=$(( size / 1024 * 3 + 1048576 ))
+    free=$(df -Pk "$DEPLOY" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)
+    case "$free" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    [ "$free" -ge "$need" ]
+}
+
+backup_db() {
+    mkdir -p "$BACKUPS_DIR"
+    chmod 700 "$BACKUPS_DIR"
+    name="$(date -u +%Y-%m-%d_%H%M%S)_$(printf '%.7s' "${U_FROM:-unknown}")"
+    if ! compose exec -T postgres pg_dump -U stealthnet -d stealthnet -Fc > "$BACKUPS_DIR/$name.dump" 2>/dev/null; then
+        rm -f "$BACKUPS_DIR/$name.dump"
+        return 1
+    fi
+    if [ ! -s "$BACKUPS_DIR/$name.dump" ] || ! compose exec -T postgres pg_restore --list < "$BACKUPS_DIR/$name.dump" > /dev/null 2>&1; then
+        rm -f "$BACKUPS_DIR/$name.dump"
+        return 1
+    fi
+    cp "$ENV_FILE" "$BACKUPS_DIR/$name.env"
+    chmod 600 "$BACKUPS_DIR/$name.dump" "$BACKUPS_DIR/$name.env"
+    U_BACKUP=$name
+    ls -1t "$BACKUPS_DIR"/*.dump 2>/dev/null | tail -n +4 | while IFS= read -r old; do
+        rm -f "$old" "${old%.dump}.env"
+    done
+    return 0
+}
+
+app_ready() {
+    id=$(compose ps -q app 2>/dev/null || true)
+    [ -n "$id" ] || return 1
+    docker exec "$id" curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1
+}
+
+verify_app() {
+    limit=$1
+    image=$2
+    waited=0
+    streak=0
+    while [ "$waited" -lt "$limit" ]; do
+        id=$(compose ps -q app 2>/dev/null || true)
+        if [ -n "$id" ]; then
+            restarts=$(docker inspect -f '{{.RestartCount}}' "$id" 2>/dev/null || true)
+            running=$(docker inspect -f '{{.Config.Image}}' "$id" 2>/dev/null || true)
+            if [ -n "$restarts" ] && [ "$restarts" != "0" ]; then
+                return 1
+            fi
+            if [ -n "$image" ] && [ -n "$running" ] && [ "$running" != "$image" ]; then
+                return 1
+            fi
+            if docker exec "$id" curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1; then
+                streak=$((streak + 1))
+                if [ "$streak" -ge 5 ]; then
+                    return 0
+                fi
+            else
+                streak=0
+            fi
+        fi
+        sleep "$VERIFY_PAUSE"
+        waited=$((waited + 2))
+    done
+    return 1
+}
+
+restore_before_start() {
+    if journal_has db_swapping && [ "$(db_label stealthnet)" = "stealthnet-update:$U_ID:copy" ]; then
+        pg_retry "BEGIN; ALTER DATABASE stealthnet RENAME TO stealthnet_next; ALTER DATABASE stealthnet_prev RENAME TO stealthnet; COMMIT;" || true
+        pg_retry "COMMENT ON DATABASE stealthnet IS NULL" || true
+    fi
+    if db_exists stealthnet_next && [ "$(db_label stealthnet_next)" = "stealthnet-update:$U_ID:copy" ]; then
+        pg_retry "DROP DATABASE stealthnet_next" || true
+    fi
+    if [ -n "$FROM_IMAGE" ]; then
+        set_env SN_IMAGE "$FROM_IMAGE"
+    fi
+    compose up -d --no-build >/dev/null 2>&1 || true
+    if [ -n "$DOWN_EPOCH" ]; then
+        verify_app 60 "" >/dev/null 2>&1 || true
+        UP_EPOCH=$(date +%s)
+    fi
+}
+
+block_version() {
+    if [ "$U_ORIGIN" = "panel" ] && [ -n "$U_TO" ] && [ -f "$STATUS_DIR/helper.json" ]; then
+        if helper_enabled; then
+            write_helper_json true "$U_TO"
+        else
+            write_helper_json false "$U_TO"
+        fi
+    fi
+}
+
+finish_run() {
+    U_STATE=$1
+    U_ERROR=${2:-}
+    U_FINISHED=$(now_iso)
+    if [ -n "$DOWN_EPOCH" ] && [ -z "${UP_EPOCH:-}" ]; then
+        UP_EPOCH=$(date +%s)
+    fi
+    case "$U_ERROR" in
+        migrate_failed|start_failed|unhealthy) block_version ;;
+    esac
+    if [ "$U_STATE" = "done" ] && [ -f "$STATUS_DIR/helper.json" ] && [ -n "$(helper_blocked)" ]; then
+        if helper_enabled; then
+            write_helper_json true ""
+        else
+            write_helper_json false ""
+        fi
+    fi
+    if [ "$U_ORIGIN" = "panel" ] && [ -n "$DOWN_EPOCH" ] && [ "$U_STATE" != "done" ]; then
+        date +%s > "$RUN_DIR/last_failure"
+    fi
+    write_status
+    append_history
+    log_line "заявка $U_ID: итог $U_STATE ${U_ERROR}"
+    rm -f "$RUN_DIR/journal" "$RUN_DIR/current"
+}
+
+update_steps() {
+    step_begin check
+    if ! docker info >/dev/null 2>&1; then
+        fail_step failed docker_unavailable
+        return 1
+    fi
+    if [ ! -f "$ENV_FILE" ] || [ -z "$(compose ps -q postgres 2>/dev/null || true)" ]; then
+        fail_step failed internal
+        return 1
+    fi
+    if [ "$U_ORIGIN" = "panel" ]; then
+        last=$(cat "$RUN_DIR/last_failure" 2>/dev/null || true)
+        case "$last" in
+            ""|*[!0-9]*) ;;
+            *)
+                if [ $(( $(date +%s) - last )) -lt 600 ]; then
+                    fail_step failed rate_limited
+                    return 1
+                fi
+                ;;
+        esac
+        if [ -n "$U_TO" ] && [ "$(helper_blocked)" = "$U_TO" ]; then
+            fail_step failed blocked
+            return 1
+        fi
+    fi
+    if ! space_ok; then
+        fail_step failed no_space
+        return 1
+    fi
+    step_end check done
+
+    step_begin download
+    FROM_IMAGE=$(env_value SN_IMAGE)
+    current_image=$FROM_IMAGE
+    if [ -z "$current_image" ]; then
+        current_image=stealthnet:local
+    fi
+    if [ -z "$TO_IMAGE" ]; then
+        ref="$(image_repo):main"
+        if ! docker pull "$ref" >/dev/null 2>&1; then
+            fail_step failed download_failed
+            return 1
+        fi
+        if [ "$(docker image inspect -f '{{.Architecture}}' "$ref" 2>/dev/null || true)" != "$(host_arch)" ]; then
+            fail_step failed wrong_arch
+            return 1
+        fi
+        TO_IMAGE=$(docker image inspect -f '{{index .RepoDigests 0}}' "$ref" 2>/dev/null || true)
+        case "$TO_IMAGE" in
+            *@sha256:*) ;;
+            *) TO_IMAGE=$ref ;;
+        esac
+    fi
+    rev=$(image_commit "$TO_IMAGE")
+    if [ "$U_ORIGIN" = "panel" ] && [ "$rev" != "$U_TO" ]; then
+        U_TO=$rev
+        fail_step failed stale_request
+        return 1
+    fi
+    U_TO=$rev
+    if [ "$TO_IMAGE" = "$current_image" ] || { [ -n "$rev" ] && [ "$rev" = "$U_FROM" ]; }; then
+        fail_step failed no_update
+        return 1
+    fi
+    new_created=$(image_created "$TO_IMAGE")
+    old_created=$(image_created "$current_image")
+    if [ -n "$old_created" ] && [ -n "$new_created" ] && ! later_than "$new_created" "$old_created"; then
+        fail_step failed no_update
+        return 1
+    fi
+    step_end download done
+
+    step_begin backup
+    journal begin
+    write_status
+    if ! compose stop -t 60 app >/dev/null 2>&1; then
+        fail_step restore backup_failed
+        return 1
+    fi
+    DOWN_EPOCH=$(date +%s)
+    journal app_stopped
+    if ! backup_db; then
+        fail_step restore backup_failed
+        return 1
+    fi
+    journal backup_written
+    step_end backup done
+
+    step_begin migrate
+    if db_exists stealthnet_prev; then
+        case "$(db_label stealthnet_prev)" in
+            stealthnet-update:*:prev) pg "DROP DATABASE stealthnet_prev" >/dev/null 2>&1 || true ;;
+        esac
+    fi
+    if db_exists stealthnet_prev || db_exists stealthnet_next; then
+        case "$(db_label stealthnet_next)" in
+            stealthnet-update:*:copy) pg "DROP DATABASE stealthnet_next" >/dev/null 2>&1 || true ;;
+        esac
+    fi
+    if db_exists stealthnet_prev || db_exists stealthnet_next; then
+        fail_step restore internal
+        return 1
+    fi
+    if ! pg_retry "CREATE DATABASE stealthnet_next TEMPLATE stealthnet" \
+        || ! pg_retry "COMMENT ON DATABASE stealthnet_next IS 'stealthnet-update:$U_ID:copy'"; then
+        fail_step restore internal
+        return 1
+    fi
+    journal db_cloned
+    password=$(env_value POSTGRES_PASSWORD)
+    if ! (cd "$DEPLOY" && SN_IMAGE="$TO_IMAGE" docker compose run --rm --no-deps -T \
+        -e "DATABASE_URL=postgres://stealthnet:$password@postgres:5432/stealthnet_next" \
+        -e SN_RUN_BOT=false -e SN_RUN_WORKER=false app migrate) >> "$RUN_DIR/updater.log" 2>&1; then
+        fail_step restore migrate_failed
+        return 1
+    fi
+    step_end migrate done
+
+    step_begin start
+    journal db_swapping
+    if ! pg_retry "BEGIN; ALTER DATABASE stealthnet RENAME TO stealthnet_prev; ALTER DATABASE stealthnet_next RENAME TO stealthnet; COMMIT;"; then
+        fail_step restore internal
+        return 1
+    fi
+    pg "COMMENT ON DATABASE stealthnet_prev IS 'stealthnet-update:$U_ID:prev'" >/dev/null 2>&1 || true
+    journal db_swapped
+    journal app_starting
+    set_env SN_IMAGE "$TO_IMAGE"
+    if ! compose up -d --no-build >> "$RUN_DIR/updater.log" 2>&1; then
+        fail_step attention start_failed
+        return 1
+    fi
+    step_end start done
+
+    step_begin verify
+    if ! verify_app "$VERIFY_TIMEOUT" "$TO_IMAGE"; then
+        fail_step attention unhealthy
+        return 1
+    fi
+    UP_EPOCH=$(date +%s)
+    journal committed
+    pg "COMMENT ON DATABASE stealthnet IS NULL" >/dev/null 2>&1 || true
+    step_end verify done
+    return 0
+}
+
+update_run() {
+    reset_run
+    U_ORIGIN=$1
+    U_ID=$2
+    U_ADMIN=$3
+    U_TO=$4
+    TO_IMAGE=${5:-}
+    UP_EPOCH=""
+    FAIL_KIND=""
+    FAIL_CODE=""
+    U_STARTED=$(now_iso)
+    START_EPOCH=$(date +%s)
+    current=$(env_value SN_IMAGE)
+    U_FROM=$(image_commit "${current:-stealthnet:local}")
+    U_STATE=running
+    rm -f "$RUN_DIR/journal"
+    write_status
+    log_line "заявка $U_ID: начало, источник $U_ORIGIN"
+    if update_steps; then
+        finish_run done
+        return 0
+    fi
+    case "$FAIL_KIND" in
+        restore)
+            restore_before_start
+            finish_run rolled_back "$FAIL_CODE"
+            ;;
+        attention)
+            finish_run attention "$FAIL_CODE"
+            ;;
+        *)
+            finish_run failed "$FAIL_CODE"
+            ;;
+    esac
+    return 1
+}
+
+take_request() {
+    req="$REQUEST_DIR/request.json"
+    if [ ! -e "$req" ] && [ ! -L "$req" ]; then
+        sleep 2
+        return 1
+    fi
+    mkdir -p "$RUN_DIR/taken"
+    chmod 700 "$RUN_DIR/taken"
+    taken="$RUN_DIR/taken/request.$$"
+    rm -rf "$taken"
+    if ! mv -f "$req" "$taken" 2>/dev/null; then
+        rm -rf "$req"
+        return 1
+    fi
+    if [ -L "$taken" ] || [ ! -f "$taken" ]; then
+        rm -rf "$taken"
+        log_line "заявка отклонена: это не обычный файл"
+        sleep 2
+        return 1
+    fi
+    info=$(ls -ln "$taken" 2>/dev/null || true)
+    set -- $info
+    links=${2:-0}
+    uid=${3:-}
+    size=${5:-99999}
+    case "$size" in
+        ""|*[!0-9]*) size=99999 ;;
+    esac
+    if [ "$links" != "1" ] || [ "$uid" != "$APP_UID" ] || [ "$size" -gt 1024 ]; then
+        rm -f "$taken"
+        log_line "заявка отклонена: чужой, большой или связанный файл"
+        sleep 2
+        return 1
+    fi
+    line=$(head -c 1100 "$taken" | head -n 1)
+    rm -f "$taken"
+    REQ_ID=$(printf '%s' "$line" | sed -n 's/^{"id":"\([0-9a-f-]\{36\}\)".*/\1/p')
+    if ! printf '%s\n' "$line" | grep -Eqx '\{"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","action":"update","target":"[0-9a-f]{40}","requested_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","admin_id":[0-9]{1,18}\}'; then
+        log_line "заявка отклонена: неверный вид"
+        if [ -n "$REQ_ID" ]; then
+            reset_run
+            U_ID=$REQ_ID
+            U_ORIGIN=panel
+            U_STARTED=$(now_iso)
+            finish_run failed invalid_request
+        fi
+        return 1
+    fi
+    REQ_TARGET=$(printf '%s' "$line" | sed -n 's/.*"target":"\([0-9a-f]\{40\}\)".*/\1/p')
+    REQ_ADMIN=$(printf '%s' "$line" | sed -n 's/.*"admin_id":\([0-9]\{1,18\}\)}$/\1/p')
+    REQ_AT=$(printf '%s' "$line" | sed -n 's/.*"requested_at":"\([^"]*\)".*/\1/p')
+    at=$(iso_epoch "$REQ_AT")
+    if [ -n "$at" ] && [ $(( $(date +%s) - at )) -gt 600 ]; then
+        reset_run
+        U_ID=$REQ_ID
+        U_ORIGIN=panel
+        U_ADMIN=$REQ_ADMIN
+        U_TO=$REQ_TARGET
+        U_STARTED=$(now_iso)
+        finish_run failed expired
+        return 1
+    fi
+    return 0
+}
+
+updater_run() {
+    trap - INT TERM
+    reset_run
+    if ! take_request; then
+        return 0
+    fi
+    U_ID=$REQ_ID
+    U_ORIGIN=panel
+    U_ADMIN=$REQ_ADMIN
+    U_TO=$REQ_TARGET
+    U_STARTED=$(now_iso)
+    if ! helper_enabled; then
+        finish_run failed blocked
+        return 0
+    fi
+    if ! lock_take 180; then
+        finish_run failed busy
+        return 0
+    fi
+    update_run panel "$REQ_ID" "$REQ_ADMIN" "$REQ_TARGET" "" || true
+    lock_release
+    return 0
+}
+
+updater_recover() {
+    if [ ! -f "$RUN_DIR/current" ]; then
+        return 0
+    fi
+    reset_run
+    load_run
+    UP_EPOCH=""
+    if ! lock_take 30; then
+        return 0
+    fi
+    log_line "заявка $U_ID: обновление прервалось, довожу до конца"
+    if journal_has committed; then
+        finish_run done
+    elif journal_has app_starting; then
+        if [ -n "$TO_IMAGE" ] && verify_app 30 "$TO_IMAGE"; then
+            finish_run done
+        else
+            finish_run attention interrupted
+        fi
+    elif journal_has app_stopped || journal_has begin; then
+        restore_before_start
+        finish_run rolled_back interrupted
+    else
+        finish_run failed interrupted
+    fi
+    lock_release
+    return 0
+}
+
+run_dir_ready() {
+    if mkdir -p "$RUN_DIR" 2>/dev/null && [ -w "$RUN_DIR" ]; then
+        chmod 700 "$RUN_DIR"
+        return 0
+    fi
+    RUN_DIR="$DEPLOY/.update"
+    mkdir -p "$RUN_DIR"
+    chmod 700 "$RUN_DIR"
+}
+
+updater_command() {
+    if [ ! -f "$ENV_FILE" ]; then
+        exit 0
+    fi
+    run_dir_ready
+    case "${1:-}" in
+        run) updater_run ;;
+        recover) updater_recover ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+show_status() {
+    printf '%sSTEALTHNET RW SYSTEM — состояние%s\n\n' "$BOLD" "$RESET"
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите $(command_for install)"
+    fi
+    image=$(env_value SN_IMAGE)
+    commit=$(image_commit "${image:-stealthnet:local}")
+    created=$(image_created "${image:-stealthnet:local}")
+    if [ -n "$commit" ]; then
+        printf '  Сборка:            %.7s от %.10s\n' "$commit" "$created"
+    else
+        printf '  Сборка:            %s\n' "${image:-собрана на этом сервере}"
+    fi
+    id=$(compose ps -q app 2>/dev/null || true)
+    state=""
+    if [ -n "$id" ]; then
+        state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || true)
+    fi
+    case "$state" in
+        healthy) printf '  Панель:            работает\n' ;;
+        starting) printf '  Панель:            запускается\n' ;;
+        "") printf '  Панель:            не запущена\n' ;;
+        *) printf '  Панель:            %s\n' "$state" ;;
+    esac
+    if helper_enabled; then
+        printf '  Обновление из админки: включено\n'
+    else
+        printf '  Обновление из админки: выключено (включить: %s)\n' "$(command_for 'helper on')"
+    fi
+    if [ -f "$STATUS_DIR/update.json" ]; then
+        last_state=$(sed -n 's/.*"state":"\([a-z_]*\)","steps".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
+        last_error=$(sed -n 's/.*"error":"\([a-z_]*\)".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
+        last_at=$(sed -n 's/.*"started_at":"\([^"]*\)".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
+        case "$last_state" in
+            done) printf '  Последнее обновление: %s, установлено\n' "$last_at" ;;
+            running|waiting) printf '  Последнее обновление: идёт сейчас\n' ;;
+            rolled_back) printf '  Последнее обновление: %s, не установлено (%s), прежняя версия работает\n' "$last_at" "$last_error" ;;
+            attention) printf '  Последнее обновление: %s, новая версия запущена с ошибками (%s)\n' "$last_at" "$last_error"
+                printf '  Журнал панели: cd %s && docker compose logs --tail 100 app\n' "$DEPLOY" ;;
+            failed) printf '  Последнее обновление: %s, не началось (%s)\n' "$last_at" "$last_error" ;;
+        esac
+    fi
+    count=$(ls -1 "$BACKUPS_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${count:-0}" -gt 0 ]; then
+        newest=$(ls -1t "$BACKUPS_DIR"/*.dump 2>/dev/null | sed -n '1p')
+        printf '  Копии базы:        %s, последняя %s\n' "$count" "$(basename "$newest" .dump)"
+        printf '  Где лежат:         %s\n' "$BACKUPS_DIR"
+    fi
+}
+
+cli_update() {
+    NEW_IMAGE=$(env_value SN_IMAGE)
+    set_env SN_IMAGE "$OLD_IMAGE"
+    run_dir_ready
+    if ! lock_take 180; then
+        die "сейчас идёт другое обновление" "Дождитесь его конца и запустите команду ещё раз: $(command_for update)"
+    fi
+    hint "Панель будет недоступна около минуты. Перед обновлением сохраню копию базы."
+    CLI_UPDATE=1
+    if update_run command "cmd-$(random_hex 8)" "" "" "$NEW_IMAGE"; then
+        CLI_UPDATE=""
+        lock_release
+        return 0
+    fi
+    CLI_UPDATE=""
+    lock_release
+    case "$U_STATE:$U_ERROR" in
+        failed:no_update)
+            set_env SN_IMAGE "$OLD_IMAGE"
+            start_stack
+            ;;
+        rolled_back:*)
+            die "новая версия не установлена ($U_ERROR), работает прежняя, данные не изменились" \
+                "Журнал обновления: $RUN_DIR/updater.log"
+            ;;
+        attention:*)
+            die "новая версия запущена, но не отвечает ($U_ERROR)" \
+                "База уже обновлена, поэтому прежнюю версию я сам не возвращаю." \
+                "Журнал панели: cd $DEPLOY && docker compose logs --tail 100 app" \
+                "Копия базы перед обновлением: $BACKUPS_DIR/$U_BACKUP.dump"
+            ;;
+        *)
+            die "обновление не началось ($U_ERROR), работает прежняя версия" \
+                "Журнал обновления: $RUN_DIR/updater.log"
+            ;;
+    esac
+}
+
 detect_short
 
 case "${1:-}" in
@@ -768,6 +1775,9 @@ case "${1:-}" in
     owner-email|--owner-email) change_owner_email ;;
     reset-password|--reset-password) reset_password ;;
     update|--update) update ;;
+    status|--status) show_status ;;
+    helper|--helper) helper_command "${2:-}" ;;
+    updater) updater_command "${2:-}" ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
 esac

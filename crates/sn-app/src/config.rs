@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use sn_server::ServerConfig;
 use sn_server::extract::parse_proxy_list;
+use sn_services::updates::{BuildInfo, UpdateConfig};
 use sn_services::{EnvFallbacks, RemnaConnection};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -24,6 +25,7 @@ pub struct Config {
     pub telegram_api: String,
     pub server: ServerConfig,
     pub env: EnvFallbacks,
+    pub updates: UpdateConfig,
 }
 
 const TELEGRAM_API: &str = "https://api.telegram.org";
@@ -53,6 +55,29 @@ fn list(vars: &HashMap<String, String>, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn updates(vars: &HashMap<String, String>) -> Result<UpdateConfig> {
+    let build = BuildInfo::new(
+        text(vars, "SN_BUILD_COMMIT").as_deref(),
+        text(vars, "SN_BUILD_DATE").as_deref(),
+    );
+    let mut config = UpdateConfig::new(build);
+    config.dir = text(vars, "SN_UPDATER_DIR").map(std::path::PathBuf::from);
+    if let Some(registry) = text(vars, "SN_UPDATE_REGISTRY") {
+        if !(registry.starts_with("https://") || registry.starts_with("http://")) {
+            bail!("SN_UPDATE_REGISTRY должен начинаться с https://");
+        }
+        config.registry = registry;
+    }
+    if let Some(repository) = text(vars, "SN_UPDATE_REPOSITORY") {
+        config.repository = repository;
+    }
+    if let Some(tag) = text(vars, "SN_UPDATE_TAG") {
+        config.tag = tag;
+    }
+    config.checks_allowed = flag(vars, "SN_UPDATE_CHECK", true)?;
+    Ok(config)
 }
 
 impl Config {
@@ -132,6 +157,7 @@ impl Config {
                 remna,
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
             },
+            updates: updates(vars)?,
         })
     }
 }

@@ -726,6 +726,42 @@ impl<'a> Auth<'a> {
         })
     }
 
+    pub async fn confirm_admin(
+        &self,
+        admin_id: AdminId,
+        password: &str,
+        code: Option<&str>,
+    ) -> ServiceResult<()> {
+        let admin = self.admin_for_security(admin_id).await?;
+        if !check_password(password, Some(admin.password_hash.clone())).await? {
+            return Err(wrong_password());
+        }
+        let Some(sealed) = admin.totp.clone() else {
+            return Ok(());
+        };
+        let Some(code) = code.map(str::trim).filter(|c| !c.is_empty()) else {
+            return Err(ServiceError::rejected(
+                TOTP_REQUIRED,
+                "Введите код из приложения-аутентификатора",
+            ));
+        };
+        let secret = self.open_admin_totp(admin_id, &sealed)?;
+        let attempt = self.totp_attempt(admin_id).await?;
+        let accepted = match totp::verify(&secret, code, self.services.now().timestamp()) {
+            Some(step) => {
+                let mut conn = self.services.store().conn().await?;
+                conn.admins().use_totp_step(admin_id, step).await?
+            }
+            None => false,
+        };
+        self.settle_totp(admin_id, &attempt, accepted, None).await?;
+        if accepted {
+            Ok(())
+        } else {
+            Err(totp_invalid())
+        }
+    }
+
     pub async fn admin_security(&self, admin_id: AdminId) -> ServiceResult<AdminSecurity> {
         let mut conn = self.services.store().conn().await?;
         let admin = conn.admins().get(admin_id).await?;

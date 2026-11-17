@@ -3225,3 +3225,5 @@ async fn фавикон_загружается_отдельно_и_подмен�
     std::fs::remove_dir_all(dir).unwrap();
     h.db.cleanup().await;
 }
+
+mod system_updates;

@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod legacy;
+mod updates;
 mod watch;
 
 use anyhow::{Context, Result, bail};
@@ -123,6 +124,7 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         .reload()
         .await
         .context("настройки из базы не загрузились")?;
+    services.set_update_config(Some(config.updates.clone()));
     let cancel = CancellationToken::new();
     let signals = cancel.clone();
     tokio::spawn(async move {
@@ -130,10 +132,10 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         tracing::info!("получен сигнал остановки");
         signals.cancel();
     });
-    let mut background = vec![tokio::spawn(watch::settings_changes(
-        services.clone(),
-        cancel.clone(),
-    ))];
+    let mut background = vec![
+        tokio::spawn(watch::settings_changes(services.clone(), cancel.clone())),
+        tokio::spawn(updates::checks(services.clone(), cancel.clone())),
+    ];
     if config.run_worker {
         background.push(tokio::spawn(
             worker(services.clone(), &config).run(cancel.clone()),
@@ -227,7 +229,17 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Command::Version => {
-            println!("stealthnet {}", env!("CARGO_PKG_VERSION"));
+            let build = sn_services::updates::BuildInfo::new(
+                std::env::var("SN_BUILD_COMMIT").ok().as_deref(),
+                std::env::var("SN_BUILD_DATE").ok().as_deref(),
+            );
+            println!("stealthnet {}", build.version);
+            if let Some(commit) = build.commit {
+                println!("сборка {commit}");
+            }
+            if let Some(at) = build.built_at {
+                println!("собрана {}", at.to_rfc3339());
+            }
             return ExitCode::SUCCESS;
         }
         Command::GenSecretKey => {

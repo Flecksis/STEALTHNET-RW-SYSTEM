@@ -1,0 +1,4 @@
+#!/bin/sh
+STATE=${FAKE_STATE:?}
+printf '%s\n' "$*" >> "$STATE/systemctl.log"
+exit "${FAKE_SYSTEMCTL_EXIT:-0}"
