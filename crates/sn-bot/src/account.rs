@@ -1,8 +1,10 @@
 use crate::BotError;
-use crate::handler::{Screen, Turn, live, menu_keyboard, tariff_name};
+use crate::handler::{Screen, Turn, live, status_text, tariff_name};
 use crate::session::{Awaiting, DevicePick};
-use crate::telegram::{Button, Keyboard};
-use crate::text::{self, escape};
+use crate::telegram::Keyboard;
+use crate::text;
+use crate::ui::{self, Html, Lines, Text};
+use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::format;
 use sn_domain::ids::SubscriptionId;
@@ -12,58 +14,80 @@ use sn_domain::pricing::topup_quote;
 use sn_domain::support::TicketChannel;
 use sn_domain::traffic::{NextReset, next_reset};
 use sn_payments::{MethodsContext, ProviderKind};
+use sn_services::bot_content::BotContent;
 use sn_services::checkout::{Channel, CheckoutResult};
 use sn_services::support::OpenTicket;
 use sn_services::{Actor, ServiceError};
 use sn_store::{Db, StoreError};
 
-pub fn payment_screen(result: &CheckoutResult, what: &str) -> Screen {
+pub fn payment_screen(c: &BotContent, result: &CheckoutResult, what: &str) -> Screen {
     match result {
         CheckoutResult::Redirect { pay_url, .. } if pay_url.starts_with("http") => {
-            Screen::new(format!(
-                "{what}\nСчёт готов: нажмите «Оплатить». После оплаты пришлём подтверждение сюда."
-            ))
+            Screen::new(ui::text(c, "pay.ready", &[("what", Html(what))]))
+                .keyboard(
+                    Keyboard::new()
+                        .push(ui::link(c, "pay.btn.pay", &[], pay_url.clone()))
+                        .push(ui::menu(c)),
+                )
+                .section(Section::Payment)
+        }
+        CheckoutResult::Redirect { pay_url, .. } => Screen::notice(ui::text(
+            c,
+            "pay.link",
+            &[("what", Html(what)), ("url", Text(pay_url))],
+        ))
+        .section(Section::Payment),
+        CheckoutResult::Completed { .. } => Screen::new(ui::text(c, "pay.balance_done", &[]))
             .keyboard(
                 Keyboard::new()
-                    .link("Оплатить", pay_url.clone())
-                    .button("В меню", "m"),
+                    .push(ui::button(c, "common.btn.subscription", &[], "subs"))
+                    .push(ui::menu(c)),
             )
-        }
-        CheckoutResult::Redirect { pay_url, .. } => {
-            Screen::notice(format!("{what}\nСсылка на оплату: {}", escape(pay_url)))
-        }
-        CheckoutResult::Completed { .. } => {
-            Screen::new("Оплачено с баланса. Подписка обновится в течение минуты.").keyboard(
-                Keyboard::new()
-                    .button("Подписка", "subs")
-                    .button("В меню", "m"),
-            )
-        }
+            .section(Section::Payment),
     }
 }
 
 pub async fn subscriptions(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let list = live(services.subscriptions().list_for_client(client.id).await?);
     match list.as_slice() {
-        [] => Ok(Screen::new("Подписки пока нет.").keyboard(
-            Keyboard::new()
-                .button("Купить подписку", "buy")
-                .button("В меню", "m"),
-        )),
+        [] => Ok(Screen::new(ui::text(c, "sub.none", &[]))
+            .keyboard(
+                Keyboard::new()
+                    .push(ui::button(c, "sub.btn.buy", &[], "buy"))
+                    .push(ui::menu(c)),
+            )
+            .section(Section::Subscription)),
         [only] => subscription(turn, client, only.id.0).await,
         many => {
             let offset = services.settings().remna_offset();
             let mut keyboard = Keyboard::new();
             for sub in many {
                 let name = tariff_name(&services, sub.tariff_id).await;
-                let label = match sub.mirror.expire_at {
-                    Some(at) => format!("{name} · до {}", text::day_month(at, offset)),
-                    None => name,
+                let button = match sub.mirror.expire_at {
+                    Some(at) => ui::button(
+                        c,
+                        "sub.btn.item",
+                        &[
+                            ("tariff", Text(&name)),
+                            ("date", Text(&text::day_month(at, offset))),
+                        ],
+                        format!("sub:{}", sub.id),
+                    ),
+                    None => ui::button(
+                        c,
+                        "sub.btn.item_open",
+                        &[("tariff", Text(&name))],
+                        format!("sub:{}", sub.id),
+                    ),
                 };
-                keyboard = keyboard.button(label, format!("sub:{}", sub.id));
+                keyboard = keyboard.push(button);
             }
-            Ok(Screen::new("Выберите подписку:").keyboard(keyboard.button("В меню", "m")))
+            Ok(Screen::new(ui::text(c, "sub.choose", &[]))
+                .keyboard(keyboard.push(ui::menu(c)))
+                .section(Section::Subscription))
         }
     }
 }
@@ -81,11 +105,17 @@ pub async fn subscription(
     id: i64,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let actor = Actor::Client(client.id);
     let sid = SubscriptionId(id);
     let (view, link_error) = match services.subscriptions().view(sid, actor, true).await {
         Ok(view) => (view, None),
-        Err(err) if not_found(&err) => return Ok(Screen::notice("Подписка не найдена.")),
+        Err(err) if not_found(&err) => {
+            return Ok(
+                Screen::notice(ui::text(c, "sub.not_found", &[])).section(Section::Subscription)
+            );
+        }
         Err(err) => match services.subscriptions().view(sid, actor, false).await {
             Ok(view) => (view, Some(err)),
             Err(_) => return Ok(Screen::notice(text::user_error(&err))),
@@ -96,28 +126,32 @@ pub async fn subscription(
     let settings = services.settings();
     let offset = settings.remna_offset();
     let name = tariff_name(&services, sub.tariff_id).await;
-    let mut lines = vec![format!(
-        "<b>{}</b> · {}",
-        escape(&name),
-        text::status_title(sub, now).to_lowercase()
-    )];
+    let status = status_text(c, sub, now);
+    let mut lines = Lines::new();
+    lines.add(ui::text(
+        c,
+        "sub.title",
+        &[("tariff", Text(&name)), ("status", Html(&status))],
+    ));
     match sub.mirror.expire_at {
-        Some(at) if at > now => lines.push(format!(
-            "До {}, осталось {}",
-            text::date(at, offset),
-            text::plural_days(text::days_left(at, now))
+        Some(at) if at > now => lines.add(ui::text(
+            c,
+            "sub.until",
+            &[
+                ("date", Text(&text::date(at, offset))),
+                ("days", Text(&text::plural_days(text::days_left(at, now)))),
+            ],
         )),
-        Some(at) => lines.push(format!("Закончилась {}", text::date(at, offset))),
+        Some(at) => lines.add(ui::text(
+            c,
+            "sub.ended",
+            &[("date", Text(&text::date(at, offset)))],
+        )),
         None => {}
     }
     match sub.mirror.traffic_limit_bytes.filter(|l| *l > 0) {
         Some(limit) => {
             let used = sub.mirror.traffic_used_bytes.unwrap_or(0);
-            let mut line = format!(
-                "Трафик: {} из {}",
-                format::traffic(used),
-                format::traffic(limit)
-            );
             let reset = match sub.tariff_id {
                 Some(tariff_id) => {
                     let mut conn = services.store().conn().await?;
@@ -129,63 +163,86 @@ pub async fn subscription(
                 }
                 None => None,
             };
-            match reset {
-                Some(NextReset::At(at)) => {
-                    line.push_str(&format!(", обновится {}", text::day_month(at, offset)))
-                }
-                Some(NextReset::OnPayment) => line.push_str(", обновится при продлении"),
-                _ => {}
-            }
-            lines.push(line);
+            let reset = match reset {
+                Some(NextReset::At(at)) => ui::text(
+                    c,
+                    "sub.traffic_reset_date",
+                    &[("date", Text(&text::day_month(at, offset)))],
+                ),
+                Some(NextReset::OnPayment) => ui::text(c, "sub.traffic_reset_payment", &[]),
+                _ => String::new(),
+            };
+            lines.add(ui::text(
+                c,
+                "sub.traffic",
+                &[
+                    ("used", Text(&format::traffic(used))),
+                    ("limit", Text(&format::traffic(limit))),
+                    ("reset", Html(&reset)),
+                ],
+            ));
         }
-        None => lines.push("Трафик: без лимита".into()),
+        None => lines.add(ui::text(c, "sub.traffic_unlimited", &[])),
     }
     match (sub.mirror.devices_count, sub.mirror.hwid_limit) {
-        (Some(count), Some(limit)) => lines.push(format!("Устройства: {count} из {limit}")),
-        (None, Some(limit)) => lines.push(format!("Устройств можно подключить: {limit}")),
+        (Some(count), Some(limit)) => lines.add(ui::text(
+            c,
+            "sub.devices",
+            &[
+                ("count", Text(&count.to_string())),
+                ("limit", Text(&limit.to_string())),
+            ],
+        )),
+        (None, Some(limit)) => lines.add(ui::text(
+            c,
+            "sub.devices_limit",
+            &[("limit", Text(&limit.to_string()))],
+        )),
         _ => {}
     }
-    lines.push(format!(
-        "Автопродление: {}",
+    lines.add(ui::text(
+        c,
         if sub.autorenew.enabled {
-            "включено"
+            "sub.autorenew_on"
         } else {
-            "выключено"
-        }
+            "sub.autorenew_off"
+        },
+        &[],
     ));
     let mut keyboard = Keyboard::new();
     match (&view.subscription_url, &link_error) {
         (Some(url), _) => {
-            lines.push(String::new());
-            lines.push("Ссылка подписки:".into());
-            lines.push(format!("<code>{}</code>", escape(url)));
+            lines.add(ui::text(c, "sub.link", &[("url", Text(url))]));
             if url.starts_with("http") {
-                keyboard = keyboard.link("Открыть страницу подключения", url.clone());
+                keyboard = keyboard.push(ui::link(c, "sub.btn.connect", &[], url.clone()));
             }
         }
         (None, Some(err)) => {
-            lines.push(String::new());
-            lines.push(format!(
-                "Ссылку сейчас не получить. {}",
-                text::user_error(err)
+            lines.add(ui::text(
+                c,
+                "sub.link_error",
+                &[("error", Text(&text::user_error(err)))],
             ));
         }
         (None, None) => {}
     }
     if sub.remna.is_some() {
         keyboard = keyboard
-            .button("Устройства", format!("dev:{id}"))
-            .button("Выпустить новую ссылку", format!("rei:{id}"));
+            .push(ui::button(c, "sub.btn.devices", &[], format!("dev:{id}")))
+            .push(ui::button(c, "sub.btn.reissue", &[], format!("rei:{id}")));
     }
-    keyboard = keyboard.button("Продлить", format!("buy:{id}")).row(vec![
-        Button::callback("Все подписки", "subs"),
-        Button::callback("В меню", "m"),
-    ]);
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard))
+    keyboard = keyboard
+        .push(ui::button(c, "sub.btn.extend", &[], format!("buy:{id}")))
+        .pair(ui::button(c, "sub.btn.all", &[], "subs"), ui::menu(c));
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard)
+        .section(Section::Subscription))
 }
 
 pub async fn devices(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let list = match services
         .subscriptions()
         .devices(SubscriptionId(id), Actor::Client(client.id))
@@ -194,19 +251,16 @@ pub async fn devices(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
         Ok(list) => list,
         Err(err) => return Ok(Screen::notice(text::user_error(&err))),
     };
-    let back = Keyboard::new().row(vec![
-        Button::callback("Назад", format!("sub:{id}")),
-        Button::callback("В меню", "m"),
-    ]);
+    let back = Keyboard::new().pair(ui::back(c, format!("sub:{id}")), ui::menu(c));
     if list.is_empty() {
         turn.session.devices = None;
-        return Ok(Screen::new(
-            "Устройств пока нет: они появятся, когда вы добавите подписку в приложение.",
-        )
-        .keyboard(back));
+        return Ok(Screen::new(ui::text(c, "dev.empty", &[]))
+            .keyboard(back)
+            .section(Section::Devices));
     }
     let offset = services.settings().remna_offset();
-    let mut lines = vec!["<b>Устройства</b>".to_string()];
+    let mut lines = Lines::new();
+    lines.add(ui::text(c, "dev.title", &[]));
     let mut keyboard = Keyboard::new();
     for (index, device) in list.iter().enumerate() {
         let details: Vec<String> = [
@@ -220,25 +274,45 @@ pub async fn devices(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
         .into_iter()
         .flatten()
         .collect();
-        let details = if details.is_empty() {
-            String::new()
+        let number = (index + 1).to_string();
+        let date = text::day_month(device.added_at, offset);
+        lines.add(if details.is_empty() {
+            ui::text(
+                c,
+                "dev.line_plain",
+                &[
+                    ("n", Text(&number)),
+                    ("title", Text(&device.title)),
+                    ("date", Text(&date)),
+                ],
+            )
         } else {
-            format!(" — {}", escape(&details.join(" · ")))
-        };
-        lines.push(format!(
-            "{}. {}{details}, добавлено {}",
-            index + 1,
-            escape(&device.title),
-            text::day_month(device.added_at, offset)
+            ui::text(
+                c,
+                "dev.line",
+                &[
+                    ("n", Text(&number)),
+                    ("title", Text(&device.title)),
+                    ("details", Text(&details.join(" · "))),
+                    ("date", Text(&date)),
+                ],
+            )
+        });
+        keyboard = keyboard.push(ui::button(
+            c,
+            "dev.btn.disconnect",
+            &[("title", Text(&device.title))],
+            format!("dx:{index}"),
         ));
-        keyboard = keyboard.button(format!("Отключить {}", device.title), format!("dx:{index}"));
     }
     turn.session.devices = Some(DevicePick {
         subscription_id: SubscriptionId(id),
         hwids: list.into_iter().map(|d| (d.hwid, d.title)).collect(),
     });
     keyboard.inline_keyboard.extend(back.inline_keyboard);
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard))
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard)
+        .section(Section::Devices))
 }
 
 fn picked(turn: &Turn<'_>, rest: &str) -> Option<(SubscriptionId, usize, String, String)> {
@@ -249,21 +323,25 @@ fn picked(turn: &Turn<'_>, rest: &str) -> Option<(SubscriptionId, usize, String,
 }
 
 pub async fn device_confirm(turn: &mut Turn<'_>, rest: &str) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     let Some((sub, index, _, title)) = picked(turn, rest) else {
-        return Ok(Screen::notice(
-            "Список устройств устарел. Откройте его заново.",
-        ));
+        return Ok(Screen::notice(ui::text(c, "dev.stale", &[])).section(Section::Devices));
     };
-    Ok(Screen::new(format!(
-        "Отключить {}? Место освободится, но если подписка на нём осталась, при обновлении он займёт его снова. \
-         Чтобы закрыть доступ, выпустите новую ссылку.",
-        escape(&title)
-    ))
-    .keyboard(
-        Keyboard::new()
-            .button("Отключить", format!("dxy:{index}"))
-            .button("Отменить", format!("dev:{sub}")),
-    ))
+    Ok(
+        Screen::new(ui::text(c, "dev.confirm", &[("title", Text(&title))]))
+            .keyboard(
+                Keyboard::new()
+                    .push(ui::button(
+                        c,
+                        "dev.btn.disconnect_yes",
+                        &[],
+                        format!("dxy:{index}"),
+                    ))
+                    .push(ui::cancel(c, format!("dev:{sub}"))),
+            )
+            .section(Section::Devices),
+    )
 }
 
 pub async fn device_disconnect(
@@ -271,10 +349,10 @@ pub async fn device_disconnect(
     client: &Client,
     rest: &str,
 ) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     let Some((sub, _, hwid, title)) = picked(turn, rest) else {
-        return Ok(Screen::notice(
-            "Список устройств устарел. Откройте его заново.",
-        ));
+        return Ok(Screen::notice(ui::text(c, "dev.stale", &[])).section(Section::Devices));
     };
     match turn
         .services()
@@ -285,30 +363,37 @@ pub async fn device_disconnect(
         Ok(()) => {
             turn.session.devices = None;
             Ok(
-                Screen::new(format!("{} отключено.", escape(&title))).keyboard(
-                    Keyboard::new()
-                        .button("Устройства", format!("dev:{sub}"))
-                        .button("В меню", "m"),
-                ),
+                Screen::new(ui::text(c, "dev.disconnected", &[("title", Text(&title))]))
+                    .keyboard(
+                        Keyboard::new()
+                            .push(ui::button(c, "sub.btn.devices", &[], format!("dev:{sub}")))
+                            .push(ui::menu(c)),
+                    )
+                    .section(Section::Devices),
             )
         }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }
 
-pub fn reissue_confirm(id: i64) -> Screen {
-    Screen::new(
-        "Старая ссылка перестанет работать, а с ней все устройства. \
-         Нужные устройства подключите заново по новой ссылке.",
-    )
-    .keyboard(
-        Keyboard::new()
-            .button("Выпустить новую ссылку", format!("reiy:{id}"))
-            .button("Отменить", format!("sub:{id}")),
-    )
+pub fn reissue_confirm(c: &BotContent, id: i64) -> Screen {
+    Screen::new(ui::text(c, "sub.reissue_confirm", &[]))
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(
+                    c,
+                    "sub.btn.reissue_yes",
+                    &[],
+                    format!("reiy:{id}"),
+                ))
+                .push(ui::cancel(c, format!("sub:{id}"))),
+        )
+        .section(Section::Subscription)
 }
 
 pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     match turn
         .services()
         .subscriptions()
@@ -318,13 +403,13 @@ pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
         Ok(url) => {
             let mut keyboard = Keyboard::new();
             if url.starts_with("http") {
-                keyboard = keyboard.link("Открыть страницу подключения", url.clone());
+                keyboard = keyboard.push(ui::link(c, "sub.btn.connect", &[], url.clone()));
             }
-            Ok(Screen::new(format!(
-                "Новая ссылка подписки:\n<code>{}</code>\nДобавьте её в приложение заново.",
-                escape(&url)
-            ))
-            .keyboard(keyboard.button("В меню", "m")))
+            Ok(
+                Screen::new(ui::text(c, "sub.reissued", &[("url", Text(&url))]))
+                    .keyboard(keyboard.push(ui::menu(c)))
+                    .section(Section::Subscription),
+            )
         }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
@@ -339,6 +424,8 @@ fn presets(currency: Currency) -> [i64; 4] {
 
 pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let settings = services.settings();
     let currency = settings.currency;
     let (main, referral) = {
@@ -352,47 +439,57 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
                 .await?,
         )
     };
-    let mut lines = vec![format!("На балансе: <b>{}</b>", format::money(main))];
+    let mut lines = Lines::new();
+    lines.add(ui::text(
+        c,
+        "bal.amount",
+        &[("amount", Text(&format::money(main)))],
+    ));
     if referral.minor > 0 {
-        lines.push(format!(
-            "Реферальный баланс: {} (его можно вывести в разделе «Пригласить друга»)",
-            format::money(referral)
+        lines.add(ui::text(
+            c,
+            "bal.referral",
+            &[("amount", Text(&format::money(referral)))],
         ));
     }
-    lines.push("С баланса оплачивается вся сумма сразу, без доплаты картой.".into());
+    lines.add(ui::text(c, "bal.note", &[]));
     let limits = settings.topup_limits();
-    let buttons: Vec<Button> = presets(currency)
+    let buttons: Vec<_> = presets(currency)
         .into_iter()
         .filter(|m| *m >= limits.min.minor && *m <= limits.max.minor)
-        .map(|minor| {
-            Button::callback(
-                format!("+{}", format::money(Money::new(minor, currency))),
+        .filter_map(|minor| {
+            ui::button(
+                c,
+                "bal.btn.preset",
+                &[("amount", Text(&format::money(Money::new(minor, currency))))],
                 format!("top:{minor}"),
             )
         })
         .collect();
-    let mut keyboard = Keyboard::new();
-    for pair in buttons.chunks(2) {
-        keyboard = keyboard.row(pair.to_vec());
-    }
-    Ok(Screen::new(lines.join("\n")).keyboard(
-        keyboard
-            .button("Другая сумма", "topx")
-            .button("В меню", "m"),
-    ))
+    Ok(Screen::new(lines.text())
+        .keyboard(
+            Keyboard::new()
+                .grid(buttons, 2)
+                .push(ui::button(c, "bal.btn.custom", &[], "topx"))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Balance))
 }
 
 pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let settings = services.settings();
     let amount = Money::new(minor, settings.currency);
     if let Err(err) = topup_quote(amount, settings.topup_limits()) {
         turn.session.wait_for(Awaiting::TopUpAmount);
-        return Ok(Screen::new(format!(
-            "{} Введите другую сумму.",
-            text::capitalize(&err.to_string())
+        return Ok(Screen::notice(ui::text(
+            c,
+            "bal.bad_amount",
+            &[("error", Text(&text::capitalize(&err.to_string())))],
         ))
-        .keyboard(menu_keyboard()));
+        .section(Section::Balance));
     }
     let methods: Vec<_> = services
         .payments()
@@ -406,35 +503,46 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
         .filter(|m| m.kind == ProviderKind::External && m.unavailable.is_none())
         .collect();
     if methods.is_empty() {
-        return Ok(Screen::notice(
-            "Пополнение сейчас недоступно: не подключена ни одна платёжная система.",
-        ));
+        return Ok(Screen::notice(ui::text(c, "bal.no_methods", &[])).section(Section::Balance));
     }
     turn.session.topup_minor = Some(minor);
     let mut keyboard = Keyboard::new();
     for method in methods {
-        let label = if method.hint.is_empty() {
-            method.title.to_string()
+        let data = format!("tp:{}", method.provider);
+        keyboard = keyboard.push(if method.hint.is_empty() {
+            ui::button(c, "bal.btn.method", &[("method", Text(method.title))], data)
         } else {
-            format!("{} · {}", method.title, method.hint)
-        };
-        keyboard = keyboard.button(label, format!("tp:{}", method.provider));
+            ui::button(
+                c,
+                "bal.btn.method_hint",
+                &[("method", Text(method.title)), ("hint", Text(method.hint))],
+                data,
+            )
+        });
     }
-    Ok(Screen::new(format!(
-        "Пополнение на {}. Выберите способ оплаты:",
-        format::money(amount)
+    Ok(Screen::new(ui::text(
+        c,
+        "bal.choose_method",
+        &[("amount", Text(&format::money(amount)))],
     ))
-    .keyboard(keyboard.button("Назад", "bal")))
+    .keyboard(keyboard.push(ui::back(c, "bal")))
+    .section(Section::Balance))
 }
 
 pub fn topup_custom(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::TopUpAmount);
+    let content = turn.services().bot_content();
     let example = match turn.services().settings().currency {
         Currency::Usd => "например 10 или 12.50",
         Currency::Rub => "например 500",
     };
-    Screen::new(format!("Введите сумму пополнения, {example}."))
-        .keyboard(Keyboard::new().button("Отменить", "bal"))
+    Screen::new(ui::text(
+        &content,
+        "bal.enter_amount",
+        &[("example", Text(example))],
+    ))
+    .keyboard(Keyboard::new().push(ui::cancel(&content, "bal")))
+    .section(Section::Balance)
 }
 
 pub async fn topup_entered(turn: &mut Turn<'_>, raw: &str) -> Result<Screen, BotError> {
@@ -451,8 +559,10 @@ pub async fn topup_entered(turn: &mut Turn<'_>, raw: &str) -> Result<Screen, Bot
         Some(minor) if minor > 0 => topup_amount(turn, minor).await,
         _ => {
             turn.session.wait_for(Awaiting::TopUpAmount);
-            Ok(Screen::new("Не понял сумму. Введите число, например 10.")
-                .keyboard(Keyboard::new().button("Отменить", "bal")))
+            let content = turn.services().bot_content();
+            Ok(Screen::new(ui::text(&content, "bal.not_understood", &[]))
+                .keyboard(Keyboard::new().push(ui::cancel(&content, "bal")))
+                .section(Section::Balance))
         }
     }
 }
@@ -466,6 +576,7 @@ pub async fn topup_start(
         return balance(turn, client).await;
     };
     let services = turn.services().clone();
+    let content = services.bot_content();
     let amount = Money::new(minor, services.settings().currency);
     match services
         .checkout()
@@ -474,10 +585,12 @@ pub async fn topup_start(
     {
         Ok(result) => {
             turn.session.topup_minor = None;
-            Ok(payment_screen(
-                &result,
-                &format!("Пополнение на {}.", format::money(amount)),
-            ))
+            let what = ui::text(
+                &content,
+                "pay.what_topup",
+                &[("amount", Text(&format::money(amount)))],
+            );
+            Ok(payment_screen(&content, &result, &what))
         }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
@@ -485,6 +598,8 @@ pub async fn topup_start(
 
 pub fn support_prompt(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::SupportMessage);
+    let content = turn.services().bot_content();
+    let c = &*content;
     let mut keyboard = Keyboard::new();
     if let Some(url) = turn
         .services()
@@ -493,10 +608,11 @@ pub fn support_prompt(turn: &mut Turn<'_>) -> Screen {
         .as_deref()
         .filter(|u| u.starts_with("http"))
     {
-        keyboard = keyboard.link("Другие способы связи", url);
+        keyboard = keyboard.push(ui::link(c, "sup.btn.other", &[], url));
     }
-    Screen::new("Опишите вопрос одним сообщением — ответим здесь, в боте.")
-        .keyboard(keyboard.button("Отменить", "m"))
+    Screen::new(ui::text(c, "sup.prompt", &[]))
+        .keyboard(keyboard.push(ui::cancel(c, "m")))
+        .section(Section::Support)
 }
 
 pub async fn support_entered(
@@ -507,6 +623,7 @@ pub async fn support_entered(
     if body.trim().is_empty() {
         return Ok(support_prompt(turn));
     }
+    let content = turn.services().bot_content();
     match turn
         .services()
         .support()
@@ -521,23 +638,27 @@ pub async fn support_entered(
         )
         .await
     {
-        Ok(id) => Ok(Screen::notice(format!(
-            "Обращение №{id} отправлено. Ответим здесь, в боте."
-        ))),
+        Ok(id) => Ok(Screen::notice(ui::text(
+            &content,
+            "sup.sent",
+            &[("id", Text(&id.to_string()))],
+        ))
+        .section(Section::Support)),
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }
 
 pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     match turn.services().checkout().start_trial(client.id).await {
-        Ok(_) => Ok(Screen::new(
-            "Пробный период оформляется. Через минуту подписка появится в разделе «Подписка».",
-        )
-        .keyboard(
-            Keyboard::new()
-                .button("Подписка", "subs")
-                .button("В меню", "m"),
-        )),
+        Ok(_) => Ok(Screen::new(ui::text(c, "sub.trial_started", &[]))
+            .keyboard(
+                Keyboard::new()
+                    .push(ui::button(c, "common.btn.subscription", &[], "subs"))
+                    .push(ui::menu(c)),
+            )
+            .section(Section::Subscription)),
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }

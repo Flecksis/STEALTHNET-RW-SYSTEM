@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod autorenew;
+pub mod bot_content;
 pub mod bot_runtime;
 pub mod branding;
 pub mod checkout;

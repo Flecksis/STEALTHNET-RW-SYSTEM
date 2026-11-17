@@ -1226,8 +1226,17 @@
 
 .cb-foot {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 0 16px;
   padding: 0 16px 8px;
+}
+
+.cb:not(.cb-phone) .cb-foot {
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0 24px 24px;
+  box-sizing: border-box;
 }
 
 .cb-foot a {

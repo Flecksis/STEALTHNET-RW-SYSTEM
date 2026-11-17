@@ -12,6 +12,7 @@ const SECTIONS: Array<{ label: string; to?: string }> = [
   { label: 'Оформление', to: '/admin/settings/look' },
   { label: 'Оплата', to: '/admin/settings/payments' },
   { label: 'Бот', to: '/admin/settings/bot' },
+  { label: 'Документы', to: '/admin/settings/documents' },
   { label: 'Кабинет и мини-приложение' },
   { label: 'Почта и уведомления' },
   { label: 'Администраторы' },
@@ -45,7 +46,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
                 key={section.label}
                 to={section.to}
                 className="hov"
-                aria-current={pathname === section.to ? 'page' : undefined}
+                aria-current={pathname === section.to || pathname.startsWith(`${section.to}/`) ? 'page' : undefined}
                 aria-label={section.to === UPDATES && fresh ? `${section.label}, вышла новая сборка` : undefined}
               >
                 <span className="subnav-label">{section.label}</span>

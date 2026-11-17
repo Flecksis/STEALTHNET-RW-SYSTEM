@@ -56,6 +56,7 @@ struct Runtime {
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
     updates: Option<Arc<crate::updates::UpdateConfig>>,
+    bot_content: Arc<crate::bot_content::BotContent>,
 }
 
 struct Inner {
@@ -90,6 +91,7 @@ impl Services {
                 .and_then(|r| r.webhook_secret.clone()),
             bot_token: deps.env.bot_token.clone(),
             updates: None,
+            bot_content: Arc::default(),
         };
         Services {
             inner: Arc::new(Inner {
@@ -223,6 +225,7 @@ impl Services {
             bot_token.as_deref(),
         )
         .await?;
+        let bot_content = crate::bot_content::load(&mut conn).await?;
         drop(conn);
         self.inner.payments.apply(snapshot);
         self.inner.modules.set_currency(core.currency);
@@ -252,6 +255,7 @@ impl Services {
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;
+            r.bot_content = Arc::new(bot_content);
         });
         if token_changed {
             self.inner.bot.wake();
@@ -333,6 +337,14 @@ impl Services {
 
     pub fn branding(&self) -> crate::branding::BrandingOps<'_> {
         crate::branding::BrandingOps::new(self)
+    }
+
+    pub fn bot_content(&self) -> Arc<crate::bot_content::BotContent> {
+        self.read(|r| r.bot_content.clone())
+    }
+
+    pub fn bot_content_ops(&self) -> crate::bot_content::BotContentOps<'_> {
+        crate::bot_content::BotContentOps::new(self)
     }
 
     pub fn stars_review(&self) -> StarsReview<'_> {

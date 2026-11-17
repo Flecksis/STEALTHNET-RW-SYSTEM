@@ -1,31 +1,8 @@
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sn_services::bot_content::Document;
 use sn_store::{Db, StoreResult};
 
-pub const DOCUMENTS_KEY: &str = "bot.documents";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Document {
-    pub title: String,
-    pub url: String,
-}
-
-impl Document {
-    fn valid(&self) -> bool {
-        !self.title.trim().is_empty()
-            && (self.url.starts_with("https://") || self.url.starts_with("http://"))
-    }
-}
-
-pub async fn documents(db: &mut impl Db) -> StoreResult<Vec<Document>> {
-    let raw = db.settings().get(DOCUMENTS_KEY).await?;
-    Ok(raw
-        .and_then(|value| serde_json::from_value::<Vec<Document>>(value).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(Document::valid)
-        .collect())
-}
+pub use sn_services::bot_content::DOCUMENTS_KEY;
 
 pub fn version(documents: &[Document]) -> Option<String> {
     if documents.is_empty() {

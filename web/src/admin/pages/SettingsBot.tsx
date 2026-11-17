@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { NBSP, plural, timeHM } from '../../lib/format';
 import '../form.css';
+import { BotTabs } from './BotTabs';
 import { SettingsLayout } from './SettingsLayout';
 
 type Problem = 'bad_token' | 'unreachable' | 'conflict' | 'webhook' | 'telegram' | 'internal';
@@ -179,6 +180,7 @@ export function SettingsBot() {
   if (!bot) {
     return (
       <SettingsLayout>
+        <BotTabs />
         {error ? (
           <p className="err" role="alert">
             {error}
@@ -242,6 +244,7 @@ export function SettingsBot() {
 
   return (
     <SettingsLayout>
+      <BotTabs />
       <section className="sec" aria-labelledby="bot-h">
         <div className="sec-head">
           <h2 id="bot-h" className="section-title">

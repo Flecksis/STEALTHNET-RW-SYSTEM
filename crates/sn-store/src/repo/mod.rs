@@ -1,6 +1,7 @@
 mod admins;
 mod audit;
 mod billing;
+mod bot_images;
 mod client_history;
 mod client_photos;
 mod client_search;
@@ -25,6 +26,7 @@ mod webhooks;
 pub use admins::*;
 pub use audit::*;
 pub use billing::*;
+pub use bot_images::*;
 pub use client_history::*;
 pub use client_photos::*;
 pub use client_search::*;

@@ -2,8 +2,10 @@ use crate::BotError;
 use crate::account::payment_screen;
 use crate::handler::{Screen, Turn, id_arg, live, tariff_name};
 use crate::session::{Awaiting, Cart};
-use crate::telegram::{Button, Keyboard};
-use crate::text::{self, escape};
+use crate::telegram::Keyboard;
+use crate::text;
+use crate::ui::{self, Lines, Text};
+use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::format;
 use sn_domain::ids::{PeriodId, TariffId};
@@ -33,21 +35,38 @@ pub async fn start(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<S
             [] => None,
             [only] => Some(only.id),
             many => {
+                let content = services.bot_content();
+                let c = &*content;
                 let offset = services.settings().remna_offset();
                 let mut keyboard = Keyboard::new();
                 for sub in many {
                     let name = tariff_name(&services, sub.tariff_id).await;
-                    let label = match sub.mirror.expire_at {
-                        Some(at) => format!("Продлить {name} · до {}", text::day_month(at, offset)),
-                        None => format!("Продлить {name}"),
-                    };
-                    keyboard = keyboard.button(label, format!("buy:{}", sub.id));
+                    let data = format!("buy:{}", sub.id);
+                    keyboard = keyboard.push(match sub.mirror.expire_at {
+                        Some(at) => ui::button(
+                            c,
+                            "buy.btn.extend_item",
+                            &[
+                                ("tariff", Text(&name)),
+                                ("date", Text(&text::day_month(at, offset))),
+                            ],
+                            data,
+                        ),
+                        None => ui::button(
+                            c,
+                            "buy.btn.extend_item_open",
+                            &[("tariff", Text(&name))],
+                            data,
+                        ),
+                    });
                 }
-                return Ok(Screen::new("Какую подписку продлить?").keyboard(
-                    keyboard
-                        .button("Новая подписка", "buy:new")
-                        .button("В меню", "m"),
-                ));
+                return Ok(Screen::new(ui::text(c, "buy.which", &[]))
+                    .keyboard(
+                        keyboard
+                            .push(ui::button(c, "buy.btn.new", &[], "buy:new"))
+                            .push(ui::menu(c)),
+                    )
+                    .section(Section::Buy));
             }
         }
     };
@@ -67,31 +86,55 @@ async fn offers(turn: &Turn<'_>) -> Result<Vec<TariffOffer>, BotError> {
 }
 
 async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     let offers = offers(turn).await?;
     if offers.is_empty() {
-        return Ok(Screen::notice("Сейчас нет тарифов в продаже."));
+        return Ok(Screen::notice(ui::text(c, "buy.empty", &[])).section(Section::Buy));
     }
-    let mut lines = vec!["<b>Выберите тариф</b>".to_string()];
+    let mut lines = Lines::new();
+    lines.add(ui::text(c, "buy.title", &[]));
     let mut keyboard = Keyboard::new();
     let mut category = None;
     for offer in &offers {
         if category != Some(offer.category.id) {
             category = Some(offer.category.id);
-            lines.push(String::new());
-            lines.push(format!("<b>{}</b>", escape(&offer.category.name)));
+            lines.add(ui::text(
+                c,
+                "buy.category",
+                &[("category", Text(&offer.category.name))],
+            ));
         }
         let cheapest = offer
             .periods
             .iter()
             .map(|p| p.per_month)
             .min_by_key(|m| m.minor);
-        let price = cheapest
-            .map(|m| format!(" — от {} в месяц", format::money(m)))
-            .unwrap_or_default();
-        lines.push(format!("{}{price}", escape(&offer.tariff.name)));
-        keyboard = keyboard.button(offer.tariff.name.clone(), format!("t:{}", offer.tariff.id));
+        lines.add(match cheapest {
+            Some(per_month) => ui::text(
+                c,
+                "buy.tariff_line",
+                &[
+                    ("tariff", Text(&offer.tariff.name)),
+                    ("per_month", Text(&format::money(per_month))),
+                ],
+            ),
+            None => ui::text(
+                c,
+                "buy.tariff_line_plain",
+                &[("tariff", Text(&offer.tariff.name))],
+            ),
+        });
+        keyboard = keyboard.push(ui::button(
+            c,
+            "buy.btn.tariff",
+            &[("tariff", Text(&offer.tariff.name))],
+            format!("t:{}", offer.tariff.id),
+        ));
     }
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard.button("В меню", "m")))
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard.push(ui::menu(c)))
+        .section(Section::Buy))
 }
 
 pub async fn tariff(
@@ -99,6 +142,8 @@ pub async fn tariff(
     client: &Client,
     tariff_id: TariffId,
 ) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     let offers = offers(turn).await?;
     let Some(offer) = offers.into_iter().find(|o| o.tariff.id == tariff_id) else {
         return start(turn, client, "").await;
@@ -109,44 +154,75 @@ pub async fn tariff(
     cart.extra_devices = 0;
     let back = back_target(cart);
     let tariff = &offer.tariff;
-    let mut lines = vec![format!("<b>{}</b>", escape(&tariff.name))];
+    let mut lines = Lines::new();
+    lines.add(ui::text(
+        c,
+        "buy.tariff_title",
+        &[("tariff", Text(&tariff.name))],
+    ));
     if let Some(description) = tariff
         .description
         .as_deref()
         .filter(|d| !d.trim().is_empty())
     {
-        lines.push(escape(description));
+        lines.add(text::escape(description));
     }
-    lines.push(format!("Устройств в тарифе: {}", tariff.devices.included));
+    lines.add(ui::text(
+        c,
+        "buy.tariff_devices",
+        &[("count", Text(&tariff.devices.included.to_string()))],
+    ));
     match tariff.traffic.limit_bytes {
-        Some(limit) if limit > 0 => lines.push(format!(
-            "Трафик: {}, {}",
-            format::traffic(limit),
-            tariff.traffic.reset.short_ru()
+        Some(limit) if limit > 0 => lines.add(ui::text(
+            c,
+            "buy.tariff_traffic",
+            &[
+                ("limit", Text(&format::traffic(limit))),
+                ("reset", Text(tariff.traffic.reset.short_ru())),
+            ],
         )),
-        _ => lines.push("Трафик: без лимита".into()),
+        _ => lines.add(ui::text(c, "buy.tariff_unlimited", &[])),
     }
-    lines.push(String::new());
-    lines.push("Выберите срок:".into());
+    lines.add(ui::text(c, "buy.choose_period", &[]));
     let mut keyboard = Keyboard::new();
     for period in &offer.periods {
-        let mut label = format!(
-            "{} — {}",
-            format::days(period.days),
-            format::money(period.price)
-        );
-        if period.months > 1 {
-            label.push_str(&format!(", {} в месяц", format::money(period.per_month)));
-        }
-        if let Some(savings) = period.savings_percent {
-            label.push_str(&format!(", выгоднее на {savings}%"));
-        }
-        keyboard = keyboard.button(label, format!("p:{}", period.period_id));
+        let days = format::days(period.days);
+        let price = format::money(period.price);
+        let per_month = format::money(period.per_month);
+        let data = format!("p:{}", period.period_id);
+        keyboard = keyboard.push(match period.savings_percent {
+            Some(savings) => ui::button(
+                c,
+                "buy.btn.period_savings",
+                &[
+                    ("days", Text(&days)),
+                    ("price", Text(&price)),
+                    ("per_month", Text(&per_month)),
+                    ("savings", Text(&savings.to_string())),
+                ],
+                data,
+            ),
+            None if period.months > 1 => ui::button(
+                c,
+                "buy.btn.period_monthly",
+                &[
+                    ("days", Text(&days)),
+                    ("price", Text(&price)),
+                    ("per_month", Text(&per_month)),
+                ],
+                data,
+            ),
+            None => ui::button(
+                c,
+                "buy.btn.period",
+                &[("days", Text(&days)), ("price", Text(&price))],
+                data,
+            ),
+        });
     }
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard.row(vec![
-        Button::callback("Назад", back),
-        Button::callback("В меню", "m"),
-    ])))
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard.pair(ui::back(c, back), ui::menu(c)))
+        .section(Section::Buy))
 }
 
 pub async fn period(
@@ -158,6 +234,8 @@ pub async fn period(
         return start(turn, client, "").await;
     };
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let tariff = {
         let mut conn = services.store().conn().await?;
         conn.tariffs().get(tariff_id).await?
@@ -181,21 +259,37 @@ pub async fn period(
     let Some(monthly) = extra.monthly.get(currency) else {
         return summary(turn, client).await;
     };
-    let mut keyboard = Keyboard::new().button("Без доп. устройств", "d:0");
-    let buttons: Vec<Button> = (1..=extra.max)
-        .map(|n| Button::callback(format!("+{n}"), format!("d:{n}")))
+    let buttons: Vec<_> = (1..=extra.max)
+        .filter_map(|n| {
+            ui::button(
+                c,
+                "buy.btn.extra",
+                &[("count", Text(&n.to_string()))],
+                format!("d:{n}"),
+            )
+        })
         .collect();
-    for chunk in buttons.chunks(4) {
-        keyboard = keyboard.row(chunk.to_vec());
-    }
     let included = tariff.devices.included;
-    Ok(Screen::new(format!(
-        "В тарифе {included}{}{}. Добавить ещё? Каждое — {} в месяц.",
+    let included_text = format!(
+        "{included}{}{}",
         text::NB,
-        format::plural_ru(u64::from(included), "устройство", "устройства", "устройств"),
-        format::money(monthly)
+        format::plural_ru(u64::from(included), "устройство", "устройства", "устройств")
+    );
+    Ok(Screen::new(ui::text(
+        c,
+        "buy.extra_devices",
+        &[
+            ("included", Text(&included_text)),
+            ("price", Text(&format::money(monthly))),
+        ],
     ))
-    .keyboard(keyboard.button("Назад", format!("t:{tariff_id}"))))
+    .keyboard(
+        Keyboard::new()
+            .push(ui::button(c, "buy.btn.no_extra", &[], "d:0"))
+            .grid(buttons, 4)
+            .push(ui::back(c, format!("t:{tariff_id}"))),
+    )
+    .section(Section::Buy))
 }
 
 pub async fn devices(turn: &mut Turn<'_>, client: &Client, count: u32) -> Result<Screen, BotError> {
@@ -223,11 +317,17 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         return catalog(turn).await;
     };
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let mut notes = Vec::new();
     let view = match services.checkout().quote(client.id, &cart_request).await {
         Ok(view) => view,
         Err(err) if cart_request.promo_code.is_some() => {
-            notes.push(format!("{} Промокод убран.", text::user_error(&err)));
+            notes.push(ui::text(
+                c,
+                "buy.promo_removed",
+                &[("error", Text(&text::user_error(&err)))],
+            ));
             turn.session.promo = None;
             let plain = CartRequest {
                 promo_code: None,
@@ -242,72 +342,94 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     };
     let offset = services.settings().remna_offset();
     let quote = &view.quote;
-    let mut lines = vec!["<b>Оплата</b>".to_string()];
+    let mut lines = Lines::new();
+    lines.add(ui::text(c, "buy.summary_title", &[]));
     for line in &quote.lines {
-        lines.push(format!(
-            "{} — {}",
-            escape(&line.label),
-            format::money(line.amount)
+        lines.add(ui::text(
+            c,
+            "buy.summary_line",
+            &[
+                ("label", Text(&line.label)),
+                ("amount", Text(&format::money(line.amount))),
+            ],
         ));
     }
-    let stars = quote
-        .stars
-        .map(|s| format!(" (или {})", format::stars(s.total)))
-        .unwrap_or_default();
-    lines.push(format!(
-        "К оплате: <b>{}</b>{stars}",
-        format::money(quote.total)
-    ));
-    let until = text::date(view.expire_preview, offset);
-    lines.push(match view.kind {
-        PlanKind::Renewal => format!("Продление: подписка будет действовать до {until}."),
-        PlanKind::Change => format!(
-            "Смена тарифа: новый срок начнётся с даты оплаты, оставшиеся дни не переносятся. Подписка будет действовать до {until}."
+    let total = format::money(quote.total);
+    lines.add(match quote.stars {
+        Some(stars) => ui::text(
+            c,
+            "buy.summary_total_stars",
+            &[
+                ("total", Text(&total)),
+                ("stars", Text(&format::stars(stars.total))),
+            ],
         ),
-        PlanKind::New => format!("Подписка будет действовать до {until}."),
+        None => ui::text(c, "buy.summary_total", &[("total", Text(&total))]),
     });
+    let until = text::date(view.expire_preview, offset);
+    lines.add(ui::text(
+        c,
+        match view.kind {
+            PlanKind::Renewal => "buy.summary_renewal",
+            PlanKind::Change => "buy.summary_change",
+            PlanKind::New => "buy.summary_new",
+        },
+        &[("date", Text(&until))],
+    ));
     let mut keyboard = Keyboard::new();
     for method in &view.methods {
         match (&method.unavailable, method.amount) {
             (None, Some(amount)) => {
-                keyboard = keyboard.button(
-                    format!("{} — {}", method.title, text::amount(amount)),
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "buy.btn.method",
+                    &[
+                        ("method", Text(method.title)),
+                        ("amount", Text(&text::amount(amount))),
+                    ],
                     format!("pay:{}", method.provider),
-                );
+                ));
             }
             (Some(Unavailable::InsufficientBalance { balance, missing }), _) => {
-                lines.push(format!(
-                    "С баланса: не хватает {} (на балансе {})",
-                    format::money(*missing),
-                    format::money(*balance)
+                lines.add(ui::text(
+                    c,
+                    "buy.balance_short",
+                    &[
+                        ("missing", Text(&format::money(*missing))),
+                        ("balance", Text(&format::money(*balance))),
+                    ],
                 ));
             }
             _ => {}
         }
     }
     if view.methods.iter().all(|m| m.unavailable.is_some()) {
-        lines.push("Сейчас нет доступных способов оплаты.".into());
+        lines.add(ui::text(c, "buy.no_methods", &[]));
     }
-    lines.extend(notes);
+    for note in notes {
+        lines.add(note);
+    }
     if services.modules().is_enabled(ModuleId::Promo) {
-        keyboard = match turn.session.promo {
-            Some(_) => keyboard.button("Убрать промокод", "nopromo"),
-            None => keyboard.button("Ввести промокод", "promo"),
-        };
+        keyboard = keyboard.push(match turn.session.promo {
+            Some(_) => ui::button(c, "buy.btn.promo_remove", &[], "nopromo"),
+            None => ui::button(c, "buy.btn.promo", &[], "promo"),
+        });
     }
     let back = match cart.tariff_id {
         Some(tariff) => format!("t:{tariff}"),
         None => back_target(&cart),
     };
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard.row(vec![
-        Button::callback("Назад", back),
-        Button::callback("В меню", "m"),
-    ])))
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard.pair(ui::back(c, back), ui::menu(c)))
+        .section(Section::Buy))
 }
 
 pub fn ask_promo(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::PromoForCart);
-    Screen::new("Введите промокод:").keyboard(Keyboard::new().button("Отменить", "sum"))
+    let content = turn.services().bot_content();
+    Screen::new(ui::text(&content, "buy.ask_promo", &[]))
+        .keyboard(Keyboard::new().push(ui::cancel(&content, "sum")))
+        .section(Section::Buy)
 }
 
 pub async fn promo_entered(
@@ -316,6 +438,8 @@ pub async fn promo_entered(
     raw: &str,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let ctx = services.module_context();
     let tariff = turn.session.cart.as_ref().and_then(|c| c.tariff_id);
     match promo::check(
@@ -333,18 +457,20 @@ pub async fn promo_entered(
             turn.session.promo = Some(code.code);
             summary(turn, client).await
         }
-        Ok(_) => Ok(
-            Screen::new(promo::PromoRejection::DaysCode.message()).keyboard(
+        Ok(_) => Ok(Screen::new(promo::PromoRejection::DaysCode.message())
+            .keyboard(
                 Keyboard::new()
-                    .button("Активировать промокод", "x:promo")
-                    .button("Вернуться к оплате", "sum"),
-            ),
-        ),
-        Err(PromoError::Rejected(rejection)) => Ok(Screen::new(rejection.message()).keyboard(
-            Keyboard::new()
-                .button("Ввести другой", "promo")
-                .button("Без промокода", "sum"),
-        )),
+                    .push(ui::button(c, "buy.btn.promo_activate", &[], "x:promo"))
+                    .push(ui::button(c, "buy.btn.back_to_payment", &[], "sum")),
+            )
+            .section(Section::Buy)),
+        Err(PromoError::Rejected(rejection)) => Ok(Screen::new(rejection.message())
+            .keyboard(
+                Keyboard::new()
+                    .push(ui::button(c, "buy.btn.promo_other", &[], "promo"))
+                    .push(ui::button(c, "buy.btn.no_promo", &[], "sum")),
+            )
+            .section(Section::Buy)),
         Err(PromoError::Module(err)) => Ok(Screen::notice(text::user_error(&err.into()))),
     }
 }
@@ -357,6 +483,7 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, provider: &str) -> Result
         return catalog(turn).await;
     };
     let services = turn.services().clone();
+    let content = services.bot_content();
     let title = tariff_name(&services, cart.tariff_id).await;
     let result = services
         .checkout()
@@ -374,7 +501,8 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, provider: &str) -> Result
         Ok(result) => {
             turn.session.cart = None;
             turn.session.promo = None;
-            Ok(payment_screen(&result, &format!("{}.", escape(&title))))
+            let what = ui::text(&content, "pay.what_tariff", &[("tariff", Text(&title))]);
+            Ok(payment_screen(&content, &result, &what))
         }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }

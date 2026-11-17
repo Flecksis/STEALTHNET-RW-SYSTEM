@@ -61,6 +61,7 @@ async fn site(State(state): State<AppState>) -> Response {
         "connect": settings.connect,
         "autorenew_days_before": settings.autorenew.charge_days_before,
         "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
+        "documents": state.services.bot_content().documents,
     }))
     .into_response()
 }

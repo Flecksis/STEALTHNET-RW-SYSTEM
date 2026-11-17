@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -48,6 +48,7 @@ pub struct BotRuntime {
     state: Mutex<BotState>,
     wake: Notify,
     takeover: AtomicBool,
+    emoji: AtomicU8,
 }
 
 impl Default for BotRuntime {
@@ -56,6 +57,7 @@ impl Default for BotRuntime {
             state: Mutex::new(BotState::Off),
             wake: Notify::new(),
             takeover: AtomicBool::new(false),
+            emoji: AtomicU8::new(0),
         }
     }
 }
@@ -100,6 +102,11 @@ impl BotRuntime {
 
     pub fn take_takeover(&self) -> bool {
         self.takeover.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn note_custom_emoji(&self, accepted: bool) -> bool {
+        let next = if accepted { 2 } else { 1 };
+        self.emoji.swap(next, Ordering::SeqCst) != next
     }
 }
 

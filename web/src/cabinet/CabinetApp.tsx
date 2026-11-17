@@ -141,7 +141,7 @@ export function CabinetApp() {
             <Route path="*" element={<SubscriptionPage />} />
           </Routes>
         </main>
-        {phone ? <PhoneFooter /> : null}
+        <Footer />
       </div>
     </Ctx.Provider>
   );
@@ -296,11 +296,16 @@ function PhoneHeader() {
   );
 }
 
-function PhoneFooter() {
+function Footer() {
   const { site } = useCabinet();
   return (
     <footer className="cb-foot">
       {site.support_url ? <a href={site.support_url}>Помощь</a> : <Link to="/cabinet#help">Помощь</Link>}
+      {(site.documents ?? []).map((doc) => (
+        <a key={doc.url} href={doc.url} target="_blank" rel="noreferrer noopener">
+          {doc.title}
+        </a>
+      ))}
     </footer>
   );
 }

@@ -19,6 +19,7 @@ use sn_worker::{JobHandler, JobResult};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod content;
 mod photos;
 mod runtime;
 mod stars;
@@ -273,6 +274,7 @@ async fn согласие_с_документами_до_первого_дейс
             .await
             .unwrap();
     }
+    services.reload().await.unwrap();
     handle_update(&ctx, text_update(1, 502, "/start s_vk")).await;
     assert!(client_of(&services, 502).await.is_none());
     assert!(last_text(&server).await.contains("Оферта"));
@@ -645,6 +647,7 @@ async fn лимит_телеграма_откладывает_уведомлен
 fn шаблоны_уведомлений_с_параметрами() {
     let utc = chrono::FixedOffset::east_opt(0).unwrap();
     let renewed = notify::render(
+        &sn_domain::bot_content::Content::default(),
         notify::templates::SUBSCRIPTION_RENEWED,
         &serde_json::json!({"expire_at": "2027-02-14T10:00:00Z"}),
         utc,
@@ -655,6 +658,7 @@ fn шаблоны_уведомлений_с_параметрами() {
         "Подписка продлена до 14\u{a0}февраля\u{a0}2027."
     );
     let credit = notify::render(
+        &sn_domain::bot_content::Content::default(),
         referral::TEMPLATE_CREDIT,
         &serde_json::json!({"amount": "$1.50", "level": 1}),
         utc,
@@ -662,6 +666,7 @@ fn шаблоны_уведомлений_с_параметрами() {
     .unwrap();
     assert!(credit.text.contains("$1.50"));
     let fulfilled = notify::render(
+        &sn_domain::bot_content::Content::default(),
         notify::templates::ORDER_FULFILLED,
         &serde_json::json!({
             "order_kind": "renewal",
@@ -673,6 +678,7 @@ fn шаблоны_уведомлений_с_параметрами() {
     .unwrap();
     assert_eq!(fulfilled.text, renewed.text);
     let ready = notify::render(
+        &sn_domain::bot_content::Content::default(),
         notify::templates::ORDER_FULFILLED,
         &serde_json::json!({"order_kind": "new", "expire_at": "2027-02-14T10:00:00Z"}),
         utc,
@@ -680,6 +686,7 @@ fn шаблоны_уведомлений_с_параметрами() {
     .unwrap();
     assert!(ready.text.starts_with("Подписка готова"), "{}", ready.text);
     let reminder = notify::render(
+        &sn_domain::bot_content::Content::default(),
         notify::templates::AUTORENEW_REMINDER,
         &serde_json::json!({
             "amount": {"minor": 699, "currency": "USD"},
@@ -696,6 +703,7 @@ fn шаблоны_уведомлений_с_параметрами() {
     );
     assert!(
         notify::render(
+            &sn_domain::bot_content::Content::default(),
             notify::templates::AUTORENEW_CHARGE_FAILED,
             &serde_json::json!({"amount": {"minor": 699, "currency": "USD"}}),
             utc
@@ -704,6 +712,7 @@ fn шаблоны_уведомлений_с_параметрами() {
     );
     assert!(
         notify::render(
+            &sn_domain::bot_content::Content::default(),
             notify::templates::AUTORENEW_TURNED_OFF,
             &serde_json::json!({"expire_at": "2027-02-14T10:00:00Z"}),
             utc
@@ -712,9 +721,15 @@ fn шаблоны_уведомлений_с_параметрами() {
         .text
         .starts_with("Автопродление выключено")
     );
-    let escaped = notify::render("text", &serde_json::json!({"text": "<b>x</b>"}), utc).unwrap();
+    let escaped = notify::render(
+        &sn_domain::bot_content::Content::default(),
+        "text",
+        &serde_json::json!({"text": "<b>x</b>"}),
+        utc,
+    )
+    .unwrap();
     assert_eq!(escaped.text, "&lt;b&gt;x&lt;/b&gt;");
-    let credited = notify::render(
+    let credited = notify::render(&sn_domain::bot_content::Content::default(),
         notify::templates::REPEAT_CREDITED,
         &serde_json::json!({"text": "Повторная оплата $6.99 по уже оплаченному счёту зачислена на баланс."}),
         utc,
@@ -726,6 +741,7 @@ fn шаблоны_уведомлений_с_параметрами() {
         crate::telegram::Keyboard::new().button("Баланс", "bal")
     );
     let review = notify::render(
+        &sn_domain::bot_content::Content::default(),
         notify::templates::REPEAT_REVIEW,
         &serde_json::json!({"text": "Проверим её вручную и свяжемся с вами."}),
         utc,
@@ -737,6 +753,7 @@ fn шаблоны_уведомлений_с_параметрами() {
     );
     assert!(
         notify::render(
+            &sn_domain::bot_content::Content::default(),
             notify::templates::SUPPORT_REPLY,
             &serde_json::json!({}),
             utc

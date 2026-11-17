@@ -2,7 +2,9 @@ use crate::BotError;
 use crate::handler::{Screen, Turn, id_arg, live, main_menu, tariff_name};
 use crate::session::{Awaiting, WithdrawalDraft};
 use crate::telegram::{Button, Keyboard};
-use crate::text::{self, escape};
+use crate::text;
+use crate::ui::{self, Html, Lines, Text};
+use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::format;
 use sn_domain::ids::SubscriptionId;
@@ -35,10 +37,10 @@ pub async fn entry(turn: &mut Turn<'_>, client: &Client, key: &str) -> Result<Sc
 
 fn promo_prompt(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::PromoCode);
-    Screen::new(
-        "Введите промокод. Скидку применим при оплате, а бесплатные дни сразу добавим к подписке.",
-    )
-    .keyboard(Keyboard::new().button("Отменить", "m"))
+    let content = turn.services().bot_content();
+    Screen::new(ui::text(&content, "promo.prompt", &[]))
+        .keyboard(Keyboard::new().push(ui::cancel(&content, "m")))
+        .section(Section::Promo)
 }
 
 pub async fn promo_entered(
@@ -47,6 +49,8 @@ pub async fn promo_entered(
     raw: &str,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let ctx = services.module_context();
     let checked = promo::check(
         &ctx,
@@ -61,33 +65,40 @@ pub async fn promo_entered(
     let code = match checked {
         Ok(code) => code,
         Err(PromoError::Rejected(rejection)) => {
-            return Ok(Screen::new(rejection.message()).keyboard(
-                Keyboard::new()
-                    .button("Ввести другой", format!("x:{}", promo::BOT_ENTRY))
-                    .button("В меню", "m"),
-            ));
+            return Ok(Screen::new(rejection.message())
+                .keyboard(
+                    Keyboard::new()
+                        .push(ui::button(
+                            c,
+                            "buy.btn.promo_other",
+                            &[],
+                            format!("x:{}", promo::BOT_ENTRY),
+                        ))
+                        .push(ui::menu(c)),
+                )
+                .section(Section::Promo));
         }
         Err(PromoError::Module(err)) => return Ok(Screen::notice(module_error(err))),
     };
     if code.is_discount() {
         let label = code.label();
         turn.session.promo = Some(code.code);
-        return Ok(Screen::new(format!(
-            "{} сохранён: скидка применится при оплате.",
-            escape(&label)
-        ))
-        .keyboard(
-            Keyboard::new()
-                .button("Выбрать тариф", "buy")
-                .button("В меню", "m"),
-        ));
+        return Ok(
+            Screen::new(ui::text(c, "promo.saved", &[("code", Text(&label))]))
+                .keyboard(
+                    Keyboard::new()
+                        .push(ui::button(c, "promo.btn.choose_tariff", &[], "buy"))
+                        .push(ui::menu(c)),
+                )
+                .section(Section::Promo),
+        );
     }
     let subscriptions: Vec<_> = live(services.subscriptions().list_for_client(client.id).await?)
         .into_iter()
         .filter(|s| s.remna.is_some())
         .collect();
     match subscriptions.as_slice() {
-        [] => Ok(Screen::notice(PromoRejection::NoSubscription.message())),
+        [] => Ok(Screen::notice(PromoRejection::NoSubscription.message()).section(Section::Promo)),
         [only] => {
             turn.session.days_code = Some(code.code);
             activate_days(turn, client, only.id.0).await
@@ -97,10 +108,16 @@ pub async fn promo_entered(
             let mut keyboard = Keyboard::new();
             for sub in many {
                 let name = tariff_name(&services, sub.tariff_id).await;
-                keyboard = keyboard.button(name, format!("pc:{}", sub.id));
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "sub.btn.item_open",
+                    &[("tariff", Text(&name))],
+                    format!("pc:{}", sub.id),
+                ));
             }
-            Ok(Screen::new("К какой подписке добавить дни?")
-                .keyboard(keyboard.button("Отменить", "m")))
+            Ok(Screen::new(ui::text(c, "promo.which_sub", &[]))
+                .keyboard(keyboard.push(ui::cancel(c, "m")))
+                .section(Section::Promo))
         }
     }
 }
@@ -113,21 +130,46 @@ pub async fn activate_days(
     let Some(code) = turn.session.days_code.take() else {
         return Ok(promo_prompt(turn));
     };
+    let content = turn.services().bot_content();
+    let c = &*content;
     let ctx = turn.services().module_context();
     match promo::activate(&ctx, client.id, &code, SubscriptionId(subscription_id)).await {
-        Ok(done) => Ok(
-            Screen::new(format!("Добавили {} к подписке.", format::days(done.days))).keyboard(
-                Keyboard::new()
-                    .button("Подписка", format!("sub:{subscription_id}"))
-                    .button("В меню", "m"),
-            ),
-        ),
-        Err(PromoError::Rejected(rejection)) => Ok(Screen::notice(rejection.message())),
+        Ok(done) => Ok(Screen::new(ui::text(
+            c,
+            "promo.days_added",
+            &[("days", Text(&format::days(done.days)))],
+        ))
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(
+                    c,
+                    "common.btn.subscription",
+                    &[],
+                    format!("sub:{subscription_id}"),
+                ))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Promo)),
+        Err(PromoError::Rejected(rejection)) => {
+            Ok(Screen::notice(rejection.message()).section(Section::Promo))
+        }
         Err(PromoError::Module(err)) => Ok(Screen::notice(module_error(err))),
     }
 }
 
+fn back_to_referral(turn: &Turn<'_>, key: &str) -> Keyboard {
+    let content = turn.services().bot_content();
+    Keyboard::new().push(ui::button(
+        &content,
+        key,
+        &[],
+        format!("x:{}", referral::BOT_ENTRY),
+    ))
+}
+
 async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     let ctx = turn.services().module_context();
     let overview = referral::overview(&ctx, client.id).await?;
     let link = overview.bot_link.clone().or_else(|| {
@@ -136,22 +178,30 @@ async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen,
             .as_deref()
             .map(|username| referral::invite_link(username, &overview.code))
     });
-    let mut lines = vec![
-        "<b>Пригласить друга</b>".to_string(),
-        format!(
-            "Делитесь ссылкой: вы получаете {}% с каждой оплаты друга.",
-            overview.levels[0]
-        ),
-    ];
+    let mut lines = Lines::new();
+    lines.add(ui::text(c, "ref.title", &[]));
+    lines.add(ui::text(
+        c,
+        "ref.percent",
+        &[("percent", Text(&overview.levels[0].to_string()))],
+    ));
     if let Some(link) = &link {
-        lines.push(format!("<code>{}</code>", escape(link)));
+        lines.add(ui::text(c, "ref.link", &[("link", Text(link))]));
     }
-    lines.push(String::new());
-    lines.push(format!("Приглашено: {}", overview.invited));
-    lines.push(format!("Заработано: {}", format::money(overview.earned)));
-    lines.push(format!(
-        "На реферальном балансе: {}",
-        format::money(overview.balance)
+    lines.add(ui::text(
+        c,
+        "ref.invited",
+        &[("count", Text(&overview.invited.to_string()))],
+    ));
+    lines.add(ui::text(
+        c,
+        "ref.earned",
+        &[("amount", Text(&format::money(overview.earned)))],
+    ));
+    lines.add(ui::text(
+        c,
+        "ref.balance",
+        &[("amount", Text(&format::money(overview.balance)))],
     ));
     let mut keyboard = Keyboard::new();
     let pending: Vec<_> = overview
@@ -165,32 +215,43 @@ async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen,
         })
         .collect();
     if !pending.is_empty() {
-        lines.push(String::new());
+        lines.blank();
         for withdrawal in &pending {
-            lines.push(format!(
-                "Заявка №{} на {}: {}",
-                withdrawal.id,
-                format::money(withdrawal.amount),
-                withdrawal.status.title_ru().to_lowercase()
+            let id = withdrawal.id.to_string();
+            let status = withdrawal.status.title_ru().to_lowercase();
+            lines.add(ui::text(
+                c,
+                "ref.withdrawal",
+                &[
+                    ("id", Text(&id)),
+                    ("amount", Text(&format::money(withdrawal.amount))),
+                    ("status", Text(&status)),
+                ],
             ));
             if withdrawal.status == WithdrawalStatus::Pending {
-                keyboard = keyboard.button(
-                    format!("Отменить заявку №{}", withdrawal.id),
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "ref.btn.cancel_withdrawal",
+                    &[("id", Text(&id))],
                     format!("ref:c:{}", withdrawal.id),
-                );
+                ));
             }
         }
     }
     if overview.withdrawals_enabled && overview.balance.minor > 0 {
-        keyboard = keyboard.button("Вывести деньги", "ref:w");
+        keyboard = keyboard.push(ui::button(c, "ref.btn.withdraw", &[], "ref:w"));
     }
     if let Some(link) = link {
-        keyboard = keyboard.link(
-            "Поделиться ссылкой",
+        keyboard = keyboard.push(ui::link(
+            c,
+            "ref.btn.share",
+            &[],
             format!("https://t.me/share/url?url={}", text::url_encode(&link)),
-        );
+        ));
     }
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard.button("В меню", "m")))
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard.push(ui::menu(c)))
+        .section(Section::Referral))
 }
 
 pub async fn referral_action(
@@ -201,19 +262,21 @@ pub async fn referral_action(
     if !turn.services().modules().is_enabled(ModuleId::Referral) {
         return main_menu(turn.ctx, client).await;
     }
+    let content = turn.services().bot_content();
+    let c = &*content;
     let (action, arg) = rest.split_once(':').unwrap_or((rest, ""));
     match action {
         "w" => {
-            let buttons: Vec<Button> = PayoutMethod::ALL
-                .into_iter()
-                .map(|m| Button::callback(m.title_ru(), format!("ref:m:{}", m.as_str())))
-                .collect();
             let mut keyboard = Keyboard::new();
-            for button in buttons {
-                keyboard = keyboard.row(vec![button]);
+            for method in PayoutMethod::ALL {
+                keyboard = keyboard.row(vec![Button::callback(
+                    method.title_ru(),
+                    format!("ref:m:{}", method.as_str()),
+                )]);
             }
-            Ok(Screen::new("Как получить деньги?")
-                .keyboard(keyboard.button("Отменить", format!("x:{}", referral::BOT_ENTRY))))
+            Ok(Screen::new(ui::text(c, "ref.how", &[]))
+                .keyboard(keyboard.push(ui::cancel(c, format!("x:{}", referral::BOT_ENTRY))))
+                .section(Section::Referral))
         }
         "m" => {
             let Some(method) = PayoutMethod::parse(arg) else {
@@ -228,13 +291,18 @@ pub async fn referral_action(
             let overview = referral::overview(&ctx, client.id).await?;
             let minimum = overview
                 .withdraw_min
-                .map(|m| format!(" Минимум — {}.", format::money(m)))
+                .map(|m| ui::text(c, "ref.minimum", &[("amount", Text(&format::money(m)))]))
                 .unwrap_or_default();
-            Ok(Screen::new(format!(
-                "Сколько вывести? На реферальном балансе {}.{minimum}",
-                format::money(overview.balance)
+            Ok(Screen::new(ui::text(
+                c,
+                "ref.amount",
+                &[
+                    ("amount", Text(&format::money(overview.balance))),
+                    ("minimum", Html(&minimum)),
+                ],
             ))
-            .keyboard(Keyboard::new().button("Отменить", format!("x:{}", referral::BOT_ENTRY))))
+            .keyboard(Keyboard::new().push(ui::cancel(c, format!("x:{}", referral::BOT_ENTRY))))
+            .section(Section::Referral))
         }
         "c" => {
             let Some(id) = id_arg(arg) else {
@@ -242,12 +310,16 @@ pub async fn referral_action(
             };
             let ctx = turn.services().module_context();
             match referral::cancel_withdrawal(&ctx, client.id, id).await {
-                Ok(withdrawal) => Ok(Screen::new(format!(
-                    "Заявка №{} отменена, {} вернулись на реферальный баланс.",
-                    withdrawal.id,
-                    format::money(withdrawal.amount)
+                Ok(withdrawal) => Ok(Screen::new(ui::text(
+                    c,
+                    "ref.cancelled",
+                    &[
+                        ("id", Text(&withdrawal.id.to_string())),
+                        ("amount", Text(&format::money(withdrawal.amount))),
+                    ],
                 ))
-                .keyboard(Keyboard::new().button("Назад", format!("x:{}", referral::BOT_ENTRY)))),
+                .keyboard(back_to_referral(turn, "common.btn.back"))
+                .section(Section::Referral)),
                 Err(err) => Ok(Screen::notice(referral_error(err))),
             }
         }
@@ -283,10 +355,14 @@ pub async fn withdrawal_amount(
         amount: Some(amount),
     });
     turn.session.wait_for(Awaiting::WithdrawalDetails);
-    Ok(
-        Screen::new(format!("Укажите реквизиты. {}", method.details_hint()))
-            .keyboard(Keyboard::new().button("Отменить", format!("x:{}", referral::BOT_ENTRY))),
-    )
+    let content = turn.services().bot_content();
+    Ok(Screen::new(ui::text(
+        &content,
+        "ref.details",
+        &[("hint", Text(method.details_hint()))],
+    ))
+    .keyboard(back_to_referral(turn, "common.btn.cancel"))
+    .section(Section::Referral))
 }
 
 pub async fn withdrawal_details(
@@ -301,6 +377,8 @@ pub async fn withdrawal_details(
     else {
         return referral_screen(turn, client).await;
     };
+    let content = turn.services().bot_content();
+    let c = &*content;
     let ctx = turn.services().module_context();
     match referral::request_withdrawal(
         &ctx,
@@ -313,39 +391,51 @@ pub async fn withdrawal_details(
     )
     .await
     {
-        Ok(withdrawal) => Ok(Screen::new(format!(
-            "Заявка №{} на {} принята. Сумма списана с реферального баланса и вернётся, если заявку отклонят.",
-            withdrawal.id,
-            format::money(withdrawal.amount)
+        Ok(withdrawal) => Ok(Screen::new(ui::text(
+            c,
+            "ref.requested",
+            &[
+                ("id", Text(&withdrawal.id.to_string())),
+                ("amount", Text(&format::money(withdrawal.amount))),
+            ],
         ))
-        .keyboard(Keyboard::new().button("Назад", format!("x:{}", referral::BOT_ENTRY)))),
-        Err(err) => Ok(Screen::new(referral_error(err)).keyboard(
-            Keyboard::new()
-                .button("Попробовать снова", "ref:w")
-                .button("В меню", "m"),
-        )),
+        .keyboard(back_to_referral(turn, "common.btn.back"))
+        .section(Section::Referral)),
+        Err(err) => Ok(Screen::new(referral_error(err))
+            .keyboard(
+                Keyboard::new()
+                    .push(ui::button(c, "ref.btn.retry", &[], "ref:w"))
+                    .push(ui::menu(c)),
+            )
+            .section(Section::Referral)),
     }
 }
 
 async fn options_start(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
+    let c = &*content;
     let subscriptions: Vec<_> = live(services.subscriptions().list_for_client(client.id).await?)
         .into_iter()
         .filter(|s| s.remna.is_some())
         .collect();
     match subscriptions.as_slice() {
-        [] => Ok(Screen::notice(
-            "Докупить устройства можно к действующей подписке.",
-        )),
+        [] => Ok(Screen::notice(ui::text(c, "opt.no_subscription", &[])).section(Section::Options)),
         [only] => options_offer(turn, client, only.id).await,
         many => {
             let mut keyboard = Keyboard::new();
             for sub in many {
                 let name = tariff_name(&services, sub.tariff_id).await;
-                keyboard = keyboard.button(name, format!("opt:{}", sub.id));
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "sub.btn.item_open",
+                    &[("tariff", Text(&name))],
+                    format!("opt:{}", sub.id),
+                ));
             }
-            Ok(Screen::new("К какой подписке добавить устройства?")
-                .keyboard(keyboard.button("В меню", "m")))
+            Ok(Screen::new(ui::text(c, "opt.which_sub", &[]))
+                .keyboard(keyboard.push(ui::menu(c)))
+                .section(Section::Options))
         }
     }
 }
@@ -377,35 +467,44 @@ async fn options_offer(
     client: &Client,
     subscription_id: SubscriptionId,
 ) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let c = &*content;
     let offer = match offer(turn, client, subscription_id).await? {
         Ok(offer) => offer,
-        Err(message) => return Ok(Screen::notice(message)),
+        Err(message) => return Ok(Screen::notice(message).section(Section::Options)),
     };
     if offer.can_add == 0 {
-        return Ok(Screen::notice(
-            "К этой подписке больше устройств не докупить.",
-        ));
+        return Ok(Screen::notice(ui::text(c, "opt.max", &[])).section(Section::Options));
     }
     let stars = offer
         .monthly_stars
-        .map(|s| format!(" или {}", format::stars(s)))
+        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s)))]))
         .unwrap_or_default();
-    let text = format!(
-        "Сейчас: {} в тарифе и {} докуплено. Можно добавить ещё {}.\nЦена: {}{stars} в месяц за устройство, до конца подписки — {} мес.",
-        offer.included,
-        offer.extra_now,
-        offer.can_add,
-        format::money(offer.monthly),
-        offer.months
+    let message = ui::text(
+        c,
+        "opt.offer",
+        &[
+            ("included", Text(&offer.included.to_string())),
+            ("extra", Text(&offer.extra_now.to_string())),
+            ("can_add", Text(&offer.can_add.to_string())),
+            ("price", Text(&format::money(offer.monthly))),
+            ("stars", Html(&stars)),
+            ("months", Text(&offer.months.to_string())),
+        ],
     );
-    let buttons: Vec<Button> = (1..=offer.can_add)
-        .map(|n| Button::callback(format!("+{n}"), format!("opt:{subscription_id}:{n}")))
+    let buttons: Vec<_> = (1..=offer.can_add)
+        .filter_map(|n| {
+            ui::button(
+                c,
+                "opt.btn.count",
+                &[("count", Text(&n.to_string()))],
+                format!("opt:{subscription_id}:{n}"),
+            )
+        })
         .collect();
-    let mut keyboard = Keyboard::new();
-    for chunk in buttons.chunks(4) {
-        keyboard = keyboard.row(chunk.to_vec());
-    }
-    Ok(Screen::new(text).keyboard(keyboard.button("В меню", "m")))
+    Ok(Screen::new(message)
+        .keyboard(Keyboard::new().grid(buttons, 4).push(ui::menu(c)))
+        .section(Section::Options))
 }
 
 pub async fn options_action(
@@ -423,32 +522,46 @@ pub async fn options_action(
     let Ok(count) = count.parse::<u32>() else {
         return options_offer(turn, client, sub).await;
     };
+    let content = turn.services().bot_content();
+    let c = &*content;
     let offer = match offer(turn, client, sub).await? {
         Ok(offer) => offer,
-        Err(message) => return Ok(Screen::notice(message)),
+        Err(message) => return Ok(Screen::notice(message).section(Section::Options)),
     };
     let quote = match options::devices_quote(&offer, count) {
         Ok(quote) => quote,
-        Err(OptionsError::Rejected(rejection)) => return Ok(Screen::notice(rejection.message())),
+        Err(OptionsError::Rejected(rejection)) => {
+            return Ok(Screen::notice(rejection.message()).section(Section::Options));
+        }
         Err(OptionsError::Module(err)) => return Ok(Screen::notice(module_error(err))),
     };
     let stars = quote
         .stars
-        .map(|s| format!(" или {}", format::stars(s.total)))
+        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s.total)))]))
         .unwrap_or_default();
     let label = quote
         .lines
         .first()
         .map(|line| line.label.clone())
         .unwrap_or_default();
-    Ok(Screen::new(format!(
-        "{} — {}{stars}.\nОплата доп. устройств в боте появится позже. Сейчас их можно добавить при продлении подписки.",
-        escape(&label),
-        format::money(quote.total)
+    Ok(Screen::new(ui::text(
+        c,
+        "opt.quote",
+        &[
+            ("label", Text(&label)),
+            ("total", Text(&format::money(quote.total))),
+            ("stars", Html(&stars)),
+        ],
     ))
     .keyboard(
         Keyboard::new()
-            .button("Продлить с устройствами", format!("buy:{sub}"))
-            .button("В меню", "m"),
-    ))
+            .push(ui::button(
+                c,
+                "opt.btn.extend_with",
+                &[],
+                format!("buy:{sub}"),
+            ))
+            .push(ui::menu(c)),
+    )
+    .section(Section::Options))
 }

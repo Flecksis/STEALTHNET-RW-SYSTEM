@@ -452,6 +452,11 @@ export function Landing() {
           {site.support_url ? <a href={site.support_url}>Поддержка</a> : null}
           {bot ? <a href={bot}>Telegram-бот</a> : null}
           <Link to="/cabinet">Личный кабинет</Link>
+          {(site.documents ?? []).map((doc) => (
+            <a key={doc.url} href={doc.url} target="_blank" rel="noreferrer noopener">
+              {doc.title}
+            </a>
+          ))}
         </nav>
       </footer>
     </div>

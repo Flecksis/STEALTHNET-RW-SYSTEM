@@ -1,14 +1,19 @@
 use crate::session::{Awaiting, Session};
 use crate::stars::{self, Settled};
-use crate::telegram::{BotUser, CallbackQuery, Keyboard, PreCheckoutQuery, TelegramApi, Update};
+use crate::telegram::{
+    BotUser, CallbackQuery, Keyboard, Message, PreCheckoutQuery, TelegramApi, Update,
+};
 use crate::text::{self, escape};
-use crate::{BotError, account, buy, consent, extras, login};
+use crate::ui::{self, Html, Lines, Text};
+use crate::{BotError, account, buy, consent, extras, login, media};
+use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
 use sn_domain::ids::TariffId;
 use sn_domain::subscription::Subscription;
 use sn_modules::catalog::{options, promo, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
+use sn_services::bot_content::{BotContent, Document};
 use sn_services::subscriptions::SubscriptionView;
 use sn_store::Db;
 use std::sync::Arc;
@@ -24,6 +29,8 @@ pub struct BotCtx {
 pub struct Screen {
     pub text: String,
     pub keyboard: Keyboard,
+    pub section: Option<Section>,
+    pub menu: bool,
 }
 
 impl Screen {
@@ -31,6 +38,8 @@ impl Screen {
         Screen {
             text: text.into(),
             keyboard: Keyboard::new(),
+            section: None,
+            menu: false,
         }
     }
 
@@ -40,44 +49,30 @@ impl Screen {
     }
 
     pub fn notice(text: impl Into<String>) -> Self {
-        Screen::new(text).keyboard(menu_keyboard())
+        Screen::new(text).with_menu()
     }
-}
 
-pub fn menu_keyboard() -> Keyboard {
-    Keyboard::new().button("В меню", "m")
+    pub fn with_menu(mut self) -> Self {
+        self.menu = true;
+        self
+    }
+
+    pub fn section(mut self, section: Section) -> Self {
+        self.section = Some(section);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub chat_id: i64,
     pub message_id: Option<i64>,
+    pub photo: bool,
 }
 
 impl BotCtx {
     pub async fn show(&self, target: Target, screen: &Screen) -> Result<(), BotError> {
-        if let Some(message_id) = target.message_id {
-            match self
-                .api
-                .edit_message(
-                    target.chat_id,
-                    message_id,
-                    &screen.text,
-                    Some(&screen.keyboard),
-                )
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(err) if err.is_forbidden() => return Err(err.into()),
-                Err(err) => {
-                    tracing::debug!(error = %err, "сообщение не отредактировано, отправляем новое")
-                }
-            }
-        }
-        self.api
-            .send_message(target.chat_id, &screen.text, Some(&screen.keyboard))
-            .await?;
-        Ok(())
+        media::show(self, target, screen).await
     }
 }
 
@@ -156,6 +151,7 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
     let target = Target {
         chat_id: message.chat.id,
         message_id: None,
+        photo: false,
     };
     if let Some(event) = stars::from_message(&message) {
         return match event.event {
@@ -169,6 +165,9 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
     let Some(text) = message.text.as_deref() else {
         return Ok(());
     };
+    if parse_command(text).is_some_and(|(command, _)| command == "emoji") {
+        return ctx.show(target, &emoji_codes(&message)).await;
+    }
     let session = Session::load(&ctx.services, target.chat_id).await?;
     let action = match parse_command(text) {
         Some((command, args)) => match command.as_str() {
@@ -194,6 +193,7 @@ async fn on_callback(ctx: &BotCtx, callback: CallbackQuery) -> Result<(), BotErr
     let target = Target {
         chat_id: message.chat.id,
         message_id: Some(message.message_id),
+        photo: message.has_photo(),
     };
     let session = Session::load(&ctx.services, target.chat_id).await?;
     let data = callback.data.clone().unwrap_or_default();
@@ -247,18 +247,54 @@ async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError
     }
 }
 
+pub fn emoji_codes(message: &Message) -> Screen {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for (fallback, id) in message.custom_emoji() {
+        if !found.iter().any(|(_, known)| *known == id) {
+            found.push((fallback, id));
+        }
+    }
+    if found.is_empty() {
+        return Screen::notice(
+            "Пришлите /emoji вместе с премиум-эмодзи в одном сообщении — бот ответит их кодами для текстов и кнопок.",
+        );
+    }
+    let mut out = vec!["<b>Коды премиум-эмодзи</b>".to_string()];
+    for (fallback, id) in &found {
+        out.push(String::new());
+        out.push(format!(
+            "{} — <code>{}</code>",
+            escape(fallback),
+            escape(id)
+        ));
+        out.push(format!(
+            "<code>{}</code>",
+            escape(&format!(
+                "<tg-emoji emoji-id=\"{id}\">{fallback}</tg-emoji>"
+            ))
+        ));
+    }
+    out.push(String::new());
+    out.push(
+        "Код из первой строки вставьте в поле «Премиум-эмодзи» у кнопки, а строку с тегом — прямо в текст."
+            .into(),
+    );
+    Screen::notice(out.join("\n"))
+}
+
 async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, BotError> {
     let services = turn.services().clone();
+    let content = services.bot_content();
     {
+        let documents = content.consent_documents();
         let mut conn = services.store().conn().await?;
-        let documents = consent::documents(&mut conn).await?;
-        if let Some(version) = consent::version(&documents)
+        if let Some(version) = consent::version(documents)
             && !consent::accepted(&mut conn, turn.user.id, &version).await?
         {
             if let Some(param) = start_param {
                 turn.session.pending_start = Some(param.to_string());
             }
-            return Ok(Gate::Stop(consent_screen(&documents)));
+            return Ok(Gate::Stop(consent_screen(&content)));
         }
     }
     let param = start_param
@@ -275,9 +311,11 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
         .await?;
     if client.is_blocked() {
         turn.session = Session::default();
-        return Ok(Gate::Stop(Screen::new(
-            "Аккаунт заблокирован. Напишите в поддержку.",
-        )));
+        return Ok(Gate::Stop(Screen::new(ui::text(
+            &content,
+            "common.blocked",
+            &[],
+        ))));
     }
     let mut conn = services.store().conn().await?;
     if client.bot_unreachable {
@@ -293,25 +331,44 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
     Ok(Gate::Ready(client))
 }
 
-fn consent_screen(documents: &[consent::Document]) -> Screen {
-    let mut lines = vec!["Прежде чем начать, ознакомьтесь с документами:".to_string()];
+fn document_lines(content: &BotContent, documents: &[Document], lines: &mut Lines) {
     for document in documents {
-        lines.push(format!(
-            "• <a href=\"{}\">{}</a>",
-            escape(&document.url),
-            escape(&document.title)
+        lines.add(ui::text(
+            content,
+            "docs.item",
+            &[
+                ("title", Text(&document.title)),
+                ("url", Text(&document.url)),
+            ],
         ));
     }
-    lines.push(String::new());
-    lines.push("Нажимая «Принимаю», вы соглашаетесь с ними.".into());
-    Screen::new(lines.join("\n")).keyboard(Keyboard::new().button("Принимаю", "terms:ok"))
+}
+
+fn consent_screen(content: &BotContent) -> Screen {
+    let mut lines = Lines::new();
+    lines.add(ui::text(content, "docs.intro", &[]));
+    document_lines(content, content.consent_documents(), &mut lines);
+    lines.add(ui::text(content, "docs.agree", &[]));
+    Screen::new(lines.text())
+        .keyboard(Keyboard::new().push(ui::button(content, "docs.btn.accept", &[], "terms:ok")))
+        .section(Section::Documents)
+}
+
+pub fn documents_screen(content: &BotContent) -> Screen {
+    let mut lines = Lines::new();
+    lines.add(ui::text(content, "docs.list_title", &[]));
+    document_lines(content, &content.documents, &mut lines);
+    Screen::new(lines.text())
+        .with_menu()
+        .section(Section::Documents)
 }
 
 async fn accept_documents(turn: &mut Turn<'_>) -> Result<(), BotError> {
-    let mut conn = turn.services().store().conn().await?;
-    let documents = consent::documents(&mut conn).await?;
-    if let Some(version) = consent::version(&documents) {
-        consent::accept(&mut conn, turn.user.id, &version, &documents).await?;
+    let content = turn.services().bot_content();
+    let documents = content.consent_documents();
+    if let Some(version) = consent::version(documents) {
+        let mut conn = turn.services().store().conn().await?;
+        consent::accept(&mut conn, turn.user.id, &version, documents).await?;
     }
     Ok(())
 }
@@ -365,7 +422,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "dx" => account::device_confirm(turn, rest).await?,
         "dxy" => account::device_disconnect(turn, client, rest).await?,
         "rei" => match id_arg(rest) {
-            Some(id) => account::reissue_confirm(id),
+            Some(id) => account::reissue_confirm(&turn.services().bot_content(), id),
             None => main_menu(turn.ctx, client).await?,
         },
         "reiy" => match id_arg(rest) {
@@ -409,6 +466,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "ref" => extras::referral_action(turn, client, rest).await?,
         "opt" => extras::options_action(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
+        "docs" => documents_screen(&turn.services().bot_content()),
         _ => main_menu(turn.ctx, client).await?,
     };
     Ok(screen)
@@ -448,7 +506,7 @@ async fn trial_available(services: &Services, client: &Client) -> Result<bool, B
     Ok(!conn.trials().was_claimed(&identities).await?)
 }
 
-pub fn module_buttons(services: &Services) -> Vec<(&'static str, &'static str)> {
+pub fn module_buttons(services: &Services) -> Vec<&'static str> {
     let mut entries: Vec<_> = services
         .modules()
         .enabled()
@@ -462,56 +520,127 @@ pub fn module_buttons(services: &Services) -> Vec<(&'static str, &'static str)> 
         })
         .collect();
     entries.sort_by_key(|e| e.order);
-    entries.into_iter().map(|e| (e.key, e.label)).collect()
+    entries.into_iter().map(|e| e.key).collect()
+}
+
+fn module_button_key(entry: &str) -> Option<&'static str> {
+    match entry {
+        promo::BOT_ENTRY => Some("menu.btn.promo"),
+        referral::BOT_ENTRY => Some("menu.btn.referral"),
+        options::BOT_ENTRY => Some("menu.btn.options"),
+        _ => None,
+    }
+}
+
+async fn first_name(services: &Services, client: &Client) -> String {
+    let Ok(mut conn) = services.store().conn().await else {
+        return String::new();
+    };
+    conn.clients()
+        .identities(client.id)
+        .await
+        .ok()
+        .and_then(|list| {
+            list.into_iter()
+                .find(|i| i.kind == IdentityKind::Telegram)
+                .and_then(|i| {
+                    i.meta
+                        .get("first_name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+        })
+        .unwrap_or_default()
+}
+
+pub fn status_text(
+    content: &BotContent,
+    subscription: &Subscription,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    ui::text(content, text::status_key(subscription, now), &[])
 }
 
 pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError> {
     let services = &ctx.services;
+    let content = services.bot_content();
+    let c = &*content;
     let settings = services.settings();
     let now = services.now();
     let offset = settings.remna_offset();
     let subscriptions = live(services.subscriptions().list_for_client(client.id).await?);
-    let mut lines = vec![format!("<b>{}</b>", escape(&settings.brand_name))];
+    let wants_name = ["menu.title", "menu.greeting"]
+        .iter()
+        .any(|key| c.content.template(key).contains("{name}"));
+    let name = if wants_name {
+        first_name(services, client).await
+    } else {
+        String::new()
+    };
+    let head = [
+        ("brand", Text(settings.brand_name.as_str())),
+        ("name", Text(name.as_str())),
+    ];
+    let mut lines = Lines::new();
+    lines.add(ui::text(c, "menu.title", &head));
+    lines.add(ui::text(c, "menu.greeting", &head));
     if subscriptions.is_empty() {
-        lines.push("Подписки пока нет.".into());
+        lines.add(ui::text(c, "menu.no_subscription", &[]));
     }
     for subscription in &subscriptions {
-        let name = tariff_name(services, subscription.tariff_id).await;
-        let until = subscription
-            .mirror
-            .expire_at
-            .map(|at| format!(", до {}", text::date(at, offset)))
-            .unwrap_or_default();
-        lines.push(format!(
-            "{}: {}{until}",
-            escape(&name),
-            text::status_title(subscription, now).to_lowercase()
-        ));
+        let tariff = tariff_name(services, subscription.tariff_id).await;
+        let status = status_text(c, subscription, now);
+        lines.add(match subscription.mirror.expire_at {
+            Some(at) => ui::text(
+                c,
+                "menu.subscription",
+                &[
+                    ("tariff", Text(&tariff)),
+                    ("status", Html(&status)),
+                    ("date", Text(&text::date(at, offset))),
+                ],
+            ),
+            None => ui::text(
+                c,
+                "menu.subscription_open",
+                &[("tariff", Text(&tariff)), ("status", Html(&status))],
+            ),
+        });
     }
-    let mut keyboard = Keyboard::new();
+    let mut buttons = Vec::new();
     if !subscriptions.is_empty() {
-        keyboard = keyboard.button("Подписка", "subs");
+        buttons.extend(ui::button(c, "menu.btn.subscription", &[], "subs"));
     }
     if subscriptions.is_empty() && trial_available(services, client).await? {
-        keyboard = keyboard.button("Попробовать бесплатно", "trial");
+        buttons.extend(ui::button(c, "menu.btn.trial", &[], "trial"));
     }
-    keyboard = keyboard.button(
+    buttons.extend(ui::button(
+        c,
         if subscriptions.is_empty() {
-            "Купить подписку"
+            "menu.btn.buy"
         } else {
-            "Продлить или сменить тариф"
+            "menu.btn.extend"
         },
+        &[],
         "buy",
-    );
-    keyboard = keyboard.button("Баланс", "bal");
-    for (key, label) in module_buttons(services) {
-        keyboard = keyboard.button(label, format!("x:{key}"));
+    ));
+    buttons.extend(ui::button(c, "menu.btn.balance", &[], "bal"));
+    for entry in module_buttons(services) {
+        if let Some(key) = module_button_key(entry) {
+            buttons.extend(ui::button(c, key, &[], format!("x:{entry}")));
+        }
     }
-    keyboard = keyboard.button("Поддержка", "sup");
-    Ok(Screen::new(lines.join("\n")).keyboard(keyboard))
+    if !c.documents.is_empty() {
+        buttons.extend(ui::button(c, "menu.btn.documents", &[], "docs"));
+    }
+    buttons.extend(ui::button(c, "menu.btn.support", &[], "sup"));
+    Ok(Screen::new(lines.text())
+        .keyboard(Keyboard::new().grid(buttons, c.content.menu_columns()))
+        .section(Section::Menu))
 }
 
 fn paysupport(ctx: &BotCtx) -> Screen {
+    let content = ctx.services.bot_content();
     let settings = ctx.services.settings();
     let mut keyboard = Keyboard::new();
     if let Some(url) = settings
@@ -519,14 +648,12 @@ fn paysupport(ctx: &BotCtx) -> Screen {
         .as_deref()
         .filter(|u| u.starts_with("http"))
     {
-        keyboard = keyboard.link("Написать в поддержку", url);
+        keyboard = keyboard.push(ui::link(&content, "pay.btn.write_support", &[], url));
     }
-    keyboard = keyboard.button("Поддержка в боте", "sup");
-    Screen::new(
-        "Вопросы по оплате звёздами Telegram: напишите в поддержку, ответим в течение дня. \
-         Если подписка после оплаты не выдана, вернём звёзды.",
-    )
-    .keyboard(keyboard)
+    keyboard = keyboard.push(ui::button(&content, "pay.btn.support_bot", &[], "sup"));
+    Screen::new(ui::text(&content, "pay.paysupport", &[]))
+        .keyboard(keyboard)
+        .section(Section::Support)
 }
 
 async fn login_screen(
@@ -537,63 +664,61 @@ async fn login_screen(
     let Some(token) = login::token_from_param(param) else {
         return main_menu(turn.ctx, client).await;
     };
+    let content = turn.services().bot_content();
+    let c = &*content;
     let request = match login::describe(turn.services(), token, &profile(turn.user)).await {
         Ok(request) => request,
         Err(err) => {
-            return Ok(Screen::notice(format!(
-                "Вход в кабинет: {}",
-                text::user_error(&err)
-            )));
+            return Ok(Screen::notice(ui::text(
+                c,
+                "login.error",
+                &[("error", Text(&text::user_error(&err)))],
+            ))
+            .section(Section::Login));
         }
     };
     turn.session.login_token = Some(token.to_string());
     let who = match &turn.user.username {
         Some(username) => format!(
             "{} (@{}, Telegram {})",
-            escape(&turn.user.first_name),
-            escape(username),
-            turn.user.id
+            turn.user.first_name, username, turn.user.id
         ),
-        None => format!(
-            "{} (Telegram {})",
-            escape(&turn.user.first_name),
-            turn.user.id
-        ),
+        None => format!("{} (Telegram {})", turn.user.first_name, turn.user.id),
     };
-    let mut lines = vec![
-        "<b>Вход в кабинет</b>".to_string(),
-        format!("Аккаунт: {who}"),
-    ];
+    let mut lines = Lines::new();
+    lines.add(ui::text(c, "login.title", &[]));
+    lines.add(ui::text(c, "login.account", &[("who", Text(&who))]));
     if let Some(ip) = &request.ip {
-        lines.push(format!("Откуда: {}", escape(ip)));
+        lines.add(ui::text(c, "login.ip", &[("ip", Text(ip))]));
     }
     if let Some(agent) = &request.user_agent {
-        lines.push(format!("Браузер: {}", escape(agent)));
+        lines.add(ui::text(c, "login.browser", &[("agent", Text(agent))]));
     }
-    lines.push("Если вход запросили вы — подтвердите. Если нет — нажмите «Это не я».".into());
-    Ok(Screen::new(lines.join("\n")).keyboard(
-        Keyboard::new()
-            .button("Подтвердить вход", "auth:ok")
-            .button("Это не я", "auth:no"),
-    ))
+    lines.add(ui::text(c, "login.hint", &[]));
+    Ok(Screen::new(lines.text())
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(c, "login.btn.confirm", &[], "auth:ok"))
+                .push(ui::button(c, "login.btn.reject", &[], "auth:no")),
+        )
+        .section(Section::Login))
 }
 
 async fn login_decision(turn: &mut Turn<'_>, rest: &str) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
     let Some(token) = turn.session.login_token.take() else {
-        return Ok(Screen::notice(
-            "Запрос на вход устарел. Начните вход в кабинете заново.",
-        ));
+        return Ok(Screen::notice(ui::text(&content, "login.expired", &[])).section(Section::Login));
     };
     let result = match rest {
         "ok" => login::confirm(turn.services(), &token, &profile(turn.user))
             .await
-            .map(|_| "Вход подтверждён. Вернитесь в кабинет."),
+            .map(|_| "login.confirmed"),
         _ => login::reject(turn.services(), &token)
             .await
-            .map(|_| "Вход отклонён. Если это были не вы, ничего делать не нужно."),
+            .map(|_| "login.rejected"),
     };
     Ok(match result {
-        Ok(message) => Screen::notice(message),
+        Ok(key) => Screen::notice(ui::text(&content, key, &[])).section(Section::Login),
         Err(err) => Screen::notice(text::user_error(&err)),
     })
 }
@@ -617,23 +742,20 @@ async fn pre_checkout(ctx: &BotCtx, query: &PreCheckoutQuery) -> Result<(), BotE
 }
 
 async fn stars_paid(ctx: &BotCtx, target: Target, event: &StarsPayment) -> Result<(), BotError> {
-    let deferred = Screen::notice(
-        "Оплату получили, но не смогли сразу её провести. Проверим и выдадим подписку; \
-         если она не появится в течение часа, напишите /paysupport.",
-    );
+    let content = ctx.services.bot_content();
+    let c = &*content;
+    let deferred = Screen::notice(ui::text(c, "pay.stars_deferred", &[])).section(Section::Payment);
     let screen = match stars::settle(&ctx.services, event).await {
-        Settled::Done => {
-            Screen::new("Оплата звёздами получена. Подписка обновится в течение минуты.").keyboard(
+        Settled::Done => Screen::new(ui::text(c, "pay.stars_done", &[]))
+            .keyboard(
                 Keyboard::new()
-                    .button("Подписка", "subs")
-                    .button("В меню", "m"),
+                    .push(ui::button(c, "common.btn.subscription", &[], "subs"))
+                    .push(ui::menu(c)),
             )
+            .section(Section::Payment),
+        Settled::Repeat => {
+            Screen::notice(ui::text(c, "pay.stars_repeat", &[])).section(Section::Payment)
         }
-        Settled::Repeat => Screen::new(
-            "Оплата звёздами получена, но этот счёт уже был оплачен. \
-             Повторную оплату проверим вручную и напишем вам.",
-        )
-        .keyboard(Keyboard::new().button("В меню", "m")),
         Settled::Waiting(reason) => {
             tracing::warn!(
                 charge = %event.telegram_payment_charge_id,

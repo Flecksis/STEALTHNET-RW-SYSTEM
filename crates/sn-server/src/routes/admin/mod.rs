@@ -1,4 +1,5 @@
 mod auth;
+mod bot_content;
 mod catalog;
 mod clients;
 mod delivery;
@@ -34,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         .merge(support::routes())
         .merge(settings::routes())
         .merge(system::routes())
+        .merge(bot_content::routes())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

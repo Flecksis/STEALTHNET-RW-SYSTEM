@@ -4,12 +4,14 @@ pub mod consent;
 mod extras;
 pub mod handler;
 pub mod login;
+pub mod media;
 pub mod notify;
 pub mod photos;
 pub mod session;
 pub mod stars;
 pub mod telegram;
 pub mod text;
+pub mod ui;
 
 #[cfg(test)]
 mod tests;

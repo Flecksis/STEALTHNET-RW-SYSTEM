@@ -23,6 +23,7 @@ export type Site = {
   connect?: { mode: 'ours' | 'remnawave'; page_config: string | null };
   autorenew_days_before?: number;
   trial?: { enabled: boolean; days: number };
+  documents?: Array<{ title: string; url: string }>;
 };
 
 export type Permission =

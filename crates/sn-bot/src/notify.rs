@@ -1,8 +1,10 @@
 use crate::BotConfig;
-use crate::telegram::{Keyboard, TelegramApi, TelegramError};
+use crate::telegram::{Button, Keyboard, TelegramApi, TelegramError};
 use crate::text::{self, escape};
 use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
+use sn_domain::bot_content::Content;
+use sn_domain::bot_content::Value::{self, Html, Text};
 use sn_domain::client::IdentityKind;
 use sn_domain::format;
 use sn_domain::ids::ClientId;
@@ -77,121 +79,131 @@ fn date_param(params: &serde_json::Value, key: &str, offset: FixedOffset) -> Opt
         .map(|at| text::date(at.with_timezone(&Utc), offset))
 }
 
-fn keyboard(button: Option<(&str, &str)>) -> Keyboard {
-    match button {
-        Some((label, data)) => Keyboard::new().button(label, data),
+fn keyboard(content: &Content, button: Option<(&str, &str)>) -> Keyboard {
+    let Some((key, data)) = button else {
+        return Keyboard::new();
+    };
+    match content.button(key, &[]) {
+        Some(label) => Keyboard::new().row(vec![
+            Button::callback(label.text, data)
+                .look(label.emoji_id, label.style.map(|s| s.as_str())),
+        ]),
         None => Keyboard::new(),
     }
 }
 
-pub fn render(template: &str, params: &serde_json::Value, offset: FixedOffset) -> Option<Rendered> {
+pub fn render(
+    content: &Content,
+    template: &str,
+    params: &serde_json::Value,
+    offset: FixedOffset,
+) -> Option<Rendered> {
     let template = canonical(template, params);
     let amount = param(params, "amount");
     let date =
         date_param(params, "date", offset).or_else(|| date_param(params, "expire_at", offset));
+    let t = |key: &str, vars: &[(&str, Value<'_>)]| content.text(key, vars);
     let (text, button): (String, Option<(&str, &str)>) = match template {
         templates::PAYMENT_PAID => (
             match &amount {
-                Some(amount) => {
-                    format!("Оплата {amount} получена. Подписка обновится в течение минуты.")
-                }
-                None => "Оплата получена. Подписка обновится в течение минуты.".into(),
+                Some(amount) => t("notify.payment_paid", &[("amount", Html(amount))]),
+                None => t("notify.payment_paid_plain", &[]),
             },
-            Some(("Подписка", "subs")),
+            Some(("notify.btn.subscription", "subs")),
         ),
         templates::TOPUP_DONE => (
             match &amount {
-                Some(amount) => format!("Баланс пополнен на {amount}."),
-                None => "Баланс пополнен.".into(),
+                Some(amount) => t("notify.topup_done", &[("amount", Html(amount))]),
+                None => t("notify.topup_done_plain", &[]),
             },
-            Some(("Баланс", "bal")),
+            Some(("notify.btn.balance", "bal")),
         ),
         templates::SUBSCRIPTION_READY => (
             match &date {
-                Some(date) => {
-                    format!("Подписка готова и действует до {date}. Ссылка — в разделе «Подписка».")
-                }
-                None => "Подписка готова. Ссылка — в разделе «Подписка».".into(),
+                Some(date) => t("notify.subscription_ready", &[("date", Text(date))]),
+                None => t("notify.subscription_ready_plain", &[]),
             },
-            Some(("Подписка", "subs")),
+            Some(("notify.btn.subscription", "subs")),
         ),
         templates::SUBSCRIPTION_RENEWED => (
             match &date {
-                Some(date) => format!("Подписка продлена до {date}."),
-                None => "Подписка продлена.".into(),
+                Some(date) => t("notify.subscription_renewed", &[("date", Text(date))]),
+                None => t("notify.subscription_renewed_plain", &[]),
             },
-            Some(("Подписка", "subs")),
+            Some(("notify.btn.subscription", "subs")),
         ),
         templates::SUBSCRIPTION_EXPIRING => (
             match &date {
-                Some(date) => {
-                    format!("Подписка закончится {date}. Продлите её, чтобы VPN не отключился.")
-                }
-                None => "Подписка скоро закончится. Продлите её, чтобы VPN не отключился.".into(),
+                Some(date) => t("notify.subscription_expiring", &[("date", Text(date))]),
+                None => t("notify.subscription_expiring_plain", &[]),
             },
-            Some(("Продлить", "buy")),
+            Some(("notify.btn.extend", "buy")),
         ),
         templates::AUTORENEW_UPCOMING => (
             match (&date, &amount) {
-                (Some(date), Some(amount)) => format!(
-                    "{date} спишем {amount} за продление подписки. Если на балансе не хватит, пополните его заранее."
+                (Some(date), Some(amount)) => t(
+                    "notify.autorenew_upcoming",
+                    &[("date", Text(date)), ("amount", Html(amount))],
                 ),
-                _ => "Скоро продлим подписку. Если на балансе не хватит, пополните его заранее."
-                    .into(),
+                _ => t("notify.autorenew_upcoming_plain", &[]),
             },
-            Some(("Баланс", "bal")),
+            Some(("notify.btn.balance", "bal")),
         ),
         templates::AUTORENEW_FAILED => (
             match param(params, "missing") {
-                Some(missing) => format!(
-                    "Не получилось продлить подписку: не хватает {missing}. Пополните баланс — продлим автоматически."
-                ),
-                None => {
-                    "Не получилось продлить подписку. Пополните баланс — продлим автоматически."
-                        .into()
-                }
+                Some(missing) => t("notify.autorenew_failed", &[("missing", Html(&missing))]),
+                None => t("notify.autorenew_failed_plain", &[]),
             },
-            Some(("Баланс", "bal")),
+            Some(("notify.btn.balance", "bal")),
         ),
         templates::AUTORENEW_DISABLED => (
-            "Автопродление выключено: оплатить не удалось. Продлите подписку вручную.".into(),
-            Some(("Продлить", "buy")),
+            t("notify.autorenew_disabled", &[]),
+            Some(("notify.btn.extend", "buy")),
         ),
         templates::SUPPORT_REPLY => (
-            format!("<b>Ответ поддержки</b>\n\n{}", param(params, "body")?),
-            Some(("Ответить", "sup")),
-        ),
-        templates::REPEAT_CREDITED => (param(params, "text")?, Some(("Баланс", "bal"))),
-        templates::REPEAT_REVIEW => (param(params, "text")?, Some(("Поддержка", "sup"))),
-        referral::TEMPLATE_CREDIT => (
-            format!(
-                "Начислено {} за оплату приглашённого друга.",
-                amount.clone()?
+            t(
+                "notify.support_reply",
+                &[("body", Html(&param(params, "body")?))],
             ),
-            Some(("Пригласить друга", "x:referral")),
+            Some(("notify.btn.reply", "sup")),
+        ),
+        templates::REPEAT_CREDITED => (param(params, "text")?, Some(("notify.btn.balance", "bal"))),
+        templates::REPEAT_REVIEW => (param(params, "text")?, Some(("notify.btn.support", "sup"))),
+        referral::TEMPLATE_CREDIT => (
+            t(
+                "notify.referral_credit",
+                &[("amount", Html(&amount.clone()?))],
+            ),
+            Some(("notify.btn.referral", "x:referral")),
         ),
         referral::TEMPLATE_WITHDRAWAL_PAID => (
-            format!("Заявка на вывод {} выплачена.", amount.clone()?),
+            t(
+                "notify.withdrawal_paid",
+                &[("amount", Html(&amount.clone()?))],
+            ),
             None,
         ),
         referral::TEMPLATE_WITHDRAWAL_REJECTED => (
             match param(params, "comment") {
-                Some(comment) => format!(
-                    "Заявка на вывод {} отклонена: {comment}. Деньги вернулись на реферальный баланс.",
-                    amount.clone()?
+                Some(comment) => t(
+                    "notify.withdrawal_rejected",
+                    &[
+                        ("amount", Html(&amount.clone()?)),
+                        ("comment", Html(&comment)),
+                    ],
                 ),
-                None => format!(
-                    "Заявка на вывод {} отклонена. Деньги вернулись на реферальный баланс.",
-                    amount.clone()?
+                None => t(
+                    "notify.withdrawal_rejected_plain",
+                    &[("amount", Html(&amount.clone()?))],
                 ),
             },
-            Some(("Пригласить друга", "x:referral")),
+            Some(("notify.btn.referral", "x:referral")),
         ),
         _ => (param(params, "text")?, None),
     };
     Some(Rendered {
         text,
-        keyboard: keyboard(button),
+        keyboard: keyboard(content, button),
     })
 }
 
@@ -268,7 +280,13 @@ impl NotifyHandler {
         if client.bot_unreachable {
             return JobResult::Done;
         }
-        let Some(rendered) = render(template, params, services.settings().remna_offset()) else {
+        let content = services.bot_content();
+        let Some(rendered) = render(
+            &content.content,
+            template,
+            params,
+            services.settings().remna_offset(),
+        ) else {
             return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
         };
         drop(conn);

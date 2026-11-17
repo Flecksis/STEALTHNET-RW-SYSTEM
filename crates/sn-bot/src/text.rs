@@ -61,6 +61,17 @@ pub fn amount(value: Amount) -> String {
     value.to_string()
 }
 
+pub fn status_key(subscription: &Subscription, now: DateTime<Utc>) -> &'static str {
+    match status_title(subscription, now) {
+        "Пробный период" => "status.trial",
+        "Активна" => "status.active",
+        "Трафик закончился" => "status.limited",
+        "Истекла" => "status.expired",
+        "Заблокирована" => "status.disabled",
+        _ => "status.pending",
+    }
+}
+
 pub fn status_title(subscription: &Subscription, now: DateTime<Utc>) -> &'static str {
     let status = subscription.mirror.status.or_else(|| {
         subscription.mirror.expire_at.map(|at| {

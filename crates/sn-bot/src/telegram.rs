@@ -114,6 +114,63 @@ pub struct Message {
     pub successful_payment: Option<SuccessfulPayment>,
     #[serde(default)]
     pub refunded_payment: Option<RefundedPayment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<Vec<PhotoSize>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entities: Option<Vec<MessageEntity>>,
+}
+
+impl Message {
+    pub fn has_photo(&self) -> bool {
+        self.photo.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    pub fn largest_photo(&self) -> Option<&PhotoSize> {
+        self.photo
+            .as_ref()?
+            .iter()
+            .max_by_key(|p| p.width.saturating_mul(p.height))
+    }
+
+    pub fn custom_emoji(&self) -> Vec<(String, String)> {
+        let Some(text) = self.text.as_deref() else {
+            return Vec::new();
+        };
+        let units: Vec<u16> = text.encode_utf16().collect();
+        self.entities
+            .iter()
+            .flatten()
+            .filter(|e| e.kind == "custom_emoji")
+            .filter_map(|e| {
+                let id = e.custom_emoji_id.clone()?;
+                let start = usize::try_from(e.offset).ok()?;
+                let end = start.checked_add(usize::try_from(e.length).ok()?)?;
+                let fallback = String::from_utf16(units.get(start..end)?).ok()?;
+                Some((fallback, id))
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhotoSize {
+    pub file_id: String,
+    #[serde(default)]
+    pub file_unique_id: String,
+    #[serde(default)]
+    pub width: i64,
+    #[serde(default)]
+    pub height: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageEntity {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub offset: i64,
+    pub length: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_emoji_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +233,10 @@ impl Update {
 pub struct Button {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_custom_emoji_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub callback_data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -185,6 +246,8 @@ impl Button {
     pub fn callback(text: impl Into<String>, data: impl Into<String>) -> Self {
         Button {
             text: text.into(),
+            icon_custom_emoji_id: None,
+            style: None,
             callback_data: Some(data.into()),
             url: None,
         }
@@ -193,9 +256,22 @@ impl Button {
     pub fn url(text: impl Into<String>, url: impl Into<String>) -> Self {
         Button {
             text: text.into(),
+            icon_custom_emoji_id: None,
+            style: None,
             callback_data: None,
             url: Some(url.into()),
         }
+    }
+
+    pub fn look(mut self, icon: Option<String>, style: Option<&str>) -> Self {
+        self.icon_custom_emoji_id = icon;
+        self.style = style.map(str::to_string);
+        self
+    }
+
+    pub fn plain(mut self) -> Self {
+        self.icon_custom_emoji_id = None;
+        self
     }
 }
 
@@ -235,6 +311,50 @@ impl Keyboard {
     pub fn is_empty(&self) -> bool {
         self.inline_keyboard.is_empty()
     }
+
+    pub fn push(self, button: Option<Button>) -> Self {
+        match button {
+            Some(button) => self.row(vec![button]),
+            None => self,
+        }
+    }
+
+    pub fn pair(self, left: Option<Button>, right: Option<Button>) -> Self {
+        self.row(left.into_iter().chain(right).collect())
+    }
+
+    pub fn grid(mut self, buttons: Vec<Button>, columns: usize) -> Self {
+        for chunk in buttons.chunks(columns.max(1)) {
+            self = self.row(chunk.to_vec());
+        }
+        self
+    }
+
+    pub fn has_custom_emoji(&self) -> bool {
+        self.inline_keyboard
+            .iter()
+            .flatten()
+            .any(|b| b.icon_custom_emoji_id.is_some())
+    }
+
+    pub fn plain(&self) -> Keyboard {
+        Keyboard {
+            inline_keyboard: self
+                .inline_keyboard
+                .iter()
+                .map(|row| row.iter().cloned().map(Button::plain).collect())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PhotoInput<'a> {
+    FileId(&'a str),
+    Upload {
+        bytes: &'a [u8],
+        content_type: &'a str,
+    },
 }
 
 #[derive(Deserialize)]
@@ -291,6 +411,147 @@ impl TelegramApi {
             .send()
             .await
             .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+        Self::parse(response).await
+    }
+
+    async fn call_form<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        form: reqwest::multipart::Form,
+    ) -> Result<T, TelegramError> {
+        let response = self
+            .http
+            .post(format!("{}/{method}", self.base))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+        Self::parse(response).await
+    }
+
+    fn photo_part(
+        bytes: &[u8],
+        content_type: &str,
+    ) -> Result<reqwest::multipart::Part, TelegramError> {
+        let name = if content_type == "image/png" {
+            "image.png"
+        } else {
+            "image.jpg"
+        };
+        reqwest::multipart::Part::bytes(bytes.to_vec())
+            .file_name(name)
+            .mime_str(content_type)
+            .map_err(|e| TelegramError::Transport(e.without_url().to_string()))
+    }
+
+    pub async fn send_photo(
+        &self,
+        chat_id: i64,
+        photo: PhotoInput<'_>,
+        caption: &str,
+        keyboard: Option<&Keyboard>,
+    ) -> Result<Message, TelegramError> {
+        let markup = keyboard
+            .filter(|k| !k.is_empty())
+            .map(|k| serde_json::json!(k));
+        match photo {
+            PhotoInput::FileId(file_id) => {
+                let mut body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "photo": file_id,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                });
+                if let Some(markup) = markup {
+                    body["reply_markup"] = markup;
+                }
+                self.call("sendPhoto", &body).await
+            }
+            PhotoInput::Upload {
+                bytes,
+                content_type,
+            } => {
+                let mut form = reqwest::multipart::Form::new()
+                    .text("chat_id", chat_id.to_string())
+                    .text("caption", caption.to_string())
+                    .text("parse_mode", "HTML")
+                    .part("photo", Self::photo_part(bytes, content_type)?);
+                if let Some(markup) = markup {
+                    form = form.text("reply_markup", markup.to_string());
+                }
+                self.call_form("sendPhoto", form).await
+            }
+        }
+    }
+
+    pub async fn edit_photo(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        photo: PhotoInput<'_>,
+        caption: &str,
+        keyboard: Option<&Keyboard>,
+    ) -> Result<Option<Message>, TelegramError> {
+        let media_ref = match photo {
+            PhotoInput::FileId(file_id) => file_id.to_string(),
+            PhotoInput::Upload { .. } => "attach://photo".to_string(),
+        };
+        let media = serde_json::json!({
+            "type": "photo",
+            "media": media_ref,
+            "caption": caption,
+            "parse_mode": "HTML",
+        });
+        let markup = keyboard
+            .filter(|k| !k.is_empty())
+            .map(|k| serde_json::json!(k));
+        let result: Result<serde_json::Value, TelegramError> = match photo {
+            PhotoInput::FileId(_) => {
+                let mut body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "media": media,
+                });
+                if let Some(markup) = markup {
+                    body["reply_markup"] = markup;
+                }
+                self.call("editMessageMedia", &body).await
+            }
+            PhotoInput::Upload {
+                bytes,
+                content_type,
+            } => {
+                let mut form = reqwest::multipart::Form::new()
+                    .text("chat_id", chat_id.to_string())
+                    .text("message_id", message_id.to_string())
+                    .text("media", media.to_string())
+                    .part("photo", Self::photo_part(bytes, content_type)?);
+                if let Some(markup) = markup {
+                    form = form.text("reply_markup", markup.to_string());
+                }
+                self.call_form("editMessageMedia", form).await
+            }
+        };
+        match result {
+            Ok(value) => Ok(serde_json::from_value::<Message>(value).ok()),
+            Err(err) if err.is_not_modified() => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn delete_message(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+    ) -> Result<bool, TelegramError> {
+        self.call(
+            "deleteMessage",
+            &serde_json::json!({ "chat_id": chat_id, "message_id": message_id }),
+        )
+        .await
+    }
+
+    async fn parse<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, TelegramError> {
         let status = response.status();
         let envelope: Envelope<T> = response.json().await.map_err(|e| {
             if status.is_server_error() {
