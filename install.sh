@@ -539,6 +539,7 @@ install() {
     prepare_image
     start_stack
     wait_healthy
+    install_short || true
     step "Владелец"
     find_owner
     if [ -n "$EXISTING_OWNER" ]; then
@@ -549,7 +550,6 @@ install() {
         set_owner_password "$NEW_EMAIL"
         done_line "создан, пароль сгенерирован"
     fi
-    install_short
     summary
 }
 
