@@ -452,6 +452,12 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
             &[("amount", Text(&format::money(referral)))],
         ));
     }
+    if !services.payments().balance_enabled() {
+        lines.add(ui::text(c, "bal.off_note", &[]));
+        return Ok(Screen::new(lines.text())
+            .keyboard(Keyboard::new().push(ui::menu(c)))
+            .section(Section::Balance));
+    }
     lines.add(ui::text(c, "bal.note", &[]));
     let limits = settings.topup_limits();
     let buttons: Vec<_> = presets(currency)

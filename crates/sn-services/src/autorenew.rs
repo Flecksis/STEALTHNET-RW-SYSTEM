@@ -475,6 +475,7 @@ impl<'a> AutoRenew<'a> {
                             "balance": balance,
                             "balance_text": format::money(balance),
                             "missing": total.checked_sub(balance)?,
+                            "balance_off": !self.services.payments().balance_enabled(),
                         }),
                     },
                     None,
@@ -652,14 +653,11 @@ impl<'a> AutoRenew<'a> {
         ))
     }
 
-    async fn saved_card(&self, tx: &mut Tx, client_id: ClientId) -> ServiceResult<Option<Card>> {
+    fn card_providers(&self) -> Vec<Arc<dyn PaymentProvider>> {
         let settings = self.services.settings();
-        if !settings.autorenew.use_saved_card {
-            return Ok(None);
+        if !settings.autorenew.use_saved_card || self.services.secrets().is_none() {
+            return Vec::new();
         }
-        let Some(secrets) = self.services.secrets() else {
-            return Ok(None);
-        };
         let registry = self.services.payments();
         let mut candidates: Vec<Arc<dyn PaymentProvider>> = registry
             .providers()
@@ -672,7 +670,33 @@ impl<'a> AutoRenew<'a> {
             .cloned()
             .collect();
         candidates.sort_by_key(|p| p.id() != providers::YOOKASSA);
+        candidates
+    }
+
+    pub async fn has_saved_card(&self, client_id: ClientId) -> ServiceResult<bool> {
+        let candidates = self.card_providers();
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let mut conn = self.services.store().conn().await?;
         for provider in candidates {
+            if conn
+                .saved_methods()
+                .active(client_id, provider.id())
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn saved_card(&self, tx: &mut Tx, client_id: ClientId) -> ServiceResult<Option<Card>> {
+        let Some(secrets) = self.services.secrets() else {
+            return Ok(None);
+        };
+        for provider in self.card_providers() {
             let Some(record) = tx.saved_methods().active(client_id, provider.id()).await? else {
                 continue;
             };
@@ -1105,6 +1129,7 @@ impl<'a> AutoRenew<'a> {
                             "expire_at": subscription.mirror.expire_at,
                             "amount": total,
                             "amount_text": format::money(total),
+                            "balance_off": !self.services.payments().balance_enabled(),
                         }),
                     },
                     None,

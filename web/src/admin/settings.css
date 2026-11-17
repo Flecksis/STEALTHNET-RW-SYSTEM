@@ -409,6 +409,27 @@
   cursor: pointer;
 }
 
+.pay-ghost {
+  visibility: hidden;
+}
+
+.pay-off {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 760px;
+  padding: 0 20px 12px;
+  margin-top: -2px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pay-off-sum {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 .pay-rule {
   flex-basis: 100%;
   max-width: 760px;

@@ -31,6 +31,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[cfg(test)]
+pub(crate) mod balance_off_tests;
+#[cfg(test)]
 mod channel_tests;
 #[cfg(test)]
 mod gram_tests;
@@ -344,18 +346,28 @@ async fn record_paid(
     })
 }
 
+pub const BALANCE_OFF: &str = "balance.disabled";
+
 fn pick_method(
     methods: &[CheckoutMethod],
     provider: &str,
+    balance_on: bool,
 ) -> ServiceResult<(ProviderKind, Amount)> {
     let method = methods
         .iter()
         .find(|m| m.provider == provider)
         .ok_or_else(|| {
-            ServiceError::rejected(
-                "checkout.method_unavailable",
-                "Этот способ оплаты сейчас недоступен",
-            )
+            if provider == providers::BALANCE && !balance_on {
+                ServiceError::rejected(
+                    BALANCE_OFF,
+                    "Оплата с баланса выключена: остатком можно оплатить, только если его хватает на всю сумму. Выберите другой способ оплаты.",
+                )
+            } else {
+                ServiceError::rejected(
+                    "checkout.method_unavailable",
+                    "Этот способ оплаты сейчас недоступен",
+                )
+            }
         })?;
     if let Some(reason) = &method.unavailable {
         return Err(ServiceError::rejected(
@@ -716,7 +728,11 @@ impl<'a> Checkout<'a> {
                 request.channel.client(),
             )
             .await?;
-        let (kind, amount) = pick_method(&prepared.methods, &request.provider)?;
+        let (kind, amount) = pick_method(
+            &prepared.methods,
+            &request.provider,
+            self.services.payments().balance_enabled(),
+        )?;
         let period = prepared
             .tariff
             .period(request.cart.period_id)
@@ -750,6 +766,17 @@ impl<'a> Checkout<'a> {
         .await
     }
 
+    pub fn topup_open(&self) -> ServiceResult<()> {
+        if self.services.payments().balance_enabled() {
+            Ok(())
+        } else {
+            Err(ServiceError::rejected(
+                BALANCE_OFF,
+                "Пополнение баланса выключено. Оплатите подписку напрямую одним из способов оплаты.",
+            ))
+        }
+    }
+
     pub async fn topup(
         &self,
         client_id: ClientId,
@@ -757,6 +784,7 @@ impl<'a> Checkout<'a> {
         provider: &str,
         channel: Channel,
     ) -> ServiceResult<CheckoutResult> {
+        self.topup_open()?;
         let settings = self.services.settings();
         if amount.currency != settings.currency {
             return Err(ServiceError::rejected(
@@ -952,7 +980,11 @@ impl<'a> Checkout<'a> {
         let (client, quote, methods) = self
             .prepare_item(client_id, &request.item, request.channel.client())
             .await?;
-        let (kind, amount) = pick_method(&methods, &request.provider)?;
+        let (kind, amount) = pick_method(
+            &methods,
+            &request.provider,
+            self.services.payments().balance_enabled(),
+        )?;
         let order = NewOrder {
             client_id,
             subscription_id: request.item.subscription_id,

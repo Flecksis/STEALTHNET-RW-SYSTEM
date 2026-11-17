@@ -146,6 +146,14 @@ impl ProviderRegistry {
             && (provider.kind() == ProviderKind::Balance || provider.is_configured(&state.config))
     }
 
+    pub fn balance_enabled(&self) -> bool {
+        let snapshot = self.snapshot();
+        self.providers
+            .iter()
+            .filter(|p| p.kind() == ProviderKind::Balance)
+            .any(|p| snapshot.states.get(p.id()).is_some_and(|s| s.enabled))
+    }
+
     pub fn allowed_in(&self, id: &str, channel: ClientChannel) -> bool {
         self.snapshot()
             .states
@@ -206,16 +214,20 @@ impl ProviderRegistry {
         let mut methods = Vec::new();
         let mut balance_method = None;
         for id in ordered {
-            if !self.is_available(id, ctx.currency)
+            let Some(provider) = self.get(id) else {
+                continue;
+            };
+            let open = self.is_available(id, ctx.currency);
+            let leftover = !open
+                && provider.kind() == ProviderKind::Balance
+                && provider.currencies().contains(&ctx.currency);
+            if (!open && !leftover)
                 || ctx
                     .channel
                     .is_some_and(|channel| !self.allowed_in(id, channel))
             {
                 continue;
             }
-            let Some(provider) = self.get(id) else {
-                continue;
-            };
             let label = provider.client_label(ctx.currency);
             let (amount, unavailable) = match provider.kind() {
                 ProviderKind::External => (Some(ctx.total.into()), None),
@@ -229,6 +241,7 @@ impl ProviderRegistry {
                     };
                     let unavailable = match balance_check(balance, ctx.total) {
                         Ok(BalanceCheck::Enough) => None,
+                        Ok(BalanceCheck::Short { .. }) if leftover => continue,
                         Ok(BalanceCheck::Short { balance, missing }) => {
                             Some(Unavailable::InsufficientBalance { balance, missing })
                         }
@@ -517,6 +530,61 @@ mod tests {
             .find(|v| v.id == providers::CRYPTOPAY)
             .unwrap();
         assert!(!view.channels.bot);
+    }
+
+    #[test]
+    fn выключенный_баланс_тратит_только_остаток_которого_хватает() {
+        let registry = registry(Currency::Usd);
+        assert!(registry.balance_enabled());
+        let mut snapshot = (*registry.snapshot()).clone();
+        if let Some(state) = snapshot.states.get_mut(providers::BALANCE) {
+            state.enabled = false;
+        }
+        registry.apply(snapshot.clone());
+        assert!(!registry.balance_enabled());
+        assert!(!registry.is_available(providers::BALANCE, Currency::Usd));
+        let methods = |total: i64, balance: Option<i64>, channel: Option<ClientChannel>| {
+            registry.checkout_methods(&MethodsContext {
+                currency: Currency::Usd,
+                total: Money::new(total, Currency::Usd),
+                stars_total: None,
+                balance: balance.map(|minor| Money::new(minor, Currency::Usd)),
+                channel,
+            })
+        };
+        let short = methods(699, Some(420), None);
+        assert!(short.iter().all(|m| m.provider != providers::BALANCE));
+        let enough = methods(699, Some(700), None);
+        let leftover = enough
+            .iter()
+            .find(|m| m.provider == providers::BALANCE)
+            .unwrap();
+        assert_eq!(leftover.unavailable, None);
+        assert_eq!(leftover.amount, Some(Money::new(699, Currency::Usd).into()));
+        assert!(
+            methods(699, None, None)
+                .iter()
+                .all(|m| m.provider != providers::BALANCE)
+        );
+        assert!(
+            methods(0, Some(0), None)
+                .iter()
+                .any(|m| m.provider == providers::BALANCE)
+        );
+        if let Some(state) = snapshot.states.get_mut(providers::BALANCE) {
+            state.channels.bot = false;
+        }
+        registry.apply(snapshot);
+        assert!(
+            methods(699, Some(700), Some(ClientChannel::Bot))
+                .iter()
+                .all(|m| m.provider != providers::BALANCE)
+        );
+        assert!(
+            methods(699, Some(700), Some(ClientChannel::Cabinet))
+                .iter()
+                .any(|m| m.provider == providers::BALANCE)
+        );
     }
 
     #[test]

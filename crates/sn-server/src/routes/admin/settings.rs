@@ -64,7 +64,7 @@ async fn read(
         "core" => json(&ops.core())?,
         "appearance" => json(&ops.appearance())?,
         "connect" => json(&ops.connect())?,
-        "payments" => json(&ops.payments())?,
+        "payments" => json(&ops.payments().await?)?,
         "trial" => json(&ops.trial())?,
         "autorenew" => json(&ops.autorenew())?,
         "remnawave" => json(&ops.remnawave().await?)?,
@@ -302,11 +302,12 @@ async fn providers(
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
     admin.require(Permission::Settings)?;
-    let payments = state.services.settings_ops().payments();
+    let payments = state.services.settings_ops().payments().await?;
     Ok(Json(serde_json::json!({
         "currency": payments.currency,
         "order": payments.order,
         "providers": payments.providers,
+        "balances": payments.balances,
     })))
 }
 

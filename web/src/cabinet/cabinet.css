@@ -680,6 +680,11 @@
   border-top: 1px solid var(--line);
 }
 
+.cb-auto-row.solo {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .cb-auto-text {
   min-width: 0;
   display: flex;

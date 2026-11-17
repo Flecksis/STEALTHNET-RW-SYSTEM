@@ -194,6 +194,9 @@ export function SubscriptionPage() {
   const renewPrice: Money | null = renewPeriod?.price ?? null;
   const chargeDate = expire ? new Date(Date.parse(expire) - (site.autorenew_days_before ?? 1) * 86_400_000).toISOString() : null;
   const autoOn = view?.subscription.autorenew.enabled ?? false;
+  const balanceOff = me.balance_enabled === false;
+  const showBalance = !balanceOff || me.balance.minor > 0;
+  const canCharge = !balanceOff || me.autorenew_card === true || (renewPrice !== null && me.balance.minor >= renewPrice.minor);
   const autoText = !view
     ? ''
     : blocked
@@ -204,15 +207,27 @@ export function SubscriptionPage() {
         ? expired
           ? 'Выключено'
           : 'Выключено, напомним за 3 дня'
-        : expired
-          ? renewPrice
-            ? `Спишем ${money(renewPrice)}, когда хватит баланса`
-            : 'Спишем, когда хватит баланса'
-          : renewPrice && chargeDate
-            ? phone
-              ? `Спишем ${money(renewPrice)} ${dateLong(chargeDate, false)}`
-              : `${dateLong(chargeDate, false)} спишем ${money(renewPrice)}`
-            : 'Спишем с баланса перед окончанием';
+        : !canCharge
+          ? expired
+            ? 'Продлите подписку вручную'
+            : chargeDate
+              ? `Напомним продлить ${dateLong(chargeDate, false)}`
+              : 'Напомним продлить перед окончанием'
+          : expired
+            ? balanceOff
+              ? renewPrice
+                ? `Спишем ${money(renewPrice)} при следующей попытке`
+                : 'Спишем при следующей попытке'
+              : renewPrice
+                ? `Спишем ${money(renewPrice)}, когда хватит баланса`
+                : 'Спишем, когда хватит баланса'
+            : renewPrice && chargeDate
+              ? phone
+                ? `Спишем ${money(renewPrice)} ${dateLong(chargeDate, false)}`
+                : `${dateLong(chargeDate, false)} спишем ${money(renewPrice)}`
+              : balanceOff
+                ? 'Спишем перед окончанием'
+                : 'Спишем с баланса перед окончанием';
 
   const platforms: Array<[Platform, string]> = phone
     ? [
@@ -551,22 +566,32 @@ export function SubscriptionPage() {
         {devicesCard}
       </div>
       <div className="cb-col right">
-        <Card className="cb-balance-card" label="Баланс">
-          <span className="cb-label">Баланс</span>
-          <span className="cb-sum">{money(me.balance)}</span>
-          <button type="button" className="cb-main wide" onClick={() => navigate('/cabinet/pay')}>
-            Пополнить
-          </button>
-          {view ? (
-            <div className="cb-auto-row">
-              <span className="cb-auto-text">
-                <strong>Автопродление</strong>
-                <span className="cb-small cb-muted">{autoText}</span>
-              </span>
-              {autoSwitch}
-            </div>
-          ) : null}
-        </Card>
+        {showBalance || view ? (
+          <Card className="cb-balance-card" label={showBalance ? 'Баланс' : 'Автопродление'}>
+            {showBalance ? (
+              <>
+                <span className="cb-label">{balanceOff ? 'Остаток на балансе' : 'Баланс'}</span>
+                <span className="cb-sum">{money(me.balance)}</span>
+                {balanceOff ? (
+                  <span className="cb-small cb-muted">Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму</span>
+                ) : (
+                  <button type="button" className="cb-main wide" onClick={() => navigate('/cabinet/pay')}>
+                    Пополнить
+                  </button>
+                )}
+              </>
+            ) : null}
+            {view ? (
+              <div className={showBalance ? 'cb-auto-row' : 'cb-auto-row solo'}>
+                <span className="cb-auto-text">
+                  <strong>Автопродление</strong>
+                  <span className="cb-small cb-muted">{autoText}</span>
+                </span>
+                {autoSwitch}
+              </div>
+            ) : null}
+          </Card>
+        ) : null}
         {referral ? (
           <Card id="friends" className="cb-friends" label="Друзья">
             <h2 className="cb-h2">Друзья</h2>

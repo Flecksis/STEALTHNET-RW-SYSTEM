@@ -128,6 +128,22 @@ impl<'c> LedgerRepo<'c> {
         Ok(Money::new(amount.unwrap_or(0), currency))
     }
 
+    pub async fn holders(
+        &mut self,
+        wallet: Wallet,
+        currency: Currency,
+    ) -> StoreResult<(i64, Money)> {
+        let (clients, total): (i64, i64) = sqlx::query_as(
+            "SELECT count(*), COALESCE(sum(amount_minor), 0)::bigint FROM client_balances \
+             WHERE wallet = $1 AND currency = $2 AND amount_minor > 0",
+        )
+        .bind(wallet.as_str())
+        .bind(currency.code())
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok((clients, Money::new(total, currency)))
+    }
+
     pub async fn append(&mut self, entry: &NewLedgerEntry) -> StoreResult<LedgerAppend> {
         entry.validate()?;
         if let Some(found) = self.existing(entry).await? {

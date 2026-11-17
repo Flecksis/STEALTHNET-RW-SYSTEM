@@ -149,6 +149,13 @@ pub fn render(
             },
             Some(("notify.btn.balance", "bal")),
         ),
+        templates::AUTORENEW_FAILED if params["balance_off"].as_bool() == Some(true) => (
+            match &date {
+                Some(date) => t("notify.autorenew_pay", &[("date", Text(date))]),
+                None => t("notify.autorenew_pay_plain", &[]),
+            },
+            Some(("notify.btn.extend", "buy")),
+        ),
         templates::AUTORENEW_FAILED => (
             match param(params, "missing") {
                 Some(missing) => t("notify.autorenew_failed", &[("missing", Html(&missing))]),

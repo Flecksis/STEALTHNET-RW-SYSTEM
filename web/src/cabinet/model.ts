@@ -26,6 +26,8 @@ export type SubscriptionView = {
 export type ClientMe = {
   client: { id: number; status: 'active' | 'blocked'; created_at: string; locale: string };
   balance: Money;
+  balance_enabled?: boolean;
+  autorenew_card?: boolean;
   referral_balance: Money;
   currency: Currency;
   channel: 'cabinet' | 'miniapp';

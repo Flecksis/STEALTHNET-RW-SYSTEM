@@ -31,10 +31,18 @@ export function MiniProfile() {
   return (
     <main className="mn-page profile">
       <BackHead title="Профиль" />
-      <div className="mn-card mn-pad">
-        <span className="mn-muted">Баланс</span>
-        <strong className="mn-big">{money(me.balance)}</strong>
-      </div>
+      {me.balance_enabled !== false ? (
+        <div className="mn-card mn-pad">
+          <span className="mn-muted">Баланс</span>
+          <strong className="mn-big">{money(me.balance)}</strong>
+        </div>
+      ) : me.balance.minor > 0 ? (
+        <div className="mn-card mn-pad">
+          <span className="mn-muted">Остаток на балансе</span>
+          <strong className="mn-big">{money(me.balance)}</strong>
+          <span className="mn-muted small">Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму</span>
+        </div>
+      ) : null}
       {referral ? (
         <div className="mn-card mn-pad">
           <strong>Друзья</strong>

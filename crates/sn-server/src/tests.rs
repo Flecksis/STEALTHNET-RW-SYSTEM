@@ -24,6 +24,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod balance_off;
 mod bot_content;
 mod channels;
 mod gram;

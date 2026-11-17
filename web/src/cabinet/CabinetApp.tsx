@@ -229,10 +229,16 @@ function Header() {
           ))}
         </nav>
         <div className="cb-head-end">
-          <Link to="/cabinet/pay" className="cb-balance hov" aria-label={`Баланс ${money(me.balance)}, пополнить`}>
-            <span>{money(me.balance)}</span>
-            <span className="cb-accent">Пополнить</span>
-          </Link>
+          {me.balance_enabled !== false ? (
+            <Link to="/cabinet/pay" className="cb-balance hov" aria-label={`Баланс ${money(me.balance)}, пополнить`}>
+              <span>{money(me.balance)}</span>
+              <span className="cb-accent">Пополнить</span>
+            </Link>
+          ) : me.balance.minor > 0 ? (
+            <Link to="/cabinet/pay" className="cb-balance hov" aria-label={`Остаток на балансе ${money(me.balance)}`}>
+              <span>{money(me.balance)}</span>
+            </Link>
+          ) : null}
           <ThemeButton className="cb-icon hov" />
           <div className="cb-prof" ref={ref}>
             <button type="button" className="cb-ava" aria-label="Профиль" aria-expanded={open} onClick={() => setOpen((v) => !v)} style={{ background: avatarColor(me.client.id) }}>
@@ -270,9 +276,11 @@ function PhoneHeader() {
     <header className="cb-phead">
       <Brand small />
       <span className="cb-grow" />
-      <Link to="/cabinet/pay" className="cb-chip" aria-label={`Баланс ${money(me.balance)}, пополнить`}>
-        <span>{money(me.balance)}</span>
-      </Link>
+      {me.balance_enabled !== false || me.balance.minor > 0 ? (
+        <Link to="/cabinet/pay" className="cb-chip" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}, пополнить` : `Остаток на балансе ${money(me.balance)}`}>
+          <span>{money(me.balance)}</span>
+        </Link>
+      ) : null}
       <ThemeButton className="cb-circ" />
       <button type="button" className="cb-circ" aria-label="Меню" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <Icon name={open ? 'close' : 'menu'} size={20} />

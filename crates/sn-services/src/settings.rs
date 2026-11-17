@@ -6,8 +6,9 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sn_domain::ids::AdminId;
+use sn_domain::ledger::Wallet;
 use sn_domain::module::ModuleId;
-use sn_domain::money::Currency;
+use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{PaymentChannels, providers};
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, ImageMeta,
@@ -474,11 +475,18 @@ pub struct CoreUpdate {
     pub topup: Option<TopUpSettings>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BalanceHolders {
+    pub clients: i64,
+    pub total: Money,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PaymentsView {
     pub currency: Currency,
     pub order: Vec<String>,
     pub providers: Vec<ProviderView>,
+    pub balances: BalanceHolders,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1046,16 +1054,23 @@ impl<'a> SettingsOps<'a> {
         Ok(self.autorenew())
     }
 
-    pub fn payments(&self) -> PaymentsView {
+    pub async fn payments(&self) -> ServiceResult<PaymentsView> {
         let settings = self.services.settings();
-        PaymentsView {
+        let (clients, total) = {
+            let mut conn = self.services.store().conn().await?;
+            conn.ledger()
+                .holders(Wallet::Main, settings.currency)
+                .await?
+        };
+        Ok(PaymentsView {
             currency: settings.currency,
             order: settings
                 .payment_order
                 .for_currency(settings.currency)
                 .to_vec(),
             providers: self.services.payments().views(),
-        }
+            balances: BalanceHolders { clients, total },
+        })
     }
 
     pub async fn update_payments(
@@ -1113,7 +1128,7 @@ impl<'a> SettingsOps<'a> {
             .await?;
         tx.commit().await?;
         self.saved().await?;
-        Ok(self.payments())
+        self.payments().await
     }
 
     async fn stored_provider(&self, db: &mut impl Db, id: &str) -> ServiceResult<ProviderSettings> {

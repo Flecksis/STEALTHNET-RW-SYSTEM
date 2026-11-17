@@ -289,9 +289,16 @@ async fn me(
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let card = state.services.clients().card(client.0.client_id).await?;
+    let autorenew_card = state
+        .services
+        .autorenew()
+        .has_saved_card(client.0.client_id)
+        .await?;
     Ok(Json(serde_json::json!({
         "client": card.client,
         "balance": card.balance,
+        "balance_enabled": state.services.payments().balance_enabled(),
+        "autorenew_card": autorenew_card,
         "referral_balance": card.referral_balance,
         "currency": state.services.settings().currency,
         "channel": client.0.channel,
@@ -374,6 +381,7 @@ async fn topup(
     ApiJson(body): ApiJson<TopUpBody>,
 ) -> ApiResult<Json<CheckoutResult>> {
     client.require_full()?;
+    state.services.checkout().topup_open()?;
     let currency = state.services.settings().currency;
     let minor = parse_units(body.amount.trim(), currency.into()).ok_or_else(|| {
         ApiError::bad_request(

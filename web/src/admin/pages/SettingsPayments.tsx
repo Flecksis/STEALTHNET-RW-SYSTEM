@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { plural } from '../../lib/format';
+import { money, plural, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import type { Currency } from '../../lib/types';
 import { ConfirmDialog } from '../client/dialogs';
@@ -33,6 +33,8 @@ const CHANNELS: Array<[keyof Channels, string]> = [
   ['cabinet', 'Кабинет'],
   ['miniapp', 'Мини-приложение'],
 ];
+
+type Holders = { clients: number; total: Money };
 
 type Renew = { charge_days_before: number; retry_days: number; enable_for_new: boolean; use_saved_card: boolean };
 
@@ -89,6 +91,7 @@ function same(a: Work, b: Work): boolean {
 export function SettingsPayments() {
   const { reload } = useSession();
   const [providers, setProviders] = useState<Provider[] | null>(null);
+  const [holders, setHolders] = useState<Holders | null>(null);
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [base, setBase] = useState<Work | null>(null);
   const [work, setWork] = useState<Work | null>(null);
@@ -101,7 +104,7 @@ export function SettingsPayments() {
   const load = useCallback(async () => {
     try {
       const [pay, core, renew] = await Promise.all([
-        api<{ currency: Currency; order: string[]; providers: Provider[] }>('/api/admin/settings/payments'),
+        api<{ currency: Currency; order: string[]; providers: Provider[]; balances?: Holders }>('/api/admin/settings/payments'),
         api<Core>('/api/admin/settings/core'),
         api<Renew>('/api/admin/settings/autorenew'),
       ]);
@@ -117,6 +120,7 @@ export function SettingsPayments() {
         savedCard: renew.use_saved_card,
       };
       setProviders(list);
+      setHolders(pay.balances ?? null);
       setPublicUrl(core.settings.public_url);
       setBase(next);
       setWork(next);
@@ -271,6 +275,7 @@ export function SettingsPayments() {
   };
 
   const balance = providers.find((p) => p.kind === 'balance');
+  const balanceOn = balance ? work.shown[balance.id] === true : true;
 
   const statusText = status?.text ?? (dirty ? 'Есть несохранённые изменения' : '');
 
@@ -334,12 +339,35 @@ export function SettingsPayments() {
           <>
             <div className="pay-row">
               <span className="pay-name">С баланса</span>
-              <span className="pay-what muted">Оплата деньгами, которые клиент положил на баланс</span>
+              <span className="pay-what muted">Клиент пополняет баланс и платит с него</span>
               <span className="pay-state" style={{ color: 'var(--ink-2)' }}>
-                Включена
+                {balanceOn ? 'Включена' : 'Выключена'}
+              </span>
+              <span className="pay-switch">
+                <Switch on={balanceOn} onToggle={() => edit({ shown: { ...work.shown, [balance.id]: !balanceOn } })} label="Пополнение и оплата с баланса" disabled={busy} />
+              </span>
+              <span className="pay-setup pay-ghost" aria-hidden="true">
+                Настроить
               </span>
             </div>
-            {channelLine(balance.id, 'С баланса')}
+            {balanceOn ? (
+              channelLine(balance.id, 'С баланса')
+            ) : (
+              <div className="pay-off">
+                <span>Пополнить баланс нельзя ни в боте, ни в кабинете, ни в мини-приложении: клиент платит сразу через платёжную систему.</span>
+                <span>
+                  Деньги, которые уже лежат на балансе, не пропадают: ими можно оплатить подписку или автопродление, если остатка хватает на всю сумму. Остаток меньше цены можно вернуть клиенту вручную и
+                  списать в его карточке.
+                </span>
+                {holders ? (
+                  <span className="pay-off-sum">
+                    {holders.clients > 0
+                      ? `Сейчас деньги на балансе у ${holders.clients} ${plural(holders.clients, 'клиента', 'клиентов', 'клиентов')}, всего ${money(holders.total)}`
+                      : 'Сейчас ни у кого из клиентов нет денег на балансе'}
+                  </span>
+                ) : null}
+              </div>
+            )}
           </>
         ) : null}
       </section>
@@ -379,7 +407,7 @@ export function SettingsPayments() {
               ))}
             </ol>
           )}
-          <p className="pay-foot cap">Оплата с баланса всегда последняя</p>
+          {balanceOn ? <p className="pay-foot cap">Оплата с баланса всегда последняя</p> : null}
         </section>
 
         <section className="sec pay-card" aria-labelledby="ren-h">
@@ -387,7 +415,7 @@ export function SettingsPayments() {
             <h2 id="ren-h" className="section-title">
               Автопродление
             </h2>
-            <span className="muted">Списывается с баланса клиента</span>
+            <span className="muted">{balanceOn ? 'Списывается с баланса клиента' : 'Баланс выключен: спишем остаток, если его хватает, иначе напомним продлить вручную'}</span>
           </div>
           <div className="pay-renew">
             <label className="pay-line">

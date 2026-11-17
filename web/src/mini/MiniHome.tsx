@@ -90,9 +90,11 @@ export function MiniHome() {
       <header className="mn-head">
         <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
         <h1 className="mn-brand">{site.brand_name.toUpperCase()}</h1>
-        <Link to="/app/plans" className="mn-balance press" aria-label={`Баланс ${money(me.balance)}`}>
-          <span>{money(me.balance)}</span>
-        </Link>
+        {me.balance_enabled !== false || me.balance.minor > 0 ? (
+          <Link to="/app/plans" className="mn-balance press" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}` : `Остаток на балансе ${money(me.balance)}`}>
+            <span>{money(me.balance)}</span>
+          </Link>
+        ) : null}
         <ThemeCirc />
       </header>
 

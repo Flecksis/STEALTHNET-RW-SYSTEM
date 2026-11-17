@@ -19,6 +19,7 @@ use sn_worker::{JobHandler, JobResult};
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+mod balance_off;
 mod content;
 mod photos;
 mod referral_login;

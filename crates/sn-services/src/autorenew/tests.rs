@@ -1380,3 +1380,41 @@ async fn заказ_на_проверке_с_неприменённым_план
     );
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn при_выключенном_балансе_тратится_остаток_а_без_него_напоминание_продлить() {
+    let Some(kit) = kit().await else { return };
+    crate::checkout::balance_off_tests::balance_off(&kit).await;
+    let rich = client(&kit.services, 351).await;
+    let rich_subscription =
+        due_subscription(&kit, rich, Days::hours(12), SubscriptionStatus::Active).await;
+    drain_to(&kit, rich, 800).await;
+    let poor = client(&kit.services, 352).await;
+    let poor_subscription =
+        due_subscription(&kit, poor, Days::hours(12), SubscriptionStatus::Active).await;
+    drain_to(&kit, poor, 300).await;
+    jobs(&kit.services).await;
+    let autorenew = kit.services.autorenew();
+    let report = autorenew.run_due(kit.services.now()).await.unwrap();
+    assert_eq!((report.charged, report.reminded), (1, 1));
+    assert_eq!(balance(&kit.services, rich).await, 101);
+    assert_eq!(renewals(&kit, &rich_subscription).await.len(), 1);
+    assert!(renewals(&kit, &poor_subscription).await.is_empty());
+    let queued = jobs(&kit.services).await;
+    let reminder = queued
+        .iter()
+        .find_map(|job| match job {
+            JobPayload::Notify {
+                client_id,
+                template,
+                params,
+            } if *client_id == poor && template == "autorenew.reminder" => Some(params.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(reminder["balance_off"], serde_json::json!(true));
+    assert!(!autorenew.has_saved_card(poor).await.unwrap());
+    save_card(&kit, poor).await;
+    assert!(autorenew.has_saved_card(poor).await.unwrap());
+    kit.db.cleanup().await;
+}

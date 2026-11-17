@@ -9,6 +9,7 @@ use crate::{BotError, account, buy, consent, extras, login, media};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
 use sn_domain::ids::TariffId;
+use sn_domain::ledger::Wallet;
 use sn_domain::subscription::Subscription;
 use sn_modules::catalog::{options, promo, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
@@ -395,6 +396,9 @@ async fn input(
     match awaiting {
         Awaiting::PromoCode => extras::promo_entered(turn, client, text).await,
         Awaiting::PromoForCart => buy::promo_entered(turn, client, text).await,
+        Awaiting::TopUpAmount if !turn.services().payments().balance_enabled() => {
+            account::balance(turn, client).await
+        }
         Awaiting::TopUpAmount => account::topup_entered(turn, text).await,
         Awaiting::SupportMessage => account::support_entered(turn, client, text).await,
         Awaiting::WithdrawalAmount => extras::withdrawal_amount(turn, client, text).await,
@@ -430,6 +434,9 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             None => main_menu(turn.ctx, client).await?,
         },
         "bal" => account::balance(turn, client).await?,
+        "top" | "topx" | "tp" if !turn.services().payments().balance_enabled() => {
+            account::balance(turn, client).await?
+        }
         "top" => match rest.parse::<i64>() {
             Ok(minor) => account::topup_amount(turn, minor).await?,
             Err(_) => account::balance(turn, client).await?,
@@ -561,6 +568,15 @@ pub fn status_text(
     ui::text(content, text::status_key(subscription, now), &[])
 }
 
+async fn has_balance(services: &Services, client: &Client) -> Result<bool, BotError> {
+    let mut conn = services.store().conn().await?;
+    let balance = conn
+        .ledger()
+        .balance(client.id, Wallet::Main, services.settings().currency)
+        .await?;
+    Ok(balance.minor > 0)
+}
+
 pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError> {
     let services = &ctx.services;
     let content = services.bot_content();
@@ -624,7 +640,9 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
         &[],
         "buy",
     ));
-    buttons.extend(ui::button(c, "menu.btn.balance", &[], "bal"));
+    if services.payments().balance_enabled() || has_balance(services, client).await? {
+        buttons.extend(ui::button(c, "menu.btn.balance", &[], "bal"));
+    }
     for entry in module_buttons(services) {
         if let Some(key) = module_button_key(entry) {
             buttons.extend(ui::button(c, key, &[], format!("x:{entry}")));
