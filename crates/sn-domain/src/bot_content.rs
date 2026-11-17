@@ -2073,20 +2073,20 @@ pub fn normalize_markup(raw: &str) -> Result<String, MarkupProblem> {
     while let Some(index) = rest.find(['<', '>', '&']) {
         out.push_str(&rest[..index]);
         let tail = &rest[index..];
-        if tail.starts_with('&') {
+        if let Some(after) = tail.strip_prefix('&') {
             if is_entity(tail) {
                 let end = tail.find(';').unwrap_or(0);
                 out.push_str(&tail[..=end]);
                 rest = &tail[end + 1..];
             } else {
                 out.push_str("&amp;");
-                rest = &tail[1..];
+                rest = after;
             }
             continue;
         }
-        if tail.starts_with('>') {
+        if let Some(after) = tail.strip_prefix('>') {
             out.push_str("&gt;");
-            rest = &tail[1..];
+            rest = after;
             continue;
         }
         let Some(close) = tail.find('>') else {
