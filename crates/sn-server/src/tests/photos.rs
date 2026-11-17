@@ -52,11 +52,21 @@ async fn фото_клиента_видит_админка_и_сам_клиен�
     assert_eq!(body[alexey.0.to_string()], "AQADmid");
 
     let photo = format!("/api/admin/clients/{}/photo", alexey.0);
-    let (status, headers, bytes) = raw(&h, &photo, Some(&owner)).await;
+    let (status, headers, bytes) = raw(&h, &format!("{photo}?v=AQADmid"), Some(&owner)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, JPEG);
     assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
-    assert_eq!(headers[header::CACHE_CONTROL], "private, max-age=86400");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "private, max-age=31536000, immutable"
+    );
+    let (status, headers, _) = raw(&h, &format!("{photo}?v=old"), Some(&owner)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "private, no-cache");
+    let (status, headers, bytes) = raw(&h, &photo, Some(&owner)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, JPEG);
+    assert_eq!(headers[header::CACHE_CONTROL], "private, no-cache");
     assert_eq!(headers[header::ETAG], "\"AQADmid\"");
     assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
     assert_eq!(

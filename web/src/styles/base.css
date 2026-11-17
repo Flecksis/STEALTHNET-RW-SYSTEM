@@ -93,6 +93,10 @@ img.ava-img {
   background: var(--fill);
 }
 
+.ava-wait {
+  background: var(--fill);
+}
+
 .brand-logo {
   background: transparent !important;
   box-shadow: none !important;

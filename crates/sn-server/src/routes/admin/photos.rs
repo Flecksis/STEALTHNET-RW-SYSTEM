@@ -72,10 +72,17 @@ async fn versions(
     ))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct PhotoQuery {
+    #[serde(default)]
+    v: Option<String>,
+}
+
 async fn photo(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<PhotoQuery>,
 ) -> ApiResult<Response> {
     admin.require(Permission::ClientsRead)?;
     let mut conn = state
@@ -92,7 +99,12 @@ async fn photo(
     else {
         return Err(ApiError::not_found());
     };
-    image(photo, "private, max-age=86400")
+    let cache = if query.v.as_deref() == Some(photo.version.as_str()) {
+        "private, max-age=31536000, immutable"
+    } else {
+        "private, no-cache"
+    };
+    image(photo, cache)
 }
 
 pub(crate) fn image(photo: sn_store::ClientPhoto, cache: &'static str) -> ApiResult<Response> {
