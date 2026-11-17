@@ -24,6 +24,12 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     exit 0
 fi
 
+newest=$(git tag --list 'v*' --sort=-v:refname | sed -n '1p')
+if [ -n "$newest" ] && [ "$(printf '%s\n%s\n' "$newest" "$tag" | sort -V | tail -n 1)" != "$tag" ]; then
+    echo "уже вышел более новый релиз $newest, $tag не выпускается: его изменения вошли туда"
+    exit 0
+fi
+
 prev=$(git tag --list 'v*' --merged "$commit" --sort=-v:refname | sed -n '1p')
 if [ -n "$prev" ]; then
     files=$(git diff --name-only --diff-filter=A "$prev" "$commit" -- "$dir")
