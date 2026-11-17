@@ -16,6 +16,7 @@ use sn_store::{ClientFilter, ClientListItem, ClientSegment};
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clients", get(list))
+        .route("/clients/segments", get(segments))
         .route("/clients/{id}", get(card))
         .route("/clients/{id}/history", get(history))
         .route("/clients/{id}/note", put(note))
@@ -55,9 +56,20 @@ struct ListQuery {
     after: Option<i64>,
 }
 
-fn list_item(item: &ClientListItem, state: &AppState, money: bool) -> serde_json::Value {
+fn list_item(
+    item: &ClientListItem,
+    state: &AppState,
+    money: bool,
+    tariffs: &std::collections::HashMap<sn_domain::ids::TariffId, String>,
+) -> serde_json::Value {
     let currency = state.services.settings().currency;
+    let tariff_name = item
+        .subscription
+        .as_ref()
+        .and_then(|s| s.tariff_id)
+        .and_then(|id| tariffs.get(&id).cloned());
     serde_json::json!({
+        "tariff_name": tariff_name,
         "client": item.client,
         "name": item.name,
         "telegram_id": item.telegram_id,
@@ -106,14 +118,23 @@ async fn list(
         .search(&filter, paging.request())
         .await?;
     let money = admin.can(Permission::Money);
+    let tariffs = state.services.clients().tariff_names().await?;
     let items: Vec<serde_json::Value> = page
         .items
         .iter()
-        .map(|item| list_item(item, &state, money))
+        .map(|item| list_item(item, &state, money, &tariffs))
         .collect();
     Ok(Json(
         serde_json::json!({ "items": items, "next": page.next }),
     ))
+}
+
+async fn segments(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<sn_store::SegmentCounts>> {
+    admin.require(Permission::ClientsRead)?;
+    Ok(Json(state.services.clients().segment_counts().await?))
 }
 
 async fn card(

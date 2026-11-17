@@ -285,6 +285,24 @@ impl<'a> ClientOps<'a> {
             .await?)
     }
 
+    pub async fn segment_counts(&self) -> ServiceResult<sn_store::SegmentCounts> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn.clients().segment_counts(self.services.now()).await?)
+    }
+
+    pub async fn tariff_names(
+        &self,
+    ) -> ServiceResult<std::collections::HashMap<sn_domain::ids::TariffId, String>> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn
+            .tariffs()
+            .list(true)
+            .await?
+            .into_iter()
+            .map(|t| (t.id, t.name))
+            .collect())
+    }
+
     pub async fn block(
         &self,
         id: ClientId,

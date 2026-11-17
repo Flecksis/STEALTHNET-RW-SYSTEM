@@ -19,7 +19,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   return (
     <>
-      <h1 className="page-title">Настройки</h1>
+      <h1 className="page-title tight">Настройки</h1>
       <div className="setgrid">
         <nav aria-label="Разделы настроек" className="subnav">
           {SECTIONS.map((section) =>

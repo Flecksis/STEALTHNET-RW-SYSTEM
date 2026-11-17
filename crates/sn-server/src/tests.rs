@@ -1300,6 +1300,12 @@ async fn клиенты_ищутся_и_история_собирается_че
     assert!(none["items"].as_array().unwrap().is_empty());
     let (status, body) = h.get("/api/admin/clients?segment=lost", &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(page["items"][0]["tariff_name"], Value::Null);
+    let (status, counts) = h.get("/api/admin/clients/segments", &support).await;
+    assert_eq!(status, StatusCode::OK, "{counts}");
+    assert_eq!(counts["total"], 2);
+    assert_eq!(counts["no_subscription"], 2);
+    assert_eq!(counts["active"], 0);
     let (status, history) = h
         .get(&format!("/api/admin/clients/{}/history", first.0), &owner)
         .await;
