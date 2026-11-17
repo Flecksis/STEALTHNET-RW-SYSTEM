@@ -1086,17 +1086,56 @@ async fn журнал_клиента_скрывает_деньги_без_пра
         )
         .await
         .unwrap();
-    let full = services.clients().history(client, 50, true).await.unwrap();
-    let kinds: Vec<&str> = full.iter().map(|e| e.kind.as_str()).collect();
-    assert!(kinds.contains(&"client_registered"));
-    assert!(kinds.contains(&"client.note"));
-    assert!(kinds.contains(&"balance_changed"));
-    let redacted = services.clients().history(client, 50, false).await.unwrap();
-    assert!(redacted.iter().all(|e| e.kind != "balance_changed"));
+    let kinds = |page: &crate::clients::HistoryPage| -> Vec<String> {
+        page.items
+            .iter()
+            .map(|item| match &item.record {
+                crate::clients::HistoryRecord::Event { kind, .. } => kind.clone(),
+                crate::clients::HistoryRecord::Audit { action, .. } => action.clone(),
+                crate::clients::HistoryRecord::Payment { .. } => "payment".into(),
+                crate::clients::HistoryRecord::Order { .. } => "order".into(),
+            })
+            .collect()
+    };
+    let page = sn_domain::paging::PageRequest::new(Some(50), None);
+    let full = services
+        .clients()
+        .history(client, page, true)
+        .await
+        .unwrap();
+    let seen = kinds(&full);
+    assert!(seen.iter().any(|k| k == "client_registered"));
+    assert!(seen.iter().any(|k| k == "client.note"));
+    assert!(seen.iter().any(|k| k == "balance_changed"));
+    assert_eq!(full.total, seen.len() as i64);
+    let note = full
+        .items
+        .iter()
+        .find_map(|item| match &item.record {
+            crate::clients::HistoryRecord::Audit {
+                action,
+                actor_email,
+                ..
+            } if action == "client.note" => Some(actor_email.clone()),
+            _ => None,
+        })
+        .expect("заметка в истории");
+    assert!(note.is_some());
+    let redacted = services
+        .clients()
+        .history(client, page, false)
+        .await
+        .unwrap();
+    assert!(kinds(&redacted).iter().all(|k| k != "balance_changed"));
+    assert_eq!(redacted.total, full.total - 1);
     assert!(matches!(
         services
             .clients()
-            .history(ClientId(999_999), 10, true)
+            .history(
+                ClientId(999_999),
+                sn_domain::paging::PageRequest::new(Some(10), None),
+                true
+            )
             .await,
         Err(ServiceError::Store(sn_store::StoreError::NotFound(_)))
     ));

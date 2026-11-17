@@ -603,27 +603,36 @@ async fn поддержка_не_видит_деньги_а_наблюдател
     let (status, body) = h.get(&card, &owner).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["balance"]["minor"], 420);
+    assert_eq!(body["stats"]["paid_total"]["minor"], 0);
+    assert_eq!(body["stats"]["payments_count"], 0);
+    assert_eq!(body["bot_available"], false);
     let (status, body) = h.get(&card, &support).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.get("balance").is_none() && body.get("referral_balance").is_none());
+    assert!(body["stats"].get("paid_total").is_none());
+    assert!(body["stats"].get("payments_count").is_none());
+    assert_eq!(body["stats"]["referrals_count"], 0);
     let (status, history) = h.get(&format!("{card}/history"), &support).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        history
+        history["items"]
             .as_array()
             .unwrap()
             .iter()
             .all(|e| e["kind"] != "balance_changed")
     );
+    assert_eq!(history["total"], 1);
     let (status, history) = h.get(&format!("{card}/history"), &owner).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        history
+        history["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["kind"] == "balance_changed")
+            .any(|e| e["type"] == "event" && e["kind"] == "balance_changed")
     );
+    assert_eq!(history["total"], 2);
+    assert_eq!(history["next"], Value::Null);
     for path in [
         "/api/admin/payments",
         "/api/admin/settings/core",
@@ -1310,14 +1319,14 @@ async fn клиенты_ищутся_и_история_собирается_че
         .get(&format!("/api/admin/clients/{}/history", first.0), &owner)
         .await;
     assert_eq!(status, StatusCode::OK, "{history}");
-    let changed: Vec<&Value> = history
+    let changed: Vec<&Value> = history["items"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|item| item["kind"] == "balance_changed")
         .collect();
     assert_eq!(changed.len(), 1, "{history}");
-    assert_eq!(changed[0]["data"]["delta"]["minor"], 420);
+    assert_eq!(changed[0]["event"]["delta"]["minor"], 420);
     let (status, _) = h
         .get(&format!("/api/admin/clients/{}/history", second.0), &owner)
         .await;
@@ -1495,5 +1504,189 @@ async fn способ_подключения_и_оформления_стран�
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn карточка_подписки_подключения_запросы_и_отмена_продлений() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let readonly = h.admin("readonly@example.com", AdminRole::ReadOnly).await;
+    let client = h.client(5_093_118_422).await;
+    let mut user = sn_remnawave::fake::sample_user(41, "sn_card");
+    user.active_internal_squads = vec![sn_remnawave::SquadRef {
+        uuid: Uuid::from_u128(7),
+        name: "Основной".into(),
+    }];
+    h.remna.insert_user(user.clone());
+    let subscription = {
+        let mut tx = h.services().store().begin().await.unwrap();
+        let created = tx
+            .subscriptions()
+            .create(&sn_store::NewSubscription {
+                client_id: client,
+                tariff_id: None,
+                kind: sn_domain::subscription::SubscriptionKind::Paid,
+                extra_devices: 0,
+                autorenew: sn_domain::subscription::AutoRenewState::default(),
+            })
+            .await
+            .unwrap();
+        tx.subscriptions()
+            .link_remna(
+                created.id,
+                &sn_domain::subscription::RemnaLink {
+                    user_id: user.id,
+                    username: user.username.clone(),
+                    short_uuid: Some(user.short_uuid.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        created.id
+    };
+    let base = format!("/api/admin/subscriptions/{}", subscription.0);
+
+    let (status, view) = h.get(&base, &readonly).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["squads"], json!(["Основной"]));
+    assert_eq!(view["remna_reachable"], true);
+    assert_eq!(view["subscription"]["id"], subscription.0);
+    assert!(view.get("traffic_30d_bytes").is_some());
+
+    let (status, _) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/extend"),
+            &readonly,
+            json!({ "days": 7 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, requests) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/requests"),
+            &readonly,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{requests}");
+    assert!(requests.as_array().unwrap().is_empty());
+    let (status, connections) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/connections"),
+            &readonly,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{connections}");
+    assert_eq!(connections["state"], "done");
+    let (status, bad) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/connections"),
+            &owner,
+            json!({ "job_id": "../../etc" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+
+    let before = h.remna.user(user.id).unwrap().expire_at;
+    for days in [7, 30] {
+        let (status, body) = h
+            .write(
+                Method::POST,
+                &format!("{base}/actions/extend"),
+                &owner,
+                json!({ "days": days }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/undo-extend"),
+            &owner,
+            json!({ "count": 2 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(h.remna.user(user.id).unwrap().expire_at, before);
+
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/limits"),
+            &owner,
+            json!({ "limits": { "traffic_limit_bytes": 1_073_741_824u64 } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        h.remna.user(user.id).unwrap().traffic_limit_bytes,
+        1_073_741_824
+    );
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("{base}/actions/limits"),
+            &owner,
+            json!({ "limits": { "traffic_limit_bytes": null } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(h.remna.user(user.id).unwrap().traffic_limit_bytes, 0);
+
+    let message = format!("/api/admin/clients/{}/message", client.0);
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &message,
+            &owner,
+            json!({ "text": "Здравствуйте!" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "client.bot_missing");
+    let (status, _) = h
+        .write(
+            Method::POST,
+            &message,
+            &readonly,
+            json!({ "text": "Здравствуйте!" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, history) = h
+        .get(
+            &format!("/api/admin/clients/{}/history?limit=50", client.0),
+            &owner,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let actions: Vec<&str> = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"subscription.add_days"), "{history}");
+    assert!(
+        actions.contains(&"subscription.add_days_undone"),
+        "{history}"
+    );
+    let undone = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["action"] == "subscription.add_days_undone")
+        .unwrap();
+    assert_eq!(undone["actor_email"], "owner@example.com");
+    assert_eq!(undone["details"]["days"], 37);
     h.db.cleanup().await;
 }

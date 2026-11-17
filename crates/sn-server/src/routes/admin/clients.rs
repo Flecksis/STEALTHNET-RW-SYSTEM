@@ -10,7 +10,7 @@ use sn_domain::access::Permission;
 use sn_domain::ids::{ClientId, SubscriptionId};
 use sn_domain::money::Money;
 use sn_domain::subscription::admin_status;
-use sn_services::clients::HistoryEntry;
+use sn_services::clients::HistoryPage;
 use sn_store::{ClientFilter, ClientListItem, ClientSegment};
 
 pub fn routes() -> Router<AppState> {
@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clients/{id}/history", get(history))
         .route("/clients/{id}/note", put(note))
         .route("/clients/{id}/balance", post(balance))
+        .route("/clients/{id}/message", post(message))
         .route("/clients/{id}/block", post(block))
         .route("/clients/{id}/unblock", post(unblock))
         .route("/subscriptions/{id}", get(subscription))
@@ -150,32 +151,26 @@ async fn card(
     {
         object.remove("balance");
         object.remove("referral_balance");
+        if let Some(stats) = object.get_mut("stats").and_then(|s| s.as_object_mut()) {
+            stats.remove("paid_total");
+            stats.remove("payments_count");
+        }
     }
     Ok(Json(value))
-}
-
-#[derive(Deserialize)]
-struct HistoryQuery {
-    #[serde(default)]
-    limit: Option<u32>,
 }
 
 async fn history(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    ApiQuery(query): ApiQuery<HistoryQuery>,
-) -> ApiResult<Json<Vec<HistoryEntry>>> {
+    ApiQuery(paging): ApiQuery<Paging>,
+) -> ApiResult<Json<HistoryPage>> {
     admin.require(Permission::ClientsRead)?;
     Ok(Json(
         state
             .services
             .clients()
-            .history(
-                ClientId(id),
-                query.limit.unwrap_or(50),
-                admin.can(Permission::Money),
-            )
+            .history(ClientId(id), paging.request(), admin.can(Permission::Money))
             .await?,
     ))
 }
@@ -196,6 +191,26 @@ async fn note(
         .services
         .clients()
         .set_note(ClientId(id), body.note.as_deref(), admin.actor())
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct MessageRequest {
+    text: String,
+}
+
+async fn message(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<MessageRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::ClientsWrite)?;
+    state
+        .services
+        .clients()
+        .send_message(ClientId(id), &body.text, admin.actor())
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -274,13 +289,13 @@ async fn subscription(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> ApiResult<Json<sn_services::subscriptions::SubscriptionView>> {
+) -> ApiResult<Json<sn_services::subscriptions::AdminSubscriptionView>> {
     admin.require(Permission::ClientsRead)?;
     Ok(Json(
         state
             .services
             .subscriptions()
-            .view(SubscriptionId(id), admin.actor(), true)
+            .admin_view(SubscriptionId(id), admin.actor())
             .await?,
     ))
 }
@@ -289,6 +304,10 @@ async fn subscription(
 struct ActionRequest {
     #[serde(default)]
     days: Option<u32>,
+    #[serde(default)]
+    count: Option<u32>,
+    #[serde(default)]
+    job_id: Option<String>,
     #[serde(default)]
     hwid: Option<String>,
     #[serde(default)]
@@ -301,7 +320,12 @@ async fn subscription_action(
     Path((id, action)): Path<(i64, String)>,
     body: Option<ApiJson<ActionRequest>>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    admin.require(Permission::ClientsWrite)?;
+    let reading = matches!(action.as_str(), "devices" | "connections" | "requests");
+    admin.require(if reading {
+        Permission::ClientsRead
+    } else {
+        Permission::ClientsWrite
+    })?;
     let body = body.map(|b| b.0).unwrap_or_default();
     let ops = state.services.subscriptions();
     let actor = admin.actor();
@@ -317,6 +341,12 @@ async fn subscription_action(
             }
             json(&ops.add_days(id, days, actor).await?)
         }
+        "undo-extend" => json(
+            &ops.undo_add_days(id, body.count.unwrap_or(1), actor)
+                .await?,
+        ),
+        "connections" => json(&ops.connections(id, body.job_id.as_deref(), actor).await?),
+        "requests" => json(&ops.subscription_requests(id, actor).await?),
         "reset-traffic" => json(&ops.reset_traffic(id, actor).await?),
         "reissue-link" => json(&ops.reissue_link(id, actor).await?),
         "disconnect-devices" => json(&ops.disconnect_all_devices(id, actor).await?),

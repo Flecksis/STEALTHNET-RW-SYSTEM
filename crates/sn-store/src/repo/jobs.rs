@@ -2,7 +2,7 @@ use super::non_negative_u32;
 use super::orders::{REFUND_PENDING, fulfill_key_prefix};
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
-use sn_domain::ids::{JobId, OrderId};
+use sn_domain::ids::{ClientId, JobId, OrderId, SubscriptionId};
 use sn_domain::jobs::{JobKind, JobPayload, JobStatus};
 use sqlx::PgConnection;
 use std::time::Duration;
@@ -114,6 +114,25 @@ impl<'c> JobsRepo<'c> {
         .fetch_optional(&mut *self.conn)
         .await?;
         Ok(id.map(JobId))
+    }
+
+    pub async fn drop_queued_notifications(
+        &mut self,
+        client_id: ClientId,
+        template: &str,
+        subscription_id: SubscriptionId,
+    ) -> StoreResult<u64> {
+        Ok(sqlx::query(
+            "DELETE FROM jobs WHERE kind = 'notify' AND status = 'queued' \
+             AND payload ->> 'client_id' = $1::text AND payload ->> 'template' = $2 \
+             AND payload -> 'params' ->> 'subscription_id' = $3::text",
+        )
+        .bind(client_id.0)
+        .bind(template)
+        .bind(subscription_id.0)
+        .execute(&mut *self.conn)
+        .await?
+        .rows_affected())
     }
 
     pub async fn claim(&mut self, limit: i64, lease: Duration) -> StoreResult<Vec<JobRecord>> {

@@ -452,27 +452,23 @@ async fn история_клиента_одной_лентой_без_потер
 
     let mut conn = db.store.conn().await.unwrap();
     let later = paid(&mut conn, alexey, "cryptopay", usd(640)).await;
-    assert_eq!(conn.clients().history_count(alexey).await.unwrap(), 7);
+    assert_eq!(conn.clients().history_count(alexey, true).await.unwrap(), 5);
 
     let first = conn
         .clients()
-        .history(alexey, PageRequest::new(Some(2), None))
+        .history(alexey, PageRequest::new(Some(1), None), true)
         .await
         .unwrap();
-    assert_eq!(first.items.len(), 2);
+    assert_eq!(first.items.len(), 1);
     assert!(matches!(&first.items[0].entry, ClientHistoryEntry::Payment(p) if p.id == later));
-    assert!(matches!(
-        &first.items[1].entry,
-        ClientHistoryEntry::Order(_)
-    ));
     assert!(first.next.is_some());
 
     let second = conn
         .clients()
-        .history(alexey, PageRequest::new(Some(2), first.next))
+        .history(alexey, PageRequest::new(Some(2), first.next), true)
         .await
         .unwrap();
-    assert_eq!(second.items.len(), 5);
+    assert_eq!(second.items.len(), 4);
     assert!(
         second
             .items
@@ -490,7 +486,7 @@ async fn история_клиента_одной_лентой_без_потер
             ClientHistoryEntry::Order(_) => "order",
         })
         .collect();
-    assert_eq!(kinds, ["audit", "audit", "event", "payment", "order"]);
+    assert_eq!(kinds, ["audit", "audit", "event", "payment"]);
     assert!(
         second.items.iter().any(
             |item| matches!(&item.entry, ClientHistoryEntry::Payment(p) if p.id == payment_id)
@@ -504,10 +500,139 @@ async fn история_клиента_одной_лентой_без_потер
         .history(
             alexey,
             PageRequest::new(Some(50), Some(second.items[0].at.timestamp_micros())),
+            true,
         )
         .await
         .unwrap();
     assert!(empty.items.is_empty());
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn история_без_повторов_и_сводка_для_карточки() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let inviter = client(
+        &mut conn,
+        &Person {
+            telegram: Some(700_100),
+            username: Some("ivan_p"),
+            first_name: Some("Иван"),
+            last_name: Some("Петров"),
+            ..Person::NOBODY
+        },
+    )
+    .await;
+    let alexey = client(&mut conn, &Person::NOBODY).await;
+    let sub = subscription(&mut conn, alexey, active(SubscriptionKind::Paid, 90, true)).await;
+    sqlx::query("INSERT INTO referral_links (client_id, referrer_id) VALUES ($1, $2)")
+        .bind(alexey.0)
+        .bind(inviter.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO client_sessions (client_id, token_hash, channel, expires_at, last_seen_at) \
+         VALUES ($1, '\\x01'::bytea, 'cabinet', now() + interval '1 day', now() - interval '1 hour'), \
+         ($1, '\\x02'::bytea, 'cabinet', now() + interval '1 day', now() - interval '3 hours')",
+    )
+    .bind(alexey.0)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    let card_paid = paid(&mut conn, alexey, "cryptopay", usd(699)).await;
+    paid(&mut conn, alexey, "balance", usd(299)).await;
+    payment(&mut conn, alexey, "cryptopay", usd(100)).await;
+    order(&mut conn, alexey, usd(500)).await;
+    for event in [
+        DomainEvent::ClientRegistered {
+            client_id: alexey,
+            source: RegistrationSource::Bot,
+            start_param: Some("ref_ivan".into()),
+        },
+        DomainEvent::SubscriptionStatusChanged {
+            subscription_id: sub,
+            client_id: alexey,
+            from: Some(SubscriptionStatus::Active),
+            to: SubscriptionStatus::Expired,
+        },
+        DomainEvent::SubscriptionStatusChanged {
+            subscription_id: sub,
+            client_id: alexey,
+            from: Some(SubscriptionStatus::Expired),
+            to: SubscriptionStatus::Active,
+        },
+        DomainEvent::ClientUnblocked { client_id: alexey },
+    ] {
+        conn.events().push(&event).await.unwrap();
+    }
+
+    let page = conn
+        .clients()
+        .history(alexey, PageRequest::new(Some(50), None), true)
+        .await
+        .unwrap();
+    let mut seen: Vec<String> = page
+        .items
+        .iter()
+        .map(|item| match &item.entry {
+            ClientHistoryEntry::Payment(p) => format!("payment:{}", p.provider),
+            ClientHistoryEntry::Order(o) => format!("order:{}", o.id.0),
+            ClientHistoryEntry::Event(e) => match &e.event {
+                DomainEvent::SubscriptionStatusChanged { to, .. } => format!("status:{to:?}"),
+                other => other.kind().to_string(),
+            },
+            ClientHistoryEntry::Audit(a) => a.action.clone(),
+        })
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            "client_registered",
+            "payment:balance",
+            "payment:cryptopay",
+            "status:Expired"
+        ]
+    );
+    assert_eq!(conn.clients().history_count(alexey, true).await.unwrap(), 4);
+    assert_eq!(
+        conn.clients().history_count(alexey, false).await.unwrap(),
+        2
+    );
+    assert!(
+        page.items
+            .iter()
+            .any(|item| matches!(&item.entry, ClientHistoryEntry::Payment(p) if p.id == card_paid))
+    );
+
+    let stats = conn
+        .clients()
+        .card_stats(alexey, Currency::Usd)
+        .await
+        .unwrap();
+    assert_eq!((stats.paid_total_minor, stats.payments_count), (699, 1));
+    assert_eq!(stats.referrals_count, 0);
+    let referrer = stats.referrer.expect("пригласивший");
+    assert_eq!(referrer.client_id, inviter);
+    assert_eq!(referrer.name.as_deref(), Some("Иван Петров"));
+    assert_eq!(referrer.telegram_username.as_deref(), Some("ivan_p"));
+    let seen_at = stats.cabinet_seen_at.expect("вход в кабинет");
+    assert!(Utc::now() - seen_at < Duration::minutes(70));
+    assert_eq!(stats.miniapp_seen_at, None);
+
+    let inviter_stats = conn
+        .clients()
+        .card_stats(inviter, Currency::Usd)
+        .await
+        .unwrap();
+    assert_eq!(inviter_stats.referrals_count, 1);
+    assert_eq!(inviter_stats.referrer, None);
+    assert_eq!(
+        (inviter_stats.paid_total_minor, inviter_stats.payments_count),
+        (0, 0)
+    );
     drop(conn);
     db.cleanup().await;
 }

@@ -7,19 +7,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sn_domain::DomainError;
 use sn_domain::ids::{ClientId, PeriodId, RemnaUserId, SubscriptionId};
+use sn_domain::jobs::JobPayload;
 use sn_domain::subscription::{
     AdminStatus, AutoRenewState, PeriodProgress, Subscription, SubscriptionStatus, admin_status,
     period_progress,
 };
 use sn_remnawave::{
-    DropConnectionsRequest, HwidDevice, HwidDevices, RemnaError, RemnaUser, RemnawaveApi,
-    RevokeRequest, UpdateUserRequest, UserStatus,
+    DateRange, DropConnectionsRequest, HwidDevice, HwidDevices, RemnaError, RemnaUser,
+    RemnawaveApi, RevokeRequest, UpdateUserRequest, UserStatus,
 };
 use sn_store::{ActorKind, AuditEntry, Db, LockSpace, PurchaseApplied, StoreError};
 use std::collections::BTreeSet;
 use std::future::Future;
 
 pub const MAX_ADD_DAYS: u32 = 3650;
+pub const MAX_UNDO_STEPS: u32 = 50;
+const CONNECTION_POLLS: u32 = 4;
+const CONNECTION_POLL_DELAY: std::time::Duration = std::time::Duration::from_millis(700);
+const REQUESTS_SHOWN: usize = 20;
+const RENEWED_TEMPLATE: &str = "subscription_renewed";
+const ADDED_NOTICE_DELAY_SECONDS: i64 = 60;
 pub(crate) const ALREADY_DISABLED: &str = "A029";
 pub(crate) const ALREADY_ENABLED: &str = "A030";
 const HOLDS_BATCH: i64 = 200;
@@ -84,6 +91,41 @@ pub struct SubscriptionView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdminSubscriptionView {
+    #[serde(flatten)]
+    pub view: SubscriptionView,
+    pub squads: Vec<String>,
+    pub last_node: Option<String>,
+    pub traffic_30d_bytes: Option<u64>,
+    pub remna_reachable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectionView {
+    pub node: String,
+    pub country_code: String,
+    pub ip: String,
+    pub last_seen: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ConnectionsView {
+    Pending { job_id: String },
+    Done { connections: Vec<ConnectionView> },
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RequestView {
+    pub at: DateTime<Utc>,
+    pub response: String,
+    pub ip: Option<String>,
+    pub app: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceView {
     pub hwid: String,
     pub title: String,
@@ -95,8 +137,18 @@ pub struct DeviceView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LimitsChange {
+    #[serde(default, deserialize_with = "present_or_null")]
     pub traffic_limit_bytes: Option<Option<u64>>,
+    #[serde(default)]
     pub extra_devices: Option<u32>,
+}
+
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 fn actor_fields(actor: Actor) -> (ActorKind, Option<i64>) {
@@ -516,6 +568,187 @@ impl<'a> SubscriptionOps<'a> {
         self.view_of(id, fresh.as_ref(), countries).await
     }
 
+    pub async fn admin_view(
+        &self,
+        id: SubscriptionId,
+        actor: Actor,
+    ) -> ServiceResult<AdminSubscriptionView> {
+        let subscription = self.owned(id, actor).await?;
+        staff_only(actor)?;
+        let stored = |reachable: bool| async move {
+            Ok::<AdminSubscriptionView, ServiceError>(AdminSubscriptionView {
+                view: self.view_of(id, None, Vec::new()).await?,
+                squads: Vec::new(),
+                last_node: None,
+                traffic_30d_bytes: None,
+                remna_reachable: reachable,
+            })
+        };
+        let Some(link) = &subscription.remna else {
+            return stored(true).await;
+        };
+        let remna = self.services.remna()?;
+        let user = match remna.get_user(link.user_id).await {
+            Ok(user) => user,
+            Err(err) if err.is_not_found() => {
+                self.mark_missing(id).await?;
+                return stored(true).await;
+            }
+            Err(err) => {
+                tracing::warn!(subscription = %id, error = %err, "Remnawave не ответила, карточка на сохранённых данных");
+                return stored(false).await;
+            }
+        };
+        {
+            let mut tx = self.services.store().begin().await?;
+            store_user(&mut tx, id, &user, None, self.services.now()).await?;
+            tx.commit().await?;
+        }
+        let accessible = match remna.user_accessible_nodes(link.user_id).await {
+            Ok(nodes) => Some(nodes),
+            Err(err) => {
+                tracing::warn!(error = %err, "ноды подписки не получены");
+                None
+            }
+        };
+        let countries = accessible
+            .as_ref()
+            .map(|nodes| {
+                nodes
+                    .country_codes()
+                    .into_iter()
+                    .filter(|code| !code.eq_ignore_ascii_case("XX"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let last_uuid = user.user_traffic.last_connected_node_uuid;
+        let mut last_node = last_uuid.and_then(|uuid| {
+            accessible
+                .as_ref()?
+                .active_nodes
+                .iter()
+                .find(|node| node.uuid == uuid)
+                .map(|node| node.node_name.clone())
+        });
+        if last_node.is_none()
+            && let Some(uuid) = last_uuid
+            && let Ok(nodes) = remna.nodes().await
+        {
+            last_node = nodes
+                .into_iter()
+                .find(|node| node.uuid == uuid)
+                .map(|node| node.name);
+        }
+        let today = self.services.now().date_naive();
+        let range = DateRange {
+            start: today
+                .checked_sub_days(chrono::Days::new(29))
+                .unwrap_or(today),
+            end: today,
+        };
+        let traffic_30d_bytes = match remna.user_usage(link.user_id, range).await {
+            Ok(usage) => Some(usage.total_bytes()),
+            Err(err) => {
+                tracing::warn!(error = %err, "трафик подписки за 30 дней не получен");
+                None
+            }
+        };
+        let squads = user
+            .active_internal_squads
+            .iter()
+            .map(|squad| squad.name.clone())
+            .collect();
+        Ok(AdminSubscriptionView {
+            view: self.view_of(id, Some(&user), countries).await?,
+            squads,
+            last_node,
+            traffic_30d_bytes,
+            remna_reachable: true,
+        })
+    }
+
+    pub async fn connections(
+        &self,
+        id: SubscriptionId,
+        job_id: Option<&str>,
+        actor: Actor,
+    ) -> ServiceResult<ConnectionsView> {
+        let subscription = self.owned(id, actor).await?;
+        staff_only(actor)?;
+        ensure_live(&subscription)?;
+        let user_id = linked_user(&subscription)?;
+        let remna = self.services.remna()?;
+        let job_id = match job_id {
+            Some(job)
+                if !job.is_empty()
+                    && job.len() <= 100
+                    && job
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+            {
+                job.to_string()
+            }
+            Some(_) => {
+                return Err(ServiceError::rejected(
+                    "subscription.connections_job",
+                    "неверный номер запроса подключений",
+                ));
+            }
+            None => remna.request_user_connections(user_id).await?.job_id,
+        };
+        for attempt in 0..CONNECTION_POLLS {
+            let status = remna.user_connections(&job_id).await?;
+            if status.is_failed {
+                return Ok(ConnectionsView::Failed);
+            }
+            if status.is_completed {
+                let nodes = status.result.map(|r| r.nodes).unwrap_or_default();
+                let connections = nodes
+                    .into_iter()
+                    .flat_map(|node| {
+                        let name = node.node_name;
+                        let country = node.country_code;
+                        node.ips.into_iter().map(move |ip| ConnectionView {
+                            node: name.clone(),
+                            country_code: country.clone(),
+                            ip: ip.ip,
+                            last_seen: ip.last_seen,
+                        })
+                    })
+                    .collect();
+                return Ok(ConnectionsView::Done { connections });
+            }
+            if attempt + 1 < CONNECTION_POLLS {
+                tokio::time::sleep(CONNECTION_POLL_DELAY).await;
+            }
+        }
+        Ok(ConnectionsView::Pending { job_id })
+    }
+
+    pub async fn subscription_requests(
+        &self,
+        id: SubscriptionId,
+        actor: Actor,
+    ) -> ServiceResult<Vec<RequestView>> {
+        let subscription = self.owned(id, actor).await?;
+        staff_only(actor)?;
+        let user_id = linked_user(&subscription)?;
+        let remna = self.services.remna()?;
+        let mut records = remna.user_subscription_requests(user_id).await?.records;
+        records.sort_by(|a, b| b.request_at.cmp(&a.request_at));
+        Ok(records
+            .into_iter()
+            .take(REQUESTS_SHOWN)
+            .map(|record| RequestView {
+                at: record.request_at,
+                response: record.srr_response_type,
+                ip: record.request_ip,
+                app: app_name(record.user_agent.as_deref()),
+                user_agent: record.user_agent,
+            })
+            .collect())
+    }
+
     pub async fn set_autorenew(
         &self,
         id: SubscriptionId,
@@ -581,36 +814,48 @@ impl<'a> SubscriptionOps<'a> {
             Ok::<RemnaUser, ServiceError>(after)
         })
         .await?;
+        if matches!(actor, Actor::Admin(_)) {
+            self.notify_added(&subscription, after.expire_at).await;
+        }
         self.view_of(id, Some(&after), Vec::new()).await
     }
 
     pub async fn undo_add_days(
         &self,
         id: SubscriptionId,
+        count: u32,
         actor: Actor,
     ) -> ServiceResult<SubscriptionView> {
         let subscription = self.owned(id, actor).await?;
         staff_only(actor)?;
         ensure_live(&subscription)?;
+        if count == 0 || count > MAX_UNDO_STEPS {
+            return Err(ServiceError::rejected(
+                "subscription.undo_steps",
+                format!("отменить можно от 1 до {MAX_UNDO_STEPS} добавлений"),
+            ));
+        }
         let user_id = linked_user(&subscription)?;
-        let last = {
-            let mut conn = self.services.store().conn().await?;
-            conn.audit()
-                .for_entity("subscription", id.0, 50)
-                .await?
-                .into_iter()
-                .find(|r| r.action == actions::ADD_DAYS || r.action == actions::ADD_DAYS_UNDONE)
-        };
         let nothing = || {
             ServiceError::rejected(
                 "subscription.nothing_to_undo",
                 "нечего отменять: дни не добавлялись",
             )
         };
-        let record = last
-            .filter(|r| r.action == actions::ADD_DAYS)
-            .ok_or_else(nothing)?;
-        let read = |key: &str| {
+        let records: Vec<sn_store::AuditRecord> = {
+            let mut conn = self.services.store().conn().await?;
+            conn.audit()
+                .for_entity("subscription", id.0, 200)
+                .await?
+                .into_iter()
+                .filter(|r| r.action == actions::ADD_DAYS || r.action == actions::ADD_DAYS_UNDONE)
+                .take(count as usize)
+                .collect()
+        };
+        if records.len() < count as usize || records.iter().any(|r| r.action != actions::ADD_DAYS) {
+            return Err(nothing());
+        }
+        let read = |record: &sn_store::AuditRecord, key: &str| {
             record
                 .details
                 .get(key)
@@ -618,16 +863,32 @@ impl<'a> SubscriptionOps<'a> {
                 .and_then(|v| serde_json::from_value::<DateTime<Utc>>(v).ok())
                 .ok_or_else(nothing)
         };
-        let previous = read("previous_expire_at")?;
-        let extended = read("expire_at")?;
+        let changed = || {
+            ServiceError::rejected(
+                "subscription.changed_since",
+                "срок уже менялся после добавления дней, отменить нельзя",
+            )
+        };
+        for pair in records.windows(2) {
+            if read(&pair[0], "previous_expire_at")? != read(&pair[1], "expire_at")? {
+                return Err(changed());
+            }
+        }
+        let (Some(newest), Some(oldest)) = (records.first(), records.last()) else {
+            return Err(nothing());
+        };
+        let extended = read(newest, "expire_at")?;
+        let previous = read(oldest, "previous_expire_at")?;
+        let days: u64 = records
+            .iter()
+            .filter_map(|r| r.details.get("days").and_then(serde_json::Value::as_u64))
+            .sum();
+        let undone: Vec<i64> = records.iter().map(|r| r.id).collect();
         let remna = self.services.remna()?;
         let after = with_subscription_lock(self.services, id, async {
             let current = self.fetch_user(&*remna, &subscription, user_id).await?;
             if current.expire_at != extended {
-                return Err(ServiceError::rejected(
-                    "subscription.changed_since",
-                    "срок уже менялся после добавления дней, отменить нельзя",
-                ));
+                return Err(changed());
             }
             let mut request = UpdateUserRequest::new(user_id);
             request.expire_at = Some(previous);
@@ -640,7 +901,8 @@ impl<'a> SubscriptionOps<'a> {
                 actor,
                 action: actions::ADD_DAYS_UNDONE,
                 details: json!({
-                    "undone": record.id,
+                    "undone": undone,
+                    "days": days,
                     "previous_expire_at": extended,
                     "expire_at": after.expire_at,
                 }),
@@ -652,7 +914,54 @@ impl<'a> SubscriptionOps<'a> {
             Ok(after)
         })
         .await?;
+        self.cancel_added_notice(&subscription).await;
         self.view_of(id, Some(&after), Vec::new()).await
+    }
+
+    async fn notify_added(&self, subscription: &Subscription, expire_at: DateTime<Utc>) {
+        let payload = JobPayload::Notify {
+            client_id: subscription.client_id,
+            template: RENEWED_TEMPLATE.into(),
+            params: json!({
+                "expire_at": expire_at,
+                "subscription_id": subscription.id,
+            }),
+        };
+        let run_at = self.services.now() + chrono::Duration::seconds(ADDED_NOTICE_DELAY_SECONDS);
+        let queued = async {
+            let mut conn = self.services.store().conn().await?;
+            conn.jobs()
+                .drop_queued_notifications(
+                    subscription.client_id,
+                    RENEWED_TEMPLATE,
+                    subscription.id,
+                )
+                .await?;
+            conn.jobs().enqueue(&payload, Some(run_at)).await?;
+            Ok::<(), ServiceError>(())
+        }
+        .await;
+        if let Err(err) = queued {
+            tracing::warn!(subscription = %subscription.id, error = %err, "уведомление о добавленных днях не поставлено");
+        }
+    }
+
+    async fn cancel_added_notice(&self, subscription: &Subscription) {
+        let dropped = async {
+            let mut conn = self.services.store().conn().await?;
+            conn.jobs()
+                .drop_queued_notifications(
+                    subscription.client_id,
+                    RENEWED_TEMPLATE,
+                    subscription.id,
+                )
+                .await?;
+            Ok::<(), ServiceError>(())
+        }
+        .await;
+        if let Err(err) = dropped {
+            tracing::warn!(subscription = %subscription.id, error = %err, "уведомление о добавленных днях не снято");
+        }
     }
 
     pub async fn reset_traffic(
@@ -1553,14 +1862,14 @@ pub(crate) mod tests {
 
         env.services
             .subscriptions()
-            .undo_add_days(subscription.id, ADMIN)
+            .undo_add_days(subscription.id, 1, ADMIN)
             .await
             .unwrap();
         assert_eq!(env.fake.user(RemnaUserId(1)).unwrap().expire_at, before);
         let err = env
             .services
             .subscriptions()
-            .undo_add_days(subscription.id, ADMIN)
+            .undo_add_days(subscription.id, 1, ADMIN)
             .await
             .unwrap_err();
         assert_eq!(code(&err), "subscription.nothing_to_undo");
@@ -1575,6 +1884,58 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn несколько_добавлений_отменяются_разом_и_уведомление_снимается() {
+        let Some(env) = env().await else { return };
+        let client = env.client().await;
+        let subscription = env.linked(client.id, sample_user(1, "sn_undo_many")).await;
+        let before = env.fake.user(RemnaUserId(1)).unwrap().expire_at;
+        let ops = env.services.subscriptions();
+        ops.add_days(subscription.id, 7, ADMIN).await.unwrap();
+        let view = ops.add_days(subscription.id, 30, ADMIN).await.unwrap();
+        let queued = || async {
+            let mut conn = env.services.store().conn().await.unwrap();
+            sqlx::query_as::<_, (serde_json::Value, DateTime<Utc>)>(
+                "SELECT payload, run_at FROM jobs WHERE kind = 'notify' AND status = 'queued'",
+            )
+            .fetch_all(conn.conn())
+            .await
+            .unwrap()
+        };
+        let notices = queued().await;
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].0["template"], RENEWED_TEMPLATE);
+        assert_eq!(notices[0].0["params"]["subscription_id"], subscription.id.0);
+        let promised: DateTime<Utc> =
+            serde_json::from_value(notices[0].0["params"]["expire_at"].clone()).unwrap();
+        assert_eq!(Some(promised), view.subscription.mirror.expire_at);
+        assert!(notices[0].1 > Utc::now() + Duration::seconds(30));
+
+        let err = ops
+            .undo_add_days(subscription.id, 3, ADMIN)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&err), "subscription.nothing_to_undo");
+        let err = ops
+            .undo_add_days(subscription.id, 0, ADMIN)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&err), "subscription.undo_steps");
+        ops.undo_add_days(subscription.id, 2, ADMIN).await.unwrap();
+        assert_eq!(env.fake.user(RemnaUserId(1)).unwrap().expire_at, before);
+        assert!(queued().await.is_empty());
+        let audit = env.audit("subscription", subscription.id.0).await;
+        assert_eq!(audit[0].action, actions::ADD_DAYS_UNDONE);
+        assert_eq!(audit[0].details["days"], 37);
+        assert_eq!(audit[0].details["undone"].as_array().map(Vec::len), Some(2));
+        let err = ops
+            .undo_add_days(subscription.id, 1, ADMIN)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&err), "subscription.nothing_to_undo");
+        env.finish().await;
+    }
+
+    #[tokio::test]
     async fn отмена_невозможна_если_срок_менялся_после() {
         let Some(env) = env().await else { return };
         let client = env.client().await;
@@ -1584,7 +1945,10 @@ pub(crate) mod tests {
         let mut patch = UpdateUserRequest::new(RemnaUserId(1));
         patch.expire_at = Some(Utc::now() + Duration::days(400));
         env.fake.update_user(&patch).await.unwrap();
-        let err = ops.undo_add_days(subscription.id, ADMIN).await.unwrap_err();
+        let err = ops
+            .undo_add_days(subscription.id, 1, ADMIN)
+            .await
+            .unwrap_err();
         assert_eq!(code(&err), "subscription.changed_since");
         env.finish().await;
     }
@@ -2334,5 +2698,24 @@ pub(crate) mod tests {
             before + Duration::days(7)
         );
         env.finish().await;
+    }
+}
+
+#[cfg(test)]
+mod limits_change_tests {
+    use super::LimitsChange;
+
+    #[test]
+    fn пустой_лимит_трафика_снимает_лимит_а_пропуск_не_меняет() {
+        let removed: LimitsChange =
+            serde_json::from_value(serde_json::json!({ "traffic_limit_bytes": null })).unwrap();
+        assert_eq!(removed.traffic_limit_bytes, Some(None));
+        let kept: LimitsChange =
+            serde_json::from_value(serde_json::json!({ "extra_devices": 2 })).unwrap();
+        assert_eq!(kept.traffic_limit_bytes, None);
+        assert_eq!(kept.extra_devices, Some(2));
+        let set: LimitsChange =
+            serde_json::from_value(serde_json::json!({ "traffic_limit_bytes": 1024 })).unwrap();
+        assert_eq!(set.traffic_limit_bytes, Some(Some(1024)));
     }
 }

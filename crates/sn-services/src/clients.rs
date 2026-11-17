@@ -9,36 +9,146 @@ use sn_domain::client::{
     TelegramProfile,
 };
 use sn_domain::events::DomainEvent;
-use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, SubscriptionId};
+use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, SubscriptionId, TariffId, TicketId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Amount, Money};
-use sn_domain::order::{OrderKind, OrderStatus};
+use sn_domain::order::{Order, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{PaymentStatus, ProviderId};
 use sn_domain::subscription::Subscription;
-use sn_store::{ClientFilter, ClientListItem, Db, LockSpace, NewClient, StoreError, Tx};
+use sn_domain::support::TicketStatus;
+use sn_domain::tariff::{DevicePolicy, months_for_days};
+use sn_domain::traffic::TrafficPolicy;
+use sn_store::{
+    ClientFilter, ClientHistoryEntry, ClientListItem, ClientPerson, Db, LockSpace, NewClient,
+    StoreError, Tx,
+};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[cfg(test)]
 mod tests;
 
 pub const MAX_BLOCK_REASON: usize = 500;
+pub const MAX_MESSAGE: usize = 3_500;
+const MESSAGE_TEMPLATE: &str = "text";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HistorySource {
-    Payment,
-    Event,
-    Audit,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrderBrief {
+    pub id: Uuid,
+    pub kind: OrderKind,
+    pub status: OrderStatus,
+    pub label: Option<String>,
+    pub tariff_id: Option<TariffId>,
+    pub tariff_name: Option<String>,
+    pub days: Option<u32>,
+    pub months: Option<u32>,
+    pub extra_devices: u32,
+    pub total: Money,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaymentBrief {
+    pub id: Uuid,
+    pub status: PaymentStatus,
+    pub amount: Amount,
+    pub provider: ProviderId,
+    pub method: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TicketBrief {
+    pub id: TicketId,
+    pub subject: Option<String>,
+    pub status: TicketStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct HistoryEntry {
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HistoryRecord {
+    Payment {
+        payment: PaymentBrief,
+        order: Option<OrderBrief>,
+    },
+    Order {
+        order: OrderBrief,
+    },
+    Event {
+        kind: String,
+        event: DomainEvent,
+        ticket: Option<TicketBrief>,
+    },
+    Audit {
+        action: String,
+        actor_kind: String,
+        actor_id: Option<i64>,
+        actor_email: Option<String>,
+        entity_kind: Option<String>,
+        entity_id: Option<i64>,
+        details: serde_json::Value,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HistoryItem {
     pub at: DateTime<Utc>,
-    pub source: HistorySource,
-    pub kind: String,
-    pub data: serde_json::Value,
+    #[serde(flatten)]
+    pub record: HistoryRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HistoryPage {
+    pub items: Vec<HistoryItem>,
+    pub next: Option<i64>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TariffBrief {
+    pub id: TariffId,
+    pub name: String,
+    pub on_sale: bool,
+    pub devices: DevicePolicy,
+    pub traffic: TrafficPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CardStats {
+    pub paid_total: Money,
+    pub payments_count: i64,
+    pub referrals_count: i64,
+    pub referrer: Option<ClientPerson>,
+    pub cabinet_seen_at: Option<DateTime<Utc>>,
+    pub miniapp_seen_at: Option<DateTime<Utc>>,
+}
+
+fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) -> OrderBrief {
+    let tariff_id = match &order.intent {
+        PurchaseIntent::Subscription { tariff_id, .. }
+        | PurchaseIntent::AdminGrant { tariff_id, .. } => Some(*tariff_id),
+        _ => order.snapshot.as_ref().map(|snapshot| snapshot.tariff_id),
+    };
+    let days = (order.quote.days > 0).then_some(order.quote.days);
+    OrderBrief {
+        id: order.public_id,
+        kind: order.kind,
+        status: order.status,
+        label: order.quote.lines.first().map(|line| line.label.clone()),
+        tariff_id,
+        tariff_name: tariff_id
+            .and_then(|id| tariffs.get(&id).cloned())
+            .or_else(|| {
+                order
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.name.clone())
+            }),
+        days,
+        months: days.filter(|d| *d >= 28).map(months_for_days),
+        extra_devices: order.quote.extra_devices,
+        total: order.quote.total,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,8 +167,6 @@ pub struct PaymentStatusView {
     pub created_at: DateTime<Utc>,
 }
 
-const MONEY_EVENTS: [&str; 3] = ["payment_paid", "payment_refunded", "balance_changed"];
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClientCard {
     pub client: Client,
@@ -66,6 +174,9 @@ pub struct ClientCard {
     pub balance: Money,
     pub referral_balance: Money,
     pub subscriptions: Vec<Subscription>,
+    pub tariffs: Vec<TariffBrief>,
+    pub stats: CardStats,
+    pub bot_available: bool,
 }
 
 const BLOCKED_REASON: &str = "клиент заблокирован";
@@ -187,12 +298,38 @@ impl<'a> ClientOps<'a> {
             .balance(id, Wallet::Referral, currency)
             .await?;
         let subscriptions = conn.subscriptions().by_client(id).await?;
+        let wanted: Vec<TariffId> = subscriptions.iter().filter_map(|s| s.tariff_id).collect();
+        let tariffs = conn
+            .tariffs()
+            .list(true)
+            .await?
+            .into_iter()
+            .filter(|t| wanted.contains(&t.id))
+            .map(|t| TariffBrief {
+                id: t.id,
+                name: t.name,
+                on_sale: t.on_sale,
+                devices: t.devices,
+                traffic: t.traffic,
+            })
+            .collect();
+        let stats = conn.clients().card_stats(id, currency).await?;
         Ok(ClientCard {
             client,
             identities,
             balance,
             referral_balance,
             subscriptions,
+            tariffs,
+            stats: CardStats {
+                paid_total: Money::new(stats.paid_total_minor, currency),
+                payments_count: stats.payments_count,
+                referrals_count: stats.referrals_count,
+                referrer: stats.referrer,
+                cabinet_seen_at: stats.cabinet_seen_at,
+                miniapp_seen_at: stats.miniapp_seen_at,
+            },
+            bot_available: self.services.bot_token().is_some(),
         })
     }
 
@@ -218,6 +355,62 @@ impl<'a> ClientOps<'a> {
                 "client",
                 Some(id.0),
                 serde_json::json!({ "cleared": note.is_none() }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn send_message(&self, id: ClientId, text: &str, actor: Actor) -> ServiceResult<()> {
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > MAX_MESSAGE {
+            return Err(ServiceError::rejected(
+                "client.message",
+                format!("сообщение должно быть от 1 до {MAX_MESSAGE} символов"),
+            ));
+        }
+        if self.services.bot_token().is_none() {
+            return Err(ServiceError::rejected(
+                "client.bot_missing",
+                "бот не подключён: сообщение некуда отправить",
+            ));
+        }
+        let mut tx = self.services.store().begin().await?;
+        let client = tx.clients().get(id).await?;
+        let telegram = tx
+            .clients()
+            .identities(id)
+            .await?
+            .into_iter()
+            .any(|identity| identity.kind == IdentityKind::Telegram);
+        if !telegram {
+            return Err(ServiceError::rejected(
+                "client.no_telegram",
+                "у клиента нет Telegram: написать можно только через бота",
+            ));
+        }
+        if client.bot_unreachable {
+            return Err(ServiceError::rejected(
+                "client.bot_unreachable",
+                "клиент остановил бота, сообщение не дойдёт",
+            ));
+        }
+        tx.jobs()
+            .enqueue(
+                &JobPayload::Notify {
+                    client_id: id,
+                    template: MESSAGE_TEMPLATE.into(),
+                    params: serde_json::json!({ "text": text }),
+                },
+                None,
+            )
+            .await?;
+        tx.audit()
+            .record(&actor.audit(
+                "client.message",
+                "client",
+                Some(id.0),
+                serde_json::json!({ "text": text.chars().take(500).collect::<String>() }),
             ))
             .await?;
         tx.commit().await?;
@@ -409,60 +602,127 @@ impl<'a> ClientOps<'a> {
     pub async fn history(
         &self,
         id: ClientId,
-        limit: u32,
+        page: PageRequest,
         include_money: bool,
-    ) -> ServiceResult<Vec<HistoryEntry>> {
-        let limit = limit.clamp(1, PageRequest::MAX_LIMIT);
+    ) -> ServiceResult<HistoryPage> {
         let mut conn = self.services.store().conn().await?;
         conn.clients().get(id).await?;
-        let mut entries = Vec::new();
-        if include_money {
-            let payments = conn
-                .payments()
-                .for_client(id, PageRequest::new(Some(limit), None))
-                .await?;
-            for payment in payments.items {
-                entries.push(HistoryEntry {
-                    at: payment.paid_at.unwrap_or(payment.created_at),
-                    source: HistorySource::Payment,
-                    kind: payment.status.as_str().to_string(),
-                    data: serde_json::to_value(&payment)
-                        .map_err(|e| ServiceError::Internal(e.to_string()))?,
-                });
-            }
-        }
-        for stored in conn.events().for_client(id, i64::from(limit)).await? {
-            let kind = stored.event.kind();
-            if MONEY_EVENTS.contains(&kind) && (!include_money || kind == "payment_paid") {
-                continue;
-            }
-            entries.push(HistoryEntry {
-                at: stored.occurred_at,
-                source: HistorySource::Event,
-                kind: kind.to_string(),
-                data: serde_json::to_value(&stored.event)
-                    .map_err(|e| ServiceError::Internal(e.to_string()))?,
-            });
-        }
-        for record in conn
-            .audit()
-            .for_entity("client", id.0, i64::from(limit))
+        let feed = conn.clients().history(id, page, include_money).await?;
+        let total = conn.clients().history_count(id, include_money).await?;
+        let tariffs: HashMap<TariffId, String> = conn
+            .tariffs()
+            .list(true)
             .await?
-        {
-            entries.push(HistoryEntry {
-                at: record.created_at,
-                source: HistorySource::Audit,
-                kind: record.action.clone(),
-                data: serde_json::json!({
-                    "actor_kind": record.actor_kind,
-                    "actor_id": record.actor_id,
-                    "details": record.details,
-                }),
-            });
+            .into_iter()
+            .map(|t| (t.id, t.name))
+            .collect();
+        let order_ids: Vec<OrderId> = feed
+            .items
+            .iter()
+            .filter_map(|item| match &item.entry {
+                ClientHistoryEntry::Payment(payment) => Some(payment.order_id),
+                _ => None,
+            })
+            .collect();
+        let orders: HashMap<OrderId, Order> = conn
+            .orders()
+            .by_ids(&order_ids)
+            .await?
+            .into_iter()
+            .map(|order| (order.id, order))
+            .collect();
+        let admins: HashMap<i64, String> = if feed.items.iter().any(|item| {
+            matches!(&item.entry, ClientHistoryEntry::Audit(record) if record.actor_kind == "admin")
+        }) {
+            conn.admins()
+                .list()
+                .await?
+                .into_iter()
+                .map(|admin| (admin.id.0, admin.email))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        let mut tickets: HashMap<TicketId, TicketBrief> = HashMap::new();
+        for item in &feed.items {
+            if let ClientHistoryEntry::Event(stored) = &item.entry
+                && let DomainEvent::TicketOpened { ticket_id, .. }
+                | DomainEvent::TicketAnswered { ticket_id, .. } = &stored.event
+                && !tickets.contains_key(ticket_id)
+            {
+                match conn.tickets().get(*ticket_id).await {
+                    Ok(ticket) => {
+                        tickets.insert(
+                            *ticket_id,
+                            TicketBrief {
+                                id: ticket.id,
+                                subject: ticket.subject,
+                                status: ticket.status,
+                            },
+                        );
+                    }
+                    Err(StoreError::NotFound(_)) => {}
+                    Err(err) => return Err(err.into()),
+                }
+            }
         }
-        entries.sort_by(|a, b| b.at.cmp(&a.at));
-        entries.truncate(limit as usize);
-        Ok(entries)
+        let items = feed
+            .items
+            .into_iter()
+            .map(|item| {
+                let record = match item.entry {
+                    ClientHistoryEntry::Payment(payment) => HistoryRecord::Payment {
+                        order: orders
+                            .get(&payment.order_id)
+                            .map(|order| order_brief(order, &tariffs)),
+                        payment: PaymentBrief {
+                            id: payment.public_id,
+                            status: payment.status,
+                            amount: payment.amount,
+                            provider: payment.provider,
+                            method: payment.method,
+                        },
+                    },
+                    ClientHistoryEntry::Order(order) => HistoryRecord::Order {
+                        order: order_brief(&order, &tariffs),
+                    },
+                    ClientHistoryEntry::Event(stored) => {
+                        let ticket = match &stored.event {
+                            DomainEvent::TicketOpened { ticket_id, .. }
+                            | DomainEvent::TicketAnswered { ticket_id, .. } => {
+                                tickets.get(ticket_id).cloned()
+                            }
+                            _ => None,
+                        };
+                        HistoryRecord::Event {
+                            kind: stored.event.kind().to_string(),
+                            event: stored.event,
+                            ticket,
+                        }
+                    }
+                    ClientHistoryEntry::Audit(record) => HistoryRecord::Audit {
+                        actor_email: (record.actor_kind == "admin")
+                            .then(|| record.actor_id.and_then(|id| admins.get(&id).cloned()))
+                            .flatten(),
+                        action: record.action,
+                        actor_kind: record.actor_kind,
+                        actor_id: record.actor_id,
+                        entity_kind: record.entity_kind,
+                        entity_id: record.entity_id,
+                        details: record.details,
+                    },
+                };
+                HistoryItem {
+                    at: item.at,
+                    record,
+                }
+            })
+            .collect();
+        Ok(HistoryPage {
+            items,
+            next: feed.next,
+            total,
+        })
     }
 
     pub async fn payment_status(
