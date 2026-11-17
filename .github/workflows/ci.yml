@@ -119,9 +119,6 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: install
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: read
     defaults:
       run:
         shell: bash
@@ -131,10 +128,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: sign in to the registry
-        env:
-          REGISTRY_TOKEN: ${{ github.token }}
-        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: the registry holds no saved sign-in
+        run: |
+          docker logout ghcr.io
+          if grep -q 'ghcr.io' "$HOME/.docker/config.json" 2>/dev/null; then exit 1; fi
       - name: install from the published image
         run: |
           started=$SECONDS
