@@ -1,3 +1,4 @@
+use crate::crypto::SealedSecret;
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
 use sn_domain::client::{
@@ -8,6 +9,19 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_domain::subscription::Subscription;
 use sqlx::PgConnection;
 use uuid::Uuid;
+
+#[derive(sqlx::FromRow)]
+struct TotpRow {
+    totp_nonce: Option<Vec<u8>>,
+    totp_secret: Option<Vec<u8>>,
+    totp_enabled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientTotp {
+    pub secret: SealedSecret,
+    pub enabled_at: Option<DateTime<Utc>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewClient {
@@ -372,5 +386,65 @@ impl<'c> ClientsRepo<'c> {
             .execute(&mut *self.conn)
             .await?;
         Ok(())
+    }
+
+    pub async fn totp(&mut self, id: ClientId) -> StoreResult<Option<ClientTotp>> {
+        let row: Option<TotpRow> = sqlx::query_as(
+            "SELECT totp_nonce, totp_secret, totp_enabled_at FROM client_credentials WHERE client_id = $1",
+        )
+        .bind(id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(row.and_then(|row| match (row.totp_nonce, row.totp_secret) {
+            (Some(nonce), Some(ciphertext)) => Some(ClientTotp {
+                secret: SealedSecret { nonce, ciphertext },
+                enabled_at: row.totp_enabled_at,
+            }),
+            _ => None,
+        }))
+    }
+
+    pub async fn enable_totp(
+        &mut self,
+        id: ClientId,
+        secret: &SealedSecret,
+        at: DateTime<Utc>,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO client_credentials (client_id, totp_nonce, totp_secret, totp_last_step, totp_enabled_at) \
+             VALUES ($1, $2, $3, NULL, $4) \
+             ON CONFLICT (client_id) DO UPDATE SET totp_nonce = EXCLUDED.totp_nonce, \
+             totp_secret = EXCLUDED.totp_secret, totp_last_step = NULL, totp_enabled_at = EXCLUDED.totp_enabled_at",
+        )
+        .bind(id.0)
+        .bind(&secret.nonce)
+        .bind(&secret.ciphertext)
+        .bind(at)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_totp(&mut self, id: ClientId) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE client_credentials SET totp_nonce = NULL, totp_secret = NULL, totp_last_step = NULL, \
+             totp_enabled_at = NULL WHERE client_id = $1 AND totp_secret IS NOT NULL",
+        )
+        .bind(id.0)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn use_totp_step(&mut self, id: ClientId, step: i64) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE client_credentials SET totp_last_step = $2 WHERE client_id = $1 \
+             AND totp_secret IS NOT NULL AND (totp_last_step IS NULL OR totp_last_step < $2)",
+        )
+        .bind(id.0)
+        .bind(step)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
     }
 }

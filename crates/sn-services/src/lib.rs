@@ -20,6 +20,7 @@ pub mod subscriptions;
 pub mod support;
 pub mod tariffs;
 pub mod totp;
+pub mod two_factor;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use error::{ServiceError, ServiceResult};

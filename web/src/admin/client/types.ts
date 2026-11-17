@@ -40,6 +40,7 @@ export type ClientCard = {
   tariffs: TariffBrief[];
   stats: CardStats;
   bot_available: boolean;
+  two_factor: { enabled: boolean; enabled_at: string | null };
 };
 
 export type SubscriptionDetails = {

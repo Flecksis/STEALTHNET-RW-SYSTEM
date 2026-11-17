@@ -85,6 +85,26 @@ pub mod rules {
         limit: 10,
         window_seconds: 900,
     };
+    pub const CLIENT_TOTP_IP: RateRule = RateRule {
+        scope: "client_totp_ip",
+        limit: 30,
+        window_seconds: 900,
+    };
+    pub const CLIENT_TOTP_FAILURES: RateRule = RateRule {
+        scope: "client_totp_failures",
+        limit: 5,
+        window_seconds: 900,
+    };
+    pub const CLIENT_TOTP_FAILURES_DAY: RateRule = RateRule {
+        scope: "client_totp_failures_day",
+        limit: 20,
+        window_seconds: 86_400,
+    };
+    pub const CLIENT_SECURITY: RateRule = RateRule {
+        scope: "client_security",
+        limit: 10,
+        window_seconds: 900,
+    };
 }
 
 pub fn ip_key(ip: IpAddr) -> String {

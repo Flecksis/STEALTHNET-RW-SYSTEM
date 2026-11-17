@@ -514,10 +514,13 @@ async fn вход_по_почте_одноразовым_кодом() {
         .await
         .unwrap();
     assert_eq!(issued.email, "alex@example.com");
-    let login = auth
+    let two_factor::CabinetLogin::Session(login) = auth
         .email_login_verify(" ALEX@example.com ", &second, &who)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("без второго фактора вход по почте не просит код");
+    };
     assert!(login.created);
     assert_eq!(
         code(
@@ -547,6 +550,304 @@ async fn вход_по_почте_одноразовым_кодом() {
         ),
         "auth.code_invalid"
     );
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn второй_фактор_клиента_спрашивается_при_входе_на_сайт_и_сбрасывается_админом() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let auth = services.auth();
+    let who = meta("203.0.113.7");
+    set_bot(services).await;
+    let admin = owner(services).await;
+    let client = telegram_client(services, 5_093_118_422).await;
+    let off = two_factor::TwoFactor {
+        enabled: false,
+        enabled_at: None,
+    };
+    assert_eq!(auth.client_two_factor(client).await.unwrap(), off);
+    assert_eq!(
+        code(auth.client_totp_disable(client, "123456").await),
+        "auth.totp_disabled"
+    );
+    assert_eq!(
+        code(
+            services
+                .clients()
+                .reset_two_factor(client, Actor::Admin(admin))
+                .await
+        ),
+        two_factor::TOTP_NOT_ENABLED
+    );
+    let setup = auth.client_totp_setup(client).await.unwrap();
+    assert!(
+        setup
+            .uri
+            .starts_with("otpauth://totp/STEALTHNET:%40morozov_a?secret="),
+        "{}",
+        setup.uri
+    );
+    let now = start();
+    assert_eq!(
+        code(
+            auth.client_totp_enable(client, "не-base32", &totp_code(&setup.secret, now))
+                .await
+        ),
+        "auth.totp_secret"
+    );
+    let far = totp_code(&setup.secret, now + Duration::hours(1));
+    if far != totp_code(&setup.secret, now) {
+        assert_eq!(
+            code(auth.client_totp_enable(client, &setup.secret, &far).await),
+            "auth.totp_code"
+        );
+    }
+    let enabled = auth
+        .client_totp_enable(
+            client,
+            &setup.secret.to_lowercase(),
+            &totp_code(&setup.secret, now),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        enabled,
+        two_factor::TwoFactor {
+            enabled: true,
+            enabled_at: Some(now),
+        }
+    );
+    assert_eq!(auth.client_two_factor(client).await.unwrap(), enabled);
+    assert_eq!(
+        code(auth.client_totp_setup(client).await),
+        "auth.totp_enabled"
+    );
+
+    let started = auth.telegram_login_start(&who).await.unwrap();
+    let link = started.link.rsplit('=').next().unwrap().to_string();
+    auth.confirm_telegram_login(&link, &profile(5_093_118_422))
+        .await
+        .unwrap();
+    let TelegramLoginStatus::TotpRequired {
+        challenge,
+        expires_at,
+    } = auth
+        .telegram_login_status(&started.poll_token, &who)
+        .await
+        .unwrap()
+    else {
+        panic!("вход через Telegram должен попросить код");
+    };
+    assert_eq!(
+        expires_at,
+        now + Duration::seconds(two_factor::TOTP_CHALLENGE_TTL_SECONDS)
+    );
+    assert_eq!(
+        auth.telegram_login_status(&started.poll_token, &who)
+            .await
+            .unwrap(),
+        TelegramLoginStatus::Expired
+    );
+    let wrong = |at| {
+        if totp_code(&setup.secret, at) == "000000" {
+            "111111"
+        } else {
+            "000000"
+        }
+    };
+    assert_eq!(
+        code(auth.cabinet_totp_login(&challenge, wrong(now), &who).await),
+        "auth.totp_code"
+    );
+    assert_eq!(
+        code(
+            auth.cabinet_totp_login(&challenge, &totp_code(&setup.secret, now), &who)
+                .await
+        ),
+        "auth.totp_code"
+    );
+    assert_eq!(
+        code(auth.cabinet_totp_login("чужой", "000000", &who).await),
+        "auth.login_expired"
+    );
+    let later = now + Duration::seconds(30);
+    env.clock.set(later);
+    let login = auth
+        .cabinet_totp_login(&challenge, &totp_code(&setup.secret, later), &who)
+        .await
+        .unwrap();
+    assert_eq!(login.principal.client_id, client);
+    assert_eq!(
+        login.principal.channel,
+        sn_domain::access::ClientChannel::Cabinet
+    );
+    let cabinet = login.token.clone();
+    assert!(auth.client_session(&cabinet).await.is_ok());
+    assert_eq!(
+        code(
+            auth.cabinet_totp_login(
+                &challenge,
+                &totp_code(&setup.secret, later + Duration::seconds(30)),
+                &who
+            )
+            .await
+        ),
+        "auth.login_expired"
+    );
+
+    let hour = later + Duration::hours(1);
+    env.clock.set(hour);
+    let mut conn = services.store().conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            client,
+            &sn_domain::client::NewIdentity::new(IdentityKind::Email, "alex@example.com", true)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    drop(conn);
+    let (mail_code, _) = auth
+        .issue_email_code("alex@example.com", &who)
+        .await
+        .unwrap();
+    let two_factor::CabinetLogin::TotpRequired(mail) = auth
+        .email_login_verify("alex@example.com", &mail_code, &who)
+        .await
+        .unwrap()
+    else {
+        panic!("вход по почте должен попросить код");
+    };
+    for _ in 0..two_factor::TOTP_CHALLENGE_ATTEMPTS {
+        assert_eq!(
+            code(
+                auth.cabinet_totp_login(&mail.challenge, wrong(hour), &who)
+                    .await
+            ),
+            "auth.totp_code"
+        );
+    }
+    assert_eq!(
+        code(
+            auth.cabinet_totp_login(&mail.challenge, &totp_code(&setup.secret, hour), &who)
+                .await
+        ),
+        "auth.code_attempts"
+    );
+    let (mail_code, _) = auth
+        .issue_email_code("alex@example.com", &who)
+        .await
+        .unwrap();
+    let two_factor::CabinetLogin::TotpRequired(locked) = auth
+        .email_login_verify("alex@example.com", &mail_code, &who)
+        .await
+        .unwrap()
+    else {
+        panic!("вход по почте должен попросить код");
+    };
+    assert_eq!(
+        code(
+            auth.cabinet_totp_login(&locked.challenge, &totp_code(&setup.secret, hour), &who)
+                .await
+        ),
+        RATE_LIMITED
+    );
+
+    let next_day = hour + Duration::days(1);
+    env.clock.set(next_day);
+    assert_eq!(
+        code(auth.client_totp_disable(client, wrong(next_day)).await),
+        "auth.totp_code"
+    );
+    assert_eq!(
+        auth.client_totp_disable(client, &totp_code(&setup.secret, next_day))
+            .await
+            .unwrap(),
+        off
+    );
+    let again = auth.client_totp_setup(client).await.unwrap();
+    assert_ne!(again.secret, setup.secret);
+    auth.client_totp_enable(client, &again.secret, &totp_code(&again.secret, next_day))
+        .await
+        .unwrap();
+    let miniapp = auth
+        .client_session_for(
+            client,
+            sn_store::SessionChannel::Miniapp,
+            &RequestMeta::default(),
+            false,
+        )
+        .await
+        .unwrap();
+    let (mail_code, _) = auth
+        .issue_email_code("alex@example.com", &who)
+        .await
+        .unwrap();
+    let two_factor::CabinetLogin::TotpRequired(pending) = auth
+        .email_login_verify("alex@example.com", &mail_code, &who)
+        .await
+        .unwrap()
+    else {
+        panic!("вход по почте должен попросить код");
+    };
+    services
+        .clients()
+        .reset_two_factor(client, Actor::Admin(admin))
+        .await
+        .unwrap();
+    assert_eq!(auth.client_two_factor(client).await.unwrap(), off);
+    assert!(auth.client_session(&cabinet).await.is_err());
+    assert!(auth.client_session(&miniapp.token).await.is_ok());
+    let after = next_day + Duration::seconds(30);
+    env.clock.set(after);
+    assert_eq!(
+        code(
+            auth.cabinet_totp_login(&pending.challenge, &totp_code(&again.secret, after), &who)
+                .await
+        ),
+        "auth.login_expired"
+    );
+    let (mail_code, _) = auth
+        .issue_email_code("alex@example.com", &who)
+        .await
+        .unwrap();
+    assert!(matches!(
+        auth.email_login_verify("alex@example.com", &mail_code, &who)
+            .await
+            .unwrap(),
+        two_factor::CabinetLogin::Session(_)
+    ));
+    assert_eq!(
+        code(
+            services
+                .clients()
+                .reset_two_factor(client, Actor::Admin(admin))
+                .await
+        ),
+        two_factor::TOTP_NOT_ENABLED
+    );
+    let mut conn = services.store().conn().await.unwrap();
+    let audit = conn
+        .audit()
+        .for_entity("client", client.0, 20)
+        .await
+        .unwrap();
+    let actions: Vec<&str> = audit.iter().map(|a| a.action.as_str()).collect();
+    for action in [
+        "client.totp_enabled",
+        "client.totp_disabled",
+        "client.totp_reset",
+    ] {
+        assert!(actions.contains(&action), "{actions:?}");
+    }
+    let reset = audit
+        .iter()
+        .find(|a| a.action == "client.totp_reset")
+        .unwrap();
+    assert_eq!(reset.details["revoked_sessions"], 1);
+    assert_eq!(reset.details["rejected_logins"], 1);
+    drop(conn);
     env.db.cleanup().await;
 }
 

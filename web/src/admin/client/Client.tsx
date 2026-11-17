@@ -17,7 +17,7 @@ import './client.css';
 const FIRST_PAGE = 5;
 const MORE_PAGE = 20;
 
-type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'delete-sub' | 'delete-client';
+type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'delete-sub' | 'delete-client' | 'reset-2fa';
 
 function fingerprint(card: ClientCard): string {
   return JSON.stringify(card.subscriptions.map((s) => [s.id, s.tariff_id, s.mirror.expire_at, s.ended_at, s.period_days]));
@@ -544,6 +544,9 @@ function ClientDesktop() {
                     Заблокировать
                   </button>
                 )}
+                <button type="button" className="b36 bad hov" onClick={() => setDialog('reset-2fa')} disabled={!card.two_factor.enabled}>
+                  Сбросить 2FA
+                </button>
                 {moneyOk && sub ? (
                   <button type="button" className="b36 bad hov" onClick={() => setDialog('delete-sub')}>
                     Удалить подписку
@@ -555,7 +558,10 @@ function ClientDesktop() {
                   </button>
                 ) : null}
               </div>
-              {blocked && card.client.block_reason ? <p className="cap" style={{ paddingTop: 10 }}>Причина блокировки: {card.client.block_reason}</p> : null}
+              <p className="cap" style={{ paddingTop: 10 }}>
+                {card.two_factor.enabled ? `2FA включена${card.two_factor.enabled_at ? ` ${dateLong(card.two_factor.enabled_at)}` : ''}` : '2FA у клиента не включена'}
+              </p>
+              {blocked && card.client.block_reason ? <p className="cap" style={{ paddingTop: 4 }}>Причина блокировки: {card.client.block_reason}</p> : null}
             </details>
           ) : null}
         </aside>
@@ -612,6 +618,21 @@ function ClientDesktop() {
             await api(`/api/admin/subscriptions/${sub.id}/actions/delete`, { method: 'POST', body: {} });
             setDialog('');
             setNotice('Подписка удалена');
+            await loadCard();
+            refreshHistory();
+          }}
+        />
+      ) : null}
+      {dialog === 'reset-2fa' ? (
+        <ConfirmDialog
+          title="Сбросить 2FA"
+          text="Клиент войдёт в кабинет на сайте без кода из приложения и сможет заново включить защиту в разделе «Безопасность». Все входы в кабинет на сайте закроются, мини-приложение в Telegram продолжит работать."
+          confirm="Сбросить 2FA"
+          onClose={() => setDialog('')}
+          run={async () => {
+            await api(`/api/admin/clients/${clientId}/totp/reset`, { method: 'POST', body: {} });
+            setDialog('');
+            setNotice('2FA сброшена: при следующем входе на сайт код не понадобится');
             await loadCard();
             refreshHistory();
           }}

@@ -222,6 +222,7 @@ pub struct ClientCard {
     pub tariffs: Vec<TariffBrief>,
     pub stats: CardStats,
     pub bot_available: bool,
+    pub two_factor: crate::two_factor::TwoFactor,
 }
 
 const BLOCKED_REASON: &str = "клиент заблокирован";
@@ -284,7 +285,7 @@ async fn cancel_open_invoices(tx: &mut Tx, client_id: ClientId) -> ServiceResult
 }
 
 pub struct ClientOps<'a> {
-    services: &'a Services,
+    pub(crate) services: &'a Services,
 }
 
 impl<'a> ClientOps<'a> {
@@ -359,6 +360,7 @@ impl<'a> ClientOps<'a> {
             })
             .collect();
         let stats = conn.clients().card_stats(id, currency).await?;
+        let two_factor = crate::two_factor::TwoFactor::of(conn.clients().totp(id).await?.as_ref());
         Ok(ClientCard {
             client,
             identities,
@@ -375,6 +377,7 @@ impl<'a> ClientOps<'a> {
                 miniapp_seen_at: stats.miniapp_seen_at,
             },
             bot_available: self.services.bot_token().is_some(),
+            two_factor,
         })
     }
 

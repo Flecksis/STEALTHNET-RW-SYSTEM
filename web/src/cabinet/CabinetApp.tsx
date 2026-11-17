@@ -10,6 +10,7 @@ import type { Site } from '../lib/types';
 import { Login } from './Login';
 import type { ClientMe } from './model';
 import { Pay } from './Pay';
+import { SecurityPage } from './Security';
 import { SubscriptionPage } from './Subscription';
 import './cabinet.css';
 
@@ -135,6 +136,7 @@ export function CabinetApp() {
           <Routes>
             <Route index element={<SubscriptionPage />} />
             <Route path="pay" element={<Pay />} />
+            <Route path="security" element={<SecurityPage />} />
             <Route path="*" element={<SubscriptionPage />} />
           </Routes>
         </main>
@@ -153,6 +155,9 @@ const TABS: Array<{ key: string; label: string; to: string }> = [
 ];
 
 function currentTab(path: string, hash: string): string {
+  if (path.startsWith('/cabinet/security')) {
+    return 'security';
+  }
   if (path.startsWith('/cabinet/pay')) {
     return 'pay';
   }
@@ -235,6 +240,10 @@ function Header() {
             </button>
             {open ? (
               <div className="cb-pop" role="menu">
+                <Link to="/cabinet/security" role="menuitem" className="cb-pop-item plain hov" onClick={() => setOpen(false)}>
+                  <Icon name="sliders" size={18} />
+                  Безопасность
+                </Link>
                 <button type="button" role="menuitem" className="cb-pop-item hov" onClick={() => void logout()}>
                   <Icon name="logout" size={18} />
                   Выйти
@@ -274,6 +283,9 @@ function PhoneHeader() {
               {t.label}
             </Link>
           ))}
+          <Link to="/cabinet/security" className="cb-menu-item" aria-current={location.pathname.startsWith('/cabinet/security') ? 'page' : undefined}>
+            Безопасность
+          </Link>
           <button type="button" className="cb-menu-item" onClick={() => void logout()}>
             Выйти
           </button>

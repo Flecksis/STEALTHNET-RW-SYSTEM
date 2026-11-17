@@ -16,7 +16,7 @@ import './phone.css';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
-type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'limits' | 'reissue' | 'block' | 'delete-sub' | 'delete';
+type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 type SheetItem = { key: Dialogs; icon: IconName; label: string };
@@ -75,6 +75,7 @@ export function ClientPhone() {
   const navigate = useNavigate();
   const { can, me } = useSession();
   const writable = can('clients_write');
+  const moneyOk = can('money');
   const [card, setCard] = useState<ClientCard | null>(null);
   const [details, setDetails] = useState<SubscriptionDetails | null>(null);
   const [detailsKey, setDetailsKey] = useState(0);
@@ -733,23 +734,31 @@ export function ClientPhone() {
           </summary>
           <div className="pc-danger-grid">
             {blocked ? (
-              <button type="button" className={sub ? 'pc-dbtn neutral press' : 'pc-dbtn neutral wide press'} onClick={() => void unblock()} disabled={busy}>
+              <button type="button" className="pc-dbtn neutral press" onClick={() => void unblock()} disabled={busy}>
                 Разблокировать
               </button>
             ) : (
-              <button type="button" className={sub ? 'pc-dbtn press' : 'pc-dbtn wide press'} onClick={() => setDialog('block')}>
+              <button type="button" className="pc-dbtn press" onClick={() => setDialog('block')}>
                 Заблокировать
               </button>
             )}
-            {sub ? (
-              <button type="button" className="pc-dbtn press" onClick={() => setDialog('delete-sub')}>
+            <button type="button" className="pc-dbtn press" onClick={() => setDialog('reset-2fa')} disabled={!card.two_factor.enabled}>
+              Сбросить 2FA
+            </button>
+            {moneyOk && sub ? (
+              <button type="button" className="pc-dbtn wide press" onClick={() => setDialog('delete-sub')}>
                 Удалить подписку
               </button>
             ) : null}
-            <button type="button" className="pc-dbtn wide press" onClick={() => setDialog('delete')}>
-              Удалить клиента
-            </button>
+            {moneyOk ? (
+              <button type="button" className="pc-dbtn wide press" onClick={() => setDialog('delete')}>
+                Удалить клиента
+              </button>
+            ) : null}
           </div>
+          <p className="pc-small pc-muted pc-danger-note">
+            {card.two_factor.enabled ? `2FA включена${card.two_factor.enabled_at ? ` ${dateLong(card.two_factor.enabled_at)}` : ''}` : '2FA у клиента не включена'}
+          </p>
         </details>
       ) : null}
 
@@ -872,6 +881,21 @@ export function ClientPhone() {
             setDialog('');
             show({ kind: 'info', head: 'Клиент заблокирован' });
             void loadCard();
+            void loadHistory();
+          }}
+        />
+      ) : null}
+      {dialog === 'reset-2fa' ? (
+        <ConfirmDialog
+          title="Сбросить 2FA"
+          text="Клиент войдёт в кабинет на сайте без кода из приложения и сможет заново включить защиту в разделе «Безопасность». Все входы в кабинет на сайте закроются, мини-приложение в Telegram продолжит работать."
+          confirm="Сбросить 2FA"
+          onClose={() => setDialog('')}
+          run={async () => {
+            await api(`/api/admin/clients/${clientId}/totp/reset`, { method: 'POST', body: {} });
+            setDialog('');
+            show({ kind: 'info', head: '2FA сброшена,', tail: ' при следующем входе код не понадобится' });
+            await loadCard();
             void loadHistory();
           }}
         />

@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clients/{id}/delete", post(delete_client))
         .route("/clients/{id}/block", post(block))
         .route("/clients/{id}/unblock", post(unblock))
+        .route("/clients/{id}/totp/reset", post(reset_two_factor))
         .route("/subscriptions/{id}", get(subscription))
         .route(
             "/subscriptions/{id}/actions/{action}",
@@ -324,6 +325,20 @@ async fn unblock(
         .services
         .clients()
         .unblock(ClientId(id), admin.actor())
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn reset_two_factor(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::ClientsWrite)?;
+    state
+        .services
+        .clients()
+        .reset_two_factor(ClientId(id), admin.actor())
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

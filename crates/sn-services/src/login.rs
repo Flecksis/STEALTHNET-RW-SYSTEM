@@ -2,6 +2,7 @@ use crate::Actor;
 use crate::auth::{Auth, CLIENT_SESSION_DAYS, ClientLogin, RequestMeta, token_hash};
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::rules;
+use crate::two_factor::{CabinetLogin, cabinet_session};
 use chrono::{DateTime, Duration, Utc};
 use rand::{Rng, RngCore};
 use serde::Serialize;
@@ -63,8 +64,16 @@ pub struct TelegramLoginConfirmed {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum TelegramLoginStatus {
-    Pending { expires_at: DateTime<Utc> },
-    Confirmed { login: ClientLogin },
+    Pending {
+        expires_at: DateTime<Utc>,
+    },
+    Confirmed {
+        login: ClientLogin,
+    },
+    TotpRequired {
+        challenge: String,
+        expires_at: DateTime<Utc>,
+    },
     Rejected,
     Expired,
 }
@@ -163,7 +172,7 @@ fn account_title(profile: &TelegramProfile) -> String {
     }
 }
 
-async fn issue_session(
+pub(crate) async fn issue_session(
     tx: &mut Tx,
     client_id: ClientId,
     now: DateTime<Utc>,
@@ -387,9 +396,15 @@ impl<'a> Auth<'a> {
                 .bind(now)
                 .execute(tx.conn())
                 .await?;
-                let login = issue_session(&mut tx, client_id, now, meta, false).await?;
+                let status = match cabinet_session(&mut tx, client_id, now, meta, false).await? {
+                    CabinetLogin::Session(login) => TelegramLoginStatus::Confirmed { login },
+                    CabinetLogin::TotpRequired(totp) => TelegramLoginStatus::TotpRequired {
+                        challenge: totp.challenge,
+                        expires_at: totp.expires_at,
+                    },
+                };
                 tx.commit().await?;
-                return Ok(TelegramLoginStatus::Confirmed { login });
+                return Ok(status);
             }
             _ => TelegramLoginStatus::Expired,
         };
@@ -456,7 +471,7 @@ impl<'a> Auth<'a> {
         email: &str,
         code: &str,
         meta: &RequestMeta,
-    ) -> ServiceResult<ClientLogin> {
+    ) -> ServiceResult<CabinetLogin> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
@@ -534,7 +549,7 @@ impl<'a> Auth<'a> {
         .bind(now)
         .execute(tx.conn())
         .await?;
-        let login = issue_session(&mut tx, client_id, now, meta, created).await?;
+        let login = cabinet_session(&mut tx, client_id, now, meta, created).await?;
         tx.commit().await?;
         Ok(login)
     }

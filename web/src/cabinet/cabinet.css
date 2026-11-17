@@ -1427,3 +1427,48 @@
 .cb-pay .cb-col.right {
   flex: 1 1 370px;
 }
+
+.cb-pop-item.plain {
+  color: var(--ink);
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+.cb-secure {
+  width: 100%;
+  max-width: 680px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.cb-secure-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cb-secure .qr {
+  align-self: flex-start;
+  border-radius: 12px;
+}
+
+.cb-secure .cb-field input {
+  max-width: 240px;
+}
+
+.cb-secure .cb-link {
+  height: auto;
+  min-height: 44px;
+  padding: 10px 14px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.cb-login-help {
+  font-size: 14px;
+}
+
+.cb-solo-box .cb-error {
+  color: var(--bad);
+}

@@ -496,7 +496,17 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
-  padding: 2px 16px 16px;
+  padding: 2px 16px 0;
+}
+
+.pc-danger-note {
+  margin: 0;
+  padding: 10px 16px 16px;
+}
+
+.pc-dbtn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .pc-dbtn {

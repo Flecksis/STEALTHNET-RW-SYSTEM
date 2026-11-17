@@ -335,7 +335,7 @@ impl<'a> Auth<'a> {
         Ok(result)
     }
 
-    async fn forgive(&self, strikes: &[Strike]) -> ServiceResult<()> {
+    pub(crate) async fn forgive(&self, strikes: &[Strike]) -> ServiceResult<()> {
         let limits = self.services.limits();
         for strike in strikes {
             limits.forgive(strike).await?;
@@ -343,7 +343,7 @@ impl<'a> Auth<'a> {
         Ok(())
     }
 
-    async fn strike_both(
+    pub(crate) async fn strike_both(
         &self,
         first: (RateRule, &str),
         second: (RateRule, &str),

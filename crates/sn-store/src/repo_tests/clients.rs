@@ -636,3 +636,84 @@ async fn история_без_повторов_и_сводка_для_карт�
     drop(conn);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn второй_фактор_клиента_включается_отсекает_повтор_и_сбрасывается() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let id = client(&mut conn, &Person::NOBODY).await;
+    assert!(conn.clients().totp(id).await.unwrap().is_none());
+    assert!(!conn.clients().use_totp_step(id, 10).await.unwrap());
+    assert!(!conn.clients().clear_totp(id).await.unwrap());
+    let sealed = SealedSecret {
+        nonce: vec![1; 12],
+        ciphertext: vec![2; 40],
+    };
+    let at = Utc::now();
+    conn.clients().enable_totp(id, &sealed, at).await.unwrap();
+    let totp = conn.clients().totp(id).await.unwrap().unwrap();
+    assert_eq!(totp.secret, sealed);
+    assert_eq!(
+        totp.enabled_at.map(|t| t.timestamp_micros()),
+        Some(at.timestamp_micros())
+    );
+    assert!(conn.clients().use_totp_step(id, 100).await.unwrap());
+    assert!(!conn.clients().use_totp_step(id, 100).await.unwrap());
+    assert!(!conn.clients().use_totp_step(id, 99).await.unwrap());
+    assert!(conn.clients().use_totp_step(id, 101).await.unwrap());
+    let other = SealedSecret {
+        nonce: vec![3; 12],
+        ciphertext: vec![4; 40],
+    };
+    conn.clients().enable_totp(id, &other, at).await.unwrap();
+    assert_eq!(
+        conn.clients().totp(id).await.unwrap().unwrap().secret,
+        other
+    );
+    assert!(conn.clients().use_totp_step(id, 50).await.unwrap());
+    for (channel, token) in [
+        (SessionChannel::Cabinet, b"cabinet-token".to_vec()),
+        (SessionChannel::Miniapp, b"miniapp-token".to_vec()),
+    ] {
+        conn.sessions()
+            .create_client(
+                id,
+                channel,
+                SessionScope::Full,
+                &NewSession {
+                    token_hash: token,
+                    expires_at: Utc::now() + Duration::days(1),
+                    ip: None,
+                    user_agent: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert!(conn.clients().clear_totp(id).await.unwrap());
+    assert!(conn.clients().totp(id).await.unwrap().is_none());
+    assert!(!conn.clients().clear_totp(id).await.unwrap());
+    assert_eq!(
+        conn.sessions()
+            .revoke_client_channel(id, SessionChannel::Cabinet)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        conn.sessions()
+            .client_by_token(b"cabinet-token")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        conn.sessions()
+            .client_by_token(b"miniapp-token")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    drop(conn);
+    db.cleanup().await;
+}

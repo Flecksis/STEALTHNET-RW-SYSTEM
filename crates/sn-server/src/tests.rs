@@ -1054,6 +1054,163 @@ async fn платежи_список_и_ручная_отметка_через_h
 }
 
 #[tokio::test]
+async fn второй_фактор_клиента_через_http_и_сброс_в_админке() {
+    let Some(h) = http().await else { return };
+    h.set_bot().await;
+    let client = h.client(5_093_118_422).await;
+    let cabinet = h.client_token(client).await;
+    let (status, me) = h.get("/api/client/me", &cabinet).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(
+        me["two_factor"],
+        json!({ "enabled": false, "enabled_at": null })
+    );
+    let (status, setup) = h
+        .write(
+            Method::POST,
+            "/api/client/security/totp/setup",
+            &cabinet,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{setup}");
+    let secret = setup["secret"].as_str().unwrap().to_string();
+    assert!(
+        setup["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/STEALTHNET:%40morozov_a?secret=")
+    );
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/client/security/totp/enable",
+            &cabinet,
+            json!({ "secret": secret, "code": totp_code(&secret, start()) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["enabled"], true);
+    let (status, security) = h.get("/api/client/security", &cabinet).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(security["enabled"], true);
+
+    let (status, _, started) = h
+        .send(Method::POST, "/api/client/auth/telegram", None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let poll = started["poll_token"].as_str().unwrap().to_string();
+    let link = started["link"]
+        .as_str()
+        .unwrap()
+        .rsplit('=')
+        .next()
+        .unwrap()
+        .to_string();
+    h.services()
+        .auth()
+        .confirm_telegram_login(
+            &link,
+            &TelegramProfile {
+                id: 5_093_118_422,
+                username: Some("morozov_a".into()),
+                first_name: Some("Алексей".into()),
+                last_name: None,
+                language_code: Some("ru".into()),
+                is_premium: false,
+            },
+        )
+        .await
+        .unwrap();
+    let (status, headers, body) = h
+        .send(
+            Method::POST,
+            "/api/client/auth/telegram/status",
+            None,
+            Some(json!({ "poll_token": poll })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "totp_required");
+    assert!(headers.get(header::SET_COOKIE).is_none());
+    let challenge = body["challenge"].as_str().unwrap().to_string();
+    let (status, _, body) = h
+        .send(
+            Method::POST,
+            "/api/client/auth/totp",
+            None,
+            Some(json!({ "challenge": challenge, "code": "12" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "auth.totp_code");
+    let later = start() + Duration::seconds(30);
+    h.clock.set(later);
+    let (status, headers, body) = h
+        .send(
+            Method::POST,
+            "/api/client/auth/totp",
+            None,
+            Some(json!({ "challenge": challenge, "code": totp_code(&secret, later) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        headers[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with("sn_client=")
+    );
+    let second = body["token"].as_str().unwrap().to_string();
+    assert_eq!(h.get("/api/client/me", &second).await.0, StatusCode::OK);
+
+    let owner = h.owner().await;
+    let (status, card) = h
+        .get(&format!("/api/admin/clients/{}", client.0), &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(card["two_factor"]["enabled"], true);
+    let reset = format!("/api/admin/clients/{}/totp/reset", client.0);
+    let readonly = h.admin("readonly@example.com", AdminRole::ReadOnly).await;
+    let (status, _) = h.write(Method::POST, &reset, &readonly, json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h.write(Method::POST, &reset, &owner, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        h.get("/api/client/me", &second).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.get("/api/client/me", &cabinet).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, card) = h
+        .get(&format!("/api/admin/clients/{}", client.0), &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(card["two_factor"]["enabled"], false);
+    let (status, body) = h.write(Method::POST, &reset, &owner, json!({})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "client.totp_not_enabled");
+    let (status, history) = h
+        .get(
+            &format!("/api/admin/clients/{}/history?limit=20", client.0),
+            &owner,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let actions: Vec<&str> = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"client.totp_reset"), "{actions:?}");
+    assert!(actions.contains(&"client.totp_enabled"), "{actions:?}");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn кабинет_входит_через_telegram_и_выходит() {
     let Some(h) = http().await else { return };
     let (status, _, body) = h

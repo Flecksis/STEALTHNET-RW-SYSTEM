@@ -30,7 +30,10 @@ export type ClientMe = {
   currency: Currency;
   channel: 'cabinet' | 'miniapp';
   full_access: boolean;
+  two_factor: TwoFactor;
 };
+
+export type TwoFactor = { enabled: boolean; enabled_at: string | null };
 
 export type Device = { hwid: string; title: string | null; platform: string | null; os_version: string | null; app: string | null; added_at: string | null };
 

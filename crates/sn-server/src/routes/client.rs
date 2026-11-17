@@ -15,6 +15,7 @@ use sn_domain::support::{Ticket, TicketChannel};
 use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult};
 use sn_services::login::TelegramLoginStatus;
 use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
+use sn_services::two_factor::{CabinetLogin, TwoFactor};
 use uuid::Uuid;
 
 pub fn routes() -> Router<AppState> {
@@ -24,8 +25,13 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/telegram/status", post(telegram_status))
         .route("/auth/email", post(email_start))
         .route("/auth/email/verify", post(email_verify))
+        .route("/auth/totp", post(totp_login))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
+        .route("/security", get(security))
+        .route("/security/totp/setup", post(totp_setup))
+        .route("/security/totp/enable", post(totp_enable))
+        .route("/security/totp/disable", post(totp_disable))
         .route("/catalog", get(catalog))
         .route("/quote", post(quote))
         .route("/checkout", post(checkout))
@@ -153,7 +159,98 @@ async fn email_verify(
         .auth()
         .email_login_verify(&body.email, &body.code, &meta)
         .await?;
+    Ok(match &login {
+        CabinetLogin::Session(session) => session_response(&state, session, &login),
+        CabinetLogin::TotpRequired(_) => cookies::with_cookie(None, Json(&login)),
+    })
+}
+
+#[derive(Deserialize)]
+struct TotpLogin {
+    challenge: String,
+    code: String,
+}
+
+async fn totp_login(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<TotpLogin>,
+) -> ApiResult<Response> {
+    let login = state
+        .services
+        .auth()
+        .cabinet_totp_login(&body.challenge, &body.code, &meta)
+        .await?;
     Ok(session_response(&state, &login, &login))
+}
+
+async fn security(
+    client: CurrentClient,
+    State(state): State<AppState>,
+) -> ApiResult<Json<TwoFactor>> {
+    client.require_full()?;
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .client_two_factor(client.0.client_id)
+            .await?,
+    ))
+}
+
+async fn totp_setup(
+    client: CurrentClient,
+    State(state): State<AppState>,
+) -> ApiResult<Json<sn_services::auth::TotpSetup>> {
+    client.require_full()?;
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .client_totp_setup(client.0.client_id)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct TotpEnable {
+    secret: String,
+    code: String,
+}
+
+async fn totp_enable(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<TotpEnable>,
+) -> ApiResult<Json<TwoFactor>> {
+    client.require_full()?;
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .client_totp_enable(client.0.client_id, &body.secret, &body.code)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct TotpDisable {
+    code: String,
+}
+
+async fn totp_disable(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<TotpDisable>,
+) -> ApiResult<Json<TwoFactor>> {
+    client.require_full()?;
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .client_totp_disable(client.0.client_id, &body.code)
+            .await?,
+    ))
 }
 
 async fn logout(
@@ -187,6 +284,7 @@ async fn me(
         "currency": state.services.settings().currency,
         "channel": client.0.channel,
         "full_access": client.0.full_access,
+        "two_factor": card.two_factor,
     })))
 }
 

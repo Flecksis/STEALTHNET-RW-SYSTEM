@@ -218,6 +218,21 @@ impl<'c> SessionsRepo<'c> {
         Ok(done.rows_affected() > 0)
     }
 
+    pub async fn revoke_client_channel(
+        &mut self,
+        client_id: ClientId,
+        channel: SessionChannel,
+    ) -> StoreResult<u64> {
+        let done = sqlx::query(
+            "UPDATE client_sessions SET revoked_at = now() WHERE client_id = $1 AND channel = $2 AND revoked_at IS NULL",
+        )
+        .bind(client_id.0)
+        .bind(channel.as_str())
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     pub async fn revoke_all_client(&mut self, client_id: ClientId) -> StoreResult<u64> {
         let done = sqlx::query(
             "UPDATE client_sessions SET revoked_at = now() WHERE client_id = $1 AND revoked_at IS NULL",
