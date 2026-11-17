@@ -7,6 +7,7 @@ ENV_FILE="$DEPLOY/.env"
 IMAGE_REPO=${SN_IMAGE_REPO:-ghcr.io/stealthnet-app/stealthnet-rw-system}
 HEALTH_TIMEOUT=${SN_HEALTH_TIMEOUT:-300}
 USE_PREBUILT=0
+TTY_SAVED=""
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$(printf '\033[1m')
@@ -48,6 +49,8 @@ usage() {
 STEALTHNET RW SYSTEM — установка
 
   ./install.sh                   установить или продолжить установку
+  ./install.sh --domain          указать или сменить домен панели
+  ./install.sh --owner-email     сменить почту владельца
   ./install.sh --reset-password  выдать владельцу новый пароль
   ./install.sh --help            эта справка
 
@@ -60,19 +63,52 @@ can_ask() {
     [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null
 }
 
+on_tty() {
+    if [ -t 0 ]; then
+        "$@"
+    else
+        "$@" < /dev/tty
+    fi
+}
+
+restore_tty() {
+    if [ -n "$TTY_SAVED" ]; then
+        on_tty stty "$TTY_SAVED" 2>/dev/null || true
+        TTY_SAVED=""
+    fi
+}
+
+drain_input() {
+    TTY_SAVED=$(on_tty stty -g 2>/dev/null) || TTY_SAVED=""
+    if [ -z "$TTY_SAVED" ]; then
+        return 0
+    fi
+    if on_tty stty -icanon -echo min 0 time 0 2>/dev/null; then
+        while [ "$(on_tty dd bs=256 count=1 2>/dev/null | wc -c | tr -d ' ')" != "0" ]; do
+            :
+        done
+    fi
+    restore_tty
+}
+
 ask() {
     ANSWER=""
-    printf '%s%s%s ' "$BOLD" "$1" "$RESET"
-    if [ -t 0 ]; then
-        read -r ANSWER || ANSWER=""
-    elif { read -r ANSWER < /dev/tty; } 2>/dev/null; then
-        :
-    else
-        printf '\n'
+    if ! can_ask; then
         die "некому ответить на вопрос «$1»" \
             "Запустите установку в терминале или задайте SN_OWNER_EMAIL и SN_DOMAIN."
     fi
+    drain_input
+    printf '%s%s%s ' "$BOLD" "$1" "$RESET"
+    if [ -t 0 ]; then
+        read -r ANSWER || ANSWER=""
+    else
+        read -r ANSWER < /dev/tty || ANSWER=""
+    fi
+    ANSWER=$(printf '%s' "$ANSWER" | tr -d '\r')
 }
+
+trap restore_tty EXIT
+trap 'restore_tty; exit 130' INT TERM
 
 env_value() {
     sed -n "s|^$1=||p" "$ENV_FILE" | tail -n 1
@@ -170,6 +206,26 @@ valid_domain() {
     printf '%s' "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?$'
 }
 
+ask_domain() {
+    while :; do
+        ask "Домен:"
+        domain=$(clean_domain "$ANSWER")
+        if [ -z "$domain" ]; then
+            if [ "$1" = "optional" ]; then
+                ask "Домен не введён. Продолжить без него? [д/Н]"
+                case "$ANSWER" in
+                    д*|Д*|y*|Y*) return 0 ;;
+                esac
+            fi
+            continue
+        fi
+        if valid_domain "$domain"; then
+            return 0
+        fi
+        hint "Не похоже на домен. Нужен вид panel.example.com, без пробелов."
+    done
+}
+
 prepare_domain() {
     step "Адрес панели"
     current=$(env_value SN_PUBLIC_URL)
@@ -181,20 +237,12 @@ prepare_domain() {
         domain=$(clean_domain "$SN_DOMAIN")
     elif can_ask; then
         hint "Домен, по которому будет открываться панель, например panel.example.com."
-        hint "Если домена ещё нет, нажмите Enter — его можно указать позже."
-        while :; do
-            ask "Домен:"
-            domain=$(clean_domain "$ANSWER")
-            if [ -z "$domain" ] || valid_domain "$domain"; then
-                break
-            fi
-            hint "Не похоже на домен. Нужен вид panel.example.com, без пробелов."
-        done
+        ask_domain optional
     else
         domain=""
     fi
     if [ -z "$domain" ]; then
-        done_line "укажете позже в deploy/.env, строка SN_PUBLIC_URL"
+        done_line "без домена; указать позже: ./install.sh --domain"
         return 0
     fi
     if ! valid_domain "$domain"; then
@@ -277,27 +325,52 @@ source_changed() {
     [ -n "$changes" ]
 }
 
+use_image() {
+    docker pull "$1" 2>/dev/null || return 1
+    if [ "$(docker image inspect -f '{{.Architecture}}' "$1" 2>/dev/null)" != "$(host_arch)" ]; then
+        docker image rm "$1" >/dev/null 2>&1 || true
+        WRONG_ARCH=1
+        return 1
+    fi
+    pinned=$1
+    if [ "${2:-}" = "pin" ]; then
+        digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$1" 2>/dev/null || true)
+        case "$digest" in
+            *@sha256:*) pinned=$digest ;;
+        esac
+    fi
+    set_env SN_IMAGE "$pinned"
+    USE_PREBUILT=1
+}
+
 prepare_image() {
     step "Сборка"
-    commit=""
-    if [ -z "${SN_BUILD:-}" ] && ! source_changed; then
-        commit=$(source_commit | tr -d ' \n')
+    WRONG_ARCH=0
+    if [ -n "${SN_BUILD:-}" ] || source_changed; then
+        set_env SN_IMAGE ""
+        done_line "соберу из исходников: это 10–20 минут"
+        return 0
     fi
-    if printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
-        image="$IMAGE_REPO:sha-$commit"
-        hint "Скачиваю готовую сборку."
-        if docker pull "$image" 2>/dev/null; then
-            if [ "$(docker image inspect -f '{{.Architecture}}' "$image" 2>/dev/null)" = "$(host_arch)" ]; then
-                set_env SN_IMAGE "$image"
-                USE_PREBUILT=1
-                done_line "готовая сборка скачана"
-                return 0
-            fi
-            docker image rm "$image" >/dev/null 2>&1 || true
-            hint "Готовая сборка есть, но для другого процессора."
-        fi
+    hint "Скачиваю готовую сборку."
+    commit=$(source_commit | tr -d ' \n')
+    if printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$' && use_image "$IMAGE_REPO:sha-$commit"; then
+        done_line "готовая сборка скачана"
+        return 0
+    fi
+    current=$(env_value SN_IMAGE)
+    if [ -n "$current" ] && docker image inspect "$current" >/dev/null 2>&1; then
+        USE_PREBUILT=1
+        done_line "новой сборки пока нет, оставляю установленную"
+        return 0
+    fi
+    if use_image "$IMAGE_REPO:main" pin; then
+        done_line "готовая сборка скачана"
+        return 0
     fi
     set_env SN_IMAGE ""
+    if [ "$WRONG_ARCH" -eq 1 ]; then
+        hint "Готовая сборка есть только для другого процессора."
+    fi
     done_line "готовой сборки для этого сервера нет, соберу из исходников: это 10–20 минут"
 }
 
@@ -389,6 +462,8 @@ summary() {
     printf '\n%sГотово.%s\n\n' "$BOLD" "$RESET"
     if [ -n "$url" ]; then
         printf '  Адрес панели:      %s\n' "$url"
+    else
+        printf '  Адрес панели:      не задан, указать: ./install.sh --domain\n'
     fi
     printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
     if [ -n "${OWNER_PASSWORD:-}" ]; then
@@ -445,8 +520,60 @@ reset_password() {
     printf '\n%sПароль показан один раз — сохраните его.%s\n' "$BOLD" "$RESET"
 }
 
+change_domain() {
+    printf '%sSTEALTHNET RW SYSTEM — домен панели%s\n\n' "$BOLD" "$RESET"
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите ./install.sh"
+    fi
+    step "Адрес панели"
+    current=$(env_value SN_PUBLIC_URL)
+    if [ -n "$current" ]; then
+        hint "Сейчас: $current"
+    fi
+    if [ "${SN_DOMAIN+set}" = "set" ]; then
+        domain=$(clean_domain "$SN_DOMAIN")
+    else
+        hint "Домен, по которому будет открываться панель, например panel.example.com."
+        ask_domain required
+    fi
+    if ! valid_domain "$domain"; then
+        die "«$domain» не похоже на домен" "Нужен вид panel.example.com."
+    fi
+    set_env SN_PUBLIC_URL "https://$domain"
+    done_line "https://$domain"
+    step "Запуск"
+    if ! compose up -d --no-build; then
+        die "перезапуск не прошёл" "Сообщение об ошибке — выше."
+    fi
+    wait_healthy
+    printf '\n  Адрес панели:      https://%s\n' "$domain"
+}
+
+change_owner_email() {
+    printf '%sSTEALTHNET RW SYSTEM — почта владельца%s\n\n' "$BOLD" "$RESET"
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите ./install.sh"
+    fi
+    wait_healthy
+    step "Владелец"
+    find_owner
+    if [ -z "$EXISTING_OWNER" ]; then
+        die "владелец ещё не создан" "Запустите ./install.sh"
+    fi
+    hint "Сейчас: $EXISTING_OWNER"
+    read_email
+    query="UPDATE admins SET email = :'email' WHERE id = (SELECT id FROM admins WHERE role = 'owner' ORDER BY id LIMIT 1);"
+    if ! printf '%s\n' "$query" | compose exec -T postgres psql -U stealthnet -d stealthnet -q -v ON_ERROR_STOP=1 -v "email=$NEW_EMAIL" -f - >/dev/null 2>&1; then
+        die "не удалось сменить почту" "Возможно, эта почта уже занята другим администратором."
+    fi
+    done_line "почта заменена, пароль прежний"
+    printf '\n  Почта владельца:   %s\n' "$NEW_EMAIL"
+}
+
 case "${1:-}" in
     "") install ;;
+    --domain) change_domain ;;
+    --owner-email) change_owner_email ;;
     --reset-password) reset_password ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

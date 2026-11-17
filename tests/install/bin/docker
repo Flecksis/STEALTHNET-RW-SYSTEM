@@ -1,0 +1,64 @@
+#!/bin/sh
+STATE=${FAKE_STATE:?}
+printf '%s\n' "$*" >> "$STATE/calls.log"
+case "$*" in
+    "compose version"*) exit 0 ;;
+    "info -f"*) echo "${FAKE_HOST_ARCH:-x86_64}"; exit 0 ;;
+    "info"*) exit "${FAKE_INFO_EXIT:-0}" ;;
+    pull*)
+        all="$*"
+        ref=${all##* }
+        ok=1
+        if [ "${FAKE_PULL_EXIT:-1}" -eq 0 ]; then ok=0; fi
+        if [ -n "${FAKE_PULL_OK:-}" ]; then
+            case "$ref" in *"$FAKE_PULL_OK") ok=0 ;; esac
+        fi
+        if [ "$ok" -eq 0 ]; then
+            echo "[fake] pulled $ref"
+            printf '%s\n' "$ref" "${FAKE_DIGEST:-ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:1111}" >> "$STATE/images"
+        else
+            echo "manifest unknown" >&2
+        fi
+        exit "$ok" ;;
+    "image inspect -f {{.Architecture}}"*) echo "${FAKE_IMAGE_ARCH:-amd64}"; exit 0 ;;
+    "image inspect -f {{index .RepoDigests 0}}"*) echo "${FAKE_DIGEST:-ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:1111}"; exit 0 ;;
+    "image inspect"*)
+        all="$*"
+        ref=${all##* }
+        grep -Fxq "$ref" "$STATE/images" 2>/dev/null
+        exit $? ;;
+    "image rm"*)
+        all="$*"
+        ref=${all##* }
+        if [ -f "$STATE/images" ]; then grep -Fxv "$ref" "$STATE/images" > "$STATE/images.tmp"; mv "$STATE/images.tmp" "$STATE/images"; fi
+        exit 0 ;;
+    "compose up -d --no-build"*) echo "[fake] starting prebuilt image"; exit "${FAKE_UP_EXIT:-0}" ;;
+    "network inspect remnawave-network"*) exit "${FAKE_REMNA_EXIT:-1}" ;;
+    "compose up -d --build"*) echo "[fake] building image"; sleep "${FAKE_UP_SLEEP:-0}"; exit "${FAKE_UP_EXIT:-0}" ;;
+    "compose ps -q app"*) echo "abc123"; exit 0 ;;
+    inspect*)
+        n=$(cat "$STATE/health_calls" 2>/dev/null || echo 0)
+        n=$((n + 1))
+        echo "$n" > "$STATE/health_calls"
+        if [ "$n" -le "${FAKE_STARTING:-0}" ]; then echo starting; else echo "${FAKE_HEALTH:-healthy}"; fi
+        exit 0 ;;
+    "compose exec -T postgres psql"*" -f -")
+        all="$*"
+        email=${all##*email=}
+        email=${email%% -f -}
+        cat > /dev/null
+        if [ "${FAKE_UPDATE_EXIT:-0}" -eq 0 ]; then printf '%s' "$email" > "$STATE/owner.txt"; fi
+        exit "${FAKE_UPDATE_EXIT:-0}" ;;
+    "compose exec -T postgres psql"*) cat "$STATE/owner.txt" 2>/dev/null; exit "${FAKE_DB_EXIT:-0}" ;;
+    "compose exec -T app stealthnet create-admin --email "*)
+        all="$*"
+        email=${all##*--email }
+        IFS= read -r pw
+        printf '%s' "$email" > "$STATE/owner.txt"
+        printf '%s' "$pw" > "$STATE/password.txt"
+        echo "Владелец создан"
+        exit 0 ;;
+    "compose logs"*) echo "[fake] logs"; exit 0 ;;
+esac
+echo "fake docker: неизвестный вызов: $*" >&2
+exit 97
