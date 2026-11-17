@@ -31,6 +31,7 @@ rand.workspace = true
 jsonwebtoken.workspace = true
 sqlx.workspace = true
 reqwest.workspace = true
+lettre.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true

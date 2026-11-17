@@ -32,6 +32,7 @@ mod channels;
 mod gram;
 mod hosts;
 mod landing;
+mod mail;
 mod multi_subscriptions;
 mod photos;
 

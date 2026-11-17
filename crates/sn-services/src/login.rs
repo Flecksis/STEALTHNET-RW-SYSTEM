@@ -443,9 +443,24 @@ impl<'a> Auth<'a> {
             .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
-        Err(ServiceError::NotImplemented(
-            "вход по почте: письмо с кодом отправит модуль «Почта», он ещё не подключён",
-        ))
+        let mail = self.services.mail();
+        if !mail.available() {
+            return Err(ServiceError::NotImplemented(
+                "вход по почте: включите и настройте модуль «Почта»",
+            ));
+        }
+        let (code, start) = self.issue_email_code(&email, meta).await?;
+        let brand = self.services.settings().brand_name.clone();
+        let minutes = EMAIL_CODE_TTL_SECONDS / 60;
+        mail.send(&crate::mail::Letter {
+            to: start.email.clone(),
+            subject: format!("Код для входа в {brand}: {code}"),
+            text: format!(
+                "Код для входа в кабинет {brand}: {code}\n\nОн действует {minutes} минут. Если вход запрашивали не вы, просто не используйте код."
+            ),
+        })
+        .await?;
+        Ok(start)
     }
 
     pub async fn issue_email_code(

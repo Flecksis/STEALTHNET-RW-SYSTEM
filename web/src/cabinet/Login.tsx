@@ -204,7 +204,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
             {help}
           </form>
         ) : null}
-        {challenge ? null : (
+        {challenge || site.email_login === false ? null : (
         <div role="group" aria-label="Способ входа" className="cb-seg">
           <button type="button" aria-pressed={mode === 'telegram'} onClick={() => setMode('telegram')}>
             Telegram

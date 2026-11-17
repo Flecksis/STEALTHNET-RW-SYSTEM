@@ -16,7 +16,7 @@ const SECTIONS: Array<{ label: string; to?: string; need?: Permission }> = [
   { label: 'Документы', to: '/admin/settings/documents' },
   { label: 'Лендинг', to: '/admin/settings/landing' },
   { label: 'Кабинет и мини-приложение' },
-  { label: 'Почта и уведомления' },
+  { label: 'Почта и уведомления', to: '/admin/settings/mail' },
   { label: 'Администраторы', to: '/admin/settings/admins', need: 'admins' },
   { label: 'API-ключи', to: '/admin/settings/api-keys' },
   { label: 'Обновления и резервные копии', to: UPDATES_PATH },

@@ -7,6 +7,7 @@ mod clients;
 mod delivery;
 mod infra;
 mod landing;
+mod mail;
 mod money;
 mod overview;
 pub(crate) mod photos;
@@ -29,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .merge(auth::routes())
         .merge(admins::routes())
         .merge(api_keys::routes())
+        .merge(mail::routes())
         .merge(overview::routes())
         .merge(clients::routes())
         .merge(photos::routes())

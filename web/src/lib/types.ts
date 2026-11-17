@@ -24,6 +24,7 @@ export type Site = {
   autorenew_days_before?: number;
   trial?: { enabled: boolean; days: number };
   documents?: Array<{ title: string; url: string }>;
+  email_login?: boolean;
 };
 
 export type Permission =
