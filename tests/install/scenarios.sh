@@ -281,6 +281,8 @@ run "$SHELL_BIN" "$R/install.sh" --domain > "$WORK/out.txt" 2>&1 </dev/null
 [ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "смена домена до установки объяснена" || check no "смена домена до установки"
 run "$SHELL_BIN" "$R/install.sh" --owner-email > "$WORK/out.txt" 2>&1 </dev/null
 [ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "смена почты до установки объяснена" || check no "смена почты до установки"
+run "$SHELL_BIN" "$R/install.sh" start > "$WORK/out.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "запуск до установки объяснён" || check no "запуск до установки"
 
 echo "=== X. короткая команда"
 fresh
@@ -579,6 +581,42 @@ mkdir -p "$R/.git"
 printf '%s\n' "$SHA" > "$R/.git/HEAD"
 run FAKE_GIT_STATUS=" M crates/x.rs" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 grep -q "^commit= date=" "$S/builds" && check ok "изменённые исходники не выдаются за опубликованный коммит" || check no "builds: $(cat "$S/builds" 2>/dev/null)"
+echo "=== AT. запуск, перезапуск, остановка и журнал"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q "$WORK/bin/stealthnet start" "$WORK/out.txt" && check ok "в итоге установки есть команда запуска" || check no "в итоге нет команды запуска"
+: > "$S/calls.log"
+rm -f "$S/health_calls"
+run FAKE_STARTING=2 "$SHELL_BIN" "$R/install.sh" start > "$WORK/start.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "запуск прошёл" || check no "запуск: код $code, $(tail -2 "$WORK/start.txt")"
+grep -q '^compose up -d --no-build --remove-orphans$' "$S/calls.log" && check ok "запуск поднимает контейнеры без сборки и скачивания" || check no "нет запуска контейнеров"
+grep -q '^compose up -d --build' "$S/calls.log" && check no "запуск пересобирает систему" || check ok "запуск ничего не пересобирает"
+grep -q '^pull ' "$S/calls.log" && check no "запуск скачивает сборку" || check ok "запуск ничего не скачивает"
+grep -q 'система запущена и отвечает' "$WORK/start.txt" && check ok "после запуска проверено, что система отвечает" || check no "нет проверки после запуска"
+grep -q 'Адрес панели: *https://panel.test' "$WORK/start.txt" && check ok "после запуска показан адрес" || check no "нет адреса после запуска"
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" restart > "$WORK/restart.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && grep -q '^compose restart$' "$S/calls.log" && check ok "перезапуск прошёл" || check no "перезапуск: код $code, $(tail -2 "$WORK/restart.txt")"
+run FAKE_RESTART_EXIT=1 "$SHELL_BIN" "$R/install.sh" restart > "$WORK/restart2.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'перезапуск не прошёл' "$WORK/restart2.txt" && check ok "сбой перезапуска объяснён" || check no "сбой перезапуска"
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" stop > "$WORK/stop.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 1 ] && grep -q 'stop --yes' "$WORK/stop.txt" && ! grep -q '^compose stop$' "$S/calls.log"; then check ok "без терминала остановка требует --yes"; else check no "остановка без подтверждения: код $code"; fi
+run "$SHELL_BIN" "$R/install.sh" stop --yes > "$WORK/stop2.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 0 ] && grep -q '^compose stop$' "$S/calls.log" && grep -q 'Запустить снова:.*stealthnet start' "$WORK/stop2.txt"; then check ok "остановка с --yes прошла и подсказала запуск"; else check no "остановка с --yes: код $code"; fi
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" logs > "$WORK/logs.txt" 2>&1 </dev/null
+[ $? -eq 0 ] && grep -q '^compose logs --tail 200 app$' "$S/calls.log" && check ok "журнал показывается" || check no "журнал"
+run "$SHELL_BIN" "$R/install.sh" logs -f > "$WORK/logs2.txt" 2>&1 </dev/null
+[ $? -eq 0 ] && grep -q '^compose logs --tail 100 -f app$' "$S/calls.log" && check ok "журнал можно смотреть вживую" || check no "журнал -f"
+run FAKE_INFO_EXIT=1 "$SHELL_BIN" "$R/install.sh" start > "$WORK/start2.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'Docker не отвечает' "$WORK/start2.txt" && grep -q 'sudo .*start' "$WORK/start2.txt" && check ok "без Docker запуск объясняет, что делать" || check no "запуск без Docker"
+env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help.txt" 2>&1 </dev/null
+grep -q '^  stealthnet restart$' "$WORK/help.txt" && grep -q '^  stealthnet logs$' "$WORK/help.txt" && check ok "новые команды есть в справке" || check no "в справке нет новых команд"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi

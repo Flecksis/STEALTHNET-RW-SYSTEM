@@ -110,6 +110,10 @@ usage() {
     printf '  %s\n      скачать новую версию и обновить систему\n' "$(command_for update)"
     printf '  %s\n      показать версию, состояние и итог последнего обновления\n' "$(command_for status)"
     printf '  %s\n      разрешить или запретить обновление из админки\n' "$(command_for 'helper on|off')"
+    printf '  %s\n      запустить систему, например после перезагрузки сервера\n' "$(command_for start)"
+    printf '  %s\n      перезапустить систему\n' "$(command_for restart)"
+    printf '  %s\n      остановить систему\n' "$(command_for stop)"
+    printf '  %s\n      журнал приложения; с -f — следить\n' "$(command_for logs)"
     printf '\nБез вопросов: задайте SN_OWNER_EMAIL и, если нужно, SN_DOMAIN.\n'
     printf 'Собрать из исходников вместо готовой сборки: SN_BUILD=1 %s\n' "$(command_for install)"
 }
@@ -653,6 +657,8 @@ commands_list() {
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
     printf '  %s\n      обновить систему\n' "$(command_for update)"
     printf '  %s\n      состояние и итог последнего обновления\n' "$(command_for status)"
+    printf '  %s\n      запустить, например после перезагрузки сервера\n' "$(command_for start)"
+    printf '  %s\n      перезапустить\n' "$(command_for restart)"
 }
 
 summary() {
@@ -1771,6 +1777,122 @@ cli_update() {
     esac
 }
 
+need_installed() {
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите $(command_for install)"
+    fi
+}
+
+docker_ready() {
+    if ! command -v docker >/dev/null 2>&1; then
+        die "Docker не установлен" \
+            "Установите его командой: curl -fsSL https://get.docker.com | sudo sh"
+    fi
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+        hint "Docker не запущен, запускаю его."
+        systemctl start docker >/dev/null 2>&1 || true
+        if docker info >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    die "Docker не отвечает" \
+        "Если он не запущен: sudo systemctl start docker" \
+        "Если не хватает прав: sudo $(command_for "$1")"
+}
+
+boot_with_server() {
+    if [ "$(id -u)" -ne 0 ] || ! command -v systemctl >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ "$(systemctl is-enabled docker 2>/dev/null)" = "enabled" ]; then
+        return 0
+    fi
+    if systemctl enable docker >/dev/null 2>&1; then
+        hint "Docker теперь запускается вместе с сервером: после перезагрузки система поднимется сама."
+    fi
+}
+
+show_address() {
+    url=$(env_value SN_PUBLIC_URL)
+    if [ -n "$url" ]; then
+        printf '\n  Адрес панели:      %s\n' "$url"
+    fi
+}
+
+start_system() {
+    printf '%sSTEALTHNET RW SYSTEM — запуск%s\n\n' "$BOLD" "$RESET"
+    need_installed
+    docker_ready start
+    step "Запуск"
+    if ! compose up -d --no-build --remove-orphans; then
+        die "запуск не прошёл" "Сообщение об ошибке — выше."
+    fi
+    done_line "контейнеры запущены"
+    wait_healthy
+    boot_with_server
+    show_address
+}
+
+restart_system() {
+    printf '%sSTEALTHNET RW SYSTEM — перезапуск%s\n\n' "$BOLD" "$RESET"
+    need_installed
+    docker_ready restart
+    step "Перезапуск"
+    hint "Панель и бот будут недоступны несколько секунд."
+    if ! compose up -d --no-build --remove-orphans; then
+        die "запуск не прошёл" "Сообщение об ошибке — выше."
+    fi
+    if ! compose restart; then
+        die "перезапуск не прошёл" "Сообщение об ошибке — выше."
+    fi
+    done_line "перезапущено"
+    wait_healthy
+    show_address
+}
+
+stop_system() {
+    printf '%sSTEALTHNET RW SYSTEM — остановка%s\n\n' "$BOLD" "$RESET"
+    need_installed
+    case "${1:-}" in
+        --yes|-y) ;;
+        "")
+            if ! can_ask; then
+                die "некому подтвердить остановку" \
+                    "Без вопросов: $(command_for stop) --yes"
+            fi
+            ask "Остановить STEALTHNET? Панель, бот и приём оплат не будут работать, пока не запустите снова. [д/Н]"
+            case "$ANSWER" in
+                д*|Д*|y*|Y*) ;;
+                *)
+                    printf 'Ничего не сделано.\n'
+                    return 0
+                    ;;
+            esac
+            ;;
+        *) die "не понял «$1»" "Остановить без вопросов: $(command_for stop) --yes" ;;
+    esac
+    docker_ready stop
+    step "Остановка"
+    if ! compose stop; then
+        die "остановить не получилось" "Сообщение об ошибке — выше."
+    fi
+    done_line "остановлено"
+    printf '\nЗапустить снова: %s\n' "$(command_for start)"
+}
+
+show_logs() {
+    need_installed
+    docker_ready logs
+    case "${1:-}" in
+        "") compose logs --tail 200 app ;;
+        -f|--follow) compose logs --tail 100 -f app ;;
+        *) die "не понял «$1»" "Журнал: $(command_for logs), следить: $(command_for logs) -f" ;;
+    esac
+}
+
 detect_short
 
 case "${1:-}" in
@@ -1782,6 +1904,10 @@ case "${1:-}" in
     status|--status) show_status ;;
     helper|--helper) helper_command "${2:-}" ;;
     updater) updater_command "${2:-}" ;;
+    start|--start) start_system ;;
+    restart|--restart) restart_system ;;
+    stop|--stop) stop_system "${2:-}" ;;
+    logs|--logs) show_logs "${2:-}" ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
 esac
