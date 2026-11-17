@@ -1,5 +1,5 @@
 import { Link } from 'react-router';
-import { dateNumeric } from '../lib/format';
+import { dateNumeric, dayMonthNumeric } from '../lib/format';
 
 export type BuildSummary = {
   version: string;
@@ -79,4 +79,76 @@ export function VersionLine({ build, prefix, className, canOpen, onOpen }: LineP
 
 export function versionLine(prefix: string, build: BuildSummary): string {
   return withPrefix(prefix, build);
+}
+
+function compactName(label: string | null | undefined, commit: string | null | undefined, builtAt?: string | null): string {
+  if (label) {
+    return label;
+  }
+  if (builtAt) {
+    return dayMonthNumeric(builtAt);
+  }
+  return shortCommit(commit) || '—';
+}
+
+function railNote(build: BuildSummary, next: string | null): string {
+  if (next) {
+    return `→ ${next}`;
+  }
+  if (!build.label) {
+    return build.built_at ? 'сборка без номера' : 'собрана вручную';
+  }
+  return build.built_at ? `от ${dateNumeric(build.built_at)}` : '';
+}
+
+type ChipProps = {
+  build: BuildSummary | null;
+  canOpen: boolean;
+  variant: 'top' | 'rail';
+};
+
+export function BuildChip({ build, canOpen, variant }: ChipProps) {
+  if (!build) {
+    return null;
+  }
+  const fresh = build.update;
+  const current = compactName(build.label, build.commit, build.built_at);
+  const next = fresh ? compactName(fresh.label, fresh.commit, fresh.built_at) : null;
+  const title = fresh
+    ? `STEALTHNET ${buildText(build)}. Вышла версия ${buildName(fresh.label, fresh.commit, fresh.built_at)}`
+    : `STEALTHNET ${buildText(build)}${build.commit ? ` · ${shortCommit(build.commit)}` : ''}`;
+  const base = variant === 'top' ? 'top-build' : 'rail-build';
+  const className = `${base}${fresh ? ' ver-new' : ''}${canOpen ? ' hov' : ''}`;
+  const content =
+    variant === 'top' ? (
+      <>
+        {fresh ? <span className="build-dot" aria-hidden="true" /> : null}
+        <span>
+          {build.label || fresh ? <span className="top-build-word">версия </span> : null}
+          {fresh ? `${current} → ${next}` : build.label ? current : buildText(build)}
+        </span>
+      </>
+    ) : (
+      <>
+        <span className="rail-build-short">
+          <span className="rail-build-num">
+            {current}
+            {fresh ? <span className="build-dot" aria-hidden="true" /> : null}
+          </span>
+        </span>
+        <span className="lbl">{railNote(build, next)}</span>
+      </>
+    );
+  if (canOpen) {
+    return (
+      <Link to={UPDATES_PATH} className={className} title={title} aria-label={`${title}. Открыть обновления`}>
+        {content}
+      </Link>
+    );
+  }
+  return (
+    <span className={className} title={title}>
+      {content}
+    </span>
+  );
 }

@@ -6,7 +6,7 @@ import { useMedia, usePhone } from '../lib/media';
 import { readStored, writeStored, type Theme } from '../lib/theme';
 import { isCurrent, navItems, type NavItem } from './nav';
 import { ROLE_LABEL, useSession } from './session';
-import { VersionLine, type BuildSummary } from './version';
+import { BuildChip, VersionLine, type BuildSummary } from './version';
 import './shell.css';
 
 const PIN_KEY = 'sn.admin.pinned';
@@ -102,32 +102,30 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
           </span>
           <span className="lbl">{ThemeLabel(theme)}</span>
         </button>
+        <BuildChip build={build} canOpen={can('settings')} variant="rail" />
         <button type="button" className="rail-item quiet hov" aria-pressed={pinned} onClick={togglePin}>
           <span className="rail-icon">
             <Icon name="pin" />
           </span>
           <span className="lbl">Закрепить меню</span>
         </button>
-        <div className="rail-acct">
-          <button
-            type="button"
-            className="rail-who"
-            aria-expanded={whoOpen}
-            aria-label="Профиль администратора"
-            onClick={() => setWhoOpen((v) => !v)}
-          >
-            <span className="avatar" aria-hidden="true">
-              {initial(me.email)}
+        <button
+          type="button"
+          className="rail-who"
+          aria-expanded={whoOpen}
+          aria-label="Профиль администратора"
+          onClick={() => setWhoOpen((v) => !v)}
+        >
+          <span className="avatar" aria-hidden="true">
+            {initial(me.email)}
+          </span>
+          <span className="lbl">
+            <span className="who-name" title={me.email ?? undefined}>
+              {me.email ?? 'Администратор'}
             </span>
-            <span className="lbl">
-              <span className="who-name" title={me.email ?? undefined}>
-                {me.email ?? 'Администратор'}
-              </span>
-              <span className="who-role">{ROLE_LABEL[me.admin.role]}</span>
-            </span>
-          </button>
-          <VersionLine build={build} prefix="версия" className="lbl rail-ver" canOpen={can('settings')} />
-        </div>
+            <span className="who-role">{ROLE_LABEL[me.admin.role]}</span>
+          </span>
+        </button>
       </nav>
       {whoOpen ? (
         <div className="profile-menu rail-pop" ref={whoRef}>
@@ -141,7 +139,6 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
             <Icon name="logout" size={18} />
             Выйти
           </button>
-          <VersionLine build={build} prefix="STEALTHNET" className="profile-ver" canOpen={can('settings')} onOpen={() => setWhoOpen(false)} />
         </div>
       ) : null}
     </div>
@@ -210,6 +207,7 @@ function TopBar({ items, path, theme, onFlipTheme, build }: MenuProps) {
           ) : null}
         </nav>
         <div className="topbar-end">
+          <BuildChip build={build} canOpen={can('settings')} variant="top" />
           <button type="button" className="icon-btn hov" aria-label={ThemeLabel(theme)} title={ThemeLabel(theme)} onClick={onFlipTheme}>
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
@@ -236,7 +234,6 @@ function TopBar({ items, path, theme, onFlipTheme, build }: MenuProps) {
                   <Icon name="logout" size={18} />
                   Выйти
                 </button>
-                <VersionLine build={build} prefix="STEALTHNET" className="profile-ver" canOpen={can('settings')} onOpen={() => setProfileOpen(false)} />
               </div>
             ) : null}
           </div>

@@ -959,35 +959,87 @@
   margin: 0;
 }
 
-.rail-acct {
-  display: flex;
-  flex-direction: column;
-}
-
-.rail .rail-ver {
+.rail-build {
+  position: relative;
+  flex: 0 0 22px;
   display: block;
-  padding: 0 4px 2px 56px;
-  font-size: 12px;
-  line-height: 16px;
-  white-space: normal;
+  margin: -2px 0 2px;
+  border-radius: 8px;
   color: var(--muted);
+  text-decoration: none;
 }
 
-.rail .rail-ver.ver-new,
-.profile-menu .profile-ver.ver-new,
-.psheet .psheet-ver.ver-new {
+.rail-build-short {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.rail-build-num {
+  position: relative;
+}
+
+.rail-build-num .build-dot {
+  position: absolute;
+  top: 0;
+  right: -7px;
+}
+
+.rail-build .lbl {
+  position: absolute;
+  top: 0;
+  left: 44px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+}
+
+.top-build {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.rail-build.ver-new,
+.top-build.ver-new,
+.psheet .psheet-ver.ver-new {
   color: var(--accent-ink);
 }
 
-.profile-menu .profile-ver {
-  display: block;
-  margin-top: 4px;
-  padding: 8px 10px 4px;
-  border-top: 1px solid var(--line);
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--muted);
+.psheet .psheet-ver.ver-new {
+  font-weight: 600;
+}
+
+.build-dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+@media (max-width: 1180px) {
+  .top-build .top-build-word {
+    display: none;
+  }
 }
 
 .psheet .psheet-ver {
