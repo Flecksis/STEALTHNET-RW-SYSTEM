@@ -21,6 +21,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod content;
 mod photos;
+mod referral_login;
 mod runtime;
 mod stars;
 mod stars_review;

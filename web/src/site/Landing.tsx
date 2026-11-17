@@ -10,6 +10,7 @@ import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Currency } from '../lib/types';
 import './landing.css';
+import { botLink, storedReferral } from '../lib/referral';
 
 type Reset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
 
@@ -106,7 +107,8 @@ export function Landing() {
   }, [offers]);
   const offer = offers.find((o) => o.category.id === cat) ?? offers[0] ?? null;
   const currency = catalog?.currency ?? site.currency;
-  const bot = site.bot_username ? `https://t.me/${site.bot_username.replace(/^@/, '')}` : null;
+  const invite = storedReferral();
+  const bot = site.bot_username ? botLink(site.bot_username, invite ? `ref_${invite}` : null) : null;
   const trial = site.trial?.enabled ? site.trial.days : 0;
   const year = new Date().getFullYear();
   const selected = offer?.periods.find((p) => p.period_id === term) ?? offer?.periods[Math.min(1, (offer?.periods.length ?? 1) - 1)] ?? null;

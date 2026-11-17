@@ -10,7 +10,8 @@ pub struct LoginRequest {
 }
 
 pub fn token_from_param(param: &str) -> Option<&str> {
-    let token = param.strip_prefix(PREFIX)?;
+    let first = param.split("__").next().unwrap_or(param);
+    let token = first.strip_prefix(PREFIX)?;
     let valid = (16..=64).contains(&token.len())
         && token
             .bytes()

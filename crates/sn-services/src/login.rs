@@ -117,6 +117,12 @@ fn link_code(raw: &str) -> Option<String> {
         .then(|| code.to_ascii_lowercase())
 }
 
+pub fn referral_code(raw: &str) -> Option<String> {
+    let code = raw.trim().to_ascii_uppercase();
+    ((4..=16).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then_some(code)
+}
+
 fn expired_link() -> ServiceError {
     ServiceError::rejected(
         "auth.login_expired",
@@ -228,6 +234,14 @@ impl<'a> Auth<'a> {
         &self,
         meta: &RequestMeta,
     ) -> ServiceResult<TelegramLoginStart> {
+        self.telegram_login_start_with(meta, None).await
+    }
+
+    pub async fn telegram_login_start_with(
+        &self,
+        meta: &RequestMeta,
+        referral: Option<&str>,
+    ) -> ServiceResult<TelegramLoginStart> {
         self.services
             .limits()
             .hit_ip(rules::TELEGRAM_START_IP, meta.ip.as_deref())
@@ -256,7 +270,13 @@ impl<'a> Auth<'a> {
             .await?;
         Ok(TelegramLoginStart {
             poll_token,
-            link: format!("https://t.me/{bot}?start={TELEGRAM_START_PREFIX}{code}"),
+            link: format!(
+                "https://t.me/{bot}?start={TELEGRAM_START_PREFIX}{code}{}",
+                referral
+                    .and_then(referral_code)
+                    .map(|c| format!("__ref_{c}"))
+                    .unwrap_or_default()
+            ),
             expires_at,
         })
     }

@@ -4,6 +4,7 @@ import { BrandMark } from '../lib/brand';
 import { QrCode } from '../lib/qr';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import type { Site } from '../lib/types';
+import { storedReferral } from '../lib/referral';
 
 type Tg = { poll_token: string; link: string; expires_at: string };
 type Status = { status: 'pending' | 'confirmed' | 'rejected' | 'expired' | 'totp_required'; challenge?: string };
@@ -77,7 +78,8 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<Tg>('/api/client/auth/telegram', { method: 'POST', body: {} });
+      const referral = storedReferral();
+      const res = await api<Tg>('/api/client/auth/telegram', { method: 'POST', body: referral ? { ref: referral } : {} });
       setTg(res);
       setTgState('waiting');
       poll(res.poll_token, Date.parse(res.expires_at));

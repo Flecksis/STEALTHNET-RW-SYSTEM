@@ -94,12 +94,24 @@ async fn miniapp_login(
     ))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct TelegramStart {
+    #[serde(default, rename = "ref")]
+    referral: Option<String>,
+}
+
 async fn telegram_start(
     State(state): State<AppState>,
     Meta(meta): Meta,
+    body: Option<ApiJson<TelegramStart>>,
 ) -> ApiResult<Json<sn_services::login::TelegramLoginStart>> {
+    let referral = body.and_then(|b| b.0.referral);
     Ok(Json(
-        state.services.auth().telegram_login_start(&meta).await?,
+        state
+            .services
+            .auth()
+            .telegram_login_start_with(&meta, referral.as_deref())
+            .await?,
     ))
 }
 

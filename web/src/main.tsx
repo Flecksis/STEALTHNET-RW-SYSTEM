@@ -4,6 +4,7 @@ import './styles/base.css';
 import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Route, Routes } from 'react-router';
+import { captureReferral } from './lib/referral';
 
 const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp })));
 const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon })));
@@ -28,6 +29,8 @@ function App() {
     </BrowserRouter>
   );
 }
+
+captureReferral();
 
 const root = document.getElementById('root');
 if (root) {

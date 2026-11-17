@@ -5,11 +5,12 @@ import { Icon } from '../lib/icons';
 import type { Referral } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal } from './telegram';
+import { siteInviteLink } from '../lib/referral';
 
 export function MiniProfile() {
   const { me, site } = useMini();
   const [referral, setReferral] = useState<Referral | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
     api<Referral>('/api/client/m/referral/me')
@@ -17,11 +18,11 @@ export function MiniProfile() {
       .catch(() => setReferral(null));
   }, []);
 
-  const copy = async (text: string) => {
+  const copy = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
+      setCopied(key);
+      window.setTimeout(() => setCopied(null), 2000);
     } catch {
       return;
     }
@@ -40,12 +41,18 @@ export function MiniProfile() {
           <span className="mn-ink2">Пригласите друга и получайте {referral.levels[0] ?? 0}% от его оплат на баланс.</span>
           {referral.bot_link ? (
             <>
+              <span className="mn-muted small">Ссылка на Telegram-бота</span>
               <span className="mn-url mono">{referral.bot_link.replace(/^https:\/\//, '')}</span>
-              <button type="button" className="mn-btn2 press" onClick={() => void copy(referral.bot_link ?? '')}>
-                {copied ? 'Скопировано' : 'Скопировать ссылку'}
+              <button type="button" className="mn-btn2 press" onClick={() => void copy(referral.bot_link ?? '', 'bot')}>
+                {copied === 'bot' ? 'Скопировано' : 'Скопировать ссылку'}
               </button>
             </>
           ) : null}
+          <span className="mn-muted small">Ссылка на сайт</span>
+          <span className="mn-url mono">{siteInviteLink(referral.code).replace(/^https?:\/\//, '')}</span>
+          <button type="button" className="mn-btn2 press" onClick={() => void copy(siteInviteLink(referral.code), 'site')}>
+            {copied === 'site' ? 'Скопировано' : 'Скопировать ссылку'}
+          </button>
           <span className="mn-muted small">
             Пришли по ссылке: {referral.invited} · заработано {money(referral.earned)}
           </span>

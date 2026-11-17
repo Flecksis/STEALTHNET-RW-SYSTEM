@@ -5,6 +5,7 @@ import { dateLong, days, money, type Money } from '../lib/format';
 import { countryName } from '../lib/geo';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
+import { siteInviteLink } from '../lib/referral';
 import { Card, useCabinet } from './CabinetApp';
 import {
   APPS,
@@ -570,16 +571,24 @@ export function SubscriptionPage() {
           <Card id="friends" className="cb-friends" label="Друзья">
             <h2 className="cb-h2">Друзья</h2>
             <p className="cb-ink2">Пригласите друга и получайте {referral.levels[0] ?? 0}% от его оплат на баланс.</p>
+            <span className="cb-small cb-muted">Ссылка на сайт</span>
+            <div className="cb-linkrow">
+              <span className="cb-link mono">{siteInviteLink(referral.code).replace(/^https?:\/\//, '')}</span>
+              <button type="button" className="cb-second" onClick={() => void copy(siteInviteLink(referral.code), 'ref-site')}>
+                {copied === 'ref-site' ? 'Скопировано' : 'Скопировать'}
+              </button>
+            </div>
             {referral.bot_link ? (
-              <div className="cb-linkrow">
-                <span className="cb-link mono">{referral.bot_link.replace(/^https:\/\//, '')}</span>
-                <button type="button" className="cb-second" onClick={() => void copy(referral.bot_link ?? '', 'ref')}>
-                  {copied === 'ref' ? 'Скопировано' : 'Скопировать'}
-                </button>
-              </div>
-            ) : (
-              <p className="cb-muted">Ссылка появится, когда оператор подключит бота</p>
-            )}
+              <>
+                <span className="cb-small cb-muted">Ссылка на Telegram-бота</span>
+                <div className="cb-linkrow">
+                  <span className="cb-link mono">{referral.bot_link.replace(/^https:\/\//, '')}</span>
+                  <button type="button" className="cb-second" onClick={() => void copy(referral.bot_link ?? '', 'ref')}>
+                    {copied === 'ref' ? 'Скопировано' : 'Скопировать'}
+                  </button>
+                </div>
+              </>
+            ) : null}
             <span className="cb-small cb-muted">
               Пришли по ссылке: {referral.invited} · заработано {money(referral.earned)}
             </span>
