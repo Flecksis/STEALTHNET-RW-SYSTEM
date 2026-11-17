@@ -1,5 +1,5 @@
-use super::store::{self, Withdrawal, WithdrawalFilter};
-use super::{Decision, ReferralError, ReferralOverview, WithdrawalRequest};
+use super::store::{self, AdminWithdrawal, Referrer, Totals, Withdrawal, WithdrawalFilter};
+use super::{Decision, LEVELS, ReferralError, ReferralOverview, WithdrawalRequest};
 use crate::catalog::installation_currency;
 use crate::catalog::web::{Admin, Customer, WebError};
 use crate::context::ModuleContext;
@@ -27,6 +27,8 @@ impl From<ReferralError> for WebError {
 
 pub fn admin(ctx: ModuleContext) -> Router {
     Router::new()
+        .route("/summary", get(summary))
+        .route("/referrers", get(referrers))
         .route("/withdrawals", get(withdrawals))
         .route("/withdrawals/{id}/decision", post(decide))
         .route("/clients/{client_id}", get(client_stats))
@@ -52,16 +54,67 @@ struct ListQuery {
     after: Option<i64>,
 }
 
+#[derive(Serialize)]
+struct Summary {
+    levels: [u8; LEVELS],
+    withdraw_min: Option<Money>,
+    withdrawals_enabled: bool,
+    #[serde(flatten)]
+    totals: Totals,
+}
+
+async fn summary(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+) -> Result<Json<Summary>, WebError> {
+    admin.require(Permission::Money)?;
+    let mut conn = ctx.store.conn().await?;
+    let currency = installation_currency(&mut conn).await?;
+    let settings = super::settings(&mut conn, currency).await?;
+    Ok(Json(Summary {
+        levels: settings.levels,
+        withdraw_min: settings.withdraw_min,
+        withdrawals_enabled: settings.withdrawals,
+        totals: store::totals(&mut conn, currency).await?,
+    }))
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    after: Option<i64>,
+}
+
+async fn referrers(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Page<Referrer>>, WebError> {
+    admin.require(Permission::Money)?;
+    let mut conn = ctx.store.conn().await?;
+    let currency = installation_currency(&mut conn).await?;
+    Ok(Json(
+        store::referrers(
+            &mut conn,
+            currency,
+            PageRequest::new(query.limit, query.after),
+        )
+        .await?,
+    ))
+}
+
 async fn withdrawals(
     State(ctx): State<ModuleContext>,
     admin: Admin,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Page<Withdrawal>>, WebError> {
+) -> Result<Json<Page<AdminWithdrawal>>, WebError> {
     admin.require(Permission::Money)?;
     let filter = WithdrawalFilter::parse(query.status.as_deref()).ok_or_else(|| {
         WebError::rejected(
             "validation.invalid_value",
-            "фильтр: pending, paid, rejected, canceled или all",
+            "фильтр: pending, decided, paid, rejected, canceled или all",
         )
     })?;
     let mut conn = ctx.store.conn().await?;

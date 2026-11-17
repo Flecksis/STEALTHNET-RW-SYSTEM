@@ -743,3 +743,222 @@ async fn сторно_после_сбоя_берёт_сумму_из_журна�
     assert_eq!(referral_balance(&db.store, referrer).await, usd(0));
     db.cleanup().await;
 }
+
+fn admin_as(
+    admin_id: AdminId,
+    role: sn_domain::access::AdminRole,
+) -> sn_domain::access::AdminPrincipal {
+    sn_domain::access::AdminPrincipal {
+        admin_id,
+        role,
+        permissions: Vec::new(),
+        session_id: 1,
+        api_key: None,
+    }
+}
+
+async fn owner(store: &Store) -> AdminId {
+    let mut conn = store.conn().await.unwrap();
+    conn.admins()
+        .create(&sn_store::NewAdmin {
+            email: "owner@example.com".into(),
+            password_hash: "x".into(),
+            role: sn_domain::access::AdminRole::Owner,
+            must_change_password: false,
+        })
+        .await
+        .unwrap()
+        .id
+}
+
+async fn named(store: &Store, telegram: &str, first: &str, last: &str) -> ClientId {
+    let id = client(store).await;
+    let mut conn = store.conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            id,
+            &sn_domain::client::NewIdentity {
+                kind: sn_domain::client::IdentityKind::Telegram,
+                value: telegram.into(),
+                verified: true,
+                meta: serde_json::json!({"first_name": first, "last_name": last, "username": "anna"}),
+            },
+        )
+        .await
+        .unwrap();
+    id
+}
+
+async fn get_json(
+    router: &axum::Router,
+    path: &str,
+    principal: &sn_domain::access::AdminPrincipal,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+    let response = router
+        .clone()
+        .oneshot(
+            axum::http::Request::get(path)
+                .extension(principal.clone())
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+#[tokio::test]
+async fn админка_видит_очередь_историю_сводку_и_рефереров() {
+    use axum::http::StatusCode;
+    use sn_domain::access::AdminRole;
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let registry =
+        std::sync::Arc::new(crate::registry::ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.admin_router(ctx.clone());
+    let owner_id = owner(&db.store).await;
+    let boss = admin_as(owner_id, AdminRole::Owner);
+    let anna = named(&db.store, "1001", "Анна", "Ким").await;
+    let boris = client(&db.store).await;
+    let partner = client(&db.store).await;
+    let first_buyer = client(&db.store).await;
+    let quiet_buyer = client(&db.store).await;
+    let second_buyer = client(&db.store).await;
+    invite(&ctx, anna, first_buyer).await;
+    invite(&ctx, anna, quiet_buyer).await;
+    invite(&ctx, boris, second_buyer).await;
+    for (buyer, minor) in [(first_buyer, 5000), (second_buyer, 1000)] {
+        let (_, event) = pay(
+            &db.store,
+            buyer,
+            "heleket",
+            Amount::new(minor, PayCurrency::Usd),
+        )
+        .await;
+        ReferralModule.on_event(&ctx, &event).await.unwrap();
+    }
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        ensure_code(&mut conn, partner).await.unwrap();
+        store::set_personal_percent(&mut conn, partner, Some(50))
+            .await
+            .unwrap();
+    }
+    let ask = |amount: &str| WithdrawalRequest {
+        amount: amount.into(),
+        method: PayoutMethod::UsdtTrc20,
+        details: "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC".into(),
+    };
+    let paid = request_withdrawal(&ctx, anna, &ask("5.00")).await.unwrap();
+    let waiting = request_withdrawal(&ctx, anna, &ask("4.00")).await.unwrap();
+    let later = request_withdrawal(&ctx, boris, &ask("2.00")).await.unwrap();
+    decide(
+        &ctx,
+        paid.id,
+        &Decision::Paid {
+            comment: Some("Перевод 12:40".into()),
+        },
+        Some(owner_id),
+    )
+    .await
+    .unwrap();
+
+    let (status, queue) = get_json(&router, "/referral/withdrawals?status=pending", &boss).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<i64> = queue["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![waiting.id, later.id],
+        "очередь — от старых к новым"
+    );
+    assert_eq!(queue["items"][0]["client"]["name"], "Анна Ким");
+    assert_eq!(queue["items"][0]["client"]["telegram_username"], "anna");
+    assert_eq!(queue["items"][0]["amount"]["minor"], 400);
+    assert_eq!(
+        queue["items"][0]["details"],
+        "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC"
+    );
+    assert_eq!(queue["items"][1]["client"]["name"], serde_json::Value::Null);
+
+    let (_, first_page) = get_json(
+        &router,
+        "/referral/withdrawals?status=pending&limit=1",
+        &boss,
+    )
+    .await;
+    assert_eq!(first_page["items"][0]["id"], waiting.id);
+    let (_, second_page) = get_json(
+        &router,
+        &format!(
+            "/referral/withdrawals?status=pending&limit=1&after={}",
+            first_page["next"]
+        ),
+        &boss,
+    )
+    .await;
+    assert_eq!(second_page["items"][0]["id"], later.id);
+    assert_eq!(second_page["next"], serde_json::Value::Null);
+
+    let (_, history) = get_json(&router, "/referral/withdrawals?status=decided", &boss).await;
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(history["items"][0]["id"], paid.id);
+    assert_eq!(history["items"][0]["status"], "paid");
+    assert_eq!(history["items"][0]["comment"], "Перевод 12:40");
+    assert_eq!(history["items"][0]["decided_by"], "owner@example.com");
+    let (bad, _) = get_json(&router, "/referral/withdrawals?status=soon", &boss).await;
+    assert_eq!(bad, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (status, summary) = get_json(&router, "/referral/summary", &boss).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summary["levels"], serde_json::json!([30, 10, 10]));
+    assert_eq!(summary["withdrawals_enabled"], true);
+    assert_eq!(summary["invited"], 3);
+    assert_eq!(summary["referrers"], 2);
+    assert_eq!(summary["earned"]["minor"], 1800);
+    assert_eq!(summary["paid_out"]["minor"], 500);
+    assert_eq!(summary["pending_count"], 2);
+    assert_eq!(summary["pending"]["minor"], 600);
+    assert_eq!(summary["holders"], 2);
+    assert_eq!(summary["balance"]["minor"], 700);
+
+    let (_, top) = get_json(&router, "/referral/referrers?limit=2", &boss).await;
+    assert_eq!(top["items"][0]["client_id"], anna.0);
+    assert_eq!(top["items"][0]["client"]["name"], "Анна Ким");
+    assert_eq!(top["items"][0]["invited"], 2);
+    assert_eq!(top["items"][0]["earned"]["minor"], 1500);
+    assert_eq!(top["items"][0]["paid_out"]["minor"], 500);
+    assert_eq!(top["items"][0]["balance"]["minor"], 600);
+    assert_eq!(top["items"][1]["client_id"], boris.0);
+    assert_eq!(top["items"][1]["balance"]["minor"], 100);
+    assert_eq!(top["next"], 2);
+    let (_, rest) = get_json(&router, "/referral/referrers?limit=2&after=2", &boss).await;
+    assert_eq!(rest["items"].as_array().unwrap().len(), 1);
+    assert_eq!(rest["items"][0]["client_id"], partner.0);
+    assert_eq!(rest["items"][0]["personal_percent"], 50);
+    assert_eq!(rest["items"][0]["invited"], 0);
+    assert_eq!(rest["next"], serde_json::Value::Null);
+
+    let helper = admin_as(owner_id, AdminRole::Support);
+    for path in [
+        "/referral/summary",
+        "/referral/referrers",
+        "/referral/withdrawals",
+    ] {
+        let (status, _) = get_json(&router, path, &helper).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+    }
+    db.cleanup().await;
+}

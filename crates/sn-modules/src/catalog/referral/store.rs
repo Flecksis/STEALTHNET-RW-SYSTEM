@@ -2,10 +2,11 @@ use super::PayoutMethod;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sn_domain::ids::{AdminId, ClientId, PaymentId};
+use sn_domain::ledger::Wallet;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{PaymentStatus, ProviderId};
-use sn_store::{Db, StoreError, StoreResult};
+use sn_store::{ClientPerson, Db, StoreError, StoreResult};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -55,6 +56,7 @@ impl WithdrawalStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithdrawalFilter {
     Status(WithdrawalStatus),
+    Decided,
     All,
 }
 
@@ -62,6 +64,7 @@ impl WithdrawalFilter {
     pub fn parse(value: Option<&str>) -> Option<Self> {
         match value.unwrap_or("pending") {
             "all" => Some(WithdrawalFilter::All),
+            "decided" => Some(WithdrawalFilter::Decided),
             "pending" => Some(WithdrawalFilter::Status(WithdrawalStatus::Pending)),
             "paid" => Some(WithdrawalFilter::Status(WithdrawalStatus::Paid)),
             "rejected" => Some(WithdrawalFilter::Status(WithdrawalStatus::Rejected)),
@@ -70,11 +73,22 @@ impl WithdrawalFilter {
         }
     }
 
-    const fn status(self) -> Option<&'static str> {
+    fn statuses(self) -> Vec<&'static str> {
         match self {
-            WithdrawalFilter::Status(status) => Some(status.as_str()),
-            WithdrawalFilter::All => None,
+            WithdrawalFilter::Status(status) => vec![status.as_str()],
+            WithdrawalFilter::Decided => [
+                WithdrawalStatus::Paid,
+                WithdrawalStatus::Rejected,
+                WithdrawalStatus::Canceled,
+            ]
+            .map(WithdrawalStatus::as_str)
+            .to_vec(),
+            WithdrawalFilter::All => Vec::new(),
         }
+    }
+
+    const fn oldest_first(self) -> bool {
+        matches!(self, WithdrawalFilter::Status(WithdrawalStatus::Pending))
     }
 }
 
@@ -132,6 +146,56 @@ impl TryFrom<WithdrawalRow> for Withdrawal {
 
 fn rows(rows: Vec<WithdrawalRow>) -> StoreResult<Vec<Withdrawal>> {
     rows.into_iter().map(TryInto::try_into).collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdminWithdrawal {
+    #[serde(flatten)]
+    pub withdrawal: Withdrawal,
+    pub decided_by: Option<String>,
+    pub client: Option<ClientPerson>,
+}
+
+#[derive(sqlx::FromRow)]
+struct AdminWithdrawalRow {
+    #[sqlx(flatten)]
+    row: WithdrawalRow,
+    decided_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Totals {
+    pub invited: u32,
+    pub referrers: u32,
+    pub earned: Money,
+    pub paid_out: Money,
+    pub pending_count: u32,
+    pub pending: Money,
+    pub holders: u32,
+    pub balance: Money,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Referrer {
+    pub client_id: ClientId,
+    pub client: Option<ClientPerson>,
+    pub code: Option<String>,
+    pub personal_percent: Option<u8>,
+    pub invited: u32,
+    pub earned: Money,
+    pub paid_out: Money,
+    pub balance: Money,
+}
+
+#[derive(sqlx::FromRow)]
+struct ReferrerRow {
+    client_id: i64,
+    code: Option<String>,
+    percent: Option<i32>,
+    invited: i64,
+    earned: i64,
+    paid_out: i64,
+    balance: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,17 +667,124 @@ pub async fn list_withdrawals(
     db: &mut impl Db,
     filter: WithdrawalFilter,
     page: PageRequest,
-) -> StoreResult<Page<Withdrawal>> {
-    let found: Vec<WithdrawalRow> = sqlx::query_as(&format!(
-        "SELECT {W_COLUMNS} FROM referral_withdrawals WHERE ($1::text IS NULL OR status = $1) \
-         AND ($2::bigint IS NULL OR id < $2) ORDER BY id DESC LIMIT $3"
+) -> StoreResult<Page<AdminWithdrawal>> {
+    let (after, order) = if filter.oldest_first() {
+        (">", "ASC")
+    } else {
+        ("<", "DESC")
+    };
+    let found: Vec<AdminWithdrawalRow> = sqlx::query_as(&format!(
+        "SELECT {W_COLUMNS}, (SELECT a.email FROM admins a WHERE a.id = w.admin_id) AS decided_by \
+         FROM referral_withdrawals w WHERE (cardinality($1::text[]) = 0 OR status = ANY($1)) \
+         AND ($2::bigint IS NULL OR id {after} $2) ORDER BY id {order} LIMIT $3"
     ))
-    .bind(filter.status())
+    .bind(filter.statuses())
     .bind(page.after)
     .bind(page.fetch_limit())
     .fetch_all(db.conn())
     .await?;
-    Ok(Page::from_overfetch(rows(found)?, page, |w| w.id))
+    let items = found
+        .into_iter()
+        .map(|found| {
+            Ok(AdminWithdrawal {
+                withdrawal: found.row.try_into()?,
+                decided_by: found.decided_by,
+                client: None,
+            })
+        })
+        .collect::<StoreResult<Vec<AdminWithdrawal>>>()?;
+    let mut page = Page::from_overfetch(items, page, |w| w.withdrawal.id);
+    let ids: Vec<ClientId> = page.items.iter().map(|w| w.withdrawal.client_id).collect();
+    let people = db.clients().people(&ids).await?;
+    for item in &mut page.items {
+        item.client = people.get(&item.withdrawal.client_id).cloned();
+    }
+    Ok(page)
+}
+
+pub async fn totals(db: &mut impl Db, currency: Currency) -> StoreResult<Totals> {
+    let (invited, referrers, earned, paid_out, pending_count, pending): (i64, i64, i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT (SELECT count(*) FROM referral_links), \
+               (SELECT count(DISTINCT referrer_id) FROM referral_links), \
+               (SELECT COALESCE(sum(amount_minor - reversed_minor), 0)::bigint FROM referral_credits \
+                WHERE currency = $1 AND credited_at IS NOT NULL), \
+               (SELECT COALESCE(sum(amount_minor), 0)::bigint FROM referral_withdrawals \
+                WHERE currency = $1 AND status = 'paid'), \
+               (SELECT count(*) FROM referral_withdrawals WHERE currency = $1 AND status = 'pending'), \
+               (SELECT COALESCE(sum(amount_minor), 0)::bigint FROM referral_withdrawals \
+                WHERE currency = $1 AND status = 'pending')",
+        )
+        .bind(currency.code())
+        .fetch_one(db.conn())
+        .await?;
+    let (holders, balance) = db.ledger().holders(Wallet::Referral, currency).await?;
+    Ok(Totals {
+        invited: count(invited),
+        referrers: count(referrers),
+        earned: Money::new(earned, currency),
+        paid_out: Money::new(paid_out, currency),
+        pending_count: count(pending_count),
+        pending: Money::new(pending, currency),
+        holders: count(holders),
+        balance,
+    })
+}
+
+pub async fn referrers(
+    db: &mut impl Db,
+    currency: Currency,
+    page: PageRequest,
+) -> StoreResult<Page<Referrer>> {
+    let offset = page.after.unwrap_or(0).max(0);
+    let found: Vec<ReferrerRow> = sqlx::query_as(
+        "WITH ids AS ( \
+             SELECT referrer_id AS client_id FROM referral_links \
+             UNION SELECT referrer_id FROM referral_credits \
+             UNION SELECT client_id FROM referral_codes WHERE percent IS NOT NULL), \
+         inv AS (SELECT referrer_id AS client_id, count(*) AS invited FROM referral_links GROUP BY referrer_id), \
+         earn AS (SELECT referrer_id AS client_id, sum(amount_minor - reversed_minor)::bigint AS earned \
+             FROM referral_credits WHERE credited_at IS NOT NULL AND currency = $1 GROUP BY referrer_id), \
+         paid AS (SELECT client_id, sum(amount_minor)::bigint AS paid_out FROM referral_withdrawals \
+             WHERE status = 'paid' AND currency = $1 GROUP BY client_id) \
+         SELECT ids.client_id, rc.code, rc.percent, COALESCE(inv.invited, 0) AS invited, \
+             COALESCE(earn.earned, 0)::bigint AS earned, COALESCE(paid.paid_out, 0)::bigint AS paid_out, \
+             COALESCE(b.amount_minor, 0) AS balance \
+         FROM ids JOIN clients c ON c.id = ids.client_id AND c.deleted_at IS NULL \
+         LEFT JOIN inv ON inv.client_id = ids.client_id \
+         LEFT JOIN earn ON earn.client_id = ids.client_id \
+         LEFT JOIN paid ON paid.client_id = ids.client_id \
+         LEFT JOIN referral_codes rc ON rc.client_id = ids.client_id \
+         LEFT JOIN client_balances b ON b.client_id = ids.client_id AND b.wallet = 'referral' AND b.currency = $1 \
+         ORDER BY earned DESC, invited DESC, ids.client_id DESC OFFSET $2 LIMIT $3",
+    )
+    .bind(currency.code())
+    .bind(offset)
+    .bind(page.fetch_limit())
+    .fetch_all(db.conn())
+    .await?;
+    let more = found.len() > page.limit as usize;
+    let mut items: Vec<Referrer> = found
+        .into_iter()
+        .take(page.limit as usize)
+        .map(|row| Referrer {
+            client_id: ClientId(row.client_id),
+            client: None,
+            code: row.code,
+            personal_percent: row.percent.and_then(|p| u8::try_from(p).ok()),
+            invited: count(row.invited),
+            earned: Money::new(row.earned, currency),
+            paid_out: Money::new(row.paid_out, currency),
+            balance: Money::new(row.balance, currency),
+        })
+        .collect();
+    let ids: Vec<ClientId> = items.iter().map(|r| r.client_id).collect();
+    let people = db.clients().people(&ids).await?;
+    for item in &mut items {
+        item.client = people.get(&item.client_id).cloned();
+    }
+    let next = more.then(|| offset + i64::from(page.limit));
+    Ok(Page { items, next })
 }
 
 pub async fn stale_holding(db: &mut impl Db, limit: i64) -> StoreResult<Vec<Withdrawal>> {

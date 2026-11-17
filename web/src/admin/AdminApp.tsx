@@ -16,6 +16,7 @@ import { InfraHosts } from './infra/InfraHosts';
 import { InfraBilling } from './infra/InfraBilling';
 import { Modules } from './modules/Modules';
 import { ModulePage } from './modules/ModulePage';
+import { ModuleScreen } from './modules/ModuleScreen';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { Money } from './money/Money';
@@ -223,7 +224,7 @@ export function AdminApp() {
           <Route path="infra/billing" element={<InfraBilling />} />
           <Route path="modules" element={<Modules />} />
           <Route path="modules/:id" element={<ModulePage />} />
-          <Route path="m/:module/*" element={<Pending title="Модуль" />} />
+          <Route path="m/:module/*" element={<ModuleScreen />} />
           <Route path="settings/look" element={<SettingsLook />} />
           <Route path="settings/remnawave" element={<SettingsRemna />} />
           <Route path="settings/payments" element={<SettingsPayments />} />
