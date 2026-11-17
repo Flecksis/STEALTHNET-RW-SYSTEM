@@ -16,7 +16,7 @@ use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId, providers};
 use sn_domain::plan::{CurrentTariff, PlanKind, classify, new_expire_at};
 use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
-use sn_domain::settings::TrialSettings;
+use sn_domain::settings::{TrialSettings, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
 use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook, QuoteOrigin};
@@ -347,6 +347,8 @@ async fn record_paid(
 }
 
 pub const BALANCE_OFF: &str = "balance.disabled";
+pub const GRAM_WALLET_OFF: &str = "gram.wallet_unavailable";
+pub const GRAM_WIDGET_TEMPLATE: &str = "gram.widget";
 
 fn pick_method(
     methods: &[CheckoutMethod],
@@ -764,6 +766,76 @@ impl<'a> Checkout<'a> {
             },
         )
         .await
+    }
+
+    pub async fn gram_in_telegram(
+        &self,
+        client_id: ClientId,
+        payment: Uuid,
+    ) -> ServiceResult<String> {
+        let unavailable =
+            |message: &str| ServiceError::rejected(GRAM_WALLET_OFF, message.to_string());
+        if self
+            .services
+            .payments()
+            .config(providers::GRAM)
+            .flag("testnet")
+        {
+            return Err(unavailable(
+                "Кошелёк Telegram не работает с тестовой сетью TON. Оплатите другим кошельком.",
+            ));
+        }
+        if self.services.bot_token().is_none() {
+            return Err(unavailable("Бот не подключён. Оплатите другим кошельком."));
+        }
+        let mut tx = self.services.store().begin().await?;
+        let username = tx
+            .settings()
+            .get_as::<String>(keys::BOT_USERNAME)
+            .await?
+            .filter(|u| !u.trim().is_empty())
+            .ok_or_else(|| unavailable("Бот не подключён. Оплатите другим кошельком."))?;
+        let found = match tx.payments().by_public_id(payment).await {
+            Ok(found)
+                if found.client_id == client_id && found.provider.as_str() == providers::GRAM =>
+            {
+                found
+            }
+            Ok(_) | Err(StoreError::NotFound(_)) => return Err(ServiceError::NotFound("счёт")),
+            Err(err) => return Err(err.into()),
+        };
+        if found.status != PaymentStatus::Pending
+            || found.expires_at.is_some_and(|at| at <= self.services.now())
+        {
+            return Err(ServiceError::rejected(
+                "gram.closed",
+                "Счёт уже закрыт. Оформите оплату заново.",
+            ));
+        }
+        let client = tx.clients().get(client_id).await?;
+        let telegram = tx
+            .clients()
+            .identities(client_id)
+            .await?
+            .into_iter()
+            .any(|identity| identity.kind == IdentityKind::Telegram);
+        if !telegram || client.bot_unreachable {
+            return Err(unavailable(
+                "Бот не может написать вам. Откройте бота в Telegram, нажмите «Старт» и попробуйте ещё раз.",
+            ));
+        }
+        tx.jobs()
+            .enqueue(
+                &JobPayload::Notify {
+                    client_id,
+                    template: GRAM_WIDGET_TEMPLATE.into(),
+                    params: serde_json::json!({ "payment_id": found.public_id }),
+                },
+                None,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(format!("https://t.me/{}", username.trim_start_matches('@')))
     }
 
     pub fn topup_open(&self) -> ServiceResult<()> {

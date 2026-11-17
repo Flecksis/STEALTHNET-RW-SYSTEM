@@ -38,6 +38,7 @@ pub fn routes() -> Router<AppState> {
         .route("/topup", post(topup))
         .route("/trial", post(trial))
         .route("/payments/{id}", get(payment))
+        .route("/payments/{id}/telegram", post(gram_in_telegram))
         .route("/subscriptions", get(subscriptions))
         .route("/subscriptions/{id}", get(subscription))
         .route("/subscriptions/{id}/autorenew", put(autorenew))
@@ -412,6 +413,20 @@ async fn topup(
             )
             .await?,
     ))
+}
+
+async fn gram_in_telegram(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    client.require_full()?;
+    let chat_url = state
+        .services
+        .checkout()
+        .gram_in_telegram(client.0.client_id, id)
+        .await?;
+    Ok(Json(serde_json::json!({ "chat_url": chat_url })))
 }
 
 async fn trial(

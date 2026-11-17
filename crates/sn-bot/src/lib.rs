@@ -2,6 +2,7 @@ mod account;
 mod buy;
 pub mod consent;
 mod extras;
+pub mod gram_wallet;
 pub mod handler;
 pub mod login;
 pub mod media;

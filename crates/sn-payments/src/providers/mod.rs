@@ -13,7 +13,7 @@ mod yoomoney;
 pub use balance::Balance;
 pub use cloudpayments::CloudPayments;
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
-pub use gram::{Gram, GramInvoice, format_grams};
+pub use gram::{Gram, GramInvoice, comment_payload, format_grams, friendly_address};
 pub use heleket::{Heleket, signature as heleket_signature};
 pub use lava::Lava;
 pub use overpay::Overpay;

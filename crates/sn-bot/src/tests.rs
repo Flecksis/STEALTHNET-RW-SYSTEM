@@ -21,6 +21,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod balance_off;
 mod content;
+mod gram_wallet;
 mod photos;
 mod referral_login;
 mod runtime;

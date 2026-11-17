@@ -3,7 +3,7 @@ import { api, ApiError } from '../lib/api';
 import { count, money, MINUS, type Money } from '../lib/format';
 import { gb, resetPlan, stars, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
-import { openExternal } from './telegram';
+import { openExternal, webApp } from './telegram';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -28,6 +28,7 @@ export function MiniPlans() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [otherWallet, setOtherWallet] = useState<string | null>(null);
   const seq = useRef(0);
 
   useEffect(() => {
@@ -99,6 +100,7 @@ export function MiniPlans() {
   const methods = quote?.methods ?? [];
   const chosen = methods.find((m) => m.provider === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
+  const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
   const balanceShort = methods.find((m) => m.kind === 'balance' && m.unavailable?.type === 'insufficient_balance');
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
@@ -112,6 +114,7 @@ export function MiniPlans() {
     }
     setBusy(true);
     setError(null);
+    setOtherWallet(null);
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/checkout', {
         method: 'POST',
@@ -121,6 +124,17 @@ export function MiniPlans() {
         },
       });
       if (res.type === 'redirect') {
+        if (inTelegramWallet) {
+          try {
+            const sent = await api<{ chat_url: string }>(`/api/client/payments/${res.payment_id}/telegram`, { method: 'POST' });
+            setOtherWallet(res.pay_url);
+            setNote('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.');
+            openExternal(sent.chat_url);
+            return;
+          } catch (err) {
+            setError(failText(err, 'Счёт в чат не отправился, открываем другой кошелёк'));
+          }
+        }
         openExternal(res.pay_url);
         setNote('Оплата открылась в новом окне. Когда она пройдёт, подписка обновится сама.');
         return;
@@ -275,11 +289,19 @@ export function MiniPlans() {
         {note ? (
           <p role="status" className="mn-note">
             {note}
+            {otherWallet ? (
+              <>
+                {' '}
+                <button type="button" className="mn-link press" onClick={() => openExternal(otherWallet)}>
+                  Оплатить другим кошельком
+                </button>
+              </>
+            ) : null}
           </p>
         ) : null}
       </div>
       <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
-        {busy ? 'Открываем оплату…' : `Оплатить ${totalText}`}
+        {busy ? 'Открываем оплату…' : inTelegramWallet ? `Оплатить ${totalText} в Telegram` : `Оплатить ${totalText}`}
       </button>
     </main>
   );

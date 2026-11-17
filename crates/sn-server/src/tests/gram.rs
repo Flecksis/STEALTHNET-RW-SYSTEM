@@ -17,7 +17,10 @@ async fn gram_http(chain: &MockServer) -> Option<Http> {
         modules: Arc::new(ModuleRegistry::catalog_only()),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock: clock.clone(),
-        env: EnvFallbacks::default(),
+        env: EnvFallbacks {
+            bot_token: Some("123456:TEST-token".into()),
+            ..EnvFallbacks::default()
+        },
     });
     {
         let mut conn = db.store.conn().await.unwrap();
@@ -41,26 +44,15 @@ async fn gram_http(chain: &MockServer) -> Option<Http> {
     })
 }
 
-#[tokio::test]
-async fn страница_оплаты_gram_показывает_счёт_и_итог() {
-    let chain = MockServer::start().await;
-    let Some(h) = gram_http(&chain).await else {
-        return;
-    };
-    Mock::given(method("GET"))
-        .and(path("/getTransactions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": []})))
-        .up_to_n_times(1)
-        .with_priority(1)
-        .mount(&chain)
-        .await;
-    let tariff = h.tariff().await;
-    let client = h.client(5_093_118_422).await;
-    let other = h.pending_payment(client, &tariff).await;
+async fn gram_payment(
+    h: &Http,
+    client: ClientId,
+    tariff: &Tariff,
+) -> (sn_domain::payment::Payment, GramInvoice) {
     let period = &tariff.periods[0];
     let q = quote(&QuoteRequest {
         currency: Currency::Usd,
-        tariff: &tariff,
+        tariff,
         period_id: period.id,
         extra_devices: 0,
         sell_extra_devices: true,
@@ -125,6 +117,26 @@ async fn страница_оплаты_gram_показывает_счёт_и_и�
             .await
             .unwrap();
     }
+    (payment, invoice)
+}
+
+#[tokio::test]
+async fn страница_оплаты_gram_показывает_счёт_и_итог() {
+    let chain = MockServer::start().await;
+    let Some(h) = gram_http(&chain).await else {
+        return;
+    };
+    Mock::given(method("GET"))
+        .and(path("/getTransactions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": []})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&chain)
+        .await;
+    let tariff = h.tariff().await;
+    let client = h.client(5_093_118_422).await;
+    let other = h.pending_payment(client, &tariff).await;
+    let (payment, _) = gram_payment(&h, client, &tariff).await;
     let url = format!("/api/public/pay/{}", payment.public_id);
     let (status, _, body) = h.send(Method::GET, &url, None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -182,5 +194,67 @@ async fn страница_оплаты_gram_показывает_счёт_и_и�
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn счёт_gram_отправляется_в_чат_с_ботом_для_кошелька_telegram() {
+    let chain = MockServer::start().await;
+    let Some(h) = gram_http(&chain).await else {
+        return;
+    };
+    let tariff = h.tariff().await;
+    let client = h.client(5_093_118_422).await;
+    let (payment, _) = gram_payment(&h, client, &tariff).await;
+    let token = h.client_token(client).await;
+    let url = format!("/api/client/payments/{}/telegram", payment.public_id);
+    let (status, body) = h.write(Method::POST, &url, &token, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["chat_url"], "https://t.me/stealth_vpn_bot");
+    let queued: Vec<String> = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.jobs()
+            .claim(100, std::time::Duration::from_secs(30))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|job| serde_json::to_string(&job.typed().ok()?).ok())
+            .collect()
+    };
+    assert!(
+        queued
+            .iter()
+            .any(|job| job.contains("gram.widget") && job.contains(&payment.public_id.to_string())),
+        "{queued:?}"
+    );
+
+    let stranger = h.client(5_093_118_423).await;
+    let other = h.client_token(stranger).await;
+    let (status, _) = h.write(Method::POST, &url, &other, json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = h
+        .write(
+            Method::POST,
+            &format!("/api/client/payments/{}/telegram", Uuid::from_u128(9)),
+            &token,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                &keys::provider("gram"),
+                &json!({"enabled": true, "config": {"wallet": WALLET, "rate": "5", "testnet": true}}),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    h.services().reload().await.unwrap();
+    let (status, refused) = h.write(Method::POST, &url, &token, json!({})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "gram.wallet_unavailable");
     h.db.cleanup().await;
 }

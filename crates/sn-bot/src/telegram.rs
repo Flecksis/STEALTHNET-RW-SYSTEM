@@ -193,6 +193,45 @@ pub struct PreCheckoutQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WidgetQueryWallet {
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WidgetQueryKind {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet: Option<WidgetQueryWallet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WidgetQuery {
+    pub id: String,
+    pub from: BotUser,
+    #[serde(default)]
+    pub chat: Option<Chat>,
+    #[serde(default)]
+    pub message_id: Option<i64>,
+    #[serde(rename = "type")]
+    pub kind: WidgetQueryKind,
+    #[serde(default)]
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WidgetMessage {
+    pub html: String,
+    pub chat_data: String,
+    pub caption: String,
+    pub keyboard: Keyboard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Update {
     pub update_id: i64,
     #[serde(default)]
@@ -201,6 +240,8 @@ pub struct Update {
     pub callback_query: Option<CallbackQuery>,
     #[serde(default)]
     pub pre_checkout_query: Option<PreCheckoutQuery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget_query: Option<WidgetQuery>,
 }
 
 impl Update {
@@ -210,6 +251,9 @@ impl Update {
         }
         if let Some(callback) = &self.callback_query {
             return Some(&callback.from);
+        }
+        if let Some(query) = &self.widget_query {
+            return Some(&query.from);
         }
         self.pre_checkout_query.as_ref().map(|q| &q.from)
     }
@@ -616,7 +660,7 @@ impl TelegramApi {
                 &serde_json::json!({
                     "offset": offset,
                     "timeout": timeout.as_secs(),
-                    "allowed_updates": ["message", "callback_query", "pre_checkout_query"],
+                    "allowed_updates": ["message", "callback_query", "pre_checkout_query", "widget_query"],
                 }),
             )
             .await?;
@@ -633,6 +677,7 @@ impl TelegramApi {
                             message: None,
                             callback_query: None,
                             pre_checkout_query: None,
+                            widget_query: None,
                         })
                     }
                 }
@@ -715,6 +760,72 @@ impl TelegramApi {
         self.call::<bool>("answerCallbackQuery", &body)
             .await
             .map(|_| ())
+    }
+
+    fn widget_body(chat_id: i64, widget: &WidgetMessage, html: bool) -> serde_json::Value {
+        let caption = if html {
+            truncate(&widget.caption, 1_024)
+        } else {
+            truncate(&strip_tags(&widget.caption), 1_024)
+        };
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "html": widget.html,
+            "chat_data": widget.chat_data,
+            "caption": caption,
+            "allow_queries": true,
+        });
+        if html {
+            body["parse_mode"] = serde_json::json!("HTML");
+        }
+        if !widget.keyboard.is_empty() {
+            body["reply_markup"] = serde_json::json!(widget.keyboard);
+        }
+        body
+    }
+
+    pub async fn send_widget(
+        &self,
+        chat_id: i64,
+        widget: &WidgetMessage,
+    ) -> Result<Message, TelegramError> {
+        match self
+            .call("sendWidget", &Self::widget_body(chat_id, widget, true))
+            .await
+        {
+            Err(err) if err.is_parse_error() => {
+                self.call("sendWidget", &Self::widget_body(chat_id, widget, false))
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    pub async fn answer_widget_query(
+        &self,
+        query_id: &str,
+        data: &str,
+    ) -> Result<(), TelegramError> {
+        self.call::<bool>(
+            "answerWidgetQuery",
+            &serde_json::json!({ "widget_query_id": query_id, "data": data }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub async fn edit_widget_data(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        chat_data: &str,
+    ) -> Result<(), TelegramError> {
+        self.call::<bool>(
+            "editMessageWidgetData",
+            &serde_json::json!({ "chat_id": chat_id, "message_id": message_id, "chat_data": chat_data }),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn answer_pre_checkout(

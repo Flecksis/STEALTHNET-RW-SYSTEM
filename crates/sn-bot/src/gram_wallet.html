@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0}
+body{padding:14px 14px 12px;font:15px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:var(--tg-text-font-size,15px);color:var(--tg-theme-text-color,#111);background:var(--tg-theme-bg-color,#fff);-webkit-font-smoothing:antialiased}
+.label{color:var(--tg-theme-hint-color,#8a8a8e);font-size:13px}
+.sum{margin-top:2px;font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.fiat{color:var(--tg-theme-hint-color,#8a8a8e)}
+button{display:block;width:100%;height:44px;margin-top:12px;border:0;border-radius:10px;background:var(--tg-theme-button-color,#2481cc);color:var(--tg-theme-button-text-color,#fff);font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+[hidden]{display:none!important}
+.note{margin-top:10px;min-height:1.35em;color:var(--tg-theme-hint-color,#8a8a8e);font-size:14px}
+.note.done{color:var(--tg-theme-text-color,#111);font-weight:600}
+</style>
+</head>
+<body>
+<div class="label">К оплате</div>
+<div class="sum" id="sum">—</div>
+<div class="fiat" id="fiat"></div>
+<button id="pay" type="button">Оплатить в Telegram</button>
+<div class="note" id="note" role="status"></div>
+<script>
+(function(){
+var W=window.TelegramWidget,d={},busy=false;
+var sum=document.getElementById('sum'),fiat=document.getElementById('fiat'),pay=document.getElementById('pay'),note=document.getElementById('note');
+function say(text,done){note.textContent=text||'';note.className=done?'note done':'note'}
+function read(){try{d=JSON.parse(W&&W.chatData||'{}')||{}}catch(e){d={}}}
+function draw(){
+sum.textContent=d.a||'—';fiat.textContent=d.f||'';
+if(d.s==='paid'){pay.hidden=true;say('Оплачено. Подписка обновится в течение минуты.',true)}
+else if(d.s==='sent'){pay.hidden=true;say('Перевод отправлен. Бот напишет, как только сеть его подтвердит.',true)}
+}
+function fail(e){
+var code=e&&(e.code||e.message)||'';
+busy=false;pay.disabled=false;
+if(code==='REJECTED'){say('Оплата отменена.')}
+else if(code==='TIMEOUT'){pay.disabled=true;say('Ответ задержался. Не платите повторно: бот напишет, когда перевод дойдёт.')}
+else if(code==='RATE_LIMITED'||code==='BUSY'){say('Подождите пару секунд и нажмите ещё раз.')}
+else{say(e&&e.text?e.text:'Не получилось открыть кошелёк. Попробуйте ещё раз или оплатите другим кошельком.')}
+}
+read();draw();
+if(!W){pay.disabled=true;say('Откройте сообщение в приложении Telegram.');return}
+pay.addEventListener('click',function(){
+if(busy){return}
+if(!W.wallet){say('Кошелёк Telegram здесь недоступен. Оплатите кнопкой «Другой кошелёк» под сообщением.');return}
+busy=true;pay.disabled=true;say('Готовим перевод…');
+W.request('p:'+d.id,{wallet:true}).then(function(a){
+var r=JSON.parse(a&&a.result||'{}');
+if(r.done){d.s='paid';draw();busy=false;return null}
+if(!r.messages){throw {text:r.error}}
+say('Подтвердите перевод в окне кошелька.');
+return W.wallet.sendTransaction(r,'s:'+d.id).then(function(b){
+var x=JSON.parse(b&&b.result||'{}');d.s=x.status==='paid'?'paid':'sent';draw();busy=false
+})
+}).catch(fail)
+});
+if(W.onEvent){W.onEvent('chatDataChanged',function(){read();draw()})}
+if(W.ready){W.ready()}
+})();
+</script>
+</body>
+</html>

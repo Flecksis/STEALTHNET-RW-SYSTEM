@@ -1,20 +1,23 @@
 use crate::BotError;
 use crate::account::payment_screen;
+use crate::gram_wallet;
 use crate::handler::{Screen, Turn, id_arg, live, tariff_name};
 use crate::session::{Awaiting, Cart};
 use crate::telegram::Keyboard;
 use crate::text;
-use crate::ui::{self, Lines, Text};
+use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::format;
 use sn_domain::ids::{PeriodId, TariffId};
 use sn_domain::module::ModuleId;
+use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
 use sn_modules::catalog::promo::{self, PromoError, Purpose};
 use sn_payments::Unavailable;
-use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, TariffOffer};
+use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult, TariffOffer};
 use sn_store::Db;
+use uuid::Uuid;
 
 fn back_target(cart: &Cart) -> String {
     match cart.subscription_id {
@@ -483,6 +486,24 @@ pub async fn promo_entered(
     }
 }
 
+async fn send_gram_widget(turn: &Turn<'_>, payment_id: Uuid, what: &str) -> Result<bool, BotError> {
+    let services = turn.services();
+    let payment = {
+        let mut conn = services.store().conn().await?;
+        conn.payments().by_public_id(payment_id).await?
+    };
+    let Some(widget) = gram_wallet::compose(services, &payment, what) else {
+        return Ok(false);
+    };
+    match turn.ctx.api.send_widget(turn.target.chat_id, &widget).await {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            tracing::warn!(error = %err, "виджет оплаты GRAM не отправлен, показываем ссылку");
+            Ok(false)
+        }
+    }
+}
+
 pub async fn pay(turn: &mut Turn<'_>, client: &Client, provider: &str) -> Result<Screen, BotError> {
     let Some(cart) = turn.session.cart.clone() else {
         return start(turn, client, "").await;
@@ -510,6 +531,18 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, provider: &str) -> Result
             turn.session.cart = None;
             turn.session.promo = None;
             let what = ui::text(&content, "pay.what_tariff", &[("tariff", Text(&title))]);
+            if let CheckoutResult::Redirect { payment_id, .. } = &result
+                && provider == providers::GRAM
+                && send_gram_widget(turn, *payment_id, &what).await?
+            {
+                return Ok(Screen::new(ui::text(
+                    &content,
+                    "pay.gram_ready",
+                    &[("what", Html(&what))],
+                ))
+                .keyboard(Keyboard::new().push(ui::menu(&content)))
+                .section(Section::Payment));
+            }
             Ok(payment_screen(&content, &result, &what))
         }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),

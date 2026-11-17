@@ -1,4 +1,5 @@
 use crate::BotConfig;
+use crate::gram_wallet;
 use crate::telegram::{Button, Keyboard, TelegramApi, TelegramError};
 use crate::text::{self, escape};
 use async_trait::async_trait;
@@ -15,6 +16,7 @@ use sn_services::Services;
 use sn_store::{Db, StoreError};
 use sn_worker::{CoreHandlers, JobHandler, JobResult};
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 pub mod templates {
     pub const TEXT: &str = "text";
@@ -291,22 +293,41 @@ impl NotifyHandler {
         if client.bot_unreachable {
             return JobResult::Done;
         }
-        let content = services.bot_content();
-        let Some(rendered) = render(
-            &content.content,
-            template,
-            params,
-            services.settings().remna_offset(),
-        ) else {
-            return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
-        };
         drop(conn);
-        match self
-            .api(&token)
-            .send_message(chat_id, &rendered.text, Some(&rendered.keyboard))
-            .await
-        {
-            Ok(_) => JobResult::Done,
+        let sent = if template == gram_wallet::TEMPLATE {
+            let Some(payment) = params
+                .get("payment_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| Uuid::parse_str(raw).ok())
+            else {
+                return JobResult::Fail("в задании нет счёта".into());
+            };
+            let widget = match gram_wallet::compose_for(services, payment).await {
+                Ok(Some(widget)) => widget,
+                Ok(None) => return JobResult::Done,
+                Err(err) => return retry(err.to_string()),
+            };
+            self.api(&token)
+                .send_widget(chat_id, &widget)
+                .await
+                .map(|_| ())
+        } else {
+            let content = services.bot_content();
+            let Some(rendered) = render(
+                &content.content,
+                template,
+                params,
+                services.settings().remna_offset(),
+            ) else {
+                return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
+            };
+            self.api(&token)
+                .send_message(chat_id, &rendered.text, Some(&rendered.keyboard))
+                .await
+                .map(|_| ())
+        };
+        match sent {
+            Ok(()) => JobResult::Done,
             Err(err) if err.is_forbidden() || chat_missing(&err) => {
                 match services.store().conn().await {
                     Ok(mut conn) => {

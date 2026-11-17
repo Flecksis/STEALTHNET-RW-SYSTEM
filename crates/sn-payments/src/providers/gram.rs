@@ -1,6 +1,7 @@
 use crate::error::{PaymentError, PaymentResult};
 use crate::provider::*;
 use async_trait::async_trait;
+use base64::Engine as _;
 use chrono::Utc;
 use serde::Deserialize;
 use sn_domain::money::{Amount, Currency, PayCurrency};
@@ -89,6 +90,91 @@ impl GramInvoice {
             encode(&self.comment)
         )
     }
+
+    pub fn wallet_transaction(&self, valid_until: i64) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "valid_until": valid_until,
+            "messages": [{
+                "address": friendly_address(&self.address)?,
+                "amount": self.nano.to_string(),
+                "payload": comment_payload(&self.comment)?,
+            }],
+        }))
+    }
+}
+
+const COMMENT_BYTES_MAX: usize = 123;
+
+pub fn comment_payload(text: &str) -> Option<String> {
+    if text.len() > COMMENT_BYTES_MAX {
+        return None;
+    }
+    let mut data = vec![0u8; 4];
+    data.extend_from_slice(text.as_bytes());
+    cell_boc(&data)
+}
+
+fn cell_boc(data: &[u8]) -> Option<String> {
+    let doubled = u8::try_from(data.len() * 2).ok()?;
+    let mut cell = vec![0u8, doubled];
+    cell.extend_from_slice(data);
+    let mut boc = vec![0xb5, 0xee, 0x9c, 0x72, 0x41, 1, 1, 1, 0];
+    boc.push(u8::try_from(cell.len()).ok()?);
+    boc.push(0);
+    boc.extend_from_slice(&cell);
+    let crc = crc32c(&boc);
+    boc.extend_from_slice(&crc.to_le_bytes());
+    Some(base64::engine::general_purpose::STANDARD.encode(boc))
+}
+
+pub fn friendly_address(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if !valid_address(raw) {
+        return None;
+    }
+    let Some((workchain, hex)) = raw.split_once(':') else {
+        return Some(raw.to_string());
+    };
+    let workchain = workchain.parse::<i8>().ok()?;
+    let mut bytes = Vec::with_capacity(36);
+    bytes.push(0x51);
+    bytes.push(workchain.to_be_bytes()[0]);
+    for pair in hex.as_bytes().chunks(2) {
+        bytes.push(u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?);
+    }
+    let crc = crc16(&bytes);
+    bytes.extend_from_slice(&crc.to_be_bytes());
+    Some(base64::engine::general_purpose::URL_SAFE.encode(bytes))
+}
+
+fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for byte in data {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 == 0 {
+                crc << 1
+            } else {
+                (crc << 1) ^ 0x1021
+            };
+        }
+    }
+    crc
+}
+
+fn crc32c(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 0 {
+                crc >> 1
+            } else {
+                (crc >> 1) ^ 0x82F6_3B78
+            };
+        }
+    }
+    !crc
 }
 
 fn encode(value: &str) -> String {
@@ -673,6 +759,42 @@ mod tests {
             "in_msg": {"@type": "raw.message", "source": source, "destination": WALLET, "value": value, "message": comment},
             "out_msgs": []
         })
+    }
+
+    #[test]
+    fn перевод_для_кошелька_telegram_с_комментарием_в_payload() {
+        assert_eq!(crc32c(b"123456789"), 0xE306_9283);
+        assert_eq!(crc16(b"123456789"), 0x31C3);
+        assert_eq!(cell_boc(&[]).as_deref(), Some("te6cckEBAQEAAgAAAEysuc0="));
+        assert_eq!(
+            comment_payload("SN-ABCDEFGH").as_deref(),
+            Some("te6cckEBAQEAEQAAHgAAAABTTi1BQkNERUZHSIkhE3A=")
+        );
+        assert_eq!(comment_payload(&"x".repeat(124)), None);
+        assert_eq!(
+            friendly_address("0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba403a0f31a8")
+                .as_deref(),
+            Some("UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI")
+        );
+        assert_eq!(friendly_address(WALLET).as_deref(), Some(WALLET));
+        assert_eq!(friendly_address("0:zz"), None);
+        let invoice = GramInvoice {
+            comment: "SN-ABCDEFGH".into(),
+            nano: 1_340_000_000,
+            address: WALLET.into(),
+            amount: Amount::new(699, PayCurrency::Usd),
+        };
+        assert_eq!(
+            invoice.wallet_transaction(1_800_000_000),
+            Some(json!({
+                "valid_until": 1_800_000_000,
+                "messages": [{
+                    "address": WALLET,
+                    "amount": "1340000000",
+                    "payload": "te6cckEBAQEAEQAAHgAAAABTTi1BQkNERUZHSIkhE3A="
+                }]
+            }))
+        );
     }
 
     #[test]

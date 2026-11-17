@@ -5,7 +5,7 @@ use crate::telegram::{
 };
 use crate::text::{self, escape};
 use crate::ui::{self, Html, Lines, Text};
-use crate::{BotError, account, buy, consent, extras, login, media};
+use crate::{BotError, account, buy, consent, extras, gram_wallet, login, media};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
 use sn_domain::ids::TariffId;
@@ -135,6 +135,9 @@ pub async fn handle_update(ctx: &BotCtx, update: Update) {
 }
 
 async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
+    if let Some(query) = update.widget_query {
+        return gram_wallet::on_query(ctx, query).await;
+    }
     if let Some(query) = update.pre_checkout_query {
         return pre_checkout(ctx, &query).await;
     }
