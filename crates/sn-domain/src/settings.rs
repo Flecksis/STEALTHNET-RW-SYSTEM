@@ -1,4 +1,5 @@
 use crate::ids::SquadId;
+use crate::image::ImageKind;
 use crate::money::{Currency, Money};
 use crate::payment::providers;
 use crate::pricing::TopUpLimits;
@@ -271,6 +272,48 @@ pub struct ConnectSettings {
     pub page_config: Option<String>,
 }
 
+pub const SITE_TITLE_MAX: usize = 70;
+pub const SITE_DESCRIPTION_MAX: usize = 300;
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteSettings {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "yes")]
+    pub indexing: bool,
+}
+
+impl Default for SiteSettings {
+    fn default() -> Self {
+        SiteSettings {
+            title: None,
+            description: None,
+            indexing: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogoMeta {
+    pub tag: String,
+    pub kind: ImageKind,
+    pub width: u32,
+    pub height: u32,
+    pub size: u32,
+}
+
+impl LogoMeta {
+    pub fn path(&self) -> String {
+        format!("/api/public/logo/{}.{}", self.tag, self.kind.extension())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreSettings {
     pub currency: Currency,
@@ -287,6 +330,10 @@ pub struct CoreSettings {
     pub appearance: Appearance,
     #[serde(default)]
     pub connect: ConnectSettings,
+    #[serde(default)]
+    pub site: SiteSettings,
+    #[serde(default)]
+    pub logo: Option<LogoMeta>,
 }
 
 impl Default for CoreSettings {
@@ -304,6 +351,8 @@ impl Default for CoreSettings {
             invoice_ttl_minutes: 60,
             appearance: Appearance::default(),
             connect: ConnectSettings::default(),
+            site: SiteSettings::default(),
+            logo: None,
         }
     }
 }
@@ -337,6 +386,8 @@ pub mod keys {
     pub const APPEARANCE: &str = "core.appearance";
     pub const CONNECT: &str = "core.connect";
     pub const BOT_USERNAME: &str = "bot.username";
+    pub const SITE: &str = "core.site";
+    pub const LOGO: &str = "core.logo";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")

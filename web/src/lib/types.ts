@@ -14,6 +14,8 @@ export type Currency = 'USD' | 'RUB';
 
 export type Site = {
   brand_name: string;
+  title?: string;
+  logo_url?: string | null;
   currency: Currency;
   support_url: string | null;
   bot_username: string | null;
@@ -52,5 +54,6 @@ export type Me = {
   menu: ModuleMenuItem[];
   currency: Currency;
   brand_name: string;
+  logo_url?: string | null;
   appearance: Appearance;
 };

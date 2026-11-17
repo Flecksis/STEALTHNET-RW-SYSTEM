@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Link, Route, Routes, useLocation } from 'react-router';
 import { api, ApiError, setBearer } from '../lib/api';
+import { BrandMark } from '../lib/brand';
 import { Icon, type IconName } from '../lib/icons';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
@@ -168,9 +169,7 @@ export function MiniApp() {
             : '';
     return (
       <div className="mn mn-solo">
-        <span className="mn-logo" aria-hidden="true">
-          S
-        </span>
+        <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
         <h1>{site.brand_name}</h1>
         <p>{text}</p>
         {state.kind === 'error' ? (

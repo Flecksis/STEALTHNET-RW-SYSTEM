@@ -10,8 +10,8 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::Currency;
 use sn_domain::payment::providers;
 use sn_domain::settings::{
-    Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, PaymentOrder,
-    SettingField, TopUpSettings, TrialSettings, keys, secret_keys,
+    Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, LogoMeta,
+    PaymentOrder, SettingField, SiteSettings, TopUpSettings, TrialSettings, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -103,6 +103,12 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                     settings.connect = v;
                 }
             }
+            keys::SITE => {
+                if let Some(v) = parse::<SiteSettings>(&key, value) {
+                    settings.site = v;
+                }
+            }
+            keys::LOGO => settings.logo = parse::<LogoMeta>(&key, value),
             _ => {}
         }
     }

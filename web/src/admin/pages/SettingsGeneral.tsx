@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
+import { BrandMark } from '../../lib/brand';
 import type { Currency } from '../../lib/types';
 import { useSession } from '../session';
 import { fromRaw, toRaw } from '../tariffs/model';
+import { Switch } from '../ui';
 import '../form.css';
 import { SettingsLayout } from './SettingsLayout';
 
@@ -18,7 +20,31 @@ type Core = {
   };
 };
 
-type Work = { brand: string; support: string; ttl: string; offset: number; min: string; max: string };
+type SiteData = { title: string | null; description: string | null; indexing: boolean; title_max: number; description_max: number };
+
+type Work = {
+  brand: string;
+  support: string;
+  ttl: string;
+  offset: number;
+  min: string;
+  max: string;
+  title: string;
+  desc: string;
+  indexing: boolean;
+};
+
+function chars(text: string): number {
+  return [...text.trim().replace(/\s+/g, ' ')].length;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 const OFFSETS = Array.from({ length: (14 * 60 * 2) / 30 + 1 }, (_, i) => -14 * 60 + i * 30);
 
@@ -35,8 +61,9 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function SettingsGeneral() {
-  const { reload } = useSession();
+  const { me, reload } = useSession();
   const [core, setCore] = useState<Core['settings'] | null>(null);
+  const [limits, setLimits] = useState<{ title: number; desc: number }>({ title: 70, desc: 300 });
   const [base, setBase] = useState<Work | null>(null);
   const [work, setWork] = useState<Work | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +72,7 @@ export function SettingsGeneral() {
 
   const load = useCallback(async () => {
     try {
-      const data = await api<Core>('/api/admin/settings/core');
+      const [data, site] = await Promise.all([api<Core>('/api/admin/settings/core'), api<SiteData>('/api/admin/settings/site')]);
       const s = data.settings;
       const next: Work = {
         brand: s.brand_name,
@@ -54,7 +81,11 @@ export function SettingsGeneral() {
         offset: s.remna_utc_offset_minutes,
         min: toRaw(s.topup.min_minor, s.currency),
         max: toRaw(s.topup.max_minor, s.currency),
+        title: site.title ?? '',
+        desc: site.description ?? '',
+        indexing: site.indexing,
       };
+      setLimits({ title: site.title_max, desc: site.description_max });
       setCore(s);
       setBase(next);
       setWork(next);
@@ -95,12 +126,17 @@ export function SettingsGeneral() {
   const min = fromRaw(work.min, currency);
   const max = fromRaw(work.max, currency);
   const topupBad = min === 'bad' || max === 'bad' || min === null || max === null || min <= 0 || max < min;
+  const titleLen = chars(work.title);
+  const descLen = chars(work.desc);
+  const titleBad = titleLen > limits.title;
+  const descBad = descLen > limits.desc;
+  const siteDirty = work.title !== base.title || work.desc !== base.desc || work.indexing !== base.indexing;
 
   const save = async () => {
     if (!dirty || busy) {
       return;
     }
-    if (brandBad || supportBad || ttlBad || topupBad) {
+    if (brandBad || supportBad || ttlBad || topupBad || titleBad || descBad) {
       setStatus({ text: 'Исправьте поля, отмеченные красным', bad: true });
       return;
     }
@@ -123,7 +159,15 @@ export function SettingsGeneral() {
       if (work.min !== base.min || work.max !== base.max) {
         body.topup = { min_minor: min, max_minor: max };
       }
-      await api('/api/admin/settings/core', { method: 'PUT', body });
+      if (Object.keys(body).length > 0) {
+        await api('/api/admin/settings/core', { method: 'PUT', body });
+      }
+      if (siteDirty) {
+        await api('/api/admin/settings/site', {
+          method: 'PUT',
+          body: { title: work.title, description: work.desc, indexing: work.indexing },
+        });
+      }
       await load();
       if (work.brand !== base.brand) {
         await reload();
@@ -184,6 +228,96 @@ export function SettingsGeneral() {
               {core.public_url ?? window.location.origin}
             </span>
             <span className="cap">Задаётся при установке вместе с сертификатом</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="sec" aria-labelledby="seo-h">
+        <div className="sec-head">
+          <h2 id="seo-h" className="section-title">
+            Сайт в поиске и в превью ссылок
+          </h2>
+          <span className="muted">Так главную страницу покажут Яндекс и Google, а ссылку на сайт — Telegram и другие мессенджеры</span>
+        </div>
+        <div className="row">
+          <label htmlFor="seo-title" className="rl">
+            Заголовок
+          </label>
+          <div className="rc">
+            <input
+              id="seo-title"
+              className="field"
+              maxLength={limits.title + 30}
+              value={work.title}
+              placeholder={work.brand.trim() || core.brand_name}
+              aria-invalid={titleBad}
+              aria-describedby="seo-title-hint"
+              onChange={(e) => edit({ title: e.target.value })}
+              disabled={busy}
+            />
+            <span id="seo-title-hint" className="cap">
+              <span className={titleBad ? 'seo-count over' : 'seo-count'}>
+                {titleLen} из {limits.title}
+              </span>
+              {' · '}Пусто — будет название сервиса. В поиске видно около 60 символов
+            </span>
+          </div>
+        </div>
+        <div className="row">
+          <label htmlFor="seo-desc" className="rl">
+            Описание
+          </label>
+          <div className="rc">
+            <textarea
+              id="seo-desc"
+              className="field"
+              rows={3}
+              maxLength={limits.desc + 60}
+              value={work.desc}
+              placeholder="Одно-два предложения о сервисе"
+              aria-invalid={descBad}
+              aria-describedby="seo-desc-hint"
+              onChange={(e) => edit({ desc: e.target.value })}
+              disabled={busy}
+            />
+            <span id="seo-desc-hint" className="cap">
+              <span className={descBad ? 'seo-count over' : 'seo-count'}>
+                {descLen} из {limits.desc}
+              </span>
+              {' · '}В поиске видно около 160 символов, в Telegram — первые две-три строки
+            </span>
+          </div>
+        </div>
+        <div className="row">
+          <span className="rl">Поиск</span>
+          <div className="rc">
+            <span className="gen-line" style={{ minHeight: 40 }}>
+              <Switch
+                on={work.indexing}
+                onToggle={() => edit({ indexing: !work.indexing })}
+                label="Показывать главную страницу в поиске"
+                describedBy="seo-index-hint"
+                disabled={busy}
+              />
+              <span>Показывать главную страницу в поиске</span>
+            </span>
+            <span id="seo-index-hint" className="cap">
+              Кабинет, мини-приложение и админка в поиск не попадают никогда
+            </span>
+          </div>
+        </div>
+        <div className="row">
+          <span className="rl">Как это выглядит</span>
+          <div className="rc">
+            <div className="seo-preview" aria-hidden="true">
+              <BrandMark name={work.brand.trim() || core.brand_name} logo={me.logo_url} className="mark" />
+              <span className="seo-text">
+                <span className="seo-host">{hostOf(core.public_url ?? window.location.origin)}</span>
+                <span className="seo-title">{work.title.trim() || work.brand.trim() || core.brand_name}</span>
+                <span className={work.desc.trim() ? 'seo-desc' : 'seo-desc empty'}>{work.desc.trim() || 'Описание не задано'}</span>
+              </span>
+            </div>
+            <span className="cap">Картинка в превью — логотип из раздела «Оформление»</span>
           </div>
         </div>
       </section>

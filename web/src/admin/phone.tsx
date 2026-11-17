@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
+import { BrandMark } from '../lib/brand';
 import { Icon } from '../lib/icons';
 import { useSession } from './session';
 
@@ -11,7 +12,7 @@ type HeaderProps = {
 };
 
 export function PhoneHeader({ title, back, center = false, children }: HeaderProps) {
-  const { theme, flipTheme } = useSession();
+  const { me, theme, flipTheme } = useSession();
   const label = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
   return (
     <header className="ph-head">
@@ -22,9 +23,7 @@ export function PhoneHeader({ title, back, center = false, children }: HeaderPro
           </span>
         </Link>
       ) : (
-        <span className="ph-logo" aria-hidden="true">
-          S
-        </span>
+        <BrandMark name={me.brand_name} logo={me.logo_url} className="ph-logo" />
       )}
       {center ? <span className="ph-title center">{title}</span> : <h1 className="ph-title">{title}</h1>}
       <span className="ph-tools">

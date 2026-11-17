@@ -2,7 +2,9 @@ use super::{decode, json};
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiJson, CurrentAdmin};
 use crate::state::AppState;
-use axum::extract::{Path, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -10,6 +12,7 @@ use sn_domain::access::Permission;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::{Appearance, AutoRenewSettings, ConnectSettings, TrialSettings};
 use sn_modules::ModuleView;
+use sn_services::branding::{LogoView, SiteUpdate};
 use sn_services::settings::{
     BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
     ProviderUpdate, RemnaCheck, RemnaCheckRequest, RemnaUpdate, SubscriptionSettingsUpdate,
@@ -20,6 +23,12 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/{section}", get(read).put(write))
         .route("/settings/bot/restart", post(restart_bot))
+        .route(
+            "/settings/logo",
+            post(upload_logo)
+                .delete(delete_logo)
+                .layer(DefaultBodyLimit::max(LOGO_UPLOAD_LIMIT)),
+        )
         .route("/settings/remnawave/check", post(check_remnawave))
         .route("/settings/remnawave/webhook-secret", post(webhook_secret))
         .route("/settings/remnawave/page-configs", get(page_configs))
@@ -54,6 +63,7 @@ async fn read(
         "remnawave" => json(&ops.remnawave().await?)?,
         "subscription" => json(&ops.subscription_settings().await?)?,
         "bot" => json(&ops.bot().await?)?,
+        "site" => json(&state.services.branding().site())?,
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
@@ -99,6 +109,13 @@ async fn write(
                 .await?,
         )?,
         "bot" => json(&ops.update_bot(&decode::<BotUpdate>(body)?, by).await?)?,
+        "site" => json(
+            &state
+                .services
+                .branding()
+                .update_site(&decode::<SiteUpdate>(body)?, by)
+                .await?,
+        )?,
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
@@ -124,6 +141,53 @@ async fn restart_bot(
             .restart_bot(body.take_over, admin.0.admin_id)
             .await?,
     ))
+}
+
+const LOGO_UPLOAD_LIMIT: usize = 4 * 1024 * 1024;
+
+fn image_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .is_some_and(|value| matches!(value.as_str(), "image/png" | "image/jpeg" | "image/webp"))
+}
+
+async fn upload_logo(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Json<LogoView>> {
+    admin.require(Permission::Settings)?;
+    if !image_type(&headers) {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "logo.format",
+            "Подходят только PNG, JPEG и WebP",
+        ));
+    }
+    Ok(Json(
+        state
+            .services
+            .branding()
+            .upload_logo(&body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn delete_logo(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    let removed = state
+        .services
+        .branding()
+        .delete_logo(admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
 }
 
 async fn webhook_env(

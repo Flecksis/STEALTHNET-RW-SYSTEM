@@ -1,13 +1,15 @@
 import { useState, type FormEvent } from 'react';
 import { api, ApiError } from '../lib/api';
+import { BrandMark } from '../lib/brand';
 import './login.css';
 
 type Props = {
   brand: string;
+  logo: string | null;
   onDone: () => void;
 };
 
-export function Login({ brand, onDone }: Props) {
+export function Login({ brand, logo, onDone }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
@@ -51,9 +53,7 @@ export function Login({ brand, onDone }: Props) {
     <div className="login">
       <div className="login-box">
         <div className="login-brand">
-          <span className="mark" aria-hidden="true">
-            S
-          </span>
+          <BrandMark name={brand} logo={logo} className="mark" />
           <span>{brand.toUpperCase()}</span>
         </div>
         <form className="card login-card" onSubmit={submit} noValidate>

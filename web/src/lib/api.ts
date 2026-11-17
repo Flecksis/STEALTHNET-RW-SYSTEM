@@ -63,6 +63,10 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
     }
     throw new ApiError(0, 'network', 'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз');
   }
+  return read<T>(response);
+}
+
+async function read<T>(response: Response): Promise<T> {
   const text = await response.text();
   let data: unknown = null;
   if (text) {
@@ -76,4 +80,19 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
     throw errorFrom(response.status, data);
   }
   return data as T;
+}
+
+export async function upload<T>(path: string, file: Blob): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' },
+      body: file,
+      credentials: 'same-origin',
+    });
+  } catch {
+    throw new ApiError(0, 'network', 'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз');
+  }
+  return read<T>(response);
 }

@@ -1,4 +1,5 @@
 import { useSite, DEFAULT_SITE } from '../lib/site';
+import { BrandMark } from '../lib/brand';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import './soon.css';
 
@@ -17,9 +18,7 @@ export function Soon({ title, text }: Props) {
     <main className="soon">
       <div className="soon-box">
         <div className="soon-brand">
-          <span className="mark" aria-hidden="true">
-            S
-          </span>
+          <BrandMark name={site.brand_name} logo={site.logo_url} className="mark" />
           <span>{site.brand_name.toUpperCase()}</span>
         </div>
         <h1>{title}</h1>

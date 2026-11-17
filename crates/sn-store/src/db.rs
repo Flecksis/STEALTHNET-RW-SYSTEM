@@ -167,6 +167,10 @@ pub trait Db: Send {
         SecretsRepo::new(self.conn())
     }
 
+    fn site_assets(&mut self) -> SiteAssetsRepo<'_> {
+        SiteAssetsRepo::new(self.conn())
+    }
+
     fn admins(&mut self) -> AdminsRepo<'_> {
         AdminsRepo::new(self.conn())
     }

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { api, ApiError } from '../../lib/api';
+import { useEffect, useRef, useState } from 'react';
+import { api, ApiError, upload } from '../../lib/api';
+import { BrandMark } from '../../lib/brand';
 import type { AdminDesign, AdminTheme, Appearance, ClientDesign, ClientTheme } from '../../lib/types';
 import { useSession } from '../session';
 import { SettingsLayout } from './SettingsLayout';
@@ -103,6 +104,131 @@ function Segs<T extends string>({ label, value, options, onPick }: SegsProps<T>)
   );
 }
 
+type LogoInfo = { url: string; content_type: string; width: number; height: number; size: number };
+
+const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const LOGO_MAX = 1024 * 1024;
+
+function weight(size: number): string {
+  if (size >= 1024 * 1024) {
+    return `${(size / 1024 / 1024).toFixed(1).replace('.', ',')}\u00a0МБ`;
+  }
+  return `${Math.max(1, Math.round(size / 1024))}\u00a0КБ`;
+}
+
+function LogoCard() {
+  const { me, reload } = useSession();
+  const [logo, setLogo] = useState<LogoInfo | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api<{ logo: LogoInfo | null }>('/api/admin/settings/site')
+      .then((site) => setLogo(site.logo))
+      .catch(() => setLogo(null));
+  }, []);
+
+  const send = async (file: File | undefined) => {
+    if (!file) {
+      return;
+    }
+    setNote('');
+    if (!LOGO_TYPES.includes(file.type)) {
+      setError('Подходят только PNG, JPEG и WebP');
+      return;
+    }
+    if (file.size > LOGO_MAX) {
+      setError('Файл больше 1\u00a0МБ: уменьшите картинку');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setLogo(await upload<LogoInfo>('/api/admin/settings/logo', file));
+      await reload();
+      setNote('Логотип обновлён');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Логотип не загрузился');
+    } finally {
+      setBusy(false);
+      if (input.current) {
+        input.current.value = '';
+      }
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    setNote('');
+    try {
+      await api('/api/admin/settings/logo', { method: 'DELETE' });
+      setLogo(null);
+      await reload();
+      setNote('Логотип убран, вместо него снова первая буква названия');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Логотип не убрался');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const url = logo?.url ?? null;
+  const name = me.brand_name.toUpperCase();
+  return (
+    <section aria-labelledby="logo-h" className="card">
+      <div className="card-pad lg">
+        <div className="head-stack">
+          <h2 id="logo-h" className="section-title">
+            Логотип
+          </h2>
+          <span className="muted">В меню админки, в кабинете, мини-приложении, на сайте и во вкладке браузера</span>
+        </div>
+        <div className="lg-row">
+          <span className="lg-previews" aria-hidden="true">
+            <span className="lg-pv dark">
+              <BrandMark name={me.brand_name} logo={url} className="mark" />
+              <span>{name}</span>
+            </span>
+            <span className="lg-pv light">
+              <BrandMark name={me.brand_name} logo={url} className="mark" />
+              <span>{name}</span>
+            </span>
+          </span>
+          <span className="lg-side">
+            <span className="lg-btns">
+              <button type="button" className="btn-line hov" onClick={() => input.current?.click()} disabled={busy || logo === undefined}>
+                {busy ? 'Загружаем…' : url ? 'Заменить' : 'Загрузить'}
+              </button>
+              {url ? (
+                <button type="button" className="btn-line hov" onClick={() => void remove()} disabled={busy}>
+                  Убрать
+                </button>
+              ) : null}
+            </span>
+            <span className="cap">
+              {logo ? `Сейчас: ${logo.width}×${logo.height}, ${weight(logo.size)}` : 'Сейчас вместо логотипа первая буква названия'}
+            </span>
+            <span className="cap">PNG, JPEG или WebP до 1&nbsp;МБ. Лучше квадрат от 256×256 с прозрачным фоном. Меняется сразу, без кнопки «Сохранить»</span>
+            {error ? (
+              <span role="alert" className="err">
+                {error}
+              </span>
+            ) : (
+              <span role="status" className="lg-note">
+                {note}
+              </span>
+            )}
+          </span>
+        </div>
+        <input ref={input} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => void send(e.target.files?.[0])} />
+      </div>
+    </section>
+  );
+}
+
 export function SettingsLook() {
   const { me, setAppearance } = useSession();
   const saved = me.appearance;
@@ -148,6 +274,7 @@ export function SettingsLook() {
 
   return (
     <SettingsLayout>
+      <LogoCard />
       <section aria-label="Админка" className="card">
         <div className="card-pad" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="head-stack">

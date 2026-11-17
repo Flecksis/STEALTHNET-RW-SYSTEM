@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../lib/api';
+import { BrandMark } from '../lib/brand';
 import { count, money, NBSP, type Money } from '../lib/format';
 import { countriesIn, countryName, joinAnd } from '../lib/geo';
 import { Icon } from '../lib/icons';
@@ -83,8 +84,8 @@ export function Landing() {
   useSurface('landing', theme, site.appearance.client === 'mono' ? 'b' : 'a');
 
   useEffect(() => {
-    document.title = site.brand_name;
-  }, [site.brand_name]);
+    document.title = site.title ?? site.brand_name;
+  }, [site.title, site.brand_name]);
 
   useEffect(() => {
     api<PublicCatalog>('/api/public/catalog')
@@ -142,9 +143,7 @@ export function Landing() {
   const header = phone ? (
     <header className="ld-head">
       <a href="#top" className="ld-brand">
-        <span className="ld-mark" aria-hidden="true">
-          S
-        </span>
+        <BrandMark name={site.brand_name} logo={site.logo_url} className="ld-mark" />
         <span>{site.brand_name.toUpperCase()}</span>
       </a>
       <span className="ld-grow" />
@@ -161,9 +160,7 @@ export function Landing() {
     <header className="ld-head">
       <div className="ld-head-in">
         <a href="#top" className="ld-brand">
-          <span className="ld-mark" aria-hidden="true">
-            S
-          </span>
+          <BrandMark name={site.brand_name} logo={site.logo_url} className="ld-mark" />
           <span>{site.brand_name.toUpperCase()}</span>
         </a>
         <nav aria-label="Разделы страницы" className="ld-nav">
@@ -448,9 +445,7 @@ export function Landing() {
       </main>
       <footer className="ld-foot">
         <span className="ld-foot-brand">
-          <span className="ld-mark sm" aria-hidden="true">
-            S
-          </span>
+          <BrandMark name={site.brand_name} logo={site.logo_url} className="ld-mark sm" />
           © {year} {site.brand_name.toUpperCase()}
         </span>
         <nav aria-label="Ссылки" className="ld-foot-nav">

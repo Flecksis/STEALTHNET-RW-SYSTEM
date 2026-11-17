@@ -4,6 +4,7 @@ pub mod error;
 pub mod events;
 pub mod format;
 pub mod ids;
+pub mod image;
 pub mod jobs;
 pub mod ledger;
 pub mod module;

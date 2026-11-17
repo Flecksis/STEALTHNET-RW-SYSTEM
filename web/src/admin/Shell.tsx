@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { Icon } from '../lib/icons';
+import { BrandMark } from '../lib/brand';
 import { useMedia, usePhone } from '../lib/media';
 import { readStored, writeStored, type Theme } from '../lib/theme';
 import { isCurrent, navItems, type NavItem } from './nav';
@@ -67,9 +68,7 @@ function Rail({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: str
     <div className={pinned ? 'rail-hold pinned' : 'rail-hold'}>
       <nav aria-label="Меню" className={pinned ? 'rail pinned' : 'rail'}>
         <div className="rail-logo">
-          <span className="mark" aria-hidden="true">
-            S
-          </span>
+          <BrandMark name={me.brand_name} logo={me.logo_url} className="mark" />
           <span className="lbl">{me.brand_name.toUpperCase()}</span>
         </div>
         {items.map((item) => {
@@ -158,9 +157,7 @@ function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: s
     <header className="topbar">
       <div className="topbar-in">
         <Link to="/admin" className="topbar-home">
-          <span className="mark" aria-hidden="true">
-            S
-          </span>
+          <BrandMark name={me.brand_name} logo={me.logo_url} className="mark" />
           <span>{me.brand_name.toUpperCase()}</span>
         </Link>
         <nav aria-label="Разделы" className="tabs">

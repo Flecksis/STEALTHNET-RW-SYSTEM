@@ -2,6 +2,7 @@ pub mod admin;
 pub mod auth;
 pub mod autorenew;
 pub mod bot_runtime;
+pub mod branding;
 pub mod checkout;
 pub mod clients;
 pub mod clock;

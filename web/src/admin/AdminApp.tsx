@@ -147,7 +147,7 @@ export function AdminApp() {
     );
   }
   if (state.kind === 'guest' || !session) {
-    return <Login brand={(site ?? DEFAULT_SITE).brand_name} onDone={() => void load()} />;
+    return <Login brand={(site ?? DEFAULT_SITE).brand_name} logo={site?.logo_url ?? null} onDone={() => void load()} />;
   }
 
   return (

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, ApiError } from '../lib/api';
+import { BrandMark } from '../lib/brand';
 import { QrCode } from '../lib/qr';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import type { Site } from '../lib/types';
@@ -169,7 +170,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
     <div className="cb-solo">
       <div className="cb-solo-box cb-login">
         <div className="cb-brand" aria-hidden="true">
-          <span className="cb-mark">S</span>
+          <BrandMark name={site.brand_name} logo={site.logo_url} className="cb-mark" />
           <span className="cb-brand-name">{site.brand_name.toUpperCase()}</span>
         </div>
         <h1>Вход в кабинет</h1>

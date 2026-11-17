@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
+import { BrandMark } from '../lib/brand';
 import { api } from '../lib/api';
 import { dateLong, money, plural } from '../lib/format';
 import { Icon, type IconName } from '../lib/icons';
@@ -86,9 +87,7 @@ export function MiniHome() {
   return (
     <main className="mn-page home">
       <header className="mn-head">
-        <span className="mn-logo" aria-hidden="true">
-          S
-        </span>
+        <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
         <h1 className="mn-brand">{site.brand_name.toUpperCase()}</h1>
         <Link to="/app/plans" className="mn-balance press" aria-label={`Баланс ${money(me.balance)}`}>
           <span>{money(me.balance)}</span>

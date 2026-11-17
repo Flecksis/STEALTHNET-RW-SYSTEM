@@ -2806,3 +2806,260 @@ async fn инфраструктура_сквады_провайдеры_и_оп�
     assert_eq!(history["records"][0]["nodes"], json!(["FI-1"]));
     h.db.cleanup().await;
 }
+
+fn logo_png(width: u32, height: u32, fill: u8) -> Vec<u8> {
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+    bytes.extend_from_slice(&[fill; 64]);
+    bytes
+}
+
+async fn upload_logo(
+    h: &Http,
+    token: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/admin/settings/logo")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(bytes))
+        .unwrap();
+    let response = router(h.state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+async fn raw(state: &AppState, path: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(path)
+        .body(Body::empty())
+        .unwrap();
+    let response = router(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, headers, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn логотип_загружается_раздаётся_заменяется_и_удаляется() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let (status, _) = upload_logo(&h, &support, "image/png", logo_png(256, 256, 1)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = upload_logo(&h, &owner, "text/plain", logo_png(256, 256, 1)).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec();
+    let (status, body) = upload_logo(&h, &owner, "image/png", svg).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "logo.format");
+    let (status, body) = upload_logo(&h, &owner, "image/png", logo_png(16, 16, 1)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "logo.too_small");
+    let mut heavy = logo_png(256, 256, 1);
+    heavy.resize(sn_domain::image::LOGO_MAX_BYTES + 1, 0);
+    let (status, body) = upload_logo(&h, &owner, "image/png", heavy).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "logo.too_heavy");
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(site["logo_url"], Value::Null);
+
+    let first = logo_png(256, 256, 1);
+    let (status, logo) = upload_logo(&h, &owner, "image/png", first.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{logo}");
+    let url = logo["url"].as_str().unwrap().to_string();
+    assert!(
+        url.starts_with("/api/public/logo/") && url.ends_with(".png"),
+        "{url}"
+    );
+    assert_eq!(logo["width"], 256);
+    assert_eq!(logo["content_type"], "image/png");
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(site["logo_url"], url.as_str());
+    let (_, me) = h.get("/api/admin/me", &owner).await;
+    assert_eq!(me["logo_url"], url.as_str());
+    let (status, headers, bytes) = raw(&h.state, &url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, first);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    let (status, _, _) = raw(&h.state, &url.replace(".png", ".jpg")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let second = logo_png(512, 512, 2);
+    let (status, replaced) = upload_logo(&h, &owner, "image/png", second.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    let next = replaced["url"].as_str().unwrap().to_string();
+    assert_ne!(next, url);
+    let (status, _, _) = raw(&h.state, &url).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, bytes) = raw(&h.state, &next).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, second);
+
+    let (status, _) = h
+        .write(
+            Method::DELETE,
+            "/api/admin/settings/logo",
+            &support,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(
+            Method::DELETE,
+            "/api/admin/settings/logo",
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["removed"], true);
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(site["logo_url"], Value::Null);
+    let (status, _, _) = raw(&h.state, &next).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, body) = h
+        .write(
+            Method::DELETE,
+            "/api/admin/settings/logo",
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(body["removed"], false);
+    let marks = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.audit()
+            .recent_by_action("settings.logo", 10)
+            .await
+            .unwrap()
+    };
+    assert_eq!(marks.len(), 3);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn описание_сайта_настраивается_и_попадает_в_страницу() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let (status, site) = h.get("/api/admin/settings/site", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{site}");
+    assert_eq!(site["title"], Value::Null);
+    assert_eq!(site["indexing"], true);
+    assert_eq!(site["brand_name"], "STEALTHNET");
+    assert_eq!(site["title_max"], 70);
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/site",
+            &support,
+            json!({ "title": "Чужой" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/site",
+            &owner,
+            json!({ "title": "x".repeat(71) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/site",
+            &owner,
+            json!({ "title": "  Тихий\nVPN  ", "description": "Быстрый & стабильный <VPN>", "indexing": false }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["title"], "Тихий VPN");
+    assert_eq!(body["indexing"], false);
+    let (_, _, public) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(public["title"], "Тихий VPN");
+    assert_eq!(public["brand_name"], "STEALTHNET");
+
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.settings()
+            .set(keys::PUBLIC_URL, &json!("https://vpn.example"), None)
+            .await
+            .unwrap();
+    }
+    h.services().reload().await.unwrap();
+    let dir = std::env::temp_dir().join(format!("sn-web-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html>\n<html lang=\"ru\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"robots\" content=\"noindex\" />\n    <title>STEALTHNET</title>\n  </head>\n  <body><div id=\"root\"></div></body>\n</html>\n",
+    )
+    .unwrap();
+    let state = AppState {
+        config: Arc::new(ServerConfig {
+            web_dir: Some(dir.clone()),
+            ..ServerConfig::default()
+        }),
+        services: h.state.services.clone(),
+    };
+    let (status, _, page) = fetch(&state, Method::GET, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("<title>Тихий VPN</title>"), "{page}");
+    assert!(page.contains("<meta name=\"robots\" content=\"noindex\">"));
+    assert!(
+        page.contains(
+            "<meta name=\"description\" content=\"Быстрый &amp; стабильный &lt;VPN&gt;\">"
+        )
+    );
+    assert!(page.contains("<meta property=\"og:url\" content=\"https://vpn.example/\">"));
+    assert!(page.contains("<link rel=\"icon\" href=\"/api/public/icon.svg\">"));
+    assert!(!page.contains("canonical"));
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/site",
+            &owner,
+            json!({ "indexing": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, logo) = upload_logo(&h, &owner, "image/png", logo_png(128, 128, 7)).await;
+    let logo_url = logo["url"].as_str().unwrap().to_string();
+    let (_, _, page) = fetch(&state, Method::GET, "/").await;
+    assert!(page.contains("<meta name=\"robots\" content=\"index, follow\">"));
+    assert!(page.contains("<link rel=\"canonical\" href=\"https://vpn.example/\">"));
+    assert!(page.contains(&format!(
+        "<meta property=\"og:image\" content=\"https://vpn.example{logo_url}\">"
+    )));
+    let (_, headers, admin_page) = fetch(&state, Method::GET, "/admin/settings").await;
+    assert!(admin_page.contains("<title>Админка — STEALTHNET</title>"));
+    assert!(admin_page.contains("noindex, nofollow"));
+    assert!(!admin_page.contains("description"));
+    assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+    let (_, _, cabinet) = fetch(&state, Method::GET, "/cabinet").await;
+    assert!(cabinet.contains("<title>Личный кабинет — STEALTHNET</title>"));
+    let (status, headers, icon) = fetch(&state, Method::GET, "/api/public/icon.svg").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
+    assert!(icon.contains(">S</text>"));
+    std::fs::remove_dir_all(dir).unwrap();
+    h.db.cleanup().await;
+}

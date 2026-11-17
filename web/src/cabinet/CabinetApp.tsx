@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, Route, Routes, useLocation } from 'react-router';
 import { api, ApiError } from '../lib/api';
+import { BrandMark } from '../lib/brand';
 import { avatarColor, money } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
@@ -191,9 +192,7 @@ function Brand({ small }: { small?: boolean }) {
   const { site } = useCabinet();
   return (
     <Link to="/" className={small ? 'cb-brand small' : 'cb-brand'} aria-label={`${site.brand_name}, на главную`}>
-      <span className="cb-mark" aria-hidden="true">
-        S
-      </span>
+      <BrandMark name={site.brand_name} logo={site.logo_url} className="cb-mark" />
       <span className="cb-brand-name">{site.brand_name.toUpperCase()}</span>
     </Link>
   );

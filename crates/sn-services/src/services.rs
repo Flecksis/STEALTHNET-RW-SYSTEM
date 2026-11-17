@@ -317,6 +317,10 @@ impl Services {
         SettingsOps::new(self)
     }
 
+    pub fn branding(&self) -> crate::branding::BrandingOps<'_> {
+        crate::branding::BrandingOps::new(self)
+    }
+
     pub fn stars_review(&self) -> StarsReview<'_> {
         StarsReview::new(self)
     }
