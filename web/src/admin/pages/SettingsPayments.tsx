@@ -52,7 +52,7 @@ type Work = {
 const ACCEPTS: Record<string, string> = {
   cryptopay: 'USDT, TON, BTC',
   heleket: 'Криптовалюта',
-  lava: 'Карты Visa и Mastercard',
+  lava: 'Карты: российские в рублях, Visa и Mastercard в долларах',
   stars: 'Своя цена в звёздах, задаётся в тарифе',
   gram: 'GRAM переводом на кошелёк TON',
   yookassa: 'Карты, СБП, автопродление',

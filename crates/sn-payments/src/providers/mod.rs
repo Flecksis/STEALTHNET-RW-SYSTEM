@@ -126,6 +126,7 @@ mod tests {
                     providers::YOOMONEY,
                     providers::STARS,
                     providers::CLOUDPAYMENTS,
+                    providers::LAVA,
                     providers::BALANCE,
                 ],
             ),

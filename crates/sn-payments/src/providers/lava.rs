@@ -73,13 +73,16 @@ impl PaymentProvider for Lava {
     }
 
     fn currencies(&self) -> &'static [Currency] {
-        &[Currency::Usd]
+        &[Currency::Usd, Currency::Rub]
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
+    fn client_label(&self, currency: Currency) -> ClientLabel {
         ClientLabel {
             title: "Банковская карта",
-            hint: "Visa и Mastercard любых стран",
+            hint: match currency {
+                Currency::Rub => "Карты российских банков",
+                Currency::Usd => "Visa и Mastercard любых стран",
+            },
         }
     }
 
@@ -127,13 +130,17 @@ impl PaymentProvider for Lava {
         config: &ProviderConfig,
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
-        util::require_currency(request.amount, PayCurrency::Usd)?;
+        let currency = match request.amount.currency {
+            PayCurrency::Usd => "USD",
+            PayCurrency::Rub => "RUB",
+            other => return Err(PaymentError::UnsupportedCurrency(other.code().into())),
+        };
         let offer = config.require("offer_id")?;
         let email = util::client_email(request).ok_or(PaymentError::EmailRequired)?;
         let mut body = Json::object([
             ("email", Json::from(email)),
             ("offerId", Json::from(offer)),
-            ("currency", Json::from("USD")),
+            ("currency", Json::from(currency)),
             ("amount", Json::number(request.amount.units())),
         ]);
         if let Some(url) = util::return_url(request).filter(|u| util::is_https(u) && u.len() <= 512)
@@ -292,7 +299,7 @@ mod tests {
     use crate::test_support::*;
     use serde_json::json;
     use sn_domain::payment::{AmountCheck, check_paid_amount};
-    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::matchers::{body_json, body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const OFFER: &str = "836b9fc5-7ae9-4a27-9642-592bc44072b7";
@@ -468,11 +475,42 @@ mod tests {
                 .await,
             Err(PaymentError::EmailRequired)
         );
-        assert!(matches!(
-            lava.create_invoice(&settings(), &invoice(rub(49_900), Some("c@example.com")))
-                .await,
-            Err(PaymentError::UnsupportedCurrency(_))
-        ));
+    }
+
+    #[tokio::test]
+    async fn счёт_lava_в_рублях() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/invoice"))
+            .and(body_partial_json(
+                json!({"currency": "RUB", "offerId": OFFER}),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": CONTRACT,
+                "status": "in-progress",
+                "amountTotal": {"currency": "RUB", "amount": 499},
+                "paymentUrl": "https://app.lava.top/payment/7ea82675"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let lava = Lava::with_api_base(server.uri());
+        let created = lava
+            .create_invoice(&settings(), &invoice(rub(49_900), Some("c@example.com")))
+            .await
+            .unwrap();
+        assert_eq!(created.external_id.as_deref(), Some(CONTRACT));
+        let sent = server.received_requests().await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&sent[0].body).contains("\"amount\":499"),
+            "{}",
+            String::from_utf8_lossy(&sent[0].body)
+        );
+        assert!(lava.currencies().contains(&Currency::Rub));
+        assert_eq!(
+            lava.client_label(Currency::Rub).hint,
+            "Карты российских банков"
+        );
     }
 
     #[tokio::test]
