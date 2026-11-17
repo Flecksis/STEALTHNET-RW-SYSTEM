@@ -255,6 +255,14 @@ export function MiniPlans() {
             {starsMode && q.stars ? stars(q.stars.discount) : money(q.discount)}
           </p>
         ) : null}
+        {q && methods.length === 0 ? (
+          <p className="mn-muted small">
+            В мини-приложении оплатить сейчас нельзя.{' '}
+            <button type="button" className="mn-link press" onClick={() => openExternal(`${window.location.origin}/cabinet/pay`)}>
+              Оплатить в кабинете на сайте
+            </button>
+          </p>
+        ) : null}
         <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
           {methods.map((m) => (
             <button key={m.provider} type="button" role="radio" aria-checked={chosen?.provider === m.provider} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(m.provider)}>

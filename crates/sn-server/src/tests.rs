@@ -25,6 +25,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 mod bot_content;
+mod channels;
 mod gram;
 mod photos;
 

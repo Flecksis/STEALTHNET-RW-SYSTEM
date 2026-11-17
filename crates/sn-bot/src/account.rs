@@ -498,6 +498,7 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
             total: amount,
             stars_total: None,
             balance: None,
+            channel: Some(sn_domain::access::ClientChannel::Bot),
         })
         .into_iter()
         .filter(|m| m.kind == ProviderKind::External && m.unavailable.is_none())

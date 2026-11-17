@@ -3,6 +3,7 @@ use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::DomainError;
+use sn_domain::access::ClientChannel;
 use sn_domain::client::{Client, IdentityKind};
 use sn_domain::events::DomainEvent;
 use sn_domain::format;
@@ -29,6 +30,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod channel_tests;
 #[cfg(test)]
 mod gram_tests;
 #[cfg(test)]
@@ -62,6 +65,17 @@ pub enum Channel {
     Miniapp,
     Cabinet,
     Admin,
+}
+
+impl Channel {
+    pub const fn client(self) -> Option<ClientChannel> {
+        match self {
+            Channel::Bot => Some(ClientChannel::Bot),
+            Channel::Miniapp => Some(ClientChannel::Miniapp),
+            Channel::Cabinet => Some(ClientChannel::Cabinet),
+            Channel::Admin => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,6 +593,7 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         cart: &CartRequest,
         origin: &QuoteOrigin,
+        channel: Option<ClientChannel>,
     ) -> ServiceResult<Prepared> {
         let currency = self.services.settings().currency;
         let modules = self.services.modules();
@@ -619,6 +634,7 @@ impl<'a> Checkout<'a> {
             total: quote.total,
             stars_total: quote.stars.map(|s| s.total),
             balance: Some(balance),
+            channel,
         });
         Ok(Prepared {
             client,
@@ -631,7 +647,17 @@ impl<'a> Checkout<'a> {
     }
 
     pub async fn quote(&self, client_id: ClientId, cart: &CartRequest) -> ServiceResult<QuoteView> {
-        self.quote_from(client_id, cart, None).await
+        self.quote_for(client_id, cart, None, None).await
+    }
+
+    pub async fn quote_in(
+        &self,
+        client_id: ClientId,
+        cart: &CartRequest,
+        channel: Channel,
+    ) -> ServiceResult<QuoteView> {
+        self.quote_for(client_id, cart, None, channel.client())
+            .await
     }
 
     pub async fn quote_from(
@@ -640,8 +666,18 @@ impl<'a> Checkout<'a> {
         cart: &CartRequest,
         address: Option<IpAddr>,
     ) -> ServiceResult<QuoteView> {
+        self.quote_for(client_id, cart, address, None).await
+    }
+
+    pub async fn quote_for(
+        &self,
+        client_id: ClientId,
+        cart: &CartRequest,
+        address: Option<IpAddr>,
+        channel: Option<ClientChannel>,
+    ) -> ServiceResult<QuoteView> {
         let prepared = self
-            .prepare(client_id, cart, &QuoteOrigin { address })
+            .prepare(client_id, cart, &QuoteOrigin { address }, channel)
             .await?;
         let expire_preview = new_expire_at(
             prepared.kind,
@@ -673,7 +709,12 @@ impl<'a> Checkout<'a> {
     ) -> ServiceResult<CheckoutResult> {
         self.services.remna()?;
         let prepared = self
-            .prepare(client_id, &request.cart, &QuoteOrigin { address })
+            .prepare(
+                client_id,
+                &request.cart,
+                &QuoteOrigin { address },
+                request.channel.client(),
+            )
             .await?;
         let (kind, amount) = pick_method(&prepared.methods, &request.provider)?;
         let period = prepared
@@ -714,7 +755,7 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         amount: Money,
         provider: &str,
-        _channel: Channel,
+        channel: Channel,
     ) -> ServiceResult<CheckoutResult> {
         let settings = self.services.settings();
         if amount.currency != settings.currency {
@@ -735,7 +776,11 @@ impl<'a> Checkout<'a> {
         let provider = registry
             .get(provider)
             .filter(|p| {
-                p.kind() == ProviderKind::External && registry.is_available(p.id(), amount.currency)
+                p.kind() == ProviderKind::External
+                    && registry.is_available(p.id(), amount.currency)
+                    && channel
+                        .client()
+                        .is_none_or(|channel| registry.allowed_in(p.id(), channel))
             })
             .ok_or_else(|| {
                 ServiceError::rejected(
@@ -837,6 +882,7 @@ impl<'a> Checkout<'a> {
         &self,
         client_id: ClientId,
         item: &ItemRequest,
+        channel: Option<ClientChannel>,
     ) -> ServiceResult<(Client, Quote, Vec<CheckoutMethod>)> {
         let currency = self.services.settings().currency;
         let modules = self.services.modules();
@@ -884,6 +930,7 @@ impl<'a> Checkout<'a> {
             total: quote.total,
             stars_total: quote.stars.map(|s| s.total),
             balance: Some(balance),
+            channel,
         });
         Ok((client, quote, methods))
     }
@@ -893,7 +940,7 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         item: &ItemRequest,
     ) -> ServiceResult<ItemQuoteView> {
-        let (_, quote, methods) = self.prepare_item(client_id, item).await?;
+        let (_, quote, methods) = self.prepare_item(client_id, item, None).await?;
         Ok(ItemQuoteView { quote, methods })
     }
 
@@ -902,7 +949,9 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         request: &ItemCheckoutRequest,
     ) -> ServiceResult<CheckoutResult> {
-        let (client, quote, methods) = self.prepare_item(client_id, &request.item).await?;
+        let (client, quote, methods) = self
+            .prepare_item(client_id, &request.item, request.channel.client())
+            .await?;
         let (kind, amount) = pick_method(&methods, &request.provider)?;
         let order = NewOrder {
             client_id,

@@ -326,7 +326,7 @@ async fn quote(
         state
             .services
             .checkout()
-            .quote_from(client.0.client_id, &cart, address)
+            .quote_for(client.0.client_id, &cart, address, Some(client.channel()))
             .await?,
     ))
 }

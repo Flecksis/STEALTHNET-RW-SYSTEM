@@ -11,6 +11,8 @@ import { Switch } from '../ui';
 import '../form.css';
 import { SettingsLayout } from './SettingsLayout';
 
+type Channels = { cabinet: boolean; bot: boolean; miniapp: boolean };
+
 type Provider = {
   id: string;
   title: string;
@@ -20,8 +22,17 @@ type Provider = {
   configured: boolean;
   accepts_http_webhooks: boolean;
   supports_recurring: boolean;
+  channels?: Channels;
   settings: Record<string, unknown>;
 };
+
+const ALL_CHANNELS: Channels = { cabinet: true, bot: true, miniapp: true };
+
+const CHANNELS: Array<[keyof Channels, string]> = [
+  ['bot', 'Бот'],
+  ['cabinet', 'Кабинет'],
+  ['miniapp', 'Мини-приложение'],
+];
 
 type Renew = { charge_days_before: number; retry_days: number; enable_for_new: boolean; use_saved_card: boolean };
 
@@ -30,6 +41,7 @@ type Core = { settings: { currency: Currency; public_url: string | null; payment
 type Work = {
   currency: Currency;
   shown: Record<string, boolean>;
+  channels: Record<string, Channels>;
   order: { usd: string[]; rub: string[] };
   charge: string;
   retry: string;
@@ -42,6 +54,7 @@ const ACCEPTS: Record<string, string> = {
   heleket: 'Криптовалюта',
   lava: 'Карты Visa и Mastercard',
   stars: 'Своя цена в звёздах, задаётся в тарифе',
+  gram: 'GRAM переводом на кошелёк TON',
   yookassa: 'Карты, СБП, автопродление',
   platega: 'СБП',
   yoomoney: 'Карты через форму ЮMoney',
@@ -96,6 +109,7 @@ export function SettingsPayments() {
       const next: Work = {
         currency: pay.currency,
         shown: Object.fromEntries(list.map((p) => [p.id, p.enabled && p.configured])),
+        channels: Object.fromEntries(list.map((p) => [p.id, p.channels ?? ALL_CHANNELS])),
         order: { usd: fullOrder(core.settings.payment_order.usd, list, 'USD'), rub: fullOrder(core.settings.payment_order.rub, list, 'RUB') },
         charge: String(renew.charge_days_before),
         retry: String(renew.retry_days),
@@ -196,8 +210,15 @@ export function SettingsPayments() {
         await api('/api/admin/settings/payments', { method: 'PUT', body: { order: work.order[cur] } });
       }
       for (const p of providers) {
+        const body: Record<string, unknown> = {};
         if (p.configured && work.shown[p.id] !== base.shown[p.id]) {
-          await api(`/api/admin/payments/providers/${p.id}`, { method: 'PUT', body: { enabled: work.shown[p.id] } });
+          body.enabled = work.shown[p.id];
+        }
+        if (JSON.stringify(work.channels[p.id]) !== JSON.stringify(base.channels[p.id])) {
+          body.channels = work.channels[p.id];
+        }
+        if (Object.keys(body).length > 0) {
+          await api(`/api/admin/payments/providers/${p.id}`, { method: 'PUT', body });
         }
       }
       if (work.charge !== base.charge || work.retry !== base.retry || work.forNew !== base.forNew || work.savedCard !== base.savedCard) {
@@ -223,9 +244,33 @@ export function SettingsPayments() {
   const configured = (next: Provider) => {
     setProviders(providers.map((p) => (p.id === next.id ? next : p)));
     const shown = next.enabled && next.configured;
-    setBase({ ...base, shown: { ...base.shown, [next.id]: shown } });
+    setBase({ ...base, shown: { ...base.shown, [next.id]: shown }, channels: { ...base.channels, [next.id]: next.channels ?? ALL_CHANNELS } });
     setWork({ ...work, shown: { ...work.shown, [next.id]: shown } });
   };
+
+  const toggleChannel = (id: string, channel: keyof Channels) => {
+    const current = work.channels[id] ?? ALL_CHANNELS;
+    edit({ channels: { ...work.channels, [id]: { ...current, [channel]: !current[channel] } } });
+  };
+
+  const channelLine = (id: string, title: string) => {
+    const current = work.channels[id] ?? ALL_CHANNELS;
+    const none = !current.bot && !current.cabinet && !current.miniapp;
+    return (
+      <div className="pay-channels" role="group" aria-label={`Где показывать: ${title}`}>
+        <span className="pay-ch-title muted">Где показывать</span>
+        {CHANNELS.map(([channel, label]) => (
+          <label key={channel} className="pay-check">
+            <input type="checkbox" checked={current[channel]} onChange={() => toggleChannel(id, channel)} disabled={busy} />
+            {label}
+          </label>
+        ))}
+        {none ? <span className="warn-line">Нигде не показывается</span> : null}
+      </div>
+    );
+  };
+
+  const balance = providers.find((p) => p.kind === 'balance');
 
   const statusText = status?.text ?? (dirty ? 'Есть несохранённые изменения' : '');
 
@@ -258,6 +303,10 @@ export function SettingsPayments() {
             Платёжные системы
           </h2>
           <span className="muted">Для валюты «{work.currency === 'RUB' ? 'Рубли' : 'Доллары'}»</span>
+          <span className="pay-rule">
+            Правила Telegram: в боте и мини-приложении цифровые товары, включая VPN-подписку, продаются только за звёзды. За другие способы оплаты там Telegram может заблокировать бота без
+            предупреждения, поэтому карты и криптовалюту безопаснее оставить только в кабинете.
+          </span>
         </div>
         {visible.map((p) => {
           const on = work.shown[p.id] === true;
@@ -276,10 +325,23 @@ export function SettingsPayments() {
                   Настроить
                 </button>
               </div>
+              {channelLine(p.id, p.title)}
               {setup === p.id ? <ProviderSetup provider={p} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
             </Fragment>
           );
         })}
+        {balance ? (
+          <>
+            <div className="pay-row">
+              <span className="pay-name">С баланса</span>
+              <span className="pay-what muted">Оплата деньгами, которые клиент положил на баланс</span>
+              <span className="pay-state" style={{ color: 'var(--ink-2)' }}>
+                Включена
+              </span>
+            </div>
+            {channelLine(balance.id, 'С баланса')}
+          </>
+        ) : null}
       </section>
 
       <div className="pay-pair">

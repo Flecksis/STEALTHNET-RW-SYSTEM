@@ -102,6 +102,7 @@ mod tests {
                     ProviderState {
                         enabled: true,
                         config: filled(p.id()),
+                        channels: sn_domain::payment::PaymentChannels::ALL,
                     },
                 )
             })
@@ -139,6 +140,7 @@ mod tests {
                 total: Money::new(49_900, currency),
                 stars_total: Some(Stars(350)),
                 balance: Some(Money::new(100_000, currency)),
+                channel: None,
             });
             let ids: Vec<&str> = methods.iter().map(|m| m.provider).collect();
             assert_eq!(ids, expected, "{currency}");

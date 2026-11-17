@@ -389,7 +389,7 @@ export function Pay() {
 
           <Card className="cb-methods" label="Способ оплаты">
             <h2 className="cb-h2">Способ оплаты</h2>
-            {methods.length === 0 && quote ? <p className="cb-muted">Способов оплаты пока нет: оператор их ещё не подключил.</p> : null}
+            {methods.length === 0 && quote ? <p className="cb-muted">Здесь пока нет способов оплаты. Напишите в поддержку — подскажем, как оплатить.</p> : null}
             <div role="radiogroup" aria-label="Способ оплаты" className="cb-method-grid">
               {methods.map((m) => {
                 const off = !!m.unavailable;

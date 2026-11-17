@@ -1,4 +1,5 @@
 use crate::DomainError;
+use crate::access::ClientChannel;
 use crate::ids::{AdminId, ClientId, OrderId, PaymentId, RefundId};
 use crate::money::Amount;
 use chrono::{DateTime, Utc};
@@ -19,6 +20,42 @@ pub mod providers {
     pub const CLOUDPAYMENTS: &str = "cloudpayments";
     pub const OVERPAY: &str = "overpay";
     pub const GRAM: &str = "gram";
+}
+
+const fn shown() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PaymentChannels {
+    #[serde(default = "shown")]
+    pub cabinet: bool,
+    #[serde(default = "shown")]
+    pub bot: bool,
+    #[serde(default = "shown")]
+    pub miniapp: bool,
+}
+
+impl Default for PaymentChannels {
+    fn default() -> Self {
+        PaymentChannels::ALL
+    }
+}
+
+impl PaymentChannels {
+    pub const ALL: PaymentChannels = PaymentChannels {
+        cabinet: true,
+        bot: true,
+        miniapp: true,
+    };
+
+    pub const fn allows(self, channel: ClientChannel) -> bool {
+        match channel {
+            ClientChannel::Cabinet => self.cabinet,
+            ClientChannel::Bot => self.bot,
+            ClientChannel::Miniapp => self.miniapp,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -247,5 +284,22 @@ mod tests {
                 .transition(PaymentStatus::Paid)
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    #[test]
+    fn каналы_оплаты_по_умолчанию_все_и_читаются_из_старых_настроек() {
+        assert_eq!(PaymentChannels::default(), PaymentChannels::ALL);
+        let old: PaymentChannels = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old, PaymentChannels::ALL);
+        let site_only: PaymentChannels =
+            serde_json::from_value(serde_json::json!({"bot": false, "miniapp": false})).unwrap();
+        assert!(site_only.allows(ClientChannel::Cabinet));
+        assert!(!site_only.allows(ClientChannel::Bot));
+        assert!(!site_only.allows(ClientChannel::Miniapp));
     }
 }

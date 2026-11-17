@@ -320,7 +320,11 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     let content = services.bot_content();
     let c = &*content;
     let mut notes = Vec::new();
-    let view = match services.checkout().quote(client.id, &cart_request).await {
+    let view = match services
+        .checkout()
+        .quote_in(client.id, &cart_request, Channel::Bot)
+        .await
+    {
         Ok(view) => view,
         Err(err) if cart_request.promo_code.is_some() => {
             notes.push(ui::text(
@@ -333,7 +337,11 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
                 promo_code: None,
                 ..cart_request.clone()
             };
-            match services.checkout().quote(client.id, &plain).await {
+            match services
+                .checkout()
+                .quote_in(client.id, &plain, Channel::Bot)
+                .await
+            {
                 Ok(view) => view,
                 Err(err) => return Ok(Screen::notice(text::user_error(&err))),
             }

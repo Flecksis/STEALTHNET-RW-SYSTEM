@@ -1055,6 +1055,7 @@ async fn секреты_платёжной_системы_только_на_за
         }))
         .unwrap(),
         clear: Vec::new(),
+        channels: None,
     };
     let details = ops
         .update_provider(providers::CRYPTOPAY, &with_token, admin)

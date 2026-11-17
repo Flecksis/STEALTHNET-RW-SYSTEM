@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use sn_domain::ids::AdminId;
 use sn_domain::module::ModuleId;
 use sn_domain::money::Currency;
-use sn_domain::payment::providers;
+use sn_domain::payment::{PaymentChannels, providers};
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, ImageMeta,
     PaymentOrder, SettingField, SiteSettings, TopUpSettings, TrialSettings, keys, secret_keys,
@@ -37,6 +37,8 @@ pub struct ProviderSettings {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub config: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub channels: PaymentChannels,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(key: &str, value: Value) -> Option<T> {
@@ -234,6 +236,7 @@ pub async fn registry_snapshot(
                     .enabled
                     .unwrap_or_else(|| provider.enabled_by_default()),
                 config,
+                channels: stored.channels,
             },
         );
     }
@@ -491,6 +494,8 @@ pub struct ProviderUpdate {
     pub config: Map<String, Value>,
     #[serde(default)]
     pub clear: Vec<String>,
+    #[serde(default)]
+    pub channels: Option<PaymentChannels>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1158,6 +1163,9 @@ impl<'a> SettingsOps<'a> {
         if let Some(enabled) = update.enabled {
             stored.enabled = Some(enabled);
         }
+        if let Some(channels) = update.channels {
+            stored.channels = channels;
+        }
         let secrets = self.services.secrets();
         let mut merged = stored.config.clone();
         for field in schema.iter().filter(|f| f.is_secret()) {
@@ -1186,7 +1194,9 @@ impl<'a> SettingsOps<'a> {
         let enabled = stored
             .enabled
             .unwrap_or_else(|| provider.enabled_by_default());
-        if enabled && provider.kind() != ProviderKind::Balance {
+        let connection_touched =
+            update.enabled == Some(true) || !update.config.is_empty() || !update.clear.is_empty();
+        if enabled && connection_touched && provider.kind() != ProviderKind::Balance {
             provider
                 .validate_settings(&merged)
                 .map_err(|e| ServiceError::rejected("settings.provider_invalid", e.to_string()))?;
@@ -1241,6 +1251,7 @@ impl<'a> SettingsOps<'a> {
                 serde_json::json!({
                     "provider": id,
                     "enabled": stored.enabled,
+                    "channels": update.channels,
                     "fields": update.config.keys().collect::<Vec<_>>(),
                     "secrets": changed_secrets,
                 }),

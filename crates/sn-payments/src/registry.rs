@@ -1,6 +1,8 @@
 use crate::provider::{PaymentProvider, ProviderConfig, ProviderKind};
 use serde::Serialize;
+use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
+use sn_domain::payment::PaymentChannels;
 use sn_domain::pricing::{BalanceCheck, balance_check};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -9,6 +11,7 @@ use std::sync::{Arc, RwLock};
 pub struct ProviderState {
     pub enabled: bool,
     pub config: ProviderConfig,
+    pub channels: PaymentChannels,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -24,6 +27,7 @@ pub struct MethodsContext {
     pub total: Money,
     pub stars_total: Option<Stars>,
     pub balance: Option<Money>,
+    pub channel: Option<ClientChannel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -53,6 +57,7 @@ pub struct ProviderView {
     pub configured: bool,
     pub accepts_http_webhooks: bool,
     pub supports_recurring: bool,
+    pub channels: PaymentChannels,
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -71,6 +76,7 @@ impl ProviderRegistry {
                     ProviderState {
                         enabled: p.enabled_by_default(),
                         config: ProviderConfig::default(),
+                        channels: PaymentChannels::ALL,
                     },
                 )
             })
@@ -140,6 +146,13 @@ impl ProviderRegistry {
             && (provider.kind() == ProviderKind::Balance || provider.is_configured(&state.config))
     }
 
+    pub fn allowed_in(&self, id: &str, channel: ClientChannel) -> bool {
+        self.snapshot()
+            .states
+            .get(id)
+            .is_some_and(|state| state.channels.allows(channel))
+    }
+
     pub fn accepts_webhooks(&self, id: &str) -> bool {
         let Some(provider) = self.get(id) else {
             return false;
@@ -168,6 +181,7 @@ impl ProviderRegistry {
                     configured: p.is_configured(&state.config),
                     accepts_http_webhooks: p.accepts_http_webhooks(),
                     supports_recurring: p.supports_recurring(),
+                    channels: state.channels,
                     settings: state.config.public_view(&p.settings_schema()),
                 }
             })
@@ -192,7 +206,11 @@ impl ProviderRegistry {
         let mut methods = Vec::new();
         let mut balance_method = None;
         for id in ordered {
-            if !self.is_available(id, ctx.currency) {
+            if !self.is_available(id, ctx.currency)
+                || ctx
+                    .channel
+                    .is_some_and(|channel| !self.allowed_in(id, channel))
+            {
                 continue;
             }
             let Some(provider) = self.get(id) else {
@@ -379,6 +397,7 @@ mod tests {
                     ProviderState {
                         enabled,
                         config: ProviderConfig::default(),
+                        channels: sn_domain::payment::PaymentChannels::ALL,
                     },
                 )
             })
@@ -422,6 +441,7 @@ mod tests {
             total: Money::new(699, Currency::Usd),
             stars_total: Some(Stars(350)),
             balance: Some(Money::new(420, Currency::Usd)),
+            channel: None,
         });
         let ids: Vec<&str> = methods.iter().map(|m| m.provider).collect();
         assert_eq!(
@@ -444,6 +464,62 @@ mod tests {
     }
 
     #[test]
+    fn способ_выключенный_в_канале_не_показывается_там() {
+        let registry = registry(Currency::Usd);
+        let mut snapshot = (*registry.snapshot()).clone();
+        if let Some(state) = snapshot.states.get_mut(providers::CRYPTOPAY) {
+            state.channels = sn_domain::payment::PaymentChannels {
+                cabinet: true,
+                bot: false,
+                miniapp: false,
+            };
+        }
+        if let Some(state) = snapshot.states.get_mut(providers::STARS) {
+            state.channels.cabinet = false;
+        }
+        registry.apply(snapshot);
+        let ids = |channel: Option<ClientChannel>| -> Vec<&'static str> {
+            registry
+                .checkout_methods(&MethodsContext {
+                    currency: Currency::Usd,
+                    total: Money::new(699, Currency::Usd),
+                    stars_total: Some(Stars(350)),
+                    balance: Some(Money::new(9_000, Currency::Usd)),
+                    channel,
+                })
+                .into_iter()
+                .map(|m| m.provider)
+                .collect()
+        };
+        assert_eq!(
+            ids(Some(ClientChannel::Bot)),
+            [providers::LAVA, providers::STARS, providers::BALANCE]
+        );
+        assert_eq!(
+            ids(Some(ClientChannel::Cabinet)),
+            [providers::CRYPTOPAY, providers::LAVA, providers::BALANCE]
+        );
+        assert_eq!(
+            ids(None),
+            [
+                providers::CRYPTOPAY,
+                providers::LAVA,
+                providers::STARS,
+                providers::BALANCE
+            ]
+        );
+        assert!(registry.allowed_in(providers::CRYPTOPAY, ClientChannel::Cabinet));
+        assert!(!registry.allowed_in(providers::CRYPTOPAY, ClientChannel::Miniapp));
+        assert!(!registry.allowed_in("нет-такого", ClientChannel::Bot));
+        let view = registry
+            .views()
+            .into_iter()
+            .find(|v| v.id == providers::CRYPTOPAY)
+            .unwrap();
+        assert!(!view.channels.bot);
+    }
+
+    #[test]
     fn способы_оплаты_в_рублях_и_без_цены_в_звёздах() {
         let registry = registry(Currency::Rub);
         let methods = registry.checkout_methods(&MethodsContext {
@@ -451,6 +527,7 @@ mod tests {
             total: Money::new(49_900, Currency::Rub),
             stars_total: None,
             balance: None,
+            channel: None,
         });
         let ids: Vec<&str> = methods.iter().map(|m| m.provider).collect();
         assert_eq!(
@@ -494,6 +571,7 @@ mod tests {
                             ProviderState {
                                 enabled: enabled.contains(&p.id()),
                                 config: configured(p.id()),
+                                channels: sn_domain::payment::PaymentChannels::ALL,
                             },
                         )
                     })
