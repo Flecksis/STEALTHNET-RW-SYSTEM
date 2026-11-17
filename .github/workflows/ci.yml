@@ -92,6 +92,34 @@ jobs:
           curl -fsS -o /dev/null -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
 
+  install-root:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: install as root
+        run: sudo SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+      - name: the stealthnet command works from any folder
+        run: |
+          grep -q 'готовая сборка скачана' "$RUNNER_TEMP/install.log"
+          grep -q '^  stealthnet reset-password$' "$RUNNER_TEMP/install.log"
+          test -x /usr/local/bin/stealthnet
+          cd /
+          sudo stealthnet reset-password | tee "$RUNNER_TEMP/reset.log"
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/reset.log" | tail -n 1)
+          test "${#password}" -eq 20
+          curl -fsS -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
+          sudo SN_DOMAIN=short.example.org stealthnet domain
+          sudo grep -q '^SN_PUBLIC_URL=https://short.example.org$' "$GITHUB_WORKSPACE/deploy/.env"
+          curl -fsS http://127.0.0.1:8080/api/health
+
   install:
     runs-on: ubuntu-24.04
     permissions:
