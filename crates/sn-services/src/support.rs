@@ -144,6 +144,17 @@ impl<'a> SupportOps<'a> {
         Ok(conn.tickets().list(filter, page).await?)
     }
 
+    pub async fn list_view(
+        &self,
+        filter: TicketFilter,
+        page: PageRequest,
+    ) -> ServiceResult<(Page<sn_store::TicketListItem>, sn_store::TicketCounts)> {
+        let mut conn = self.services.store().conn().await?;
+        let items = conn.tickets().list_view(filter, page).await?;
+        let counts = conn.tickets().counts().await?;
+        Ok((items, counts))
+    }
+
     pub async fn for_client(&self, client_id: ClientId) -> ServiceResult<Vec<Ticket>> {
         let mut conn = self.services.store().conn().await?;
         let rows: Vec<TicketRow> = sqlx::query_as(

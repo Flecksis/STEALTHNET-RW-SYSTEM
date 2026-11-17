@@ -266,8 +266,8 @@ export function ClientPage() {
 
   const seen = sub
     ? mirror?.online_at
-      ? `был в сети ${seenText(mirror.online_at)}${details?.last_node ? ` через ${details.last_node}` : ''}`
-      : 'ещё не подключался'
+      ? `в сети ${seenText(mirror.online_at)}${details?.last_node ? ` через ${details.last_node}` : ''}`
+      : 'подключений ещё не было'
     : '';
   const subline = [
     tg?.meta?.username ? `@${tg.meta.username}` : null,
@@ -450,7 +450,7 @@ export function ClientPage() {
               <div className="cc-col" style={{ gap: 6, color: 'var(--ink-2)' }}>
                 {stats.paid_total ? (
                   <span>
-                    Оплатил всего: <strong style={{ color: 'var(--ink)' }}>{money(stats.paid_total)}</strong>
+                    Всего оплачено: <strong style={{ color: 'var(--ink)' }}>{money(stats.paid_total)}</strong>
                     {stats.payments_count ? ` за ${count(stats.payments_count, 'платёж', 'платежа', 'платежей')}` : ''}
                   </span>
                 ) : null}
@@ -476,12 +476,12 @@ export function ClientPage() {
               <span>{locale}</span>
             </div>
             <div className="cc-prof">
-              <span className="muted">Пригласил</span>
+              <span className="muted">Приглашённые</span>
               <span>{stats.referrals_count > 0 ? count(stats.referrals_count, 'друга', 'друзей', 'друзей') : 'никого'}</span>
             </div>
             {stats.referrer ? (
               <div className="cc-prof">
-                <span className="muted">Пришёл по приглашению</span>
+                <span className="muted">Пригласивший</span>
                 <Link to={`/admin/clients/${stats.referrer.client_id}`}>
                   {stats.referrer.telegram_username ? `@${stats.referrer.telegram_username}` : (stats.referrer.name ?? `клиент ${stats.referrer.client_id}`)}
                 </Link>

@@ -103,7 +103,7 @@ export function seenText(iso: string | null): string {
 
 export function visitText(iso: string | null): string {
   if (!iso) {
-    return 'не входил';
+    return 'не было';
   }
   const date = new Date(iso);
   const start = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();

@@ -32,6 +32,13 @@ export function amountText(amount: Amount): string {
 const CRYPTO = new Set(['cryptopay', 'heleket']);
 const CARD = new Set(['bank_card', 'card']);
 
+export function lowerFirst(text: string): string {
+  if (text.length > 1 && text.charAt(1) !== text.charAt(1).toLowerCase()) {
+    return text;
+  }
+  return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
 export function methodText(provider: string, method: string | null): string {
   const m = (method ?? '').toLowerCase();
   if (provider === 'balance') {
@@ -67,21 +74,21 @@ function period(order: OrderBrief): string {
 
 function bought(order: OrderBrief | null): string {
   if (!order) {
-    return 'Оплатил заказ';
+    return 'Оплата заказа';
   }
-  const name = order.tariff_name ? `«${order.tariff_name}»` : 'подписку';
+  const name = order.tariff_name ? `«${order.tariff_name}»` : 'подписки';
   const span = period(order);
   switch (order.kind) {
     case 'top_up':
-      return 'Пополнил баланс';
+      return 'Пополнение баланса';
     case 'change':
-      return order.tariff_name ? `Перешёл на «${order.tariff_name}»` : 'Сменил тариф';
+      return order.tariff_name ? `Переход на «${order.tariff_name}»` : 'Смена тарифа';
     case 'module':
-      return order.label ? `Оплатил: ${order.label}` : 'Оплатил дополнение';
+      return order.label ? `Оплата: ${order.label}` : 'Оплата дополнения';
     case 'trial':
       return 'Пробный период';
     default:
-      return span ? `Оплатил ${name} на ${span}` : `Оплатил ${name}`;
+      return span ? `Оплата ${name} на ${span}` : `Оплата ${name}`;
   }
 }
 
@@ -109,8 +116,8 @@ function cut(text: string, max = 90): string {
 
 const AUDIT_TEXT: Record<string, string> = {
   'client.note': 'Изменена заметка',
-  'client.unblock': 'Разблокирован',
-  'client.telegram_login_confirmed': 'Вошёл в кабинет через Telegram',
+  'client.unblock': 'Разблокировка',
+  'client.telegram_login_confirmed': 'Вход в кабинет через Telegram',
   'subscription.reset_traffic': 'Сброшен трафик',
   'subscription.reissue_link': 'Выпущена новая ссылка подписки',
   'subscription.disconnect_all_devices': 'Отключены все устройства',
@@ -134,12 +141,12 @@ const AUDIT_TEXT: Record<string, string> = {
 };
 
 const SOURCE_TEXT: Record<string, string> = {
-  bot: 'Пришёл в бот',
-  miniapp: 'Открыл мини-приложение',
-  web: 'Зарегистрировался в кабинете',
-  admin: 'Добавлен администратором',
-  import: 'Перенесён из прежней панели',
-  migration: 'Перенесён из прежней панели',
+  bot: 'Регистрация через бота',
+  miniapp: 'Регистрация через мини-приложение',
+  web: 'Регистрация в кабинете',
+  admin: 'Создан администратором',
+  import: 'Перенос из прежней панели',
+  migration: 'Перенос из прежней панели',
 };
 
 function personText(person: Person): string {
@@ -171,22 +178,22 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
     case 'order': {
       const { order } = item;
       if (order.kind === 'trial') {
-        return { ...base, what: order.days ? `Взял пробный период на ${days(order.days)}` : 'Взял пробный период', note: '', sum: '' };
+        return { ...base, what: order.days ? `Пробный период на ${days(order.days)}` : 'Пробный период', note: '', sum: '' };
       }
       const name = order.tariff_name ? `«${order.tariff_name}»` : 'подписка';
       const span = period(order);
       if (order.kind === 'admin_grant') {
         return { ...base, what: span ? `Выдана ${name} на ${span}` : `Выдана ${name}`, note: 'Без оплаты, администратор', sum: '' };
       }
-      return { ...base, what: span ? `Получил ${name} на ${span}` : `Получил ${name}`, note: 'Без оплаты', sum: '' };
+      return { ...base, what: span ? `${name} на ${span}` : name, note: 'Без оплаты', sum: '' };
     }
     case 'event': {
       const event = item.event;
       switch (item.kind) {
         case 'client_registered': {
-          const source = SOURCE_TEXT[String(event.source)] ?? 'Зарегистрировался';
+          const source = SOURCE_TEXT[String(event.source)] ?? 'Регистрация';
           if (referrer) {
-            return { ...base, what: `${source} по приглашению`, note: `Пригласил ${personText(referrer)}`, sum: '' };
+            return { ...base, what: `${source} по приглашению`, note: `Приглашение от ${personText(referrer)}`, sum: '' };
           }
           const mark = str(event.start_param);
           return { ...base, what: source, note: mark ? `Метка «${cut(mark, 40)}»` : '', sum: '' };
@@ -194,7 +201,7 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         case 'subscription_status_changed':
           return { ...base, what: event.to === 'limited' ? 'Закончился трафик' : 'Подписка истекла', note: '', sum: '' };
         case 'ticket_opened':
-          return { ...base, what: 'Написал в поддержку', note: item.ticket?.subject ? `«${cut(item.ticket.subject)}»` : '', sum: '' };
+          return { ...base, what: 'Обращение в поддержку', note: item.ticket?.subject ? `«${cut(item.ticket.subject)}»` : '', sum: '' };
         case 'ticket_answered':
           return { ...base, what: 'Поддержка ответила', note: item.ticket?.subject ? `«${cut(item.ticket.subject)}»` : '', sum: '' };
         case 'balance_changed': {
@@ -232,7 +239,7 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         }
         case 'client.block': {
           const reason = str(details.reason);
-          return { ...base, what: 'Заблокирован', note: reason ? `${actor}: ${cut(reason, 70)}` : actor, sum: '' };
+          return { ...base, what: 'Блокировка', note: reason ? `${actor}: ${cut(reason, 70)}` : actor, sum: '' };
         }
         case 'client.message': {
           const text = str(details.text);

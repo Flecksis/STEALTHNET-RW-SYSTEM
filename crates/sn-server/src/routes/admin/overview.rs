@@ -11,6 +11,19 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/dashboard", get(dashboard))
         .route("/feed", get(feed))
+        .route("/badges", get(badges))
+}
+
+async fn badges(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let support = if admin.can(Permission::Support) {
+        state.services.admin().support_waiting().await?
+    } else {
+        0
+    };
+    Ok(Json(serde_json::json!({ "support": support })))
 }
 
 async fn dashboard(

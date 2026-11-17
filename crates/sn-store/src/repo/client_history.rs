@@ -90,6 +90,18 @@ pub struct ClientPerson {
     pub client_id: ClientId,
     pub name: Option<String>,
     pub telegram_username: Option<String>,
+    pub telegram_id: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PersonRow {
+    id: i64,
+    telegram_id: Option<String>,
+    username: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    email: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -245,10 +257,50 @@ impl<'c> ClientsRepo<'c> {
                     row.referrer_last_name.as_deref(),
                 ),
                 telegram_username: row.referrer_username,
+                telegram_id: None,
+                email: None,
             }),
             cabinet_seen_at: row.cabinet_seen_at,
             miniapp_seen_at: row.miniapp_seen_at,
         })
+    }
+
+    pub async fn people(
+        &mut self,
+        ids: &[ClientId],
+    ) -> StoreResult<HashMap<ClientId, ClientPerson>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let rows: Vec<PersonRow> = sqlx::query_as(
+            "SELECT c.id, tg.value AS telegram_id, tg.meta ->> 'username' AS username, \
+             tg.meta ->> 'first_name' AS first_name, tg.meta ->> 'last_name' AS last_name, \
+             em.value AS email FROM clients c \
+             LEFT JOIN LATERAL (SELECT i.value, i.meta FROM client_identities i WHERE i.client_id = c.id \
+                 AND i.kind = 'telegram' ORDER BY i.id LIMIT 1) tg ON true \
+             LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id \
+                 AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
+             WHERE c.id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    ClientId(row.id),
+                    ClientPerson {
+                        client_id: ClientId(row.id),
+                        name: display_name(row.first_name.as_deref(), row.last_name.as_deref()),
+                        telegram_username: row.username,
+                        telegram_id: row.telegram_id,
+                        email: row.email,
+                    },
+                )
+            })
+            .collect())
     }
 
     pub async fn history_count(&mut self, id: ClientId, money: bool) -> StoreResult<i64> {

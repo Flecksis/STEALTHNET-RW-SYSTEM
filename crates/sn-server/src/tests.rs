@@ -2006,3 +2006,75 @@ async fn тарифы_каналы_применение_и_удаление_че
     assert_eq!(list["categories"].as_array().unwrap().len(), 1, "{list}");
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn главная_сводка_лента_оплаты_и_обращения_с_именами() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let client = h.client(5_093_118_422).await;
+    let token = h.client_token(client).await;
+    let tariff = h.tariff().await;
+    let payment = h.pending_payment(client, &tariff).await;
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/payments/{}/mark-paid", payment.id.0),
+            &owner,
+            json!({ "comment": "пришло" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, opened) = h
+        .write(
+            Method::POST,
+            "/api/client/support/tickets",
+            &token,
+            json!({ "subject": "Не подключается", "body": "Не подключается на iPhone после обновления" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+
+    let (status, dashboard) = h.get("/api/admin/dashboard", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{dashboard}");
+    assert_eq!(dashboard["today"]["payments"], 1);
+    assert_eq!(dashboard["today"]["new_clients"], 1);
+    assert_eq!(dashboard["today"]["new_clients_paid"], 1);
+    assert_eq!(dashboard["revenue"]["today"]["minor"], 699);
+    assert_eq!(dashboard["revenue"]["by_day"].as_array().unwrap().len(), 14);
+    assert_eq!(dashboard["support_waiting"], 1);
+
+    let (status, feed) = h
+        .get("/api/admin/feed?kind=payments&limit=10", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{feed}");
+    let paid = feed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "payment_paid")
+        .expect("оплата в ленте");
+    assert_eq!(paid["client"]["name"], "Алексей");
+    assert_eq!(paid["client"]["telegram_username"], "morozov_a");
+    assert_eq!(paid["order"]["tariff_name"], "Стандарт");
+    assert_eq!(paid["order"]["days"], 90);
+    assert_eq!(paid["payment"]["amount"]["minor"], 699);
+
+    let (status, payments) = h.get("/api/admin/payments?limit=5", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{payments}");
+    assert_eq!(payments["items"][0]["client"]["name"], "Алексей");
+    assert_eq!(payments["items"][0]["order"]["tariff_name"], "Стандарт");
+    assert_eq!(payments["items"][0]["status"], "paid");
+
+    let (status, tickets) = h
+        .get("/api/admin/support/tickets?filter=waiting&limit=3", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{tickets}");
+    assert_eq!(tickets["counts"]["waiting"], 1);
+    assert_eq!(tickets["items"][0]["client_name"], "Алексей");
+    assert_eq!(
+        tickets["items"][0]["preview"],
+        "Не подключается на iPhone после обновления"
+    );
+    assert!(tickets["items"][0]["waiting_since"].is_string());
+    h.db.cleanup().await;
+}

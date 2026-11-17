@@ -304,7 +304,7 @@ impl<'c> EventsRepo<'c> {
 
     pub async fn by_ids(&mut self, ids: &[EventId]) -> StoreResult<Vec<StoredEvent>> {
         let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
-        let rows: Vec<(i64, Json<DomainEvent>, DateTime<Utc>)> = sqlx::query_as(
+        let rows: Vec<(i64, Json<serde_json::Value>, DateTime<Utc>)> = sqlx::query_as(
             "SELECT id, payload, occurred_at FROM domain_events WHERE id = ANY($1) ORDER BY id",
         )
         .bind(&ids)
@@ -312,10 +312,18 @@ impl<'c> EventsRepo<'c> {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, event, occurred_at)| StoredEvent {
-                id: EventId(id),
-                event: event.0,
-                occurred_at,
+            .filter_map(|(id, payload, occurred_at)| {
+                match serde_json::from_value::<DomainEvent>(payload.0) {
+                    Ok(event) => Some(StoredEvent {
+                        id: EventId(id),
+                        event,
+                        occurred_at,
+                    }),
+                    Err(err) => {
+                        tracing::warn!(event = id, error = %err, "событие не разобрано и пропущено");
+                        None
+                    }
+                }
             })
             .collect())
     }

@@ -168,7 +168,7 @@ pub struct GrantResult {
 
 pub const MAX_GRANT_DAYS: u32 = 3650;
 
-fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) -> OrderBrief {
+pub(crate) fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) -> OrderBrief {
     let tariff_id = match &order.intent {
         PurchaseIntent::Subscription { tariff_id, .. }
         | PurchaseIntent::AdminGrant { tariff_id, .. } => Some(*tariff_id),

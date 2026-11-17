@@ -42,7 +42,7 @@ const BULK_TEXT: Record<Bulk, { title: string; confirm: string; text: string }> 
   message: { title: 'Написать', confirm: 'Отправить', text: 'Сообщение придёт от бота каждому выбранному клиенту с Telegram.' },
 };
 
-function PickClient({ onClose }: { onClose: () => void }) {
+export function PickClient({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [rows, setRows] = useState<ClientRow[] | null>(null);
@@ -122,7 +122,7 @@ function rowView(row: ClientRow) {
   } else if (sub) {
     plan = [row.tariff_name, periodLabel(sub.period_days)].filter(Boolean).join(`${NBSP}· `);
   } else if (row.balance && row.balance.minor > 0) {
-    plan = 'Пополнил баланс';
+    plan = 'Пополнение баланса';
   }
   const expire = sub?.mirror.expire_at ?? null;
   const left = daysLeft(expire);
@@ -388,7 +388,7 @@ export function Clients() {
                 Баланс
               </span>
               <span role="columnheader" className="right">
-                Оплатил
+                Оплачено
               </span>
               <span role="columnheader">
                 <span className="sr-only">Действия</span>

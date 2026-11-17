@@ -8,8 +8,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::TicketId;
-use sn_domain::paging::Page;
-use sn_domain::support::{Ticket, TicketFilter};
+use sn_domain::support::TicketFilter;
 use sn_services::support::{ReplyRequest, TicketThread};
 
 pub fn routes() -> Router<AppState> {
@@ -45,20 +44,23 @@ async fn list(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<ListQuery>,
-) -> ApiResult<Json<Page<Ticket>>> {
+) -> ApiResult<Json<serde_json::Value>> {
     admin.require(Permission::Support)?;
     let filter = filter(query.filter.as_deref())?;
     let paging = Paging {
         limit: query.limit,
         after: query.after,
     };
-    Ok(Json(
-        state
-            .services
-            .support()
-            .list(filter, paging.request())
-            .await?,
-    ))
+    let (page, counts) = state
+        .services
+        .support()
+        .list_view(filter, paging.request())
+        .await?;
+    Ok(Json(serde_json::json!({
+        "items": page.items,
+        "next": page.next,
+        "counts": counts,
+    })))
 }
 
 async fn thread(

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::paging::{Page, PageRequest};
-use sn_domain::payment::{Payment, PaymentStatus};
+use sn_domain::payment::PaymentStatus;
 use sn_services::admin::{MarkPaidRequest, MarkPaidResult, PaymentFilter, RefundRequest};
 use sn_services::inbox::{PendingRefundRequest, RefundActionReview};
 
@@ -63,7 +63,7 @@ async fn list(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<ListQuery>,
-) -> ApiResult<Json<Page<Payment>>> {
+) -> ApiResult<Json<Page<sn_services::admin::PaymentListItem>>> {
     admin.require(Permission::Money)?;
     let status = match query
         .status
@@ -85,7 +85,7 @@ async fn list(
         state
             .services
             .admin()
-            .payments(&filter, PageRequest::new(query.limit, query.after))
+            .payments_view(&filter, PageRequest::new(query.limit, query.after))
             .await?,
     ))
 }

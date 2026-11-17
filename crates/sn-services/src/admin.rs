@@ -1,4 +1,5 @@
 use crate::Actor;
+use crate::clients::{OrderBrief, PaymentBrief, TicketBrief, order_brief};
 use crate::error::{ServiceError, ServiceResult};
 use crate::inbox::{AcceptResult, RefundCommand, RefundResult};
 use crate::services::Services;
@@ -6,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sn_domain::events::DomainEvent;
-use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId};
+use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, TariffId};
 use sn_domain::money::{Amount, Currency, Money, PayCurrency};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{
@@ -14,7 +15,9 @@ use sn_domain::payment::{
 };
 use sn_payments::{PaymentRef, ProviderStatus, WebhookOutcome, WebhookReply};
 use sn_remnawave::NodeState;
+use sn_store::ClientPerson;
 use sn_store::{Db, StoreError};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub const FEED_MAX: u32 = 100;
@@ -29,11 +32,27 @@ pub struct DashboardCounts {
     pub limited: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DashboardRevenue {
     pub today: Money,
+    pub yesterday: Money,
     pub week: Money,
     pub month: Money,
+    pub today_stars: i64,
+    pub by_day: Vec<DayAmount>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DayAmount {
+    pub day: chrono::NaiveDate,
+    pub amount: Money,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DashboardToday {
+    pub payments: i64,
+    pub new_clients: i64,
+    pub new_clients_paid: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -44,6 +63,9 @@ pub struct NodeBrief {
     pub state: NodeState,
     pub users_online: i64,
     pub traffic_alert: bool,
+    pub traffic_used_bytes: Option<i64>,
+    pub traffic_limit_bytes: Option<i64>,
+    pub traffic_reset_day: Option<i64>,
     pub last_status_change: Option<DateTime<Utc>>,
     pub last_status_message: Option<String>,
 }
@@ -62,6 +84,7 @@ pub struct RemnaOverview {
 pub struct DashboardView {
     pub currency: Currency,
     pub subscriptions: Option<DashboardCounts>,
+    pub today: Option<DashboardToday>,
     pub revenue: Option<DashboardRevenue>,
     pub stats_error: Option<String>,
     pub support_waiting: i64,
@@ -80,6 +103,8 @@ pub enum FeedKind {
     Nodes,
     Clients,
     Payments,
+    Support,
+    Highlights,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -111,6 +136,18 @@ pub struct FeedItem {
     pub client_id: Option<ClientId>,
     pub subject: Option<String>,
     pub data: Value,
+    pub client: Option<ClientPerson>,
+    pub order: Option<OrderBrief>,
+    pub payment: Option<PaymentBrief>,
+    pub ticket: Option<TicketBrief>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PaymentListItem {
+    #[serde(flatten)]
+    pub payment: Payment,
+    pub client: Option<ClientPerson>,
+    pub order: Option<OrderBrief>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -210,7 +247,7 @@ struct CoreFeedRow {
     id: i64,
     occurred_at: DateTime<Utc>,
     client_id: Option<i64>,
-    payload: sqlx::types::Json<DomainEvent>,
+    payload: sqlx::types::Json<Value>,
 }
 
 fn text(value: &Value, path: &[&str]) -> Option<String> {
@@ -349,7 +386,8 @@ fn remna_scopes(kind: FeedKind) -> Option<Vec<String>> {
         FeedKind::All => None,
         FeedKind::Nodes => Some(vec!["node".into(), "crm".into()]),
         FeedKind::Clients => Some(vec!["user".into(), "user_hwid_devices".into()]),
-        FeedKind::Payments => Some(Vec::new()),
+        FeedKind::Payments | FeedKind::Support => Some(Vec::new()),
+        FeedKind::Highlights => Some(vec!["node".into(), "crm".into()]),
     }
 }
 
@@ -402,6 +440,20 @@ fn core_kinds(kind: FeedKind, include_money: bool) -> Option<Vec<String>> {
             .map(|k| k.to_string())
             .collect(),
         ),
+        FeedKind::Support => Some(vec!["ticket_opened".into(), "ticket_answered".into()]),
+        FeedKind::Highlights => Some(
+            [
+                "client_registered",
+                "client_blocked",
+                "payment_paid",
+                "payment_refunded",
+                "ticket_opened",
+            ]
+            .iter()
+            .filter(allowed)
+            .map(|k| k.to_string())
+            .collect(),
+        ),
     }
 }
 
@@ -442,26 +494,45 @@ impl<'a> AdminOps<'a> {
         let currency = self.services.settings().currency;
         let now = self.services.now();
         let mut conn = self.services.store().conn().await?;
-        let (subscriptions, revenue, stats_error) =
-            match conn.subscriptions().dashboard(now, currency).await {
-                Ok(stats) => (
-                    Some(DashboardCounts {
-                        active_paid: stats.active_paid,
-                        trials: stats.trials,
-                        expiring_soon: stats.expiring_soon,
-                        never_connected: stats.never_connected,
-                        limited: stats.limited,
-                    }),
-                    include_money.then_some(DashboardRevenue {
-                        today: Money::new(stats.revenue_today_minor, currency),
-                        week: Money::new(stats.revenue_7d_minor, currency),
-                        month: Money::new(stats.revenue_30d_minor, currency),
-                    }),
-                    None,
-                ),
-                Err(StoreError::NotImplemented(what)) => (None, None, Some(what.to_string())),
-                Err(err) => return Err(err.into()),
-            };
+        let offset = self.services.settings().remna_offset();
+        let (subscriptions, today, revenue, stats_error) = match conn
+            .subscriptions()
+            .dashboard_in(now, currency, offset)
+            .await
+        {
+            Ok(stats) => (
+                Some(DashboardCounts {
+                    active_paid: stats.active_paid,
+                    trials: stats.trials,
+                    expiring_soon: stats.expiring_soon,
+                    never_connected: stats.never_connected,
+                    limited: stats.limited,
+                }),
+                Some(DashboardToday {
+                    payments: stats.payments_today,
+                    new_clients: stats.new_clients_today,
+                    new_clients_paid: stats.new_clients_paid_today,
+                }),
+                include_money.then(|| DashboardRevenue {
+                    today: Money::new(stats.revenue_today_minor, currency),
+                    yesterday: Money::new(stats.revenue_yesterday_minor, currency),
+                    week: Money::new(stats.revenue_7d_minor, currency),
+                    month: Money::new(stats.revenue_30d_minor, currency),
+                    today_stars: stats.revenue_today_stars.0,
+                    by_day: stats
+                        .revenue_by_day
+                        .iter()
+                        .map(|day| DayAmount {
+                            day: day.day,
+                            amount: Money::new(day.minor, currency),
+                        })
+                        .collect(),
+                }),
+                None,
+            ),
+            Err(StoreError::NotImplemented(what)) => (None, None, None, Some(what.to_string())),
+            Err(err) => return Err(err.into()),
+        };
         let support_waiting: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM tickets WHERE status = 'open' AND last_author = 'client'",
         )
@@ -488,6 +559,7 @@ impl<'a> AdminOps<'a> {
         Ok(DashboardView {
             currency,
             subscriptions,
+            today,
             revenue,
             stats_error,
             support_waiting,
@@ -497,6 +569,15 @@ impl<'a> AdminOps<'a> {
             remna,
             remna_error,
         })
+    }
+
+    pub async fn support_waiting(&self) -> ServiceResult<i64> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM tickets WHERE status = 'open' AND last_author = 'client'",
+        )
+        .fetch_one(conn.conn())
+        .await?)
     }
 
     async fn remna_overview(&self) -> ServiceResult<RemnaOverview> {
@@ -512,6 +593,9 @@ impl<'a> AdminOps<'a> {
                 state: node.state(),
                 users_online: node.users_online,
                 traffic_alert: node.traffic_alert(),
+                traffic_used_bytes: node.traffic_used_bytes,
+                traffic_limit_bytes: node.traffic_limit_bytes.filter(|limit| *limit > 0),
+                traffic_reset_day: node.traffic_reset_day,
                 last_status_change: node.last_status_change,
                 last_status_message: node.last_status_message.clone(),
             })
@@ -576,11 +660,21 @@ impl<'a> AdminOps<'a> {
                 client_id: None,
                 subject: row.subject_id,
                 data,
+                client: None,
+                order: None,
+                payment: None,
+                ticket: None,
             });
         }
         let mut core_items = Vec::with_capacity(core_rows.len());
         for row in core_rows {
-            let event = row.payload.0;
+            let event: DomainEvent = match serde_json::from_value(row.payload.0) {
+                Ok(event) => event,
+                Err(err) => {
+                    tracing::warn!(event = row.id, error = %err, "событие ядра не разобрано, в ленте пропущено");
+                    continue;
+                }
+            };
             core_items.push(FeedItem {
                 source: FeedSource::Core,
                 id: row.id,
@@ -591,9 +685,14 @@ impl<'a> AdminOps<'a> {
                 subject: None,
                 data: serde_json::to_value(&event)
                     .map_err(|e| ServiceError::Internal(e.to_string()))?,
+                client: None,
+                order: None,
+                payment: None,
+                ticket: None,
             });
         }
-        let items = merge_feed(remna_items, core_items, limit as usize);
+        let mut items = merge_feed(remna_items, core_items, limit as usize);
+        self.enrich_feed(&mut conn, &mut items).await?;
         let last = |source: FeedSource| {
             items
                 .iter()
@@ -606,6 +705,120 @@ impl<'a> AdminOps<'a> {
             core_before: last(FeedSource::Core).or(query.core_before),
             has_more: fetched > items.len(),
             items,
+        })
+    }
+
+    async fn enrich_feed(
+        &self,
+        conn: &mut sn_store::Conn,
+        items: &mut [FeedItem],
+    ) -> ServiceResult<()> {
+        let client_ids: Vec<ClientId> = items.iter().filter_map(|item| item.client_id).collect();
+        let people = conn.clients().people(&client_ids).await?;
+        let payment_ids: Vec<PaymentId> = items
+            .iter()
+            .filter_map(
+                |item| match serde_json::from_value::<DomainEvent>(item.data.clone()) {
+                    Ok(DomainEvent::PaymentPaid { payment_id, .. }) => Some(payment_id),
+                    _ => None,
+                },
+            )
+            .collect();
+        let payments: HashMap<PaymentId, Payment> = conn
+            .payments()
+            .by_ids(&payment_ids)
+            .await?
+            .into_iter()
+            .map(|p| (p.id, p))
+            .collect();
+        let order_ids: Vec<OrderId> = payments.values().map(|p| p.order_id).collect();
+        let orders: HashMap<OrderId, sn_domain::order::Order> = conn
+            .orders()
+            .by_ids(&order_ids)
+            .await?
+            .into_iter()
+            .map(|o| (o.id, o))
+            .collect();
+        let tariffs: HashMap<TariffId, String> = if orders.is_empty() {
+            HashMap::new()
+        } else {
+            conn.tariffs()
+                .list(true)
+                .await?
+                .into_iter()
+                .map(|t| (t.id, t.name))
+                .collect()
+        };
+        for item in items.iter_mut() {
+            item.client = item.client_id.and_then(|id| people.get(&id).cloned());
+            match serde_json::from_value::<DomainEvent>(item.data.clone()) {
+                Ok(DomainEvent::PaymentPaid { payment_id, .. }) => {
+                    if let Some(payment) = payments.get(&payment_id) {
+                        item.order = orders
+                            .get(&payment.order_id)
+                            .map(|order| order_brief(order, &tariffs));
+                        item.payment = Some(PaymentBrief {
+                            id: payment.public_id,
+                            status: payment.status,
+                            amount: payment.amount,
+                            provider: payment.provider.clone(),
+                            method: payment.method.clone(),
+                        });
+                    }
+                }
+                Ok(DomainEvent::TicketOpened { ticket_id, .. })
+                | Ok(DomainEvent::TicketAnswered { ticket_id, .. }) => {
+                    if let Ok(ticket) = conn.tickets().get(ticket_id).await {
+                        item.ticket = Some(TicketBrief {
+                            id: ticket.id,
+                            subject: ticket.subject,
+                            status: ticket.status,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn payments_view(
+        &self,
+        filter: &PaymentFilter,
+        page: PageRequest,
+    ) -> ServiceResult<Page<PaymentListItem>> {
+        let list = self.payments(filter, page).await?;
+        let mut conn = self.services.store().conn().await?;
+        let client_ids: Vec<ClientId> = list.items.iter().map(|p| p.client_id).collect();
+        let people = conn.clients().people(&client_ids).await?;
+        let order_ids: Vec<OrderId> = list.items.iter().map(|p| p.order_id).collect();
+        let orders: HashMap<OrderId, sn_domain::order::Order> = conn
+            .orders()
+            .by_ids(&order_ids)
+            .await?
+            .into_iter()
+            .map(|o| (o.id, o))
+            .collect();
+        let tariffs: HashMap<TariffId, String> = conn
+            .tariffs()
+            .list(true)
+            .await?
+            .into_iter()
+            .map(|t| (t.id, t.name))
+            .collect();
+        Ok(Page {
+            next: list.next,
+            items: list
+                .items
+                .into_iter()
+                .map(|payment| PaymentListItem {
+                    client: people.get(&payment.client_id).cloned(),
+                    order: orders
+                        .get(&payment.order_id)
+                        .map(|order| order_brief(order, &tariffs)),
+                    payment,
+                })
+                .collect(),
         })
     }
 

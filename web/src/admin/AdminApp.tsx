@@ -7,6 +7,7 @@ import type { AdminTheme, Appearance, Me, Permission } from '../lib/types';
 import { Clients } from './clients/Clients';
 import { ClientPage } from './client/Client';
 import { Tariffs } from './tariffs/Tariffs';
+import { Home } from './home/Home';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
@@ -50,6 +51,25 @@ export function AdminApp() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const [supportBadge, setSupportBadge] = useState(0);
+  const signedIn = state.kind === 'in';
+  useEffect(() => {
+    if (!signedIn) {
+      return;
+    }
+    let alive = true;
+    const tick = () =>
+      api<{ support: number }>('/api/admin/badges')
+        .then((b) => alive && setSupportBadge(b.support))
+        .catch(() => undefined);
+    void tick();
+    const timer = window.setInterval(tick, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [signedIn]);
 
   const appearance: Appearance = state.kind === 'in' ? state.me.appearance : (site ?? DEFAULT_SITE).appearance;
   const canSettings = state.kind === 'in' && state.me.permissions.includes('settings');
@@ -119,9 +139,9 @@ export function AdminApp() {
 
   return (
     <SessionContext.Provider value={session}>
-      <Shell theme={theme} onFlipTheme={() => void flipTheme()}>
+      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge}>
         <Routes>
-          <Route index element={<Pending title="Главная" />} />
+          <Route index element={<Home />} />
           <Route path="clients" element={<Clients />} />
           <Route path="clients/:id" element={<ClientPage />} />
           <Route path="support/*" element={<Pending title="Поддержка" />} />
