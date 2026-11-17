@@ -258,7 +258,7 @@ async fn bought_before_reset(
     let subscription = set_user(kit, &subscription, |user| {
         user.user_traffic.used_traffic_bytes = (100 * GIB) as i64;
         user.user_traffic.lifetime_used_traffic_bytes = (100 * GIB) as i64;
-        user.last_traffic_reset_at = Some(Utc::now() - Days::days(10));
+        user.last_traffic_reset_at = Some(Utc::now() - Days::days(10) + Days::nanoseconds(789));
         user.status = UserStatus::Limited;
     })
     .await;

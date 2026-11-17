@@ -370,7 +370,7 @@ impl SubscriptionOps<'_> {
             }
             let start_lifetime = state.window_lifetime.unwrap_or_else(|| lifetime_at_reset(&user));
             let reset_seen = match (user.last_traffic_reset_at, state.window_started_at) {
-                (Some(at), Some(start)) => at > start,
+                (Some(at), Some(start)) => at > start + Duration::seconds(1),
                 (Some(_), None) => true,
                 (None, _) => false,
             } || lifetime_at_reset(&user) > start_lifetime;
