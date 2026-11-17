@@ -10,6 +10,7 @@ export type Session = {
   setAppearance: (appearance: Appearance) => void;
   theme: Theme;
   flipTheme: () => void;
+  supportWaiting: (count: number) => void;
 };
 
 export const SessionContext = createContext<Session | null>(null);

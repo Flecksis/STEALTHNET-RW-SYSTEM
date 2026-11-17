@@ -26,6 +26,12 @@ pub struct OpenTicket {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivered {
+    Opened(TicketId),
+    Added(TicketId),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplyRequest {
     pub body: String,
@@ -140,6 +146,58 @@ impl<'a> SupportOps<'a> {
             .await?;
         tx.commit().await?;
         Ok(id)
+    }
+
+    pub async fn telegram_ticket(
+        &self,
+        client_id: ClientId,
+        preferred: Option<TicketId>,
+    ) -> ServiceResult<Option<TicketId>> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn
+            .tickets()
+            .open_in_telegram(client_id, preferred)
+            .await?)
+    }
+
+    pub async fn from_telegram(
+        &self,
+        client_id: ClientId,
+        body: &str,
+        preferred: Option<TicketId>,
+    ) -> ServiceResult<Delivered> {
+        let current = {
+            let mut conn = self.services.store().conn().await?;
+            conn.tickets()
+                .open_in_telegram(client_id, preferred)
+                .await?
+        };
+        if let Some(id) = current {
+            let request = ReplyRequest {
+                body: body.to_string(),
+                close: false,
+            };
+            match self.reply(id, &request, Actor::Client(client_id)).await {
+                Ok(()) => return Ok(Delivered::Added(id)),
+                Err(ServiceError::Rejected {
+                    code: "support.closed",
+                    ..
+                }) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        let id = self
+            .open(
+                client_id,
+                &OpenTicket {
+                    subscription_id: None,
+                    channel: TicketChannel::Bot,
+                    subject: None,
+                    body: body.to_string(),
+                },
+            )
+            .await?;
+        Ok(Delivered::Opened(id))
     }
 
     pub async fn list(

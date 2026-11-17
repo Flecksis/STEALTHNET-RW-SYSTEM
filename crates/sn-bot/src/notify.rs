@@ -103,6 +103,10 @@ pub fn render(
     let date =
         date_param(params, "date", offset).or_else(|| date_param(params, "expire_at", offset));
     let t = |key: &str, vars: &[(&str, Value<'_>)]| content.text(key, vars);
+    let reply = match params.get("ticket_id").and_then(serde_json::Value::as_i64) {
+        Some(id) if id > 0 => format!("sup:{id}"),
+        _ => "sup".to_string(),
+    };
     let (text, button): (String, Option<(&str, &str)>) = match template {
         templates::PAYMENT_PAID => (
             match &amount {
@@ -172,7 +176,7 @@ pub fn render(
                 "notify.support_reply",
                 &[("body", Html(&param(params, "body")?))],
             ),
-            Some(("notify.btn.reply", "sup")),
+            Some(("notify.btn.reply", reply.as_str())),
         ),
         templates::REPEAT_CREDITED => (param(params, "text")?, Some(("notify.btn.balance", "bal"))),
         templates::REPEAT_REVIEW => (param(params, "text")?, Some(("notify.btn.support", "sup"))),

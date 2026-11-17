@@ -26,6 +26,7 @@ mod referral_login;
 mod runtime;
 mod stars;
 mod stars_review;
+mod support_followup;
 
 const TOKEN: &str = "123456:TEST-secret-token";
 

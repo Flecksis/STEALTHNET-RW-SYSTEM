@@ -771,6 +771,7 @@ impl<'a> AdminOps<'a> {
                     if let Ok(ticket) = conn.tickets().get(ticket_id).await {
                         item.ticket = Some(TicketBrief {
                             id: ticket.id,
+                            state: ticket.filter(),
                             subject: ticket.subject,
                             status: ticket.status,
                         });

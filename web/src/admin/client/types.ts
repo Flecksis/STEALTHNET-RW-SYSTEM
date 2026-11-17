@@ -99,7 +99,7 @@ export type HistoryItem = { at: string } & (
       type: 'event';
       kind: string;
       event: Record<string, unknown> & { type: string };
-      ticket: { id: number; subject: string | null; status: string } | null;
+      ticket: { id: number; subject: string | null; status: string; state?: 'waiting' | 'answered' | 'closed' } | null;
     }
   | {
       type: 'audit';

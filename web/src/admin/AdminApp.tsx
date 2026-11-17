@@ -79,13 +79,32 @@ export function AdminApp() {
       api<{ support: number }>('/api/admin/badges')
         .then((b) => alive && setSupportBadge(b.support))
         .catch(() => undefined);
+    const onShow = () => {
+      if (document.visibilityState === 'visible') {
+        void tick();
+      }
+    };
     void tick();
-    const timer = window.setInterval(tick, 60_000);
+    const timer = window.setInterval(onShow, 30_000);
+    window.addEventListener('focus', onShow);
+    document.addEventListener('visibilitychange', onShow);
     return () => {
       alive = false;
       window.clearInterval(timer);
+      window.removeEventListener('focus', onShow);
+      document.removeEventListener('visibilitychange', onShow);
     };
   }, [signedIn]);
+
+  const canSupport = state.kind === 'in' && state.me.permissions.includes('support');
+  const supportWaiting = useCallback(
+    (count: number) => {
+      if (canSupport) {
+        setSupportBadge(count);
+      }
+    },
+    [canSupport],
+  );
 
   const adminId = state.kind === 'in' ? state.me.admin.admin_id : null;
   useEffect(() => {
@@ -152,8 +171,9 @@ export function AdminApp() {
       setAppearance,
       theme,
       flipTheme: () => void flipTheme(),
+      supportWaiting,
     };
-  }, [state, load, setAppearance, theme, flipTheme]);
+  }, [state, load, setAppearance, theme, flipTheme, supportWaiting]);
 
   if (state.kind === 'loading') {
     return <div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />;

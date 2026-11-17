@@ -94,7 +94,7 @@ function dayLabel(iso: string): string {
 }
 
 export function Support() {
-  const { me } = useSession();
+  const { me, supportWaiting } = useSession();
   const [params, setParams] = useSearchParams();
   const filter = (params.get('filter') as Filter | null) ?? 'waiting';
   const ticketParam = params.get('ticket');
@@ -125,12 +125,13 @@ export function Support() {
       const data = await api<{ items: ListItem[]; counts: Counts }>(`/api/admin/support/tickets?${search.toString()}`);
       setItems(data.items);
       setCounts(data.counts);
+      supportWaiting(data.counts.waiting);
       return data.items;
     } catch {
       setItems([]);
       return [];
     }
-  }, [filter, query]);
+  }, [filter, query, supportWaiting]);
 
   useEffect(() => {
     void loadList().then((list) => {

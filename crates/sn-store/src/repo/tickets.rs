@@ -254,6 +254,23 @@ impl<'c> TicketsRepo<'c> {
         .await?)
     }
 
+    pub async fn open_in_telegram(
+        &mut self,
+        client_id: ClientId,
+        preferred: Option<TicketId>,
+    ) -> StoreResult<Option<TicketId>> {
+        let id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM tickets \
+             WHERE client_id = $1 AND status = 'open' AND channel IN ('bot', 'unknown') \
+             ORDER BY id = $2 DESC, updated_at DESC, id DESC LIMIT 1",
+        )
+        .bind(client_id.0)
+        .bind(preferred.map_or(0, |id| id.0))
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(id.map(TicketId))
+    }
+
     pub async fn close(&mut self, id: TicketId) -> StoreResult<()> {
         sqlx::query("UPDATE tickets SET status = 'closed', closed_at = now() WHERE id = $1 AND status = 'open'")
             .bind(id.0)

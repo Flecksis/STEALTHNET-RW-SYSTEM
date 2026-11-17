@@ -7,16 +7,15 @@ use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::format;
-use sn_domain::ids::SubscriptionId;
+use sn_domain::ids::{SubscriptionId, TicketId};
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
 use sn_domain::pricing::topup_quote;
-use sn_domain::support::TicketChannel;
 use sn_domain::traffic::{NextReset, next_reset};
 use sn_payments::{MethodsContext, ProviderKind};
 use sn_services::bot_content::BotContent;
 use sn_services::checkout::{Channel, CheckoutResult};
-use sn_services::support::OpenTicket;
+use sn_services::support::Delivered;
 use sn_services::{Actor, ServiceError};
 use sn_store::{Db, StoreError};
 
@@ -603,7 +602,38 @@ pub async fn topup_start(
     }
 }
 
+pub async fn support_reply_prompt(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    ticket: i64,
+) -> Result<Screen, BotError> {
+    let open = match turn
+        .services()
+        .support()
+        .telegram_ticket(client.id, Some(TicketId(ticket)))
+        .await
+    {
+        Ok(open) => open,
+        Err(err) => return Ok(Screen::notice(text::user_error(&err))),
+    };
+    let Some(open) = open else {
+        return Ok(support_prompt(turn));
+    };
+    turn.session.support_ticket = Some(open.0);
+    turn.session.wait_for(Awaiting::SupportMessage);
+    let content = turn.services().bot_content();
+    let c = &*content;
+    Ok(Screen::new(ui::text(
+        c,
+        "sup.reply_prompt",
+        &[("id", Text(&open.to_string()))],
+    ))
+    .keyboard(Keyboard::new().push(ui::cancel(c, "m")))
+    .section(Section::Support))
+}
+
 pub fn support_prompt(turn: &mut Turn<'_>) -> Screen {
+    turn.session.support_ticket = None;
     turn.session.wait_for(Awaiting::SupportMessage);
     let content = turn.services().bot_content();
     let c = &*content;
@@ -627,32 +657,57 @@ pub async fn support_entered(
     client: &Client,
     body: &str,
 ) -> Result<Screen, BotError> {
+    let preferred = turn.session.support_ticket.take();
     if body.trim().is_empty() {
-        return Ok(support_prompt(turn));
+        return match preferred {
+            Some(ticket) => support_reply_prompt(turn, client, ticket).await,
+            None => Ok(support_prompt(turn)),
+        };
     }
-    let content = turn.services().bot_content();
+    deliver(turn, client, body, preferred.map(TicketId)).await
+}
+
+pub async fn support_followup(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    body: &str,
+) -> Result<Option<Screen>, BotError> {
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
     match turn
         .services()
         .support()
-        .open(
-            client.id,
-            &OpenTicket {
-                subscription_id: None,
-                channel: TicketChannel::Bot,
-                subject: None,
-                body: body.to_string(),
-            },
-        )
+        .telegram_ticket(client.id, None)
         .await
     {
-        Ok(id) => Ok(Screen::notice(ui::text(
-            &content,
-            "sup.sent",
-            &[("id", Text(&id.to_string()))],
-        ))
-        .section(Section::Support)),
-        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+        Ok(Some(ticket)) => Ok(Some(deliver(turn, client, body, Some(ticket)).await?)),
+        Ok(None) => Ok(None),
+        Err(err) => Ok(Some(Screen::notice(text::user_error(&err)))),
     }
+}
+
+async fn deliver(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    body: &str,
+    preferred: Option<TicketId>,
+) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    let (key, id) = match turn
+        .services()
+        .support()
+        .from_telegram(client.id, body, preferred)
+        .await
+    {
+        Ok(Delivered::Opened(id)) => ("sup.sent", id),
+        Ok(Delivered::Added(id)) => ("sup.added", id),
+        Err(err) => return Ok(Screen::notice(text::user_error(&err))),
+    };
+    Ok(
+        Screen::notice(ui::text(&content, key, &[("id", Text(&id.to_string()))]))
+            .section(Section::Support),
+    )
 }
 
 pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {

@@ -58,6 +58,8 @@ pub struct Session {
     pub topup_minor: Option<i64>,
     #[serde(default)]
     pub withdrawal: Option<WithdrawalDraft>,
+    #[serde(default)]
+    pub support_ticket: Option<i64>,
 }
 
 impl Session {

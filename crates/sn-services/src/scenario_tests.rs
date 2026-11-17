@@ -17,7 +17,7 @@ use sn_domain::order::{NewOrder, OrderKind, PurchaseIntent};
 use sn_domain::payment::{NewPayment, PaymentStatus, ProviderId, providers};
 use sn_domain::pricing::{QuoteRequest, quote};
 use sn_domain::settings::{SettingField, keys, secret_keys};
-use sn_domain::support::TicketChannel;
+use sn_domain::support::{TicketChannel, TicketFilter};
 use sn_domain::tariff::{CurrencyPrices, DevicePolicy, Tariff};
 use sn_domain::traffic::TrafficPolicy;
 use sn_modules::{Module, ModuleRegistry};
@@ -1363,6 +1363,112 @@ async fn ответ_поддержки_уходит_туда_откуда_при
             .await,
         Err(ServiceError::Store(sn_store::StoreError::NotFound(_)))
     ));
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn сообщения_из_бота_идут_в_открытое_обращение_а_не_в_новое() {
+    use crate::support::Delivered;
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let client = telegram_client(services, 5_093_118_422).await;
+    let support = services.support();
+    let cabinet = support
+        .open(
+            client,
+            &OpenTicket {
+                subscription_id: None,
+                channel: TicketChannel::Cabinet,
+                subject: Some("Чек".into()),
+                body: "Не пришёл чек".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(support.telegram_ticket(client, None).await.unwrap(), None);
+    let Delivered::Opened(first) = support
+        .from_telegram(client, "Не подключается", None)
+        .await
+        .unwrap()
+    else {
+        panic!("первое сообщение из бота должно открыть обращение");
+    };
+    assert_ne!(first, cabinet);
+    support
+        .reply(
+            first,
+            &ReplyRequest {
+                body: "Обновите подписку".into(),
+                close: false,
+            },
+            Actor::Admin(admin),
+        )
+        .await
+        .unwrap();
+    assert_eq!(support.waiting_count().await.unwrap(), 1);
+    let feed = services
+        .admin()
+        .feed(
+            &FeedQuery {
+                kind: FeedKind::Support,
+                remna_before: None,
+                core_before: None,
+                limit: Some(10),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    let states: Vec<(&str, i64, TicketFilter)> = feed
+        .items
+        .iter()
+        .filter_map(|i| {
+            i.ticket
+                .as_ref()
+                .map(|t| (i.kind.as_str(), t.id.0, t.state))
+        })
+        .collect();
+    assert!(
+        states.contains(&("ticket_opened", first.0, TicketFilter::Answered)),
+        "{states:?}"
+    );
+    assert!(
+        states.contains(&("ticket_opened", cabinet.0, TicketFilter::Waiting)),
+        "{states:?}"
+    );
+    assert_eq!(
+        support
+            .from_telegram(client, "Не помогло", Some(first))
+            .await
+            .unwrap(),
+        Delivered::Added(first)
+    );
+    assert_eq!(
+        support
+            .from_telegram(client, "Ещё вопрос", None)
+            .await
+            .unwrap(),
+        Delivered::Added(first)
+    );
+    let thread = support.thread(first, Actor::Admin(admin)).await.unwrap();
+    assert_eq!(thread.messages.len(), 4);
+    assert_eq!(thread.ticket.filter(), TicketFilter::Waiting);
+    assert_eq!(support.waiting_count().await.unwrap(), 2);
+    assert_eq!(support.for_client(client).await.unwrap().len(), 2);
+    support.close(first, Actor::Admin(admin)).await.unwrap();
+    let Delivered::Opened(second) = support
+        .from_telegram(client, "Снова не работает", Some(first))
+        .await
+        .unwrap()
+    else {
+        panic!("после закрытия должно открыться новое обращение");
+    };
+    assert_ne!(second, first);
+    assert_eq!(
+        support.telegram_ticket(client, None).await.unwrap(),
+        Some(second)
+    );
     env.db.cleanup().await;
 }
 

@@ -43,7 +43,7 @@ export type FeedItem = {
   client: Person | null;
   order: OrderBrief | null;
   payment: { id: string; status: string; amount: Amount; provider: string; method: string | null } | null;
-  ticket: { id: number; subject: string | null; status: string } | null;
+  ticket: { id: number; subject: string | null; status: string; state?: 'waiting' | 'answered' | 'closed' } | null;
 };
 
 export type FeedPage = { items: FeedItem[]; remna_before: number | null; core_before: number | null; has_more: boolean };
@@ -289,7 +289,7 @@ export function feedLine(item: FeedItem, nodes: NodeBrief[]): FeedLine | null {
           note: item.ticket?.subject ? `«${item.ticket.subject}»` : '',
           tone: 0,
           icon: 'person',
-          action: item.ticket ? { label: 'Ответить', aria: `Ответить: ${who}`, kind: 'reply', target: String(item.ticket.id) } : null,
+          action: item.ticket?.state === 'waiting' ? { label: 'Ответить', aria: `Ответить: ${who}`, kind: 'reply', target: String(item.ticket.id) } : null,
         };
       case 'ticket_answered':
         return { ...base, who, what: 'ответ поддержки', note: item.ticket?.subject ? `«${item.ticket.subject}»` : '', tone: 0, icon: 'person', action: null };

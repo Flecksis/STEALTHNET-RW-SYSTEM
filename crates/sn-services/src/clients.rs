@@ -21,7 +21,7 @@ use sn_domain::payment::{PaymentStatus, ProviderId};
 use sn_domain::plan::{CurrentTariff, PlanKind, classify};
 use sn_domain::pricing::{Quote, QuoteLine, QuoteLineKind};
 use sn_domain::subscription::Subscription;
-use sn_domain::support::TicketStatus;
+use sn_domain::support::{TicketFilter, TicketStatus};
 use sn_domain::tariff::{DevicePolicy, months_for_days};
 use sn_domain::traffic::TrafficPolicy;
 use sn_store::{
@@ -66,6 +66,7 @@ pub struct TicketBrief {
     pub id: TicketId,
     pub subject: Option<String>,
     pub status: TicketStatus,
+    pub state: TicketFilter,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -934,6 +935,7 @@ impl<'a> ClientOps<'a> {
                             *ticket_id,
                             TicketBrief {
                                 id: ticket.id,
+                                state: ticket.filter(),
                                 subject: ticket.subject,
                                 status: ticket.status,
                             },

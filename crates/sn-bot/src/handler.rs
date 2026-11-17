@@ -107,6 +107,7 @@ enum Action {
     Menu,
     PaySupport,
     Input(Awaiting, String),
+    Text(String),
     Callback(String),
 }
 
@@ -178,7 +179,7 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
         },
         None => match session.awaiting {
             Some(awaiting) => Action::Input(awaiting, text.trim().to_string()),
-            None => Action::Menu,
+            None => Action::Text(text.trim().to_string()),
         },
     };
     run(ctx, &user, target, session, action).await
@@ -244,6 +245,10 @@ async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError
             main_menu(turn.ctx, &client).await
         }
         Action::Input(awaiting, text) => input(turn, &client, awaiting, &text).await,
+        Action::Text(text) => match account::support_followup(turn, &client, &text).await? {
+            Some(screen) => Ok(screen),
+            None => main_menu(turn.ctx, &client).await,
+        },
         Action::Callback(data) => callback(turn, &client, &data).await,
     }
 }
@@ -443,7 +448,10 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         },
         "topx" => account::topup_custom(turn),
         "tp" => account::topup_start(turn, client, rest).await?,
-        "sup" => account::support_prompt(turn),
+        "sup" => match id_arg(rest) {
+            Some(id) => account::support_reply_prompt(turn, client, id).await?,
+            None => account::support_prompt(turn),
+        },
         "trial" => account::trial(turn, client).await?,
         "buy" => buy::start(turn, client, rest).await?,
         "t" => match id_arg(rest) {
