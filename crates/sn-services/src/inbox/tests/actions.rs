@@ -509,3 +509,260 @@ async fn возврат_с_немедленным_ответом_кассы_об
     assert!(provider_refunds(&kit, renewal.payment.id).await.is_empty());
     kit.db.cleanup().await;
 }
+
+async fn paid_undelivered_renewal(
+    kit: &Kit,
+    client_id: ClientId,
+    tariff: &Tariff,
+    current: &Subscription,
+) -> (Payment, Order) {
+    let result = kit
+        .services
+        .checkout()
+        .start(
+            client_id,
+            &CheckoutRequest {
+                cart: cart(tariff, 30, Some(current)),
+                provider: KASSA.into(),
+                channel: Channel::Cabinet,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let CheckoutResult::Redirect { payment_id, .. } = result else {
+        panic!("ожидался счёт");
+    };
+    let invoice = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.payments().by_public_id(payment_id).await.unwrap()
+    };
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &outcome(&invoice, ProviderStatus::Paid))
+        .await
+        .unwrap();
+    let renewal = order(&kit.services, invoice.order_id).await;
+    assert_eq!(renewal.status, OrderStatus::Paid);
+    (payment(kit, invoice.id).await, renewal)
+}
+
+#[tokio::test]
+async fn обрезка_срока_после_ожидающего_возврата_не_трогает_невыданный_заказ() {
+    let kassa = Arc::new(Kassa::default());
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 9602).await;
+    let tariff = standard(&kit.services).await;
+    let first = buy(&kit, client_id, &tariff, 90, None).await;
+    let before = remna_user(&kit, &first.subscription).await.expire_at;
+    let (paid, renewal) =
+        paid_undelivered_renewal(&kit, client_id, &tariff, &first.subscription).await;
+    let requested = kit
+        .services
+        .inbox()
+        .refund(
+            paid.id,
+            &refund_command(None, RefundSubscriptionAction::Cut, Some("не продлилось")),
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(requested.pending);
+    let held = kit.services.fulfillment().run(renewal.id).await.unwrap();
+    assert!(matches!(held, FulfillmentOutcome::Retry { .. }), "{held:?}");
+    let confirmed = WebhookOutcome {
+        event_key: "refund:kr-1".into(),
+        ..outcome(&paid, ProviderStatus::Refunded)
+    };
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &confirmed)
+        .await
+        .unwrap();
+    let refunded = order(&kit.services, renewal.id).await;
+    assert_eq!(refunded.status, OrderStatus::Refunded);
+    assert!(refunded.fulfilled_at.is_none());
+    assert_eq!(
+        remna_user(&kit, &first.subscription).await.expire_at,
+        before,
+        "заказ не выдавался: срок, оплаченный раньше, не укорачивается"
+    );
+    let actions = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.payments()
+            .provider_refunds(paid.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.action.status)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(actions, vec![RefundActionStatus::Done]);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn обрезка_срока_при_немедленном_возврате_не_трогает_невыданный_заказ() {
+    let kassa = Arc::new(Kassa::default());
+    *kassa.refund_completed.lock().unwrap() = true;
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 9603).await;
+    let tariff = standard(&kit.services).await;
+    let first = buy(&kit, client_id, &tariff, 90, None).await;
+    let before = remna_user(&kit, &first.subscription).await.expire_at;
+    let (paid, renewal) =
+        paid_undelivered_renewal(&kit, client_id, &tariff, &first.subscription).await;
+    let done = kit
+        .services
+        .inbox()
+        .refund(
+            paid.id,
+            &refund_command(None, RefundSubscriptionAction::Cut, Some("не продлилось")),
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(!done.pending);
+    assert_eq!(
+        order(&kit.services, renewal.id).await.status,
+        OrderStatus::Refunded
+    );
+    assert_eq!(
+        remna_user(&kit, &first.subscription).await.expire_at,
+        before,
+        "заказ не выдавался: срок, оплаченный раньше, не укорачивается"
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn заказ_с_планом_и_ожидающим_возвратом_не_держит_следующую_покупку() {
+    let kassa = Arc::new(Kassa::default());
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 9604).await;
+    let tariff = standard(&kit.services).await;
+    let first = buy(&kit, client_id, &tariff, 90, None).await;
+    let before = remna_user(&kit, &first.subscription).await.expire_at;
+    let (paid, stuck) =
+        paid_undelivered_renewal(&kit, client_id, &tariff, &first.subscription).await;
+    kit.remna.fail_on("update_user", Fault::Timeout);
+    let attempt = kit.services.fulfillment().run(stuck.id).await.unwrap();
+    assert!(
+        matches!(attempt, FulfillmentOutcome::Retry { .. }),
+        "{attempt:?}"
+    );
+    assert!(order(&kit.services, stuck.id).await.plan.is_some());
+    let requested = kit
+        .services
+        .inbox()
+        .refund(
+            paid.id,
+            &refund_command(None, RefundSubscriptionAction::Keep, Some("не продлилось")),
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(requested.pending);
+    let (_, again) = paid_undelivered_renewal(&kit, client_id, &tariff, &first.subscription).await;
+    let delivered = kit.services.fulfillment().run(again.id).await.unwrap();
+    assert!(
+        matches!(delivered, FulfillmentOutcome::Done { .. }),
+        "повторная покупка не ждёт решения кассы по возврату: {delivered:?}"
+    );
+    assert_eq!(
+        remna_user(&kit, &first.subscription).await.expire_at,
+        before + chrono::Duration::days(30)
+    );
+    let holds = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        crate::fulfillment::holds_autorenew(&mut conn, stuck.id)
+            .await
+            .unwrap()
+    };
+    assert!(
+        !holds,
+        "заказ с ожидающим возвратом не держит автопродление"
+    );
+    let confirmed = WebhookOutcome {
+        event_key: "refund:kr-1".into(),
+        ..outcome(&paid, ProviderStatus::Refunded)
+    };
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &confirmed)
+        .await
+        .unwrap();
+    assert_eq!(
+        order(&kit.services, stuck.id).await.status,
+        OrderStatus::Refunded
+    );
+    assert_eq!(
+        remna_user(&kit, &first.subscription).await.expire_at,
+        before + chrono::Duration::days(30)
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn обрезка_срока_снимает_дни_заказа_который_применился_без_ответа_панели() {
+    let kassa = Arc::new(Kassa::default());
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 9605).await;
+    let tariff = standard(&kit.services).await;
+    let first = buy(&kit, client_id, &tariff, 90, None).await;
+    let before = remna_user(&kit, &first.subscription).await.expire_at;
+    let (paid, renewal) =
+        paid_undelivered_renewal(&kit, client_id, &tariff, &first.subscription).await;
+    kit.remna.fail_on("update_user", Fault::TimeoutAfterApply);
+    let attempt = kit.services.fulfillment().run(renewal.id).await.unwrap();
+    assert!(
+        matches!(attempt, FulfillmentOutcome::Retry { .. }),
+        "{attempt:?}"
+    );
+    let extended = remna_user(&kit, &first.subscription).await.expire_at;
+    assert!(
+        extended > before,
+        "продление должно было примениться в панели"
+    );
+    let requested = kit
+        .services
+        .inbox()
+        .refund(
+            paid.id,
+            &refund_command(None, RefundSubscriptionAction::Cut, Some("не продлилось")),
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(requested.pending);
+    let confirmed = WebhookOutcome {
+        event_key: "refund:kr-1".into(),
+        ..outcome(&paid, ProviderStatus::Refunded)
+    };
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &confirmed)
+        .await
+        .unwrap();
+    assert_eq!(
+        remna_user(&kit, &first.subscription)
+            .await
+            .expire_at
+            .timestamp(),
+        before.timestamp(),
+        "дни заказа, которые успели попасть в панель, снимаются"
+    );
+    kit.db.cleanup().await;
+}

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use std::sync::Mutex;
 
 pub trait Clock: Send + Sync {
@@ -10,7 +10,7 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+        Utc::now().trunc_subsecs(6)
     }
 }
 

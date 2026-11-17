@@ -8,6 +8,7 @@ use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, SubscriptionId};
 use sn_domain::money::Amount;
 use sn_domain::order::Order;
 use sn_domain::payment::RefundSubscriptionAction;
+use sn_domain::plan::PlanAction;
 use sn_remnawave::{DropConnectionsRequest, UpdateUserRequest};
 use sn_store::{
     ActorKind, AuditEntry, Db, FailedRefundAction, ProviderRefund, RefundActionStatus, audit_entity,
@@ -169,6 +170,11 @@ impl PaymentInbox<'_> {
         let user = match action {
             RefundSubscriptionAction::Cut => {
                 let current = remna.get_user(link.user_id).await?;
+                if !self.order_delivered(order, current.expire_at).await? {
+                    return self
+                        .skip_undelivered_cut(order, subscription_id, admin, request)
+                        .await;
+                }
                 let target = match request {
                     Some(request) => {
                         self.planned_cut(request, current.expire_at, order.quote.days)
@@ -235,6 +241,70 @@ impl PaymentInbox<'_> {
                     "request_id": request.map(|r| r.id),
                     "previous_expire_at": subscription.mirror.expire_at,
                     "expire_at": user.expire_at,
+                }),
+                ip: None,
+            })
+            .await?;
+        if let Some(request) = request {
+            tx.payments().finish_refund_action(request.id).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn order_delivered(&self, order: &Order, current: DateTime<Utc>) -> ServiceResult<bool> {
+        let (fresh, state) = {
+            let mut conn = self.services.store().conn().await?;
+            let fresh = conn.orders().get(order.id).await?;
+            let state = conn.orders().plan_state(order.id).await?;
+            (fresh, state)
+        };
+        if fresh.fulfilled_at.is_some() || state.applied_at.is_some() {
+            return Ok(true);
+        }
+        let Some(plan) = fresh.plan else {
+            return Ok(false);
+        };
+        let (PlanAction::Update { .. }, Some(base)) = (&plan.action, plan.base_expire_at) else {
+            return Ok(true);
+        };
+        if same_moment(current, plan.target.expire_at) {
+            Ok(true)
+        } else if same_moment(current, base) {
+            Ok(false)
+        } else {
+            Err(ServiceError::rejected(
+                ACTION_CONFLICT,
+                "Не ясно, успел ли заказ продлить подписку: проверьте срок и укоротите его вручную",
+            ))
+        }
+    }
+
+    async fn skip_undelivered_cut(
+        &self,
+        order: &Order,
+        subscription_id: SubscriptionId,
+        admin: Option<AdminId>,
+        request: Option<&ProviderRefund>,
+    ) -> ServiceResult<()> {
+        let mut tx = self.services.store().begin().await?;
+        tx.audit()
+            .record(&AuditEntry {
+                actor_kind: if admin.is_some() {
+                    ActorKind::Admin
+                } else {
+                    ActorKind::System
+                },
+                actor_id: admin.map(|a| a.0),
+                action: "subscription.refund_action".into(),
+                entity_kind: Some(audit_entity::SUBSCRIPTION.into()),
+                entity_id: Some(subscription_id.0),
+                details: serde_json::json!({
+                    "order_id": order.id,
+                    "action": RefundSubscriptionAction::Cut,
+                    "request_id": request.map(|r| r.id),
+                    "applied": false,
+                    "reason": "order_not_delivered",
                 }),
                 ip: None,
             })

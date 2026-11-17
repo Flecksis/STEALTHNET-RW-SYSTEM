@@ -468,7 +468,7 @@ impl<'c> OrdersRepo<'c> {
         Ok(sqlx::query_scalar(&format!(
             "SELECT o.public_id FROM orders o WHERE o.subscription_id = $1 AND o.id <> $2 \
              AND o.kind NOT IN ('topup', 'module') \
-             AND ((o.status = 'paid' AND (o.plan IS NOT NULL OR (o.id < $2 AND NOT {REFUND_PENDING}))) \
+             AND ((o.status = 'paid' AND NOT {REFUND_PENDING} AND (o.plan IS NOT NULL OR o.id < $2)) \
                  OR (o.status = 'review' AND {LIVE_REVIEW})) \
              ORDER BY o.id LIMIT 1"
         ))
@@ -480,7 +480,7 @@ impl<'c> OrdersRepo<'c> {
 
     pub async fn holds_renewal(&mut self, id: OrderId, renewal_method: &str) -> StoreResult<bool> {
         Ok(sqlx::query_scalar(&format!(
-            "SELECT o.status = 'paid' OR (o.status = 'review' AND ({LIVE_REVIEW} \
+            "SELECT (o.status = 'paid' AND NOT {REFUND_PENDING}) OR (o.status = 'review' AND ({LIVE_REVIEW} \
                  OR EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.method = $2))) \
              FROM orders o WHERE o.id = $1"
         ))
@@ -977,7 +977,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn оплаченный_заказ_с_ожидающим_возвратом_не_держит_следующие_пока_без_плана() {
+    async fn оплаченный_заказ_с_ожидающим_возвратом_не_держит_следующие() {
         let Some(db) = test_store().await else { return };
         let mut conn = db.store.conn().await.unwrap();
         let (client, sub) = subscription(&mut conn).await;
@@ -1010,8 +1010,7 @@ mod tests {
             .save_plan(refunded, &sample_plan())
             .await
             .unwrap();
-        assert_eq!(blocker(&mut conn, sub, next).await, Some(refunded_public));
-        conn.orders().reset_plan(refunded).await.unwrap();
+        assert_eq!(blocker(&mut conn, sub, next).await, None);
         sqlx::query(
             "UPDATE provider_refunds SET status = 'declined', resolved_at = now() WHERE id = $1",
         )
@@ -1019,6 +1018,8 @@ mod tests {
         .execute(conn.conn())
         .await
         .unwrap();
+        assert_eq!(blocker(&mut conn, sub, next).await, Some(refunded_public));
+        conn.orders().reset_plan(refunded).await.unwrap();
         assert_eq!(blocker(&mut conn, sub, next).await, Some(refunded_public));
         drop(conn);
         db.cleanup().await;
