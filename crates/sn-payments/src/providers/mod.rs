@@ -1,6 +1,7 @@
 mod balance;
 mod cloudpayments;
 mod cryptopay;
+mod gram;
 mod heleket;
 mod lava;
 mod overpay;
@@ -12,6 +13,7 @@ mod yoomoney;
 pub use balance::Balance;
 pub use cloudpayments::CloudPayments;
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
+pub use gram::{Gram, GramInvoice, format_grams};
 pub use heleket::{Heleket, signature as heleket_signature};
 pub use lava::Lava;
 pub use overpay::Overpay;
@@ -29,6 +31,7 @@ use std::sync::Arc;
 pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
     vec![
         Arc::new(CryptoPay::new()),
+        Arc::new(Gram::new()),
         Arc::new(Heleket::new()),
         Arc::new(Lava::new()),
         Arc::new(YooKassa::new()),

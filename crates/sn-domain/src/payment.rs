@@ -18,6 +18,7 @@ pub mod providers {
     pub const YOOMONEY: &str = "yoomoney";
     pub const CLOUDPAYMENTS: &str = "cloudpayments";
     pub const OVERPAY: &str = "overpay";
+    pub const GRAM: &str = "gram";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

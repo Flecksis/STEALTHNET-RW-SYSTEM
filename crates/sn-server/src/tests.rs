@@ -24,6 +24,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod gram;
 mod photos;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";

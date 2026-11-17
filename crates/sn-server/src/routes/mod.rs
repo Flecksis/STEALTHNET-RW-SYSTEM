@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod client;
 mod client_photo;
+mod public_pay;
 pub mod system;
 pub mod webhooks;
 
@@ -69,6 +70,7 @@ pub fn router(state: AppState) -> Router {
     let request_id = HeaderName::from_static(REQUEST_ID);
     Router::new()
         .merge(system::routes())
+        .merge(public_pay::routes())
         .merge(webhooks::routes())
         .nest("/api/admin", admin::routes())
         .nest(

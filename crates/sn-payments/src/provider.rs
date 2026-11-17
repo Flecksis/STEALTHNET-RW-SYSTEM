@@ -261,6 +261,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
         false
     }
 
+    fn polls_status(&self) -> bool {
+        false
+    }
+
     fn supports_recurring(&self) -> bool {
         false
     }

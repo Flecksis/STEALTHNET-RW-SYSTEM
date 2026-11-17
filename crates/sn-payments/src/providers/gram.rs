@@ -1,0 +1,914 @@
+use crate::error::{PaymentError, PaymentResult};
+use crate::provider::*;
+use async_trait::async_trait;
+use chrono::Utc;
+use serde::Deserialize;
+use sn_domain::money::{Amount, Currency, PayCurrency};
+use sn_domain::payment::providers;
+use sn_domain::settings::SettingField;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use uuid::Uuid;
+
+pub const NANO_PER_GRAM: u128 = 1_000_000_000;
+const STEP_NANO: u128 = 10_000_000;
+const MICRO_PER_UNIT: u128 = 1_000_000;
+const MICRO_PER_MINOR: u128 = 10_000;
+const PRICE_MAX_MICRO: u128 = 1_000_000_000_000_000;
+const RATES_TTL: Duration = Duration::from_secs(300);
+const TONCENTER: &str = "https://toncenter.com/api/v2";
+const TONCENTER_TESTNET: &str = "https://testnet.toncenter.com/api/v2";
+const TONAPI: &str = "https://tonapi.io";
+const COINGECKO: &str = "https://api.coingecko.com";
+const TONKEEPER: &str = "https://app.tonkeeper.com/transfer";
+const COMMENT_PREFIX: &str = "SN-";
+const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const TRANSACTIONS_LIMIT: u32 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GramInvoice {
+    pub comment: String,
+    pub nano: u128,
+    pub address: String,
+    pub amount: Amount,
+}
+
+impl GramInvoice {
+    pub fn external_id(&self) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            self.comment,
+            self.nano,
+            self.address,
+            self.amount.minor,
+            self.amount.currency.code()
+        )
+    }
+
+    pub fn parse(raw: &str) -> Option<GramInvoice> {
+        let mut parts = raw.split('|');
+        let comment = parts.next()?.to_string();
+        let nano = parts.next()?.parse::<u128>().ok()?;
+        let address = parts.next()?.to_string();
+        let minor = parts.next()?.parse::<i64>().ok()?;
+        let currency = PayCurrency::parse(parts.next()?).ok()?;
+        if parts.next().is_some()
+            || !comment.starts_with(COMMENT_PREFIX)
+            || nano == 0
+            || !valid_address(&address)
+        {
+            return None;
+        }
+        Some(GramInvoice {
+            comment,
+            nano,
+            address,
+            amount: Amount::new(minor, currency),
+        })
+    }
+
+    pub fn grams(&self) -> String {
+        format_grams(self.nano)
+    }
+
+    pub fn ton_link(&self) -> String {
+        format!(
+            "ton://transfer/{}?amount={}&text={}",
+            self.address,
+            self.nano,
+            encode(&self.comment)
+        )
+    }
+
+    pub fn tonkeeper_link(&self) -> String {
+        format!(
+            "{TONKEEPER}/{}?amount={}&text={}",
+            self.address,
+            self.nano,
+            encode(&self.comment)
+        )
+    }
+}
+
+fn encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+pub fn format_grams(nano: u128) -> String {
+    let whole = nano / NANO_PER_GRAM;
+    let fraction = nano % NANO_PER_GRAM;
+    if fraction == 0 {
+        return whole.to_string();
+    }
+    let digits = format!("{fraction:09}");
+    format!("{whole}.{}", digits.trim_end_matches('0'))
+}
+
+pub fn valid_address(raw: &str) -> bool {
+    let raw = raw.trim();
+    if let Some((workchain, hex)) = raw.split_once(':') {
+        let workchain = workchain.strip_prefix('-').unwrap_or(workchain);
+        return !workchain.is_empty()
+            && workchain.len() <= 3
+            && workchain.bytes().all(|b| b.is_ascii_digit())
+            && hex.len() == 64
+            && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    raw.len() == 48
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'+' | b'/'))
+}
+
+pub fn comment_for(payment: Uuid) -> String {
+    let bytes = payment.as_bytes();
+    let mut bits: u64 = 0;
+    for byte in &bytes[..5] {
+        bits = (bits << 8) | u64::from(*byte);
+    }
+    let mut out = String::from(COMMENT_PREFIX);
+    for index in (0..8).rev() {
+        let value = ((bits >> (index * 5)) & 0x1F) as usize;
+        out.push(BASE32[value] as char);
+    }
+    out
+}
+
+pub fn parse_price(raw: &str) -> Option<u128> {
+    let raw = raw.trim().replace(',', ".");
+    let (whole, fraction) = match raw.split_once('.') {
+        Some((whole, fraction)) => (whole, fraction),
+        None => (raw.as_str(), ""),
+    };
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    if !whole.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+        || fraction.len() > 6
+        || whole.len() > 12
+    {
+        return None;
+    }
+    let whole: u128 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().ok()?
+    };
+    let mut fraction_micro: u128 = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse().ok()?
+    };
+    for _ in fraction.len()..6 {
+        fraction_micro *= 10;
+    }
+    let micro = whole * MICRO_PER_UNIT + fraction_micro;
+    (micro > 0 && micro < PRICE_MAX_MICRO).then_some(micro)
+}
+
+fn price_from_float(value: f64) -> Option<u128> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let micro = (value * MICRO_PER_UNIT as f64).round();
+    if micro < 1.0 || micro >= PRICE_MAX_MICRO as f64 {
+        return None;
+    }
+    Some(micro as u128)
+}
+
+pub fn to_nano(minor: i64, price_micro: u128) -> Option<u128> {
+    if minor <= 0 || price_micro == 0 {
+        return None;
+    }
+    let amount_micro = (minor as u128) * MICRO_PER_MINOR;
+    let nano = (amount_micro * NANO_PER_GRAM).div_ceil(price_micro);
+    Some(nano.div_ceil(STEP_NANO) * STEP_NANO)
+}
+
+fn page_url(webhook_url: &str, payment: Uuid) -> Option<String> {
+    let (base, _) = webhook_url.split_once("/api/webhooks/pay/")?;
+    (base.starts_with("https://") || base.starts_with("http://"))
+        .then(|| format!("{}/pay/{payment}", base.trim_end_matches('/')))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rates {
+    usd: u128,
+    rub: u128,
+}
+
+impl Rates {
+    fn get(self, currency: Currency) -> u128 {
+        match currency {
+            Currency::Usd => self.usd,
+            Currency::Rub => self.rub,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct TonapiRates {
+    rates: HashMap<String, TonapiToken>,
+}
+
+#[derive(Deserialize)]
+struct TonapiToken {
+    prices: HashMap<String, f64>,
+}
+
+#[derive(Deserialize)]
+struct ToncenterResponse {
+    ok: bool,
+    #[serde(default)]
+    result: Vec<Transaction>,
+}
+
+#[derive(Deserialize)]
+struct Transaction {
+    transaction_id: TransactionId,
+    #[serde(default)]
+    in_msg: Option<Message>,
+}
+
+#[derive(Deserialize)]
+struct TransactionId {
+    hash: String,
+}
+
+#[derive(Deserialize)]
+struct Message {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+pub struct Gram {
+    http: reqwest::Client,
+    toncenter: Option<String>,
+    tonapi: String,
+    coingecko: String,
+    rates: Mutex<Option<(Instant, Rates)>>,
+}
+
+impl Default for Gram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Gram {
+    pub fn new() -> Self {
+        Gram {
+            http: http_client(),
+            toncenter: None,
+            tonapi: TONAPI.into(),
+            coingecko: COINGECKO.into(),
+            rates: Mutex::new(None),
+        }
+    }
+
+    pub fn with_endpoints(
+        toncenter: impl Into<String>,
+        tonapi: impl Into<String>,
+        coingecko: impl Into<String>,
+    ) -> Self {
+        Gram {
+            http: http_client(),
+            toncenter: Some(toncenter.into()),
+            tonapi: tonapi.into(),
+            coingecko: coingecko.into(),
+            rates: Mutex::new(None),
+        }
+    }
+
+    fn toncenter(&self, config: &ProviderConfig) -> String {
+        match &self.toncenter {
+            Some(base) => base.trim_end_matches('/').to_string(),
+            None if config.flag("testnet") => TONCENTER_TESTNET.to_string(),
+            None => TONCENTER.to_string(),
+        }
+    }
+
+    fn cached(&self) -> Option<Rates> {
+        let guard = match self.rates.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .filter(|(at, _)| at.elapsed() < RATES_TTL)
+            .map(|(_, rates)| rates)
+    }
+
+    fn remember(&self, rates: Rates) {
+        let mut guard = match self.rates.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Some((Instant::now(), rates));
+    }
+
+    async fn rates_tonapi(&self) -> PaymentResult<Rates> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/v2/rates?tokens=ton&currencies=usd,rub",
+                self.tonapi.trim_end_matches('/')
+            ))
+            .send()
+            .await
+            .map_err(PaymentError::transport)?;
+        if !response.status().is_success() {
+            return Err(PaymentError::Http {
+                status: response.status().as_u16(),
+            });
+        }
+        let parsed: TonapiRates = response
+            .json()
+            .await
+            .map_err(|e| PaymentError::BadPayload(e.without_url().to_string()))?;
+        let token = parsed
+            .rates
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("ton"))
+            .map(|(_, token)| token)
+            .ok_or_else(|| PaymentError::BadPayload("в ответе нет курса TON".into()))?;
+        let price = |code: &str| {
+            token
+                .prices
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(code))
+                .and_then(|(_, value)| price_from_float(*value))
+        };
+        match (price("usd"), price("rub")) {
+            (Some(usd), Some(rub)) => Ok(Rates { usd, rub }),
+            _ => Err(PaymentError::BadPayload("курс TON без USD или RUB".into())),
+        }
+    }
+
+    async fn rates_coingecko(&self) -> PaymentResult<Rates> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/api/v3/simple/price?ids=the-open-network&vs_currencies=usd,rub",
+                self.coingecko.trim_end_matches('/')
+            ))
+            .send()
+            .await
+            .map_err(PaymentError::transport)?;
+        if !response.status().is_success() {
+            return Err(PaymentError::Http {
+                status: response.status().as_u16(),
+            });
+        }
+        let parsed: HashMap<String, HashMap<String, f64>> = response
+            .json()
+            .await
+            .map_err(|e| PaymentError::BadPayload(e.without_url().to_string()))?;
+        let prices = parsed
+            .get("the-open-network")
+            .ok_or_else(|| PaymentError::BadPayload("в ответе нет курса TON".into()))?;
+        match (
+            prices.get("usd").copied().and_then(price_from_float),
+            prices.get("rub").copied().and_then(price_from_float),
+        ) {
+            (Some(usd), Some(rub)) => Ok(Rates { usd, rub }),
+            _ => Err(PaymentError::BadPayload("курс TON без USD или RUB".into())),
+        }
+    }
+
+    async fn market_price(&self, currency: Currency) -> PaymentResult<u128> {
+        if let Some(rates) = self.cached() {
+            return Ok(rates.get(currency));
+        }
+        let rates = match self.rates_tonapi().await {
+            Ok(rates) => rates,
+            Err(first) => {
+                tracing::warn!(error = %first, "курс GRAM от tonapi не получен, пробуем CoinGecko");
+                self.rates_coingecko().await.map_err(|_| {
+                    PaymentError::Transport("курс GRAM сейчас недоступен, попробуйте позже".into())
+                })?
+            }
+        };
+        self.remember(rates);
+        Ok(rates.get(currency))
+    }
+
+    async fn price(&self, config: &ProviderConfig, currency: Currency) -> PaymentResult<u128> {
+        match manual_rate(config) {
+            Some(Ok(price)) => Ok(price),
+            Some(Err(())) => Err(PaymentError::NotConfigured(
+                "курс вручную записан неверно: нужно число больше нуля".into(),
+            )),
+            None => self.market_price(currency).await,
+        }
+    }
+
+    async fn transactions(
+        &self,
+        config: &ProviderConfig,
+        address: &str,
+    ) -> PaymentResult<Vec<Transaction>> {
+        let mut request = self
+            .http
+            .get(format!("{}/getTransactions", self.toncenter(config)))
+            .query(&[
+                ("address", address.to_string()),
+                ("limit", TRANSACTIONS_LIMIT.to_string()),
+                ("archival", "false".to_string()),
+            ]);
+        if let Some(key) = config.get("toncenter_key") {
+            request = request.header("X-API-Key", key);
+        }
+        let response = request.send().await.map_err(PaymentError::transport)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(PaymentError::Http {
+                status: status.as_u16(),
+            });
+        }
+        let parsed: ToncenterResponse = response
+            .json()
+            .await
+            .map_err(|e| PaymentError::BadPayload(e.without_url().to_string()))?;
+        if !parsed.ok {
+            return Err(PaymentError::BadPayload(
+                "toncenter ответил ok=false".into(),
+            ));
+        }
+        Ok(parsed.result)
+    }
+}
+
+fn manual_rate(config: &ProviderConfig) -> Option<Result<u128, ()>> {
+    let raw = match config.0.get("rate") {
+        None | Some(serde_json::Value::Null) => return None,
+        Some(serde_json::Value::Number(number)) => number.to_string(),
+        Some(serde_json::Value::String(text)) if text.trim().is_empty() => return None,
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(_) => return Some(Err(())),
+    };
+    Some(parse_price(&raw).ok_or(()))
+}
+
+fn pending(invoice: &GramInvoice) -> WebhookOutcome {
+    WebhookOutcome {
+        event_key: format!("gram:wait:{}", invoice.comment),
+        payment: None,
+        provider_txid: None,
+        status: ProviderStatus::Pending,
+        amount: None,
+        saved_method: None,
+        reply: WebhookReply::ok(),
+    }
+}
+
+#[async_trait]
+impl PaymentProvider for Gram {
+    fn id(&self) -> &'static str {
+        providers::GRAM
+    }
+
+    fn title(&self) -> &'static str {
+        "GRAM"
+    }
+
+    fn currencies(&self) -> &'static [Currency] {
+        &[Currency::Usd, Currency::Rub]
+    }
+
+    fn client_label(&self, _currency: Currency) -> ClientLabel {
+        ClientLabel {
+            title: "GRAM",
+            hint: "криптовалюта TON",
+        }
+    }
+
+    fn settings_schema(&self) -> Vec<SettingField> {
+        vec![
+            SettingField::text(
+                "wallet",
+                "Адрес кошелька TON",
+                "Куда приходят платежи. Лучше некастодиальный кошелёк: Tonkeeper, TON Space в Telegram Wallet",
+            ),
+            SettingField::secret(
+                "toncenter_key",
+                "Ключ API toncenter",
+                "Необязательно. Без ключа toncenter отвечает не чаще раза в секунду; ключ выдаёт @tonapibot",
+            )
+            .optional(),
+            SettingField::number(
+                "rate",
+                "Курс вручную",
+                "Цена 1 GRAM в валюте сервиса. Пусто — курс берётся с tonapi.io и CoinGecko и обновляется раз в 5 минут",
+            ),
+            SettingField::flag(
+                "testnet",
+                "Тестовая сеть",
+                "Только для проверки: платежи тестовыми GRAM в сети testnet",
+            ),
+        ]
+    }
+
+    fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
+        let wallet = config.require("wallet")?;
+        if !valid_address(wallet) {
+            return Err(PaymentError::NotConfigured(
+                "адрес кошелька TON записан неверно: нужен адрес из 48 символов, например UQ…"
+                    .into(),
+            ));
+        }
+        if let Some(Err(())) = manual_rate(config) {
+            return Err(PaymentError::NotConfigured(
+                "курс вручную записан неверно: нужно число больше нуля".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn polls_status(&self) -> bool {
+        true
+    }
+
+    async fn create_invoice(
+        &self,
+        config: &ProviderConfig,
+        request: &InvoiceRequest,
+    ) -> PaymentResult<Invoice> {
+        let address = config.require("wallet")?.to_string();
+        if !valid_address(&address) {
+            return Err(PaymentError::NotConfigured(
+                "адрес кошелька TON записан неверно".into(),
+            ));
+        }
+        let currency = request.amount.currency.as_currency().ok_or_else(|| {
+            PaymentError::UnsupportedCurrency(request.amount.currency.code().into())
+        })?;
+        let price = self.price(config, currency).await?;
+        let nano = to_nano(request.amount.minor, price).ok_or_else(|| {
+            PaymentError::Rejected("сумма к оплате должна быть больше нуля".into())
+        })?;
+        let invoice = GramInvoice {
+            comment: comment_for(request.payment_public_id),
+            nano,
+            address,
+            amount: request.amount,
+        };
+        let pay_url = page_url(&request.webhook_url, request.payment_public_id)
+            .unwrap_or_else(|| invoice.tonkeeper_link());
+        Ok(Invoice {
+            pay_url,
+            external_id: Some(invoice.external_id()),
+            expires_at: Some(Utc::now() + request.expires_in),
+            payload: serde_json::json!({
+                "address": invoice.address,
+                "nano": invoice.nano.to_string(),
+                "comment": invoice.comment,
+                "rate_micro": price.to_string(),
+                "currency": currency.code(),
+            }),
+        })
+    }
+
+    async fn parse_webhook(
+        &self,
+        _config: &ProviderConfig,
+        _request: &WebhookRequest,
+    ) -> PaymentResult<WebhookOutcome> {
+        Err(PaymentError::Unsupported(
+            "уведомления: оплата GRAM проверяется в блокчейне",
+        ))
+    }
+
+    async fn fetch_status(
+        &self,
+        config: &ProviderConfig,
+        external_id: &str,
+    ) -> PaymentResult<Option<WebhookOutcome>> {
+        let Some(invoice) = GramInvoice::parse(external_id) else {
+            return Ok(None);
+        };
+        let transactions = match self.transactions(config, &invoice.address).await {
+            Ok(list) => list,
+            Err(err) if err.is_retryable() || matches!(err, PaymentError::Http { status: 429 }) => {
+                tracing::debug!(error = %err, "toncenter не ответил, проверим позже");
+                return Ok(Some(pending(&invoice)));
+            }
+            Err(err) => return Err(err),
+        };
+        let paid = transactions.into_iter().find(|tx| {
+            tx.in_msg.as_ref().is_some_and(|msg| {
+                msg.source.as_deref().is_some_and(|s| !s.trim().is_empty())
+                    && msg
+                        .message
+                        .as_deref()
+                        .is_some_and(|m| m.trim().eq_ignore_ascii_case(&invoice.comment))
+                    && msg
+                        .value
+                        .as_deref()
+                        .and_then(|v| v.trim().parse::<u128>().ok())
+                        .is_some_and(|value| value >= invoice.nano)
+            })
+        });
+        Ok(Some(match paid {
+            Some(tx) => WebhookOutcome {
+                event_key: format!("gram:{}", tx.transaction_id.hash),
+                payment: None,
+                provider_txid: None,
+                status: ProviderStatus::Paid,
+                amount: Some(invoice.amount),
+                saved_method: None,
+                reply: WebhookReply::ok(),
+            },
+            None => pending(&invoice),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{PAYMENT, config, invoice, rub, usd};
+    use serde_json::json;
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const WALLET: &str = "UQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG";
+
+    fn settings(extra: &[(&str, serde_json::Value)]) -> ProviderConfig {
+        let mut pairs = vec![("wallet", json!(WALLET))];
+        pairs.extend(extra.iter().cloned());
+        config(&pairs)
+    }
+
+    async fn rates(server: &MockServer, usd: f64, rub: f64) {
+        Mock::given(method("GET"))
+            .and(path("/v2/rates"))
+            .and(query_param("tokens", "ton"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "rates": {"TON": {"prices": {"USD": usd, "RUB": rub}, "diff_24h": {"USD": "+1%"}}}
+            })))
+            .mount(server)
+            .await;
+    }
+
+    fn tx(hash: &str, source: &str, value: &str, comment: &str) -> serde_json::Value {
+        json!({
+            "@type": "raw.transaction",
+            "utime": 1_763_300_000,
+            "transaction_id": {"@type": "internal.transactionId", "lt": "51000000000001", "hash": hash},
+            "in_msg": {"@type": "raw.message", "source": source, "destination": WALLET, "value": value, "message": comment},
+            "out_msgs": []
+        })
+    }
+
+    #[test]
+    fn граммы_адреса_и_комментарий() {
+        assert_eq!(format_grams(12_470_000_000), "12.47");
+        assert_eq!(format_grams(5_000_000_000), "5");
+        assert_eq!(format_grams(10_000_000), "0.01");
+        assert!(valid_address(WALLET));
+        assert!(valid_address(
+            "0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba403a0f31a8"
+        ));
+        assert!(!valid_address("UQ123"));
+        assert!(!valid_address("0:zz"));
+        let comment = comment_for(PAYMENT);
+        assert_eq!(comment.len(), 11);
+        assert!(comment.starts_with("SN-"));
+        assert_eq!(comment, comment_for(PAYMENT));
+        assert_ne!(comment, comment_for(Uuid::from_u128(1 << 100)));
+        assert_eq!(parse_price("5.25"), Some(5_250_000));
+        assert_eq!(parse_price("410,5"), Some(410_500_000));
+        assert_eq!(parse_price("0"), None);
+        assert_eq!(parse_price("abc"), None);
+        assert_eq!(parse_price("1.1234567"), None);
+        assert_eq!(to_nano(699, 5_250_000), Some(1_340_000_000));
+        assert_eq!(to_nano(500, 5_000_000), Some(1_000_000_000));
+        assert_eq!(to_nano(0, 5_000_000), None);
+        let invoice = GramInvoice {
+            comment: "SN-ABCDEFGH".into(),
+            nano: 1_340_000_000,
+            address: WALLET.into(),
+            amount: usd(699),
+        };
+        assert_eq!(
+            GramInvoice::parse(&invoice.external_id()),
+            Some(invoice.clone())
+        );
+        assert_eq!(GramInvoice::parse("SN-A|1|bad|1|USD"), None);
+        assert_eq!(
+            invoice.ton_link(),
+            format!("ton://transfer/{WALLET}?amount=1340000000&text=SN-ABCDEFGH")
+        );
+        assert!(
+            invoice
+                .tonkeeper_link()
+                .starts_with("https://app.tonkeeper.com/transfer/")
+        );
+    }
+
+    #[tokio::test]
+    async fn счёт_по_курсу_с_округлением_и_своей_страницей() {
+        let server = MockServer::start().await;
+        rates(&server, 5.25, 420.0).await;
+        let provider = Gram::with_endpoints(server.uri(), server.uri(), server.uri());
+        let created = provider
+            .create_invoice(&settings(&[]), &invoice(usd(699), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            created.pay_url,
+            format!("https://panel.example.com/pay/{PAYMENT}")
+        );
+        let parsed = GramInvoice::parse(created.external_id.as_deref().unwrap()).unwrap();
+        assert_eq!(parsed.nano, 1_340_000_000);
+        assert_eq!(parsed.amount, usd(699));
+        assert_eq!(parsed.address, WALLET);
+        assert_eq!(parsed.comment, comment_for(PAYMENT));
+        assert_eq!(created.payload["rate_micro"], "5250000");
+        let rubles = provider
+            .create_invoice(&settings(&[]), &invoice(rub(49_900), None))
+            .await
+            .unwrap();
+        let parsed = GramInvoice::parse(rubles.external_id.as_deref().unwrap()).unwrap();
+        assert_eq!(parsed.nano, 1_190_000_000);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        let mut offline = invoice(usd(699), None);
+        offline.webhook_url = String::new();
+        let created = provider
+            .create_invoice(&settings(&[]), &offline)
+            .await
+            .unwrap();
+        assert!(
+            created
+                .pay_url
+                .starts_with("https://app.tonkeeper.com/transfer/")
+        );
+    }
+
+    #[tokio::test]
+    async fn ручной_курс_и_запасной_источник() {
+        let server = MockServer::start().await;
+        let provider = Gram::with_endpoints(server.uri(), server.uri(), server.uri());
+        let manual = provider
+            .create_invoice(&settings(&[("rate", json!("5"))]), &invoice(usd(500), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            GramInvoice::parse(manual.external_id.as_deref().unwrap())
+                .unwrap()
+                .nano,
+            1_000_000_000
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(matches!(
+            provider
+                .create_invoice(
+                    &settings(&[("rate", json!("-1"))]),
+                    &invoice(usd(500), None)
+                )
+                .await,
+            Err(PaymentError::NotConfigured(_))
+        ));
+        Mock::given(method("GET"))
+            .and(path("/v2/rates"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/simple/price"))
+            .and(query_param("ids", "the-open-network"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"the-open-network": {"usd": 4.0, "rub": 320.0}})),
+            )
+            .mount(&server)
+            .await;
+        let fallback = provider
+            .create_invoice(&settings(&[]), &invoice(usd(500), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            GramInvoice::parse(fallback.external_id.as_deref().unwrap())
+                .unwrap()
+                .nano,
+            1_250_000_000
+        );
+        assert!(
+            Gram::new()
+                .validate_settings(&config(&[("wallet", json!("кошелёк"))]))
+                .is_err()
+        );
+        assert!(Gram::new().validate_settings(&settings(&[])).is_ok());
+        assert!(
+            provider
+                .create_invoice(
+                    &settings(&[("rate", json!(5))]),
+                    &invoice(sn_domain::money::Amount::new(10, PayCurrency::Xtr), None)
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn оплата_находится_по_комментарию_а_недоплата_ждёт() {
+        let server = MockServer::start().await;
+        let provider = Gram::with_endpoints(server.uri(), server.uri(), server.uri());
+        let invoice = GramInvoice {
+            comment: comment_for(PAYMENT),
+            nano: 1_340_000_000,
+            address: WALLET.into(),
+            amount: usd(699),
+        };
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .and(query_param("address", WALLET))
+            .and(header("X-API-Key", "secret-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "result": [
+                    tx("aGFzaDE=", "EQSender", "1340000000", "другой платёж"),
+                    tx("aGFzaDI=", "", "1340000000", &invoice.comment),
+                    tx("aGFzaDM=", "EQSender", "1000000000", &invoice.comment),
+                ]
+            })))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let keyed = settings(&[("toncenter_key", json!("secret-key"))]);
+        let waiting = provider
+            .fetch_status(&keyed, &invoice.external_id())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(waiting.status, ProviderStatus::Pending);
+        assert_eq!(waiting.amount, None);
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "result": [
+                    tx("aGFzaDQ=", "EQSender", "1340000000", &invoice.comment.to_lowercase()),
+                ]
+            })))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let paid = provider
+            .fetch_status(&keyed, &invoice.external_id())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(paid.status, ProviderStatus::Paid);
+        assert_eq!(paid.amount, Some(usd(699)));
+        assert_eq!(paid.event_key, "gram:aGFzaDQ=");
+        assert_eq!(provider.fetch_status(&keyed, "чужой").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn лимит_toncenter_не_ломает_проверку_и_тестовая_сеть() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        let provider = Gram::with_endpoints(server.uri(), server.uri(), server.uri());
+        let invoice = GramInvoice {
+            comment: comment_for(PAYMENT),
+            nano: 1_000_000_000,
+            address: WALLET.into(),
+            amount: rub(10_000),
+        };
+        let outcome = provider
+            .fetch_status(&settings(&[]), &invoice.external_id())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Pending);
+        let real = Gram::new();
+        assert_eq!(real.toncenter(&settings(&[])), TONCENTER);
+        assert_eq!(
+            real.toncenter(&settings(&[("testnet", json!(true))])),
+            TONCENTER_TESTNET
+        );
+        assert!(real.polls_status());
+        assert!(!real.accepts_http_webhooks());
+    }
+}

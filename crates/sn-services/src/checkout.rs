@@ -30,6 +30,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[cfg(test)]
+mod gram_tests;
+#[cfg(test)]
 mod pool_tests;
 #[cfg(test)]
 mod promo_tests;
@@ -39,6 +41,7 @@ pub(crate) mod testkit;
 mod tests;
 
 const POLL_DELAY_SECONDS: i64 = 120;
+const CHAIN_POLL_DELAY_SECONDS: i64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CartRequest {
@@ -1004,7 +1007,7 @@ impl<'a> Checkout<'a> {
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty());
         let external = provider.kind() == ProviderKind::External;
-        if external && public_url.is_none() {
+        if external && public_url.is_none() && !provider.polls_status() {
             return Err(ServiceError::rejected(
                 "config.public_url",
                 "Не задан внешний адрес панели: платёжная система не сможет прислать уведомление",
@@ -1036,13 +1039,18 @@ impl<'a> Checkout<'a> {
         modules
             .order_created(&ctx, &mut tx, &created, &payment)
             .await?;
-        if external && provider.accepts_http_webhooks() {
+        if external && (provider.accepts_http_webhooks() || provider.polls_status()) {
+            let delay = if provider.polls_status() {
+                CHAIN_POLL_DELAY_SECONDS
+            } else {
+                POLL_DELAY_SECONDS
+            };
             tx.jobs()
                 .enqueue(
                     &JobPayload::PollPayment {
                         payment_id: payment.id,
                     },
-                    Some(now + Duration::seconds(POLL_DELAY_SECONDS)),
+                    Some(now + Duration::seconds(delay)),
                 )
                 .await?;
         }
