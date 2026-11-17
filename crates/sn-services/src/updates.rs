@@ -600,6 +600,7 @@ pub struct SystemView {
 pub struct SummaryView {
     pub version: String,
     pub commit: Option<String>,
+    pub built_at: Option<DateTime<Utc>>,
     pub update: Option<LatestView>,
 }
 
@@ -780,6 +781,7 @@ impl<'a> Updates<'a> {
         Ok(SummaryView {
             version: config.build.version,
             commit: config.build.commit,
+            built_at: config.build.built_at,
             update,
         })
     }

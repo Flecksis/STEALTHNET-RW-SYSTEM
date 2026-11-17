@@ -6,6 +6,7 @@ import { useMedia, usePhone } from '../lib/media';
 import { readStored, writeStored, type Theme } from '../lib/theme';
 import { isCurrent, navItems, type NavItem } from './nav';
 import { ROLE_LABEL, useSession } from './session';
+import { VersionLine, type BuildSummary } from './version';
 import './shell.css';
 
 const PIN_KEY = 'sn.admin.pinned';
@@ -14,9 +15,11 @@ type Props = {
   theme: Theme;
   onFlipTheme: () => void;
   supportBadge?: number;
-  updateDot?: boolean;
+  build?: BuildSummary | null;
   children: ReactNode;
 };
+
+type MenuProps = { items: NavItem[]; path: string; theme: Theme; onFlipTheme: () => void; build: BuildSummary | null };
 
 const UPDATE_LABEL = 'вышла новая сборка';
 
@@ -55,8 +58,8 @@ function ThemeLabel(theme: Theme): string {
   return theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
 }
 
-function Rail({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: string; theme: Theme; onFlipTheme: () => void }) {
-  const { me, logout } = useSession();
+function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
+  const { me, logout, can } = useSession();
   const [pinned, setPinned] = useState(() => readStored(PIN_KEY) === '1');
   const [whoOpen, setWhoOpen] = useState(false);
   const whoRef = useOutside(whoOpen, () => setWhoOpen(false));
@@ -105,23 +108,26 @@ function Rail({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: str
           </span>
           <span className="lbl">Закрепить меню</span>
         </button>
-        <button
-          type="button"
-          className="rail-who"
-          aria-expanded={whoOpen}
-          aria-label="Профиль администратора"
-          onClick={() => setWhoOpen((v) => !v)}
-        >
-          <span className="avatar" aria-hidden="true">
-            {initial(me.email)}
-          </span>
-          <span className="lbl">
-            <span className="who-name" title={me.email ?? undefined}>
-              {me.email ?? 'Администратор'}
+        <div className="rail-acct">
+          <button
+            type="button"
+            className="rail-who"
+            aria-expanded={whoOpen}
+            aria-label="Профиль администратора"
+            onClick={() => setWhoOpen((v) => !v)}
+          >
+            <span className="avatar" aria-hidden="true">
+              {initial(me.email)}
             </span>
-            <span className="who-role">{ROLE_LABEL[me.admin.role]}</span>
-          </span>
-        </button>
+            <span className="lbl">
+              <span className="who-name" title={me.email ?? undefined}>
+                {me.email ?? 'Администратор'}
+              </span>
+              <span className="who-role">{ROLE_LABEL[me.admin.role]}</span>
+            </span>
+          </button>
+          <VersionLine build={build} prefix="версия" className="lbl rail-ver" canOpen={can('settings')} />
+        </div>
       </nav>
       {whoOpen ? (
         <div className="profile-menu rail-pop" ref={whoRef}>
@@ -135,14 +141,15 @@ function Rail({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: str
             <Icon name="logout" size={18} />
             Выйти
           </button>
+          <VersionLine build={build} prefix="STEALTHNET" className="profile-ver" canOpen={can('settings')} onOpen={() => setWhoOpen(false)} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: string; theme: Theme; onFlipTheme: () => void }) {
-  const { me, logout } = useSession();
+function TopBar({ items, path, theme, onFlipTheme, build }: MenuProps) {
+  const { me, logout, can } = useSession();
   const [moreOpen, setMoreOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const moreRef = useOutside(moreOpen, () => setMoreOpen(false));
@@ -229,6 +236,7 @@ function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: s
                   <Icon name="logout" size={18} />
                   Выйти
                 </button>
+                <VersionLine build={build} prefix="STEALTHNET" className="profile-ver" canOpen={can('settings')} onOpen={() => setProfileOpen(false)} />
               </div>
             ) : null}
           </div>
@@ -240,8 +248,8 @@ function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: s
 
 const PHONE_TABS = ['home', 'clients', 'support', 'money'];
 
-function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: string; theme: Theme; onFlipTheme: () => void }) {
-  const { me, logout } = useSession();
+function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
+  const { me, logout, can } = useSession();
   const [open, setOpen] = useState(false);
   const location = useLocation();
   useEffect(() => {
@@ -293,6 +301,7 @@ function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path:
                 Выйти
               </button>
             </div>
+            <VersionLine build={build} prefix="Версия" className="psheet-ver" canOpen={can('settings')} onOpen={() => setOpen(false)} />
           </div>
         </div>
       ) : null}
@@ -330,27 +339,27 @@ function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path:
   );
 }
 
-export function Shell({ theme, onFlipTheme, supportBadge, updateDot, children }: Props) {
+export function Shell({ theme, onFlipTheme, supportBadge, build = null, children }: Props) {
   const { me, can } = useSession();
   const location = useLocation();
   const narrow = useMedia('(max-width: 760px)');
   const phone = usePhone();
   const layout = narrow ? 'top' : me.appearance.admin;
-  const items = navItems(me, can, supportBadge, updateDot);
+  const items = navItems(me, can, supportBadge, !!build?.update);
   if (phone) {
     return (
       <div className="adm" data-layout="phone">
         <main className="page">{children}</main>
-        <PhoneNav items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} />
+        <PhoneNav items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} build={build} />
       </div>
     );
   }
   return (
     <div className="adm" data-layout={layout}>
       {layout === 'side' ? (
-        <Rail items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} />
+        <Rail items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} build={build} />
       ) : (
-        <TopBar items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} />
+        <TopBar items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} build={build} />
       )}
       <main className="page">{children}</main>
     </div>

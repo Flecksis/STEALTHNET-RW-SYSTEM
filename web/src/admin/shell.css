@@ -935,3 +935,48 @@
   right: -3px;
   margin: 0;
 }
+
+.rail-acct {
+  display: flex;
+  flex-direction: column;
+}
+
+.rail .rail-ver {
+  display: block;
+  padding: 0 4px 2px 56px;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: normal;
+  color: var(--muted);
+}
+
+.rail .rail-ver.ver-new,
+.profile-menu .profile-ver.ver-new,
+.psheet .psheet-ver.ver-new {
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+
+.profile-menu .profile-ver {
+  display: block;
+  margin-top: 4px;
+  padding: 8px 10px 4px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.psheet .psheet-ver {
+  display: block;
+  padding: 0 16px 12px;
+  background: var(--fill);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.profile-menu.rail-pop {
+  top: auto;
+  right: auto;
+}

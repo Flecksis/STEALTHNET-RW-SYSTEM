@@ -29,6 +29,7 @@ import { SettingsDocuments } from './pages/SettingsDocuments';
 import { SettingsUpdates } from './pages/SettingsUpdates';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
+import type { BuildSummary } from './version';
 
 const THEME_KEY = 'sn.admin.theme';
 
@@ -67,7 +68,7 @@ export function AdminApp() {
   }, [load]);
 
   const [supportBadge, setSupportBadge] = useState(0);
-  const [updateDot, setUpdateDot] = useState(false);
+  const [build, setBuild] = useState<BuildSummary | null>(null);
   const signedIn = state.kind === 'in';
   useEffect(() => {
     if (!signedIn) {
@@ -86,16 +87,16 @@ export function AdminApp() {
     };
   }, [signedIn]);
 
-  const owner = state.kind === 'in' && state.me.admin.role === 'owner';
+  const adminId = state.kind === 'in' ? state.me.admin.admin_id : null;
   useEffect(() => {
-    if (!owner) {
-      setUpdateDot(false);
+    if (adminId === null) {
+      setBuild(null);
       return;
     }
     let alive = true;
     const tick = () =>
-      api<{ update: unknown }>('/api/admin/system/summary')
-        .then((s) => alive && setUpdateDot(!!s.update))
+      api<BuildSummary>('/api/admin/system/summary')
+        .then((s) => alive && setBuild(s))
         .catch(() => undefined);
     void tick();
     const timer = window.setInterval(tick, 15 * 60_000);
@@ -103,7 +104,7 @@ export function AdminApp() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [owner]);
+  }, [adminId]);
 
   const appearance: Appearance = state.kind === 'in' ? state.me.appearance : (site ?? DEFAULT_SITE).appearance;
   const canSettings = state.kind === 'in' && state.me.permissions.includes('settings');
@@ -176,7 +177,7 @@ export function AdminApp() {
 
   return (
     <SessionContext.Provider value={session}>
-      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge} updateDot={updateDot}>
+      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge} build={build}>
         <Routes>
           <Route index element={<Home />} />
           <Route path="clients" element={<Clients />} />

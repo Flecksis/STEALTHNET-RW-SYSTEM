@@ -122,6 +122,8 @@ async fn обновление_из_админки_заявка_пароль_от
     assert_eq!(body["can_update"], false);
     let (_, summary) = http.get("/api/admin/system/summary", &support).await;
     assert_eq!(summary["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(summary["commit"], OLD);
+    assert_eq!(summary["built_at"], "2026-11-16T10:00:00Z");
     assert_eq!(summary["update"], Value::Null);
     let (_, summary) = http.get("/api/admin/system/summary", &owner).await;
     assert_eq!(summary["update"]["commit"], NEW);
