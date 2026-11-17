@@ -246,6 +246,10 @@ pub trait Db: Send {
     fn bot_state(&mut self) -> BotStateRepo<'_> {
         BotStateRepo::new(self.conn())
     }
+
+    fn client_photos(&mut self) -> ClientPhotosRepo<'_> {
+        ClientPhotosRepo::new(self.conn())
+    }
 }
 
 impl Db for Conn {

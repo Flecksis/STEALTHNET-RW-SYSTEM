@@ -5,6 +5,7 @@ mod delivery;
 mod infra;
 mod money;
 mod overview;
+pub(crate) mod photos;
 #[cfg(test)]
 mod review_tests;
 mod settings;
@@ -23,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .merge(auth::routes())
         .merge(overview::routes())
         .merge(clients::routes())
+        .merge(photos::routes())
         .merge(money::routes())
         .merge(stars::routes())
         .merge(delivery::routes())

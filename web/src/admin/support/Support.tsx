@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { avatarColor, dateLong, dateNumeric, days, daysLeft, groupDigits, initials, money, NBSP, timeHM, traffic, trafficPair } from '../../lib/format';
+import { dateLong, dateNumeric, days, daysLeft, groupDigits, money, NBSP, timeHM, traffic, trafficPair } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { useSession } from '../session';
 import { planTitle } from '../client/SubscriptionBlock';
@@ -9,6 +9,7 @@ import { emailOf, liveSubscriptions, nextReset, personName, platformName, seenTe
 import type { ClientCard, Device, SubscriptionDetails } from '../client/types';
 import { minutesSince, spanText } from '../home/model';
 import './support.css';
+import { Avatar } from '../Avatar';
 
 type Filter = 'waiting' | 'answered' | 'closed';
 
@@ -255,9 +256,7 @@ export function Support() {
               const preview = item.preview ? `${item.last_author === 'support' ? 'Вы: ' : ''}${item.preview}` : '';
               return (
                 <button key={item.ticket.id} type="button" className="sp-item" aria-pressed={item.ticket.id === selected} onClick={() => pick(item.ticket.id)}>
-                  <span className="sp-ava" aria-hidden="true" style={{ background: avatarColor(item.ticket.client_id) }}>
-                    {initials(name)}
-                  </span>
+                  <Avatar id={item.ticket.client_id} name={name} className="sp-ava" />
                   <span className="sp-item-main">
                     <span className="sp-item-top">
                       <strong className="sp-ell">{name}</strong>
@@ -543,9 +542,7 @@ function ClientAside({ clientId }: { clientId: number }) {
   return (
     <aside className="sp-sec sp-aside" aria-label="Клиент">
       <div className="sp-person">
-        <span className="sp-ava big" aria-hidden="true" style={{ background: avatarColor(card.client.id) }}>
-          {initials(name)}
-        </span>
+        <Avatar id={card.client.id} name={name} className="sp-ava big" retry />
         <span className="sp-col" style={{ minWidth: 0 }}>
           <strong style={{ fontSize: 16 }}>{name}</strong>
           <span className="muted" style={{ overflowWrap: 'anywhere' }}>

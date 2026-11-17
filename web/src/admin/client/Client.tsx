@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { avatarColor, count, dateLong, days, daysLeft, initials, money, type Money } from '../../lib/format';
+import { count, dateLong, days, daysLeft, money, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { usePhone } from '../../lib/media';
 import { useSession } from '../session';
@@ -13,6 +13,7 @@ import { emailOf, liveSubscriptions, nextReset, personName, seenText, sinceText,
 import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
 import './client.css';
+import { Avatar } from '../Avatar';
 
 const FIRST_PAGE = 5;
 const MORE_PAGE = 20;
@@ -307,9 +308,7 @@ function ClientDesktop() {
       </Link>
 
       <header className="cc-head">
-        <span className="cc-ava" aria-hidden="true" style={{ background: avatarColor(card.client.id) }}>
-          {initials(name)}
-        </span>
+        <Avatar id={card.client.id} name={name} className="cc-ava" retry />
         <div className="cc-who">
           <div className="cc-titlerow">
             <h1 className="cc-name">{name}</h1>

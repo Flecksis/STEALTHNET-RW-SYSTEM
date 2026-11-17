@@ -1,23 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import {
-  avatarColor,
-  dateNumeric,
-  dayMonthNumeric,
-  days,
-  daysLeft,
-  groupDigits,
-  initials,
-  money,
-  NBSP,
-  periodLabel,
-} from '../../lib/format';
+import { dateNumeric, dayMonthNumeric, days, daysLeft, groupDigits, money, NBSP, periodLabel } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { Dialog } from '../client/dialogs';
 import { useSession } from '../session';
 import { displayName, STATUS_WORD, type ClientRow, type Segment, type SegmentCounts } from './types';
 import './clients.css';
+import { Avatar } from '../Avatar';
 
 const SEGMENTS: Array<[Segment, string, keyof SegmentCounts]> = [
   ['all', 'Все', 'total'],
@@ -83,9 +73,7 @@ export function PickClient({ onClose }: { onClose: () => void }) {
             const handle = row.telegram_username ? `@${row.telegram_username}` : (row.email ?? (row.telegram_id ? `Telegram ${row.telegram_id}` : ''));
             return (
               <button key={row.client.id} type="button" className="pick-row hov" onClick={() => navigate(`/admin/clients/${row.client.id}?grant=1`)}>
-                <span className="av" aria-hidden="true" style={{ background: avatarColor(row.client.id) }}>
-                  {initials(name)}
-                </span>
+                <Avatar id={row.client.id} name={name} className="av" />
                 <span className="two">
                   <span className="main">{name}</span>
                   <span className="sub">
@@ -405,9 +393,7 @@ export function Clients() {
                     {writable ? <input type="checkbox" aria-label={`Выбрать: ${view.name}`} checked={on} onChange={() => toggle(row.client.id)} /> : null}
                   </span>
                   <div role="cell" className="cl-who">
-                    <span className="av" aria-hidden="true" style={{ background: avatarColor(row.client.id) }}>
-                      {initials(view.name)}
-                    </span>
+                    <Avatar id={row.client.id} name={view.name} className="av" />
                     <span className="two">
                       <Link to={`/admin/clients/${row.client.id}`} className="main" title={view.name}>
                         {view.name}

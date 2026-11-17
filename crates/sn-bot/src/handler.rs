@@ -279,9 +279,16 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
             "Аккаунт заблокирован. Напишите в поддержку.",
         )));
     }
+    let mut conn = services.store().conn().await?;
     if client.bot_unreachable {
-        let mut conn = services.store().conn().await?;
         conn.clients().set_bot_unreachable(client.id, false).await?;
+    }
+    if let Err(err) = conn
+        .client_photos()
+        .request_if_stale(client.id, crate::photos::REFRESH_AFTER)
+        .await
+    {
+        tracing::debug!(error = %err, "запрос фото клиента не сохранён");
     }
     Ok(Gate::Ready(client))
 }

@@ -203,6 +203,7 @@ function Header() {
   const { me, logout } = useCabinet();
   const location = useLocation();
   const [open, setOpen] = useState(false);
+  const [photo, setPhoto] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) {
@@ -237,6 +238,7 @@ function Header() {
           <div className="cb-prof" ref={ref}>
             <button type="button" className="cb-ava" aria-label="Профиль" aria-expanded={open} onClick={() => setOpen((v) => !v)} style={{ background: avatarColor(me.client.id) }}>
               <Icon name="user" size={20} />
+              {photo ? <img className="cb-ava-img" src="/api/client/photo" alt="" decoding="async" onError={() => setPhoto(false)} /> : null}
             </button>
             {open ? (
               <div className="cb-pop" role="menu">

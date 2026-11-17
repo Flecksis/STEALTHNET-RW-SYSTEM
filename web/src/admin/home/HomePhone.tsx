@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api } from '../../lib/api';
-import { avatarColor, count, dateLong, groupDigits, initials, money, type Money } from '../../lib/format';
+import { count, dateLong, groupDigits, money, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { PhoneHeader } from '../phone';
@@ -9,6 +9,7 @@ import { useSession } from '../session';
 import { useOverview } from './Home';
 import { agoLong, minutesSince, orderLine, personName, spanText, type PaymentItem, type TicketItem } from './model';
 import './phone.css';
+import { Avatar } from '../Avatar';
 
 type Withdrawal = { id: number; amount: Money; status: string; created_at: string };
 
@@ -237,9 +238,7 @@ export function HomePhone() {
                       : { text: 'Не прошла', tone: 'bad' };
               return (
                 <Link key={p.id} to={`/admin/clients/${p.client_id}`} className="hp-pay press">
-                  <span className="hp-ava" aria-hidden="true" style={{ background: avatarColor(p.client_id) }}>
-                    {initials(name)}
-                  </span>
+                  <Avatar id={p.client_id} name={name} className="hp-ava" />
                   <span className="hp-pay-body">
                     <span className="hp-pay-top">
                       <span className="hp-title hp-ell">{name}</span>

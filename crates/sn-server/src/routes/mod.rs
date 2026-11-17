@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod client;
+mod client_photo;
 pub mod system;
 pub mod webhooks;
 
@@ -70,7 +71,10 @@ pub fn router(state: AppState) -> Router {
         .merge(system::routes())
         .merge(webhooks::routes())
         .nest("/api/admin", admin::routes())
-        .nest("/api/client", client::routes())
+        .nest(
+            "/api/client",
+            client::routes().merge(client_photo::routes()),
+        )
         .nest_service("/api/admin/m", admin_modules)
         .nest_service("/api/client/m", client_modules)
         .fallback(crate::web::fallback)

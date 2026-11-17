@@ -131,6 +131,14 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         background.push(tokio::spawn(worker(services.clone()).run(cancel.clone())));
     }
     if config.run_bot {
+        background.push(tokio::spawn(
+            sn_bot::photos::PhotoKeeper::new(
+                services.clone(),
+                sn_bot::telegram::DEFAULT_API,
+                sn_bot::photos::ROUND_EVERY,
+            )
+            .run(cancel.clone()),
+        ));
         let bot = Bot::new(services.clone(), BotConfig::default());
         let token = cancel.clone();
         background.push(tokio::spawn(async move {

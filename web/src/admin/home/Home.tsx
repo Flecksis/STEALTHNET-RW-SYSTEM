@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api } from '../../lib/api';
-import { avatarColor, count, dateLong, groupDigits, initials, money, NBSP, plural } from '../../lib/format';
+import { count, dateLong, groupDigits, money, NBSP, plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { useMedia, usePhone } from '../../lib/media';
 import { HomePhone } from './HomePhone';
@@ -31,6 +31,7 @@ import {
   type TicketItem,
 } from './model';
 import './home.css';
+import { Avatar } from '../Avatar';
 
 export function useOverview() {
   const { can } = useSession();
@@ -145,9 +146,7 @@ function Bars({ values }: { values: number[] }) {
 function FeedAvatar({ line, item }: { line: FeedLine; item: FeedItem }) {
   if (line.icon === 'person' && item.client_id) {
     return (
-      <span className="hm-ava" aria-hidden="true" style={{ background: avatarColor(item.client_id) }}>
-        {initials(line.who)}
-      </span>
+      <Avatar id={item.client_id} name={line.who} className="hm-ava" />
     );
   }
   const icon = line.icon === 'server' ? 'server' : line.icon === 'wallet' ? 'card' : 'users';
@@ -484,9 +483,7 @@ function Daylight() {
               const tone = minutes >= 120 ? 'var(--bad)' : minutes >= 30 ? 'var(--warn)' : 'var(--muted)';
               return (
                 <Link key={t.ticket.id} to={`/admin/support?ticket=${t.ticket.id}`} className="hm-link-row">
-                  <span className="hm-ava big" aria-hidden="true" style={{ background: avatarColor(t.ticket.client_id) }}>
-                    {initials(name)}
-                  </span>
+                  <Avatar id={t.ticket.client_id} name={name} className="hm-ava big" />
                   <span className="hm-text">
                     <span style={{ fontWeight: 600 }}>{name}</span>
                     <span className="hm-note" style={{ color: 'var(--ink-2)', fontSize: 15 }}>
@@ -521,9 +518,7 @@ function Daylight() {
                       : { text: 'не прошла', color: 'var(--bad)' };
               return (
                 <Link key={p.id} to={`/admin/clients/${p.client_id}`} className="hm-link-row tight">
-                  <span className="hm-ava mid" aria-hidden="true" style={{ background: avatarColor(p.client_id) }}>
-                    {initials(name)}
-                  </span>
+                  <Avatar id={p.client_id} name={name} className="hm-ava mid" />
                   <span className="hm-text">
                     <span style={{ fontWeight: 600 }}>{name}</span>
                     <span className="hm-note" style={{ color: 'var(--muted)' }}>

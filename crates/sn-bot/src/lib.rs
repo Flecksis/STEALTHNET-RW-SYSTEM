@@ -5,6 +5,7 @@ mod extras;
 pub mod handler;
 pub mod login;
 pub mod notify;
+pub mod photos;
 pub mod session;
 pub mod stars;
 pub mod telegram;

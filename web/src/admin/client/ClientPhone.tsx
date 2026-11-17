@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { avatarColor, count, dateLong, days, daysLeft, initials, money, NBSP, traffic, trafficPair } from '../../lib/format';
+import { count, dateLong, days, daysLeft, money, NBSP, traffic, trafficPair } from '../../lib/format';
 import { Icon, type IconName } from '../../lib/icons';
 import type { Subscription } from '../clients/types';
 import { PhoneHeader } from '../phone';
@@ -13,6 +13,7 @@ import { planTitle } from './SubscriptionBlock';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
 import '../home/phone.css';
 import './phone.css';
+import { Avatar } from '../Avatar';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
@@ -505,9 +506,7 @@ export function ClientPhone() {
       <PhoneHeader title="Клиент" back={{ to: '/admin/clients', label: 'Назад' }} center />
 
       <div className="pc-who">
-        <span className="pc-ava" aria-hidden="true" style={{ background: avatarColor(card.client.id) }}>
-          {initials(name)}
-        </span>
+        <Avatar id={card.client.id} name={name} className="pc-ava" retry />
         <span className="pc-who-text">
           <h1 className="pc-name">{name}</h1>
           {subline ? <span className="pc-muted">{subline}</span> : null}
