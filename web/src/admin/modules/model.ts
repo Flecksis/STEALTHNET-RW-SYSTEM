@@ -1,3 +1,5 @@
+import type { SettingField } from '../SchemaFields';
+
 export type ModuleGroup = 'sales' | 'marketing' | 'support' | 'protocols' | 'protection' | 'accounting' | 'site' | 'rare';
 
 export type ModuleInfo = {
@@ -22,17 +24,6 @@ export type ModuleView = {
 };
 
 export type ModulesData = { modules: ModuleView[]; core: string[] };
-
-export type FieldKind = { type: 'text' | 'secret' | 'number' | 'flag' | 'url' } | { type: 'select'; options: string[] };
-
-export type SettingField = {
-  key: string;
-  label: string;
-  hint: string;
-  kind: FieldKind;
-  required: boolean;
-  default: string | null;
-};
 
 export type ModuleConfig = {
   module: string;

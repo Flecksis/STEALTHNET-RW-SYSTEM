@@ -508,7 +508,7 @@
   padding: 0 16px;
 }
 
-.btn-main[aria-disabled='true'] {
+.sq-actions .btn-main[aria-disabled='true'] {
   opacity: 0.5;
   cursor: default;
   filter: none;

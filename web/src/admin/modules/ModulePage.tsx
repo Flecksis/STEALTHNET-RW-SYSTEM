@@ -2,44 +2,25 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { useSession } from '../session';
+import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import { Switch } from '../ui';
-import type { ModuleConfig, ModulesData, ModuleView, SettingField } from './model';
+import type { ModuleConfig, ModulesData, ModuleView } from './model';
 import '../form.css';
 import './modules.css';
-
-type Values = Record<string, string | boolean>;
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-function initial(field: SettingField, config: Record<string, unknown>): string | boolean {
-  const stored = config[field.key];
-  if (field.kind.type === 'secret') {
-    return '';
-  }
-  if (field.kind.type === 'flag') {
-    return typeof stored === 'boolean' ? stored : field.default === 'true';
-  }
-  if (stored === null || stored === undefined) {
-    return field.default ?? '';
-  }
-  return String(stored);
-}
-
-function secretFilled(config: Record<string, unknown>, key: string): boolean {
-  const value = config[key];
-  return typeof value === 'object' && value !== null && (value as { filled?: boolean }).filled === true;
-}
+const NO_SECRETS: SecretState = { clear: [], replacing: [] };
 
 export function ModulePage() {
   const { id = '' } = useParams();
   const { reload } = useSession();
   const [view, setView] = useState<ModuleView | null>(null);
   const [cfg, setCfg] = useState<ModuleConfig | null>(null);
-  const [values, setValues] = useState<Values>({});
-  const [clear, setClear] = useState<string[]>([]);
-  const [replacing, setReplacing] = useState<string[]>([]);
+  const [values, setValues] = useState<FieldValues>({});
+  const [secrets, setSecrets] = useState<SecretState>(NO_SECRETS);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -47,9 +28,8 @@ export function ModulePage() {
 
   const apply = (next: ModuleConfig) => {
     setCfg(next);
-    setValues(Object.fromEntries(next.schema.map((f) => [f.key, initial(f, next.config)])));
-    setClear([]);
-    setReplacing([]);
+    setValues(initialValues(next.schema, next.config));
+    setSecrets(NO_SECRETS);
   };
 
   const load = useCallback(async () => {
@@ -93,21 +73,13 @@ export function ModulePage() {
     if (!cfg) {
       return;
     }
-    const config: Record<string, unknown> = {};
-    for (const field of cfg.schema) {
-      const value = values[field.key];
-      const before = initial(field, cfg.config);
-      if (field.kind.type === 'secret') {
-        if (typeof value === 'string' && value.trim()) {
-          config[field.key] = value.trim();
-        }
-        continue;
-      }
-      if (value === before) {
-        continue;
-      }
-      config[field.key] = field.kind.type === 'number' && value === '' ? null : value;
+    const lacking = missingRequired(cfg.schema, cfg.config, values, secrets);
+    if (lacking.length) {
+      setError(`Заполните: ${lacking.map((f) => f.label).join(', ')}`);
+      return;
     }
+    const config = changedConfig(cfg.schema, cfg.config, values);
+    const clear = secrets.clear;
     setBusy(true);
     setError(null);
     setNote(null);
@@ -152,8 +124,6 @@ export function ModulePage() {
     );
   }
 
-  const set = (key: string, value: string | boolean) => setValues({ ...values, [key]: value });
-
   return (
     <div className="md-page">
       <Link to="/admin/modules" className="md-back">
@@ -186,93 +156,7 @@ export function ModulePage() {
           <h2 id="md-form-h" className="section-title">
             Настройки
           </h2>
-          {cfg.schema.map((field) => {
-            const value = values[field.key];
-            const hintId = field.hint ? `hint-${field.key}` : undefined;
-            if (field.kind.type === 'flag') {
-              return (
-                <div key={field.key} className="md-flag">
-                  <span className="md-text">
-                    <span className="md-name">{field.label}</span>
-                    {field.hint ? (
-                      <span id={hintId} className="cap">
-                        {field.hint}
-                      </span>
-                    ) : null}
-                  </span>
-                  <Switch on={value === true} onToggle={() => set(field.key, value !== true)} label={field.label} describedBy={hintId} disabled={busy} />
-                </div>
-              );
-            }
-            if (field.kind.type === 'secret') {
-              const filled = secretFilled(cfg.config, field.key) && !clear.includes(field.key);
-              const editing = !filled || replacing.includes(field.key);
-              return (
-                <div key={field.key} className="md-field">
-                  <span>{field.label}</span>
-                  {editing ? (
-                    <input
-                      className="field mono"
-                      type="password"
-                      autoComplete="off"
-                      value={typeof value === 'string' ? value : ''}
-                      onChange={(e) => set(field.key, e.target.value)}
-                      aria-label={field.label}
-                      aria-describedby={hintId}
-                      placeholder={filled ? 'Новое значение' : 'Вставьте значение'}
-                      disabled={busy}
-                    />
-                  ) : (
-                    <span className="md-secret">
-                      <span className="muted">Сохранено</span>
-                      <button type="button" className="b34 hov" onClick={() => setReplacing([...replacing, field.key])} disabled={busy}>
-                        Заменить
-                      </button>
-                      {!field.required ? (
-                        <button type="button" className="b34 hov" onClick={() => setClear([...clear, field.key])} disabled={busy}>
-                          Удалить
-                        </button>
-                      ) : null}
-                    </span>
-                  )}
-                  {field.hint ? (
-                    <span id={hintId} className="cap">
-                      {field.hint}
-                    </span>
-                  ) : null}
-                </div>
-              );
-            }
-            return (
-              <label key={field.key} className="md-field">
-                <span>{field.label}</span>
-                {field.kind.type === 'select' ? (
-                  <select className="field" value={String(value ?? '')} onChange={(e) => set(field.key, e.target.value)} aria-describedby={hintId} disabled={busy}>
-                    {field.kind.options.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    className="field"
-                    type={field.kind.type === 'url' ? 'url' : 'text'}
-                    inputMode={field.kind.type === 'number' ? 'decimal' : undefined}
-                    value={String(value ?? '')}
-                    onChange={(e) => set(field.key, e.target.value)}
-                    aria-describedby={hintId}
-                    disabled={busy}
-                  />
-                )}
-                {field.hint ? (
-                  <span id={hintId} className="cap">
-                    {field.hint}
-                  </span>
-                ) : null}
-              </label>
-            );
-          })}
+          <SchemaFields schema={cfg.schema} config={cfg.config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`mod-${id}`} />
           {error ? (
             <p className="err" role="alert">
               {error}

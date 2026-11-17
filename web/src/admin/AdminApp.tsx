@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Route, Routes } from 'react-router';
+import { Navigate, Route, Routes } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
@@ -19,6 +19,7 @@ import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
 import { SettingsRemna } from './pages/SettingsRemna';
+import { SettingsPayments } from './pages/SettingsPayments';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
 
@@ -161,6 +162,8 @@ export function AdminApp() {
           <Route path="m/:module/*" element={<Pending title="Модуль" />} />
           <Route path="settings/look" element={<SettingsLook />} />
           <Route path="settings/remnawave" element={<SettingsRemna />} />
+          <Route path="settings/payments" element={<SettingsPayments />} />
+          <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
           <Route
             path="settings/*"
             element={

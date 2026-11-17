@@ -203,36 +203,6 @@
   padding: 18px 20px 20px;
 }
 
-.md-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: 480px;
-}
-
-.md-field > span:first-child {
-  font-weight: 700;
-}
-
-.md-flag {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  max-width: 480px;
-}
-
-.md-secret {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.md-secret .field {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 .md-actions {
   display: flex;
   flex-wrap: wrap;
