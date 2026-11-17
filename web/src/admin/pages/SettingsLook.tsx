@@ -104,10 +104,59 @@ function Segs<T extends string>({ label, value, options, onPick }: SegsProps<T>)
   );
 }
 
-type LogoInfo = { url: string; content_type: string; width: number; height: number; size: number };
+type ImageInfo = { url: string; content_type: string; width: number; height: number; size: number };
 
-const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-const LOGO_MAX = 1024 * 1024;
+type SiteImages = {
+  title: string | null;
+  brand_name: string;
+  logo: ImageInfo | null;
+  favicon: ImageInfo | null;
+};
+
+type Slot = {
+  kind: 'logo' | 'favicon';
+  title: string;
+  sub: string;
+  types: string[];
+  max: number;
+  accept: string;
+  hint: string;
+  tooHeavy: string;
+  wrongType: string;
+  failed: string;
+  done: string;
+  removed: string;
+};
+
+const LOGO_SLOT: Slot = {
+  kind: 'logo',
+  title: 'Логотип',
+  sub: 'В меню админки, в кабинете, мини-приложении и на сайте',
+  types: ['image/png', 'image/jpeg', 'image/webp'],
+  max: 1024 * 1024,
+  accept: 'image/png,image/jpeg,image/webp',
+  hint: 'PNG, JPEG или WebP до 1\u00a0МБ. Лучше квадрат от 256×256 с прозрачным фоном. Меняется сразу, без кнопки «Сохранить»',
+  tooHeavy: 'Файл больше 1\u00a0МБ: уменьшите картинку',
+  wrongType: 'Подходят только PNG, JPEG и WebP',
+  failed: 'Логотип не загрузился',
+  done: 'Логотип обновлён',
+  removed: 'Логотип убран, вместо него снова первая буква названия',
+};
+
+const FAVICON_SLOT: Slot = {
+  kind: 'favicon',
+  title: 'Значок во вкладке браузера',
+  sub: 'Фавикон: виден во вкладке, в закладках и на экране телефона, если сайт добавят туда',
+  types: ['image/png', 'image/x-icon', 'image/vnd.microsoft.icon'],
+  max: 512 * 1024,
+  accept: 'image/png,image/x-icon,image/vnd.microsoft.icon,.ico',
+  hint: 'PNG или ICO, квадрат от 16×16 до 1024×1024, до 512\u00a0КБ. Лучше PNG 512×512: он же пойдёт на экран телефона. Меняется сразу',
+  tooHeavy: 'Файл больше 512\u00a0КБ: уменьшите значок',
+  wrongType: 'Подходят только PNG и ICO',
+  failed: 'Значок не загрузился',
+  done: 'Значок обновлён',
+  removed: 'Свой значок убран',
+};
 
 function weight(size: number): string {
   if (size >= 1024 * 1024) {
@@ -116,41 +165,78 @@ function weight(size: number): string {
   return `${Math.max(1, Math.round(size / 1024))}\u00a0КБ`;
 }
 
-function LogoCard() {
-  const { me, reload } = useSession();
-  const [logo, setLogo] = useState<LogoInfo | null | undefined>(undefined);
+function fileType(file: File): string {
+  if (file.type) {
+    return file.type;
+  }
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.ico')) {
+    return 'image/x-icon';
+  }
+  if (name.endsWith('.png')) {
+    return 'image/png';
+  }
+  return '';
+}
+
+function tabIcon(images: SiteImages | null | undefined): { url: string; type: string } {
+  if (images?.favicon) {
+    return { url: images.favicon.url, type: images.favicon.content_type };
+  }
+  if (images?.logo) {
+    return { url: images.logo.url, type: images.logo.content_type };
+  }
+  return { url: '/api/public/icon.svg', type: 'image/svg+xml' };
+}
+
+function applyTabIcon(icon: { url: string; type: string }) {
+  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.type = icon.type;
+  link.href = icon.url;
+}
+
+type CardProps = {
+  slot: Slot;
+  info: ImageInfo | null | undefined;
+  current: string;
+  preview: React.ReactNode;
+  onChange: (next: ImageInfo | null) => Promise<void>;
+};
+
+function ImageCard({ slot, info, current, preview, onChange }: CardProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const input = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    api<{ logo: LogoInfo | null }>('/api/admin/settings/site')
-      .then((site) => setLogo(site.logo))
-      .catch(() => setLogo(null));
-  }, []);
+  const id = `${slot.kind}-h`;
 
   const send = async (file: File | undefined) => {
     if (!file) {
       return;
     }
     setNote('');
-    if (!LOGO_TYPES.includes(file.type)) {
-      setError('Подходят только PNG, JPEG и WebP');
+    const type = fileType(file);
+    if (!slot.types.includes(type)) {
+      setError(slot.wrongType);
       return;
     }
-    if (file.size > LOGO_MAX) {
-      setError('Файл больше 1\u00a0МБ: уменьшите картинку');
+    if (file.size > slot.max) {
+      setError(slot.tooHeavy);
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      setLogo(await upload<LogoInfo>('/api/admin/settings/logo', file));
-      await reload();
-      setNote('Логотип обновлён');
+      const next = await upload<ImageInfo>(`/api/admin/settings/${slot.kind}`, new Blob([file], { type }));
+      await onChange(next);
+      setNote(slot.done);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Логотип не загрузился');
+      setError(err instanceof ApiError ? err.message : slot.failed);
     } finally {
       setBusy(false);
       if (input.current) {
@@ -164,54 +250,42 @@ function LogoCard() {
     setError(null);
     setNote('');
     try {
-      await api('/api/admin/settings/logo', { method: 'DELETE' });
-      setLogo(null);
-      await reload();
-      setNote('Логотип убран, вместо него снова первая буква названия');
+      await api(`/api/admin/settings/${slot.kind}`, { method: 'DELETE' });
+      await onChange(null);
+      setNote(slot.removed);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Логотип не убрался');
+      setError(err instanceof ApiError ? err.message : 'Не получилось убрать');
     } finally {
       setBusy(false);
     }
   };
 
-  const url = logo?.url ?? null;
-  const name = me.brand_name.toUpperCase();
   return (
-    <section aria-labelledby="logo-h" className="card">
+    <section aria-labelledby={id} className="card">
       <div className="card-pad lg">
         <div className="head-stack">
-          <h2 id="logo-h" className="section-title">
-            Логотип
+          <h2 id={id} className="section-title">
+            {slot.title}
           </h2>
-          <span className="muted">В меню админки, в кабинете, мини-приложении, на сайте и во вкладке браузера</span>
+          <span className="muted">{slot.sub}</span>
         </div>
         <div className="lg-row">
           <span className="lg-previews" aria-hidden="true">
-            <span className="lg-pv dark">
-              <BrandMark name={me.brand_name} logo={url} className="mark" />
-              <span>{name}</span>
-            </span>
-            <span className="lg-pv light">
-              <BrandMark name={me.brand_name} logo={url} className="mark" />
-              <span>{name}</span>
-            </span>
+            {preview}
           </span>
           <span className="lg-side">
             <span className="lg-btns">
-              <button type="button" className="btn-line hov" onClick={() => input.current?.click()} disabled={busy || logo === undefined}>
-                {busy ? 'Загружаем…' : url ? 'Заменить' : 'Загрузить'}
+              <button type="button" className="btn-line hov" onClick={() => input.current?.click()} disabled={busy || info === undefined}>
+                {busy ? 'Загружаем…' : info ? 'Заменить' : 'Загрузить'}
               </button>
-              {url ? (
+              {info ? (
                 <button type="button" className="btn-line hov" onClick={() => void remove()} disabled={busy}>
                   Убрать
                 </button>
               ) : null}
             </span>
-            <span className="cap">
-              {logo ? `Сейчас: ${logo.width}×${logo.height}, ${weight(logo.size)}` : 'Сейчас вместо логотипа первая буква названия'}
-            </span>
-            <span className="cap">PNG, JPEG или WebP до 1&nbsp;МБ. Лучше квадрат от 256×256 с прозрачным фоном. Меняется сразу, без кнопки «Сохранить»</span>
+            <span className="cap">{current}</span>
+            <span className="cap">{slot.hint}</span>
             {error ? (
               <span role="alert" className="err">
                 {error}
@@ -223,9 +297,86 @@ function LogoCard() {
             )}
           </span>
         </div>
-        <input ref={input} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => void send(e.target.files?.[0])} />
+        <input ref={input} type="file" accept={slot.accept} hidden onChange={(e) => void send(e.target.files?.[0])} />
       </div>
     </section>
+  );
+}
+
+function TabPreview({ theme, icon, title }: { theme: PreviewTheme; icon: string; title: string }) {
+  return (
+    <span className={`fv-pv ${theme}`}>
+      <span className="fv-tab">
+        <img src={icon} alt="" width={16} height={16} draggable={false} />
+        <span className="fv-title">{title}</span>
+        <span className="fv-x">×</span>
+      </span>
+    </span>
+  );
+}
+
+function BrandCards() {
+  const { me, reload } = useSession();
+  const [images, setImages] = useState<SiteImages | null | undefined>(undefined);
+
+  useEffect(() => {
+    api<SiteImages>('/api/admin/settings/site')
+      .then(setImages)
+      .catch(() => setImages(null));
+  }, []);
+
+  const change = async (patch: Partial<SiteImages>) => {
+    const next = { ...(images ?? { title: null, brand_name: me.brand_name, logo: null, favicon: null }), ...patch };
+    setImages(next);
+    applyTabIcon(tabIcon(next));
+    await reload();
+  };
+
+  const logo = images?.logo ?? null;
+  const favicon = images?.favicon ?? null;
+  const name = me.brand_name.toUpperCase();
+  const tab = tabIcon(images);
+  const tabTitle = images?.title || me.brand_name;
+  const loading = images === undefined ? undefined : null;
+  return (
+    <>
+      <ImageCard
+        slot={LOGO_SLOT}
+        info={logo ?? loading}
+        current={logo ? `Сейчас: ${logo.width}×${logo.height}, ${weight(logo.size)}` : 'Сейчас вместо логотипа первая буква названия'}
+        onChange={(next) => change({ logo: next })}
+        preview={
+          <>
+            <span className="lg-pv dark">
+              <BrandMark name={me.brand_name} logo={logo?.url} className="mark" />
+              <span>{name}</span>
+            </span>
+            <span className="lg-pv light">
+              <BrandMark name={me.brand_name} logo={logo?.url} className="mark" />
+              <span>{name}</span>
+            </span>
+          </>
+        }
+      />
+      <ImageCard
+        slot={FAVICON_SLOT}
+        info={favicon ?? loading}
+        current={
+          favicon
+            ? `Сейчас: свой значок ${favicon.width}×${favicon.height}, ${favicon.content_type === 'image/png' ? 'PNG' : 'ICO'}, ${weight(favicon.size)}`
+            : logo
+              ? 'Сейчас своего значка нет — во вкладке логотип'
+              : 'Сейчас своего значка нет — во вкладке первая буква названия'
+        }
+        onChange={(next) => change({ favicon: next })}
+        preview={
+          <>
+            <TabPreview theme="dark" icon={tab.url} title={tabTitle} />
+            <TabPreview theme="light" icon={tab.url} title={tabTitle} />
+          </>
+        }
+      />
+    </>
   );
 }
 
@@ -274,7 +425,7 @@ export function SettingsLook() {
 
   return (
     <SettingsLayout>
-      <LogoCard />
+      <BrandCards />
       <section aria-label="Админка" className="card">
         <div className="card-pad" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="head-stack">

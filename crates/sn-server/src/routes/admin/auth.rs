@@ -176,7 +176,7 @@ async fn me(
         "menu": state.services.modules().menu(),
         "currency": settings.currency,
         "brand_name": settings.brand_name,
-        "logo_url": settings.logo.as_ref().map(|logo| logo.path()),
+        "logo_url": settings.logo_url(),
         "appearance": settings.appearance,
     })))
 }

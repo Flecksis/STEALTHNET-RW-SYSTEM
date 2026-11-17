@@ -6,11 +6,13 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use sn_domain::settings::SiteImage;
 use sn_services::branding::brand_initial;
 use sn_store::Db;
 
-const LOGO_CACHE: &str = "public, max-age=31536000, immutable";
+const IMAGE_CACHE: &str = "public, max-age=31536000, immutable";
 const ICON_CACHE: &str = "public, max-age=300";
+const TAB_ICON_CACHE: &str = "public, max-age=3600";
 const IMAGE_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
 
 pub fn routes() -> Router<AppState> {
@@ -20,7 +22,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/site", get(site))
         .route("/api/public/catalog", get(catalog))
         .route("/api/public/logo/{file}", get(logo))
+        .route("/api/public/favicon/{file}", get(favicon))
         .route("/api/public/icon.svg", get(icon))
+        .route("/favicon.ico", get(favicon_ico))
 }
 
 async fn catalog(State(state): State<AppState>) -> Response {
@@ -49,7 +53,7 @@ async fn site(State(state): State<AppState>) -> Response {
     Json(serde_json::json!({
         "brand_name": settings.brand_name,
         "title": settings.site.title.as_deref().unwrap_or(&settings.brand_name),
-        "logo_url": settings.logo.as_ref().map(|logo| logo.path()),
+        "logo_url": settings.logo_url(),
         "currency": settings.currency,
         "support_url": settings.support_url,
         "bot_username": bot_username,
@@ -61,15 +65,15 @@ async fn site(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
-async fn logo(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+async fn image_file(state: &AppState, image: SiteImage, file: &str) -> Response {
     let Some((tag, extension)) = file.split_once('.') else {
         return ApiError::not_found().into_response();
     };
-    match state.services.branding().logo(tag).await {
+    match state.services.branding().file(image, tag).await {
         Ok(Some((kind, bytes))) if kind.extension() == extension => (
             [
                 (header::CONTENT_TYPE, kind.content_type()),
-                (header::CACHE_CONTROL, LOGO_CACHE),
+                (header::CACHE_CONTROL, IMAGE_CACHE),
                 (header::CONTENT_SECURITY_POLICY, IMAGE_POLICY),
             ],
             bytes,
@@ -80,7 +84,35 @@ async fn logo(State(state): State<AppState>, Path(file): Path<String>) -> Respon
     }
 }
 
+async fn logo(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    image_file(&state, SiteImage::Logo, &file).await
+}
+
+async fn favicon(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    image_file(&state, SiteImage::Favicon, &file).await
+}
+
+async fn favicon_ico(State(state): State<AppState>) -> Response {
+    match state.services.branding().tab_icon_file().await {
+        Ok(Some((kind, bytes))) => (
+            [
+                (header::CONTENT_TYPE, kind.content_type()),
+                (header::CACHE_CONTROL, TAB_ICON_CACHE),
+                (header::CONTENT_SECURITY_POLICY, IMAGE_POLICY),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(None) => mark(&state, TAB_ICON_CACHE),
+        Err(err) => ApiError::from(err).into_response(),
+    }
+}
+
 async fn icon(State(state): State<AppState>) -> Response {
+    mark(&state, ICON_CACHE)
+}
+
+fn mark(state: &AppState, cache: &'static str) -> Response {
     let letter = escape_html(&brand_initial(&state.services.settings().brand_name));
     let svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\">\
@@ -91,7 +123,7 @@ async fn icon(State(state): State<AppState>) -> Response {
     (
         [
             (header::CONTENT_TYPE, "image/svg+xml"),
-            (header::CACHE_CONTROL, ICON_CACHE),
+            (header::CACHE_CONTROL, cache),
             (header::CONTENT_SECURITY_POLICY, IMAGE_POLICY),
         ],
         svg,

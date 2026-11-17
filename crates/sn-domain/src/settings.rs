@@ -1,5 +1,5 @@
 use crate::ids::SquadId;
-use crate::image::ImageKind;
+use crate::image::{FAVICON_RULES, ImageKind, ImageRules, LOGO_RULES};
 use crate::money::{Currency, Money};
 use crate::payment::providers;
 use crate::pricing::TopUpLimits;
@@ -299,8 +299,37 @@ impl Default for SiteSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteImage {
+    Logo,
+    Favicon,
+}
+
+impl SiteImage {
+    pub fn name(self) -> &'static str {
+        match self {
+            SiteImage::Logo => "logo",
+            SiteImage::Favicon => "favicon",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            SiteImage::Logo => keys::LOGO,
+            SiteImage::Favicon => keys::FAVICON,
+        }
+    }
+
+    pub fn rules(self) -> &'static ImageRules {
+        match self {
+            SiteImage::Logo => &LOGO_RULES,
+            SiteImage::Favicon => &FAVICON_RULES,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LogoMeta {
+pub struct ImageMeta {
     pub tag: String,
     pub kind: ImageKind,
     pub width: u32,
@@ -308,9 +337,14 @@ pub struct LogoMeta {
     pub size: u32,
 }
 
-impl LogoMeta {
-    pub fn path(&self) -> String {
-        format!("/api/public/logo/{}.{}", self.tag, self.kind.extension())
+impl ImageMeta {
+    pub fn path(&self, image: SiteImage) -> String {
+        format!(
+            "/api/public/{}/{}.{}",
+            image.name(),
+            self.tag,
+            self.kind.extension()
+        )
     }
 }
 
@@ -333,7 +367,9 @@ pub struct CoreSettings {
     #[serde(default)]
     pub site: SiteSettings,
     #[serde(default)]
-    pub logo: Option<LogoMeta>,
+    pub logo: Option<ImageMeta>,
+    #[serde(default)]
+    pub favicon: Option<ImageMeta>,
 }
 
 impl Default for CoreSettings {
@@ -353,7 +389,21 @@ impl Default for CoreSettings {
             connect: ConnectSettings::default(),
             site: SiteSettings::default(),
             logo: None,
+            favicon: None,
         }
+    }
+}
+
+impl CoreSettings {
+    pub fn image(&self, image: SiteImage) -> Option<&ImageMeta> {
+        match image {
+            SiteImage::Logo => self.logo.as_ref(),
+            SiteImage::Favicon => self.favicon.as_ref(),
+        }
+    }
+
+    pub fn logo_url(&self) -> Option<String> {
+        self.logo.as_ref().map(|logo| logo.path(SiteImage::Logo))
     }
 }
 
@@ -388,6 +438,7 @@ pub mod keys {
     pub const BOT_USERNAME: &str = "bot.username";
     pub const SITE: &str = "core.site";
     pub const LOGO: &str = "core.logo";
+    pub const FAVICON: &str = "core.favicon";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")

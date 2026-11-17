@@ -6,14 +6,15 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sn_domain::ids::AdminId;
 use sn_domain::image::{self, ImageKind, ImageProblem};
-use sn_domain::settings::{LogoMeta, SITE_DESCRIPTION_MAX, SITE_TITLE_MAX, keys};
+use sn_domain::settings::{
+    CoreSettings, ImageMeta, SITE_DESCRIPTION_MAX, SITE_TITLE_MAX, SiteImage, keys,
+};
 use sn_store::{Db, SiteAsset};
 
-pub const LOGO_ASSET: &str = "logo";
 const TAG_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct LogoView {
+pub struct ImageView {
     pub url: String,
     pub content_type: &'static str,
     pub width: u32,
@@ -21,10 +22,10 @@ pub struct LogoView {
     pub size: u32,
 }
 
-impl LogoView {
-    pub fn of(meta: &LogoMeta) -> Self {
-        LogoView {
-            url: meta.path(),
+impl ImageView {
+    pub fn of(meta: &ImageMeta, image: SiteImage) -> Self {
+        ImageView {
+            url: meta.path(image),
             content_type: meta.kind.content_type(),
             width: meta.width,
             height: meta.height,
@@ -40,7 +41,8 @@ pub struct SiteView {
     pub indexing: bool,
     pub brand_name: String,
     pub public_url: Option<String>,
-    pub logo: Option<LogoView>,
+    pub logo: Option<ImageView>,
+    pub favicon: Option<ImageView>,
     pub title_max: usize,
     pub description_max: usize,
 }
@@ -53,6 +55,38 @@ pub struct SiteUpdate {
     pub description: Option<String>,
     #[serde(default)]
     pub indexing: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabIcon<'a> {
+    Image(SiteImage, &'a ImageMeta),
+    Mark,
+}
+
+pub fn tab_icon(settings: &CoreSettings) -> TabIcon<'_> {
+    if let Some(favicon) = &settings.favicon {
+        TabIcon::Image(SiteImage::Favicon, favicon)
+    } else if let Some(logo) = &settings.logo {
+        TabIcon::Image(SiteImage::Logo, logo)
+    } else {
+        TabIcon::Mark
+    }
+}
+
+pub fn touch_icon(settings: &CoreSettings) -> Option<String> {
+    let usable = |meta: &&ImageMeta| matches!(meta.kind, ImageKind::Png | ImageKind::Jpeg);
+    settings
+        .favicon
+        .as_ref()
+        .filter(usable)
+        .map(|meta| meta.path(SiteImage::Favicon))
+        .or_else(|| {
+            settings
+                .logo
+                .as_ref()
+                .filter(usable)
+                .map(|meta| meta.path(SiteImage::Logo))
+        })
 }
 
 pub fn brand_initial(name: &str) -> String {
@@ -78,27 +112,58 @@ fn field_error(field: &str, reason: &str) -> ServiceError {
     )
 }
 
-fn problem(problem: ImageProblem) -> ServiceError {
-    match problem {
-        ImageProblem::Empty => ServiceError::rejected("logo.empty", "Файл пустой"),
-        ImageProblem::TooHeavy => {
-            ServiceError::rejected("logo.too_heavy", "Файл больше 1 МБ: уменьшите картинку")
-        }
-        ImageProblem::Format => {
-            ServiceError::rejected("logo.format", "Подходят только PNG, JPEG и WebP")
-        }
-        ImageProblem::Damaged => ServiceError::rejected(
+fn problem(image: SiteImage, problem: ImageProblem) -> ServiceError {
+    let rules = image.rules();
+    let (logo, favicon, message) = match problem {
+        ImageProblem::Empty => ("logo.empty", "favicon.empty", "Файл пустой".to_string()),
+        ImageProblem::TooHeavy => (
+            "logo.too_heavy",
+            "favicon.too_heavy",
+            match image {
+                SiteImage::Logo => "Файл больше 1 МБ: уменьшите картинку".to_string(),
+                SiteImage::Favicon => "Файл больше 512 КБ: уменьшите значок".to_string(),
+            },
+        ),
+        ImageProblem::Format => (
+            "logo.format",
+            "favicon.format",
+            match image {
+                SiteImage::Logo => "Подходят только PNG, JPEG и WebP".to_string(),
+                SiteImage::Favicon => "Подходят только PNG и ICO".to_string(),
+            },
+        ),
+        ImageProblem::Damaged => (
             "logo.damaged",
-            "Картинка повреждена или сохранена не до конца",
+            "favicon.damaged",
+            "Картинка повреждена или сохранена не до конца".to_string(),
         ),
-        ImageProblem::TooSmall => ServiceError::rejected(
+        ImageProblem::TooSmall => (
             "logo.too_small",
-            format!("Картинка меньше {0}×{0} точек", image::LOGO_MIN_SIDE),
+            "favicon.too_small",
+            format!("Картинка меньше {0}×{0} точек", rules.min_side),
         ),
-        ImageProblem::TooLarge => ServiceError::rejected(
+        ImageProblem::TooLarge => (
             "logo.too_large",
-            format!("Картинка больше {} точек по стороне", image::LOGO_MAX_SIDE),
+            "favicon.too_large",
+            format!("Картинка больше {} точек по стороне", rules.max_side),
         ),
+        ImageProblem::NotSquare => (
+            "logo.not_square",
+            "favicon.not_square",
+            "Значок должен быть квадратным: ширина равна высоте".to_string(),
+        ),
+    };
+    let code = match image {
+        SiteImage::Logo => logo,
+        SiteImage::Favicon => favicon,
+    };
+    ServiceError::rejected(code, message)
+}
+
+fn audit_action(image: SiteImage) -> &'static str {
+    match image {
+        SiteImage::Logo => "settings.logo",
+        SiteImage::Favicon => "settings.favicon",
     }
 }
 
@@ -124,7 +189,14 @@ impl<'a> BrandingOps<'a> {
             indexing: settings.site.indexing,
             brand_name: settings.brand_name.clone(),
             public_url: settings.public_url.clone(),
-            logo: settings.logo.as_ref().map(LogoView::of),
+            logo: settings
+                .logo
+                .as_ref()
+                .map(|meta| ImageView::of(meta, SiteImage::Logo)),
+            favicon: settings
+                .favicon
+                .as_ref()
+                .map(|meta| ImageView::of(meta, SiteImage::Favicon)),
             title_max: SITE_TITLE_MAX,
             description_max: SITE_DESCRIPTION_MAX,
         }
@@ -182,10 +254,15 @@ impl<'a> BrandingOps<'a> {
         Ok(self.site())
     }
 
-    pub async fn upload_logo(&self, bytes: &[u8], admin: AdminId) -> ServiceResult<LogoView> {
-        let info = image::check_logo(bytes).map_err(problem)?;
+    pub async fn upload(
+        &self,
+        image: SiteImage,
+        bytes: &[u8],
+        admin: AdminId,
+    ) -> ServiceResult<ImageView> {
+        let info = image::check(bytes, image.rules()).map_err(|reason| problem(image, reason))?;
         let digest = hex::encode(Sha256::digest(bytes));
-        let meta = LogoMeta {
+        let meta = ImageMeta {
             tag: digest[..TAG_LEN].to_string(),
             kind: info.kind,
             width: info.width,
@@ -199,12 +276,14 @@ impl<'a> BrandingOps<'a> {
         };
         let mut tx = self.services.store().begin().await?;
         tx.site_assets()
-            .put(LOGO_ASSET, &asset, Some(admin))
+            .put(image.name(), &asset, Some(admin))
             .await?;
-        tx.settings().set_as(keys::LOGO, &meta, Some(admin)).await?;
+        tx.settings()
+            .set_as(image.key(), &meta, Some(admin))
+            .await?;
         tx.audit()
             .record(&Actor::Admin(admin).audit(
-                "settings.logo",
+                audit_action(image),
                 "settings",
                 None,
                 json!({
@@ -219,20 +298,20 @@ impl<'a> BrandingOps<'a> {
             .await?;
         tx.commit().await?;
         self.saved().await?;
-        Ok(LogoView::of(&meta))
+        Ok(ImageView::of(&meta, image))
     }
 
-    pub async fn delete_logo(&self, admin: AdminId) -> ServiceResult<bool> {
+    pub async fn remove(&self, image: SiteImage, admin: AdminId) -> ServiceResult<bool> {
         let mut tx = self.services.store().begin().await?;
-        let removed = tx.site_assets().delete(LOGO_ASSET).await?;
-        let cleared = tx.settings().delete(keys::LOGO).await?;
+        let removed = tx.site_assets().delete(image.name()).await?;
+        let cleared = tx.settings().delete(image.key()).await?;
         if !(removed || cleared) {
             tx.commit().await?;
             return Ok(false);
         }
         tx.audit()
             .record(&Actor::Admin(admin).audit(
-                "settings.logo",
+                audit_action(image),
                 "settings",
                 None,
                 json!({ "action": "removed" }),
@@ -243,18 +322,30 @@ impl<'a> BrandingOps<'a> {
         Ok(true)
     }
 
-    pub async fn logo(&self, tag: &str) -> ServiceResult<Option<(ImageKind, Vec<u8>)>> {
-        let Some(meta) = self.services.settings().logo.clone() else {
+    pub async fn file(
+        &self,
+        image: SiteImage,
+        tag: &str,
+    ) -> ServiceResult<Option<(ImageKind, Vec<u8>)>> {
+        let Some(meta) = self.services.settings().image(image).cloned() else {
             return Ok(None);
         };
         if meta.tag != tag {
             return Ok(None);
         }
         let mut conn = self.services.store().conn().await?;
-        let asset = conn.site_assets().get(LOGO_ASSET).await?;
+        let asset = conn.site_assets().get(image.name()).await?;
         Ok(asset
             .filter(|asset| asset.sha256.starts_with(&meta.tag))
             .map(|asset| (meta.kind, asset.bytes)))
+    }
+
+    pub async fn tab_icon_file(&self) -> ServiceResult<Option<(ImageKind, Vec<u8>)>> {
+        let settings = self.services.settings();
+        match tab_icon(&settings) {
+            TabIcon::Image(image, meta) => self.file(image, &meta.tag).await,
+            TabIcon::Mark => Ok(None),
+        }
     }
 }
 
@@ -274,5 +365,47 @@ mod tests {
     fn тексты_сайта_без_переносов_и_служебных_символов() {
         assert_eq!(clean_text("  VPN\n\tдля\u{0} всех  "), "VPN для всех");
         assert_eq!(clean_text("   "), "");
+    }
+
+    fn meta(kind: ImageKind, tag: &str) -> ImageMeta {
+        ImageMeta {
+            tag: tag.into(),
+            kind,
+            width: 256,
+            height: 256,
+            size: 1000,
+        }
+    }
+
+    #[test]
+    fn значок_вкладки_фавикон_потом_логотип_потом_знак() {
+        let mut settings = CoreSettings::default();
+        assert_eq!(tab_icon(&settings), TabIcon::Mark);
+        assert_eq!(touch_icon(&settings), None);
+        settings.logo = Some(meta(ImageKind::Webp, "aaaa"));
+        assert!(matches!(
+            tab_icon(&settings),
+            TabIcon::Image(SiteImage::Logo, _)
+        ));
+        assert_eq!(touch_icon(&settings), None);
+        settings.logo = Some(meta(ImageKind::Png, "bbbb"));
+        assert_eq!(
+            touch_icon(&settings).as_deref(),
+            Some("/api/public/logo/bbbb.png")
+        );
+        settings.favicon = Some(meta(ImageKind::Ico, "cccc"));
+        assert!(matches!(
+            tab_icon(&settings),
+            TabIcon::Image(SiteImage::Favicon, _)
+        ));
+        assert_eq!(
+            touch_icon(&settings).as_deref(),
+            Some("/api/public/logo/bbbb.png")
+        );
+        settings.favicon = Some(meta(ImageKind::Png, "dddd"));
+        assert_eq!(
+            touch_icon(&settings).as_deref(),
+            Some("/api/public/favicon/dddd.png")
+        );
     }
 }

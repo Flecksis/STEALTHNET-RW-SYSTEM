@@ -10,7 +10,7 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::Currency;
 use sn_domain::payment::providers;
 use sn_domain::settings::{
-    Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, LogoMeta,
+    Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, ImageMeta,
     PaymentOrder, SettingField, SiteSettings, TopUpSettings, TrialSettings, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
@@ -108,7 +108,8 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                     settings.site = v;
                 }
             }
-            keys::LOGO => settings.logo = parse::<LogoMeta>(&key, value),
+            keys::LOGO => settings.logo = parse::<ImageMeta>(&key, value),
+            keys::FAVICON => settings.favicon = parse::<ImageMeta>(&key, value),
             _ => {}
         }
     }

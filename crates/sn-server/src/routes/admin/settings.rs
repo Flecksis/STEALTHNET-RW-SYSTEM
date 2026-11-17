@@ -10,9 +10,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::module::ModuleId;
+use sn_domain::settings::SiteImage;
 use sn_domain::settings::{Appearance, AutoRenewSettings, ConnectSettings, TrialSettings};
 use sn_modules::ModuleView;
-use sn_services::branding::{LogoView, SiteUpdate};
+use sn_services::branding::{ImageView, SiteUpdate};
 use sn_services::settings::{
     BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
     ProviderUpdate, RemnaCheck, RemnaCheckRequest, RemnaUpdate, SubscriptionSettingsUpdate,
@@ -27,7 +28,13 @@ pub fn routes() -> Router<AppState> {
             "/settings/logo",
             post(upload_logo)
                 .delete(delete_logo)
-                .layer(DefaultBodyLimit::max(LOGO_UPLOAD_LIMIT)),
+                .layer(DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT)),
+        )
+        .route(
+            "/settings/favicon",
+            post(upload_favicon)
+                .delete(delete_favicon)
+                .layer(DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT)),
         )
         .route("/settings/remnawave/check", post(check_remnawave))
         .route("/settings/remnawave/webhook-secret", post(webhook_secret))
@@ -143,15 +150,75 @@ async fn restart_bot(
     ))
 }
 
-const LOGO_UPLOAD_LIMIT: usize = 4 * 1024 * 1024;
+const IMAGE_UPLOAD_LIMIT: usize = 4 * 1024 * 1024;
 
-fn image_type(headers: &HeaderMap) -> bool {
+fn declared_type(headers: &HeaderMap) -> String {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
         .map(|value| value.trim().to_ascii_lowercase())
-        .is_some_and(|value| matches!(value.as_str(), "image/png" | "image/jpeg" | "image/webp"))
+        .unwrap_or_default()
+}
+
+fn accepted(image: SiteImage, headers: &HeaderMap) -> Result<(), ApiError> {
+    let declared = declared_type(headers);
+    let (fits, code, message) = match image {
+        SiteImage::Logo => (
+            matches!(declared.as_str(), "image/png" | "image/jpeg" | "image/webp"),
+            "logo.format",
+            "Подходят только PNG, JPEG и WebP",
+        ),
+        SiteImage::Favicon => (
+            matches!(
+                declared.as_str(),
+                "image/png" | "image/x-icon" | "image/vnd.microsoft.icon"
+            ),
+            "favicon.format",
+            "Подходят только PNG и ICO",
+        ),
+    };
+    if fits {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            code,
+            message,
+        ))
+    }
+}
+
+async fn upload_image(
+    image: SiteImage,
+    admin: CurrentAdmin,
+    state: AppState,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Json<ImageView>> {
+    admin.require(Permission::Settings)?;
+    accepted(image, &headers)?;
+    Ok(Json(
+        state
+            .services
+            .branding()
+            .upload(image, &body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn remove_image(
+    image: SiteImage,
+    admin: CurrentAdmin,
+    state: AppState,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    let removed = state
+        .services
+        .branding()
+        .remove(image, admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
 }
 
 async fn upload_logo(
@@ -159,35 +226,31 @@ async fn upload_logo(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
-) -> ApiResult<Json<LogoView>> {
-    admin.require(Permission::Settings)?;
-    if !image_type(&headers) {
-        return Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "logo.format",
-            "Подходят только PNG, JPEG и WebP",
-        ));
-    }
-    Ok(Json(
-        state
-            .services
-            .branding()
-            .upload_logo(&body, admin.0.admin_id)
-            .await?,
-    ))
+) -> ApiResult<Json<ImageView>> {
+    upload_image(SiteImage::Logo, admin, state, headers, body).await
 }
 
 async fn delete_logo(
     admin: CurrentAdmin,
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    admin.require(Permission::Settings)?;
-    let removed = state
-        .services
-        .branding()
-        .delete_logo(admin.0.admin_id)
-        .await?;
-    Ok(Json(serde_json::json!({ "removed": removed })))
+    remove_image(SiteImage::Logo, admin, state).await
+}
+
+async fn upload_favicon(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Json<ImageView>> {
+    upload_image(SiteImage::Favicon, admin, state, headers, body).await
+}
+
+async fn delete_favicon(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    remove_image(SiteImage::Favicon, admin, state).await
 }
 
 async fn webhook_env(

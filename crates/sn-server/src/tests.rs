@@ -3030,7 +3030,9 @@ async fn описание_сайта_настраивается_и_попада�
         )
     );
     assert!(page.contains("<meta property=\"og:url\" content=\"https://vpn.example/\">"));
-    assert!(page.contains("<link rel=\"icon\" href=\"/api/public/icon.svg\">"));
+    assert!(
+        page.contains("<link rel=\"icon\" type=\"image/svg+xml\" href=\"/api/public/icon.svg\">")
+    );
     assert!(!page.contains("canonical"));
     let (status, _) = h
         .write(
@@ -3060,6 +3062,166 @@ async fn описание_сайта_настраивается_и_попада�
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
     assert!(icon.contains(">S</text>"));
+    std::fs::remove_dir_all(dir).unwrap();
+    h.db.cleanup().await;
+}
+
+fn favicon_ico(side: u8) -> Vec<u8> {
+    let mut dib = 40u32.to_le_bytes().to_vec();
+    dib.resize(40 + usize::from(side) * usize::from(side) * 4, 0);
+    let mut bytes = vec![0, 0, 1, 0, 1, 0, side, side, 0, 0, 1, 0, 32, 0];
+    bytes.extend_from_slice(&u32::try_from(dib.len()).unwrap().to_le_bytes());
+    bytes.extend_from_slice(&22u32.to_le_bytes());
+    bytes.extend_from_slice(&dib);
+    bytes
+}
+
+async fn upload_favicon(
+    h: &Http,
+    token: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/admin/settings/favicon")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(bytes))
+        .unwrap();
+    let response = router(h.state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+#[tokio::test]
+async fn фавикон_загружается_отдельно_и_подменяет_логотип_во_вкладке() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+
+    let (status, headers, body) = raw(&h.state, "/favicon.ico").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
+    assert_eq!(headers[header::CACHE_CONTROL], "public, max-age=3600");
+    assert!(String::from_utf8_lossy(&body).contains(">S</text>"));
+
+    let (status, _) = upload_favicon(&h, &support, "image/x-icon", favicon_ico(32)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = upload_favicon(&h, &owner, "image/jpeg", favicon_ico(32)).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+    assert_eq!(body["error"]["code"], "favicon.format");
+    let (status, body) = upload_favicon(&h, &owner, "image/png", logo_png(64, 32, 1)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "favicon.not_square");
+    let (status, body) = upload_favicon(&h, &owner, "image/png", logo_png(8, 8, 1)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "favicon.too_small");
+    let mut heavy = logo_png(256, 256, 1);
+    heavy.resize(sn_domain::image::FAVICON_MAX_BYTES + 1, 0);
+    let (status, body) = upload_favicon(&h, &owner, "image/png", heavy).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "favicon.too_heavy");
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_vec();
+    let (status, body) = upload_favicon(&h, &owner, "image/png", svg).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "favicon.format");
+
+    let logo = logo_png(256, 256, 3);
+    let (status, logo_view) = upload_logo(&h, &owner, "image/png", logo.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{logo_view}");
+    let (status, headers, body) = raw(&h.state, "/favicon.ico").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+    assert_eq!(body, logo);
+
+    let icon = favicon_ico(32);
+    let (status, view) = upload_favicon(&h, &owner, "image/vnd.microsoft.icon", icon.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    let url = view["url"].as_str().unwrap().to_string();
+    assert!(
+        url.starts_with("/api/public/favicon/") && url.ends_with(".ico"),
+        "{url}"
+    );
+    assert_eq!(view["width"], 32);
+    assert_eq!(view["content_type"], "image/x-icon");
+    let (status, headers, body) = raw(&h.state, &url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/x-icon");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(body, icon);
+    let (_, _, body) = raw(&h.state, "/favicon.ico").await;
+    assert_eq!(body, icon);
+    let (status, site) = h.get("/api/admin/settings/site", &owner).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(site["favicon"]["url"], url.as_str());
+    assert_eq!(site["logo"]["url"], logo_view["url"]);
+
+    let dir = std::env::temp_dir().join(format!("sn-web-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><html><head><title>STEALTHNET</title></head><body></body></html>",
+    )
+    .unwrap();
+    let state = AppState {
+        config: Arc::new(ServerConfig {
+            web_dir: Some(dir.clone()),
+            ..ServerConfig::default()
+        }),
+        services: h.state.services.clone(),
+    };
+    for path in ["/", "/cabinet", "/app", "/admin/clients"] {
+        let (_, _, page) = fetch(&state, Method::GET, path).await;
+        assert!(
+            page.contains(&format!(
+                "<link rel=\"icon\" type=\"image/x-icon\" href=\"{url}\">"
+            )),
+            "{path}: {page}"
+        );
+        assert!(
+            page.contains(&format!(
+                "<link rel=\"apple-touch-icon\" href=\"{}\">",
+                logo_view["url"].as_str().unwrap()
+            )),
+            "{path}: {page}"
+        );
+    }
+
+    let png_icon = logo_png(180, 180, 9);
+    let (status, replaced) = upload_favicon(&h, &owner, "image/png", png_icon.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    let next = replaced["url"].as_str().unwrap().to_string();
+    let (status, _, _) = raw(&h.state, &url).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, _, page) = fetch(&state, Method::GET, "/admin").await;
+    assert!(page.contains(&format!("<link rel=\"apple-touch-icon\" href=\"{next}\">")));
+
+    let (status, body) = h
+        .write(
+            Method::DELETE,
+            "/api/admin/settings/favicon",
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["removed"], true);
+    let (_, _, body) = raw(&h.state, "/favicon.ico").await;
+    assert_eq!(body, logo);
+    let (status, _, _) = raw(&h.state, &next).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let marks = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.audit()
+            .recent_by_action("settings.favicon", 10)
+            .await
+            .unwrap()
+    };
+    assert_eq!(marks.len(), 3);
     std::fs::remove_dir_all(dir).unwrap();
     h.db.cleanup().await;
 }

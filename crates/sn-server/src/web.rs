@@ -5,6 +5,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use sn_domain::settings::CoreSettings;
+use sn_services::branding::{TabIcon, tab_icon, touch_icon};
 use std::path::Path;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
@@ -87,24 +88,28 @@ fn head(settings: &CoreSettings, page: Page) -> String {
         .public_url
         .as_deref()
         .map(|url| url.trim_end_matches('/'));
-    let logo = settings.logo.as_ref().map(|logo| logo.path());
+    let logo = settings.logo_url();
     let description = settings.site.description.as_deref();
+    let (icon, icon_type) = match tab_icon(settings) {
+        TabIcon::Image(image, meta) => (meta.path(image), meta.kind.content_type()),
+        TabIcon::Mark => (ICON.to_string(), "image/svg+xml"),
+    };
     let mut tags = vec![
         format!("<title>{}</title>", escape_html(&title)),
         format!("<meta name=\"robots\" content=\"{robots}\">"),
         format!(
-            "<link rel=\"icon\" href=\"{}\">",
-            escape_html(logo.as_deref().unwrap_or(ICON))
+            "<link rel=\"icon\" type=\"{icon_type}\" href=\"{}\">",
+            escape_html(&icon)
         ),
     ];
-    if page == Page::Admin {
-        return tags.join("\n    ");
-    }
-    if let Some(logo) = &logo {
+    if let Some(touch) = touch_icon(settings) {
         tags.push(format!(
             "<link rel=\"apple-touch-icon\" href=\"{}\">",
-            escape_html(logo)
+            escape_html(&touch)
         ));
+    }
+    if page == Page::Admin {
+        return tags.join("\n    ");
     }
     if let Some(description) = description {
         tags.push(format!(
@@ -233,7 +238,7 @@ async fn serve(dir: &Path, path: &str, request: Request<Body>) -> Response {
 mod tests {
     use super::*;
     use sn_domain::image::ImageKind;
-    use sn_domain::settings::{LogoMeta, SiteSettings};
+    use sn_domain::settings::{ImageMeta, SiteSettings};
 
     #[test]
     fn адреса_api_не_уходят_в_интерфейс() {
@@ -275,7 +280,7 @@ mod tests {
                 description: Some("Подписка & приложения".into()),
                 indexing: true,
             },
-            logo: Some(LogoMeta {
+            logo: Some(ImageMeta {
                 tag: "0123456789abcdef".into(),
                 kind: ImageKind::Png,
                 width: 256,
@@ -302,9 +307,12 @@ mod tests {
         assert!(html.contains(
             "<meta property=\"og:image\" content=\"https://vpn.example/api/public/logo/0123456789abcdef.png\">"
         ));
-        assert!(
-            html.contains("<link rel=\"icon\" href=\"/api/public/logo/0123456789abcdef.png\">")
-        );
+        assert!(html.contains(
+            "<link rel=\"icon\" type=\"image/png\" href=\"/api/public/logo/0123456789abcdef.png\">"
+        ));
+        assert!(html.contains(
+            "<link rel=\"apple-touch-icon\" href=\"/api/public/logo/0123456789abcdef.png\">"
+        ));
         assert!(html.find("<title>").unwrap() < html.find("</head>").unwrap());
         assert_eq!(html.matches("<title>").count(), 1);
     }
@@ -327,9 +335,59 @@ mod tests {
         hidden.public_url = None;
         let landing = head(&hidden, Page::Landing);
         assert!(landing.contains("<meta name=\"robots\" content=\"noindex\">"));
-        assert!(landing.contains("<link rel=\"icon\" href=\"/api/public/icon.svg\">"));
+        assert!(
+            landing.contains(
+                "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/api/public/icon.svg\">"
+            )
+        );
+        assert!(!landing.contains("apple-touch-icon"));
         assert!(!landing.contains("og:image"));
         assert!(!landing.contains("og:url"));
+    }
+
+    #[test]
+    fn свой_фавикон_стоит_во_вкладке_на_всех_страницах() {
+        let mut with_icon = settings();
+        with_icon.favicon = Some(ImageMeta {
+            tag: "fedcba9876543210".into(),
+            kind: ImageKind::Ico,
+            width: 48,
+            height: 48,
+            size: 9000,
+        });
+        for page in [
+            Page::Landing,
+            Page::Cabinet,
+            Page::MiniApp,
+            Page::Admin,
+            Page::Other,
+        ] {
+            let tags = head(&with_icon, page);
+            assert!(
+                tags.contains(
+                    "<link rel=\"icon\" type=\"image/x-icon\" href=\"/api/public/favicon/fedcba9876543210.ico\">"
+                ),
+                "{page:?}: {tags}"
+            );
+            assert!(
+                tags.contains(
+                    "<link rel=\"apple-touch-icon\" href=\"/api/public/logo/0123456789abcdef.png\">"
+                ),
+                "{page:?}: {tags}"
+            );
+        }
+        with_icon.favicon = Some(ImageMeta {
+            tag: "0011223344556677".into(),
+            kind: ImageKind::Png,
+            width: 512,
+            height: 512,
+            size: 20000,
+        });
+        let tags = head(&with_icon, Page::Admin);
+        assert!(tags.contains(
+            "<link rel=\"apple-touch-icon\" href=\"/api/public/favicon/0011223344556677.png\">"
+        ));
+        assert!(!tags.contains("og:"));
     }
 
     #[test]
