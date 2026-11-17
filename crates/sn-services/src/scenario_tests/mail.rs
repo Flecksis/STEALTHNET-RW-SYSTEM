@@ -85,6 +85,7 @@ fn code_in(text: &str) -> String {
 
 async fn configure(services: &Services, admin: AdminId, port: u16) {
     let mut config = serde_json::Map::new();
+    config.insert("transport".into(), serde_json::json!("smtp"));
     config.insert("smtp_host".into(), serde_json::json!("127.0.0.1"));
     config.insert("smtp_port".into(), serde_json::json!(port));
     config.insert("security".into(), serde_json::json!("none"));
@@ -116,11 +117,9 @@ async fn код_входа_приходит_письмом_и_открывает
     let auth = services.auth();
     let who = meta("203.0.113.9");
     assert!(!services.mail().available());
-    assert!(
-        auth.email_login_start("alex@example.com", &who)
-            .await
-            .unwrap_err()
-            .is_not_implemented()
+    assert_eq!(
+        code(auth.email_login_start("alex@example.com", &who).await),
+        "auth.email_password_mode"
     );
     let (port, letters) = fake_smtp().await;
     configure(services, admin, port).await;
@@ -155,5 +154,71 @@ async fn код_входа_приходит_письмом_и_открывает
         .await
         .unwrap();
     assert!(!services.mail().available());
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn письмо_через_resend_уходит_с_ключом_и_ошибка_понятна() {
+    use wiremock::matchers::{body_partial_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let mut config = serde_json::Map::new();
+    config.insert("transport".into(), serde_json::json!("resend"));
+    config.insert("resend_api_key".into(), serde_json::json!("re_test"));
+    config.insert("from_email".into(), serde_json::json!("robot@example.com"));
+    config.insert("from_name".into(), serde_json::json!("Сервис"));
+    let ops = services.settings_ops();
+    ops.update_module_config(
+        ModuleId::Mail,
+        &ModuleConfigUpdate {
+            config,
+            clear: Vec::new(),
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    assert!(services.mail().available());
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/emails"))
+        .and(header("authorization", "Bearer re_test"))
+        .and(body_partial_json(serde_json::json!({
+            "from": "Сервис <robot@example.com>",
+            "to": ["owner@example.com"]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "1" })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/emails"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(
+            serde_json::json!({ "statusCode": 422, "message": "The example.com domain is not verified" }),
+        ))
+        .mount(&server)
+        .await;
+    services
+        .mail()
+        .with_resend_base(server.uri())
+        .test("owner@example.com")
+        .await
+        .unwrap();
+    let failed = services
+        .mail()
+        .with_resend_base(server.uri())
+        .test("owner@example.com")
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code(), "mail.failed");
+    assert!(
+        failed.to_string().contains("domain is not verified"),
+        "{failed}"
+    );
     env.db.cleanup().await;
 }

@@ -1,0 +1,186 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router';
+import { api, ApiError } from '../../lib/api';
+import type { ModuleConfig, ModulesData } from '../modules/model';
+import { Switch } from '../ui';
+import '../form.css';
+import './admins.css';
+import { SettingsLayout } from './SettingsLayout';
+
+type Access = { miniapp: boolean; site_login: boolean; self_devices: boolean; self_reissue: boolean };
+type Core = { settings?: { public_url?: string | null } };
+
+const TRANSPORT_TEXT: Record<string, string> = {
+  none: 'по почте и паролю, без подтверждения',
+  smtp: 'по почте, кодом из письма через SMTP',
+  resend: 'по почте, кодом из письма через Resend',
+};
+
+function failText(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+function Toggle({ title, text, on, busy, onToggle }: { title: string; text: string; on: boolean; busy: boolean; onToggle: () => void }) {
+  return (
+    <div className="row adm-row">
+      <span className="adm-who">
+        <span className="adm-email">{title}</span>
+        <span className="adm-status">{text}</span>
+      </span>
+      <span className="adm-acts">
+        <Switch on={on} onToggle={onToggle} label={title} disabled={busy} />
+      </span>
+    </div>
+  );
+}
+
+export function SettingsClientAccess() {
+  const [access, setAccess] = useState<Access | null>(null);
+  const [publicUrl, setPublicUrl] = useState<string | null>(null);
+  const [mailMode, setMailMode] = useState<string>('none');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [next, core, mail, modules] = await Promise.all([
+        api<Access>('/api/admin/settings/client_access'),
+        api<Core>('/api/admin/settings/core'),
+        api<ModuleConfig>('/api/admin/modules/mail/config').catch(() => null),
+        api<ModulesData>('/api/admin/modules').catch(() => null),
+      ]);
+      setAccess(next);
+      setPublicUrl(core.settings?.public_url ?? null);
+      const mailOn = modules?.modules.find((m) => m.info.id === 'mail')?.active ?? false;
+      const transport = String(mail?.config.transport ?? 'none');
+      setMailMode(mailOn ? transport : 'none');
+      setError(null);
+    } catch (err) {
+      setError(failText(err, 'Настройки не загрузились'));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const flip = async (key: keyof Access) => {
+    if (!access || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setAccess(await api<Access>('/api/admin/settings/client_access', { method: 'PUT', body: { ...access, [key]: !access[key] } }));
+    } catch (err) {
+      setError(failText(err, 'Не сохранилось'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!access) {
+    return (
+      <SettingsLayout>
+        {error ? (
+          <p className="err" role="alert">
+            {error}
+          </p>
+        ) : (
+          <p className="muted">Загружаем…</p>
+        )}
+      </SettingsLayout>
+    );
+  }
+
+  const base = (publicUrl ?? '').trim().replace(/\/+$/, '');
+  const httpsReady = base.startsWith('https://');
+  const appUrl = `${base}/app`;
+  const miniText = !access.miniapp
+    ? 'Выключено: в боте нет кнопок приложения, а открыть его по ссылке нельзя.'
+    : httpsReady
+      ? `Кнопка «Открыть приложение» в меню бота и кнопка рядом с полем ввода ведут на ${appUrl}`
+      : 'Включено, но у сайта нет адреса с https: без него Telegram не откроет приложение.';
+
+  return (
+    <SettingsLayout>
+      <div className="sec-stack">
+        {error ? (
+          <p className="err" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <section className="sec" aria-labelledby="mini-h">
+          <div className="sec-head">
+            <h2 id="mini-h" className="section-title">
+              Мини-приложение
+            </h2>
+            <span className="muted">Открывается только внутри Telegram, из бота. Вход без пароля: Telegram сам подтверждает клиента.</span>
+          </div>
+          <Toggle title="Мини-приложение в Telegram" text={miniText} on={access.miniapp} busy={busy} onToggle={() => void flip('miniapp')} />
+          {access.miniapp && !httpsReady ? (
+            <div className="row">
+              <span className="cap">
+                Укажите адрес сайта в{' '}
+                <Link className="link" to="/admin/settings/general">
+                  «Общих»
+                </Link>
+                .
+              </span>
+            </div>
+          ) : null}
+        </section>
+        <section className="sec" aria-labelledby="site-h">
+          <div className="sec-head">
+            <h2 id="site-h" className="section-title">
+              Вход на сайт
+            </h2>
+            <span className="muted">Кабинет на сайте: подписка, оплата и поддержка в браузере.</span>
+          </div>
+          <Toggle
+            title="Пускать в кабинет на сайте"
+            text={access.site_login ? 'Клиенты входят на сайте. Уже открытые сессии работают.' : 'Выключено: вход на сайте закрыт, открытые сессии кабинета завершены.'}
+            on={access.site_login}
+            busy={busy}
+            onToggle={() => void flip('site_login')}
+          />
+          {access.site_login ? (
+            <div className="row">
+              <span className="rc">
+                <span className="cap">Через Telegram: бот присылает запрос на вход, клиент подтверждает его.</span>
+                <span className="cap">
+                  По почте: {TRANSPORT_TEXT[mailMode] ?? TRANSPORT_TEXT.none}.{' '}
+                  <Link className="link" to="/admin/settings/mail">
+                    Изменить
+                  </Link>
+                </span>
+              </span>
+            </div>
+          ) : null}
+        </section>
+        <section className="sec" aria-labelledby="self-h">
+          <div className="sec-head">
+            <h2 id="self-h" className="section-title">
+              Что клиент может сам
+            </h2>
+            <span className="muted">Выключенное действие пропадает в боте, кабинете и мини-приложении. Сделать его сможет только поддержка из админки.</span>
+          </div>
+          <Toggle
+            title="Отключать свои устройства"
+            text="Освободить место под новое устройство без обращения в поддержку."
+            on={access.self_devices}
+            busy={busy}
+            onToggle={() => void flip('self_devices')}
+          />
+          <Toggle
+            title="Выпускать новую ссылку подписки"
+            text="Старая ссылка перестаёт работать, все устройства подключаются заново."
+            on={access.self_reissue}
+            busy={busy}
+            onToggle={() => void flip('self_reissue')}
+          />
+        </section>
+      </div>
+    </SettingsLayout>
+  );
+}

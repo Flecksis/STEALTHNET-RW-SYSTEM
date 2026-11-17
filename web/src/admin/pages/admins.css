@@ -206,3 +206,14 @@
   display: block;
   padding-top: 4px;
 }
+
+.cap .link,
+.adm-status .link {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.cap .link:hover,
+.adm-status .link:hover {
+  text-decoration: underline;
+}

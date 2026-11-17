@@ -721,6 +721,9 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
         }
     }
     let mut buttons = Vec::new();
+    if let Some(url) = settings.miniapp_url() {
+        buttons.extend(ui::web_app(c, "menu.btn.app", url));
+    }
     if !subscriptions.is_empty() {
         buttons.extend(ui::button(c, "menu.btn.subscription", &[], "subs"));
     }

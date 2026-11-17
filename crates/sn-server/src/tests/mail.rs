@@ -7,7 +7,9 @@ async fn проверка_почты_только_с_правом_настрое
     let support = h.admin("support@example.com", AdminRole::Support).await;
     let (status, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(site["email_login"], false);
+    assert_eq!(site["email_auth"], "password");
+    assert_eq!(site["client_access"]["miniapp"], true);
+    assert_eq!(site["client_access"]["devices"], true);
     let (status, _) = h
         .write(
             Method::POST,
@@ -35,6 +37,7 @@ async fn проверка_почты_только_с_правом_настрое
             Some(json!({ "email": "alex@example.com" })),
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "auth.email_password_mode");
     h.db.cleanup().await;
 }

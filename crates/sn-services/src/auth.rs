@@ -811,6 +811,12 @@ impl<'a> Auth<'a> {
         init_data: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<ClientLogin> {
+        if !self.services.settings().client_access.miniapp {
+            return Err(ServiceError::rejected(
+                "auth.miniapp_off",
+                "Мини-приложение выключено: пользуйтесь ботом",
+            ));
+        }
         self.services
             .limits()
             .hit_ip(rules::MINIAPP_IP, meta.ip.as_deref())
@@ -892,6 +898,14 @@ impl<'a> Auth<'a> {
         let client = conn.clients().get(session.client_id).await?;
         if client.is_blocked() {
             return Err(ServiceError::Forbidden);
+        }
+        let access = self.services.settings().client_access;
+        let open = match session.channel {
+            SessionChannel::Cabinet => access.site_login,
+            SessionChannel::Miniapp => access.miniapp,
+        };
+        if !open {
+            return Err(ServiceError::Unauthorized);
         }
         Ok(ClientPrincipal {
             client_id: session.client_id,

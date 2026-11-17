@@ -284,6 +284,13 @@ pub struct Button {
     pub callback_data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_app: Option<WebApp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WebApp {
+    pub url: String,
 }
 
 impl Button {
@@ -294,6 +301,7 @@ impl Button {
             style: None,
             callback_data: Some(data.into()),
             url: None,
+            web_app: None,
         }
     }
 
@@ -304,6 +312,18 @@ impl Button {
             style: None,
             callback_data: None,
             url: Some(url.into()),
+            web_app: None,
+        }
+    }
+
+    pub fn web_app(text: impl Into<String>, url: impl Into<String>) -> Self {
+        Button {
+            text: text.into(),
+            icon_custom_emoji_id: None,
+            style: None,
+            callback_data: None,
+            url: None,
+            web_app: Some(WebApp { url: url.into() }),
         }
     }
 
@@ -634,6 +654,22 @@ impl TelegramApi {
         self.call(
             "deleteWebhook",
             &serde_json::json!({ "drop_pending_updates": false }),
+        )
+        .await
+    }
+
+    pub async fn set_menu_button(&self, app: Option<(&str, &str)>) -> Result<bool, TelegramError> {
+        let button = match app {
+            Some((text, url)) => serde_json::json!({
+                "type": "web_app",
+                "text": text,
+                "web_app": { "url": url },
+            }),
+            None => serde_json::json!({ "type": "default" }),
+        };
+        self.call(
+            "setChatMenuButton",
+            &serde_json::json!({ "menu_button": button }),
         )
         .await
     }

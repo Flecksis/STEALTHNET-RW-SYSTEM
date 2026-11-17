@@ -29,6 +29,10 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<string | null>(null);
   const [totp, setTotp] = useState('');
+  const [password, setPassword] = useState('');
+  const [joining, setJoining] = useState(false);
+  const emailAuth = site.email_auth === undefined ? 'code' : site.email_auth;
+  const siteOpen = site.client_access?.site_login !== false;
   const timer = useRef<number | null>(null);
 
   useEffect(
@@ -123,6 +127,31 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
     }
   };
 
+  const byPassword = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<Verified>(joining ? '/api/client/auth/email/register' : '/api/client/auth/email/password', {
+        method: 'POST',
+        body: { email: email.trim(), password },
+      });
+      if (res.status === 'totp_required' && res.challenge) {
+        setChallenge(res.challenge);
+        setTotp('');
+        return;
+      }
+      onDone();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'auth.email_taken') {
+        setJoining(false);
+      }
+      setError(failText(err, joining ? 'Аккаунт не создался' : 'Войти не получилось'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const restart = () => {
     setChallenge(null);
     setTotp('');
@@ -176,7 +205,17 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           <span className="cb-brand-name">{site.brand_name.toUpperCase()}</span>
         </div>
         <h1>Вход в кабинет</h1>
-        {challenge ? (
+        {!siteOpen ? (
+          <div className="cb-login-wait">
+            <p>Вход на сайт сейчас выключен. Подписка, оплата и поддержка доступны в Telegram-боте.</p>
+            {site.bot_username ? (
+              <a className="cb-main" href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
+                Открыть бота
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+        {siteOpen && challenge ? (
           <form className="cb-login-form" onSubmit={sendTotp}>
             <p>Вход защищён кодом. Откройте приложение-аутентификатор и введите код {site.brand_name}.</p>
             <label className="cb-field">
@@ -204,7 +243,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
             {help}
           </form>
         ) : null}
-        {challenge || site.email_login === false ? null : (
+        {!siteOpen || challenge || emailAuth === null ? null : (
         <div role="group" aria-label="Способ входа" className="cb-seg">
           <button type="button" aria-pressed={mode === 'telegram'} onClick={() => setMode('telegram')}>
             Telegram
@@ -214,7 +253,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           </button>
         </div>
         )}
-        {challenge ? null : mode === 'telegram' ? (
+        {!siteOpen || challenge ? null : mode === 'telegram' ? (
           tg && tgState === 'waiting' ? (
             <div className="cb-login-wait">
               <p>Откройте бота и подтвердите вход. Страница обновится сама.</p>
@@ -234,6 +273,47 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
               </button>
             </div>
           )
+        ) : emailAuth === 'password' ? (
+          <form className="cb-login-form" onSubmit={byPassword}>
+            <div role="group" aria-label="Есть ли аккаунт" className="cb-seg">
+              <button type="button" aria-pressed={!joining} onClick={() => setJoining(false)}>
+                Вход
+              </button>
+              <button type="button" aria-pressed={joining} onClick={() => setJoining(true)}>
+                Регистрация
+              </button>
+            </div>
+            <label className="cb-field">
+              <span>Почта</span>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
+            </label>
+            <label className="cb-field">
+              <span>Пароль</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={joining ? 'new-password' : 'current-password'}
+                placeholder={joining ? 'Не короче 10 символов' : ''}
+              />
+            </label>
+            <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1)}>
+              {busy ? (joining ? 'Создаём…' : 'Входим…') : joining ? 'Создать аккаунт' : 'Войти'}
+            </button>
+            {joining ? null : (
+              <span className="cb-login-help cb-muted">
+                Забыли пароль —{' '}
+                {site.support_url ? (
+                  <a className="cb-accent-link" href={site.support_url}>
+                    напишите в поддержку
+                  </a>
+                ) : (
+                  'напишите в поддержку'
+                )}
+                .
+              </span>
+            )}
+          </form>
         ) : sent ? (
           <form className="cb-login-form" onSubmit={verify}>
             <label className="cb-field">

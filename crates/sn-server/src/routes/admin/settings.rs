@@ -12,7 +12,7 @@ use sn_domain::access::Permission;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::SiteImage;
 use sn_domain::settings::{
-    Appearance, AutoRenewSettings, ConnectSettings, MultiSubscriptions, TrialSettings,
+    Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, MultiSubscriptions, TrialSettings,
 };
 use sn_modules::ModuleView;
 use sn_services::branding::{ImageView, SiteUpdate};
@@ -70,6 +70,7 @@ async fn read(
         "trial" => json(&ops.trial())?,
         "autorenew" => json(&ops.autorenew())?,
         "multi_subscriptions" => json(&ops.multi_subscriptions())?,
+        "client_access" => json(&ops.client_access())?,
         "remnawave" => json(&ops.remnawave().await?)?,
         "subscription" => json(&ops.subscription_settings().await?)?,
         "bot" => json(&ops.bot().await?)?,
@@ -112,6 +113,10 @@ async fn write(
         )?,
         "multi_subscriptions" => json(
             &ops.update_multi_subscriptions(&decode::<MultiSubscriptions>(body)?, by)
+                .await?,
+        )?,
+        "client_access" => json(
+            &ops.update_client_access(&decode::<ClientAccess>(body)?, by)
                 .await?,
         )?,
         "remnawave" => json(

@@ -584,6 +584,12 @@ pub static CATALOG: &[Entry] = &[
         "Продлить или сменить тариф",
         &[],
     ),
+    hideable(
+        "menu.btn.app",
+        Menu,
+        "Кнопка мини-приложения",
+        "Открыть приложение",
+    ),
     hideable("menu.btn.balance", Menu, "Кнопка «Баланс»", "Баланс"),
     hideable("menu.btn.promo", Menu, "Кнопка промокода", "Промокод"),
     hideable(

@@ -25,6 +25,8 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/telegram/status", post(telegram_status))
         .route("/auth/email", post(email_start))
         .route("/auth/email/verify", post(email_verify))
+        .route("/auth/email/register", post(email_register))
+        .route("/auth/email/password", post(email_password))
         .route("/auth/totp", post(totp_login))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
@@ -177,6 +179,45 @@ async fn email_verify(
         CabinetLogin::Session(session) => session_response(&state, session, &login),
         CabinetLogin::TotpRequired(_) => cookies::with_cookie(None, Json(&login)),
     })
+}
+
+#[derive(Deserialize)]
+struct EmailPassword {
+    email: String,
+    password: String,
+}
+
+fn cabinet_response(state: &AppState, login: &CabinetLogin) -> Response {
+    match login {
+        CabinetLogin::Session(session) => session_response(state, session, login),
+        CabinetLogin::TotpRequired(_) => cookies::with_cookie(None, Json(login)),
+    }
+}
+
+async fn email_register(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<EmailPassword>,
+) -> ApiResult<Response> {
+    let login = state
+        .services
+        .auth()
+        .email_register(&body.email, &body.password, &meta)
+        .await?;
+    Ok(cabinet_response(&state, &login))
+}
+
+async fn email_password(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<EmailPassword>,
+) -> ApiResult<Response> {
+    let login = state
+        .services
+        .auth()
+        .email_password_login(&body.email, &body.password, &meta)
+        .await?;
+    Ok(cabinet_response(&state, &login))
 }
 
 #[derive(Deserialize)]

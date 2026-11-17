@@ -177,6 +177,58 @@ async fn remember_username(services: &Services, username: &str) -> Result<(), St
     Ok(())
 }
 
+const MENU_BUTTON: &str = "bot.menu_button";
+
+async fn stored_menu(services: &Services) -> Option<String> {
+    let mut conn = services.store().conn().await.ok()?;
+    conn.settings()
+        .get(MENU_BUTTON)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_str().map(str::to_string))
+}
+
+fn desired_menu(services: &Services) -> Option<(String, String)> {
+    let url = services.settings().miniapp_url()?;
+    let text = services
+        .bot_content()
+        .content
+        .button("menu.btn.app", &[])
+        .map(|label| label.text)
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "Приложение".to_string());
+    Some((text, url))
+}
+
+async fn sync_menu(api: &TelegramApi, services: &Services, applied: &mut Option<String>) {
+    let desired = desired_menu(services);
+    let url = desired.as_ref().map(|(_, url)| url.clone());
+    if url == *applied {
+        return;
+    }
+    let app = desired
+        .as_ref()
+        .map(|(text, url)| (text.as_str(), url.as_str()));
+    match api.set_menu_button(app).await {
+        Ok(_) => {
+            *applied = url;
+            let saved = match services.store().conn().await {
+                Ok(mut conn) => conn
+                    .settings()
+                    .set(MENU_BUTTON, &serde_json::json!(applied.as_deref()), None)
+                    .await
+                    .map_err(|err| err.to_string()),
+                Err(err) => Err(err.to_string()),
+            };
+            if let Err(err) = saved {
+                tracing::warn!(error = %err, "кнопка меню бота обновлена, но не запомнена");
+            }
+        }
+        Err(err) => tracing::debug!(error = %err, "кнопка меню бота не обновлена"),
+    }
+}
+
 fn spawn_workers(ctx: &BotCtx, count: usize) -> (Vec<mpsc::Sender<Update>>, Vec<JoinHandle<()>>) {
     let mut senders = Vec::with_capacity(count);
     let mut handles = Vec::with_capacity(count);
@@ -302,10 +354,12 @@ impl Bot {
         };
         runtime.set(running(since));
         let mut failures = 0u32;
+        let mut menu = stored_menu(&self.services).await;
         let outcome: Result<Stop, BotError> = loop {
             if self.services.bot_token().as_deref() != Some(token) {
                 break Ok(Stop::TokenChanged);
             }
+            sync_menu(&api, &self.services, &mut menu).await;
             let polled = tokio::select! {
                 _ = cancel.cancelled() => break Ok(Stop::Cancelled),
                 _ = runtime.woken() => continue,

@@ -77,7 +77,7 @@ export function MiniConnect() {
     }
   };
 
-  const reissueBlock = reissued ? (
+  const reissueBlock = site.client_access?.reissue === false ? null : reissued ? (
     <p role="status" className="mn-ask">
       <span>
         <strong>Новая ссылка выпущена.</strong> Подключите нужные устройства заново.

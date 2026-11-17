@@ -33,6 +33,7 @@ const PASSWORD: &str = "очень-надёжный-пароль";
 
 mod admins;
 mod api_keys;
+mod client_access;
 mod mail;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -479,11 +480,9 @@ async fn вход_по_почте_одноразовым_кодом() {
     let Some(env) = env().await else { return };
     let auth = env.services.auth();
     let who = meta("203.0.113.7");
-    assert!(
-        auth.email_login_start("Alex@Example.com", &who)
-            .await
-            .unwrap_err()
-            .is_not_implemented()
+    assert_eq!(
+        code(auth.email_login_start("Alex@Example.com", &who).await),
+        "auth.email_password_mode"
     );
     assert_eq!(
         code(auth.email_login_start("не почта", &who).await),

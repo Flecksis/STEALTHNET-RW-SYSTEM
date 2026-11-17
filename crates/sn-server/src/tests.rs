@@ -29,6 +29,7 @@ mod api_keys;
 mod balance_off;
 mod bot_content;
 mod channels;
+mod client_access;
 mod client_payments;
 mod gram;
 mod hosts;
@@ -1365,7 +1366,8 @@ async fn кабинет_входит_через_telegram_и_выходит() {
             Some(json!({ "email": "alex@example.com" })),
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "auth.email_password_mode");
     let (status, _, body) = h
         .send(
             Method::POST,

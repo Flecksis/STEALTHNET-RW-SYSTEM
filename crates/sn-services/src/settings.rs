@@ -12,9 +12,9 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{PaymentChannels, providers};
 use sn_domain::settings::{
-    Appearance, AutoRenewSettings, ConnectSettings, CoreSettings, FieldKind, ImageMeta,
-    MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, TopUpSettings, TrialSettings,
-    keys, secret_keys,
+    Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
+    ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, TopUpSettings,
+    TrialSettings, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -111,6 +111,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::SITE => {
                 if let Some(v) = parse::<SiteSettings>(&key, value) {
                     settings.site = v;
+                }
+            }
+            keys::CLIENT_ACCESS => {
+                if let Some(v) = parse::<ClientAccess>(&key, value) {
+                    settings.client_access = v;
                 }
             }
             keys::MULTI_SUBSCRIPTIONS => {
@@ -1026,6 +1031,33 @@ impl<'a> SettingsOps<'a> {
         tx.commit().await?;
         self.saved().await?;
         Ok(self.trial())
+    }
+
+    pub fn client_access(&self) -> ClientAccess {
+        self.services.settings().client_access
+    }
+
+    pub async fn update_client_access(
+        &self,
+        value: &ClientAccess,
+        admin: AdminId,
+    ) -> ServiceResult<ClientAccess> {
+        let mut tx = self.services.store().begin().await?;
+        tx.settings()
+            .set_as(keys::CLIENT_ACCESS, value, Some(admin))
+            .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "settings.client_access",
+                "settings",
+                None,
+                serde_json::json!(value),
+            ))
+            .await?;
+        tx.commit().await?;
+        self.saved().await?;
+        self.services.bot_runtime().wake();
+        Ok(self.client_access())
     }
 
     pub fn multi_subscriptions(&self) -> MultiSubscriptions {

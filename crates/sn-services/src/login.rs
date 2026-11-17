@@ -1,5 +1,8 @@
 use crate::Actor;
-use crate::auth::{Auth, CLIENT_SESSION_DAYS, ClientLogin, RequestMeta, token_hash};
+use crate::auth::{
+    Auth, CLIENT_SESSION_DAYS, ClientLogin, RequestMeta, check_password, hash_password_async,
+    token_hash,
+};
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::rules;
 use crate::two_factor::{CabinetLogin, cabinet_session};
@@ -237,11 +240,23 @@ impl<'a> Auth<'a> {
         self.telegram_login_start_with(meta, None).await
     }
 
+    fn site_open(&self) -> ServiceResult<()> {
+        if self.services.settings().client_access.site_login {
+            Ok(())
+        } else {
+            Err(ServiceError::rejected(
+                "auth.site_off",
+                "Вход на сайт выключен: пользуйтесь ботом",
+            ))
+        }
+    }
+
     pub async fn telegram_login_start_with(
         &self,
         meta: &RequestMeta,
         referral: Option<&str>,
     ) -> ServiceResult<TelegramLoginStart> {
+        self.site_open()?;
         self.services
             .limits()
             .hit_ip(rules::TELEGRAM_START_IP, meta.ip.as_deref())
@@ -437,6 +452,7 @@ impl<'a> Auth<'a> {
         email: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<EmailLoginStart> {
+        self.site_open()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
@@ -445,8 +461,9 @@ impl<'a> Auth<'a> {
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         let mail = self.services.mail();
         if !mail.available() {
-            return Err(ServiceError::NotImplemented(
-                "вход по почте: включите и настройте модуль «Почта»",
+            return Err(ServiceError::rejected(
+                "auth.email_password_mode",
+                "Вход по почте — по паролю, без кода",
             ));
         }
         let (code, start) = self.issue_email_code(&email, meta).await?;
@@ -461,6 +478,126 @@ impl<'a> Auth<'a> {
         })
         .await?;
         Ok(start)
+    }
+
+    fn email_by_password(&self) -> ServiceResult<()> {
+        if self.services.mail().available() {
+            Err(ServiceError::rejected(
+                "auth.email_code_mode",
+                "Вход по почте — кодом из письма",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn email_register(
+        &self,
+        email: &str,
+        password: &str,
+        meta: &RequestMeta,
+    ) -> ServiceResult<CabinetLogin> {
+        self.site_open()?;
+        self.email_by_password()?;
+        let email = normalize_identity(IdentityKind::Email, email)?;
+        let limits = self.services.limits();
+        limits
+            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .await?;
+        limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        let hash = hash_password_async(password).await?;
+        let now = self.services.now();
+        let mut tx = self.services.store().begin().await?;
+        if tx
+            .clients()
+            .find_by_identity(IdentityKind::Email, &email)
+            .await?
+            .is_some()
+        {
+            return Err(ServiceError::rejected(
+                "auth.email_taken",
+                "Эта почта уже зарегистрирована: войдите с паролем",
+            ));
+        }
+        let client = tx
+            .clients()
+            .create(&NewClient {
+                locale: Locale::Ru,
+                registration_source: RegistrationSource::Web,
+                note: None,
+            })
+            .await?;
+        tx.clients()
+            .add_identity(
+                client.id,
+                &NewIdentity::new(IdentityKind::Email, &email, false)?,
+            )
+            .await?;
+        sqlx::query("INSERT INTO client_passwords (client_id, password_hash) VALUES ($1, $2)")
+            .bind(client.id.0)
+            .bind(&hash)
+            .execute(tx.conn())
+            .await?;
+        tx.events()
+            .push(&DomainEvent::ClientRegistered {
+                client_id: client.id,
+                source: RegistrationSource::Web,
+                start_param: None,
+            })
+            .await?;
+        let login = cabinet_session(&mut tx, client.id, now, meta, true).await?;
+        tx.commit().await?;
+        Ok(login)
+    }
+
+    pub async fn email_password_login(
+        &self,
+        email: &str,
+        password: &str,
+        meta: &RequestMeta,
+    ) -> ServiceResult<CabinetLogin> {
+        self.site_open()?;
+        self.email_by_password()?;
+        let email = normalize_identity(IdentityKind::Email, email)?;
+        let limits = self.services.limits();
+        limits
+            .hit_ip(rules::EMAIL_VERIFY_IP, meta.ip.as_deref())
+            .await?;
+        limits.hit(rules::EMAIL_VERIFY_ADDRESS, &email).await?;
+        let (client, hash) = {
+            let mut conn = self.services.store().conn().await?;
+            let client = conn
+                .clients()
+                .find_by_identity(IdentityKind::Email, &email)
+                .await?;
+            let hash: Option<String> = match &client {
+                Some(client) => {
+                    sqlx::query_scalar(
+                        "SELECT password_hash FROM client_passwords WHERE client_id = $1",
+                    )
+                    .bind(client.id.0)
+                    .fetch_optional(conn.conn())
+                    .await?
+                }
+                None => None,
+            };
+            (client, hash)
+        };
+        let valid = check_password(password, hash).await?;
+        let Some(client) = client.filter(|_| valid) else {
+            return Err(ServiceError::rejected(
+                "auth.wrong_password",
+                "Почта или пароль не подошли",
+            ));
+        };
+        if client.is_blocked() {
+            return Err(ServiceError::Forbidden);
+        }
+        let now = self.services.now();
+        let mut tx = self.services.store().begin().await?;
+        let login = cabinet_session(&mut tx, client.id, now, meta, false).await?;
+        tx.commit().await?;
+        Ok(login)
     }
 
     pub async fn issue_email_code(
@@ -507,6 +644,7 @@ impl<'a> Auth<'a> {
         code: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<CabinetLogin> {
+        self.site_open()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits

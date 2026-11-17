@@ -34,6 +34,11 @@ pub fn link(
     Some(Button::url(label.text, url).look(label.emoji_id, label.style.map(|s| s.as_str())))
 }
 
+pub fn web_app(content: &BotContent, key: &str, url: impl Into<String>) -> Option<Button> {
+    let label = content.content.button(key, &[])?;
+    Some(Button::web_app(label.text, url).look(label.emoji_id, label.style.map(|s| s.as_str())))
+}
+
 pub fn menu(content: &BotContent) -> Option<Button> {
     button(content, "common.btn.menu", &[], "m")
 }

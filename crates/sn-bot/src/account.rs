@@ -226,9 +226,10 @@ pub async fn subscription(
         (None, None) => {}
     }
     if sub.remna.is_some() {
-        keyboard = keyboard
-            .push(ui::button(c, "sub.btn.devices", &[], format!("dev:{id}")))
-            .push(ui::button(c, "sub.btn.reissue", &[], format!("rei:{id}")));
+        keyboard = keyboard.push(ui::button(c, "sub.btn.devices", &[], format!("dev:{id}")));
+        if turn.services().settings().client_access.self_reissue {
+            keyboard = keyboard.push(ui::button(c, "sub.btn.reissue", &[], format!("rei:{id}")));
+        }
     }
     keyboard = keyboard
         .push(ui::button(c, "sub.btn.extend", &[], format!("buy:{id}")))
@@ -258,6 +259,7 @@ pub async fn devices(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
             .section(Section::Devices));
     }
     let offset = services.settings().remna_offset();
+    let may_disconnect = services.settings().client_access.self_devices;
     let mut lines = Lines::new();
     lines.add(ui::text(c, "dev.title", &[]));
     let mut keyboard = Keyboard::new();
@@ -297,12 +299,14 @@ pub async fn devices(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
                 ],
             )
         });
-        keyboard = keyboard.push(ui::button(
-            c,
-            "dev.btn.disconnect",
-            &[("title", Text(&device.title))],
-            format!("dx:{index}"),
-        ));
+        if may_disconnect {
+            keyboard = keyboard.push(ui::button(
+                c,
+                "dev.btn.disconnect",
+                &[("title", Text(&device.title))],
+                format!("dx:{index}"),
+            ));
+        }
     }
     turn.session.devices = Some(DevicePick {
         subscription_id: SubscriptionId(id),

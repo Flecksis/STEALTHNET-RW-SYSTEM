@@ -243,7 +243,9 @@ export function SubscriptionPage() {
         ['linux', 'Linux'],
       ];
 
-  const reissueBlock = reissued ? (
+  const mayReissue = site.client_access?.reissue !== false;
+  const mayDisconnect = site.client_access?.devices !== false;
+  const reissueBlock = !mayReissue ? null : reissued ? (
     <p role="status" className="cb-result">
       <strong>Новая ссылка выпущена.</strong> Подключите нужные устройства заново.
     </p>
@@ -494,16 +496,18 @@ export function SubscriptionPage() {
                   : [appName(d), d.added_at ? `добавлено ${dateLong(d.added_at, false)}` : null].filter(Boolean).join(' · ')}
               </span>
             </span>
-            <button
-              type="button"
-              className={phone ? 'cb-text' : 'cb-second sm'}
-              aria-label={`Отключить ${d.title ?? 'устройство'}`}
-              aria-expanded={ask === d.hwid}
-              onClick={() => setAsk(ask === d.hwid ? '' : d.hwid)}
-              disabled={busy}
-            >
-              Отключить
-            </button>
+            {mayDisconnect ? (
+              <button
+                type="button"
+                className={phone ? 'cb-text' : 'cb-second sm'}
+                aria-label={`Отключить ${d.title ?? 'устройство'}`}
+                aria-expanded={ask === d.hwid}
+                onClick={() => setAsk(ask === d.hwid ? '' : d.hwid)}
+                disabled={busy}
+              >
+                Отключить
+              </button>
+            ) : null}
           </div>
           {ask === d.hwid ? (
             <div className="cb-ask">

@@ -1074,7 +1074,19 @@ impl<'a> SubscriptionOps<'a> {
         self.view_of(id, Some(&after), Vec::new()).await
     }
 
+    fn client_may(&self, actor: Actor, allowed: bool, what: &str) -> ServiceResult<()> {
+        if matches!(actor, Actor::Client(_)) && !allowed {
+            return Err(ServiceError::rejected(
+                "client.action_off",
+                format!("{what} самостоятельно нельзя: напишите в поддержку"),
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn reissue_link(&self, id: SubscriptionId, actor: Actor) -> ServiceResult<String> {
+        let access = self.services.settings().client_access;
+        self.client_may(actor, access.self_reissue, "Выпускать новую ссылку")?;
         let subscription = self.owned(id, actor).await?;
         ensure_live(&subscription)?;
         let user_id = linked_user(&subscription)?;
@@ -1114,6 +1126,8 @@ impl<'a> SubscriptionOps<'a> {
         id: SubscriptionId,
         actor: Actor,
     ) -> ServiceResult<()> {
+        let access = self.services.settings().client_access;
+        self.client_may(actor, access.self_devices, "Отключать устройства")?;
         let subscription = self.owned(id, actor).await?;
         ensure_live(&subscription)?;
         let user_id = linked_user(&subscription)?;
@@ -1160,6 +1174,8 @@ impl<'a> SubscriptionOps<'a> {
         hwid: &str,
         actor: Actor,
     ) -> ServiceResult<()> {
+        let access = self.services.settings().client_access;
+        self.client_may(actor, access.self_devices, "Отключать устройства")?;
         let subscription = self.owned(id, actor).await?;
         ensure_live(&subscription)?;
         let user_id = linked_user(&subscription)?;

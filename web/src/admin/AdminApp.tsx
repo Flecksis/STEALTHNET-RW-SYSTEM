@@ -33,6 +33,7 @@ import { SettingsLanding } from './pages/SettingsLanding';
 import { SettingsAdmins } from './pages/SettingsAdmins';
 import { SettingsApiKeys } from './pages/SettingsApiKeys';
 import { SettingsMail } from './pages/SettingsMail';
+import { SettingsClientAccess } from './pages/SettingsClientAccess';
 import { ForcedPassword, Security } from './pages/Security';
 import { SettingsUpdates } from './pages/SettingsUpdates';
 import { SessionContext, type Session } from './session';
@@ -238,6 +239,7 @@ export function AdminApp() {
           <Route path="settings/admins" element={<SettingsAdmins />} />
           <Route path="settings/api-keys" element={<SettingsApiKeys />} />
           <Route path="settings/mail" element={<SettingsMail />} />
+          <Route path="settings/client" element={<SettingsClientAccess />} />
           <Route path="security" element={<Security />} />
           <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
           <Route

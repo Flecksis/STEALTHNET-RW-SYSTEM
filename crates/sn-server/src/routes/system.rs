@@ -53,6 +53,14 @@ async fn site(State(state): State<AppState>) -> Response {
             .and_then(|value: serde_json::Value| value.as_str().map(str::to_string)),
         Err(_) => None,
     };
+    let access = settings.client_access;
+    let email_auth = if !access.site_login {
+        None
+    } else if state.services.mail().available() {
+        Some("code")
+    } else {
+        Some("password")
+    };
     Json(serde_json::json!({
         "brand_name": settings.brand_name,
         "title": settings.site.title.as_deref().unwrap_or(&settings.brand_name),
@@ -65,7 +73,13 @@ async fn site(State(state): State<AppState>) -> Response {
         "autorenew_days_before": settings.autorenew.charge_days_before,
         "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
         "documents": state.services.bot_content().documents,
-        "email_login": state.services.mail().available(),
+        "email_auth": email_auth,
+        "client_access": {
+            "miniapp": access.miniapp,
+            "site_login": access.site_login,
+            "devices": access.self_devices,
+            "reissue": access.self_reissue,
+        },
     }))
     .into_response()
 }

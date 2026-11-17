@@ -375,11 +375,40 @@ pub struct CoreSettings {
     pub landing: LandingConfig,
     #[serde(default)]
     pub multi_subscriptions: bool,
+    #[serde(default)]
+    pub client_access: ClientAccess,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultiSubscriptions {
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientAccess {
+    #[serde(default = "enabled")]
+    pub miniapp: bool,
+    #[serde(default = "enabled")]
+    pub site_login: bool,
+    #[serde(default = "enabled")]
+    pub self_devices: bool,
+    #[serde(default = "enabled")]
+    pub self_reissue: bool,
+}
+
+const fn enabled() -> bool {
+    true
+}
+
+impl Default for ClientAccess {
+    fn default() -> Self {
+        ClientAccess {
+            miniapp: true,
+            site_login: true,
+            self_devices: true,
+            self_reissue: true,
+        }
+    }
 }
 
 impl Default for CoreSettings {
@@ -402,6 +431,7 @@ impl Default for CoreSettings {
             favicon: None,
             landing: LandingConfig::standard(),
             multi_subscriptions: false,
+            client_access: ClientAccess::default(),
         }
     }
 }
@@ -416,6 +446,14 @@ impl CoreSettings {
 
     pub fn logo_url(&self) -> Option<String> {
         self.logo.as_ref().map(|logo| logo.path(SiteImage::Logo))
+    }
+
+    pub fn miniapp_url(&self) -> Option<String> {
+        if !self.client_access.miniapp {
+            return None;
+        }
+        let base = self.public_url.as_deref()?.trim().trim_end_matches('/');
+        base.starts_with("https://").then(|| format!("{base}/app"))
     }
 }
 
@@ -446,6 +484,7 @@ pub mod keys {
     pub const PAYMENT_ORDER: &str = "billing.payment_order";
     pub const INVOICE_TTL: &str = "billing.invoice_ttl_minutes";
     pub const MULTI_SUBSCRIPTIONS: &str = "billing.multi_subscriptions";
+    pub const CLIENT_ACCESS: &str = "core.client_access";
     pub const APPEARANCE: &str = "core.appearance";
     pub const CONNECT: &str = "core.connect";
     pub const BOT_USERNAME: &str = "bot.username";
