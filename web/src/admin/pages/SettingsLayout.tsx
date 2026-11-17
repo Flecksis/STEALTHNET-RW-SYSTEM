@@ -3,11 +3,11 @@ import { Link, useLocation } from 'react-router';
 import '../settings.css';
 
 const SECTIONS: Array<{ label: string; to?: string }> = [
-  { label: 'Общие' },
+  { label: 'Общие', to: '/admin/settings/general' },
   { label: 'Remnawave', to: '/admin/settings/remnawave' },
   { label: 'Оформление', to: '/admin/settings/look' },
   { label: 'Оплата', to: '/admin/settings/payments' },
-  { label: 'Бот' },
+  { label: 'Бот', to: '/admin/settings/bot' },
   { label: 'Кабинет и мини-приложение' },
   { label: 'Почта и уведомления' },
   { label: 'Администраторы' },

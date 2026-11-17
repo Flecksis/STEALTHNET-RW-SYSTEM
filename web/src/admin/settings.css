@@ -516,3 +516,17 @@
   width: 64px;
   height: 34px;
 }
+
+.gen-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bot-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding-top: 10px;
+}

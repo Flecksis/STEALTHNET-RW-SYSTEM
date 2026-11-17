@@ -20,6 +20,8 @@ import { SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
 import { SettingsRemna } from './pages/SettingsRemna';
 import { SettingsPayments } from './pages/SettingsPayments';
+import { SettingsGeneral } from './pages/SettingsGeneral';
+import { SettingsBot } from './pages/SettingsBot';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
 
@@ -163,6 +165,8 @@ export function AdminApp() {
           <Route path="settings/look" element={<SettingsLook />} />
           <Route path="settings/remnawave" element={<SettingsRemna />} />
           <Route path="settings/payments" element={<SettingsPayments />} />
+          <Route path="settings/general" element={<SettingsGeneral />} />
+          <Route path="settings/bot" element={<SettingsBot />} />
           <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
           <Route
             path="settings/*"
