@@ -118,6 +118,7 @@ jobs:
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
       - name: the domain answers over HTTPS
         run: |
+          set -x
           grep -q 'сертификат выпущен, https://panel.localhost открывается' "$RUNNER_TEMP/install.log"
           site="--resolve panel.localhost:443:127.0.0.1 --resolve panel.localhost:80:127.0.0.1"
           test "$(curl -sk $site https://panel.localhost/api/health)" = '{"status":"ok"}'
@@ -126,9 +127,10 @@ jobs:
           password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/reset.log" | tail -n 1)
           curl -fsSk $site -o /dev/null -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" https://panel.localhost/api/admin/auth/login
-          if (cd deploy && sudo docker compose logs app) | grep -q 'SN_TRUSTED_PROXIES'; then exit 1; fi
+          if (cd deploy && sudo docker compose logs app) | grep -Eq 'нет в SN_TRUSTED_PROXIES|он не в SN_TRUSTED_PROXIES'; then exit 1; fi
       - name: the domain can be changed
         run: |
+          set -x
           cd /
           sudo SN_DOMAIN=short.localhost stealthnet domain | tee "$RUNNER_TEMP/domain.log"
           sudo grep -q '^SN_PUBLIC_URL=https://short.localhost$' "$GITHUB_WORKSPACE/deploy/.env"
