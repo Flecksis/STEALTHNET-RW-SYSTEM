@@ -1,5 +1,6 @@
+use super::json;
 use crate::error::ApiResult;
-use crate::extract::{ApiJson, CurrentAdmin};
+use crate::extract::{ApiJson, ApiQuery, CurrentAdmin};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, put};
@@ -7,15 +8,23 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::{CategoryId, TariffId};
-use sn_domain::tariff::{Category, Tariff};
-use sn_services::tariffs::{CategoryInput, TariffInput, TariffsView};
+use sn_domain::tariff::{Category, Tariff, TariffChannels};
+use sn_services::tariffs::{CategoryInput, SquadBrief, TariffInput, TariffsView};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/tariffs", get(list).post(create))
-        .route("/tariffs/{id}", get(one).put(update).patch(visibility))
+        .route("/tariffs/squads", get(squads))
+        .route(
+            "/tariffs/{id}",
+            get(one).put(update).patch(visibility).delete(remove),
+        )
+        .route("/tariffs/{id}/channels", put(channels))
         .route("/categories", get(categories).post(create_category))
-        .route("/categories/{id}", put(update_category))
+        .route(
+            "/categories/{id}",
+            put(update_category).delete(remove_category),
+        )
 }
 
 async fn list(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<TariffsView>> {
@@ -47,20 +56,87 @@ async fn create(
     ))
 }
 
+#[derive(Deserialize, Default)]
+struct UpdateQuery {
+    #[serde(default)]
+    apply: Option<bool>,
+}
+
 async fn update(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
+    ApiQuery(query): ApiQuery<UpdateQuery>,
     ApiJson(body): ApiJson<TariffInput>,
-) -> ApiResult<Json<Tariff>> {
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Tariffs)?;
+    let (tariff, applied) = state
+        .services
+        .tariffs()
+        .update_and_apply(
+            TariffId(id),
+            &body,
+            admin.0.admin_id,
+            query.apply.unwrap_or(false),
+        )
+        .await?;
+    let mut value = json(&tariff)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("applied".into(), json(&applied)?);
+    }
+    Ok(Json(value))
+}
+
+async fn remove(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Tariffs)?;
+    state
+        .services
+        .tariffs()
+        .delete(TariffId(id), admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn channels(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<TariffChannels>,
+) -> ApiResult<Json<TariffChannels>> {
     admin.require(Permission::Tariffs)?;
     Ok(Json(
         state
             .services
             .tariffs()
-            .update(TariffId(id), &body, admin.0.admin_id)
+            .set_channels(TariffId(id), body, admin.0.admin_id)
             .await?,
     ))
+}
+
+async fn squads(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<Vec<SquadBrief>>> {
+    admin.require(Permission::Tariffs)?;
+    Ok(Json(state.services.tariffs().squads().await?))
+}
+
+async fn remove_category(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Tariffs)?;
+    state
+        .services
+        .tariffs()
+        .delete_category(CategoryId(id), admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

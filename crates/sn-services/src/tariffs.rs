@@ -2,11 +2,15 @@ use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use serde::{Deserialize, Serialize};
-use sn_domain::ids::{AdminId, CategoryId, PeriodId, SquadId, TariffId};
+use sn_domain::ids::{AdminId, CategoryId, PeriodId, RemnaUserId, SquadId, TariffId};
 use sn_domain::money::{Currency, Stars};
-use sn_domain::tariff::{Category, CurrencyPrices, DevicePolicy, Tariff, TariffPeriod};
+use sn_domain::tariff::{
+    Category, CurrencyPrices, DevicePolicy, Tariff, TariffChannels, TariffPeriod,
+};
 use sn_domain::traffic::TrafficPolicy;
+use sn_remnawave::{BulkSquadsRequest, BulkUpdateRequest, BulkUserFields};
 use sn_store::{Db, NewCategory, NewPeriod, NewTariff};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAX_NAME_CHARS: usize = 100;
 pub const MAX_DESCRIPTION_CHARS: usize = 2_000;
@@ -55,11 +59,37 @@ pub struct CategoryInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TariffStats {
+    pub tariff_id: TariffId,
+    pub sales_30d: i64,
+    pub channels: TariffChannels,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TariffsView {
     pub currency: Currency,
     pub categories: Vec<Category>,
     pub tariffs: Vec<Tariff>,
+    pub stats: Vec<TariffStats>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplyReport {
+    pub users: usize,
+    pub failed: usize,
+    pub squads: bool,
+    pub traffic: bool,
+    pub devices: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SquadBrief {
+    pub uuid: SquadId,
+    pub name: String,
+    pub nodes: Option<usize>,
+}
+
+const APPLY_BATCH: usize = 500;
 
 const fn enabled() -> bool {
     true
@@ -232,11 +262,214 @@ impl<'a> TariffAdmin<'a> {
 
     pub async fn list(&self) -> ServiceResult<TariffsView> {
         let mut conn = self.services.store().conn().await?;
+        let tariffs = conn.tariffs().list(true).await?;
+        let ids: Vec<TariffId> = tariffs.iter().map(|t| t.id).collect();
+        let channels = conn.tariffs().channels(&ids).await?;
+        let since = self.services.now() - chrono::Duration::days(30);
+        let sales: HashMap<TariffId, i64> = conn
+            .tariffs()
+            .sales_since(since)
+            .await?
+            .into_iter()
+            .collect();
+        let stats = ids
+            .iter()
+            .map(|id| TariffStats {
+                tariff_id: *id,
+                sales_30d: sales.get(id).copied().unwrap_or(0),
+                channels: channels.get(id).copied().unwrap_or_default(),
+            })
+            .collect();
         Ok(TariffsView {
             currency: self.services.settings().currency,
             categories: conn.tariffs().categories(true).await?,
-            tariffs: conn.tariffs().list(true).await?,
+            tariffs,
+            stats,
         })
+    }
+
+    pub async fn set_channels(
+        &self,
+        id: TariffId,
+        channels: TariffChannels,
+        admin: AdminId,
+    ) -> ServiceResult<TariffChannels> {
+        if !channels.any() {
+            return Err(invalid(
+                "Где показывать",
+                "оставьте хотя бы одно место или снимите тариф с продажи",
+            ));
+        }
+        let mut tx = self.services.store().begin().await?;
+        tx.tariffs().get(id).await?;
+        tx.tariffs().set_channels(id, channels).await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "tariff.channels",
+                "tariff",
+                Some(id.0),
+                serde_json::json!({ "channels": channels }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(channels)
+    }
+
+    pub async fn delete(&self, id: TariffId, admin: AdminId) -> ServiceResult<()> {
+        let mut tx = self.services.store().begin().await?;
+        let tariff = tx.tariffs().get(id).await?;
+        let live = tx.tariffs().live_subscriptions(id).await?;
+        if live > 0 {
+            return Err(ServiceError::rejected(
+                "tariff.in_use",
+                format!(
+                    "на тарифе {live} действующих подписок: снимите его с продажи или переведите клиентов на другой тариф"
+                ),
+            ));
+        }
+        tx.tariffs().soft_delete(id).await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "tariff.delete",
+                "tariff",
+                Some(id.0),
+                serde_json::json!({ "name": tariff.name }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_category(&self, id: CategoryId, admin: AdminId) -> ServiceResult<()> {
+        let mut tx = self.services.store().begin().await?;
+        let used = tx.tariffs().category_tariffs(id).await?;
+        if used > 0 {
+            return Err(ServiceError::rejected(
+                "category.in_use",
+                "в категории есть тарифы: перенесите или удалите их",
+            ));
+        }
+        tx.tariffs().delete_category(id).await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "category.delete",
+                "category",
+                Some(id.0),
+                serde_json::json!({}),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn squads(&self) -> ServiceResult<Vec<SquadBrief>> {
+        let remna = self.services.remna()?;
+        let squads = remna.internal_squads().await?.internal_squads;
+        let mut counts = Vec::with_capacity(squads.len());
+        for squad in &squads {
+            counts.push(
+                remna
+                    .squad_accessible_nodes(squad.uuid)
+                    .await
+                    .ok()
+                    .map(|nodes| nodes.accessible_nodes.len()),
+            );
+        }
+        let mut out: Vec<(i64, SquadBrief)> = squads
+            .into_iter()
+            .zip(counts)
+            .map(|(squad, nodes)| {
+                (
+                    squad.view_position,
+                    SquadBrief {
+                        uuid: SquadId(squad.uuid),
+                        name: squad.name,
+                        nodes,
+                    },
+                )
+            })
+            .collect();
+        out.sort_by_key(|(position, _)| *position);
+        Ok(out.into_iter().map(|(_, squad)| squad).collect())
+    }
+
+    pub async fn apply_to_subscribers(
+        &self,
+        before: &Tariff,
+        after: &Tariff,
+    ) -> ServiceResult<ApplyReport> {
+        let mut old_squads = before.squads.clone();
+        old_squads.sort();
+        let mut new_squads = after.squads.clone();
+        new_squads.sort();
+        let squads = old_squads != new_squads;
+        let traffic = before.traffic != after.traffic;
+        let devices = before.devices.included != after.devices.included;
+        let mut report = ApplyReport {
+            users: 0,
+            failed: 0,
+            squads,
+            traffic,
+            devices,
+        };
+        if !(squads || traffic || devices) {
+            return Ok(report);
+        }
+        let users = {
+            let mut conn = self.services.store().conn().await?;
+            conn.subscriptions().linked_for_tariff(after.id).await?
+        };
+        report.users = users.len();
+        if users.is_empty() {
+            return Ok(report);
+        }
+        let remna = self.services.remna()?;
+        let mut failed: HashSet<RemnaUserId> = HashSet::new();
+        if squads {
+            let target: Vec<uuid::Uuid> = after.squads.iter().map(|s| s.0).collect();
+            for chunk in users.chunks(APPLY_BATCH) {
+                let ids: Vec<RemnaUserId> = chunk.iter().map(|(id, _)| *id).collect();
+                let request = BulkSquadsRequest {
+                    user_ids: ids.clone(),
+                    active_internal_squads: target.clone(),
+                };
+                if let Err(err) = remna.bulk_update_squads(&request).await {
+                    tracing::warn!(tariff = %after.id, error = %err, "сквады подписчиков не обновились");
+                    failed.extend(ids);
+                }
+            }
+        }
+        if traffic || devices {
+            let mut groups: BTreeMap<u32, Vec<RemnaUserId>> = BTreeMap::new();
+            for (user, extra) in &users {
+                groups.entry(*extra).or_default().push(*user);
+            }
+            for (extra, ids) in groups {
+                for chunk in ids.chunks(APPLY_BATCH) {
+                    let total = after.devices.included.saturating_add(extra);
+                    let fields = BulkUserFields {
+                        status: None,
+                        traffic_limit_bytes: traffic.then(|| {
+                            i64::try_from(after.traffic.remna_limit_bytes()).unwrap_or(i64::MAX)
+                        }),
+                        traffic_limit_strategy: traffic.then(|| after.traffic.reset.strategy()),
+                        expire_at: None,
+                        hwid_device_limit: devices.then(|| (total > 0).then_some(i64::from(total))),
+                        tag: None,
+                    };
+                    let request = BulkUpdateRequest {
+                        user_ids: chunk.to_vec(),
+                        fields,
+                    };
+                    if let Err(err) = remna.bulk_update_users(&request).await {
+                        tracing::warn!(tariff = %after.id, error = %err, "лимиты подписчиков не обновились");
+                        failed.extend(chunk.iter().copied());
+                    }
+                }
+            }
+        }
+        report.failed = failed.len();
+        Ok(report)
     }
 
     pub async fn get(&self, id: TariffId) -> ServiceResult<Tariff> {
@@ -319,6 +552,32 @@ impl<'a> TariffAdmin<'a> {
             .await?;
         tx.commit().await?;
         Ok(tariff)
+    }
+
+    pub async fn update_and_apply(
+        &self,
+        id: TariffId,
+        input: &TariffInput,
+        admin: AdminId,
+        apply: bool,
+    ) -> ServiceResult<(Tariff, Option<ApplyReport>)> {
+        let before = self.get(id).await?;
+        let tariff = self.update(id, input, admin).await?;
+        if !apply {
+            return Ok((tariff, None));
+        }
+        let report = self.apply_to_subscribers(&before, &tariff).await?;
+        let mut tx = self.services.store().begin().await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "tariff.apply",
+                "tariff",
+                Some(id.0),
+                serde_json::json!({ "report": report }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok((tariff, Some(report)))
     }
 
     pub async fn set_on_sale(

@@ -191,10 +191,14 @@ async fn me(
 }
 
 async fn catalog(
-    _client: CurrentClient,
+    client: CurrentClient,
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let offers = state.services.checkout().catalog().await?;
+    let offers = state
+        .services
+        .checkout()
+        .catalog_in(Some(client.0.channel))
+        .await?;
     Ok(Json(serde_json::json!({
         "currency": state.services.settings().currency,
         "tariffs": offers,

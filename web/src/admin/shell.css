@@ -475,6 +475,74 @@
   filter: none;
 }
 
+.cc-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.b44 {
+  height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.b40,
+.b38,
+.b36,
+.b34 {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.b40 {
+  height: 40px;
+  padding: 0 16px;
+}
+
+.b38 {
+  height: 38px;
+  padding: 0 14px;
+}
+
+.b36 {
+  height: 36px;
+  padding: 0 14px;
+}
+
+.b34 {
+  height: 34px;
+  padding: 0 12px;
+}
+
+.b34.on-surface {
+  background: var(--surface);
+}
+
+.b36.bad {
+  padding: 0 12px;
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.b40:disabled,
+.b38:disabled,
+.b36:disabled,
+.b34:disabled,
+.b44:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .segs {
   display: inline-flex;
   flex-wrap: wrap;

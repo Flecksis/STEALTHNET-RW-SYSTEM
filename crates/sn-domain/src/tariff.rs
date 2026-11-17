@@ -1,4 +1,5 @@
 use crate::DomainError;
+use crate::access::ClientChannel;
 use crate::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use crate::money::{Currency, Money, Stars, div_round_half_up};
 use crate::traffic::TrafficPolicy;
@@ -210,6 +211,37 @@ pub struct TariffSnapshot {
     pub traffic: TrafficPolicy,
     pub squads: Vec<SquadId>,
     pub external_squad: Option<SquadId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TariffChannels {
+    pub bot: bool,
+    pub cabinet: bool,
+    pub miniapp: bool,
+}
+
+impl Default for TariffChannels {
+    fn default() -> Self {
+        TariffChannels {
+            bot: true,
+            cabinet: true,
+            miniapp: true,
+        }
+    }
+}
+
+impl TariffChannels {
+    pub const fn allows(self, channel: ClientChannel) -> bool {
+        match channel {
+            ClientChannel::Bot => self.bot,
+            ClientChannel::Cabinet => self.cabinet,
+            ClientChannel::Miniapp => self.miniapp,
+        }
+    }
+
+    pub const fn any(self) -> bool {
+        self.bot || self.cabinet || self.miniapp
+    }
 }
 
 pub fn months_for_days(days: u32) -> u32 {

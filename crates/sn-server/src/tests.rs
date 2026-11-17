@@ -1813,3 +1813,196 @@ async fn выдача_подписки_продление_и_удаление_ч
     assert_ne!(again, client);
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn тарифы_каналы_применение_и_удаление_через_http() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    h.remna.set_squads(vec![
+        InternalSquad {
+            uuid: Uuid::from_u128(1),
+            name: "Основной".into(),
+            view_position: 0,
+            info: SquadInfo::default(),
+            inbounds: Vec::new(),
+        },
+        InternalSquad {
+            uuid: Uuid::from_u128(2),
+            name: "Резерв".into(),
+            view_position: 1,
+            info: SquadInfo::default(),
+            inbounds: Vec::new(),
+        },
+    ]);
+    let tariff = h.tariff().await;
+    let id = tariff.id.0;
+
+    let (status, list) = h.get("/api/admin/tariffs", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list["stats"][0]["tariff_id"], id);
+    assert_eq!(list["stats"][0]["sales_30d"], 0);
+    assert_eq!(
+        list["stats"][0]["channels"],
+        json!({ "bot": true, "cabinet": true, "miniapp": true })
+    );
+    let (status, _) = h.get("/api/admin/tariffs", &support).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, squads) = h.get("/api/admin/tariffs/squads", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{squads}");
+    assert_eq!(squads[0]["name"], "Основной");
+    assert_eq!(squads[1]["name"], "Резерв");
+
+    let client = h.client(5_093_118_422).await;
+    let token = h.client_token(client).await;
+    let (status, catalog) = h.get("/api/client/catalog", &token).await;
+    assert_eq!(status, StatusCode::OK, "{catalog}");
+    assert_eq!(catalog["tariffs"].as_array().unwrap().len(), 1);
+    let channels = format!("/api/admin/tariffs/{id}/channels");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &channels,
+            &owner,
+            json!({ "bot": false, "cabinet": false, "miniapp": false }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &channels,
+            &owner,
+            json!({ "bot": true, "cabinet": false, "miniapp": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, catalog) = h.get("/api/client/catalog", &token).await;
+    assert!(
+        catalog["tariffs"].as_array().unwrap().is_empty(),
+        "{catalog}"
+    );
+    let bot_catalog = h
+        .services()
+        .checkout()
+        .catalog_in(Some(sn_domain::access::ClientChannel::Bot))
+        .await
+        .unwrap();
+    assert_eq!(bot_catalog.len(), 1);
+
+    let mut user = sn_remnawave::fake::sample_user(77, "sn_tariff");
+    user.active_internal_squads = vec![sn_remnawave::SquadRef {
+        uuid: Uuid::from_u128(1),
+        name: "Основной".into(),
+    }];
+    user.hwid_device_limit = Some(3);
+    h.remna.insert_user(user.clone());
+    {
+        let mut tx = h.services().store().begin().await.unwrap();
+        let created = tx
+            .subscriptions()
+            .create(&sn_store::NewSubscription {
+                client_id: client,
+                tariff_id: Some(tariff.id),
+                kind: sn_domain::subscription::SubscriptionKind::Paid,
+                extra_devices: 1,
+                autorenew: sn_domain::subscription::AutoRenewState::default(),
+            })
+            .await
+            .unwrap();
+        tx.subscriptions()
+            .link_remna(
+                created.id,
+                &sn_domain::subscription::RemnaLink {
+                    user_id: user.id,
+                    username: user.username.clone(),
+                    short_uuid: Some(user.short_uuid.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    let input = json!({
+        "category_id": tariff.category_id.0,
+        "name": "Стандарт",
+        "devices": { "included": 4, "extra": null },
+        "traffic": { "limit_bytes": null, "reset": "no_reset" },
+        "squads": [Uuid::from_u128(1), Uuid::from_u128(2)],
+        "periods": [{ "days": 90, "prices": { "usd": 699, "rub": 49900 }, "stars": 350 }]
+    });
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/tariffs/{id}"),
+            &owner,
+            input.clone(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["applied"], Value::Null);
+    let mut wider = input.clone();
+    wider["devices"]["included"] = json!(5);
+    wider["squads"] = json!([Uuid::from_u128(2)]);
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/tariffs/{id}?apply=true"),
+            &owner,
+            wider,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["applied"]["users"], 1, "{saved}");
+    assert_eq!(saved["applied"]["failed"], 0);
+    assert_eq!(saved["applied"]["squads"], true);
+    assert_eq!(saved["applied"]["devices"], true);
+    assert_eq!(saved["applied"]["traffic"], false);
+    let updated = h.remna.user(user.id).unwrap();
+    assert_eq!(updated.hwid_device_limit, Some(6));
+    assert_eq!(updated.squad_ids(), vec![SquadId(Uuid::from_u128(2))]);
+
+    let (status, body) = h
+        .write(
+            Method::DELETE,
+            &format!("/api/admin/tariffs/{id}"),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "tariff.in_use");
+    let category = tariff.category_id.0;
+    let (status, body) = h
+        .write(
+            Method::DELETE,
+            &format!("/api/admin/categories/{category}"),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "category.in_use");
+    let (status, empty) = h
+        .write(
+            Method::POST,
+            "/api/admin/categories",
+            &owner,
+            json!({ "name": "Пустая" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    let (status, _) = h
+        .write(
+            Method::DELETE,
+            &format!("/api/admin/categories/{}", empty["id"]),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, list) = h.get("/api/admin/tariffs", &owner).await;
+    assert_eq!(list["categories"].as_array().unwrap().len(), 1, "{list}");
+    h.db.cleanup().await;
+}

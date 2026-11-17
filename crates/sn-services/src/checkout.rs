@@ -371,14 +371,32 @@ impl<'a> Checkout<'a> {
     }
 
     pub async fn catalog(&self) -> ServiceResult<Vec<TariffOffer>> {
+        self.catalog_in(None).await
+    }
+
+    pub async fn catalog_in(
+        &self,
+        channel: Option<sn_domain::access::ClientChannel>,
+    ) -> ServiceResult<Vec<TariffOffer>> {
         let currency = self.services.settings().currency;
         let mut conn = self.services.store().conn().await?;
         let categories = conn.tariffs().categories(false).await?;
         let tariffs = conn.tariffs().list(false).await?;
+        let ids: Vec<TariffId> = tariffs.iter().map(|t| t.id).collect();
+        let channels = conn.tariffs().channels(&ids).await?;
         let mut offers = Vec::new();
         for category in categories {
             for tariff in tariffs.iter().filter(|t| t.category_id == category.id) {
                 if !tariff.is_offered(currency) {
+                    continue;
+                }
+                if let Some(channel) = channel
+                    && !channels
+                        .get(&tariff.id)
+                        .copied()
+                        .unwrap_or_default()
+                        .allows(channel)
+                {
                     continue;
                 }
                 offers.push(TariffOffer {

@@ -1,0 +1,309 @@
+.tf {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.tf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 10px;
+}
+
+.tf-title {
+  flex: 1 1 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tf-trial {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tf-trial .muted {
+  font-weight: 600;
+}
+
+.chip.dashed {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.tf-sec {
+  background: var(--surface);
+  border: 1px solid var(--card-line);
+  border-radius: 14px;
+}
+
+.tf-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+}
+
+.tf-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 24px;
+  padding: 18px 20px;
+}
+
+.tf-info {
+  flex: 1 1 420px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tf-namerow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.tf-name {
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.tf-prices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+}
+
+.tf-price {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tf-side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+}
+
+.tf-sales {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.3;
+}
+
+.tf-sales strong {
+  font-size: 18px;
+}
+
+.tf-sales span {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tf-sale {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tf-sale > span {
+  min-width: 72px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tf-saved {
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.tf-saved strong {
+  font-weight: 700;
+}
+
+.tf-form {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding: 20px 20px 22px;
+  border-top: 1px solid var(--line);
+}
+
+.tf-form .field,
+.tf .dialog .field {
+  height: 42px;
+}
+
+.tf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 14px;
+}
+
+.tf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tf-field > span:first-child,
+.tf-field > label {
+  font-weight: 600;
+}
+
+.tf-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tf-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.tf-bt {
+  font-weight: 700;
+}
+
+.tf-period {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.tf-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tf-note {
+  min-width: 300px;
+}
+
+.tf-x {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.tf-add {
+  width: fit-content;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tf-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tf-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+}
+
+.tf-switchrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+}
+
+.tf-warn {
+  font-size: 13px;
+  color: var(--warn);
+}
+
+.tf-warn a {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.tf-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.tf-fieldset legend {
+  padding: 0;
+  margin-bottom: 10px;
+}
+
+.tf-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tf-check input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.tf-del {
+  height: 44px;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--bad);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tf-note:empty {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .tf-period .tf-x {
+    order: 4;
+  }
+
+  .tf-period .tf-note {
+    order: 5;
+    min-width: 0;
+    flex-basis: 100%;
+    margin-top: -4px;
+  }
+
+  .tf-side {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

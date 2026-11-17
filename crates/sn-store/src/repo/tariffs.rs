@@ -1,9 +1,10 @@
 use super::{non_negative_u32, non_negative_u64, to_i32, to_i64};
 use crate::error::{StoreError, StoreResult};
+use chrono::{DateTime, Utc};
 use sn_domain::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use sn_domain::money::Stars;
 use sn_domain::tariff::{
-    Category, CurrencyPrices, DevicePolicy, ExtraDevices, Tariff, TariffPeriod,
+    Category, CurrencyPrices, DevicePolicy, ExtraDevices, Tariff, TariffChannels, TariffPeriod,
 };
 use sn_domain::traffic::{TrafficPolicy, TrafficReset};
 use sqlx::postgres::PgArguments;
@@ -418,6 +419,96 @@ impl<'c> TariffsRepo<'c> {
                 .await?;
         if done.rows_affected() == 0 {
             return Err(StoreError::NotFound("тариф"));
+        }
+        Ok(())
+    }
+
+    pub async fn channels(
+        &mut self,
+        ids: &[TariffId],
+    ) -> StoreResult<HashMap<TariffId, TariffChannels>> {
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let rows: Vec<(i64, bool, bool, bool)> = sqlx::query_as(
+            "SELECT tariff_id, bot, cabinet, miniapp FROM tariff_channels WHERE tariff_id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        let mut out: HashMap<TariffId, TariffChannels> = ids
+            .into_iter()
+            .map(|id| (TariffId(id), TariffChannels::default()))
+            .collect();
+        for (id, bot, cabinet, miniapp) in rows {
+            out.insert(
+                TariffId(id),
+                TariffChannels {
+                    bot,
+                    cabinet,
+                    miniapp,
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    pub async fn set_channels(
+        &mut self,
+        id: TariffId,
+        channels: TariffChannels,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            "INSERT INTO tariff_channels (tariff_id, bot, cabinet, miniapp) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (tariff_id) DO UPDATE SET bot = $2, cabinet = $3, miniapp = $4, updated_at = now()",
+        )
+        .bind(id.0)
+        .bind(channels.bot)
+        .bind(channels.cabinet)
+        .bind(channels.miniapp)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn sales_since(&mut self, since: DateTime<Utc>) -> StoreResult<Vec<(TariffId, i64)>> {
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT (snapshot ->> 'tariff_id')::bigint AS tariff, count(*) FROM orders \
+             WHERE kind IN ('new', 'renewal', 'change') AND status IN ('paid', 'fulfilled') \
+             AND snapshot IS NOT NULL AND COALESCE(paid_at, created_at) >= $1 \
+             GROUP BY 1",
+        )
+        .bind(since)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(rows.into_iter().map(|(id, n)| (TariffId(id), n)).collect())
+    }
+
+    pub async fn live_subscriptions(&mut self, id: TariffId) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM subscriptions WHERE tariff_id = $1 AND ended_at IS NULL",
+        )
+        .bind(id.0)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn category_tariffs(&mut self, id: CategoryId) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM tariffs WHERE category_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id.0)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn delete_category(&mut self, id: CategoryId) -> StoreResult<()> {
+        let done = sqlx::query(
+            "UPDATE tariff_categories SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id.0)
+        .execute(&mut *self.conn)
+        .await?;
+        if done.rows_affected() == 0 {
+            return Err(StoreError::NotFound("категория"));
         }
         Ok(())
     }

@@ -59,7 +59,11 @@ pub async fn start(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<S
 }
 
 async fn offers(turn: &Turn<'_>) -> Result<Vec<TariffOffer>, BotError> {
-    Ok(turn.services().checkout().catalog().await?)
+    Ok(turn
+        .services()
+        .checkout()
+        .catalog_in(Some(sn_domain::access::ClientChannel::Bot))
+        .await?)
 }
 
 async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {

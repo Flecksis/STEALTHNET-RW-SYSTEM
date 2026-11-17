@@ -317,6 +317,24 @@ impl<'c> SubscriptionsRepo<'c> {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    pub async fn linked_for_tariff(
+        &mut self,
+        tariff_id: TariffId,
+    ) -> StoreResult<Vec<(RemnaUserId, u32)>> {
+        let rows: Vec<(i64, i32)> = sqlx::query_as(
+            "SELECT remna_user_id, extra_devices FROM subscriptions WHERE tariff_id = $1 \
+             AND ended_at IS NULL AND remna_user_id IS NOT NULL AND remna_missing_at IS NULL \
+             AND kind <> 'trial' ORDER BY id",
+        )
+        .bind(tariff_id.0)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(user, extra)| (RemnaUserId(user), u32::try_from(extra).unwrap_or(0)))
+            .collect())
+    }
+
     pub async fn reserve_username(
         &mut self,
         id: SubscriptionId,

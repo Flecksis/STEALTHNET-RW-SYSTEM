@@ -6,6 +6,7 @@ import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from 
 import type { AdminTheme, Appearance, Me, Permission } from '../lib/types';
 import { Clients } from './clients/Clients';
 import { ClientPage } from './client/Client';
+import { Tariffs } from './tariffs/Tariffs';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
@@ -125,7 +126,7 @@ export function AdminApp() {
           <Route path="clients/:id" element={<ClientPage />} />
           <Route path="support/*" element={<Pending title="Поддержка" />} />
           <Route path="money/*" element={<Pending title="Деньги" />} />
-          <Route path="tariffs/*" element={<Pending title="Тарифы" />} />
+          <Route path="tariffs" element={<Tariffs />} />
           <Route path="infra/*" element={<Pending title="Инфраструктура" />} />
           <Route path="modules" element={<Pending title="Модули" />} />
           <Route path="m/:module/*" element={<Pending title="Модуль" />} />

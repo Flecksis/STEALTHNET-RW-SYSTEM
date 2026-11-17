@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { NBSP, timeHM } from '../../lib/format';
 import '../form.css';
+import { Switch } from '../ui';
 import { SettingsLayout } from './SettingsLayout';
 
 type RemnaView = {
@@ -95,14 +96,6 @@ function workFrom(data: Loaded): Work {
 
 function limitBad(value: string): boolean {
   return !/^\d+$/.test(value) || +value < 1 || +value > 99;
-}
-
-function Switch({ on, onToggle, label, describedBy }: { on: boolean; onToggle: () => void; label: string; describedBy?: string }) {
-  return (
-    <button type="button" role="switch" className="sw" aria-checked={on} aria-label={label} aria-describedby={describedBy} onClick={onToggle}>
-      <span aria-hidden="true" />
-    </button>
-  );
 }
 
 function maskEnv(env: string): string {
