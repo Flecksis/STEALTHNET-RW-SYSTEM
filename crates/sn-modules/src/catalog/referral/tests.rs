@@ -1,5 +1,5 @@
 use super::*;
-use crate::catalog::testing::{TestCore, client, context, order, paid_payment, usd};
+use crate::catalog::testing::{TestCore, client, context, order, paid_payment, pooled, usd};
 use sn_domain::ids::{PeriodId, TariffId};
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::PayCurrency;
@@ -528,5 +528,218 @@ async fn пропущенная_оплата_начисляется_задаче
     ReferralModule.on_event(&ctx, &event).await.unwrap();
     assert_eq!(settle(&ctx, 50).await.unwrap().payments, 0);
     assert_eq!(referral_balance(&db.store, referrer).await, usd(300));
+    db.cleanup().await;
+}
+
+async fn refund(store: &Store, payment: PaymentId, buyer: ClientId, amount: i64) -> DomainEvent {
+    let mut conn = store.conn().await.unwrap();
+    conn.payments()
+        .transition(payment, PaymentStatus::Refunded, None, None)
+        .await
+        .unwrap();
+    DomainEvent::PaymentRefunded {
+        payment_id: payment,
+        order_id: sn_domain::ids::OrderId(0),
+        client_id: buyer,
+        amount: Amount::new(amount, PayCurrency::Usd),
+    }
+}
+
+async fn move_referral(store: &Store, client_id: ClientId, minor: i64, key: &str) {
+    let mut tx = store.begin().await.unwrap();
+    tx.ledger()
+        .append(&NewLedgerEntry {
+            client_id,
+            wallet: Wallet::Referral,
+            amount: usd(minor),
+            kind: LedgerKind::Contest,
+            order_id: None,
+            payment_id: None,
+            admin_id: None,
+            comment: None,
+            idempotency_key: Some(key.into()),
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn the_credit(store: &Store, payment: PaymentId) -> store::Credit {
+    let mut conn = store.conn().await.unwrap();
+    store::credits_for_payment(&mut conn, payment)
+        .await
+        .unwrap()
+        .remove(0)
+}
+
+async fn settle_at_once(ctx: &ModuleContext, id: i64, times: usize) -> Vec<bool> {
+    let mut handles = Vec::new();
+    for _ in 0..times {
+        let ctx = ctx.clone();
+        handles.push(tokio::spawn(async move { settle_credit(&ctx, id).await }));
+    }
+    let mut done = Vec::new();
+    for handle in handles {
+        done.push(handle.await.unwrap().unwrap());
+    }
+    done
+}
+
+#[tokio::test]
+async fn начисление_и_сторно_обходятся_одним_соединением() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let setup_core = TestCore::new(&db.store);
+    let setup = context(&db.store, &setup_core, Currency::Usd);
+    let referrer = client(&db.store).await;
+    let buyer = client(&db.store).await;
+    invite(&setup, referrer, buyer).await;
+    let (payment, paid) = pay(
+        &db.store,
+        buyer,
+        "cryptopay",
+        Amount::new(1000, PayCurrency::Usd),
+    )
+    .await;
+    let single = pooled(&db, 1, Duration::from_secs(2)).await;
+    let core = TestCore::new(&single);
+    let ctx = context(&single, &core, Currency::Usd);
+    ReferralModule.on_event(&ctx, &paid).await.unwrap();
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(300));
+    let refunded = refund(&db.store, payment, buyer, 1000).await;
+    ReferralModule.on_event(&ctx, &refunded).await.unwrap();
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(0));
+    assert_eq!(settle(&ctx, 50).await.unwrap(), SettleReport::default());
+    let credit = the_credit(&db.store, payment).await;
+    assert_eq!(
+        (credit.reversal_target_minor, credit.reversed_minor),
+        (300, 300)
+    );
+    single.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn одновременная_обработка_начисления_зачисляет_и_сторнирует_один_раз() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let wide = pooled(&db, 8, Duration::from_secs(8)).await;
+    let core = TestCore::new(&wide);
+    let ctx = context(&wide, &core, Currency::Usd);
+    let referrer = client(&db.store).await;
+    let buyer = client(&db.store).await;
+    invite(&ctx, referrer, buyer).await;
+    let (payment, _) = pay(
+        &db.store,
+        buyer,
+        "cryptopay",
+        Amount::new(1000, PayCurrency::Usd),
+    )
+    .await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        assert!(store::mark_processed(&mut conn, payment).await.unwrap());
+        assert!(
+            store::insert_credit(
+                &mut conn,
+                &store::NewCredit {
+                    payment_id: payment,
+                    level: 1,
+                    referrer_id: referrer,
+                    referral_id: buyer,
+                    base: usd(1000),
+                    percent: 30,
+                    amount: usd(300),
+                },
+            )
+            .await
+            .unwrap()
+        );
+    }
+    let id = the_credit(&db.store, payment).await.id;
+    let credited = settle_at_once(&ctx, id, 8).await;
+    assert!(credited.iter().all(|done| *done), "{credited:?}");
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(300));
+    assert!(the_credit(&db.store, payment).await.credited_at.is_some());
+    assert_eq!(
+        core.notifications()
+            .iter()
+            .filter(|(_, n)| n.template == TEMPLATE_CREDIT)
+            .count(),
+        1
+    );
+    move_referral(&db.store, referrer, -200, "test:spent").await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        store::set_reversal_target(&mut conn, id, 300)
+            .await
+            .unwrap();
+    }
+    let partial = settle_at_once(&ctx, id, 8).await;
+    assert!(partial.iter().all(|done| !*done), "{partial:?}");
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(0));
+    assert_eq!(the_credit(&db.store, payment).await.reversed_minor, 100);
+    move_referral(&db.store, referrer, 500, "test:prize").await;
+    let full = settle_at_once(&ctx, id, 8).await;
+    assert!(full.iter().all(|done| *done), "{full:?}");
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(300));
+    assert_eq!(the_credit(&db.store, payment).await.reversed_minor, 300);
+    assert_eq!(settle_at_once(&ctx, id, 4).await, vec![true; 4]);
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(300));
+    wide.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn сторно_после_сбоя_берёт_сумму_из_журнала_баланса() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let referrer = client(&db.store).await;
+    let buyer = client(&db.store).await;
+    invite(&ctx, referrer, buyer).await;
+    let (payment, paid) = pay(
+        &db.store,
+        buyer,
+        "cryptopay",
+        Amount::new(1000, PayCurrency::Usd),
+    )
+    .await;
+    ReferralModule.on_event(&ctx, &paid).await.unwrap();
+    let id = the_credit(&db.store, payment).await.id;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        store::set_reversal_target(&mut conn, id, 300)
+            .await
+            .unwrap();
+    }
+    ctx.core
+        .change_balance(BalanceChange {
+            client_id: referrer,
+            wallet: Wallet::Referral,
+            amount: usd(-120),
+            kind: LedgerKind::ReferralReversal,
+            comment: None,
+            idempotency_key: format!("referral_reversal:{payment}:1:0"),
+            order_id: None,
+            payment_id: Some(payment),
+        })
+        .await
+        .unwrap();
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(180));
+    assert!(!settle_credit(&ctx, id).await.unwrap());
+    assert_eq!(
+        the_credit(&db.store, payment).await.reversed_minor,
+        120,
+        "учтено ровно то, что уже списано под этим ключом"
+    );
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(180));
+    assert!(settle_credit(&ctx, id).await.unwrap());
+    assert_eq!(the_credit(&db.store, payment).await.reversed_minor, 300);
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(0));
     db.cleanup().await;
 }

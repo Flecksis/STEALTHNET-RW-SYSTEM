@@ -1,11 +1,14 @@
+use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
-use crate::subscriptions::with_subscription_lock;
+use crate::subscriptions::{
+    actions, disable_remna_user, drop_everywhere, enable_remna_user, with_subscription_lock,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sn_domain::client::IdentityKind;
+use sn_domain::client::{ClientStatus, IdentityKind};
 use sn_domain::events::DomainEvent;
-use sn_domain::ids::{CategoryId, OrderId, RemnaUserId, SquadId, SubscriptionId};
+use sn_domain::ids::{CategoryId, ClientId, JobId, OrderId, RemnaUserId, SquadId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
 use sn_domain::order::{Order, OrderKind, OrderStatus, PurchaseIntent};
@@ -22,17 +25,120 @@ use sn_modules::ModuleError;
 use sn_remnawave::{
     CreateUserRequest, RemnaError, RemnaUser, RemnawaveApi, UpdateUserRequest, UserStatus,
 };
-use sn_store::{Db, NewSubscription, PurchaseApplied, StoreError};
+use sn_store::{
+    Db, NewSubscription, PlanStage, PurchaseApplied, ReviewJob, ReviewOrder, StoreError, Tx,
+    audit_entity,
+};
 use sqlx::types::Json;
 use std::collections::HashSet;
 use std::time::Duration;
-use uuid::Uuid;
 
 #[cfg(test)]
 mod tests;
 
 const MIN_RETRY: Duration = Duration::from_secs(15);
+const REFUND_WAIT: Duration = Duration::from_secs(300);
 const USERNAME_TAKEN: &str = "A019";
+const FINISH_ATTEMPTS: usize = 3;
+const REFUND_PENDING_REASON: &str =
+    "по платежу заказа ждём решения платёжной системы о возврате: выдача отложена";
+
+pub const MAX_FULFILL_NOTE: usize = 500;
+pub const REVIEW_ORDERS_LIMIT: i64 = 50;
+pub const REVIEW_ORDERS_MAX: i64 = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewAction {
+    Redeliver,
+    Recalculate,
+    MarkFulfilled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewItem {
+    #[serde(flatten)]
+    pub order: ReviewOrder,
+    pub actions: Vec<ReviewAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Redelivery {
+    pub order_id: OrderId,
+    pub job_id: JobId,
+    pub state: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Recalculation {
+    pub order_id: OrderId,
+    pub job_id: JobId,
+    pub state: &'static str,
+    pub plan: PlanStage,
+}
+
+pub fn review_actions(order: &ReviewOrder) -> Vec<ReviewAction> {
+    let mut actions = Vec::new();
+    if !order.refund_pending {
+        if order.plan != PlanStage::Stale {
+            actions.push(ReviewAction::Redeliver);
+        }
+        let running = order.job.as_ref().is_some_and(ReviewJob::active);
+        let resettable = match order.plan {
+            PlanStage::None => false,
+            PlanStage::Stale => true,
+            PlanStage::Saved | PlanStage::Applied => !running,
+        };
+        if order.kind.needs_remnawave() && resettable {
+            actions.push(ReviewAction::Recalculate);
+        }
+    }
+    actions.push(ReviewAction::MarkFulfilled);
+    actions
+}
+
+pub fn abandoned_reason(attempts: u32, error: &str) -> String {
+    format!(
+        "выдача не завершилась за {attempts} попыток: {error}. План мог быть отправлен в Remnawave: \
+         проверьте подписку и выберите «Пересчитать и выдать» или «Отметить выданным»"
+    )
+}
+
+pub async fn holds_autorenew(db: &mut impl Db, order_id: OrderId) -> ServiceResult<bool> {
+    Ok(db
+        .orders()
+        .holds_renewal(order_id, crate::autorenew::AUTORENEW_METHOD)
+        .await?)
+}
+
+fn not_deliverable(status: OrderStatus) -> ServiceError {
+    let message = match status {
+        OrderStatus::Fulfilled => "Заказ уже выдан",
+        OrderStatus::Refunded => "Заказ возвращён, выдавать его нельзя",
+        OrderStatus::Pending | OrderStatus::Canceled => "Заказ не оплачен",
+        OrderStatus::Paid | OrderStatus::Review => "Заказ нельзя выдать повторно",
+    };
+    ServiceError::rejected("order.redeliver_status", message)
+}
+
+fn not_in_review(status: OrderStatus) -> ServiceError {
+    let message = match status {
+        OrderStatus::Fulfilled => "Заказ уже выдан",
+        OrderStatus::Refunded => "Заказ возвращён",
+        OrderStatus::Pending | OrderStatus::Canceled => "Заказ не оплачен",
+        OrderStatus::Paid => "Заказ не на ручной проверке: его выдаёт очередь",
+        OrderStatus::Review => "Действие с заказом сейчас недоступно",
+    };
+    ServiceError::rejected("order.review_status", message)
+}
+
+fn refund_pending() -> ServiceError {
+    ServiceError::rejected(
+        "order.refund_pending",
+        "По платежу этого заказа ждём решения платёжной системы о возврате. \
+         Выдать заказ можно после отказа в возврате",
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -61,6 +167,7 @@ impl FulfillmentOutcome {
 enum Halt {
     Retry(String),
     Review(String),
+    Stale(String),
     Failed(ServiceError),
 }
 
@@ -88,7 +195,16 @@ impl From<sqlx::Error> for Halt {
 }
 
 fn same_moment(a: DateTime<Utc>, b: DateTime<Utc>) -> bool {
-    a.timestamp_micros() == b.timestamp_micros()
+    a.timestamp_millis() == b.timestamp_millis()
+}
+
+async fn client_blocked(tx: &mut Tx, client_id: ClientId) -> Result<bool, Halt> {
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM clients WHERE id = $1 FOR SHARE")
+            .bind(client_id.0)
+            .fetch_optional(tx.conn())
+            .await?;
+    Ok(status.as_deref() == Some(ClientStatus::Blocked.as_str()))
 }
 
 fn db_count(value: u32, what: &str) -> Result<i32, Halt> {
@@ -96,6 +212,22 @@ fn db_count(value: u32, what: &str) -> Result<i32, Halt> {
 }
 
 const SUBSCRIPTION_KINDS: &str = "kind NOT IN ('topup', 'module')";
+
+fn stale_reason(saved: Option<String>) -> String {
+    let choice =
+        "заказ ждёт решения администратора: «Пересчитать и выдать» или «Отметить выданным»";
+    match saved.filter(|reason| !reason.trim().is_empty()) {
+        Some(reason) => format!("{choice}. Причина: {reason}"),
+        None => choice.to_string(),
+    }
+}
+
+fn blocked_halt(order: &Order) -> Halt {
+    Halt::Review(format!(
+        "клиент заблокирован: заказ {} не выдаётся, после разблокировки выдайте его повторно",
+        order.public_id
+    ))
+}
 
 fn remna_halt(context: &str, err: RemnaError) -> Halt {
     let reason = format!("{context}: {err}");
@@ -137,9 +269,11 @@ impl<'a> Fulfillment<'a> {
     }
 
     pub async fn run(&self, order_id: OrderId) -> ServiceResult<FulfillmentOutcome> {
-        let order = {
+        let (order, waits_refund) = {
             let mut conn = self.services.store().conn().await?;
-            conn.orders().get(order_id).await?
+            let order = conn.orders().get(order_id).await?;
+            let waits_refund = conn.orders().refund_pending(order_id).await?;
+            (order, waits_refund)
         };
         match order.status {
             OrderStatus::Fulfilled => {
@@ -153,6 +287,13 @@ impl<'a> Fulfillment<'a> {
                     reason: format!("заказ в статусе {}", other.as_str()),
                 });
             }
+        }
+        if waits_refund {
+            tracing::info!(order = %order.id, "выдача отложена: по платежу ждём решения о возврате");
+            return Ok(FulfillmentOutcome::retry(
+                REFUND_WAIT,
+                REFUND_PENDING_REASON,
+            ));
         }
         let result = match &order.intent {
             PurchaseIntent::TopUp { .. } => self.topup(&order).await,
@@ -179,8 +320,228 @@ impl<'a> Fulfillment<'a> {
                 }
                 Ok(FulfillmentOutcome::Review { reason })
             }
+            Err(Halt::Stale(reason)) => {
+                tracing::warn!(order = %order.id, %reason, "заказ ждёт решения администратора");
+                Ok(FulfillmentOutcome::Review { reason })
+            }
             Err(Halt::Failed(err)) => Err(err),
         }
+    }
+
+    pub async fn review_orders(&self, limit: i64) -> ServiceResult<Vec<ReviewItem>> {
+        let mut conn = self.services.store().conn().await?;
+        let orders = conn
+            .orders()
+            .in_review(limit.clamp(1, REVIEW_ORDERS_MAX))
+            .await?;
+        Ok(orders
+            .into_iter()
+            .map(|order| ReviewItem {
+                actions: review_actions(&order),
+                order,
+            })
+            .collect())
+    }
+
+    pub async fn redeliver(&self, order_id: OrderId, actor: Actor) -> ServiceResult<Redelivery> {
+        let mut tx = self.services.store().begin().await?;
+        let order = tx.orders().lock(order_id).await?;
+        if !matches!(order.status, OrderStatus::Paid | OrderStatus::Review) {
+            return Err(not_deliverable(order.status));
+        }
+        if tx.orders().refund_pending(order.id).await? {
+            return Err(refund_pending());
+        }
+        if order.status == OrderStatus::Review && tx.orders().plan_state(order.id).await?.stale() {
+            return Err(ServiceError::rejected(
+                "order.plan_stale",
+                "План выдачи этого заказа рассчитан раньше и не применён. \
+                 Выберите «Пересчитать и выдать» или «Отметить выданным»",
+            ));
+        }
+        let queued = tx
+            .jobs()
+            .ensure_queued(&JobPayload::FulfillOrder { order_id: order.id })
+            .await?;
+        tx.audit()
+            .record(&actor.audit(
+                "order.redeliver",
+                audit_entity::ORDER,
+                Some(order.id.0),
+                serde_json::json!({
+                    "order_status": order.status,
+                    "job_id": queued.id(),
+                    "state": queued.state(),
+                }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(Redelivery {
+            order_id: order.id,
+            job_id: queued.id(),
+            state: queued.state(),
+        })
+    }
+
+    pub async fn recalculate(
+        &self,
+        order_id: OrderId,
+        reapply: bool,
+        actor: Actor,
+    ) -> ServiceResult<Recalculation> {
+        let order = {
+            let mut conn = self.services.store().conn().await?;
+            conn.orders().get(order_id).await?
+        };
+        match order.subscription_id {
+            Some(id) => {
+                with_subscription_lock(self.services, id, self.reset_plan(order_id, reapply, actor))
+                    .await
+            }
+            None => self.reset_plan(order_id, reapply, actor).await,
+        }
+    }
+
+    async fn reset_plan(
+        &self,
+        order_id: OrderId,
+        reapply: bool,
+        actor: Actor,
+    ) -> ServiceResult<Recalculation> {
+        let mut tx = self.services.store().begin().await?;
+        let order = tx.orders().lock(order_id).await?;
+        if order.status != OrderStatus::Review {
+            return Err(not_in_review(order.status));
+        }
+        if !order.kind.needs_remnawave() {
+            return Err(ServiceError::rejected(
+                "order.recalculate_kind",
+                "У этого заказа нет плана выдачи: используйте «Повторить выдачу»",
+            ));
+        }
+        if tx.orders().refund_pending(order.id).await? {
+            return Err(refund_pending());
+        }
+        let state = tx.orders().plan_state(order.id).await?;
+        let running = tx.jobs().active_fulfillment(order.id).await?.is_some();
+        if running && matches!(state.stage(), PlanStage::Saved | PlanStage::Applied) {
+            return Err(ServiceError::rejected(
+                "order.delivery_running",
+                "Выдача этого заказа уже идёт: дождитесь результата",
+            ));
+        }
+        if state.applied() && !reapply {
+            return Err(ServiceError::rejected(
+                "order.plan_applied",
+                "План этого заказа уже применён в Remnawave: пересчёт применит заказ ещё раз, \
+                 продление прибавит дни повторно. Если так и нужно, подтвердите действие, \
+                 иначе выберите «Повторить выдачу» или «Отметить выданным»",
+            ));
+        }
+        let reset = tx.orders().reset_plan(order.id).await?;
+        let queued = tx
+            .jobs()
+            .ensure_queued(&JobPayload::FulfillOrder { order_id: order.id })
+            .await?;
+        let previous = reset.plan.as_ref().map(|plan| {
+            serde_json::json!({
+                "kind": plan.kind,
+                "base_expire_at": plan.base_expire_at,
+                "target_expire_at": plan.target.expire_at,
+            })
+        });
+        tx.audit()
+            .record(&actor.audit(
+                "order.recalculate",
+                audit_entity::ORDER,
+                Some(order.id.0),
+                serde_json::json!({
+                    "job_id": queued.id(),
+                    "state": queued.state(),
+                    "plan": reset.state.stage(),
+                    "reapply": reapply,
+                    "previous_plan": previous,
+                }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(Recalculation {
+            order_id: order.id,
+            job_id: queued.id(),
+            state: queued.state(),
+            plan: reset.state.stage(),
+        })
+    }
+
+    pub async fn mark_fulfilled(
+        &self,
+        order_id: OrderId,
+        note: &str,
+        actor: Actor,
+    ) -> ServiceResult<Order> {
+        let note = note.trim();
+        if note.is_empty() || note.chars().count() > MAX_FULFILL_NOTE {
+            return Err(ServiceError::rejected(
+                "order.mark_fulfilled_note",
+                format!(
+                    "Напишите пояснение, почему заказ считается выданным: до {MAX_FULFILL_NOTE} символов"
+                ),
+            ));
+        }
+        let order = {
+            let mut conn = self.services.store().conn().await?;
+            conn.orders().get(order_id).await?
+        };
+        match order.subscription_id {
+            Some(id) => {
+                with_subscription_lock(self.services, id, self.close_order(order_id, note, actor))
+                    .await
+            }
+            None => self.close_order(order_id, note, actor).await,
+        }
+    }
+
+    async fn close_order(
+        &self,
+        order_id: OrderId,
+        note: &str,
+        actor: Actor,
+    ) -> ServiceResult<Order> {
+        let mut tx = self.services.store().begin().await?;
+        let order = tx.orders().lock(order_id).await?;
+        if order.status != OrderStatus::Review {
+            return Err(not_in_review(order.status));
+        }
+        let state = tx.orders().plan_state(order.id).await?;
+        let reason = tx.orders().review_reason(order.id).await?;
+        let (fulfilled, changed) = tx
+            .orders()
+            .transition(order.id, OrderStatus::Fulfilled)
+            .await?;
+        if changed {
+            tx.events()
+                .push(&DomainEvent::OrderFulfilled {
+                    order_id: fulfilled.id,
+                    client_id: fulfilled.client_id,
+                    order_kind: fulfilled.kind,
+                    subscription_id: fulfilled.subscription_id,
+                })
+                .await?;
+        }
+        tx.audit()
+            .record(&actor.audit(
+                "order.mark_fulfilled",
+                audit_entity::ORDER,
+                Some(order.id.0),
+                serde_json::json!({
+                    "note": note,
+                    "review_reason": reason,
+                    "plan": state.stage(),
+                }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(fulfilled)
     }
 
     async fn topup(&self, order: &Order) -> Result<Option<SubscriptionId>, Halt> {
@@ -251,21 +612,33 @@ impl<'a> Fulfillment<'a> {
         Ok(order.subscription_id)
     }
 
-    async fn ensure_not_blocked(&self, order: &Order) -> Result<(), Halt> {
+    async fn blocked(&self, order: &Order) -> Result<bool, Halt> {
         let mut conn = self.services.store().conn().await?;
-        let client = conn.clients().get(order.client_id).await?;
-        if client.is_blocked() {
-            return Err(Halt::Review(format!(
-                "клиент заблокирован: заказ {} не выдаётся, после разблокировки выдайте его повторно",
-                order.public_id
-            )));
+        Ok(conn.clients().get(order.client_id).await?.is_blocked())
+    }
+
+    async fn ensure_not_blocked(&self, order: &Order) -> Result<(), Halt> {
+        if self.blocked(order).await? {
+            return Err(blocked_halt(order));
         }
         Ok(())
     }
 
+    async fn created_earlier(&self, remna: &dyn RemnawaveApi, order: &Order) -> Result<bool, Halt> {
+        match &order.plan {
+            Some(plan) if matches!(plan.action, PlanAction::Create { .. }) => {
+                let context = self.context(order.clone()).await?;
+                Ok(self.current_user(remna, &context).await?.is_some())
+            }
+            _ => Ok(false),
+        }
+    }
+
     async fn subscription(&self, order: Order) -> Result<Option<SubscriptionId>, Halt> {
         let remna = self.services.remna()?;
-        self.ensure_not_blocked(&order).await?;
+        if order.subscription_id.is_none() {
+            self.ensure_not_blocked(&order).await?;
+        }
         let snapshot = order
             .snapshot
             .clone()
@@ -284,9 +657,11 @@ impl<'a> Fulfillment<'a> {
         remna: &dyn RemnawaveApi,
         order_id: OrderId,
     ) -> Result<Option<SubscriptionId>, Halt> {
-        let order = {
+        let (order, state) = {
             let mut conn = self.services.store().conn().await?;
-            conn.orders().get(order_id).await?
+            let order = conn.orders().get(order_id).await?;
+            let state = conn.orders().plan_state(order_id).await?;
+            (order, state)
         };
         match order.status {
             OrderStatus::Fulfilled => return Ok(order.subscription_id),
@@ -295,18 +670,29 @@ impl<'a> Fulfillment<'a> {
                 return Err(Halt::Review(format!("заказ в статусе {}", other.as_str())));
             }
         }
-        self.ensure_not_blocked(&order).await?;
+        if order.status == OrderStatus::Review && state.stale() {
+            let mut conn = self.services.store().conn().await?;
+            let saved = conn.orders().review_reason(order_id).await?;
+            return Err(Halt::Stale(stale_reason(saved)));
+        }
+        if !state.applied()
+            && self.blocked(&order).await?
+            && !self.created_earlier(remna, &order).await?
+        {
+            return Err(blocked_halt(&order));
+        }
         let context = self.context(order).await?;
         let (plan, saved) = match context.order.plan.clone() {
             Some(saved) => (saved, true),
             None => (self.prepare(remna, &context).await?, false),
         };
-        let user = if self.plan_applied(context.order.id).await? {
+        let user = if state.applied() {
             self.applied_user(remna, &context, &plan).await?
         } else {
             if saved {
                 self.check_base(remna, &context, &plan).await?;
             }
+            self.ensure_no_refund(context.order.id).await?;
             let user = self.apply(remna, &context, &plan).await?;
             self.mark_applied(context.order.id).await?;
             user
@@ -326,29 +712,23 @@ impl<'a> Fulfillment<'a> {
             .get_user(user.id)
             .await
             .map_err(|e| remna_halt("чтение пользователя после выдачи", e))?;
-        self.finish(&context, &plan, &fresh).await?;
+        self.finish(remna, &context, &plan, fresh).await?;
         Ok(Some(context.subscription.id))
     }
 
-    async fn plan_applied(&self, order_id: OrderId) -> Result<bool, Halt> {
+    async fn ensure_no_refund(&self, order_id: OrderId) -> Result<(), Halt> {
         let mut conn = self.services.store().conn().await?;
-        let applied: Option<DateTime<Utc>> =
-            sqlx::query_scalar("SELECT plan_applied_at FROM orders WHERE id = $1")
-                .bind(order_id.0)
-                .fetch_one(conn.conn())
-                .await?;
-        Ok(applied.is_some())
+        if conn.orders().refund_pending_settled(order_id).await? {
+            return Err(Halt::Retry(REFUND_PENDING_REASON.into()));
+        }
+        Ok(())
     }
 
     async fn mark_applied(&self, order_id: OrderId) -> Result<(), Halt> {
         let mut conn = self.services.store().conn().await?;
-        sqlx::query(
-            "UPDATE orders SET plan_applied_at = COALESCE(plan_applied_at, $2) WHERE id = $1",
-        )
-        .bind(order_id.0)
-        .bind(self.services.now())
-        .execute(conn.conn())
-        .await?;
+        conn.orders()
+            .mark_plan_applied(order_id, self.services.now())
+            .await?;
         Ok(())
     }
 
@@ -406,7 +786,8 @@ impl<'a> Fulfillment<'a> {
         }
         Err(Halt::Review(format!(
             "срок подписки в Remnawave изменился после расчёта плана: был {base}, сейчас {}, \
-             по плану {target}. Проверьте подписку и выдайте заказ вручную",
+             по плану {target}. Проверьте подписку: если срок ещё не учитывает этот заказ, выберите \
+             «Пересчитать и выдать», если уже учитывает, выберите «Отметить выданным»",
             current.expire_at
         )))
     }
@@ -508,22 +889,12 @@ impl<'a> Fulfillment<'a> {
 
     async fn wait_for_others(&self, context: &Context) -> Result<(), Halt> {
         let mut conn = self.services.store().conn().await?;
-        let others: Vec<(i64, Uuid, String, bool)> = sqlx::query_as(&format!(
-            "SELECT id, public_id, status, plan IS NOT NULL FROM orders \
-             WHERE subscription_id = $1 AND id <> $2 AND status IN ('paid', 'review') \
-             AND {SUBSCRIPTION_KINDS} ORDER BY id"
-        ))
-        .bind(context.subscription.id.0)
-        .bind(context.order.id.0)
-        .fetch_all(conn.conn())
-        .await?;
-        let first = others.into_iter().find(|(id, _, status, planned)| {
-            *planned || (status == OrderStatus::Paid.as_str() && *id < context.order.id.0)
-        });
-        match first {
-            Some((_, public_id, _, _)) => {
-                Err(Halt::Retry(format!("сначала выдаётся заказ {public_id}")))
-            }
+        match conn
+            .orders()
+            .delivery_blocker(context.subscription.id, context.order.id)
+            .await?
+        {
+            Some(public_id) => Err(Halt::Retry(format!("сначала выдаётся заказ {public_id}"))),
             None => Ok(()),
         }
     }
@@ -790,18 +1161,66 @@ impl<'a> Fulfillment<'a> {
         })
     }
 
+    async fn cut_access(
+        &self,
+        remna: &dyn RemnawaveApi,
+        user: &RemnaUser,
+    ) -> Result<RemnaUser, Halt> {
+        let disabled = disable_remna_user(remna, user.id)
+            .await
+            .map_err(|e| remna_halt("отключение подписки заблокированного клиента", e))?;
+        if let Err(err) = drop_everywhere(remna, vec![user.id]).await {
+            tracing::warn!(user = %user.id, error = %err, "подключения заблокированного клиента не сброшены");
+        }
+        Ok(disabled)
+    }
+
     async fn finish(
         &self,
+        remna: &dyn RemnawaveApi,
+        context: &Context,
+        plan: &FulfillmentPlan,
+        user: RemnaUser,
+    ) -> Result<(), Halt> {
+        let mut user = user;
+        let mut cut = false;
+        for _ in 0..FINISH_ATTEMPTS {
+            let mut tx = self.services.store().begin().await?;
+            let blocked = client_blocked(&mut tx, context.order.client_id).await?;
+            if blocked && user.status != UserStatus::Disabled {
+                tx.rollback().await?;
+                user = self.cut_access(remna, &user).await?;
+                cut = true;
+                continue;
+            }
+            if !blocked && cut && user.status == UserStatus::Disabled {
+                tx.rollback().await?;
+                user = enable_remna_user(remna, user.id)
+                    .await
+                    .map_err(|e| remna_halt("включение подписки после разблокировки", e))?;
+                cut = false;
+                continue;
+            }
+            return self.record(tx, context, plan, &user, blocked).await;
+        }
+        Err(Halt::Retry(
+            "статус клиента меняется во время выдачи".into(),
+        ))
+    }
+
+    async fn record(
+        &self,
+        mut tx: Tx,
         context: &Context,
         plan: &FulfillmentPlan,
         user: &RemnaUser,
+        blocked: bool,
     ) -> Result<(), Halt> {
         let order = &context.order;
         let subscription = &context.subscription;
         let snapshot = &context.snapshot;
         let settings = self.services.settings();
         let trial = matches!(order.intent, PurchaseIntent::Trial);
-        let mut tx = self.services.store().begin().await?;
         match tx
             .subscriptions()
             .link_remna(
@@ -940,22 +1359,39 @@ impl<'a> Fulfillment<'a> {
                     subscription_id: Some(subscription.id),
                 })
                 .await?;
-            tx.jobs()
-                .enqueue(
-                    &JobPayload::Notify {
-                        client_id: order.client_id,
-                        template: "order.fulfilled".into(),
-                        params: serde_json::json!({
-                            "order_id": fulfilled.public_id,
-                            "order_kind": fulfilled.kind,
-                            "subscription_id": subscription.id,
-                            "tariff": snapshot.name,
-                            "expire_at": user.expire_at,
+            if blocked {
+                tx.audit()
+                    .record(&Actor::System.audit(
+                        actions::BLOCKED_DELIVERY,
+                        audit_entity::SUBSCRIPTION,
+                        Some(subscription.id.0),
+                        serde_json::json!({
+                            "order_id": fulfilled.id,
+                            "client_id": order.client_id,
+                            "remna_user_id": user.id,
+                            "status": mirror.status,
+                            "reason": "клиент заблокирован во время выдачи заказа",
                         }),
-                    },
-                    None,
-                )
-                .await?;
+                    ))
+                    .await?;
+            } else {
+                tx.jobs()
+                    .enqueue(
+                        &JobPayload::Notify {
+                            client_id: order.client_id,
+                            template: "order.fulfilled".into(),
+                            params: serde_json::json!({
+                                "order_id": fulfilled.public_id,
+                                "order_kind": fulfilled.kind,
+                                "subscription_id": subscription.id,
+                                "tariff": snapshot.name,
+                                "expire_at": user.expire_at,
+                            }),
+                        },
+                        None,
+                    )
+                    .await?;
+            }
         }
         tx.commit().await?;
         Ok(())

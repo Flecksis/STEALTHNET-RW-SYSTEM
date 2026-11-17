@@ -1,6 +1,8 @@
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
-use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, RefundId};
+use sn_domain::ids::{
+    AdminId, ClientId, LedgerEntryId, OrderId, PaymentId, RefundId, SubscriptionId,
+};
 use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{
@@ -58,6 +60,55 @@ impl ProviderRefundStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefundActionStatus {
+    None,
+    Pending,
+    Done,
+    Failed,
+}
+
+impl RefundActionStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RefundActionStatus::None => "none",
+            RefundActionStatus::Pending => "pending",
+            RefundActionStatus::Done => "done",
+            RefundActionStatus::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> StoreResult<Self> {
+        match value {
+            "none" => Ok(RefundActionStatus::None),
+            "pending" => Ok(RefundActionStatus::Pending),
+            "done" => Ok(RefundActionStatus::Done),
+            "failed" => Ok(RefundActionStatus::Failed),
+            other => Err(StoreError::Decode(format!(
+                "статус действия с подпиской: {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefundAction {
+    pub status: RefundActionStatus,
+    pub attempts: u32,
+    pub next_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+    pub base_expire_at: Option<DateTime<Utc>>,
+    pub target_expire_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedRefundAction {
+    pub request: ProviderRefund,
+    pub order_id: OrderId,
+    pub client_id: ClientId,
+    pub subscription_id: Option<SubscriptionId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewProviderRefund {
     pub payment_id: PaymentId,
@@ -66,6 +117,7 @@ pub struct NewProviderRefund {
     pub reason: Option<String>,
     pub admin_id: Option<AdminId>,
     pub provider_refund_id: Option<String>,
+    pub hold_entry_id: Option<LedgerEntryId>,
     pub requested_at: DateTime<Utc>,
 }
 
@@ -83,6 +135,9 @@ pub struct ProviderRefund {
     pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
+    pub hold_entry_id: Option<LedgerEntryId>,
+    pub action: RefundAction,
+    pub polled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -100,10 +155,56 @@ struct ProviderRefundRow {
     failure_reason: Option<String>,
     created_at: DateTime<Utc>,
     resolved_at: Option<DateTime<Utc>>,
+    hold_entry_id: Option<i64>,
+    action_status: String,
+    action_attempts: i32,
+    action_next_at: Option<DateTime<Utc>>,
+    action_error: Option<String>,
+    action_base_expire_at: Option<DateTime<Utc>>,
+    action_target_expire_at: Option<DateTime<Utc>>,
+    polled_at: Option<DateTime<Utc>>,
 }
 
-const REFUND_COLUMNS: &str = "id, payment_id, amount_minor, currency, subscription_action, reason, admin_id, \
-                              provider_refund_id, status, refund_id, failure_reason, created_at, resolved_at";
+#[derive(sqlx::FromRow)]
+struct FailedRefundActionRow {
+    #[sqlx(flatten)]
+    request: ProviderRefundRow,
+    order_id: i64,
+    client_id: i64,
+    subscription_id: Option<i64>,
+}
+
+const REFUND_FIELDS: [&str; 21] = [
+    "id",
+    "payment_id",
+    "amount_minor",
+    "currency",
+    "subscription_action",
+    "reason",
+    "admin_id",
+    "provider_refund_id",
+    "status",
+    "refund_id",
+    "failure_reason",
+    "created_at",
+    "resolved_at",
+    "hold_entry_id",
+    "action_status",
+    "action_attempts",
+    "action_next_at",
+    "action_error",
+    "action_base_expire_at",
+    "action_target_expire_at",
+    "polled_at",
+];
+
+fn refund_columns(prefix: &str) -> String {
+    REFUND_FIELDS
+        .iter()
+        .map(|field| format!("{prefix}{field}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 const fn action_code(action: RefundSubscriptionAction) -> &'static str {
     match action {
@@ -139,6 +240,16 @@ impl TryFrom<ProviderRefundRow> for ProviderRefund {
             failure_reason: row.failure_reason,
             created_at: row.created_at,
             resolved_at: row.resolved_at,
+            hold_entry_id: row.hold_entry_id.map(LedgerEntryId),
+            action: RefundAction {
+                status: RefundActionStatus::parse(&row.action_status)?,
+                attempts: super::non_negative_u32(row.action_attempts, "action_attempts")?,
+                next_at: row.action_next_at,
+                error: row.action_error,
+                base_expire_at: row.action_base_expire_at,
+                target_expire_at: row.action_target_expire_at,
+            },
+            polled_at: row.polled_at,
         })
     }
 }
@@ -460,8 +571,9 @@ impl<'c> PaymentsRepo<'c> {
         }
         let row: ProviderRefundRow = sqlx::query_as(&format!(
             "INSERT INTO provider_refunds (payment_id, amount_minor, currency, subscription_action, reason, \
-             admin_id, provider_refund_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             RETURNING {REFUND_COLUMNS}"
+             admin_id, provider_refund_id, created_at, hold_entry_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             RETURNING {}",
+            refund_columns("")
         ))
         .bind(refund.payment_id.0)
         .bind(refund.amount.minor)
@@ -471,9 +583,30 @@ impl<'c> PaymentsRepo<'c> {
         .bind(refund.admin_id.map(|a| a.0))
         .bind(&refund.provider_refund_id)
         .bind(refund.requested_at)
+        .bind(refund.hold_entry_id.map(|e| e.0))
         .fetch_one(&mut *self.conn)
         .await?;
         row.try_into()
+    }
+
+    pub async fn unheld_refunds_minor(
+        &mut self,
+        client_id: ClientId,
+        currency: PayCurrency,
+    ) -> StoreResult<i64> {
+        let minor: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(sum(r.amount_minor), 0)::bigint FROM provider_refunds r \
+             JOIN payments p ON p.id = r.payment_id \
+             JOIN orders o ON o.id = p.order_id \
+             LEFT JOIN payment_repeats pr ON pr.payment_id = p.id \
+             WHERE p.client_id = $1 AND r.currency = $2 AND r.status = 'pending' AND r.hold_entry_id IS NULL \
+               AND (pr.action = 'balance' OR (pr.payment_id IS NULL AND o.kind = 'topup'))",
+        )
+        .bind(client_id.0)
+        .bind(currency.code())
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok(minor)
     }
 
     pub async fn provider_refunds(
@@ -481,7 +614,8 @@ impl<'c> PaymentsRepo<'c> {
         payment_id: PaymentId,
     ) -> StoreResult<Vec<ProviderRefund>> {
         let rows: Vec<ProviderRefundRow> = sqlx::query_as(&format!(
-            "SELECT {REFUND_COLUMNS} FROM provider_refunds WHERE payment_id = $1 ORDER BY id"
+            "SELECT {} FROM provider_refunds WHERE payment_id = $1 ORDER BY id",
+            refund_columns("")
         ))
         .bind(payment_id.0)
         .fetch_all(&mut *self.conn)
@@ -495,14 +629,167 @@ impl<'c> PaymentsRepo<'c> {
         limit: i64,
     ) -> StoreResult<Vec<ProviderRefund>> {
         let rows: Vec<ProviderRefundRow> = sqlx::query_as(&format!(
-            "SELECT {REFUND_COLUMNS} FROM provider_refunds WHERE status = 'pending' AND created_at <= $1 \
-             ORDER BY created_at, id LIMIT $2"
+            "SELECT {} FROM provider_refunds WHERE status = 'pending' AND created_at <= $1 \
+             ORDER BY polled_at NULLS FIRST, created_at, id LIMIT $2",
+            refund_columns("")
         ))
         .bind(requested_before)
         .bind(limit)
         .fetch_all(&mut *self.conn)
         .await?;
         rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn claim_refunds_to_poll(
+        &mut self,
+        providers: &[String],
+        requested_before: DateTime<Utc>,
+        polled_before: DateTime<Utc>,
+        now: DateTime<Utc>,
+        limit: i64,
+    ) -> StoreResult<Vec<ProviderRefund>> {
+        if providers.is_empty() || limit <= 0 {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<ProviderRefundRow> = sqlx::query_as(&format!(
+            "UPDATE provider_refunds SET polled_at = $4 WHERE id IN ( \
+             SELECT r.id FROM provider_refunds r JOIN payments p ON p.id = r.payment_id \
+             WHERE r.status = 'pending' AND r.provider_refund_id IS NOT NULL AND r.created_at <= $2 \
+               AND (r.polled_at IS NULL OR r.polled_at <= $3) AND p.provider = ANY($1) \
+             ORDER BY r.polled_at NULLS FIRST, r.created_at, r.id LIMIT $5 \
+             FOR UPDATE OF r SKIP LOCKED) RETURNING {}",
+            refund_columns("")
+        ))
+        .bind(providers)
+        .bind(requested_before)
+        .bind(polled_before)
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        let mut claimed = rows
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<StoreResult<Vec<ProviderRefund>>>()?;
+        claimed.sort_by_key(|r| r.id);
+        Ok(claimed)
+    }
+
+    pub async fn provider_refund(&mut self, id: i64) -> StoreResult<ProviderRefund> {
+        let row: ProviderRefundRow = sqlx::query_as(&format!(
+            "SELECT {} FROM provider_refunds WHERE id = $1",
+            refund_columns("")
+        ))
+        .bind(id)
+        .fetch_optional(&mut *self.conn)
+        .await?
+        .ok_or(StoreError::NotFound("заявка на возврат"))?;
+        row.try_into()
+    }
+
+    pub async fn arm_refund_action(&mut self, id: i64, at: DateTime<Utc>) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE provider_refunds SET action_status = 'pending', action_attempts = 0, action_next_at = $2, \
+             action_error = NULL WHERE id = $1 AND status = 'succeeded' AND subscription_action <> 'keep' \
+             AND action_status IN ('none', 'failed')",
+        )
+        .bind(id)
+        .bind(at)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn due_refund_actions(
+        &mut self,
+        now: DateTime<Utc>,
+        limit: i64,
+    ) -> StoreResult<Vec<ProviderRefund>> {
+        let rows: Vec<ProviderRefundRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM provider_refunds WHERE action_status = 'pending' AND action_next_at <= $1 \
+             ORDER BY action_next_at, id LIMIT $2",
+            refund_columns("")
+        ))
+        .bind(now)
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn plan_refund_action(
+        &mut self,
+        id: i64,
+        base_expire_at: DateTime<Utc>,
+        target_expire_at: DateTime<Utc>,
+    ) -> StoreResult<(DateTime<Utc>, DateTime<Utc>)> {
+        let plan: Option<(DateTime<Utc>, DateTime<Utc>)> = sqlx::query_as(
+            "UPDATE provider_refunds SET \
+             action_target_expire_at = CASE WHEN action_base_expire_at IS NULL THEN $3 ELSE action_target_expire_at END, \
+             action_base_expire_at = COALESCE(action_base_expire_at, $2) \
+             WHERE id = $1 RETURNING action_base_expire_at, action_target_expire_at",
+        )
+        .bind(id)
+        .bind(base_expire_at)
+        .bind(target_expire_at)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        plan.ok_or(StoreError::NotFound("заявка на возврат"))
+    }
+
+    pub async fn finish_refund_action(&mut self, id: i64) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE provider_refunds SET action_status = 'done', action_next_at = NULL, action_error = NULL \
+             WHERE id = $1 AND action_status IN ('pending', 'failed')",
+        )
+        .bind(id)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn fail_refund_action(
+        &mut self,
+        id: i64,
+        error: &str,
+        retry_at: Option<DateTime<Utc>>,
+    ) -> StoreResult<bool> {
+        let done = sqlx::query(
+            "UPDATE provider_refunds SET action_attempts = action_attempts + 1, action_error = $2, \
+             action_next_at = $3, action_status = CASE WHEN $3::timestamptz IS NULL THEN 'failed' ELSE 'pending' END \
+             WHERE id = $1 AND action_status = 'pending'",
+        )
+        .bind(id)
+        .bind(error)
+        .bind(retry_at)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn failed_refund_actions(
+        &mut self,
+        limit: i64,
+    ) -> StoreResult<Vec<FailedRefundAction>> {
+        let rows: Vec<FailedRefundActionRow> = sqlx::query_as(&format!(
+            "SELECT {}, p.order_id, p.client_id, o.subscription_id FROM provider_refunds r \
+             JOIN payments p ON p.id = r.payment_id JOIN orders o ON o.id = p.order_id \
+             WHERE r.action_status = 'failed' ORDER BY r.id DESC LIMIT $1",
+            refund_columns("r.")
+        ))
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(FailedRefundAction {
+                    order_id: OrderId(row.order_id),
+                    client_id: ClientId(row.client_id),
+                    subscription_id: row.subscription_id.map(SubscriptionId),
+                    request: row.request.try_into()?,
+                })
+            })
+            .collect()
     }
 
     pub async fn resolve_provider_refund(

@@ -202,10 +202,17 @@ mod tests {
     use crate::{ServerConfig, router};
     use axum::body::Body;
     use axum::http::Request;
+    use sn_domain::client::{Locale, RegistrationSource};
+    use sn_domain::money::{Currency, Money};
+    use sn_domain::order::{NewOrder, OrderKind, PurchaseIntent};
+    use sn_domain::payment::{NewPayment, ProviderId, providers};
+    use sn_domain::pricing::Quote;
+    use sn_domain::settings::{keys, secret_keys};
     use sn_modules::ModuleRegistry;
     use sn_payments::ProviderRegistry;
+    use sn_payments::providers::cryptopay_signature;
     use sn_services::{EnvFallbacks, ServiceDeps, Services, SystemClock};
-    use sn_store::{Store, StoreOptions};
+    use sn_store::{InboxOutcome, NewClient, SecretBox, Store, StoreOptions};
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -259,5 +266,151 @@ mod tests {
             post("/api/webhooks/pay/overpay", vec![b' '; 1024]).await,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn уведомление_выключенной_системы_принимается_а_ненастроенной_нет() {
+        let Some(db) = sn_store::testing::test_store().await else {
+            return;
+        };
+        let token = "4321:TEST";
+        let services = Services::new(ServiceDeps {
+            store: db.store.clone(),
+            payments: Arc::new(ProviderRegistry::builtin()),
+            modules: Arc::new(ModuleRegistry::catalog_only()),
+            secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
+            clock: Arc::new(SystemClock),
+            env: EnvFallbacks::default(),
+        });
+        let total = Money::new(500, Currency::Usd);
+        let payment = {
+            let mut conn = db.store.conn().await.unwrap();
+            conn.settings()
+                .set(
+                    &keys::provider(providers::CRYPTOPAY),
+                    &serde_json::json!({ "enabled": false }),
+                    None,
+                )
+                .await
+                .unwrap();
+            sn_services::settings::write_secret(
+                &mut conn,
+                services.secrets(),
+                &secret_keys::provider(providers::CRYPTOPAY, "api_token"),
+                Some(token),
+                None,
+            )
+            .await
+            .unwrap();
+            let client = conn
+                .clients()
+                .create(&NewClient {
+                    locale: Locale::Ru,
+                    registration_source: RegistrationSource::Bot,
+                    note: None,
+                })
+                .await
+                .unwrap()
+                .id;
+            let order = conn
+                .orders()
+                .create(&NewOrder {
+                    client_id: client,
+                    subscription_id: None,
+                    kind: OrderKind::TopUp,
+                    intent: PurchaseIntent::TopUp { amount: total },
+                    quote: Quote {
+                        currency: Currency::Usd,
+                        lines: Vec::new(),
+                        subtotal: total,
+                        discount: Money::zero(Currency::Usd),
+                        total,
+                        stars: None,
+                        days: 0,
+                        extra_devices: 0,
+                    },
+                    snapshot: None,
+                })
+                .await
+                .unwrap();
+            conn.payments()
+                .create(&NewPayment {
+                    order_id: order.id,
+                    client_id: client,
+                    provider: ProviderId::from(providers::CRYPTOPAY),
+                    method: None,
+                    amount: total.into(),
+                    expires_at: None,
+                })
+                .await
+                .unwrap()
+        };
+        services.reload().await.unwrap();
+        assert!(
+            !services
+                .payments()
+                .is_available(providers::CRYPTOPAY, Currency::Usd)
+        );
+        let app = router(AppState::new(ServerConfig::default(), services.clone()));
+        let body = serde_json::json!({
+            "update_id": 1, "update_type": "invoice_paid", "request_date": "2026-11-17T09:00:00.000Z",
+            "payload": {"invoice_id": 9001, "status": "paid", "currency_type": "fiat", "fiat": "USD",
+                        "amount": "5.00", "payload": payment.public_id.to_string()}
+        })
+        .to_string();
+        let accepted = app
+            .clone()
+            .oneshot(
+                Request::post("/api/webhooks/pay/cryptopay")
+                    .header(
+                        "crypto-pay-api-signature",
+                        cryptopay_signature(token, body.as_bytes()),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let unconfigured = app
+            .oneshot(
+                Request::post("/api/webhooks/pay/platega")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unconfigured.status(), StatusCode::NOT_FOUND);
+        let mut conn = db.store.conn().await.unwrap();
+        assert_eq!(
+            conn.payments().get(payment.id).await.unwrap().status,
+            PaymentStatus::Paid
+        );
+        let journal: Vec<(String, InboxOutcome, bool)> = conn
+            .webhooks()
+            .recent(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|entry| (entry.source, entry.outcome, entry.has_body))
+            .collect();
+        assert_eq!(
+            journal,
+            vec![
+                (
+                    providers::CRYPTOPAY.to_string(),
+                    InboxOutcome::Accepted,
+                    true
+                ),
+                (
+                    providers::PLATEGA.to_string(),
+                    InboxOutcome::NotAccepted,
+                    false
+                ),
+            ]
+        );
+        drop(conn);
+        db.cleanup().await;
     }
 }

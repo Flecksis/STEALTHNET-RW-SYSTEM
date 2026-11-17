@@ -215,6 +215,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn опрос_возвратов_объявляет_только_система_которая_умеет_спросить_статус() {
+        let empty = crate::provider::ProviderConfig::default();
+        let mut polling = Vec::new();
+        for provider in builtin() {
+            if provider.supports_refund_polling() {
+                assert!(provider.supports_refunds(), "{}", provider.id());
+                polling.push(provider.id());
+            } else {
+                assert_eq!(
+                    provider.fetch_refund(&empty, "refund-1").await,
+                    Ok(None),
+                    "{}",
+                    provider.id()
+                );
+            }
+        }
+        assert_eq!(polling, [providers::YOOKASSA]);
+    }
+
     #[test]
     fn у_каждой_системы_с_настройками_есть_секрет() {
         for provider in builtin() {

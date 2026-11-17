@@ -17,11 +17,11 @@ chrono.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 sqlx.workspace = true
+tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 sn-store = { workspace = true, features = ["test-util"] }
-tokio.workspace = true
 tower.workspace = true
 
 [lints]

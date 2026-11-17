@@ -502,13 +502,78 @@ async fn settle_payment(ctx: &ModuleContext, payment_id: PaymentId) -> Result<()
     Ok(())
 }
 
+async fn reverse_step(ctx: &ModuleContext, credit: &store::Credit) -> Result<i64, ModuleError> {
+    let base = credit.reversed_minor;
+    let wanted = credit.reversal_target_minor - base;
+    if wanted <= 0 {
+        return Ok(base);
+    }
+    let currency = credit.amount.currency;
+    let key = format!(
+        "referral_reversal:{}:{}:{}",
+        credit.payment_id, credit.level, base
+    );
+    let (known, available) = {
+        let mut conn = ctx.store.conn().await?;
+        (
+            store::reversal_applied(&mut conn, &key).await?,
+            conn.ledger()
+                .balance(credit.referrer_id, Wallet::Referral, currency)
+                .await?,
+        )
+    };
+    let charged = match known {
+        Some(_) => None,
+        None => {
+            let take = wanted.min(available.minor);
+            if take <= 0 {
+                return Ok(base);
+            }
+            Some(
+                ctx.core
+                    .change_balance(BalanceChange {
+                        client_id: credit.referrer_id,
+                        wallet: Wallet::Referral,
+                        amount: Money::new(-take, currency),
+                        kind: LedgerKind::ReferralReversal,
+                        comment: Some(format!(
+                            "Возврат оплаты: сторно реферального начисления, уровень {}",
+                            credit.level
+                        )),
+                        idempotency_key: key.clone(),
+                        order_id: None,
+                        payment_id: Some(credit.payment_id),
+                    })
+                    .await,
+            )
+        }
+    };
+    let mut conn = ctx.store.conn().await?;
+    let applied = match (known, charged) {
+        (Some(applied), _) => applied,
+        (None, charged) => match (store::reversal_applied(&mut conn, &key).await?, charged) {
+            (Some(applied), _) => applied,
+            (None, Some(Err(err))) => return Err(err),
+            (None, _) => {
+                return Err(ModuleError::Core(
+                    "сторно реферального начисления не записано в журнал баланса".into(),
+                ));
+            }
+        },
+    };
+    let reversed = base + applied;
+    store::advance_reversed(&mut conn, credit.id, base, reversed).await?;
+    Ok(reversed)
+}
+
 pub async fn settle_credit(ctx: &ModuleContext, id: i64) -> Result<bool, ModuleError> {
-    let mut tx = ctx.store.begin().await?;
-    let Some(credit) = store::lock_credit(&mut tx, id).await? else {
-        tx.commit().await?;
+    let found = {
+        let mut conn = ctx.store.conn().await?;
+        store::credit(&mut conn, id).await?
+    };
+    let Some(credit) = found else {
         return Ok(false);
     };
-    let mut notify = None;
     if credit.credited_at.is_none() {
         ctx.core
             .change_balance(BalanceChange {
@@ -522,57 +587,29 @@ pub async fn settle_credit(ctx: &ModuleContext, id: i64) -> Result<bool, ModuleE
                 payment_id: Some(credit.payment_id),
             })
             .await?;
-        store::mark_credited(&mut tx, credit.id).await?;
-        notify = Some((credit.referrer_id, credit.amount, credit.level));
-    }
-    let mut reversed = credit.reversed_minor;
-    if reversed < credit.reversal_target_minor {
-        let available = tx
-            .ledger()
-            .balance(credit.referrer_id, Wallet::Referral, credit.amount.currency)
-            .await?;
-        let take = (credit.reversal_target_minor - reversed).min(available.minor);
-        if take > 0 {
-            ctx.core
-                .change_balance(BalanceChange {
-                    client_id: credit.referrer_id,
-                    wallet: Wallet::Referral,
-                    amount: Money::new(-take, credit.amount.currency),
-                    kind: LedgerKind::ReferralReversal,
-                    comment: Some(format!(
-                        "Возврат оплаты: сторно реферального начисления, уровень {}",
-                        credit.level
-                    )),
-                    idempotency_key: format!(
-                        "referral_reversal:{}:{}:{}",
-                        credit.payment_id, credit.level, reversed
-                    ),
-                    order_id: None,
-                    payment_id: Some(credit.payment_id),
-                })
-                .await?;
-            reversed += take;
-            store::set_reversed(&mut tx, credit.id, reversed).await?;
+        let first = {
+            let mut conn = ctx.store.conn().await?;
+            store::mark_credited(&mut conn, credit.id).await?
+        };
+        if first
+            && let Err(err) = ctx
+                .core
+                .notify(
+                    credit.referrer_id,
+                    Notification {
+                        template: TEMPLATE_CREDIT.into(),
+                        params: serde_json::json!({
+                            "amount": format::money(credit.amount),
+                            "level": credit.level,
+                        }),
+                    },
+                )
+                .await
+        {
+            tracing::warn!(error = %err, "уведомление о реферальном начислении не поставлено");
         }
     }
-    tx.commit().await?;
-    if let Some((client_id, amount, level)) = notify
-        && let Err(err) = ctx
-            .core
-            .notify(
-                client_id,
-                Notification {
-                    template: TEMPLATE_CREDIT.into(),
-                    params: serde_json::json!({
-                        "amount": format::money(amount),
-                        "level": level,
-                    }),
-                },
-            )
-            .await
-    {
-        tracing::warn!(error = %err, "уведомление о реферальном начислении не поставлено");
-    }
+    let reversed = reverse_step(ctx, &credit).await?;
     Ok(reversed >= credit.reversal_target_minor)
 }
 

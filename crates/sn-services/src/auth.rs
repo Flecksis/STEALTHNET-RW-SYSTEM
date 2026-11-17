@@ -1,5 +1,5 @@
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::{RateRule, Strike, rules};
+use crate::limits::{RateRule, Strike, address_key, network_key, rules};
 use crate::services::Services;
 use crate::totp;
 use argon2::Argon2;
@@ -20,6 +20,7 @@ pub const CLIENT_SESSION_DAYS: i64 = 30;
 pub const INIT_DATA_MAX_AGE_SECONDS: i64 = 3_600;
 pub const MIN_PASSWORD_LEN: usize = 10;
 pub const MAX_PASSWORD_LEN: usize = 256;
+pub const KNOWN_ADDRESS_DAYS: i64 = 30;
 pub const TOTP_REQUIRED: &str = "auth.totp_required";
 pub const TOTP_INVALID: &str = "auth.totp_invalid";
 
@@ -152,16 +153,13 @@ pub async fn hash_password_async(password: &str) -> ServiceResult<String> {
         .map_err(|e| ServiceError::Internal(e.to_string()))?
 }
 
-const ACCOUNT_LOCKED: &str = "Слишком много неверных попыток входа.";
+const ADDRESS_LOCKED: &str = "Слишком много неверных попыток входа.";
+const ACCOUNT_LOCKED: &str = "Слишком много неверных попыток входа: для адресов, с которых вы недавно не входили, вход временно закрыт.";
 const TOTP_LOCKED: &str =
     "Код из приложения слишком часто не подходил, вход по коду временно закрыт.";
 
 fn account_identity(email: &str, ip: Option<&str>) -> String {
-    format!(
-        "{}\n{}",
-        email.trim().to_lowercase(),
-        ip.unwrap_or("unknown")
-    )
+    format!("{}\n{}", email.trim().to_lowercase(), address_key(ip))
 }
 
 fn totp_invalid() -> ServiceError {
@@ -362,18 +360,39 @@ impl<'a> Auth<'a> {
         }
     }
 
+    async fn known_address(&self, email: &str, network: Option<&str>) -> ServiceResult<bool> {
+        let Some(network) = network else {
+            return Ok(false);
+        };
+        let since = self.services.now() - Duration::days(KNOWN_ADDRESS_DAYS);
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn.admins().logged_in_from(email, network, since).await?)
+    }
+
     async fn password_attempt(
         &self,
         email: &str,
         meta: &RequestMeta,
-    ) -> ServiceResult<[Strike; 2]> {
+        known_address: bool,
+    ) -> ServiceResult<Vec<Strike>> {
+        let limits = self.services.limits();
         let pair = account_identity(email, meta.ip.as_deref());
-        self.strike_both(
-            (rules::ADMIN_LOGIN_ACCOUNT_IP, &pair),
-            (rules::ADMIN_LOGIN_ACCOUNT, email),
-            ACCOUNT_LOCKED,
-        )
-        .await
+        let own = limits
+            .strike(rules::ADMIN_LOGIN_ACCOUNT_IP, &pair, ADDRESS_LOCKED)
+            .await?;
+        if known_address {
+            return Ok(vec![own]);
+        }
+        match limits
+            .strike(rules::ADMIN_LOGIN_ACCOUNT, email, ACCOUNT_LOCKED)
+            .await
+        {
+            Ok(shared) => Ok(vec![own, shared]),
+            Err(err) => {
+                limits.forgive(&own).await?;
+                Err(err)
+            }
+        }
     }
 
     async fn totp_attempt(&self, admin_id: AdminId) -> ServiceResult<[Strike; 2]> {
@@ -439,7 +458,9 @@ impl<'a> Auth<'a> {
             .limits()
             .hit_ip(rules::ADMIN_LOGIN_IP, meta.ip.as_deref())
             .await?;
-        let attempt = self.password_attempt(email, meta).await?;
+        let network = network_key(meta.ip.as_deref());
+        let known_address = self.known_address(email, network.as_deref()).await?;
+        let attempt = self.password_attempt(email, meta, known_address).await?;
         let admin = {
             let mut conn = self.services.store().conn().await?;
             conn.admins()
@@ -475,10 +496,11 @@ impl<'a> Auth<'a> {
                 return Err(totp_invalid());
             }
         }
-        let mut conn = self.services.store().conn().await?;
+        let now = self.services.now();
         let (token, hash) = new_token();
-        let expires_at = self.services.now() + Duration::days(ADMIN_SESSION_DAYS);
-        let session_id = conn
+        let expires_at = now + Duration::days(ADMIN_SESSION_DAYS);
+        let mut tx = self.services.store().begin().await?;
+        let session_id = tx
             .sessions()
             .create_admin(
                 admin.id,
@@ -490,6 +512,17 @@ impl<'a> Auth<'a> {
                 },
             )
             .await?;
+        if let Some(network) = &network {
+            tx.admins()
+                .remember_login_address(
+                    admin.id,
+                    network,
+                    now,
+                    now - Duration::days(KNOWN_ADDRESS_DAYS),
+                )
+                .await?;
+        }
+        tx.commit().await?;
         Ok(AdminLogin {
             token,
             expires_at,
@@ -1095,6 +1128,273 @@ mod tests {
         auth.admin_login(EMAIL, PASSWORD, None, &owner)
             .await
             .unwrap();
+        env.db.cleanup().await;
+    }
+
+    async fn guess_passwords(env: &Env, ip: &str, attempts: u32) -> u32 {
+        let auth = env.services.auth();
+        let mut unauthorized = 0;
+        for _ in 0..attempts {
+            match auth
+                .admin_login(EMAIL, "подбираемый-пароль", None, &from(ip))
+                .await
+            {
+                Err(ServiceError::Unauthorized) => unauthorized += 1,
+                other => assert_eq!(rejected_code(other), crate::limits::RATE_LIMITED),
+            }
+        }
+        unauthorized
+    }
+
+    async fn fill_account_limit(env: &Env) {
+        let limits = env.services.limits();
+        for _ in 0..rules::ADMIN_LOGIN_ACCOUNT.limit {
+            limits
+                .strike(rules::ADMIN_LOGIN_ACCOUNT, EMAIL, "перебор")
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn перебор_с_десяти_адресов_одной_ipv6_сети_не_закрывает_вход_владельцу() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        auth.upsert_owner(EMAIL, PASSWORD).await.unwrap();
+        let home = from("203.0.113.7");
+        auth.admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap();
+        let mut handles = Vec::new();
+        for host in 1..=10u32 {
+            let services = env.services.clone();
+            handles.push(tokio::spawn(async move {
+                let meta = from(&format!("2001:db8:1:2::{host:x}"));
+                let mut unauthorized = 0;
+                for _ in 0..10 {
+                    match services
+                        .auth()
+                        .admin_login(EMAIL, "подбираемый-пароль", None, &meta)
+                        .await
+                    {
+                        Err(ServiceError::Unauthorized) => unauthorized += 1,
+                        other => assert_eq!(rejected_code(other), crate::limits::RATE_LIMITED),
+                    }
+                }
+                unauthorized
+            }));
+        }
+        let mut unauthorized = 0;
+        for handle in handles {
+            unauthorized += handle.await.unwrap();
+        }
+        assert_eq!(unauthorized, rules::ADMIN_LOGIN_ACCOUNT_IP.limit);
+        auth.admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap();
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn общий_лимит_двадцать_неудач_и_не_действует_на_адрес_недавнего_входа() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        auth.upsert_owner(EMAIL, PASSWORD).await.unwrap();
+        let home = from("203.0.113.7");
+        auth.admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap();
+        let mut unauthorized = 0;
+        for attacker in ["198.51.100.1", "198.51.100.2", "2001:db8:ffff:1::1"] {
+            unauthorized += guess_passwords(&env, attacker, 10).await;
+        }
+        assert_eq!(unauthorized, 20);
+        assert_eq!(rules::ADMIN_LOGIN_ACCOUNT.limit, 20);
+        assert_eq!(rules::ADMIN_LOGIN_ACCOUNT.window_seconds, 900);
+        let stranger = auth
+            .admin_login(EMAIL, PASSWORD, None, &from("192.0.2.50"))
+            .await
+            .unwrap_err();
+        assert_eq!(stranger.code(), crate::limits::RATE_LIMITED);
+        assert!(
+            stranger
+                .to_string()
+                .contains("с которых вы недавно не входили"),
+            "{stranger}"
+        );
+        auth.admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap();
+        assert_eq!(
+            guess_passwords(&env, "203.0.113.7", 12).await,
+            rules::ADMIN_LOGIN_ACCOUNT_IP.limit
+        );
+        let locked = auth
+            .admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap_err();
+        assert_eq!(locked.code(), crate::limits::RATE_LIMITED);
+        assert!(
+            locked
+                .to_string()
+                .starts_with("Слишком много неверных попыток входа. Попробуйте снова через"),
+            "{locked}"
+        );
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn неудачи_с_известного_адреса_не_расходуют_общий_лимит() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        let limits = env.services.limits();
+        auth.upsert_owner(EMAIL, PASSWORD).await.unwrap();
+        auth.admin_login(EMAIL, PASSWORD, None, &from("203.0.113.7"))
+            .await
+            .unwrap();
+        assert_eq!(guess_passwords(&env, "203.0.113.7", 3).await, 3);
+        let shared = limits
+            .strike(rules::ADMIN_LOGIN_ACCOUNT, EMAIL, "перебор")
+            .await
+            .unwrap();
+        assert_eq!(shared.failures, 1);
+        assert_eq!(guess_passwords(&env, "198.51.100.1", 3).await, 3);
+        let shared = limits
+            .strike(rules::ADMIN_LOGIN_ACCOUNT, EMAIL, "перебор")
+            .await
+            .unwrap();
+        assert_eq!(shared.failures, 5);
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn адрес_запоминается_только_после_полного_входа_с_кодом() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        let (_, secret) = totp_owner(&env).await;
+        let office = from("203.0.113.7");
+        let home = from("198.51.100.20");
+        assert_eq!(
+            rejected_code(auth.admin_login(EMAIL, PASSWORD, None, &office).await),
+            TOTP_REQUIRED
+        );
+        let later = start() + Duration::seconds(30);
+        env.clock.set(later);
+        auth.admin_login(EMAIL, PASSWORD, Some(&code_at(&secret, later)), &home)
+            .await
+            .unwrap();
+        fill_account_limit(&env).await;
+        let next = later + Duration::seconds(30);
+        env.clock.set(next);
+        assert_eq!(
+            rejected_code(
+                auth.admin_login(EMAIL, PASSWORD, Some(&code_at(&secret, next)), &office)
+                    .await
+            ),
+            crate::limits::RATE_LIMITED
+        );
+        auth.admin_login(EMAIL, PASSWORD, Some(&code_at(&secret, next)), &home)
+            .await
+            .unwrap();
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn адрес_входа_помнится_тридцать_дней() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        auth.upsert_owner(EMAIL, PASSWORD).await.unwrap();
+        let home = from("203.0.113.7");
+        auth.admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap();
+        let recent = start() + Duration::days(29) + Duration::hours(23);
+        env.clock.set(recent);
+        fill_account_limit(&env).await;
+        auth.admin_login(EMAIL, PASSWORD, None, &home)
+            .await
+            .unwrap();
+        env.clock.set(recent + Duration::days(31));
+        fill_account_limit(&env).await;
+        assert_eq!(
+            rejected_code(auth.admin_login(EMAIL, PASSWORD, None, &home).await),
+            crate::limits::RATE_LIMITED
+        );
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn известный_адрес_ipv6_сверяется_по_сети_64() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        auth.upsert_owner(EMAIL, PASSWORD).await.unwrap();
+        auth.admin_login(EMAIL, PASSWORD, None, &from("2001:db8:aaaa:1::10"))
+            .await
+            .unwrap();
+        auth.admin_login(EMAIL, PASSWORD, None, &RequestMeta::default())
+            .await
+            .unwrap();
+        fill_account_limit(&env).await;
+        auth.admin_login(
+            EMAIL,
+            PASSWORD,
+            None,
+            &from("2001:db8:aaaa:1:1234:5678:9abc:def0"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rejected_code(
+                auth.admin_login(EMAIL, PASSWORD, None, &from("2001:db8:aaaa:2::10"))
+                    .await
+            ),
+            crate::limits::RATE_LIMITED
+        );
+        assert_eq!(
+            rejected_code(
+                auth.admin_login(EMAIL, PASSWORD, None, &RequestMeta::default())
+                    .await
+            ),
+            crate::limits::RATE_LIMITED
+        );
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn лимиты_по_адресу_считают_ipv6_по_сети_64() {
+        let Some(env) = env().await else { return };
+        let limits = env.services.limits();
+        let rule = rules::TELEGRAM_START_IP;
+        for host in 1..=rule.limit {
+            assert_eq!(
+                limits
+                    .hit_ip(rule, Some(&format!("2001:db8:1:2::{host:x}")))
+                    .await
+                    .unwrap(),
+                host
+            );
+        }
+        assert_eq!(
+            rejected_code(
+                limits
+                    .hit_ip(rule, Some("2001:db8:1:2:ffff:ffff:ffff:ffff"))
+                    .await
+            ),
+            crate::limits::RATE_LIMITED
+        );
+        assert_eq!(
+            limits.hit_ip(rule, Some("2001:db8:1:3::1")).await.unwrap(),
+            1
+        );
+        assert_eq!(limits.hit_ip(rule, Some("203.0.113.7")).await.unwrap(), 1);
+        assert_eq!(limits.hit_ip(rule, Some("203.0.113.8")).await.unwrap(), 1);
+        assert_eq!(
+            limits
+                .hit_ip(rule, Some("::ffff:203.0.113.7"))
+                .await
+                .unwrap(),
+            2
+        );
         env.db.cleanup().await;
     }
 

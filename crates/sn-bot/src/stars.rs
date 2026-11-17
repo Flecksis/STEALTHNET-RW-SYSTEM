@@ -44,6 +44,8 @@ pub enum Status {
     Done,
     Skipped,
     Review,
+    Refunded,
+    Closed,
 }
 
 impl Status {
@@ -53,6 +55,8 @@ impl Status {
             Status::Done => "done",
             Status::Skipped => "skipped",
             Status::Review => "review",
+            Status::Refunded => "refunded",
+            Status::Closed => "closed",
         }
     }
 
@@ -62,6 +66,8 @@ impl Status {
             "done" => Ok(Status::Done),
             "skipped" => Ok(Status::Skipped),
             "review" => Ok(Status::Review),
+            "refunded" => Ok(Status::Refunded),
+            "closed" => Ok(Status::Closed),
             other => Err(StoreError::Decode(format!(
                 "статус оплаты звёздами: {other}"
             ))),
@@ -78,6 +84,8 @@ pub enum Settled {
 }
 
 const REPEAT_NOTE: &str = "повторная оплата уже оплаченного счёта ждёт ручной проверки";
+const UNCREDITED_NOTE: &str =
+    "возврат по списанию, которое не проводилось как оплата: платежи не изменены";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Verdict {
@@ -297,7 +305,32 @@ pub async fn settle(services: &Services, event: &StarsPayment) -> Settled {
     }
 }
 
+async fn credited(services: &Services, charge: &str) -> StoreResult<bool> {
+    let mut conn = services.store().conn().await?;
+    Ok(conn
+        .payments()
+        .by_provider_txid(providers::STARS, charge)
+        .await?
+        .is_some())
+}
+
 async fn process(services: &Services, event: &StarsPayment, retries: u32) -> Verdict {
+    if event.event == StarsPaymentEvent::RefundedPayment {
+        match credited(services, &event.telegram_payment_charge_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(
+                    charge = %event.telegram_payment_charge_id,
+                    "возврат звёзд по списанию, которое не проводилось как оплата"
+                );
+                return Verdict::Applied {
+                    payment: None,
+                    note: Some(UNCREDITED_NOTE.into()),
+                };
+            }
+            Err(err) => return Verdict::Retry(err.to_string()),
+        }
+    }
     let mut attempt: u32 = 0;
     loop {
         match services.inbox().stars_payment(event).await {
@@ -814,6 +847,8 @@ mod tests {
             Status::Done,
             Status::Skipped,
             Status::Review,
+            Status::Refunded,
+            Status::Closed,
         ] {
             assert_eq!(Status::parse(status.as_str()).unwrap(), status);
         }

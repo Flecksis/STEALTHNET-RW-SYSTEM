@@ -10,7 +10,7 @@ use sn_domain::ids::{CategoryId, ClientId, OrderId, PeriodId, SubscriptionId, Ta
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::module::ModuleId;
-use sn_domain::money::{Amount, Money, PayCurrency};
+use sn_domain::money::{Amount, Currency, Money, PayCurrency};
 use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId, providers};
 use sn_domain::plan::{CurrentTariff, PlanKind, classify, new_expire_at};
@@ -18,15 +18,18 @@ use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
 use sn_domain::settings::TrialSettings;
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
-use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook};
+use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook, QuoteOrigin};
 use sn_payments::{
     CheckoutMethod, ClientRef, InvoiceRequest, MethodsContext, PaymentProvider, ProviderKind,
     Unavailable,
 };
 use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx};
+use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod pool_tests;
 #[cfg(test)]
 mod promo_tests;
 #[cfg(test)]
@@ -126,6 +129,14 @@ struct Sale<'s> {
     amount: Amount,
     description: String,
     return_url: Option<String>,
+}
+
+struct Basis {
+    client: Client,
+    tariff: Tariff,
+    current: Option<Subscription>,
+    kind: PlanKind,
+    balance: Money,
 }
 
 struct Prepared {
@@ -380,16 +391,12 @@ impl<'a> Checkout<'a> {
         Ok(offers)
     }
 
-    async fn prepare(&self, client_id: ClientId, cart: &CartRequest) -> ServiceResult<Prepared> {
-        let settings = self.services.settings();
-        let currency = settings.currency;
-        let modules = self.services.modules();
-        if cart.promo_code.is_some() && !modules.is_enabled(ModuleId::Promo) {
-            return Err(ServiceError::rejected(
-                "promo.disabled",
-                "Промокоды сейчас не действуют",
-            ));
-        }
+    async fn basis(
+        &self,
+        client_id: ClientId,
+        cart: &CartRequest,
+        currency: Currency,
+    ) -> ServiceResult<Basis> {
         let mut conn = self.services.store().conn().await?;
         let client = conn.clients().get(client_id).await?;
         if client.is_blocked() {
@@ -431,6 +438,40 @@ impl<'a> Checkout<'a> {
                 category_id: current_category,
             }),
         );
+        let balance = conn
+            .ledger()
+            .balance(client_id, Wallet::Main, currency)
+            .await?;
+        Ok(Basis {
+            client,
+            tariff,
+            current,
+            kind,
+            balance,
+        })
+    }
+
+    async fn prepare(
+        &self,
+        client_id: ClientId,
+        cart: &CartRequest,
+        origin: &QuoteOrigin,
+    ) -> ServiceResult<Prepared> {
+        let currency = self.services.settings().currency;
+        let modules = self.services.modules();
+        if cart.promo_code.is_some() && !modules.is_enabled(ModuleId::Promo) {
+            return Err(ServiceError::rejected(
+                "promo.disabled",
+                "Промокоды сейчас не действуют",
+            ));
+        }
+        let Basis {
+            client,
+            tariff,
+            current,
+            kind,
+            balance,
+        } = self.basis(client_id, cart, currency).await?;
         let hook = QuoteHook {
             client_id,
             tariff_id: tariff.id,
@@ -440,7 +481,7 @@ impl<'a> Checkout<'a> {
             promo_code: cart.promo_code.clone(),
         };
         let adjustments = modules
-            .quote_adjustments(&self.services.module_context(), &hook)
+            .quote_adjustments_from(&self.services.module_context(), &hook, origin)
             .await?;
         let quote = quote(&QuoteRequest {
             currency,
@@ -450,10 +491,6 @@ impl<'a> Checkout<'a> {
             sell_extra_devices: modules.is_enabled(ModuleId::Options),
             adjustments: &adjustments,
         })?;
-        let balance = conn
-            .ledger()
-            .balance(client_id, Wallet::Main, currency)
-            .await?;
         let methods = self.services.payments().checkout_methods(&MethodsContext {
             currency,
             total: quote.total,
@@ -471,7 +508,18 @@ impl<'a> Checkout<'a> {
     }
 
     pub async fn quote(&self, client_id: ClientId, cart: &CartRequest) -> ServiceResult<QuoteView> {
-        let prepared = self.prepare(client_id, cart).await?;
+        self.quote_from(client_id, cart, None).await
+    }
+
+    pub async fn quote_from(
+        &self,
+        client_id: ClientId,
+        cart: &CartRequest,
+        address: Option<IpAddr>,
+    ) -> ServiceResult<QuoteView> {
+        let prepared = self
+            .prepare(client_id, cart, &QuoteOrigin { address })
+            .await?;
         let expire_preview = new_expire_at(
             prepared.kind,
             prepared.current.as_ref().and_then(|s| s.mirror.expire_at),
@@ -491,8 +539,19 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         request: &CheckoutRequest,
     ) -> ServiceResult<CheckoutResult> {
+        self.start_from(client_id, request, None).await
+    }
+
+    pub async fn start_from(
+        &self,
+        client_id: ClientId,
+        request: &CheckoutRequest,
+        address: Option<IpAddr>,
+    ) -> ServiceResult<CheckoutResult> {
         self.services.remna()?;
-        let prepared = self.prepare(client_id, &request.cart).await?;
+        let prepared = self
+            .prepare(client_id, &request.cart, &QuoteOrigin { address })
+            .await?;
         let (kind, amount) = pick_method(&prepared.methods, &request.provider)?;
         let period = prepared
             .tariff
@@ -661,17 +720,24 @@ impl<'a> Checkout<'a> {
         if !modules.is_enabled(item.module) {
             return Err(sn_modules::ModuleError::Disabled(item.module).into());
         }
-        let mut conn = self.services.store().conn().await?;
-        let client = conn.clients().get(client_id).await?;
-        if client.is_blocked() {
-            return Err(ServiceError::Forbidden);
-        }
-        if let Some(id) = item.subscription_id {
-            let subscription = conn.subscriptions().get(id).await?;
-            if subscription.client_id != client_id {
-                return Err(ServiceError::NotFound("подписка"));
+        let (client, balance) = {
+            let mut conn = self.services.store().conn().await?;
+            let client = conn.clients().get(client_id).await?;
+            if client.is_blocked() {
+                return Err(ServiceError::Forbidden);
             }
-        }
+            if let Some(id) = item.subscription_id {
+                let subscription = conn.subscriptions().get(id).await?;
+                if subscription.client_id != client_id {
+                    return Err(ServiceError::NotFound("подписка"));
+                }
+            }
+            let balance = conn
+                .ledger()
+                .balance(client_id, Wallet::Main, currency)
+                .await?;
+            (client, balance)
+        };
         let quote = modules
             .get(item.module)
             .quote_item(
@@ -690,10 +756,6 @@ impl<'a> Checkout<'a> {
                 "модуль посчитал цену не в валюте установки",
             ));
         }
-        let balance = conn
-            .ledger()
-            .balance(client_id, Wallet::Main, currency)
-            .await?;
         let methods = self.services.payments().checkout_methods(&MethodsContext {
             currency,
             total: quote.total,

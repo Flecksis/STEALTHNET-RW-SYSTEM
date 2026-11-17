@@ -1,7 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use sn_domain::client::{RegistrationSource, TelegramProfile};
-use sn_domain::ids::{ClientId, SquadId};
+use sn_domain::ids::{ClientId, OrderId, SquadId};
 use sn_domain::ledger::{LedgerKind, Wallet};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency, Stars};
@@ -1002,6 +1002,422 @@ async fn опрос_оплаченного_автосписания_подтве
         ProviderRefundStatus::Succeeded
     );
     drop(conn);
+    setup.db.cleanup().await;
+}
+
+struct SlowRefundKassa;
+
+#[async_trait]
+impl PaymentProvider for SlowRefundKassa {
+    fn id(&self) -> &'static str {
+        "slow_refund_kassa"
+    }
+
+    fn title(&self) -> &'static str {
+        "Касса с долгими возвратами"
+    }
+
+    fn currencies(&self) -> &'static [Currency] {
+        &Currency::ALL
+    }
+
+    fn client_label(&self, _currency: Currency) -> ClientLabel {
+        ClientLabel {
+            title: "Банковская карта",
+            hint: "Тестовая касса",
+        }
+    }
+
+    fn enabled_by_default(&self) -> bool {
+        true
+    }
+
+    fn supports_refunds(&self) -> bool {
+        true
+    }
+
+    async fn create_invoice(
+        &self,
+        _config: &ProviderConfig,
+        _request: &InvoiceRequest,
+    ) -> PaymentResult<Invoice> {
+        Err(PaymentError::Unsupported("счёт"))
+    }
+
+    async fn parse_webhook(
+        &self,
+        _config: &ProviderConfig,
+        _request: &WebhookRequest,
+    ) -> PaymentResult<WebhookOutcome> {
+        Err(PaymentError::BadSignature)
+    }
+
+    async fn refund(
+        &self,
+        _config: &ProviderConfig,
+        request: &RefundRequest,
+    ) -> PaymentResult<RefundOutcome> {
+        Ok(RefundOutcome {
+            provider_refund_id: Some(format!("slow-{}", request.payment_id)),
+            completed: false,
+        })
+    }
+
+    async fn fetch_refund(
+        &self,
+        _config: &ProviderConfig,
+        _provider_refund_id: &str,
+    ) -> PaymentResult<Option<WebhookOutcome>> {
+        Ok(None)
+    }
+}
+
+struct PendingRefund {
+    setup: Setup,
+    clock: Arc<FixedClock>,
+    payment: Payment,
+}
+
+async fn stalled_order_with_pending_refund(telegram_id: i64) -> Option<PendingRefund> {
+    let clock = Arc::new(FixedClock::new(Utc::now()));
+    let setup = setup_full(
+        Vec::new(),
+        clock.clone(),
+        ProviderRegistry::new(vec![Arc::new(SlowRefundKassa)]),
+    )
+    .await?;
+    let services = &setup.services;
+    let client_id = client(services, telegram_id).await;
+    let tariff = tariff(services).await;
+    let payment = pending_payment_by(
+        services,
+        client_id,
+        &tariff,
+        services.now() + chrono::Duration::days(2),
+        SlowRefundKassa.id(),
+        None,
+    )
+    .await;
+    {
+        let mut tx = services.store().begin().await.unwrap();
+        tx.payments()
+            .transition(
+                payment.id,
+                PaymentStatus::Paid,
+                Some(&format!("sx-{telegram_id}")),
+                None,
+            )
+            .await
+            .unwrap();
+        tx.orders()
+            .transition(payment.order_id, OrderStatus::Paid)
+            .await
+            .unwrap();
+        let job = tx
+            .jobs()
+            .enqueue(
+                &JobPayload::FulfillOrder {
+                    order_id: payment.order_id,
+                },
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        tx.commit().await.unwrap();
+        let mut conn = services.store().conn().await.unwrap();
+        let claimed = conn
+            .jobs()
+            .claim(10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(claimed[0].id, job);
+        conn.jobs().review(job, "попытки кончились").await.unwrap();
+    }
+    let (admin, _) = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap();
+    let requested = services
+        .inbox()
+        .refund(
+            payment.id,
+            &RefundCommand {
+                amount: None,
+                method: RefundMethod::Provider,
+                subscription_action: RefundSubscriptionAction::Keep,
+                reason: Some("не выдали, возвращаем".into()),
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(requested.pending);
+    clock.set(Utc::now() + chrono::Duration::hours(2));
+    Some(PendingRefund {
+        setup,
+        clock,
+        payment,
+    })
+}
+
+async fn settle_refund(pending: &PendingRefund, status: ProviderStatus) {
+    let outcome = WebhookOutcome {
+        event_key: format!("refund:slow-{}", pending.payment.id),
+        payment: Some(sn_payments::PaymentRef::Payment(pending.payment.id)),
+        provider_txid: None,
+        status,
+        amount: None,
+        saved_method: None,
+        reply: WebhookReply::ok(),
+    };
+    pending
+        .setup
+        .services
+        .inbox()
+        .apply_outcome(SlowRefundKassa.id(), &outcome)
+        .await
+        .unwrap();
+}
+
+async fn order_status(services: &Services, payment: &Payment) -> OrderStatus {
+    let mut conn = services.store().conn().await.unwrap();
+    conn.orders().get(payment.order_id).await.unwrap().status
+}
+
+#[tokio::test]
+async fn досверка_не_выдаёт_заказ_с_ожидающим_возвратом_а_после_отказа_кассы_выдаёт() {
+    let Some(pending) = stalled_order_with_pending_refund(591).await else {
+        return;
+    };
+    let services = &pending.setup.services;
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    let report = worker.redeliver().await.unwrap();
+    assert_eq!(report["requeued"], 0, "{report}");
+    worker.tick().await.unwrap();
+    assert_eq!(
+        order_status(services, &pending.payment).await,
+        OrderStatus::Paid
+    );
+    assert!(pending.setup.remna.users().is_empty());
+    settle_refund(&pending, ProviderStatus::RefundDeclined).await;
+    pending.clock.set(Utc::now() + chrono::Duration::hours(3));
+    worker.redeliver().await.unwrap();
+    worker.tick().await.unwrap();
+    assert_eq!(
+        order_status(services, &pending.payment).await,
+        OrderStatus::Fulfilled
+    );
+    assert_eq!(pending.setup.remna.users().len(), 1);
+    pending.setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn после_подтверждения_возврата_заказ_не_выдаётся() {
+    let Some(pending) = stalled_order_with_pending_refund(592).await else {
+        return;
+    };
+    let services = &pending.setup.services;
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    assert_eq!(worker.redeliver().await.unwrap()["requeued"], 0);
+    settle_refund(&pending, ProviderStatus::Refunded).await;
+    assert_eq!(
+        order_status(services, &pending.payment).await,
+        OrderStatus::Refunded
+    );
+    pending.clock.set(Utc::now() + chrono::Duration::hours(3));
+    assert_eq!(worker.redeliver().await.unwrap()["requeued"], 0);
+    worker.tick().await.unwrap();
+    assert!(pending.setup.remna.users().is_empty());
+    assert_eq!(
+        order_status(services, &pending.payment).await,
+        OrderStatus::Refunded
+    );
+    pending.setup.db.cleanup().await;
+}
+
+async fn buy(services: &Services, client_id: ClientId, tariff: &Tariff) -> OrderId {
+    let subscription_id = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.subscriptions()
+            .by_client(client_id)
+            .await
+            .unwrap()
+            .first()
+            .map(|s| s.id)
+    };
+    let result = services
+        .checkout()
+        .start(
+            client_id,
+            &CheckoutRequest {
+                cart: CartRequest {
+                    tariff_id: tariff.id,
+                    period_id: tariff.periods[0].id,
+                    extra_devices: 0,
+                    subscription_id,
+                    promo_code: None,
+                },
+                provider: providers::BALANCE.into(),
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let CheckoutResult::Completed { order_id } = result else {
+        panic!("оплата с баланса должна проходить сразу: {result:?}");
+    };
+    let mut conn = services.store().conn().await.unwrap();
+    conn.orders().by_public_id(order_id).await.unwrap().id
+}
+
+#[tokio::test]
+async fn брошенная_выдача_заказа_на_проверке_не_держит_следующие_заказы() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 593).await;
+    let standard = tariff(services).await;
+    services
+        .change_balance(BalanceChange {
+            client_id,
+            wallet: Wallet::Main,
+            amount: Money::new(5_000, Currency::Usd),
+            kind: LedgerKind::TopUp,
+            comment: None,
+            idempotency_key: "test:topup:593".into(),
+            order_id: None,
+            payment_id: None,
+        })
+        .await
+        .unwrap();
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    buy(services, client_id, &standard).await;
+    worker.tick().await.unwrap();
+    assert_eq!(setup.remna.users().len(), 1);
+    let before = setup.remna.users()[0].expire_at;
+    let missing: SquadId =
+        serde_json::from_value(serde_json::json!("00000000-0000-0000-0000-000000000077")).unwrap();
+    let wide = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.tariffs()
+            .create(&NewTariff {
+                category_id: standard.category_id,
+                name: "Стандарт плюс".into(),
+                description: None,
+                on_sale: true,
+                sort: 1,
+                devices: DevicePolicy {
+                    included: 3,
+                    extra: None,
+                },
+                traffic: TrafficPolicy::UNLIMITED,
+                squads: vec![squad(), missing],
+                external_squad: None,
+                periods: vec![NewPeriod {
+                    days: 30,
+                    prices: CurrencyPrices {
+                        usd: Some(399),
+                        rub: Some(29_900),
+                    },
+                    stars: None,
+                    sort: 0,
+                    active: true,
+                }],
+            })
+            .await
+            .unwrap()
+    };
+    let held = buy(services, client_id, &wide).await;
+    worker.tick().await.unwrap();
+    assert_eq!(
+        {
+            let mut conn = services.store().conn().await.unwrap();
+            conn.orders().get(held).await.unwrap().status
+        },
+        OrderStatus::Review
+    );
+    let mut squads = setup.remna.squads();
+    squads.push(InternalSquad {
+        uuid: missing.0,
+        name: "Резерв".into(),
+        view_position: 1,
+        info: SquadInfo::default(),
+        inbounds: Vec::new(),
+    });
+    setup.remna.set_squads(squads);
+    services
+        .fulfillment()
+        .redeliver(held, Actor::System)
+        .await
+        .unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        loop {
+            let job = conn
+                .jobs()
+                .claim(1, Duration::from_secs(60))
+                .await
+                .unwrap()
+                .remove(0);
+            assert_eq!(
+                job.typed().unwrap(),
+                JobPayload::FulfillOrder { order_id: held }
+            );
+            conn.jobs()
+                .retry_leased(
+                    &job,
+                    "Remnawave недоступна",
+                    Utc::now() - chrono::Duration::seconds(1),
+                )
+                .await
+                .unwrap();
+            if job.attempts + 1 == job.max_attempts {
+                break;
+            }
+        }
+    }
+    setup
+        .remna
+        .fail_on("update_user", sn_remnawave::fake::Fault::Timeout);
+    worker.tick().await.unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    let state = conn.orders().plan_state(held).await.unwrap();
+    assert_eq!(state.stage(), sn_store::PlanStage::Stale);
+    let reason = conn.orders().review_reason(held).await.unwrap().unwrap();
+    assert!(
+        reason.contains("выдача не завершилась за 12 попыток"),
+        "{reason}"
+    );
+    assert!(reason.contains("Пересчитать и выдать"), "{reason}");
+    assert!(
+        conn.jobs()
+            .active_fulfillment(held)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(conn);
+    assert_eq!(setup.remna.users()[0].expire_at, before);
+    let next = buy(services, client_id, &standard).await;
+    worker.tick().await.unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.orders().get(next).await.unwrap().status,
+        OrderStatus::Fulfilled
+    );
+    assert_eq!(
+        conn.orders().get(held).await.unwrap().status,
+        OrderStatus::Review
+    );
+    drop(conn);
+    assert_eq!(
+        setup.remna.users()[0].expire_at,
+        before + chrono::Duration::days(30)
+    );
     setup.db.cleanup().await;
 }
 

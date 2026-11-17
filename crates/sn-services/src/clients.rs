@@ -1,4 +1,5 @@
 use crate::Actor;
+use crate::autorenew::AUTORENEW_METHOD;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use chrono::{DateTime, Utc};
@@ -9,6 +10,7 @@ use sn_domain::client::{
 };
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, SubscriptionId};
+use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Amount, Money};
 use sn_domain::order::{OrderKind, OrderStatus};
@@ -17,6 +19,9 @@ use sn_domain::payment::{PaymentStatus, ProviderId};
 use sn_domain::subscription::Subscription;
 use sn_store::{ClientFilter, ClientListItem, Db, LockSpace, NewClient, StoreError, Tx};
 use uuid::Uuid;
+
+#[cfg(test)]
+mod tests;
 
 pub const MAX_BLOCK_REASON: usize = 500;
 
@@ -65,18 +70,29 @@ pub struct ClientCard {
 
 const BLOCKED_REASON: &str = "клиент заблокирован";
 
-async fn cancel_open_invoices(
-    tx: &mut Tx,
-    client_id: ClientId,
-) -> ServiceResult<(Vec<PaymentId>, Vec<OrderId>)> {
-    let pending: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM payments WHERE client_id = $1 AND status = 'pending' ORDER BY id",
+struct CanceledInvoices {
+    payments: Vec<PaymentId>,
+    orders: Vec<OrderId>,
+    kept: Vec<PaymentId>,
+}
+
+async fn cancel_open_invoices(tx: &mut Tx, client_id: ClientId) -> ServiceResult<CanceledInvoices> {
+    let pending: Vec<(i64, bool)> = sqlx::query_as(
+        "SELECT id, method IS NOT DISTINCT FROM $2 FROM payments \
+         WHERE client_id = $1 AND status = 'pending' ORDER BY id",
     )
     .bind(client_id.0)
+    .bind(AUTORENEW_METHOD)
     .fetch_all(tx.conn())
     .await?;
     let mut payments = Vec::new();
-    for id in pending.into_iter().map(PaymentId) {
+    let mut kept = Vec::new();
+    for (id, in_flight) in pending {
+        let id = PaymentId(id);
+        if in_flight {
+            kept.push(id);
+            continue;
+        }
         match tx
             .payments()
             .transition(id, PaymentStatus::Canceled, None, Some(BLOCKED_REASON))
@@ -88,9 +104,12 @@ async fn cancel_open_invoices(
         }
     }
     let open: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM orders WHERE client_id = $1 AND status = 'pending' ORDER BY id",
+        "SELECT o.id FROM orders o WHERE o.client_id = $1 AND o.status = 'pending' \
+         AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id \
+         AND p.status = 'pending' AND p.method = $2) ORDER BY o.id",
     )
     .bind(client_id.0)
+    .bind(AUTORENEW_METHOD)
     .fetch_all(tx.conn())
     .await?;
     let mut orders = Vec::new();
@@ -101,7 +120,11 @@ async fn cancel_open_invoices(
             Err(err) => return Err(err.into()),
         }
     }
-    Ok((payments, orders))
+    Ok(CanceledInvoices {
+        payments,
+        orders,
+        kept,
+    })
 }
 
 pub struct ClientOps<'a> {
@@ -282,9 +305,9 @@ impl<'a> ClientOps<'a> {
             .set_status(id, ClientStatus::Blocked, reason)
             .await?;
         tx.sessions().revoke_all_client(id).await?;
-        let (canceled_payments, canceled_orders) = cancel_open_invoices(&mut tx, id).await?;
+        let invoices = cancel_open_invoices(&mut tx, id).await?;
         let ctx = self.services.module_context();
-        for order_id in &canceled_orders {
+        for order_id in &invoices.orders {
             let order = tx.orders().get(*order_id).await?;
             self.services
                 .modules()
@@ -307,8 +330,9 @@ impl<'a> ClientOps<'a> {
                 serde_json::json!({
                     "reason": reason,
                     "changed": changed,
-                    "canceled_payments": canceled_payments,
-                    "canceled_orders": canceled_orders,
+                    "canceled_payments": invoices.payments,
+                    "canceled_orders": invoices.orders,
+                    "kept_autorenew_payments": invoices.kept,
                 }),
             ))
             .await?;
@@ -337,7 +361,31 @@ impl<'a> ClientOps<'a> {
             ))
             .await?;
         tx.commit().await?;
-        self.services.subscriptions().restore_access(id).await
+        self.services.subscriptions().restore_access(id).await?;
+        self.resume_charge_polls(id).await
+    }
+
+    async fn resume_charge_polls(&self, id: ClientId) -> ServiceResult<()> {
+        let mut conn = self.services.store().conn().await?;
+        let waiting: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM payments WHERE client_id = $1 AND status = 'pending' AND method = $2 \
+             AND (expires_at IS NULL OR expires_at > $3) ORDER BY id",
+        )
+        .bind(id.0)
+        .bind(AUTORENEW_METHOD)
+        .bind(self.services.now())
+        .fetch_all(conn.conn())
+        .await?;
+        for payment_id in waiting.into_iter().map(PaymentId) {
+            let queued = conn
+                .jobs()
+                .ensure_queued(&JobPayload::PollPayment { payment_id })
+                .await?;
+            if queued.armed() {
+                tracing::info!(client = %id, payment = %payment_id, job = %queued.id(), "опрос автосписания возобновлён после разблокировки");
+            }
+        }
+        Ok(())
     }
 
     pub async fn history(

@@ -1,10 +1,11 @@
+use crate::extract::ProxyNet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub public_url: Option<String>,
-    pub trusted_proxies: Vec<IpAddr>,
+    pub trusted_proxies: Vec<ProxyNet>,
     pub cors_origins: Vec<String>,
     pub body_limit_bytes: usize,
 }

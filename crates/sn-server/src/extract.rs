@@ -13,7 +13,9 @@ use serde::de::DeserializeOwned;
 use sn_domain::access::{AdminPrincipal, ClientChannel, ClientPrincipal, Permission};
 use sn_services::Actor;
 use sn_services::auth::RequestMeta;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 
 pub struct ApiJson<T>(pub T);
@@ -322,28 +324,197 @@ pub fn docker_gateway() -> Option<IpAddr> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProxyNetError {
+    #[error(
+        "«{0}»: ожидается IP-адрес или сеть в записи CIDR, например 10.0.0.2, 172.18.0.0/16 или fd00::/8"
+    )]
+    Malformed(String),
+    #[error("«{value}»: длина префикса сети должна быть от 0 до {max}")]
+    Prefix { value: String, max: u8 },
+    #[error(
+        "«{value}»: это адрес внутри сети, а не сама сеть: укажите {network} или один адрес без длины префикса"
+    )]
+    HostBits { value: String, network: ProxyNet },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProxyNet {
+    network: IpAddr,
+    prefix: u8,
+}
+
+const fn v4_mask(prefix: u8) -> u32 {
+    match u32::MAX.checked_shl(32 - prefix as u32) {
+        Some(mask) => mask,
+        None => 0,
+    }
+}
+
+const fn v6_mask(prefix: u8) -> u128 {
+    match u128::MAX.checked_shl(128 - prefix as u32) {
+        Some(mask) => mask,
+        None => 0,
+    }
+}
+
+fn has_host_bits(address: IpAddr, prefix: u8) -> bool {
+    match address {
+        IpAddr::V4(v4) => u32::from(v4) & !v4_mask(prefix) != 0,
+        IpAddr::V6(v6) => u128::from(v6) & !v6_mask(prefix) != 0,
+    }
+}
+
+impl ProxyNet {
+    pub const V4_BITS: u8 = 32;
+    pub const V6_BITS: u8 = 128;
+
+    pub fn new(address: IpAddr, prefix: u8) -> Option<Self> {
+        match address {
+            IpAddr::V4(v4) if prefix <= Self::V4_BITS => Some(ProxyNet {
+                network: IpAddr::V4(Ipv4Addr::from(u32::from(v4) & v4_mask(prefix))),
+                prefix,
+            }),
+            IpAddr::V6(v6) if prefix <= Self::V6_BITS => match v6.to_ipv4_mapped() {
+                Some(v4) if prefix >= Self::V6_BITS - Self::V4_BITS => {
+                    Self::new(IpAddr::V4(v4), prefix - (Self::V6_BITS - Self::V4_BITS))
+                }
+                _ => Some(ProxyNet {
+                    network: IpAddr::V6(Ipv6Addr::from(u128::from(v6) & v6_mask(prefix))),
+                    prefix,
+                }),
+            },
+            _ => None,
+        }
+    }
+
+    pub fn host(address: IpAddr) -> Self {
+        let network = address.to_canonical();
+        ProxyNet {
+            network,
+            prefix: Self::bits(network),
+        }
+    }
+
+    const fn bits(address: IpAddr) -> u8 {
+        match address {
+            IpAddr::V4(_) => Self::V4_BITS,
+            IpAddr::V6(_) => Self::V6_BITS,
+        }
+    }
+
+    pub const fn network(&self) -> IpAddr {
+        self.network
+    }
+
+    pub const fn prefix(&self) -> u8 {
+        self.prefix
+    }
+
+    pub const fn is_host(&self) -> bool {
+        self.prefix == Self::bits(self.network)
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.network, ip.to_canonical()) {
+            (IpAddr::V4(network), IpAddr::V4(ip)) => {
+                u32::from(ip) & v4_mask(self.prefix) == u32::from(network)
+            }
+            (IpAddr::V6(network), IpAddr::V6(ip)) => {
+                u128::from(ip) & v6_mask(self.prefix) == u128::from(network)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl From<IpAddr> for ProxyNet {
+    fn from(address: IpAddr) -> Self {
+        ProxyNet::host(address)
+    }
+}
+
+impl fmt::Display for ProxyNet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_host() {
+            write!(f, "{}", self.network)
+        } else {
+            write!(f, "{}/{}", self.network, self.prefix)
+        }
+    }
+}
+
+impl FromStr for ProxyNet {
+    type Err = ProxyNetError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let value = raw.trim();
+        let malformed = || ProxyNetError::Malformed(value.to_string());
+        let Some((address, prefix)) = value.split_once('/') else {
+            return value
+                .parse::<IpAddr>()
+                .map(ProxyNet::host)
+                .map_err(|_| malformed());
+        };
+        let address = address.parse::<IpAddr>().map_err(|_| malformed())?;
+        if prefix.is_empty() || !prefix.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(malformed());
+        }
+        let out_of_range = || ProxyNetError::Prefix {
+            value: value.to_string(),
+            max: ProxyNet::bits(address),
+        };
+        let prefix = prefix.parse::<u8>().map_err(|_| out_of_range())?;
+        let network = ProxyNet::new(address, prefix).ok_or_else(out_of_range)?;
+        if has_host_bits(address, prefix) {
+            return Err(ProxyNetError::HostBits {
+                value: value.to_string(),
+                network,
+            });
+        }
+        Ok(network)
+    }
+}
+
+pub fn parse_proxy_list(raw: &str) -> Result<Vec<ProxyNet>, ProxyNetError> {
+    raw.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|item| !item.is_empty())
+        .map(str::parse)
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedProxies {
-    listed: Vec<IpAddr>,
+    listed: Vec<ProxyNet>,
     gateway: Option<IpAddr>,
 }
 
 impl TrustedProxies {
     pub fn new(listed: &[IpAddr], gateway: Option<IpAddr>) -> Self {
+        let listed: Vec<ProxyNet> = listed.iter().copied().map(ProxyNet::host).collect();
+        Self::networks(&listed, gateway)
+    }
+
+    pub fn networks(listed: &[ProxyNet], gateway: Option<IpAddr>) -> Self {
         TrustedProxies {
-            listed: listed.iter().map(|ip| ip.to_canonical()).collect(),
+            listed: listed.to_vec(),
             gateway: gateway
                 .map(|ip| ip.to_canonical())
                 .filter(|ip| !is_public(*ip)),
         }
     }
 
-    pub fn from_config(listed: &[IpAddr]) -> Self {
-        if listed.is_empty() {
-            Self::new(listed, docker_gateway())
+    pub fn from_config<T>(listed: &[T]) -> Self
+    where
+        T: Copy + Into<ProxyNet>,
+    {
+        let listed: Vec<ProxyNet> = listed.iter().copied().map(Into::into).collect();
+        let gateway = if listed.is_empty() {
+            docker_gateway()
         } else {
-            Self::new(listed, None)
-        }
+            None
+        };
+        Self::networks(&listed, gateway)
     }
 
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -351,7 +522,7 @@ impl TrustedProxies {
         if self.listed.is_empty() {
             ip.is_loopback() || self.gateway == Some(ip)
         } else {
-            self.listed.contains(&ip)
+            self.listed.iter().any(|net| net.contains(ip))
         }
     }
 }
@@ -387,11 +558,10 @@ pub fn forwarded_client(peer: IpAddr, headers: &HeaderMap, proxies: &TrustedProx
     client
 }
 
-pub fn client_ip(
-    parts_ip: Option<IpAddr>,
-    headers: &HeaderMap,
-    trusted: &[IpAddr],
-) -> Option<IpAddr> {
+pub fn client_ip<T>(parts_ip: Option<IpAddr>, headers: &HeaderMap, trusted: &[T]) -> Option<IpAddr>
+where
+    T: Copy + Into<ProxyNet>,
+{
     let peer = parts_ip?;
     Some(forwarded_client(
         peer,
@@ -404,6 +574,41 @@ pub fn client_ip(
 pub enum ProxyAdvice {
     UntrustedProxy(IpAddr),
     SingleSource(IpAddr),
+    SilentProxy(IpAddr),
+}
+
+impl ProxyAdvice {
+    pub const fn peer(&self) -> IpAddr {
+        match self {
+            ProxyAdvice::UntrustedProxy(peer)
+            | ProxyAdvice::SingleSource(peer)
+            | ProxyAdvice::SilentProxy(peer) => *peer,
+        }
+    }
+
+    pub fn text(&self) -> String {
+        match self {
+            ProxyAdvice::UntrustedProxy(peer) => format!(
+                "запрос пришёл через прокси {peer} с X-Forwarded-For, но этого адреса нет в SN_TRUSTED_PROXIES: \
+                 настоящие адреса клиентов не видны, лимиты по IP общие для всех. Добавьте {peer} в SN_TRUSTED_PROXIES"
+            ),
+            ProxyAdvice::SingleSource(peer) => format!(
+                "первые {PEER_SAMPLE} запросов пришли с одного внутреннего адреса {peer}, он не в SN_TRUSTED_PROXIES: \
+                 если это обратный прокси, пусть он передаёт X-Forwarded-For, а адрес {peer} добавьте в SN_TRUSTED_PROXIES"
+            ),
+            ProxyAdvice::SilentProxy(peer) => format!(
+                "первые {PEER_SAMPLE} запросов пришли с доверенного адреса {peer} без заголовка X-Forwarded-For. \
+                 Если это обратный прокси, он не передаёт адрес клиента: все клиенты видны как {peer}, лимиты по адресу у них общие. \
+                 Настройте прокси, чтобы он дописывал заголовок (nginx: proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;)"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pattern {
+    Internal,
+    Silent,
 }
 
 #[derive(Debug, Default)]
@@ -411,7 +616,7 @@ struct WatchState {
     forwarded_reported: bool,
     sampling_done: bool,
     seen: u32,
-    source: Option<IpAddr>,
+    source: Option<(Pattern, IpAddr)>,
 }
 
 #[derive(Debug, Default)]
@@ -441,7 +646,8 @@ impl PeerWatch {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
-        let suspicious = !is_public(peer) && !proxies.contains(peer);
+        let trusted = proxies.contains(peer);
+        let suspicious = !trusted && !is_public(peer);
         if suspicious && forwarded && !state.forwarded_reported {
             state.forwarded_reported = true;
             state.sampling_done = true;
@@ -450,35 +656,45 @@ impl PeerWatch {
         if state.sampling_done {
             return None;
         }
-        if !suspicious || state.source.is_some_and(|source| source != peer) {
+        let pattern = if forwarded {
+            None
+        } else if trusted {
+            Some(Pattern::Silent)
+        } else if suspicious {
+            Some(Pattern::Internal)
+        } else {
+            None
+        };
+        let sample = pattern.and_then(|pattern| match state.source {
+            None => Some((pattern, peer)),
+            Some((seen, first))
+                if seen == pattern && (pattern == Pattern::Silent || first == peer) =>
+            {
+                Some((pattern, first))
+            }
+            Some(_) => None,
+        });
+        let Some((pattern, first)) = sample else {
             state.sampling_done = true;
             return None;
-        }
-        state.source = Some(peer);
+        };
+        state.source = Some((pattern, first));
         state.seen += 1;
-        if state.seen >= PEER_SAMPLE {
-            state.sampling_done = true;
-            return Some(ProxyAdvice::SingleSource(peer));
+        if state.seen < PEER_SAMPLE {
+            return None;
         }
-        None
+        state.sampling_done = true;
+        Some(match pattern {
+            Pattern::Internal => ProxyAdvice::SingleSource(first),
+            Pattern::Silent => ProxyAdvice::SilentProxy(first),
+        })
     }
 }
 
 static PEER_WATCH: PeerWatch = PeerWatch::new();
 
 fn report(advice: ProxyAdvice) {
-    match advice {
-        ProxyAdvice::UntrustedProxy(peer) => tracing::warn!(
-            peer = %peer,
-            "запрос пришёл через прокси {peer} с X-Forwarded-For, но этого адреса нет в SN_TRUSTED_PROXIES: \
-             настоящие адреса клиентов не видны, лимиты по IP общие для всех. Добавьте {peer} в SN_TRUSTED_PROXIES"
-        ),
-        ProxyAdvice::SingleSource(peer) => tracing::warn!(
-            peer = %peer,
-            "первые {PEER_SAMPLE} запросов пришли с одного внутреннего адреса {peer}, он не в SN_TRUSTED_PROXIES: \
-             если это обратный прокси, пусть он передаёт X-Forwarded-For, а адрес {peer} добавьте в SN_TRUSTED_PROXIES"
-        ),
-    }
+    tracing::warn!(peer = %advice.peer(), "{}", advice.text());
 }
 
 pub struct CurrentAdmin(pub AdminPrincipal);
@@ -608,7 +824,18 @@ pub async fn require_client(
     let principal = client_principal(&state, request.method(), request.headers()).await;
     match principal {
         Ok(principal) => {
+            let address = client_ip(
+                request
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|peer| peer.0.ip()),
+                request.headers(),
+                &state.config.trusted_proxies,
+            );
             request.extensions_mut().insert(principal);
+            request
+                .extensions_mut()
+                .insert(sn_modules::catalog::web::ClientAddr(address));
             next.run(request).await
         }
         Err(err) => axum::response::IntoResponse::into_response(err),
@@ -619,6 +846,8 @@ pub async fn require_client(
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    const NO_PROXIES: &[ProxyNet] = &[];
 
     #[test]
     fn токен_из_заголовка_или_куки() {
@@ -658,16 +887,19 @@ mod tests {
         headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.7"));
         let loopback: IpAddr = "127.0.0.1".parse().unwrap();
         assert_eq!(
-            client_ip(Some(loopback), &headers, &[]),
+            client_ip(Some(loopback), &headers, NO_PROXIES),
             Some("203.0.113.7".parse().unwrap())
         );
         let mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
         assert_eq!(
-            client_ip(Some(mapped), &headers, &[]),
+            client_ip(Some(mapped), &headers, NO_PROXIES),
             Some("203.0.113.7".parse().unwrap())
         );
         let stranger: IpAddr = "198.51.100.9".parse().unwrap();
-        assert_eq!(client_ip(Some(stranger), &headers, &[]), Some(stranger));
+        assert_eq!(
+            client_ip(Some(stranger), &headers, NO_PROXIES),
+            Some(stranger)
+        );
     }
 
     fn browser(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
@@ -854,6 +1086,271 @@ mod tests {
     }
 
     #[test]
+    fn доверенный_прокси_без_x_forwarded_for_даёт_одно_предупреждение() {
+        let gateway = ip("172.18.0.1");
+        let proxies = TrustedProxies::new(&[], Some(gateway));
+        let watch = PeerWatch::new();
+        let mut advice = Vec::new();
+        for _ in 0..(PEER_SAMPLE * 3) {
+            advice.extend(watch.observe(gateway, &proxies, false));
+        }
+        assert_eq!(
+            forwarded_client(gateway, &HeaderMap::new(), &proxies),
+            gateway
+        );
+        assert_eq!(advice, [ProxyAdvice::SilentProxy(gateway)]);
+        let loopback = PeerWatch::new();
+        for _ in 1..PEER_SAMPLE {
+            assert_eq!(loopback.observe(ip("127.0.0.1"), &proxies, false), None);
+        }
+        assert_eq!(
+            loopback.observe(ip("127.0.0.1"), &proxies, false),
+            Some(ProxyAdvice::SilentProxy(ip("127.0.0.1")))
+        );
+        assert_eq!(loopback.observe(ip("127.0.0.1"), &proxies, false), None);
+        let listed = TrustedProxies::networks(&[net("10.0.0.0/24")], None);
+        let pool = PeerWatch::new();
+        let mut advice = Vec::new();
+        for n in 0..(PEER_SAMPLE * 2) {
+            let peer = ip(if n % 2 == 0 { "10.0.0.2" } else { "10.0.0.3" });
+            advice.extend(pool.observe(peer, &listed, false));
+        }
+        assert_eq!(advice, [ProxyAdvice::SilentProxy(ip("10.0.0.2"))]);
+    }
+
+    #[test]
+    fn прокси_с_x_forwarded_for_предупреждений_не_даёт() {
+        let gateway = ip("172.18.0.1");
+        let proxies = TrustedProxies::new(&[], Some(gateway));
+        let forwarding = PeerWatch::new();
+        for _ in 0..(PEER_SAMPLE * 2) {
+            assert_eq!(forwarding.observe(gateway, &proxies, true), None);
+        }
+        let late = PeerWatch::new();
+        for _ in 1..PEER_SAMPLE {
+            assert_eq!(late.observe(gateway, &proxies, false), None);
+        }
+        assert_eq!(late.observe(gateway, &proxies, true), None);
+        for _ in 0..PEER_SAMPLE {
+            assert_eq!(late.observe(gateway, &proxies, false), None);
+        }
+        let direct = PeerWatch::new();
+        assert_eq!(direct.observe(gateway, &proxies, false), None);
+        assert_eq!(direct.observe(ip("203.0.113.7"), &proxies, false), None);
+        for _ in 0..PEER_SAMPLE {
+            assert_eq!(direct.observe(gateway, &proxies, false), None);
+        }
+        let switched = PeerWatch::new();
+        assert_eq!(switched.observe(ip("172.20.0.4"), &proxies, false), None);
+        for _ in 0..PEER_SAMPLE {
+            assert_eq!(switched.observe(gateway, &proxies, false), None);
+        }
+    }
+
+    #[test]
+    fn тексты_предупреждений_говорят_что_настроить() {
+        let peer = ip("172.18.0.1");
+        let silent = ProxyAdvice::SilentProxy(peer);
+        assert_eq!(silent.peer(), peer);
+        assert_eq!(
+            silent.text(),
+            format!(
+                "первые {PEER_SAMPLE} запросов пришли с доверенного адреса 172.18.0.1 без заголовка X-Forwarded-For. \
+                 Если это обратный прокси, он не передаёт адрес клиента: все клиенты видны как 172.18.0.1, лимиты по адресу у них общие. \
+                 Настройте прокси, чтобы он дописывал заголовок (nginx: proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;)"
+            )
+        );
+        assert!(
+            ProxyAdvice::UntrustedProxy(peer)
+                .text()
+                .ends_with("Добавьте 172.18.0.1 в SN_TRUSTED_PROXIES")
+        );
+        assert!(ProxyAdvice::SingleSource(peer).text().starts_with(&format!(
+            "первые {PEER_SAMPLE} запросов пришли с одного внутреннего адреса 172.18.0.1"
+        )));
+    }
+
+    fn net(value: &str) -> ProxyNet {
+        value.parse().unwrap()
+    }
+
+    #[test]
+    fn сети_прокси_разбираются_вперемешку_с_адресами() {
+        let listed =
+            parse_proxy_list("10.0.0.2, 172.18.0.0/16,fd00:1::/32 ::1\n2001:db8::7,").unwrap();
+        assert_eq!(
+            listed.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "10.0.0.2",
+                "172.18.0.0/16",
+                "fd00:1::/32",
+                "::1",
+                "2001:db8::7"
+            ]
+        );
+        assert_eq!(parse_proxy_list("  ").unwrap(), []);
+        assert_eq!(net(" 172.18.0.0/16 ").to_string(), "172.18.0.0/16");
+        assert_eq!(
+            ProxyNet::new(ip("172.18.0.1"), 16),
+            Some(net("172.18.0.0/16"))
+        );
+        assert_eq!(net("172.18.0.0/16").network(), ip("172.18.0.0"));
+        assert_eq!(net("172.18.0.0/16").prefix(), 16);
+        assert_eq!(net("10.0.0.2/32"), ProxyNet::host(ip("10.0.0.2")));
+        assert!(net("10.0.0.2/32").is_host());
+        assert!(net("2001:db8::7").is_host());
+        assert!(!net("fd00::/8").is_host());
+        assert_eq!(net("::ffff:10.0.0.0/104"), net("10.0.0.0/8"));
+        assert_eq!(net("::ffff:10.0.0.2"), net("10.0.0.2"));
+        assert_eq!(ProxyNet::from(ip("10.0.0.2")), net("10.0.0.2"));
+        assert_eq!(ProxyNet::new(ip("10.0.0.0"), 33), None);
+        assert_eq!(ProxyNet::new(ip("fd00::"), 129), None);
+    }
+
+    #[test]
+    fn сеть_прокси_покрывает_только_свои_адреса() {
+        let docker = net("172.18.0.0/16");
+        assert!(docker.contains(ip("172.18.0.1")));
+        assert!(docker.contains(ip("172.18.255.254")));
+        assert!(docker.contains(ip("::ffff:172.18.0.9")));
+        assert!(!docker.contains(ip("172.19.0.1")));
+        assert!(!docker.contains(ip("2001:db8::1")));
+        let ula = net("fd00::/8");
+        assert!(ula.contains(ip("fd12:3456::1")));
+        assert!(!ula.contains(ip("fe80::1")));
+        assert!(!ula.contains(ip("10.0.0.1")));
+        let subnet = net("2001:db8:1:2::/64");
+        assert!(subnet.contains(ip("2001:db8:1:2:ffff::1")));
+        assert!(!subnet.contains(ip("2001:db8:1:3::1")));
+        assert!(net("10.0.0.2").contains(ip("10.0.0.2")));
+        assert!(!net("10.0.0.2").contains(ip("10.0.0.3")));
+        assert!(net("0.0.0.0/0").contains(ip("203.0.113.7")));
+        assert!(!net("0.0.0.0/0").contains(ip("2001:db8::1")));
+        assert!(net("::/0").contains(ip("2001:db8::1")));
+        assert!(!net("::/0").contains(ip("203.0.113.7")));
+    }
+
+    #[test]
+    fn неверная_запись_прокси_даёт_понятную_ошибку() {
+        for bad in [
+            "proxy",
+            "10.0.0.0/",
+            "/8",
+            "10.0.0.0/8/9",
+            "10.0.0.0/+8",
+            "10.0.0.0/a",
+            "10.0.0.0 /8",
+            "10.0.0.2:8080",
+            "[::1]",
+            "172.18.0.0-172.18.0.255",
+            "",
+        ] {
+            assert_eq!(
+                bad.parse::<ProxyNet>(),
+                Err(ProxyNetError::Malformed(bad.to_string())),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            "10.0.0.0/33".parse::<ProxyNet>().unwrap_err().to_string(),
+            "«10.0.0.0/33»: длина префикса сети должна быть от 0 до 32"
+        );
+        assert_eq!(
+            "10.0.0.0/999".parse::<ProxyNet>(),
+            Err(ProxyNetError::Prefix {
+                value: "10.0.0.0/999".into(),
+                max: 32
+            })
+        );
+        assert_eq!(
+            "fd00::/129".parse::<ProxyNet>().unwrap_err().to_string(),
+            "«fd00::/129»: длина префикса сети должна быть от 0 до 128"
+        );
+        assert_eq!(
+            "172.18.0.1/16".parse::<ProxyNet>(),
+            Err(ProxyNetError::HostBits {
+                value: "172.18.0.1/16".into(),
+                network: net("172.18.0.0/16")
+            })
+        );
+        assert_eq!(
+            "172.18.0.1/16".parse::<ProxyNet>().unwrap_err().to_string(),
+            "«172.18.0.1/16»: это адрес внутри сети, а не сама сеть: укажите 172.18.0.0/16 или один адрес без длины префикса"
+        );
+        assert_eq!(
+            "fd00::1/8".parse::<ProxyNet>(),
+            Err(ProxyNetError::HostBits {
+                value: "fd00::1/8".into(),
+                network: net("fd00::/8")
+            })
+        );
+        assert_eq!(
+            "::ffff:10.0.0.1/104".parse::<ProxyNet>(),
+            Err(ProxyNetError::HostBits {
+                value: "::ffff:10.0.0.1/104".into(),
+                network: net("10.0.0.0/8")
+            })
+        );
+        assert!("10.0.0.1/0".parse::<ProxyNet>().is_err());
+        assert_eq!(
+            parse_proxy_list("10.0.0.2, proxy, 10.0.0.0/8")
+                .unwrap_err()
+                .to_string(),
+            "«proxy»: ожидается IP-адрес или сеть в записи CIDR, например 10.0.0.2, 172.18.0.0/16 или fd00::/8"
+        );
+    }
+
+    #[test]
+    fn доверенные_сети_пропускают_x_forwarded_for_своих_прокси() {
+        let proxies = TrustedProxies::networks(
+            &[net("172.18.0.0/16"), net("10.0.0.2"), net("fd00:1::/64")],
+            Some(ip("172.30.0.1")),
+        );
+        for trusted in ["172.18.0.1", "172.18.44.3", "10.0.0.2", "fd00:1::5"] {
+            assert!(proxies.contains(ip(trusted)), "{trusted}");
+        }
+        for stranger in ["10.0.0.3", "127.0.0.1", "172.30.0.1", "fd00:2::5"] {
+            assert!(!proxies.contains(ip(stranger)), "{stranger}");
+        }
+        assert_eq!(
+            forwarded_client(
+                ip("172.18.0.9"),
+                &forwarded(&["198.51.100.66, 203.0.113.7, 172.18.0.4", "fd00:1::5"]),
+                &proxies
+            ),
+            ip("203.0.113.7")
+        );
+        assert_eq!(
+            forwarded_client(ip("172.19.0.9"), &forwarded(&["203.0.113.7"]), &proxies),
+            ip("172.19.0.9")
+        );
+        assert_eq!(
+            client_ip(
+                Some(ip("172.18.0.9")),
+                &forwarded(&["203.0.113.7"]),
+                &[net("172.18.0.0/16")]
+            ),
+            Some(ip("203.0.113.7"))
+        );
+        assert_eq!(
+            client_ip(
+                Some(ip("172.19.0.9")),
+                &forwarded(&["203.0.113.7"]),
+                &[net("172.18.0.0/16")]
+            ),
+            Some(ip("172.19.0.9"))
+        );
+        assert_eq!(
+            TrustedProxies::from_config(&[net("172.18.0.0/16"), net("10.0.0.2")]),
+            TrustedProxies::networks(&[net("172.18.0.0/16"), net("10.0.0.2")], None)
+        );
+        assert_eq!(
+            TrustedProxies::from_config(&[ip("10.0.0.2")]),
+            TrustedProxies::new(&[ip("10.0.0.2")], None)
+        );
+    }
+
+    #[test]
     fn предупреждение_если_все_запросы_с_одного_внутреннего_адреса() {
         let proxies = TrustedProxies::new(&[], None);
         let watch = PeerWatch::new();
@@ -872,11 +1369,15 @@ mod tests {
             assert_eq!(mixed.observe(ip("172.20.0.4"), &proxies, false), None);
         }
         let behind_trusted = PeerWatch::new();
-        for _ in 0..PEER_SAMPLE {
+        for _ in 1..PEER_SAMPLE {
             assert_eq!(
                 behind_trusted.observe(ip("127.0.0.1"), &proxies, false),
                 None
             );
         }
+        assert_eq!(
+            behind_trusted.observe(ip("127.0.0.1"), &proxies, false),
+            Some(ProxyAdvice::SilentProxy(ip("127.0.0.1")))
+        );
     }
 }

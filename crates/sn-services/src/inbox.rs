@@ -1,13 +1,12 @@
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::RateRule;
+use crate::limits::{RATE_LIMITED, RateRule, Strike, UNKNOWN_ADDRESS, ip_key};
 use crate::services::Services;
-use crate::subscriptions::{disable_remna_user, with_subscription_lock};
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sn_domain::events::DomainEvent;
 use sn_domain::format;
-use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, RefundId, SubscriptionId};
+use sn_domain::ids::{AdminId, ClientId, LedgerEntryId, OrderId, PaymentId, RefundId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Amount, Money};
@@ -22,15 +21,22 @@ use sn_payments::{
     PaymentError, PaymentRef, ProviderKind, ProviderStatus, RefundRequest, SavedMethod,
     WebhookOutcome, WebhookReply, WebhookRequest,
 };
-use sn_remnawave::{DropConnectionsRequest, UpdateUserRequest};
 use sn_store::{
     ActorKind, AuditEntry, Db, InboxOutcome, NewInboundWebhook, NewProviderRefund, NewRefund,
     ProviderRefund, ProviderRefundStatus, RepeatAction, StatusChange, StoreError, Tx, audit_entity,
 };
+use std::net::IpAddr;
 use uuid::Uuid;
 
+mod refund_action;
+mod refund_requests;
 #[cfg(test)]
 mod tests;
+
+pub use refund_action::{
+    REFUND_ACTION_ATTEMPTS, REFUND_ACTION_FAILED, RefundActionOutcome, RefundActionReview,
+};
+pub use refund_requests::{PENDING_REFUNDS_MAX, PendingRefundRequest};
 
 fn digest_hex(body: &[u8]) -> String {
     hex::encode(Sha256::digest(body))
@@ -56,8 +62,26 @@ const REJECTED_WEBHOOKS: RateRule = RateRule {
     window_seconds: 600,
 };
 
+const WEBHOOK_LOOKUPS: RateRule = RateRule {
+    scope: "payment_webhook_lookup",
+    limit: 10,
+    window_seconds: 60,
+};
+
+fn address_key(ip: Option<IpAddr>) -> String {
+    ip.map_or_else(|| UNKNOWN_ADDRESS.to_string(), ip_key)
+}
+
 fn clip(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+fn rejection_outcome(code: &str) -> InboxOutcome {
+    if code == "payment.amount_mismatch" {
+        InboxOutcome::AmountMismatch
+    } else {
+        InboxOutcome::RejectedBusiness
+    }
 }
 
 fn stored_headers(request: &WebhookRequest) -> serde_json::Value {
@@ -128,6 +152,9 @@ pub struct RefundPollReport {
     pub waiting: usize,
     pub unsupported: usize,
     pub failed: usize,
+    pub actions_done: usize,
+    pub actions_retry: usize,
+    pub actions_failed: usize,
 }
 
 fn keep_subscription() -> RefundSubscriptionAction {
@@ -169,6 +196,7 @@ struct RefundSpec<'r> {
     reason: Option<&'r str>,
     admin: Option<AdminId>,
     provider_refund_id: Option<&'r str>,
+    held: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,27 +375,62 @@ impl<'a> PaymentInbox<'a> {
 
     pub async fn handle(&self, hook: InboundWebhook) -> ServiceResult<WebhookResponse> {
         let registry = self.services.payments();
-        let Some(provider) = registry
-            .get(&hook.provider)
-            .filter(|p| registry.accepts_webhooks(p.id()))
-        else {
+        let Some(provider) = registry.get(&hook.provider) else {
             return Ok(WebhookResponse::status(404));
         };
         if hook.request.body.len() > MAX_WEBHOOK_BODY {
             return Ok(WebhookResponse::status(413));
         }
         let dedupe_key = digest_hex(&hook.request.body);
+        if !registry.accepts_webhooks(provider.id()) {
+            let reason =
+                if provider.kind() == ProviderKind::External && provider.accepts_http_webhooks() {
+                    "платёжная система не настроена"
+                } else {
+                    "платёжная система не принимает уведомления по HTTP"
+                };
+            self.note_rejection(
+                provider.id(),
+                &hook.request,
+                &dedupe_key,
+                InboxOutcome::NotAccepted,
+                reason,
+            )
+            .await;
+            return Ok(WebhookResponse::status(404));
+        }
         let config = registry.config(provider.id());
+        let gate = if provider.verifies_webhooks_by_api() {
+            match self.lookup_gate(provider.id(), &hook.request).await? {
+                Some(strike) => Some(strike),
+                None => return Ok(WebhookResponse::status(429)),
+            }
+        } else {
+            None
+        };
         let parsed = match provider.parse_webhook(&config, &hook.request).await {
-            Ok(parsed) => parsed,
+            Ok(parsed) => {
+                if let Some(strike) = &gate
+                    && let Err(err) = self.services.limits().forgive(strike).await
+                {
+                    tracing::warn!(provider = provider.id(), error = %err, "отметка проверки вебхука не снята");
+                }
+                parsed
+            }
             Err(err) => {
                 let (outcome, status) = match &err {
                     PaymentError::BadSignature => (InboxOutcome::RejectedSignature, 401),
                     PaymentError::BadPayload(_) => (InboxOutcome::RejectedPayload, 400),
                     _ => (InboxOutcome::Error, 503),
                 };
-                self.note_rejection(provider.id(), &hook.request, &dedupe_key, outcome, &err)
-                    .await;
+                self.note_rejection(
+                    provider.id(),
+                    &hook.request,
+                    &dedupe_key,
+                    outcome,
+                    &err.to_string(),
+                )
+                .await;
                 return Ok(WebhookResponse::status(status));
             }
         };
@@ -423,11 +486,7 @@ impl<'a> PaymentInbox<'a> {
                     },
                 ),
                 Err(ServiceError::Rejected { code, message }) => (
-                    if code == "payment.amount_mismatch" {
-                        InboxOutcome::AmountMismatch
-                    } else {
-                        InboxOutcome::RejectedPayload
-                    },
+                    rejection_outcome(code),
                     None,
                     Some(message),
                     WebhookResponse {
@@ -448,41 +507,76 @@ impl<'a> PaymentInbox<'a> {
         Ok(response)
     }
 
+    async fn lookup_gate(
+        &self,
+        provider: &str,
+        request: &WebhookRequest,
+    ) -> ServiceResult<Option<Strike>> {
+        let identity = format!("{provider}|{}", address_key(request.remote_ip));
+        match self
+            .services
+            .limits()
+            .strike(
+                WEBHOOK_LOOKUPS,
+                &identity,
+                "Слишком много уведомлений, не прошедших проверку.",
+            )
+            .await
+        {
+            Ok(strike) => Ok(Some(strike)),
+            Err(ServiceError::Rejected { code, .. }) if code == RATE_LIMITED => {
+                tracing::debug!(
+                    provider,
+                    address = %address_key(request.remote_ip),
+                    "вебхук отклонён до проверки: слишком много непроверенных уведомлений с этого адреса"
+                );
+                Ok(None)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     async fn note_rejection(
         &self,
         provider: &str,
         request: &WebhookRequest,
         digest: &str,
         outcome: InboxOutcome,
-        err: &PaymentError,
+        reason: &str,
     ) {
         let ip = request.remote_ip.map(|ip| ip.to_string());
-        let identity = format!("{provider}|{}", ip.as_deref().unwrap_or("unknown"));
-        if self
+        let identity = format!("{provider}|{}", address_key(request.remote_ip));
+        match self
             .services
             .limits()
             .hit(REJECTED_WEBHOOKS, &identity)
             .await
-            .is_err()
         {
-            tracing::debug!(
-                provider,
-                ip = ip.as_deref(),
-                outcome = outcome.as_str(),
-                "отказ вебхука не записан: слишком много отказов с этого адреса"
-            );
-            return;
+            Ok(_) => {}
+            Err(ServiceError::Rejected { code, .. }) if code == RATE_LIMITED => {
+                tracing::debug!(
+                    provider,
+                    ip = ip.as_deref(),
+                    outcome = outcome.as_str(),
+                    "отказ вебхука не записан: слишком много отказов с этого адреса"
+                );
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(provider, error = %err, "отказ вебхука не записан");
+                return;
+            }
         }
         tracing::warn!(
             provider,
             ip = ip.as_deref(),
             outcome = outcome.as_str(),
-            error = %err,
+            error = reason,
             body_sha256 = digest,
             body_len = request.body.len(),
             "вебхук отклонён"
         );
-        let error = clip(&err.to_string(), STORED_TEXT_LIMIT);
+        let error = clip(reason, STORED_TEXT_LIMIT);
         let record = NewInboundWebhook {
             source: provider.to_string(),
             dedupe_key: format!("rejected:{digest}"),
@@ -1052,6 +1146,7 @@ impl<'a> PaymentInbox<'a> {
                     reason: Some("возврат по уведомлению платёжной системы"),
                     admin: None,
                     provider_refund_id: Some(&outcome.event_key),
+                    held: false,
                 },
             )
             .await?;
@@ -1082,6 +1177,8 @@ impl<'a> PaymentInbox<'a> {
                     now,
                 )
                 .await?;
+            self.release_hold(&mut tx, payment, request, request.amount.minor)
+                .await?;
             tx.commit().await?;
             return Ok(AcceptResult::AlreadyApplied {
                 payment_id: payment.id,
@@ -1102,6 +1199,7 @@ impl<'a> PaymentInbox<'a> {
                     reason: request.reason.as_deref(),
                     admin: request.admin_id,
                     provider_refund_id: Some(&refund_key),
+                    held: request.hold_entry_id.is_some(),
                 },
             )
             .await?;
@@ -1114,6 +1212,11 @@ impl<'a> PaymentInbox<'a> {
                 now,
             )
             .await?;
+        self.release_hold(&mut tx, payment, request, request.amount.minor - minor)
+            .await?;
+        let acts = request.subscription_action != RefundSubscriptionAction::Keep
+            && recorded.order.subscription_id.is_some()
+            && tx.payments().arm_refund_action(request.id, now).await?;
         tx.audit()
             .record(&AuditEntry {
                 actor_kind: ActorKind::System,
@@ -1132,15 +1235,8 @@ impl<'a> PaymentInbox<'a> {
             })
             .await?;
         tx.commit().await?;
-        if let Err(err) = self
-            .refund_subscription_action(
-                &recorded.order,
-                request.subscription_action,
-                request.admin_id,
-            )
-            .await
-        {
-            tracing::warn!(payment = %payment.id, error = %err, "действие с подпиской после подтверждения возврата не выполнено");
+        if acts && let Err(err) = self.run_refund_action(request.id).await {
+            tracing::warn!(payment = %payment.id, request = request.id, error = %err, "действие с подпиской после подтверждения возврата отложено до повтора");
         }
         Ok(AcceptResult::StatusChanged {
             payment_id: payment.id,
@@ -1178,6 +1274,9 @@ impl<'a> PaymentInbox<'a> {
                 self.services.now(),
             )
             .await?;
+        self.release_hold(&mut tx, &payment, request, request.amount.minor)
+            .await?;
+        self.resume_delivery(&mut tx, payment.order_id).await?;
         tx.audit()
             .record(&AuditEntry {
                 actor_kind: ActorKind::System,
@@ -1201,6 +1300,20 @@ impl<'a> PaymentInbox<'a> {
             payment_id: payment.id,
             status: payment.status,
         })
+    }
+
+    async fn resume_delivery(&self, tx: &mut Tx, order_id: OrderId) -> ServiceResult<()> {
+        let order = tx.orders().get(order_id).await?;
+        if order.status == OrderStatus::Paid && !tx.orders().refund_pending(order.id).await? {
+            let queued = tx
+                .jobs()
+                .ensure_queued(&JobPayload::FulfillOrder { order_id: order.id })
+                .await?;
+            if queued.armed() {
+                tracing::info!(order = %order.id, job = %queued.id(), "возврат не состоялся: выдача заказа поставлена в очередь");
+            }
+        }
+        Ok(())
     }
 
     async fn record_refund(
@@ -1268,7 +1381,7 @@ impl<'a> PaymentInbox<'a> {
                         .await?;
                 }
             }
-            RefundMethod::Provider if credits_balance(&order, repeat) => {
+            RefundMethod::Provider if credits_balance(&order, repeat) && !spec.held => {
                 self.reverse_topup(tx, payment, &order, spec.amount, refund_id)
                     .await?;
             }
@@ -1369,6 +1482,108 @@ impl<'a> PaymentInbox<'a> {
         Ok(())
     }
 
+    async fn hold_refund(
+        &self,
+        tx: &mut Tx,
+        payment: &Payment,
+        order: &Order,
+        money: Money,
+        admin: AdminId,
+    ) -> ServiceResult<LedgerEntryId> {
+        let spent = || {
+            ServiceError::rejected(
+                "refund.topup_spent",
+                "Клиент уже потратил пополнение: на балансе меньше суммы возврата",
+            )
+        };
+        let unheld = tx
+            .payments()
+            .unheld_refunds_minor(payment.client_id, money.currency.into())
+            .await?;
+        let balance = tx
+            .ledger()
+            .balance(payment.client_id, Wallet::Main, money.currency)
+            .await?;
+        if balance.minor - unheld < money.minor {
+            return Err(spent());
+        }
+        let delta = money.checked_neg()?;
+        let appended = tx
+            .ledger()
+            .append(&NewLedgerEntry {
+                client_id: payment.client_id,
+                wallet: Wallet::Main,
+                amount: delta,
+                kind: LedgerKind::RefundHold,
+                order_id: Some(order.id),
+                payment_id: Some(payment.id),
+                admin_id: Some(admin),
+                comment: Some(format!(
+                    "Возврат пополнения через платёжную систему: платёж {}",
+                    payment.public_id
+                )),
+                idempotency_key: None,
+            })
+            .await
+            .map_err(|err| match err {
+                StoreError::InsufficientFunds => spent(),
+                other => other.into(),
+            })?;
+        tx.events()
+            .push(&DomainEvent::BalanceChanged {
+                client_id: payment.client_id,
+                wallet: Wallet::Main,
+                kind: LedgerKind::RefundHold,
+                delta,
+            })
+            .await?;
+        Ok(appended.entry_id)
+    }
+
+    async fn release_hold(
+        &self,
+        tx: &mut Tx,
+        payment: &Payment,
+        request: &ProviderRefund,
+        minor: i64,
+    ) -> ServiceResult<()> {
+        if request.hold_entry_id.is_none() || minor <= 0 {
+            return Ok(());
+        }
+        let Some(currency) = request.amount.currency.as_currency() else {
+            return Ok(());
+        };
+        let amount = Money::new(minor, currency);
+        let appended = tx
+            .ledger()
+            .append(&NewLedgerEntry {
+                client_id: payment.client_id,
+                wallet: Wallet::Main,
+                amount,
+                kind: LedgerKind::RefundRelease,
+                order_id: Some(payment.order_id),
+                payment_id: Some(payment.id),
+                admin_id: None,
+                comment: Some(format!(
+                    "Возврат платежа {} через платёжную систему не состоялся",
+                    payment.public_id
+                )),
+                idempotency_key: Some(format!("refund_release:{}", request.id)),
+            })
+            .await?;
+        if !appended.duplicate {
+            tx.events()
+                .push(&DomainEvent::BalanceChanged {
+                    client_id: payment.client_id,
+                    wallet: Wallet::Main,
+                    kind: LedgerKind::RefundRelease,
+                    delta: amount,
+                })
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn refund(
         &self,
         payment_id: PaymentId,
@@ -1416,7 +1631,7 @@ impl<'a> PaymentInbox<'a> {
         let amount = Amount::new(minor, payment.amount.currency);
         let order = tx.orders().get(payment.order_id).await?;
         let credited = credits_balance(&order, tx.payments().repeat_action(payment.id).await?);
-        let (provider_refund_id, completed) = match command.method {
+        let (provider_refund_id, completed, hold) = match command.method {
             RefundMethod::Balance => {
                 if credited {
                     return Err(ServiceError::rejected(
@@ -1430,7 +1645,7 @@ impl<'a> PaymentInbox<'a> {
                         "На баланс возвращаются только суммы в валюте установки",
                     ));
                 }
-                (None, true)
+                (None, true, None)
             }
             RefundMethod::Provider => {
                 let provider = self
@@ -1450,18 +1665,13 @@ impl<'a> PaymentInbox<'a> {
                         "У платежа нет номера транзакции в платёжной системе",
                     )
                 })?;
-                if credited && let Some(money) = amount.as_money() {
-                    let balance = tx
-                        .ledger()
-                        .balance(payment.client_id, Wallet::Main, money.currency)
-                        .await?;
-                    if balance.minor - waiting < money.minor {
-                        return Err(ServiceError::rejected(
-                            "refund.topup_spent",
-                            "Клиент уже потратил пополнение: на балансе меньше суммы возврата",
-                        ));
-                    }
-                }
+                let hold = match amount.as_money() {
+                    Some(money) if credited => Some(
+                        self.hold_refund(&mut tx, &payment, &order, money, admin)
+                            .await?,
+                    ),
+                    _ => None,
+                };
                 let config = self.services.payments().config(provider.id());
                 let outcome = provider
                     .refund(
@@ -1474,7 +1684,7 @@ impl<'a> PaymentInbox<'a> {
                         },
                     )
                     .await?;
-                (outcome.provider_refund_id, outcome.completed)
+                (outcome.provider_refund_id, outcome.completed, hold)
             }
         };
         if !completed {
@@ -1487,6 +1697,7 @@ impl<'a> PaymentInbox<'a> {
                     reason: command.reason.clone(),
                     admin_id: Some(admin),
                     provider_refund_id: provider_refund_id.clone(),
+                    hold_entry_id: hold,
                     requested_at: now,
                 })
                 .await?;
@@ -1503,6 +1714,7 @@ impl<'a> PaymentInbox<'a> {
                         "method": command.method,
                         "subscription_action": command.subscription_action,
                         "provider_refund_id": provider_refund_id,
+                        "hold_entry_id": hold,
                     }),
                     ip: None,
                 })
@@ -1537,6 +1749,7 @@ impl<'a> PaymentInbox<'a> {
                     reason: command.reason.as_deref(),
                     admin: Some(admin),
                     provider_refund_id: provider_refund_id.as_deref(),
+                    held: hold.is_some(),
                 },
             )
             .await?;
@@ -1576,102 +1789,6 @@ impl<'a> PaymentInbox<'a> {
             status: recorded.status,
             subscription_error,
         })
-    }
-
-    async fn refund_subscription_action(
-        &self,
-        order: &Order,
-        action: RefundSubscriptionAction,
-        admin: Option<AdminId>,
-    ) -> ServiceResult<()> {
-        if action == RefundSubscriptionAction::Keep {
-            return Ok(());
-        }
-        let Some(subscription_id) = order.subscription_id else {
-            return Ok(());
-        };
-        with_subscription_lock(
-            self.services,
-            subscription_id,
-            self.apply_refund_action(order, subscription_id, action, admin),
-        )
-        .await
-    }
-
-    async fn apply_refund_action(
-        &self,
-        order: &Order,
-        subscription_id: SubscriptionId,
-        action: RefundSubscriptionAction,
-        admin: Option<AdminId>,
-    ) -> ServiceResult<()> {
-        let subscription = {
-            let mut conn = self.services.store().conn().await?;
-            conn.subscriptions().get(subscription_id).await?
-        };
-        let Some(link) = subscription.remna.clone() else {
-            return Ok(());
-        };
-        let remna = self.services.remna()?;
-        let user = match action {
-            RefundSubscriptionAction::Cut => {
-                let current = remna.get_user(link.user_id).await?;
-                let cut = (current.expire_at - Duration::days(order.quote.days as i64))
-                    .max(self.services.now());
-                let mut request = UpdateUserRequest::new(link.user_id);
-                request.expire_at = Some(cut);
-                remna.update_user(&request).await?
-            }
-            RefundSubscriptionAction::Disable => {
-                let user = disable_remna_user(&*remna, link.user_id).await?;
-                remna
-                    .drop_connections(&DropConnectionsRequest::users_everywhere(vec![
-                        link.user_id,
-                    ]))
-                    .await?;
-                user
-            }
-            RefundSubscriptionAction::Keep => return Ok(()),
-        };
-        let mut tx = self.services.store().begin().await?;
-        let mirror = user.mirror(subscription.mirror.devices_count, self.services.now());
-        tx.subscriptions()
-            .apply_mirror(subscription.id, &mirror)
-            .await?;
-        if let (Some(from), Some(to)) = (subscription.mirror.status, mirror.status)
-            && from != to
-        {
-            tx.events()
-                .push(&DomainEvent::SubscriptionStatusChanged {
-                    subscription_id: subscription.id,
-                    client_id: subscription.client_id,
-                    from: Some(from),
-                    to,
-                })
-                .await?;
-        }
-        tx.audit()
-            .record(&AuditEntry {
-                actor_kind: if admin.is_some() {
-                    ActorKind::Admin
-                } else {
-                    ActorKind::System
-                },
-                actor_id: admin.map(|a| a.0),
-                action: "subscription.refund_action".into(),
-                entity_kind: Some("subscription".into()),
-                entity_id: Some(subscription.id.0),
-                details: serde_json::json!({
-                    "order_id": order.id,
-                    "action": action,
-                    "previous_expire_at": subscription.mirror.expire_at,
-                    "expire_at": user.expire_at,
-                }),
-                ip: None,
-            })
-            .await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     pub async fn mark_paid(
@@ -1887,11 +2004,20 @@ impl<'a> PaymentInbox<'a> {
     }
 
     pub async fn poll_refunds(&self, limit: i64) -> ServiceResult<RefundPollReport> {
-        let requested_before = self.services.now() - Duration::seconds(REFUND_POLL_DELAY_SECONDS);
+        let now = self.services.now();
+        let quiet_since = now - Duration::seconds(REFUND_POLL_DELAY_SECONDS);
+        let pollable: Vec<String> = self
+            .services
+            .payments()
+            .providers()
+            .iter()
+            .filter(|p| p.supports_refund_polling())
+            .map(|p| p.id().to_string())
+            .collect();
         let requests = {
             let mut conn = self.services.store().conn().await?;
             conn.payments()
-                .pending_provider_refunds(requested_before, limit)
+                .claim_refunds_to_poll(&pollable, quiet_since, quiet_since, now, limit)
                 .await?
         };
         let mut report = RefundPollReport::default();
@@ -1910,6 +2036,10 @@ impl<'a> PaymentInbox<'a> {
                 }
             }
         }
+        let actions = self.retry_refund_actions(limit).await?;
+        report.actions_done = actions.done;
+        report.actions_retry = actions.retry;
+        report.actions_failed = actions.failed;
         Ok(report)
     }
 

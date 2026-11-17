@@ -1,4 +1,5 @@
 use super::non_negative_u32;
+use super::orders::{REFUND_PENDING, fulfill_key_prefix};
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
 use sn_domain::ids::{JobId, OrderId};
@@ -84,15 +85,6 @@ impl TryFrom<JobRow> for JobRecord {
             lease_token: row.lease_token,
         })
     }
-}
-
-fn fulfill_key_prefix() -> String {
-    let probe = JobPayload::FulfillOrder {
-        order_id: OrderId(0),
-    }
-    .dedupe_key()
-    .unwrap_or_default();
-    probe.strip_suffix('0').unwrap_or(&probe).to_string()
 }
 
 pub struct JobsRepo<'c> {
@@ -279,6 +271,13 @@ impl<'c> JobsRepo<'c> {
         Ok(())
     }
 
+    pub async fn active_fulfillment(&mut self, order_id: OrderId) -> StoreResult<Option<JobId>> {
+        match (JobPayload::FulfillOrder { order_id }).dedupe_key() {
+            Some(key) => self.active(&key).await,
+            None => Ok(None),
+        }
+    }
+
     async fn active(&mut self, key: &str) -> StoreResult<Option<JobId>> {
         let id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM jobs WHERE dedupe_key = $1 AND status IN ('queued', 'running') LIMIT 1",
@@ -329,12 +328,12 @@ impl<'c> JobsRepo<'c> {
         quiet_since: DateTime<Utc>,
         limit: i64,
     ) -> StoreResult<Vec<OrderId>> {
-        let ids: Vec<i64> = sqlx::query_scalar(
+        let ids: Vec<i64> = sqlx::query_scalar(&format!(
             "SELECT o.id FROM orders o WHERE o.status = 'paid' AND o.updated_at < $1 \
              AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = $2 || o.id::text \
                  AND (j.status IN ('queued', 'running', 'failed') OR j.updated_at >= $3)) \
-             ORDER BY o.updated_at, o.id LIMIT $4",
-        )
+             AND NOT {REFUND_PENDING} ORDER BY o.updated_at, o.id LIMIT $4"
+        ))
         .bind(paid_before)
         .bind(fulfill_key_prefix())
         .bind(quiet_since)
@@ -558,6 +557,73 @@ mod tests {
         conn.jobs().complete(duplicate).await.unwrap();
         conn.jobs().requeue(other).await.unwrap();
         assert_eq!(status(&mut conn, other).await, ("queued".to_string(), 0));
+        drop(conn);
+        db.cleanup().await;
+    }
+
+    async fn stalled(
+        db: &mut impl Db,
+        paid_before: DateTime<Utc>,
+        quiet_since: DateTime<Utc>,
+    ) -> Vec<OrderId> {
+        db.jobs()
+            .stalled_fulfillments(paid_before, quiet_since, 10)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn заказ_с_ожидающим_возвратом_досверка_не_берёт() {
+        let Some(db) = test_store().await else { return };
+        let mut conn = db.store.conn().await.unwrap();
+        let order = paid_order(&mut conn).await;
+        let client: i64 = sqlx::query_scalar("SELECT client_id FROM orders WHERE id = $1")
+            .bind(order.0)
+            .fetch_one(conn.conn())
+            .await
+            .unwrap();
+        let payment: i64 = sqlx::query_scalar(
+            "INSERT INTO payments (order_id, client_id, provider, amount_minor, currency, status, provider_txid) \
+             VALUES ($1, $2, 'platega', 299, 'USD', 'paid', 'tx-1') RETURNING id",
+        )
+        .bind(order.0)
+        .bind(client)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        let later = Utc::now() + chrono::Duration::hours(2);
+        let quiet = later - chrono::Duration::minutes(30);
+        assert_eq!(stalled(&mut conn, later, quiet).await, vec![order]);
+        let request: i64 = sqlx::query_scalar(
+            "INSERT INTO provider_refunds (payment_id, amount_minor, currency, subscription_action) \
+             VALUES ($1, 299, 'USD', 'keep') RETURNING id",
+        )
+        .bind(payment)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        assert!(stalled(&mut conn, later, quiet).await.is_empty());
+        sqlx::query(
+            "UPDATE provider_refunds SET status = 'declined', resolved_at = now() WHERE id = $1",
+        )
+        .bind(request)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        assert_eq!(stalled(&mut conn, later, quiet).await, vec![order]);
+        assert_eq!(conn.jobs().active_fulfillment(order).await.unwrap(), None);
+        let job = conn
+            .jobs()
+            .enqueue(&JobPayload::FulfillOrder { order_id: order }, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            conn.jobs().active_fulfillment(order).await.unwrap(),
+            Some(job)
+        );
+        conn.jobs().review(job, "попытки кончились").await.unwrap();
+        assert_eq!(conn.jobs().active_fulfillment(order).await.unwrap(), None);
         drop(conn);
         db.cleanup().await;
     }

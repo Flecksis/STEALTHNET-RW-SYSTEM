@@ -2,7 +2,7 @@ use super::{
     Activation, ListFilter, NewPromo, PromoCode, PromoError, PromoListItem, PromoRejection, Purpose,
 };
 use crate::catalog::installation_currency;
-use crate::catalog::web::{Admin, Customer, WebError};
+use crate::catalog::web::{Admin, ClientAddr, Customer, WebError};
 use crate::context::ModuleContext;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -119,15 +119,20 @@ struct CheckResponse {
 async fn check(
     State(ctx): State<ModuleContext>,
     customer: Customer,
+    address: ClientAddr,
     Json(body): Json<CheckRequest>,
 ) -> Result<Json<CheckResponse>, WebError> {
+    if super::normalize_code(&body.code).is_none() {
+        return Err(PromoError::Rejected(PromoRejection::NotFound).into());
+    }
     let currency = {
         let mut conn = ctx.store.conn().await?;
         installation_currency(&mut conn).await?
     };
-    let promo = super::check(
+    let promo = super::check_from(
         &ctx,
         customer.0.client_id,
+        address.0,
         &body.code,
         Purpose::Check {
             tariff: body.tariff_id,
@@ -152,10 +157,18 @@ struct ActivateRequest {
 async fn activate(
     State(ctx): State<ModuleContext>,
     customer: Customer,
+    address: ClientAddr,
     Json(body): Json<ActivateRequest>,
 ) -> Result<Json<Activation>, WebError> {
     customer.require_full()?;
     Ok(Json(
-        super::activate(&ctx, customer.0.client_id, &body.code, body.subscription_id).await?,
+        super::activate_from(
+            &ctx,
+            customer.0.client_id,
+            address.0,
+            &body.code,
+            body.subscription_id,
+        )
+        .await?,
     ))
 }

@@ -12,6 +12,7 @@ use crate::infra::InfraOps;
 use crate::limits::RateLimits;
 use crate::remna_sync::RemnaSync;
 use crate::settings::{self, SettingsOps};
+use crate::stars_review::StarsReview;
 use crate::subscriptions::SubscriptionOps;
 use crate::support::SupportOps;
 use crate::tariffs::TariffAdmin;
@@ -303,5 +304,9 @@ impl Services {
 
     pub fn settings_ops(&self) -> SettingsOps<'_> {
         SettingsOps::new(self)
+    }
+
+    pub fn stars_review(&self) -> StarsReview<'_> {
+        StarsReview::new(self)
     }
 }

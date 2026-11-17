@@ -1,8 +1,9 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use sn_server::ServerConfig;
+use sn_server::extract::parse_proxy_list;
 use sn_services::{EnvFallbacks, RemnaConnection};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
@@ -68,13 +69,9 @@ impl Config {
         {
             bail!("SN_PUBLIC_URL должен начинаться с https://");
         }
-        let trusted_proxies = list(vars, "SN_TRUSTED_PROXIES")
-            .iter()
-            .map(|ip| {
-                ip.parse::<IpAddr>()
-                    .with_context(|| format!("SN_TRUSTED_PROXIES: «{ip}» не IP-адрес"))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let trusted_proxies =
+            parse_proxy_list(&text(vars, "SN_TRUSTED_PROXIES").unwrap_or_default())
+                .map_err(|err| anyhow!("SN_TRUSTED_PROXIES: {err}"))?;
         let db_max_connections = text(vars, "SN_DB_MAX_CONNECTIONS")
             .map(|v| {
                 v.parse::<u32>()
@@ -156,6 +153,36 @@ mod tests {
     }
 
     #[test]
+    fn доверенные_прокси_задаются_адресами_и_сетями() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            (
+                "SN_TRUSTED_PROXIES",
+                "10.0.0.2, 172.18.0.0/16,fd00::/8, 2001:db8::7",
+            ),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config
+                .server
+                .trusted_proxies
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["10.0.0.2", "172.18.0.0/16", "fd00::/8", "2001:db8::7"]
+        );
+        assert_eq!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_TRUSTED_PROXIES", "10.0.0.2,172.18.0.0/33")
+            ]))
+            .unwrap_err()
+            .to_string(),
+            "SN_TRUSTED_PROXIES: «172.18.0.0/33»: длина префикса сети должна быть от 0 до 32"
+        );
+    }
+
+    #[test]
     fn переменные_разбираются_строго() {
         let config = Config::from_vars(&vars(&[
             ("DATABASE_URL", "postgres://sn@db/sn"),
@@ -176,12 +203,14 @@ mod tests {
         assert!(
             Config::from_vars(&vars(&[("DATABASE_URL", "x"), ("SN_RUN_BOT", "maybe")])).is_err()
         );
-        assert!(
+        assert_eq!(
             Config::from_vars(&vars(&[
                 ("DATABASE_URL", "x"),
                 ("SN_TRUSTED_PROXIES", "proxy")
             ]))
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+            "SN_TRUSTED_PROXIES: «proxy»: ожидается IP-адрес или сеть в записи CIDR, например 10.0.0.2, 172.18.0.0/16 или fd00::/8"
         );
         assert!(
             Config::from_vars(&vars(&[

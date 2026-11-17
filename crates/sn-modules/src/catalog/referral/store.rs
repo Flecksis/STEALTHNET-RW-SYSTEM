@@ -453,9 +453,9 @@ pub async fn unsettled_credits(db: &mut impl Db, limit: i64) -> StoreResult<Vec<
     .await?)
 }
 
-pub async fn lock_credit(db: &mut impl Db, id: i64) -> StoreResult<Option<Credit>> {
+pub async fn credit(db: &mut impl Db, id: i64) -> StoreResult<Option<Credit>> {
     let row: Option<CreditRow> = sqlx::query_as(&format!(
-        "SELECT {C_COLUMNS} FROM referral_credits WHERE id = $1 FOR UPDATE SKIP LOCKED"
+        "SELECT {C_COLUMNS} FROM referral_credits WHERE id = $1"
     ))
     .bind(id)
     .fetch_optional(db.conn())
@@ -463,23 +463,35 @@ pub async fn lock_credit(db: &mut impl Db, id: i64) -> StoreResult<Option<Credit
     row.map(TryInto::try_into).transpose()
 }
 
-pub async fn mark_credited(db: &mut impl Db, id: i64) -> StoreResult<()> {
-    sqlx::query(
-        "UPDATE referral_credits SET credited_at = COALESCE(credited_at, now()) WHERE id = $1",
+pub async fn mark_credited(db: &mut impl Db, id: i64) -> StoreResult<bool> {
+    let done = sqlx::query(
+        "UPDATE referral_credits SET credited_at = now() WHERE id = $1 AND credited_at IS NULL",
     )
     .bind(id)
     .execute(db.conn())
     .await?;
-    Ok(())
+    Ok(done.rows_affected() > 0)
 }
 
-pub async fn set_reversed(db: &mut impl Db, id: i64, reversed: i64) -> StoreResult<()> {
-    sqlx::query("UPDATE referral_credits SET reversed_minor = $2 WHERE id = $1")
-        .bind(id)
-        .bind(reversed)
-        .execute(db.conn())
-        .await?;
-    Ok(())
+pub async fn advance_reversed(db: &mut impl Db, id: i64, from: i64, to: i64) -> StoreResult<bool> {
+    let done = sqlx::query(
+        "UPDATE referral_credits SET reversed_minor = $3 WHERE id = $1 AND reversed_minor = $2",
+    )
+    .bind(id)
+    .bind(from)
+    .bind(to)
+    .execute(db.conn())
+    .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+pub async fn reversal_applied(db: &mut impl Db, key: &str) -> StoreResult<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT -delta_minor FROM balance_entries WHERE idempotency_key = $1 AND delta_minor < 0",
+    )
+    .bind(key)
+    .fetch_optional(db.conn())
+    .await?)
 }
 
 pub async fn refunded_minor(db: &mut impl Db, payment_id: PaymentId) -> StoreResult<i64> {

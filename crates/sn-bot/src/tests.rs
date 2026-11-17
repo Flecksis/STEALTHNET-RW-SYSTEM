@@ -20,6 +20,7 @@ use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod stars;
+mod stars_review;
 
 const TOKEN: &str = "123456:TEST-secret-token";
 

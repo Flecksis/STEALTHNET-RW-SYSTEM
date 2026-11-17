@@ -12,6 +12,7 @@ use sn_domain::payment::Payment;
 use sn_domain::pricing::{PriceAdjustment, Quote};
 use sn_domain::settings::{SettingField, missing_required};
 use sn_store::Tx;
+use std::net::IpAddr;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -51,6 +52,11 @@ pub struct QuoteHook {
     pub order_kind: OrderKind,
     pub currency: Currency,
     pub promo_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuoteOrigin {
+    pub address: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +134,15 @@ pub trait Module: Send + Sync + 'static {
         _hook: &QuoteHook,
     ) -> Result<Vec<PriceAdjustment>, ModuleError> {
         Ok(Vec::new())
+    }
+
+    async fn quote_adjustments_from(
+        &self,
+        ctx: &ModuleContext,
+        hook: &QuoteHook,
+        _origin: &QuoteOrigin,
+    ) -> Result<Vec<PriceAdjustment>, ModuleError> {
+        self.quote_adjustments(ctx, hook).await
     }
 
     async fn quote_item(

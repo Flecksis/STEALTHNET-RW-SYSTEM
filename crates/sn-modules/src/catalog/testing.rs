@@ -9,10 +9,12 @@ use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::order::{NewOrder, Order, OrderKind, PurchaseIntent};
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId};
 use sn_domain::pricing::Quote;
-use sn_store::{Db, NewClient, Store, StoreError};
+use sn_store::testing::TestDb;
+use sn_store::{Db, NewClient, Store, StoreError, StoreOptions};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 #[derive(Default)]
 pub struct Calls {
@@ -25,6 +27,7 @@ pub struct TestCore {
     pub store: Store,
     pub calls: Mutex<Calls>,
     pub fail_days: AtomicBool,
+    pub slow_days_ms: AtomicU64,
 }
 
 impl TestCore {
@@ -33,6 +36,7 @@ impl TestCore {
             store: store.clone(),
             calls: Mutex::new(Calls::default()),
             fail_days: AtomicBool::new(false),
+            slow_days_ms: AtomicU64::new(0),
         })
     }
 
@@ -91,6 +95,10 @@ impl CoreApi for TestCore {
         if let Ok(mut calls) = self.calls.lock() {
             calls.days.push((subscription_id, days, reason.to_string()));
         }
+        let slow = self.slow_days_ms.load(Ordering::SeqCst);
+        if slow > 0 {
+            tokio::time::sleep(Duration::from_millis(slow)).await;
+        }
         Ok(())
     }
 
@@ -119,6 +127,39 @@ pub fn context(store: &Store, core: &Arc<TestCore>, currency: Currency) -> Modul
         core: core.clone(),
         currency,
     }
+}
+
+pub async fn pooled(db: &TestDb, connections: u32, acquire_timeout: Duration) -> Store {
+    let url = sn_store::testing::test_database_url().unwrap();
+    let schema: String = {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query_scalar("SELECT current_schema()")
+            .fetch_one(conn.conn())
+            .await
+            .unwrap()
+    };
+    Store::connect(
+        &url,
+        StoreOptions {
+            max_connections: connections,
+            acquire_timeout,
+            search_path: Some(schema),
+            ..StoreOptions::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+pub fn offline() -> Store {
+    Store::connect_lazy(
+        "postgres://127.0.0.1:1/sn_test",
+        StoreOptions {
+            acquire_timeout: Duration::from_secs(1),
+            ..StoreOptions::default()
+        },
+    )
+    .unwrap()
 }
 
 pub async fn client(store: &Store) -> ClientId {

@@ -1,7 +1,7 @@
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use crate::gate::{GateState, gate};
-use crate::module::{Module, ModuleConfig, QuoteHook};
+use crate::module::{Module, ModuleConfig, QuoteHook, QuoteOrigin};
 use crate::placeholder::Placeholder;
 use axum::Router;
 use axum::middleware::from_fn_with_state;
@@ -301,9 +301,19 @@ impl ModuleRegistry {
         ctx: &ModuleContext,
         hook: &QuoteHook,
     ) -> Result<Vec<PriceAdjustment>, ModuleError> {
+        self.quote_adjustments_from(ctx, hook, &QuoteOrigin::default())
+            .await
+    }
+
+    pub async fn quote_adjustments_from(
+        &self,
+        ctx: &ModuleContext,
+        hook: &QuoteHook,
+        origin: &QuoteOrigin,
+    ) -> Result<Vec<PriceAdjustment>, ModuleError> {
         let mut adjustments = Vec::new();
         for module in self.enabled() {
-            adjustments.extend(module.quote_adjustments(ctx, hook).await?);
+            adjustments.extend(module.quote_adjustments_from(ctx, hook, origin).await?);
         }
         Ok(adjustments)
     }

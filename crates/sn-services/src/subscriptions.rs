@@ -35,6 +35,7 @@ pub mod actions {
     pub const BLOCK_ACCESS: &str = "subscription.block_access";
     pub const RESTORE_ACCESS: &str = "subscription.restore_access";
     pub const RELEASE_DEVICES: &str = "subscription.release_devices";
+    pub const BLOCKED_DELIVERY: &str = "subscription.blocked_delivery";
 }
 
 pub(crate) async fn with_subscription_lock<T, E, F>(
@@ -254,7 +255,7 @@ where
     }
 }
 
-async fn drop_everywhere(
+pub(crate) async fn drop_everywhere(
     remna: &dyn RemnawaveApi,
     user_ids: Vec<RemnaUserId>,
 ) -> Result<(), RemnaError> {
@@ -1358,7 +1359,9 @@ pub(crate) mod tests {
     use sn_domain::traffic::{GIB, TrafficPolicy, TrafficStrategy};
     use sn_modules::ModuleRegistry;
     use sn_payments::ProviderRegistry;
-    use sn_remnawave::fake::{FakeRemnawave, Fault, sample_device, sample_node, sample_user};
+    use sn_remnawave::fake::{
+        FakeRemnawave, Fault, panel_time, sample_device, sample_node, sample_user,
+    };
     use sn_store::testing::{TestDb, test_store};
     use sn_store::{NewCategory, NewClient, NewPeriod, NewSubscription, NewTariff};
     use std::sync::Arc;
@@ -1594,7 +1597,7 @@ pub(crate) mod tests {
         user.status = UserStatus::Expired;
         user.expire_at = Utc::now() - Duration::days(5);
         let subscription = env.linked(client.id, user).await;
-        let started = Utc::now();
+        let started = panel_time(Utc::now());
         let view = env
             .services
             .subscriptions()

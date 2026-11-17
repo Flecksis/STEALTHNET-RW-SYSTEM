@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use sn_domain::jobs::{JobKind, JobPayload};
 use sn_domain::order::OrderStatus;
 use sn_domain::payment::PaymentStatus;
+use sn_services::fulfillment::abandoned_reason;
 use sn_services::{Actor, ServiceError, Services};
 use sn_store::{Db, JobRecord, LockSpace, StoreError, audit_entity};
 use std::collections::HashMap;
@@ -204,25 +205,50 @@ impl Worker {
         self.by_kind.get(&kind).unwrap_or(&self.handler)
     }
 
+    async fn give_up(
+        &self,
+        job: &JobRecord,
+        failed: bool,
+        error: &str,
+    ) -> Result<bool, ServiceError> {
+        let mut tx = self.services.store().begin().await?;
+        let recorded = if failed {
+            tx.jobs().fail_leased(job, error).await?
+        } else {
+            tx.jobs().review_leased(job, error).await?
+        };
+        if recorded && let Ok(JobPayload::FulfillOrder { order_id }) = job.typed() {
+            let reason = abandoned_reason(job.attempts, error);
+            if tx.orders().abandon_plan(order_id, &reason).await? {
+                tracing::warn!(job = %job.id, order = %order_id, "план заказа на ручной проверке больше не применяется: нужно решение администратора");
+            }
+        }
+        tx.commit().await?;
+        Ok(recorded)
+    }
+
     async fn finish(&self, job: &JobRecord, result: JobResult) -> Result<(), ServiceError> {
-        let mut conn = self.services.store().conn().await?;
-        let mut jobs = conn.jobs();
         let recorded = match result {
-            JobResult::Done => jobs.complete_leased(job).await?,
+            JobResult::Done => {
+                let mut conn = self.services.store().conn().await?;
+                conn.jobs().complete_leased(job).await?
+            }
             JobResult::Review(reason) => {
                 tracing::warn!(job = %job.id, kind = %job.kind, %reason, "задача ждёт ручной проверки");
-                jobs.review_leased(job, &reason).await?
+                self.give_up(job, false, &reason).await?
             }
             JobResult::Fail(reason) => {
                 tracing::error!(job = %job.id, kind = %job.kind, %reason, "задача провалена");
-                jobs.fail_leased(job, &reason).await?
+                self.give_up(job, true, &reason).await?
             }
             JobResult::Retry { error, .. } if job.exhausted() => {
                 tracing::error!(job = %job.id, kind = %job.kind, %error, "попытки кончились");
-                jobs.review_leased(job, &error).await?
+                self.give_up(job, false, &error).await?
             }
             JobResult::Retry { after, error } => {
-                jobs.retry_leased(job, &error, self.services.now() + after)
+                let mut conn = self.services.store().conn().await?;
+                conn.jobs()
+                    .retry_leased(job, &error, self.services.now() + after)
                     .await?
             }
         };
@@ -472,7 +498,7 @@ impl Worker {
         for order_id in &stalled {
             let mut tx = self.services.store().begin().await?;
             let order = tx.orders().lock(*order_id).await?;
-            if order.status != OrderStatus::Paid {
+            if order.status != OrderStatus::Paid || tx.orders().refund_pending(order.id).await? {
                 tx.rollback().await?;
                 continue;
             }

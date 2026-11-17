@@ -150,7 +150,7 @@ impl ProviderRegistry {
         self.snapshot()
             .states
             .get(id)
-            .is_some_and(|state| state.enabled && provider.is_configured(&state.config))
+            .is_some_and(|state| provider.is_configured(&state.config))
     }
 
     pub fn views(&self) -> Vec<ProviderView> {
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn уведомления_принимаются_только_от_включённой_и_настроенной_системы() {
+    fn уведомления_принимаются_от_настроенной_системы_даже_выключенной() {
         let registry = ProviderRegistry::builtin();
         let configured = |id: &str| match id {
             providers::PLATEGA => crate::test_support::config(&[
@@ -515,7 +515,11 @@ mod tests {
         assert!(!registry.accepts_webhooks(providers::BALANCE));
         assert!(!registry.accepts_webhooks("nope"));
         apply(&[providers::YOOKASSA]);
-        assert!(!registry.accepts_webhooks(providers::PLATEGA));
+        assert!(registry.accepts_webhooks(providers::PLATEGA));
+        assert!(!registry.is_available(providers::PLATEGA, Currency::Rub));
+        assert!(!registry.accepts_webhooks(providers::YOOKASSA));
+        assert!(!registry.accepts_webhooks(providers::OVERPAY));
+        assert!(!registry.accepts_webhooks(providers::STARS));
     }
 
     #[test]

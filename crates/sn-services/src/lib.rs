@@ -15,6 +15,7 @@ pub mod login;
 pub mod remna_sync;
 pub mod services;
 pub mod settings;
+pub mod stars_review;
 pub mod subscriptions;
 pub mod support;
 pub mod tariffs;

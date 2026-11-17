@@ -24,12 +24,19 @@ use sn_store::SecretBox;
 use sn_store::testing::test_store;
 use std::sync::{Arc, Mutex};
 
+mod actions;
+mod gate;
+mod holds;
+mod polling;
+mod resume;
+
 const KASSA: &str = "kassa";
 const KASSA_SECRET: &str = "kassa-secret";
 
 #[derive(Default)]
 struct Kassa {
     refund_completed: Mutex<bool>,
+    refund_fails: Mutex<bool>,
     refunds: Mutex<Vec<RefundRequest>>,
     status: Mutex<Option<WebhookOutcome>>,
     lookups: Mutex<Vec<String>>,
@@ -70,6 +77,10 @@ impl PaymentProvider for Kassa {
     }
 
     fn supports_refunds(&self) -> bool {
+        true
+    }
+
+    fn supports_refund_polling(&self) -> bool {
         true
     }
 
@@ -140,6 +151,9 @@ impl PaymentProvider for Kassa {
         _config: &ProviderConfig,
         request: &RefundRequest,
     ) -> PaymentResult<RefundOutcome> {
+        if *self.refund_fails.lock().unwrap() {
+            return Err(PaymentError::Transport("касса не отвечает".into()));
+        }
         let mut refunds = self.refunds.lock().unwrap();
         refunds.push(request.clone());
         Ok(RefundOutcome {
@@ -166,15 +180,25 @@ async fn kassa_kit(kassa: Arc<Kassa>) -> Option<Kit> {
 }
 
 async fn kassa_kit_with_clock(kassa: Arc<Kassa>, clock: Arc<dyn crate::Clock>) -> Option<Kit> {
+    kassa_kit_with(kassa, clock, Vec::new()).await
+}
+
+async fn kassa_kit_with(
+    kassa: Arc<Kassa>,
+    clock: Arc<dyn crate::Clock>,
+    extra: Vec<Arc<dyn PaymentProvider>>,
+) -> Option<Kit> {
     let db = test_store().await?;
     let pay = Arc::new(TestPay::default());
-    let registry = ProviderRegistry::new(vec![
+    let mut providers: Vec<Arc<dyn PaymentProvider>> = vec![
         Arc::new(CryptoPay::new()),
         pay.clone(),
         kassa,
         Arc::new(Overpay),
         Arc::new(Balance),
-    ]);
+    ];
+    providers.extend(extra);
+    let registry = ProviderRegistry::new(providers);
     let services = Services::new(ServiceDeps {
         store: db.store.clone(),
         payments: Arc::new(registry),
@@ -225,6 +249,22 @@ async fn kassa_kit_with_clock(kassa: Arc<Kassa>, clock: Arc<dyn crate::Clock>) -
         remna,
         pay,
     })
+}
+
+async fn switch_provider(kit: &Kit, provider: &str, enabled: bool) {
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                &keys::provider(provider),
+                &serde_json::json!({ "enabled": enabled }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    kit.services.reload().await.unwrap();
+    kit.services.set_remna(Some(kit.remna.clone()));
 }
 
 fn refund_command(
@@ -1121,6 +1161,23 @@ async fn отказ_кассы_отменяет_неоплаченный_зак�
 }
 
 #[test]
+fn отказ_подлинного_уведомления_получает_свой_исход() {
+    for code in [
+        "payment.txid_mismatch",
+        "payment.provider_mismatch",
+        "payment.refund_currency",
+    ] {
+        assert_eq!(rejection_outcome(code), InboxOutcome::RejectedBusiness);
+    }
+    assert_eq!(
+        rejection_outcome("payment.amount_mismatch"),
+        InboxOutcome::AmountMismatch
+    );
+    assert!(!InboxOutcome::RejectedBusiness.is_final());
+    assert!(!InboxOutcome::RejectedBusiness.is_unverified());
+}
+
+#[test]
 fn возврат_из_админки_узнаётся_в_уведомлении_кассы() {
     assert!(same_refund("rf-1", "refund:rf-1"));
     assert!(same_refund("1601", "refund:1601"));
@@ -1332,7 +1389,7 @@ async fn повторная_оплата_возвращённого_платеж
 }
 
 #[tokio::test]
-async fn возврат_без_подтверждения_кассы_ждёт_и_не_трогает_баланс() {
+async fn возврат_без_подтверждения_кассы_ждёт_и_удерживает_сумму_на_балансе() {
     let kassa = Arc::new(Kassa::default());
     let Some(kit) = kassa_kit(kassa.clone()).await else {
         return;
@@ -1356,7 +1413,7 @@ async fn возврат_без_подтверждения_кассы_ждёт_и
     assert_eq!(kassa.refunds.lock().unwrap().len(), 1);
     assert_eq!(requested.status, PaymentStatus::Paid);
     assert_eq!(requested.amount, Amount::new(1_000, PayCurrency::Usd));
-    assert_eq!(balance(&kit.services, client_id).await, 1_000);
+    assert_eq!(balance(&kit.services, client_id).await, 0);
     assert_eq!(payment(&kit, topped.id).await.status, PaymentStatus::Paid);
     assert_eq!(
         order(&kit.services, topped.order_id).await.status,
@@ -1467,7 +1524,7 @@ async fn тело_поддельного_вебхука_не_сохраняет�
 }
 
 #[tokio::test]
-async fn вебхук_выключенной_системы_не_принимается() {
+async fn оплата_счёта_выставленного_до_выключения_системы_проходит() {
     let Some(kit) = kit().await else { return };
     let client_id = client(&kit.services, 141).await;
     let tariff = standard(&kit.services).await;
@@ -1480,51 +1537,169 @@ async fn вебхук_выключенной_системы_не_принима�
         None,
     )
     .await;
-    {
-        let mut conn = kit.services.store().conn().await.unwrap();
-        conn.settings()
-            .set(
-                &keys::provider(providers::CRYPTOPAY),
-                &serde_json::json!({ "enabled": false }),
-                None,
-            )
-            .await
-            .unwrap();
-    }
-    kit.services.reload().await.unwrap();
+    switch_provider(&kit, providers::CRYPTOPAY, false).await;
+    let view = kit
+        .services
+        .checkout()
+        .quote(client_id, &cart(&tariff, 90, None))
+        .await
+        .unwrap();
+    assert!(
+        view.methods
+            .iter()
+            .all(|m| m.provider != providers::CRYPTOPAY),
+        "{:?}",
+        view.methods
+    );
+    let refused = kit
+        .services
+        .checkout()
+        .start(
+            client_id,
+            &CheckoutRequest {
+                cart: cart(&tariff, 90, None),
+                provider: providers::CRYPTOPAY.into(),
+                channel: Channel::Cabinet,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "checkout.method_unavailable");
     let reply = kit
         .services
         .inbox()
         .handle(crypto_hook(pending_payment.public_id, "6.99", 1))
         .await
         .unwrap();
-    assert_eq!(reply.reply.status(), 404);
+    assert_eq!(reply.reply.status(), 200);
     assert_eq!(
         payment(&kit, pending_payment.id).await.status,
-        PaymentStatus::Pending
+        PaymentStatus::Paid
     );
-    assert!(inbox_rows(&kit).await.is_empty());
+    let rows = inbox_rows(&kit).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].outcome, "accepted");
+    assert_eq!(rows[0].payment_id, Some(pending_payment.id.0));
+    assert!(rows[0].body.is_some());
     kit.db.cleanup().await;
 }
 
 #[tokio::test]
-async fn вебхук_ненастроенной_системы_не_принимается_и_не_сохраняется() {
-    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+async fn подтверждение_возврата_после_выключения_системы_проходит() {
+    let kassa = Arc::new(Kassa::default());
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
         return;
     };
-    let hook = InboundWebhook {
-        provider: providers::OVERPAY.into(),
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 143).await;
+    let topped = kassa_topup(&kit, client_id, 1_000).await;
+    let inbox = kit.services.inbox();
+    inbox
+        .apply_outcome(KASSA, &outcome(&topped, ProviderStatus::Paid))
+        .await
+        .unwrap();
+    let requested = inbox
+        .refund(
+            topped.id,
+            &refund_command(None, RefundSubscriptionAction::Keep, None),
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(requested.pending);
+    switch_provider(&kit, KASSA, false).await;
+    assert_eq!(
+        kit.services
+            .checkout()
+            .topup(
+                client_id,
+                Money::new(500, Currency::Usd),
+                KASSA,
+                Channel::Cabinet,
+            )
+            .await
+            .unwrap_err()
+            .code(),
+        "checkout.method_unavailable"
+    );
+    let body = serde_json::json!({
+        "event": "refund:kr-1",
+        "payment": topped.public_id.to_string(),
+        "txid": topped.provider_txid,
+        "status": "refunded",
+        "amount": 1_000,
+    });
+    let reply = inbox.handle(kassa_hook(KASSA_SECRET, &body)).await.unwrap();
+    assert_eq!(reply.reply, kassa_reply());
+    assert_eq!(
+        payment(&kit, topped.id).await.status,
+        PaymentStatus::Refunded
+    );
+    assert_eq!(
+        provider_refunds(&kit, topped.id).await[0].status,
+        ProviderRefundStatus::Succeeded
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn вебхук_ненастроенной_системы_получает_404_и_отказ_пишется_без_тела() {
+    let clock = Arc::new(crate::FixedClock::new(moment(chrono::Duration::zero())));
+    let Some(kit) = kassa_kit_with_clock(Arc::new(Kassa::default()), clock).await else {
+        return;
+    };
+    let hook = |provider: &str, fill: u8, ip: &str| InboundWebhook {
+        provider: provider.into(),
         request: WebhookRequest {
-            headers: Vec::new(),
-            body: Bytes::from(vec![b'x'; 4096]),
-            remote_ip: "198.51.100.7".parse().ok(),
+            headers: vec![("user-agent".into(), "probe/1.0".into())],
+            body: Bytes::from(vec![fill; 4096]),
+            remote_ip: ip.parse().ok(),
             route_suffix: None,
             query: None,
         },
     };
-    let reply = kit.services.inbox().handle(hook).await.unwrap();
-    assert_eq!(reply.reply.status(), 404);
-    assert!(inbox_rows(&kit).await.is_empty());
+    let inbox = kit.services.inbox();
+    for _ in 0..2 {
+        let reply = inbox
+            .handle(hook(providers::OVERPAY, b'x', "198.51.100.7"))
+            .await
+            .unwrap();
+        assert_eq!(reply.reply.status(), 404);
+    }
+    let rows = inbox_rows(&kit).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].source, providers::OVERPAY);
+    assert_eq!(rows[0].outcome, "not_accepted");
+    assert_eq!(rows[0].body, None);
+    assert_eq!(rows[0].payment_id, None);
+    assert!(rows[0].dedupe_key.starts_with("rejected:"));
+    let unknown = inbox
+        .handle(hook("nope", b'x', "198.51.100.7"))
+        .await
+        .unwrap();
+    assert_eq!(unknown.reply.status(), 404);
+    assert_eq!(inbox_rows(&kit).await.len(), 1);
+    let internal = inbox
+        .handle(hook(providers::BALANCE, b'x', "198.51.100.7"))
+        .await
+        .unwrap();
+    assert_eq!(internal.reply.status(), 404);
+    let rows = inbox_rows(&kit).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[1].source, providers::BALANCE);
+    assert_eq!(rows[1].outcome, "not_accepted");
+    assert_eq!(rows[1].body, None);
+    for fill in 0..40u8 {
+        let reply = inbox
+            .handle(hook(providers::OVERPAY, fill, "198.51.100.8"))
+            .await
+            .unwrap();
+        assert_eq!(reply.reply.status(), 404);
+    }
+    let rows = inbox_rows(&kit).await;
+    assert_eq!(rows.len(), 2 + REJECTED_WEBHOOKS.limit as usize, "{rows:?}");
+    assert!(rows.iter().all(|r| r.body.is_none()));
     kit.db.cleanup().await;
 }
 
@@ -1595,6 +1770,83 @@ async fn старые_записи_вебхуков_удаляются() {
     assert!(keys.contains(&"fresh-rejected".to_string()));
     assert!(!keys.contains(&"old-accepted".to_string()));
     assert!(!keys.contains(&"old-rejected".to_string()));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn подлинное_уведомление_отклонённое_проверкой_хранится_тридцать_дней() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let client_id = client(&kit.services, 152).await;
+    let tariff = standard(&kit.services).await;
+    let foreign = invoice(&kit, client_id, &tariff).await;
+    let topped = kassa_topup(&kit, client_id, 500).await;
+    let inbox = kit.services.inbox();
+    let provider_mismatch = serde_json::json!({
+        "event": "pay:1",
+        "payment": foreign.public_id.to_string(),
+        "txid": "k-foreign",
+        "status": "paid",
+        "amount": 699,
+    });
+    let txid_mismatch = serde_json::json!({
+        "event": "pay:2",
+        "payment": topped.public_id.to_string(),
+        "txid": "k-other",
+        "status": "paid",
+        "amount": 500,
+    });
+    for body in [&provider_mismatch, &txid_mismatch] {
+        assert_eq!(
+            inbox
+                .handle(kassa_hook(KASSA_SECRET, body))
+                .await
+                .unwrap()
+                .reply,
+            kassa_reply()
+        );
+    }
+    for id in [foreign.id, topped.id] {
+        assert_eq!(payment(&kit, id).await.status, PaymentStatus::Pending);
+    }
+    let rows = inbox_rows(&kit).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter()
+            .all(|r| r.outcome == "rejected_business" && r.body.is_some()),
+        "{rows:?}"
+    );
+    assert_eq!(
+        inbox
+            .handle(kassa_hook("guess", &provider_mismatch))
+            .await
+            .unwrap()
+            .reply
+            .status(),
+        401
+    );
+    let age = |days: i32| {
+        let store = kit.services.store().clone();
+        async move {
+            let mut conn = store.conn().await.unwrap();
+            sqlx::query(
+                "UPDATE webhook_inbox SET received_at = received_at - make_interval(days => $1)",
+            )
+            .bind(days)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        }
+    };
+    age(10).await;
+    assert_eq!(inbox.purge_webhooks().await.unwrap(), 1);
+    let rows = inbox_rows(&kit).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows.iter().all(|r| r.outcome == "rejected_business"));
+    age(WEBHOOK_RETENTION_DAYS as i32).await;
+    assert_eq!(inbox.purge_webhooks().await.unwrap(), 2);
+    assert!(inbox_rows(&kit).await.is_empty());
     kit.db.cleanup().await;
 }
 
@@ -1727,6 +1979,7 @@ async fn частичные_ожидающие_возвраты_не_превы�
                 .pending
         );
     }
+    assert_eq!(balance(&kit.services, client_id).await, 200);
     assert_eq!(
         inbox
             .refund(
@@ -1740,6 +1993,7 @@ async fn частичные_ожидающие_возвраты_не_превы�
         "refund.pending"
     );
     assert_eq!(kassa.refunds.lock().unwrap().len(), 2);
+    assert_eq!(balance(&kit.services, client_id).await, 200);
     let confirm = |id: &str, minor: i64| WebhookOutcome {
         event_key: format!("refund:{id}"),
         ..outcome(
@@ -1759,7 +2013,7 @@ async fn частичные_ожидающие_возвраты_не_превы�
             status: PaymentStatus::PartiallyRefunded
         }
     );
-    assert_eq!(balance(&kit.services, client_id).await, 500);
+    assert_eq!(balance(&kit.services, client_id).await, 200);
     assert_eq!(
         inbox
             .apply_outcome(KASSA, &confirm("kr-1", 300))
@@ -1975,7 +2229,7 @@ async fn ожидающий_возврат_уточняется_опросом_�
             .await
             .unwrap();
     }
-    assert_eq!(balance(&kit.services, client_id).await, 1_400);
+    assert_eq!(balance(&kit.services, client_id).await, 0);
     *kassa.refund_status.lock().unwrap() = Some(WebhookOutcome {
         event_key: "refund:kr-1".into(),
         payment: None,
@@ -2010,7 +2264,7 @@ async fn ожидающий_возврат_уточняется_опросом_�
         payment(&kit, first.id).await.status,
         PaymentStatus::Refunded
     );
-    assert_eq!(balance(&kit.services, client_id).await, 400);
+    assert_eq!(balance(&kit.services, client_id).await, 0);
     assert_eq!(
         inbox.poll_payment(first.id).await.unwrap(),
         PollResult::Settled
@@ -2310,6 +2564,34 @@ async fn отказы_с_одного_адреса_записываются_не
     let mut other = crypto_hook(Uuid::new_v4(), "6.99", 99);
     other.request.headers = vec![("crypto-pay-api-signature".into(), "00".repeat(32))];
     other.request.remote_ip = "198.51.100.201".parse().ok();
+    assert_eq!(inbox.handle(other).await.unwrap().reply.status(), 401);
+    assert_eq!(
+        inbox_rows(&kit).await.len(),
+        REJECTED_WEBHOOKS.limit as usize + 1
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отказы_с_адресов_одной_ipv6_сети_считаются_вместе() {
+    let clock = Arc::new(crate::FixedClock::new(moment(chrono::Duration::zero())));
+    let Some(kit) = kassa_kit_with_clock(Arc::new(Kassa::default()), clock).await else {
+        return;
+    };
+    let inbox = kit.services.inbox();
+    for host in 1..=40 {
+        let mut forged = crypto_hook(Uuid::new_v4(), "6.99", host);
+        forged.request.headers = vec![("crypto-pay-api-signature".into(), "00".repeat(32))];
+        forged.request.remote_ip = format!("2001:db8:1:2::{host:x}").parse().ok();
+        assert_eq!(inbox.handle(forged).await.unwrap().reply.status(), 401);
+    }
+    assert_eq!(
+        inbox_rows(&kit).await.len(),
+        REJECTED_WEBHOOKS.limit as usize
+    );
+    let mut other = crypto_hook(Uuid::new_v4(), "6.99", 99);
+    other.request.headers = vec![("crypto-pay-api-signature".into(), "00".repeat(32))];
+    other.request.remote_ip = "2001:db8:1:3::1".parse().ok();
     assert_eq!(inbox.handle(other).await.unwrap().reply.status(), 401);
     assert_eq!(
         inbox_rows(&kit).await.len(),

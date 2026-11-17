@@ -66,6 +66,8 @@ pub struct DashboardView {
     pub stats_error: Option<String>,
     pub support_waiting: i64,
     pub orders_review: i64,
+    pub stars_review: i64,
+    pub refund_actions_failed: i64,
     pub remna: Option<RemnaOverview>,
     pub remna_error: Option<String>,
 }
@@ -469,6 +471,15 @@ impl<'a> AdminOps<'a> {
             sqlx::query_scalar("SELECT count(*) FROM orders WHERE status = 'review'")
                 .fetch_one(conn.conn())
                 .await?;
+        let stars_review: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM bot_star_events WHERE status = 'review'")
+                .fetch_one(conn.conn())
+                .await?;
+        let refund_actions_failed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM provider_refunds WHERE action_status = 'failed'",
+        )
+        .fetch_one(conn.conn())
+        .await?;
         drop(conn);
         let (remna, remna_error) = match self.remna_overview().await {
             Ok(overview) => (Some(overview), None),
@@ -481,6 +492,8 @@ impl<'a> AdminOps<'a> {
             stats_error,
             support_waiting,
             orders_review,
+            stars_review,
+            refund_actions_failed,
             remna,
             remna_error,
         })

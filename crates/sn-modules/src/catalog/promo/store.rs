@@ -461,42 +461,98 @@ pub async fn set_active(db: &mut impl Db, id: i64, active: bool) -> StoreResult<
     row.map(TryInto::try_into).transpose()
 }
 
-pub async fn failures(
-    db: &mut impl Db,
-    client_id: ClientId,
-    window_start: DateTime<Utc>,
-) -> StoreResult<u32> {
-    let failures: Option<i32> = sqlx::query_scalar(
-        "SELECT failures FROM promo_attempts WHERE client_id = $1 AND window_start = $2",
-    )
-    .bind(client_id.0)
-    .bind(window_start)
-    .fetch_optional(db.conn())
-    .await?;
-    Ok(failures.map_or(0, |f| u32::try_from(f.max(0)).unwrap_or(u32::MAX)))
+fn attempts(value: i32) -> u32 {
+    u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
 
-pub async fn add_failure(
+pub async fn strike_client(
     db: &mut impl Db,
     client_id: ClientId,
     window_start: DateTime<Utc>,
     forget_before: DateTime<Utc>,
 ) -> StoreResult<u32> {
-    let failures: i32 = sqlx::query_scalar(
+    let (failures, fresh): (i32, bool) = sqlx::query_as(
         "INSERT INTO promo_attempts (client_id, window_start, failures) VALUES ($1, $2, 1) \
          ON CONFLICT (client_id, window_start) \
          DO UPDATE SET failures = LEAST(promo_attempts.failures + 1, 1000000) \
-         RETURNING failures",
+         RETURNING failures, (xmax = 0)",
     )
     .bind(client_id.0)
     .bind(window_start)
     .fetch_one(db.conn())
     .await?;
-    if failures == 1 {
-        sqlx::query("DELETE FROM promo_attempts WHERE window_start < $1")
-            .bind(forget_before)
-            .execute(db.conn())
-            .await?;
+    if fresh {
+        sqlx::query(
+            "DELETE FROM promo_attempts a USING ( \
+                 SELECT client_id, window_start FROM promo_attempts \
+                 WHERE window_start < $1 FOR UPDATE SKIP LOCKED) old \
+             WHERE a.client_id = old.client_id AND a.window_start = old.window_start",
+        )
+        .bind(forget_before)
+        .execute(db.conn())
+        .await?;
     }
-    Ok(u32::try_from(failures.max(0)).unwrap_or(u32::MAX))
+    Ok(attempts(failures))
+}
+
+pub async fn forgive_client(
+    db: &mut impl Db,
+    client_id: ClientId,
+    window_start: DateTime<Utc>,
+) -> StoreResult<()> {
+    sqlx::query(
+        "UPDATE promo_attempts SET failures = failures - 1 \
+         WHERE client_id = $1 AND window_start = $2 AND failures > 0",
+    )
+    .bind(client_id.0)
+    .bind(window_start)
+    .execute(db.conn())
+    .await?;
+    Ok(())
+}
+
+pub async fn strike_address(
+    db: &mut impl Db,
+    address: &str,
+    window_start: DateTime<Utc>,
+    forget_before: DateTime<Utc>,
+) -> StoreResult<u32> {
+    let (failures, fresh): (i32, bool) = sqlx::query_as(
+        "INSERT INTO promo_address_attempts (address, window_start, failures) VALUES ($1, $2, 1) \
+         ON CONFLICT (address, window_start) \
+         DO UPDATE SET failures = LEAST(promo_address_attempts.failures + 1, 1000000) \
+         RETURNING failures, (xmax = 0)",
+    )
+    .bind(address)
+    .bind(window_start)
+    .fetch_one(db.conn())
+    .await?;
+    if fresh {
+        sqlx::query(
+            "DELETE FROM promo_address_attempts a USING ( \
+                 SELECT address, window_start FROM promo_address_attempts \
+                 WHERE window_start < $1 FOR UPDATE SKIP LOCKED) old \
+             WHERE a.address = old.address AND a.window_start = old.window_start",
+        )
+        .bind(forget_before)
+        .execute(db.conn())
+        .await?;
+    }
+    Ok(attempts(failures))
+}
+
+pub async fn forgive_address(
+    db: &mut impl Db,
+    address: &str,
+    window_start: DateTime<Utc>,
+) -> StoreResult<()> {
+    sqlx::query(
+        "UPDATE promo_address_attempts SET failures = failures - 1 \
+         WHERE address = $1 AND window_start = $2 AND failures > 0",
+    )
+    .bind(address)
+    .bind(window_start)
+    .execute(db.conn())
+    .await?;
+    Ok(())
 }

@@ -3,9 +3,12 @@ use crate::services::Services;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use sha2::{Digest, Sha256};
 use sn_store::Db;
+use std::net::{IpAddr, Ipv6Addr};
 
 pub const RATE_LIMITED: &str = "auth.rate_limited";
 pub const RETENTION_DAYS: i64 = 2;
+pub const UNKNOWN_ADDRESS: &str = "unknown";
+pub const IPV6_NETWORK_BITS: u32 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateRule {
@@ -24,7 +27,7 @@ pub mod rules {
     };
     pub const ADMIN_LOGIN_ACCOUNT: RateRule = RateRule {
         scope: "admin_login_account",
-        limit: 100,
+        limit: 20,
         window_seconds: 900,
     };
     pub const ADMIN_LOGIN_ACCOUNT_IP: RateRule = RateRule {
@@ -82,6 +85,28 @@ pub mod rules {
         limit: 10,
         window_seconds: 900,
     };
+}
+
+pub fn ip_key(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let network = u128::from(v6) & (u128::MAX << (128 - IPV6_NETWORK_BITS));
+            format!("{}/{IPV6_NETWORK_BITS}", Ipv6Addr::from(network))
+        }
+    }
+}
+
+pub fn network_key(ip: Option<&str>) -> Option<String> {
+    ip?.trim().parse::<IpAddr>().ok().map(ip_key)
+}
+
+pub fn address_key(ip: Option<&str>) -> String {
+    network_key(ip).unwrap_or_else(|| {
+        ip.map(|raw| raw.trim().to_lowercase())
+            .filter(|raw| !raw.is_empty())
+            .unwrap_or_else(|| UNKNOWN_ADDRESS.to_string())
+    })
 }
 
 pub fn bucket(rule: RateRule, identity: &str) -> Vec<u8> {
@@ -185,7 +210,7 @@ impl<'a> RateLimits<'a> {
     }
 
     pub async fn hit_ip(&self, rule: RateRule, ip: Option<&str>) -> ServiceResult<u32> {
-        self.hit(rule, ip.unwrap_or("unknown")).await
+        self.hit(rule, &address_key(ip)).await
     }
 
     pub async fn strike(
@@ -278,6 +303,43 @@ mod tests {
         let err = too_many(rule, window_start(rule, at), at);
         assert_eq!(err.code(), RATE_LIMITED);
         assert!(err.to_string().contains("3 мин"));
+    }
+
+    #[test]
+    fn адрес_ipv6_сводится_к_сети_64_а_ipv4_остаётся_целым() {
+        assert_eq!(address_key(Some("2001:db8:1:2::a")), "2001:db8:1:2::/64");
+        assert_eq!(
+            address_key(Some("2001:DB8:1:2:ffff:ffff:ffff:ffff")),
+            "2001:db8:1:2::/64"
+        );
+        assert_eq!(address_key(Some("2001:db8:1:3::a")), "2001:db8:1:3::/64");
+        assert_eq!(address_key(Some(" 203.0.113.7 ")), "203.0.113.7");
+        assert_eq!(address_key(Some("203.0.113.8")), "203.0.113.8");
+        assert_eq!(address_key(Some("::ffff:203.0.113.7")), "203.0.113.7");
+        assert_eq!(address_key(Some("::1")), "::/64");
+        assert_eq!(address_key(None), UNKNOWN_ADDRESS);
+        assert_eq!(address_key(Some("  ")), UNKNOWN_ADDRESS);
+        assert_eq!(address_key(Some("Proxy-A")), "proxy-a");
+        assert_eq!(
+            network_key(Some("2001:db8:1:2::a")).as_deref(),
+            Some("2001:db8:1:2::/64")
+        );
+        assert_eq!(network_key(Some("proxy-a")), None);
+        assert_eq!(network_key(None), None);
+        let link_local: IpAddr = "fe80::1c2:3ff:fe04:506".parse().unwrap();
+        assert_eq!(ip_key(link_local), "fe80::/64");
+        assert_eq!(
+            bucket(rules::ADMIN_LOGIN_IP, &address_key(Some("2001:db8:1:2::1"))),
+            bucket(rules::ADMIN_LOGIN_IP, &address_key(Some("2001:db8:1:2::a")))
+        );
+    }
+
+    #[test]
+    fn общий_лимит_неудач_входа_двадцать_за_пятнадцать_минут() {
+        assert_eq!(rules::ADMIN_LOGIN_ACCOUNT.limit, 20);
+        assert_eq!(rules::ADMIN_LOGIN_ACCOUNT.window_seconds, 900);
+        assert_eq!(rules::ADMIN_LOGIN_ACCOUNT_IP.limit, 10);
+        assert_eq!(rules::ADMIN_LOGIN_ACCOUNT_IP.window_seconds, 900);
     }
 
     #[test]

@@ -4,21 +4,25 @@ use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::access::Permission;
 use sn_domain::ids::{EventId, JobId, OrderId};
-use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
 use sn_domain::order::OrderStatus;
 use sn_services::ServiceError;
-use sn_store::{Db, Delivery, audit_entity};
+use sn_services::fulfillment::{REVIEW_ORDERS_LIMIT, ReviewItem};
+use sn_store::{Db, Delivery, PlanStage};
 
 const REVIEW_LIMIT: i64 = 50;
 const REVIEW_LIMIT_MAX: i64 = 200;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/orders/review", get(orders_review))
         .route("/orders/{id}/redeliver", post(redeliver))
+        .route("/orders/{id}/recalculate", post(recalculate))
+        .route("/orders/{id}/mark-fulfilled", post(mark_fulfilled))
         .route("/events/review", get(events_review))
         .route("/events/{id}/retry", post(event_retry))
 }
@@ -98,14 +102,45 @@ struct Redelivery {
     state: &'static str,
 }
 
-fn not_deliverable(status: OrderStatus) -> ServiceError {
-    let message = match status {
-        OrderStatus::Fulfilled => "Заказ уже выдан",
-        OrderStatus::Refunded => "Заказ возвращён, выдавать его нельзя",
-        OrderStatus::Pending | OrderStatus::Canceled => "Заказ не оплачен",
-        OrderStatus::Paid | OrderStatus::Review => "Заказ нельзя выдать повторно",
-    };
-    ServiceError::rejected("order.redeliver_status", message)
+#[derive(Debug, Serialize)]
+struct Recalculation {
+    ok: bool,
+    order_id: OrderId,
+    job_id: JobId,
+    state: &'static str,
+    plan: PlanStage,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RecalculateRequest {
+    #[serde(default)]
+    reapply: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MarkFulfilledRequest {
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MarkedFulfilled {
+    ok: bool,
+    order_id: OrderId,
+    status: OrderStatus,
+    fulfilled_at: Option<DateTime<Utc>>,
+}
+
+async fn orders_review(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<ReviewQuery>,
+) -> ApiResult<Json<Vec<ReviewItem>>> {
+    admin.require(Permission::Money)?;
+    let limit = query.limit.unwrap_or(REVIEW_ORDERS_LIMIT);
+    Ok(Json(
+        state.services.fulfillment().review_orders(limit).await?,
+    ))
 }
 
 async fn redeliver(
@@ -114,44 +149,59 @@ async fn redeliver(
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Redelivery>> {
     admin.require(Permission::Money)?;
-    let mut tx = state
+    let queued = state
         .services
-        .store()
-        .begin()
-        .await
-        .map_err(ServiceError::from)?;
-    let order = tx
-        .orders()
-        .lock(OrderId(id))
-        .await
-        .map_err(ServiceError::from)?;
-    if !matches!(order.status, OrderStatus::Paid | OrderStatus::Review) {
-        return Err(not_deliverable(order.status).into());
-    }
-    let queued = tx
-        .jobs()
-        .ensure_queued(&JobPayload::FulfillOrder { order_id: order.id })
-        .await
-        .map_err(ServiceError::from)?;
-    tx.audit()
-        .record(&admin.actor().audit(
-            "order.redeliver",
-            audit_entity::ORDER,
-            Some(order.id.0),
-            serde_json::json!({
-                "order_status": order.status,
-                "job_id": queued.id(),
-                "state": queued.state(),
-            }),
-        ))
-        .await
-        .map_err(ServiceError::from)?;
-    tx.commit().await.map_err(ServiceError::from)?;
+        .fulfillment()
+        .redeliver(OrderId(id), admin.actor())
+        .await?;
     Ok(Json(Redelivery {
         ok: true,
+        order_id: queued.order_id,
+        job_id: queued.job_id,
+        state: queued.state,
+    }))
+}
+
+async fn recalculate(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: Option<ApiJson<RecalculateRequest>>,
+) -> ApiResult<Json<Recalculation>> {
+    admin.require(Permission::Money)?;
+    let reapply = body.is_some_and(|b| b.0.reapply);
+    let queued = state
+        .services
+        .fulfillment()
+        .recalculate(OrderId(id), reapply, admin.actor())
+        .await?;
+    Ok(Json(Recalculation {
+        ok: true,
+        order_id: queued.order_id,
+        job_id: queued.job_id,
+        state: queued.state,
+        plan: queued.plan,
+    }))
+}
+
+async fn mark_fulfilled(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: Option<ApiJson<MarkFulfilledRequest>>,
+) -> ApiResult<Json<MarkedFulfilled>> {
+    admin.require(Permission::Money)?;
+    let note = body.and_then(|b| b.0.note).unwrap_or_default();
+    let order = state
+        .services
+        .fulfillment()
+        .mark_fulfilled(OrderId(id), &note, admin.actor())
+        .await?;
+    Ok(Json(MarkedFulfilled {
+        ok: true,
         order_id: order.id,
-        job_id: queued.id(),
-        state: queued.state(),
+        status: order.status,
+        fulfilled_at: order.fulfilled_at,
     }))
 }
 
@@ -164,17 +214,21 @@ mod tests {
     use sn_domain::access::AdminRole;
     use sn_domain::client::{RegistrationSource, TelegramProfile};
     use sn_domain::events::DomainEvent;
-    use sn_domain::ids::{ClientId, JobId, OrderId};
+    use sn_domain::ids::{ClientId, JobId, OrderId, PeriodId, TariffId};
     use sn_domain::jobs::JobPayload;
     use sn_domain::module::ModuleId;
     use sn_domain::money::{Currency, Money};
     use sn_domain::order::{NewOrder, OrderKind, OrderStatus, PurchaseIntent};
+    use sn_domain::plan::FulfillmentPlan;
     use sn_domain::pricing::Quote;
+    use sn_domain::subscription::{AutoRenewState, SubscriptionKind};
     use sn_modules::ModuleRegistry;
     use sn_payments::ProviderRegistry;
     use sn_services::{EnvFallbacks, ServiceDeps, Services, SystemClock};
     use sn_store::testing::{TestDb, test_store};
-    use sn_store::{Db, Delivery, DeliveryStatus, NewAdmin, SecretBox, audit_entity};
+    use sn_store::{
+        Db, Delivery, DeliveryStatus, NewAdmin, NewSubscription, PlanStage, SecretBox, audit_entity,
+    };
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -349,6 +403,99 @@ mod tests {
             let mut conn = self.services().store().conn().await.unwrap();
             conn.jobs().counts().await.unwrap()
         }
+
+        async fn stale_renewal(&self, client_id: ClientId) -> OrderId {
+            let amount = Money::new(299, Currency::Usd);
+            let plan: FulfillmentPlan = serde_json::from_value(json!({
+                "kind": "renewal",
+                "action": {"type": "update", "user_id": 77},
+                "target": {
+                    "expire_at": "2027-03-16T00:00:00Z",
+                    "squads": ["00000000-0000-0000-0000-000000000001"],
+                    "external_squad": null,
+                    "traffic_limit_bytes": 0,
+                    "traffic_strategy": "NO_RESET",
+                    "hwid_device_limit": 3,
+                    "tag": null
+                },
+                "reset_traffic": false,
+                "activate": false,
+                "period_started_at": "2026-11-16T14:52:00Z",
+                "period_days": 120,
+                "base_expire_at": "2027-02-14T00:00:00Z"
+            }))
+            .unwrap();
+            let mut tx = self.services().store().begin().await.unwrap();
+            let subscription = tx
+                .subscriptions()
+                .create(&NewSubscription {
+                    client_id,
+                    tariff_id: None,
+                    kind: SubscriptionKind::Paid,
+                    extra_devices: 0,
+                    autorenew: AutoRenewState::default(),
+                })
+                .await
+                .unwrap();
+            let order = tx
+                .orders()
+                .create(&NewOrder {
+                    client_id,
+                    subscription_id: Some(subscription.id),
+                    kind: OrderKind::Renewal,
+                    intent: PurchaseIntent::Subscription {
+                        tariff_id: TariffId(1),
+                        period_id: PeriodId(1),
+                        extra_devices: 0,
+                        target: Some(subscription.id),
+                    },
+                    quote: Quote {
+                        currency: Currency::Usd,
+                        lines: Vec::new(),
+                        subtotal: amount,
+                        discount: Money::zero(Currency::Usd),
+                        total: amount,
+                        stars: None,
+                        days: 30,
+                        extra_devices: 0,
+                    },
+                    snapshot: None,
+                })
+                .await
+                .unwrap();
+            tx.orders()
+                .transition(order.id, OrderStatus::Paid)
+                .await
+                .unwrap();
+            tx.orders().save_plan(order.id, &plan).await.unwrap();
+            tx.orders()
+                .mark_review(
+                    order.id,
+                    "срок подписки в Remnawave изменился после расчёта плана",
+                )
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            order.id
+        }
+
+        async fn plan_stage(&self, order_id: OrderId) -> PlanStage {
+            let mut conn = self.services().store().conn().await.unwrap();
+            conn.orders().plan_state(order_id).await.unwrap().stage()
+        }
+
+        async fn order_status(&self, order_id: OrderId) -> OrderStatus {
+            let mut conn = self.services().store().conn().await.unwrap();
+            conn.orders().get(order_id).await.unwrap().status
+        }
+
+        async fn order_audit(&self, order_id: OrderId) -> Vec<sn_store::AuditRecord> {
+            let mut conn = self.services().store().conn().await.unwrap();
+            conn.audit()
+                .for_entity(audit_entity::ORDER, order_id.0, 10)
+                .await
+                .unwrap()
+        }
     }
 
     #[tokio::test]
@@ -495,6 +642,255 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert_eq!(body["error"]["message"], "Заказ не оплачен");
         assert_eq!(h.job_counts().await, vec![("queued".to_string(), 1)]);
+        h.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn список_заказов_на_ручной_проверке_показывает_причину_и_доступные_действия() {
+        let Some(h) = harness().await else { return };
+        let owner = h.owner().await;
+        let support = h.staff("support@example.com", AdminRole::Support).await;
+        let client_id = h.client(705).await;
+        let topup = h.paid_order(client_id).await;
+        {
+            let mut conn = h.services().store().conn().await.unwrap();
+            conn.orders()
+                .mark_review(topup, "оплата получена, но модуль не подтвердил заказ")
+                .await
+                .unwrap();
+        }
+        let stale = h.stale_renewal(client_id).await;
+        h.paid_order(client_id).await;
+        let path = "/api/admin/orders/review";
+        let (status, _) = h.send(Method::GET, path, Some(&support), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, body) = h.send(Method::GET, path, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let items = body.as_array().unwrap();
+        assert_eq!(items.len(), 2, "{body}");
+        assert_eq!(items[0]["order_id"], stale.0);
+        assert_eq!(items[0]["kind"], "renewal");
+        assert_eq!(items[0]["client_id"], client_id.0);
+        assert_eq!(
+            items[0]["reason"],
+            "срок подписки в Remnawave изменился после расчёта плана"
+        );
+        assert_eq!(items[0]["plan"], "stale");
+        assert_eq!(items[0]["plan_base_expire_at"], "2027-02-14T00:00:00Z");
+        assert_eq!(items[0]["plan_target_expire_at"], "2027-03-16T00:00:00Z");
+        assert_eq!(items[0]["refund_pending"], false);
+        assert_eq!(items[0]["job"], Value::Null);
+        assert_eq!(items[0]["total"], json!({"minor": 299, "currency": "USD"}));
+        assert_eq!(
+            items[0]["actions"],
+            json!(["recalculate", "mark_fulfilled"])
+        );
+        assert_eq!(items[1]["order_id"], topup.0);
+        assert_eq!(items[1]["kind"], "top_up");
+        assert_eq!(
+            items[1]["reason"],
+            "оплата получена, но модуль не подтвердил заказ"
+        );
+        assert_eq!(items[1]["plan"], "none");
+        assert_eq!(items[1]["actions"], json!(["redeliver", "mark_fulfilled"]));
+        let (status, body) = h
+            .send(
+                Method::GET,
+                "/api/admin/orders/review?limit=1",
+                Some(&owner),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        h.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn пересчитать_и_выдать_сбрасывает_план_ставит_задачу_и_требует_права_деньги() {
+        let Some(h) = harness().await else { return };
+        let owner = h.owner().await;
+        let support = h.staff("support@example.com", AdminRole::Support).await;
+        let readonly = h.staff("readonly@example.com", AdminRole::ReadOnly).await;
+        let client_id = h.client(706).await;
+        let order_id = h.stale_renewal(client_id).await;
+        let redeliver = format!("/api/admin/orders/{}/redeliver", order_id.0);
+        let (status, body) = h.send(Method::POST, &redeliver, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "order.plan_stale");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Пересчитать и выдать")
+        );
+        assert!(h.job_counts().await.is_empty());
+        let path = format!("/api/admin/orders/{}/recalculate", order_id.0);
+        for token in [&support, &readonly] {
+            let (status, _) = h.send(Method::POST, &path, Some(token), None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+        assert_eq!(h.plan_stage(order_id).await, PlanStage::Stale);
+        let (status, body) = h.send(Method::POST, &path, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["order_id"], order_id.0);
+        assert_eq!(body["state"], "created");
+        assert_eq!(body["plan"], "stale");
+        assert_eq!(h.plan_stage(order_id).await, PlanStage::None);
+        assert_eq!(h.order_status(order_id).await, OrderStatus::Review);
+        assert_eq!(h.job_counts().await, vec![("queued".to_string(), 1)]);
+        let (status, body) = h.send(Method::POST, &path, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["state"], "already_queued");
+        assert_eq!(body["plan"], "none");
+        assert_eq!(h.job_counts().await, vec![("queued".to_string(), 1)]);
+        let audit = h.order_audit(order_id).await;
+        let records: Vec<_> = audit
+            .iter()
+            .filter(|a| a.action == "order.recalculate")
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].actor_kind, "admin");
+        assert_eq!(records[1].details["plan"], "stale");
+        assert_eq!(
+            records[1].details["previous_plan"]["target_expire_at"],
+            "2027-03-16T00:00:00Z"
+        );
+        let (status, body) = h.send(Method::POST, &redeliver, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["state"], "already_queued");
+        let applied = h.stale_renewal(client_id).await;
+        {
+            let mut conn = h.services().store().conn().await.unwrap();
+            let reset = conn.orders().reset_plan(applied).await.unwrap();
+            conn.orders()
+                .save_plan(applied, &reset.plan.unwrap())
+                .await
+                .unwrap();
+            conn.orders()
+                .mark_plan_applied(applied, chrono::Utc::now())
+                .await
+                .unwrap();
+        }
+        let again = format!("/api/admin/orders/{}/recalculate", applied.0);
+        for body in [None, Some(json!({})), Some(json!({ "reapply": false }))] {
+            let (status, body) = h.send(Method::POST, &again, Some(&owner), body).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert_eq!(body["error"]["code"], "order.plan_applied");
+        }
+        assert_eq!(h.plan_stage(applied).await, PlanStage::Applied);
+        let (status, body) = h
+            .send(
+                Method::POST,
+                &again,
+                Some(&owner),
+                Some(json!({ "reapply": true })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["plan"], "applied");
+        assert_eq!(h.plan_stage(applied).await, PlanStage::None);
+        let topup = h.paid_order(client_id).await;
+        {
+            let mut conn = h.services().store().conn().await.unwrap();
+            conn.orders()
+                .mark_review(topup, "модуль не подтвердил заказ")
+                .await
+                .unwrap();
+        }
+        let (status, body) = h
+            .send(
+                Method::POST,
+                &format!("/api/admin/orders/{}/recalculate", topup.0),
+                Some(&owner),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "order.recalculate_kind");
+        let paid = h.paid_order(client_id).await;
+        let (status, body) = h
+            .send(
+                Method::POST,
+                &format!("/api/admin/orders/{}/recalculate", paid.0),
+                Some(&owner),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "order.review_status");
+        let (status, _) = h
+            .send(
+                Method::POST,
+                "/api/admin/orders/999999/recalculate",
+                Some(&owner),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        h.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn отметить_выданным_требует_пояснение_и_завершает_заказ_на_проверке() {
+        let Some(h) = harness().await else { return };
+        let owner = h.owner().await;
+        let support = h.staff("support@example.com", AdminRole::Support).await;
+        let client_id = h.client(707).await;
+        let order_id = h.stale_renewal(client_id).await;
+        let path = format!("/api/admin/orders/{}/mark-fulfilled", order_id.0);
+        let note = json!({ "note": "Срок в панели уже учитывает эту оплату" });
+        let (status, _) = h
+            .send(Method::POST, &path, Some(&support), Some(note.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        for body in [None, Some(json!({})), Some(json!({ "note": "   " }))] {
+            let (status, body) = h.send(Method::POST, &path, Some(&owner), body).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert_eq!(body["error"]["code"], "order.mark_fulfilled_note");
+        }
+        assert_eq!(h.order_status(order_id).await, OrderStatus::Review);
+        let (status, body) = h
+            .send(Method::POST, &path, Some(&owner), Some(note.clone()))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["order_id"], order_id.0);
+        assert_eq!(body["status"], "fulfilled");
+        assert!(body["fulfilled_at"].is_string());
+        assert_eq!(h.order_status(order_id).await, OrderStatus::Fulfilled);
+        assert!(h.job_counts().await.is_empty());
+        let audit = h.order_audit(order_id).await;
+        assert_eq!(audit[0].action, "order.mark_fulfilled");
+        assert_eq!(audit[0].actor_kind, "admin");
+        assert_eq!(
+            audit[0].details["note"],
+            "Срок в панели уже учитывает эту оплату"
+        );
+        assert_eq!(audit[0].details["plan"], "stale");
+        let (status, body) = h
+            .send(Method::POST, &path, Some(&owner), Some(note.clone()))
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "order.review_status");
+        assert_eq!(body["error"]["message"], "Заказ уже выдан");
+        let paid = h.paid_order(client_id).await;
+        let (status, body) = h
+            .send(
+                Method::POST,
+                &format!("/api/admin/orders/{}/mark-fulfilled", paid.0),
+                Some(&owner),
+                Some(note),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "order.review_status");
+        let (status, body) = h
+            .send(Method::GET, "/api/admin/orders/review", Some(&owner), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body, json!([]));
         h.db.cleanup().await;
     }
 

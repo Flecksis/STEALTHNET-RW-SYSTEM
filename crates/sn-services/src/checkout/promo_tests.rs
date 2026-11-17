@@ -432,3 +432,56 @@ async fn сбой_кассы_сразу_освобождает_промокод(
     ));
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn расчёт_и_оформление_считают_неудачные_промокоды_по_адресу() {
+    let Some(kit) = promo_kit().await else { return };
+    create_promo(&kit, percent("REAL20", 20, None)).await;
+    let tariff = standard(&kit.services).await;
+    let office: IpAddr = "203.0.113.40".parse().unwrap();
+    let neighbour: IpAddr = "203.0.113.41".parse().unwrap();
+    let checkout = kit.services.checkout();
+    let accounts = promo::ADDRESS_FAILURE_LIMIT / promo::FAILURE_LIMIT;
+    for account in 0..accounts {
+        let who = client(&kit.services, 630 + i64::from(account)).await;
+        for n in 0..promo::FAILURE_LIMIT {
+            let wrong = with_code(cart(&tariff, 30, None), &format!("GUESS{account}X{n}"));
+            let err = checkout
+                .quote_from(who, &wrong, Some(office))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("нет или он не подходит"), "{err}");
+        }
+    }
+    let fresh = client(&kit.services, 640).await;
+    let cart = with_code(cart(&tariff, 30, None), "REAL20");
+    let limited = checkout
+        .quote_from(fresh, &cart, Some(office))
+        .await
+        .unwrap_err();
+    assert!(limited.to_string().contains("Слишком много"), "{limited}");
+    let limited = checkout
+        .start_from(fresh, &request(cart.clone(), TEST_PAY), Some(office))
+        .await
+        .unwrap_err();
+    assert!(limited.to_string().contains("Слишком много"), "{limited}");
+    assert!(kit.pay.invoices.lock().unwrap().is_empty());
+    assert!(orders_of(&kit, fresh).await.is_empty());
+    let view = checkout
+        .quote_from(fresh, &cart, Some(neighbour))
+        .await
+        .unwrap();
+    assert_eq!(view.quote.total.minor, 239);
+    assert!(
+        checkout.quote(fresh, &cart).await.is_ok(),
+        "без адреса действует только лимит клиента"
+    );
+    assert!(matches!(
+        checkout
+            .start_from(fresh, &request(cart, TEST_PAY), Some(neighbour))
+            .await
+            .unwrap(),
+        CheckoutResult::Redirect { .. }
+    ));
+    kit.db.cleanup().await;
+}

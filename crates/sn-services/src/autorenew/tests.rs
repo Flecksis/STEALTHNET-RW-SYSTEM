@@ -24,21 +24,21 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Default)]
-struct FlakyPay {
+pub(crate) struct FlakyPay {
     script: Mutex<VecDeque<PaymentResult<ProviderStatus>>>,
     requests: Mutex<Vec<InvoiceRequest>>,
     status: Mutex<Option<ProviderStatus>>,
 }
 
 impl FlakyPay {
-    fn answering(script: Vec<PaymentResult<ProviderStatus>>) -> Arc<Self> {
+    pub(crate) fn answering(script: Vec<PaymentResult<ProviderStatus>>) -> Arc<Self> {
         Arc::new(FlakyPay {
             script: Mutex::new(script.into()),
             ..FlakyPay::default()
         })
     }
 
-    fn requests(&self) -> Vec<InvoiceRequest> {
+    pub(crate) fn requests(&self) -> Vec<InvoiceRequest> {
         self.requests.lock().unwrap().clone()
     }
 }
@@ -138,7 +138,7 @@ impl PaymentProvider for FlakyPay {
     }
 }
 
-async fn flaky_kit(pay: Arc<FlakyPay>) -> Option<Kit> {
+pub(crate) async fn flaky_kit(pay: Arc<FlakyPay>) -> Option<Kit> {
     let db = test_store().await?;
     let services = Services::new(ServiceDeps {
         store: db.store.clone(),
@@ -206,7 +206,7 @@ async fn due_subscription(
     expire_in(kit, &subscription, moment(offset), status).await
 }
 
-async fn renewals(kit: &Kit, subscription: &Subscription) -> Vec<(Order, Vec<Payment>)> {
+pub(crate) async fn renewals(kit: &Kit, subscription: &Subscription) -> Vec<(Order, Vec<Payment>)> {
     let mut conn = kit.services.store().conn().await.unwrap();
     let orders = conn
         .orders()
@@ -239,7 +239,7 @@ async fn attempts(kit: &Kit, subscription: &Subscription) -> u32 {
         .unwrap()
 }
 
-fn notifications(jobs: &[JobPayload], name: &str) -> usize {
+pub(crate) fn notifications(jobs: &[JobPayload], name: &str) -> usize {
     jobs.iter()
         .filter(|job| matches!(job, JobPayload::Notify { template, .. } if template == name))
         .count()
@@ -611,7 +611,7 @@ async fn неизвестный_исход_списания_не_отменяе�
     kit.db.cleanup().await;
 }
 
-async fn unknown_charge(kit: &Kit, telegram_id: i64) -> (Subscription, Payment) {
+pub(crate) async fn unknown_charge(kit: &Kit, telegram_id: i64) -> (Subscription, Payment) {
     let client_id = client(&kit.services, telegram_id).await;
     let subscription =
         due_subscription(kit, client_id, Days::hours(12), SubscriptionStatus::Active).await;
@@ -792,6 +792,279 @@ async fn заблокированному_клиенту_повторный_за
         "{checked:?}"
     );
     assert_eq!(pay.requests().len(), 1);
+    kit.db.cleanup().await;
+}
+
+pub(crate) async fn payment_audit(
+    kit: &Kit,
+    payment: &Payment,
+    action: &str,
+) -> Vec<sn_store::AuditRecord> {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.audit()
+        .for_entity(sn_store::audit_entity::PAYMENT, payment.id.0, 20)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.action == action)
+        .collect()
+}
+
+async fn stays_unclear(kit: &Kit, pay: &FlakyPay, payment: &Payment, word: &str) {
+    let autorenew = kit.services.autorenew();
+    for _ in 0..2 {
+        let checked = autorenew.check_charge(payment.id).await.unwrap();
+        assert!(
+            matches!(&checked, Some(ChargeCheck::Unclear(reason)) if reason.contains(word)),
+            "{checked:?}"
+        );
+    }
+    assert_eq!(
+        pay.requests().len(),
+        1,
+        "новый запрос на списание не отправлен"
+    );
+    let mut conn = kit.services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(payment.id).await.unwrap().status,
+        PaymentStatus::Pending
+    );
+    assert_eq!(
+        conn.orders().get(payment.order_id).await.unwrap().status,
+        OrderStatus::Pending
+    );
+    drop(conn);
+    let audit = payment_audit(kit, payment, CHARGE_UNCLEAR_AUDIT).await;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0].actor_kind, "system");
+    assert_eq!(
+        audit[0].details["order_id"],
+        serde_json::json!(payment.order_id)
+    );
+    assert!(
+        audit[0].details["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(word)),
+        "{audit:?}"
+    );
+}
+
+async fn flaky_unknown_charge(
+    telegram_id: i64,
+) -> Option<(Kit, Arc<FlakyPay>, Subscription, Payment)> {
+    let pay = FlakyPay::answering(vec![
+        Err(PaymentError::Transport("обрыв связи".into())),
+        Ok(ProviderStatus::Paid),
+    ]);
+    let kit = flaky_kit(pay.clone()).await?;
+    let (subscription, payment) = unknown_charge(&kit, telegram_id).await;
+    assert_eq!(payment.provider_txid, None);
+    Some((kit, pay, subscription, payment))
+}
+
+#[tokio::test]
+async fn после_выключения_автопродления_повторный_запрос_списания_не_отправляется() {
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(346).await else {
+        return;
+    };
+    kit.services
+        .subscriptions()
+        .set_autorenew(
+            subscription.id,
+            false,
+            None,
+            crate::Actor::Client(subscription.client_id),
+        )
+        .await
+        .unwrap();
+    stays_unclear(&kit, &pay, &payment, "автопродление уже выключено").await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn после_изменения_срока_подписки_повторный_запрос_списания_не_отправляется() {
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(347).await else {
+        return;
+    };
+    expire_in(
+        &kit,
+        &subscription,
+        moment(Days::days(45)),
+        SubscriptionStatus::Active,
+    )
+    .await;
+    stays_unclear(&kit, &pay, &payment, "срок подписки уже изменился").await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn для_завершённой_подписки_повторный_запрос_списания_не_отправляется() {
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(348).await else {
+        return;
+    };
+    sqlx::query("UPDATE subscriptions SET ended_at = now() WHERE id = $1")
+        .bind(subscription.id.0)
+        .execute(kit.services.store().pool())
+        .await
+        .unwrap();
+    stays_unclear(&kit, &pay, &payment, "подписка уже завершена").await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn для_отключённой_подписки_повторный_запрос_списания_не_отправляется() {
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(349).await else {
+        return;
+    };
+    expire_in(
+        &kit,
+        &subscription,
+        subscription.mirror.expire_at.unwrap(),
+        SubscriptionStatus::Disabled,
+    )
+    .await;
+    stays_unclear(&kit, &pay, &payment, "подписка заблокирована").await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пока_другой_оплаченный_заказ_подписки_не_выдан_повторный_запрос_списания_не_отправляется()
+{
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(350).await else {
+        return;
+    };
+    let tariff = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.tariffs()
+            .get(subscription.tariff_id.unwrap())
+            .await
+            .unwrap()
+    };
+    credit(&kit.services, subscription.client_id, 1_000).await;
+    let manual = buy_with_balance(
+        &kit.services,
+        subscription.client_id,
+        cart(&tariff, 90, Some(&subscription)),
+    )
+    .await;
+    assert_eq!(manual.status, OrderStatus::Paid);
+    assert_ne!(manual.id, payment.order_id);
+    stays_unclear(&kit, &pay, &payment, "подписка уже оплачена другим заказом").await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn заказ_на_проверке_без_плана_в_работе_не_мешает_повторному_запросу_списания() {
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(353).await else {
+        return;
+    };
+    let tariff = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.tariffs()
+            .get(subscription.tariff_id.unwrap())
+            .await
+            .unwrap()
+    };
+    credit(&kit.services, subscription.client_id, 1_000).await;
+    let manual = buy_with_balance(
+        &kit.services,
+        subscription.client_id,
+        cart(&tariff, 90, Some(&subscription)),
+    )
+    .await;
+    let autorenew = kit.services.autorenew();
+    let checked = autorenew.check_charge(payment.id).await.unwrap();
+    assert!(
+        matches!(&checked, Some(ChargeCheck::Unclear(reason)) if reason.contains("подписка уже оплачена другим заказом")),
+        "{checked:?}"
+    );
+    assert_eq!(pay.requests().len(), 1);
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.orders()
+            .mark_review(manual.id, "сквада нет в панели")
+            .await
+            .unwrap();
+        assert!(
+            !crate::fulfillment::holds_autorenew(&mut conn, manual.id)
+                .await
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        autorenew.check_charge(payment.id).await.unwrap(),
+        Some(ChargeCheck::Settled)
+    );
+    assert_eq!(pay.requests().len(), 2, "повторный запрос отправлен");
+    let renewals = renewals(&kit, &subscription).await;
+    let (charged, payments) = renewals
+        .iter()
+        .find(|(order, _)| order.id == payment.order_id)
+        .unwrap();
+    assert_eq!(charged.status, OrderStatus::Paid);
+    assert_eq!(payments[0].status, PaymentStatus::Paid);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn без_записи_о_попытке_повторный_запрос_списания_не_отправляется() {
+    let Some((kit, pay, subscription, payment)) = flaky_unknown_charge(352).await else {
+        return;
+    };
+    sqlx::query("DELETE FROM autorenew_attempts WHERE subscription_id = $1 AND order_id = $2")
+        .bind(subscription.id.0)
+        .bind(payment.order_id.0)
+        .execute(kit.services.store().pool())
+        .await
+        .unwrap();
+    stays_unclear(
+        &kit,
+        &pay,
+        &payment,
+        "попытка автопродления по этому заказу не найдена",
+    )
+    .await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn после_выключения_автопродления_статус_по_номеру_платежа_всё_равно_запрашивается() {
+    let pay = FlakyPay::answering(vec![Ok(ProviderStatus::Pending)]);
+    let Some(kit) = flaky_kit(pay.clone()).await else {
+        return;
+    };
+    let (subscription, payment) = unknown_charge(&kit, 351).await;
+    assert!(payment.provider_txid.is_some());
+    kit.services
+        .subscriptions()
+        .set_autorenew(
+            subscription.id,
+            false,
+            None,
+            crate::Actor::Client(subscription.client_id),
+        )
+        .await
+        .unwrap();
+    let autorenew = kit.services.autorenew();
+    *pay.status.lock().unwrap() = Some(ProviderStatus::Pending);
+    assert_eq!(
+        autorenew.check_charge(payment.id).await.unwrap(),
+        Some(ChargeCheck::Pending)
+    );
+    *pay.status.lock().unwrap() = Some(ProviderStatus::Paid);
+    assert_eq!(
+        autorenew.check_charge(payment.id).await.unwrap(),
+        Some(ChargeCheck::Settled)
+    );
+    assert_eq!(pay.requests().len(), 1);
+    let renewals = renewals(&kit, &subscription).await;
+    assert_eq!(renewals[0].0.status, OrderStatus::Paid);
+    assert_eq!(renewals[0].1[0].status, PaymentStatus::Paid);
+    assert!(
+        payment_audit(&kit, &payment, CHARGE_UNCLEAR_AUDIT)
+            .await
+            .is_empty()
+    );
     kit.db.cleanup().await;
 }
 
@@ -1039,4 +1312,71 @@ fn удалённый_срок_заменяется_ближайшим_по_дн
         Some(30)
     );
     assert_eq!(renewal_period(&tariff, &subscription, Currency::Rub), None);
+}
+
+#[tokio::test]
+async fn заказ_на_проверке_с_неприменённым_планом_не_держит_автопродление() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 351).await;
+    let subscription =
+        due_subscription(&kit, client_id, Days::hours(12), SubscriptionStatus::Active).await;
+    let tariff = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.tariffs()
+            .get(subscription.tariff_id.unwrap())
+            .await
+            .unwrap()
+    };
+    let stuck = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&tariff, 30, Some(&subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna
+        .fail_on("update_user", sn_remnawave::fake::Fault::Timeout);
+    fulfillment.run(stuck.id).await.unwrap();
+    let admin = crate::Actor::Admin(sn_domain::ids::AdminId(1));
+    kit.services
+        .clients()
+        .block(client_id, Some("проверка"), admin)
+        .await
+        .unwrap();
+    fulfillment.run(stuck.id).await.unwrap();
+    kit.services
+        .clients()
+        .unblock(client_id, admin)
+        .await
+        .unwrap();
+    assert_eq!(
+        order(&kit.services, stuck.id).await.status,
+        OrderStatus::Review
+    );
+    let now = kit.services.now();
+    let autorenew = kit.services.autorenew();
+    assert_eq!(autorenew.run_due(now).await.unwrap().charged, 1);
+    let charged = renewals(&kit, &subscription)
+        .await
+        .into_iter()
+        .map(|(order, _)| order)
+        .find(|order| order.id != stuck.id)
+        .unwrap();
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.orders()
+            .mark_review(charged.id, "сквада нет в панели")
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        autorenew
+            .run_due(now + Days::days(1))
+            .await
+            .unwrap()
+            .charged,
+        0,
+        "своё списание на ручной проверке держит следующее"
+    );
+    kit.db.cleanup().await;
 }

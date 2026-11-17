@@ -6,15 +6,51 @@ use async_trait::async_trait;
 use sn_domain::money::{Amount, Currency, PayCurrency};
 use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 const API: &str = "https://api.yookassa.ru";
 const TAX_SYSTEMS: RangeInclusive<i64> = 1..=6;
 const VAT_CODES: RangeInclusive<i64> = 1..=12;
+const MISS_TTL: Duration = Duration::from_secs(60);
+const MISS_CAPACITY: usize = 4096;
+
+#[derive(Default)]
+struct Misses {
+    until: Mutex<HashMap<String, Instant>>,
+}
+
+impl Misses {
+    fn entries(&self) -> MutexGuard<'_, HashMap<String, Instant>> {
+        match self.until.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn known(&self, key: &str, now: Instant) -> bool {
+        self.entries().get(key).is_some_and(|until| *until > now)
+    }
+
+    fn remember(&self, key: String, now: Instant, ttl: Duration) {
+        let mut entries = self.entries();
+        if entries.len() >= MISS_CAPACITY {
+            entries.retain(|_, until| *until > now);
+        }
+        if entries.len() >= MISS_CAPACITY {
+            entries.clear();
+        }
+        entries.insert(key, now + ttl);
+    }
+}
 
 pub struct YooKassa {
     http: reqwest::Client,
     api_base: String,
+    misses: Misses,
+    miss_ttl: Duration,
 }
 
 impl Default for YooKassa {
@@ -32,6 +68,31 @@ impl YooKassa {
         YooKassa {
             http: http_client(),
             api_base: api_base.into().trim_end_matches('/').to_string(),
+            misses: Misses::default(),
+            miss_ttl: MISS_TTL,
+        }
+    }
+
+    async fn authentic(
+        &self,
+        config: &ProviderConfig,
+        collection: &str,
+        id: &str,
+    ) -> PaymentResult<Json> {
+        let id = util::safe_id(id)?;
+        let key = format!(
+            "{}|{collection}|{id}",
+            config.get("shop_id").unwrap_or_default()
+        );
+        if self.misses.known(&key, Instant::now()) {
+            return Err(PaymentError::BadSignature);
+        }
+        match self.find(config, collection, id).await? {
+            Some(object) => Ok(object),
+            None => {
+                self.misses.remember(key, Instant::now(), self.miss_ttl);
+                Err(PaymentError::BadSignature)
+            }
         }
     }
 
@@ -362,11 +423,19 @@ impl PaymentProvider for YooKassa {
         true
     }
 
+    fn verifies_webhooks_by_api(&self) -> bool {
+        true
+    }
+
     fn supports_recurring(&self) -> bool {
         true
     }
 
     fn supports_refunds(&self) -> bool {
+        true
+    }
+
+    fn supports_refund_polling(&self) -> bool {
         true
     }
 
@@ -449,10 +518,7 @@ impl PaymentProvider for YooKassa {
             .and_then(Json::as_str)
             .ok_or_else(|| util::bad("нет object.id"))?;
         if event.starts_with("payment.") {
-            let payment = self
-                .find(config, "payments", object_id)
-                .await?
-                .ok_or(PaymentError::BadSignature)?;
+            let payment = self.authentic(config, "payments", object_id).await?;
             return payment_outcome(&payment);
         }
         if !event.starts_with("refund.") {
@@ -463,10 +529,7 @@ impl PaymentProvider for YooKassa {
                 WebhookReply::ok(),
             ));
         }
-        let refund = self
-            .find(config, "refunds", object_id)
-            .await?
-            .ok_or(PaymentError::BadSignature)?;
+        let refund = self.authentic(config, "refunds", object_id).await?;
         self.refund_outcome(config, object_id, &refund).await
     }
 
@@ -677,6 +740,107 @@ mod tests {
             )
             .await;
         assert!(matches!(traversal, Err(PaymentError::BadPayload(_))));
+    }
+
+    async fn lookups(server: &MockServer) -> usize {
+        server.received_requests().await.unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn повтор_поддельного_идентификатора_не_вызывает_второй_запрос() {
+        let server = api(payment("succeeded", "499.00", "RUB")).await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        let forged = "2a8f5d1e-0000-5000-9000-000000000000";
+        for event in ["payment.succeeded", "payment.succeeded", "payment.canceled"] {
+            assert_eq!(
+                kassa
+                    .parse_webhook(&settings(&[]), &hook(&[], notification(event, forged)))
+                    .await,
+                Err(PaymentError::BadSignature)
+            );
+        }
+        assert_eq!(lookups(&server).await, 1);
+        assert_eq!(
+            kassa
+                .parse_webhook(
+                    &settings(&[]),
+                    &hook(&[], notification("refund.succeeded", forged))
+                )
+                .await,
+            Err(PaymentError::BadSignature)
+        );
+        assert_eq!(lookups(&server).await, 2);
+        let other_shop = config(&[
+            ("shop_id", json!("777000")),
+            ("secret_key", json!("live_secret")),
+        ]);
+        assert_eq!(
+            kassa
+                .parse_webhook(
+                    &other_shop,
+                    &hook(&[], notification("payment.succeeded", forged))
+                )
+                .await,
+            Err(PaymentError::BadSignature)
+        );
+        assert_eq!(lookups(&server).await, 3);
+        assert!(matches!(
+            kassa.fetch_status(&settings(&[]), forged).await,
+            Err(PaymentError::Rejected(_))
+        ));
+        assert_eq!(lookups(&server).await, 4);
+        for _ in 0..2 {
+            let genuine = kassa
+                .parse_webhook(
+                    &settings(&[]),
+                    &hook(&[], notification("payment.succeeded", ID)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(genuine.status, ProviderStatus::Paid);
+        }
+        assert_eq!(lookups(&server).await, 6);
+    }
+
+    #[tokio::test]
+    async fn отрицательный_ответ_помнится_недолго() {
+        let server = MockServer::start().await;
+        let mut kassa = YooKassa::with_api_base(server.uri());
+        kassa.miss_ttl = Duration::ZERO;
+        for _ in 0..2 {
+            assert_eq!(
+                kassa
+                    .parse_webhook(
+                        &settings(&[]),
+                        &hook(&[], notification("payment.succeeded", "forged-1"))
+                    )
+                    .await,
+                Err(PaymentError::BadSignature)
+            );
+        }
+        assert_eq!(lookups(&server).await, 2);
+        assert!(YooKassa::new().verifies_webhooks_by_api());
+    }
+
+    #[test]
+    fn память_отрицательных_ответов_ограничена() {
+        let misses = Misses::default();
+        let now = Instant::now();
+        let ttl = Duration::from_secs(60);
+        for n in 0..MISS_CAPACITY {
+            misses.remember(format!("old-{n}"), now, ttl);
+        }
+        assert!(misses.known("old-0", now));
+        assert!(!misses.known("old-0", now + ttl));
+        assert!(!misses.known("absent", now));
+        misses.remember("fresh".into(), now + ttl, ttl);
+        assert_eq!(misses.entries().len(), 1);
+        assert!(misses.known("fresh", now + ttl));
+        for n in 0..MISS_CAPACITY {
+            misses.remember(format!("flood-{n}"), now + ttl, ttl);
+        }
+        assert!(misses.entries().len() <= MISS_CAPACITY);
+        assert!(misses.known(&format!("flood-{}", MISS_CAPACITY - 1), now + ttl));
     }
 
     #[tokio::test]
@@ -1002,5 +1166,6 @@ mod tests {
             ("secret_key", json!("s"))
         ])));
         assert!(kassa.supports_recurring() && kassa.supports_refunds());
+        assert!(kassa.supports_refund_polling());
     }
 }

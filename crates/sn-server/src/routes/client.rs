@@ -203,14 +203,16 @@ async fn catalog(
 
 async fn quote(
     client: CurrentClient,
+    Meta(meta): Meta,
     State(state): State<AppState>,
     ApiJson(cart): ApiJson<CartRequest>,
 ) -> ApiResult<Json<sn_services::checkout::QuoteView>> {
+    let address = meta.ip.as_deref().and_then(|ip| ip.parse().ok());
     Ok(Json(
         state
             .services
             .checkout()
-            .quote(client.0.client_id, &cart)
+            .quote_from(client.0.client_id, &cart, address)
             .await?,
     ))
 }
@@ -225,6 +227,7 @@ struct CheckoutBody {
 
 async fn checkout(
     client: CurrentClient,
+    Meta(meta): Meta,
     State(state): State<AppState>,
     ApiJson(body): ApiJson<CheckoutBody>,
 ) -> ApiResult<Json<CheckoutResult>> {
@@ -235,11 +238,12 @@ async fn checkout(
         channel: channel(&client),
         return_url: body.return_url,
     };
+    let address = meta.ip.as_deref().and_then(|ip| ip.parse().ok());
     Ok(Json(
         state
             .services
             .checkout()
-            .start(client.0.client_id, &request)
+            .start_from(client.0.client_id, &request, address)
             .await?,
     ))
 }
@@ -682,6 +686,289 @@ mod tests {
             .unwrap()
             .ticket
             .status
+    }
+
+    async fn promo_state() -> Option<(TestDb, AppState)> {
+        let db = test_store().await?;
+        let services = Services::new(ServiceDeps {
+            store: db.store.clone(),
+            payments: Arc::new(ProviderRegistry::builtin()),
+            modules: Arc::new(ModuleRegistry::new(sn_modules::catalog::all()).unwrap()),
+            secrets: None,
+            clock: Arc::new(SystemClock),
+            env: EnvFallbacks {
+                bot_token: Some(BOT.into()),
+                ..EnvFallbacks::default()
+            },
+        });
+        services.reload().await.unwrap();
+        let config = ServerConfig {
+            public_url: Some(PANEL.into()),
+            ..ServerConfig::default()
+        };
+        Some((db, AppState::new(config, services)))
+    }
+
+    async fn session(state: &AppState, telegram_id: i64) -> String {
+        let (client, _) = state
+            .services
+            .clients()
+            .ensure_telegram(
+                &TelegramProfile {
+                    id: telegram_id,
+                    username: None,
+                    first_name: Some("Клиент".into()),
+                    last_name: None,
+                    language_code: Some("ru".into()),
+                    is_premium: false,
+                },
+                RegistrationSource::Bot,
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .services
+            .auth()
+            .client_session_for(
+                client.id,
+                SessionChannel::Cabinet,
+                &RequestMeta::default(),
+                false,
+            )
+            .await
+            .unwrap()
+            .token
+    }
+
+    #[tokio::test]
+    async fn перебор_промокодов_с_одного_адреса_останавливается_для_новых_аккаунтов() {
+        let Some((db, state)) = promo_state().await else {
+            return;
+        };
+        sn_modules::catalog::promo::create(
+            &state.services.module_context(),
+            &serde_json::from_value(json!({"code": "REAL20", "kind": "percent", "percent": 20}))
+                .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        let attacker: SocketAddr = "203.0.113.7:40000".parse().unwrap();
+        let other: SocketAddr = "203.0.113.8:40000".parse().unwrap();
+        for account in 0..3 {
+            let token = session(&state, 9_000 + account).await;
+            let bearer = format!("Bearer {token}");
+            for n in 0..10 {
+                let (status, _, body) = send_from(
+                    &state,
+                    Some(attacker),
+                    Method::POST,
+                    "/api/client/m/promo/check",
+                    &[("authorization", &bearer)],
+                    Some(json!({ "code": format!("GUESS{account}X{n}") })),
+                )
+                .await;
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            }
+        }
+        let token = session(&state, 9_100).await;
+        let bearer = format!("Bearer {token}");
+        let (status, _, body) = send_from(
+            &state,
+            Some(attacker),
+            Method::POST,
+            "/api/client/m/promo/check",
+            &[("authorization", &bearer)],
+            Some(json!({"code": "REAL20"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        let (status, _, body) = send_from(
+            &state,
+            Some(other),
+            Method::POST,
+            "/api/client/m/promo/check",
+            &[("authorization", &bearer)],
+            Some(json!({"code": "REAL20"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        db.cleanup().await;
+    }
+
+    async fn real_code(state: &AppState) {
+        sn_modules::catalog::promo::create(
+            &state.services.module_context(),
+            &serde_json::from_value(json!({"code": "REAL20", "kind": "percent", "percent": 20}))
+                .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn guess_from(
+        state: &AppState,
+        peer: SocketAddr,
+        forwarded: Option<&str>,
+        bearer: &str,
+        code: &str,
+    ) -> StatusCode {
+        let mut headers = vec![("authorization", bearer)];
+        if let Some(forwarded) = forwarded {
+            headers.push(("x-forwarded-for", forwarded));
+        }
+        send_from(
+            state,
+            Some(peer),
+            Method::POST,
+            "/api/client/m/promo/check",
+            &headers,
+            Some(json!({ "code": code })),
+        )
+        .await
+        .0
+    }
+
+    async fn exhaust_address(
+        state: &AppState,
+        peer: SocketAddr,
+        forwarded: Option<&str>,
+        first_account: i64,
+    ) {
+        let accounts = sn_modules::catalog::promo::ADDRESS_FAILURE_LIMIT
+            / sn_modules::catalog::promo::FAILURE_LIMIT;
+        for account in 0..i64::from(accounts) {
+            let bearer = format!("Bearer {}", session(state, first_account + account).await);
+            for n in 0..sn_modules::catalog::promo::FAILURE_LIMIT {
+                assert_eq!(
+                    guess_from(
+                        state,
+                        peer,
+                        forwarded,
+                        &bearer,
+                        &format!("GUESS{account}X{n}")
+                    )
+                    .await,
+                    StatusCode::UNPROCESSABLE_ENTITY
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn лимит_промокодов_считается_по_адресу_клиента_за_доверенным_прокси() {
+        let Some((db, state)) = promo_state().await else {
+            return;
+        };
+        real_code(&state).await;
+        let proxy: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        exhaust_address(&state, proxy, Some("203.0.113.7"), 9_200).await;
+        let bearer = format!("Bearer {}", session(&state, 9_300).await);
+        assert_eq!(
+            guess_from(&state, proxy, Some("203.0.113.7"), &bearer, "REAL20").await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            guess_from(&state, proxy, Some("203.0.113.8"), &bearer, "REAL20").await,
+            StatusCode::OK,
+            "сосед за тем же прокси не ограничен"
+        );
+        let direct: SocketAddr = "203.0.113.7:40000".parse().unwrap();
+        assert_eq!(
+            guess_from(&state, direct, Some("198.51.100.77"), &bearer, "REAL20").await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "заголовок от недоверенного адреса не меняет адрес клиента"
+        );
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn расчёт_корзины_считает_неверные_промокоды_по_адресу_клиента() {
+        use sn_domain::money::Stars;
+        use sn_domain::tariff::{CurrencyPrices, DevicePolicy};
+        use sn_domain::traffic::TrafficPolicy;
+        use sn_store::{NewCategory, NewPeriod, NewTariff};
+        let Some((db, state)) = promo_state().await else {
+            return;
+        };
+        real_code(&state).await;
+        let tariff = {
+            let mut conn = state.services.store().conn().await.unwrap();
+            let category = conn
+                .tariffs()
+                .create_category(&NewCategory {
+                    name: "Стандарт".into(),
+                    sort: 0,
+                    visible: true,
+                })
+                .await
+                .unwrap();
+            conn.tariffs()
+                .create(&NewTariff {
+                    category_id: category.id,
+                    name: "Стандарт".into(),
+                    description: None,
+                    on_sale: true,
+                    sort: 0,
+                    devices: DevicePolicy {
+                        included: 3,
+                        extra: None,
+                    },
+                    traffic: TrafficPolicy::UNLIMITED,
+                    squads: Vec::new(),
+                    external_squad: None,
+                    periods: vec![NewPeriod {
+                        days: 30,
+                        prices: CurrencyPrices {
+                            usd: Some(299),
+                            rub: Some(19_900),
+                        },
+                        stars: Some(Stars(150)),
+                        sort: 0,
+                        active: true,
+                    }],
+                })
+                .await
+                .unwrap()
+        };
+        let proxy: SocketAddr = "127.0.0.1:41000".parse().unwrap();
+        exhaust_address(&state, proxy, Some("203.0.113.40"), 9_400).await;
+        let bearer = format!("Bearer {}", session(&state, 9_500).await);
+        let cart = json!({
+            "tariff_id": tariff.id,
+            "period_id": tariff.periods[0].id,
+            "promo_code": "REAL20",
+        });
+        let quote = |forwarded: &'static str| {
+            let state = state.clone();
+            let bearer = bearer.clone();
+            let cart = cart.clone();
+            async move {
+                send_from(
+                    &state,
+                    Some(proxy),
+                    Method::POST,
+                    "/api/client/quote",
+                    &[("authorization", &bearer), ("x-forwarded-for", forwarded)],
+                    Some(cart),
+                )
+                .await
+            }
+        };
+        let (status, _, body) = quote("203.0.113.40").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Слишком много")),
+            "{body}"
+        );
+        let (status, _, body) = quote("203.0.113.41").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["quote"]["total"]["minor"], json!(239), "{body}");
+        db.cleanup().await;
     }
 
     #[tokio::test]

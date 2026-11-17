@@ -5,15 +5,20 @@ use crate::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult};
 use chrono::{Duration as Days, Utc};
 use sn_domain::ids::{AdminId, CategoryId, ClientId};
 use sn_domain::payment::PaymentStatus;
+use sn_domain::plan::whole_seconds;
 use sn_domain::subscription::SubscriptionStatus;
 use sn_domain::tariff::{CurrencyPrices, DevicePolicy, ExtraDevices, Tariff};
 use sn_domain::traffic::{GIB, TIB, TrafficPolicy, TrafficReset, TrafficStrategy};
 use sn_payments::{PaymentRef, ProviderStatus, WebhookOutcome, WebhookReply};
-use sn_remnawave::fake::{Fault, sample_device};
-use sn_store::{NewPeriod, NewTariff};
+use sn_remnawave::fake::{Fault, panel_time, sample_device};
+use sn_store::{NewPeriod, NewTariff, PlanStage};
 use uuid::Uuid;
 
 const ADMIN: Actor = Actor::Admin(AdminId(1));
+
+fn term(paid_at: Option<chrono::DateTime<Utc>>, days: i64) -> chrono::DateTime<Utc> {
+    whole_seconds(paid_at.unwrap() + Days::days(days))
+}
 
 async fn invoice(kit: &Kit, client_id: ClientId, cart: CartRequest) -> (Order, Uuid) {
     let result = kit
@@ -191,7 +196,8 @@ async fn покупка_с_баланса_доходит_до_пользоват
     assert_eq!(link.username, remna_username(subscription.public_id));
     let user = remna_user(&kit, &subscription).await;
     assert_eq!(user.username, link.username);
-    assert_eq!(user.expire_at, order.paid_at.unwrap() + Days::days(90));
+    assert_eq!(user.expire_at, term(order.paid_at, 90));
+    assert_eq!(user.expire_at.timestamp_subsec_nanos(), 0);
     assert_eq!(user.squad_ids(), vec![squad(1), squad(2)]);
     assert_eq!(user.hwid_device_limit, Some(3));
     assert_eq!(user.telegram_id, Some(201));
@@ -269,7 +275,7 @@ async fn истёкшая_подписка_продлевается_от_дат�
     kit.services.fulfillment().run(renewal.id).await.unwrap();
     let renewal = order(&kit.services, renewal.id).await;
     let user = remna_user(&kit, &subscription).await;
-    assert_eq!(user.expire_at, renewal.paid_at.unwrap() + Days::days(30));
+    assert_eq!(user.expire_at, term(renewal.paid_at, 30));
     assert_eq!(user.status, sn_remnawave::UserStatus::Active);
     assert!(
         events(&kit.services, client_id)
@@ -327,7 +333,7 @@ async fn смена_тарифа_сбрасывает_трафик_и_меняе
     assert_eq!(user.traffic_limit_bytes, (300 * GIB) as i64);
     assert_eq!(user.traffic_limit_strategy, TrafficStrategy::Month);
     assert_eq!(user.user_traffic.used_traffic_bytes, 0);
-    assert_eq!(user.expire_at, change.paid_at.unwrap() + Days::days(90));
+    assert_eq!(user.expire_at, term(change.paid_at, 90));
     assert!(
         kit.remna
             .calls()
@@ -826,7 +832,7 @@ async fn применённый_план_не_отправляется_повт�
         "{first:?}"
     );
     let change = order(&kit.services, change.id).await;
-    let target = change.paid_at.unwrap() + Days::days(90);
+    let target = term(change.paid_at, 90);
     assert_eq!(remna_user(&kit, &subscription).await.expire_at, target);
     kit.services
         .subscriptions()
@@ -924,7 +930,7 @@ async fn разблокированную_истёкшую_подписку_мо
     let renewal = order(&kit.services, renewal.id).await;
     let user = remna_user(&kit, &subscription).await;
     assert_eq!(user.status, sn_remnawave::UserStatus::Active);
-    assert_eq!(user.expire_at, renewal.paid_at.unwrap() + Days::days(30));
+    assert_eq!(user.expire_at, term(renewal.paid_at, 30));
     kit.db.cleanup().await;
 }
 
@@ -1298,4 +1304,1049 @@ async fn смена_тарифа_снимает_отложенные_устро�
     );
     assert_eq!(device_hold(&kit, &paid.subscription).await, None);
     kit.db.cleanup().await;
+}
+
+async fn paid_with_microseconds(kit: &Kit, order_id: OrderId) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query(
+        "UPDATE orders SET paid_at = date_trunc('milliseconds', paid_at) + interval '7 microseconds' \
+         WHERE id = $1",
+    )
+    .bind(order_id.0)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn request_refund(kit: &Kit, order_id: OrderId) -> i64 {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO provider_refunds (payment_id, amount_minor, currency, subscription_action, reason) \
+         SELECT id, amount_minor, currency, 'keep', 'клиент передумал' FROM payments \
+         WHERE order_id = $1 ORDER BY id LIMIT 1 RETURNING id",
+    )
+    .bind(order_id.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+async fn resolve_refund(kit: &Kit, request_id: i64, status: &str) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query("UPDATE provider_refunds SET status = $2, resolved_at = now() WHERE id = $1")
+        .bind(request_id)
+        .bind(status)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn повтор_после_применённого_patch_без_ответа_завершает_заказ() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 291).await;
+    let standard = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &standard, 30).await;
+    let unblock_category = category(&kit.services, "Unblock").await;
+    let unblock = tariff(
+        &kit.services,
+        unblock_category,
+        "Unblock",
+        TrafficPolicy::UNLIMITED,
+        vec![squad(3), squad(1)],
+    )
+    .await;
+    let change = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&unblock, 30, Some(&subscription)),
+    )
+    .await;
+    paid_with_microseconds(&kit, change.id).await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("update_user", Fault::TimeoutAfterApply);
+    let first = fulfillment.run(change.id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    let applied = remna_user(&kit, &subscription).await.expire_at;
+    set_user(&kit, &subscription, |user| {
+        user.expire_at = panel_time(applied);
+    })
+    .await;
+    let second = fulfillment.run(change.id).await.unwrap();
+    assert!(
+        matches!(second, FulfillmentOutcome::Done { .. }),
+        "{second:?}"
+    );
+    assert_eq!(
+        order(&kit.services, change.id).await.status,
+        OrderStatus::Fulfilled
+    );
+    let current = subscription_by_id(&kit, subscription.id).await;
+    let renewal =
+        buy_with_balance(&kit.services, client_id, cart(&unblock, 30, Some(&current))).await;
+    let next = fulfillment.run(renewal.id).await.unwrap();
+    assert!(matches!(next, FulfillmentOutcome::Done { .. }), "{next:?}");
+    kit.db.cleanup().await;
+}
+
+struct Stuck {
+    client_id: ClientId,
+    tariff: Tariff,
+    subscription: Subscription,
+    expire: chrono::DateTime<Utc>,
+    order: Order,
+}
+
+async fn stuck_renewal(kit: &Kit, telegram_id: i64) -> Stuck {
+    let client_id = client(&kit.services, telegram_id).await;
+    let tariff = standard(&kit.services).await;
+    let subscription = provision(kit, client_id, &tariff, 30).await;
+    let expire = moment(Days::days(10));
+    let subscription = expire_in(kit, &subscription, expire, SubscriptionStatus::Active).await;
+    let stuck = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&tariff, 30, Some(&subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("update_user", Fault::Timeout);
+    let first = fulfillment.run(stuck.id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    kit.services
+        .subscriptions()
+        .add_days(subscription.id, 7, ADMIN)
+        .await
+        .unwrap();
+    let second = fulfillment.run(stuck.id).await.unwrap();
+    assert!(
+        matches!(&second, FulfillmentOutcome::Review { reason } if reason.contains("срок")),
+        "{second:?}"
+    );
+    Stuck {
+        client_id,
+        tariff,
+        subscription,
+        expire,
+        order: order(&kit.services, stuck.id).await,
+    }
+}
+
+#[tokio::test]
+async fn заказ_на_проверке_с_неприменённым_планом_не_держит_следующие() {
+    let Some(kit) = kit().await else { return };
+    let stuck = stuck_renewal(&kit, 292).await;
+    assert_eq!(stuck.order.status, OrderStatus::Review);
+    let next = buy_with_balance(
+        &kit.services,
+        stuck.client_id,
+        cart(&stuck.tariff, 30, Some(&stuck.subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    let outcome = fulfillment.run(next.id).await.unwrap();
+    assert!(
+        matches!(outcome, FulfillmentOutcome::Done { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        order(&kit.services, next.id).await.status,
+        OrderStatus::Fulfilled
+    );
+    assert_eq!(
+        remna_user(&kit, &stuck.subscription).await.expire_at,
+        stuck.expire + Days::days(37)
+    );
+    assert_eq!(
+        order(&kit.services, stuck.order.id).await.status,
+        OrderStatus::Review
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn выдача_ждёт_решения_кассы_по_возврату() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 293).await;
+    let tariff = standard(&kit.services).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let order = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
+    let request = request_refund(&kit, order.id).await;
+    let fulfillment = kit.services.fulfillment();
+    let waiting = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(&waiting, FulfillmentOutcome::Retry { reason, .. } if reason.contains("возврат")),
+        "{waiting:?}"
+    );
+    assert!(kit.remna.users().is_empty());
+    assert_eq!(
+        self::order(&kit.services, order.id).await.status,
+        OrderStatus::Paid
+    );
+    resolve_refund(&kit, request, "declined").await;
+    let done = fulfillment.run(order.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(kit.remna.users().len(), 1);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn блокировка_во_время_создания_пользователя_отключает_новую_подписку() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 294).await;
+    let tariff = standard(&kit.services).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let order = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
+    let services = kit.services.clone();
+    kit.remna.before_create_response(move |_| {
+        let services = services.clone();
+        Box::pin(async move {
+            services
+                .clients()
+                .block(client_id, Some("мошенничество"), ADMIN)
+                .await
+                .unwrap();
+        })
+    });
+    let outcome = kit.services.fulfillment().run(order.id).await.unwrap();
+    assert!(
+        matches!(outcome, FulfillmentOutcome::Done { .. }),
+        "{outcome:?}"
+    );
+    let order = self::order(&kit.services, order.id).await;
+    assert_eq!(order.status, OrderStatus::Fulfilled);
+    let subscription = subscription(&kit.services, &order).await;
+    let user = remna_user(&kit, &subscription).await;
+    assert_eq!(user.status, sn_remnawave::UserStatus::Disabled);
+    assert_eq!(
+        subscription.mirror.status,
+        Some(SubscriptionStatus::Disabled)
+    );
+    assert_eq!(kit.remna.calls_of("disable_user").len(), 1);
+    kit.db.cleanup().await;
+}
+
+async fn plan_stage(kit: &Kit, order_id: OrderId) -> PlanStage {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.orders().plan_state(order_id).await.unwrap().stage()
+}
+
+async fn job_given_up(kit: &Kit, order_id: OrderId) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query(
+        "UPDATE jobs SET status = 'review', last_error = 'ручная проверка' WHERE dedupe_key = $1",
+    )
+    .bind(format!("fulfill:{order_id}"))
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn expire_at(kit: &Kit, subscription: &Subscription) -> chrono::DateTime<Utc> {
+    remna_user(kit, subscription).await.expire_at
+}
+
+#[tokio::test]
+async fn пересчитать_и_выдать_считает_план_от_текущего_срока() {
+    let Some(kit) = kit().await else { return };
+    let stuck = stuck_renewal(&kit, 295).await;
+    job_given_up(&kit, stuck.order.id).await;
+    assert_eq!(plan_stage(&kit, stuck.order.id).await, PlanStage::Stale);
+    let fulfillment = kit.services.fulfillment();
+    let refused = fulfillment
+        .redeliver(stuck.order.id, ADMIN)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "order.plan_stale");
+    let updates = kit.remna.calls_of("update_user").len();
+    let again = fulfillment.run(stuck.order.id).await.unwrap();
+    assert!(
+        matches!(&again, FulfillmentOutcome::Review { reason }
+            if reason.contains("Пересчитать и выдать") && reason.contains("срок")),
+        "{again:?}"
+    );
+    assert_eq!(kit.remna.calls_of("update_user").len(), updates);
+    assert_eq!(
+        expire_at(&kit, &stuck.subscription).await,
+        stuck.expire + Days::days(7)
+    );
+    let queued = fulfillment
+        .recalculate(stuck.order.id, false, ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(queued.plan, PlanStage::Stale);
+    assert_eq!(queued.state, "requeued");
+    assert_eq!(plan_stage(&kit, stuck.order.id).await, PlanStage::None);
+    let reset = order(&kit.services, stuck.order.id).await;
+    assert_eq!(reset.status, OrderStatus::Review);
+    assert_eq!(reset.plan, None);
+    assert!(
+        jobs(&kit.services)
+            .await
+            .contains(&JobPayload::FulfillOrder {
+                order_id: stuck.order.id
+            })
+    );
+    let done = fulfillment.run(stuck.order.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(
+        expire_at(&kit, &stuck.subscription).await,
+        stuck.expire + Days::days(37)
+    );
+    let delivered = order(&kit.services, stuck.order.id).await;
+    assert_eq!(delivered.status, OrderStatus::Fulfilled);
+    assert_eq!(
+        delivered.plan.as_ref().and_then(|p| p.base_expire_at),
+        Some(stuck.expire + Days::days(7))
+    );
+    assert_eq!(plan_stage(&kit, stuck.order.id).await, PlanStage::Applied);
+    let audit = audit_actions(&kit, "order", stuck.order.id.0).await;
+    let record = audit
+        .iter()
+        .find(|a| a.action == "order.recalculate")
+        .unwrap();
+    assert_eq!(record.actor_kind, "admin");
+    assert_eq!(record.details["plan"], "stale");
+    let previous: chrono::DateTime<Utc> =
+        serde_json::from_value(record.details["previous_plan"]["target_expire_at"].clone())
+            .unwrap();
+    assert_eq!(previous, stuck.expire + Days::days(30));
+    let closed = fulfillment
+        .recalculate(stuck.order.id, false, ADMIN)
+        .await
+        .unwrap_err();
+    assert_eq!(closed.code(), "order.review_status");
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отметить_выданным_завершает_заказ_без_обращения_к_remnawave() {
+    let Some(kit) = kit().await else { return };
+    let stuck = stuck_renewal(&kit, 296).await;
+    job_given_up(&kit, stuck.order.id).await;
+    let fulfillment = kit.services.fulfillment();
+    let calls = kit.remna.calls().len();
+    for note in ["", "   ", &"я".repeat(MAX_FULFILL_NOTE + 1)] {
+        let err = fulfillment
+            .mark_fulfilled(stuck.order.id, note, ADMIN)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "order.mark_fulfilled_note");
+    }
+    assert_eq!(
+        order(&kit.services, stuck.order.id).await.status,
+        OrderStatus::Review
+    );
+    let closed = fulfillment
+        .mark_fulfilled(
+            stuck.order.id,
+            "  Срок в панели уже учитывает эту оплату  ",
+            ADMIN,
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status, OrderStatus::Fulfilled);
+    assert!(closed.fulfilled_at.is_some());
+    assert_eq!(kit.remna.calls().len(), calls);
+    assert_eq!(
+        expire_at(&kit, &stuck.subscription).await,
+        stuck.expire + Days::days(7)
+    );
+    assert!(
+        events(&kit.services, stuck.client_id)
+            .await
+            .iter()
+            .any(|e| matches!(
+                e,
+                DomainEvent::OrderFulfilled { order_id, .. } if *order_id == stuck.order.id
+            ))
+    );
+    let audit = audit_actions(&kit, "order", stuck.order.id.0).await;
+    assert_eq!(audit[0].action, "order.mark_fulfilled");
+    assert_eq!(audit[0].actor_kind, "admin");
+    assert_eq!(
+        audit[0].details["note"],
+        "Срок в панели уже учитывает эту оплату"
+    );
+    assert_eq!(audit[0].details["plan"], "stale");
+    assert!(
+        audit[0].details["review_reason"]
+            .as_str()
+            .unwrap()
+            .contains("срок")
+    );
+    for err in [
+        fulfillment
+            .mark_fulfilled(stuck.order.id, "ещё раз", ADMIN)
+            .await
+            .unwrap_err(),
+        fulfillment
+            .recalculate(stuck.order.id, false, ADMIN)
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(err.code(), "order.review_status");
+    }
+    let next = buy_with_balance(
+        &kit.services,
+        stuck.client_id,
+        cart(&stuck.tariff, 30, Some(&stuck.subscription)),
+    )
+    .await;
+    let done = fulfillment.run(next.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(
+        expire_at(&kit, &stuck.subscription).await,
+        stuck.expire + Days::days(37)
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn устаревший_план_не_применяется_когда_срок_совпал_с_его_целью() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 297).await;
+    let tariff = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &tariff, 30).await;
+    let expire = moment(Days::days(10));
+    let subscription = expire_in(&kit, &subscription, expire, SubscriptionStatus::Active).await;
+    let held = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&tariff, 30, Some(&subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("update_user", Fault::Timeout);
+    let first = fulfillment.run(held.id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    kit.services
+        .clients()
+        .block(client_id, Some("проверка"), ADMIN)
+        .await
+        .unwrap();
+    let blocked = fulfillment.run(held.id).await.unwrap();
+    assert!(
+        matches!(&blocked, FulfillmentOutcome::Review { reason } if reason.contains("заблокирован")),
+        "{blocked:?}"
+    );
+    assert_eq!(plan_stage(&kit, held.id).await, PlanStage::Stale);
+    kit.services
+        .clients()
+        .unblock(client_id, ADMIN)
+        .await
+        .unwrap();
+    let next = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&tariff, 30, Some(&subscription)),
+    )
+    .await;
+    let done = fulfillment.run(next.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(
+        expire_at(&kit, &subscription).await,
+        expire + Days::days(30)
+    );
+    let stale = fulfillment.run(held.id).await.unwrap();
+    assert!(
+        matches!(&stale, FulfillmentOutcome::Review { reason } if reason.contains("Отметить выданным")),
+        "{stale:?}"
+    );
+    assert_eq!(
+        order(&kit.services, held.id).await.status,
+        OrderStatus::Review
+    );
+    assert_eq!(
+        expire_at(&kit, &subscription).await,
+        expire + Days::days(30)
+    );
+    fulfillment
+        .recalculate(held.id, false, ADMIN)
+        .await
+        .unwrap();
+    let recalculated = fulfillment.run(held.id).await.unwrap();
+    assert!(
+        matches!(recalculated, FulfillmentOutcome::Done { .. }),
+        "{recalculated:?}"
+    );
+    assert_eq!(
+        expire_at(&kit, &subscription).await,
+        expire + Days::days(60)
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пересчёт_отклоняется_пока_выдача_заказа_идёт() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 298).await;
+    let standard = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &standard, 30).await;
+    let expire = moment(Days::days(10));
+    let subscription = expire_in(&kit, &subscription, expire, SubscriptionStatus::Active).await;
+    let wide = tariff(
+        &kit.services,
+        standard.category_id,
+        "Стандарт плюс",
+        TrafficPolicy::UNLIMITED,
+        vec![squad(1), squad(77)],
+    )
+    .await;
+    let order = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&wide, 30, Some(&subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    let review = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(review, FulfillmentOutcome::Review { .. }),
+        "{review:?}"
+    );
+    job_given_up(&kit, order.id).await;
+    assert_eq!(plan_stage(&kit, order.id).await, PlanStage::None);
+    let mut squads = kit.remna.squads();
+    squads.push(sn_remnawave::InternalSquad {
+        uuid: squad(77).0,
+        name: "Сквад 77".into(),
+        view_position: 0,
+        info: sn_remnawave::SquadInfo::default(),
+        inbounds: Vec::new(),
+    });
+    kit.remna.set_squads(squads);
+    let queued = fulfillment.redeliver(order.id, ADMIN).await.unwrap();
+    assert_eq!(queued.state, "requeued");
+    kit.remna.fail_on("update_user", Fault::Timeout);
+    let retry = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(retry, FulfillmentOutcome::Retry { .. }),
+        "{retry:?}"
+    );
+    assert_eq!(plan_stage(&kit, order.id).await, PlanStage::Saved);
+    let busy = fulfillment
+        .recalculate(order.id, false, ADMIN)
+        .await
+        .unwrap_err();
+    assert_eq!(busy.code(), "order.delivery_running");
+    let waiting = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&standard, 30, Some(&subscription)),
+    )
+    .await;
+    let held = fulfillment.run(waiting.id).await.unwrap();
+    assert!(
+        matches!(&held, FulfillmentOutcome::Retry { reason, .. } if reason.contains(&order.public_id.to_string())),
+        "{held:?}"
+    );
+    let done = fulfillment.run(order.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    let next = fulfillment.run(waiting.id).await.unwrap();
+    assert!(matches!(next, FulfillmentOutcome::Done { .. }), "{next:?}");
+    assert_eq!(
+        expire_at(&kit, &subscription).await,
+        expire + Days::days(60)
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn заказ_на_проверке_с_применённым_планом_держит_следующие_пока_его_не_закроют() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 299).await;
+    let standard = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &standard, 30).await;
+    let unblock_category = category(&kit.services, "Unblock").await;
+    let unblock = tariff(
+        &kit.services,
+        unblock_category,
+        "Unblock",
+        TrafficPolicy {
+            limit_bytes: Some(300 * GIB),
+            reset: TrafficReset::Month,
+        },
+        vec![squad(3), squad(1)],
+    )
+    .await;
+    let change = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&unblock, 30, Some(&subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("reset_user_traffic", Fault::Timeout);
+    let first = fulfillment.run(change.id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    assert_eq!(plan_stage(&kit, change.id).await, PlanStage::Applied);
+    let user_id = subscription.remna.as_ref().unwrap().user_id;
+    kit.remna.delete_user(user_id).await.unwrap();
+    let lost = fulfillment.run(change.id).await.unwrap();
+    assert!(
+        matches!(&lost, FulfillmentOutcome::Review { reason } if reason.contains("удалён")),
+        "{lost:?}"
+    );
+    job_given_up(&kit, change.id).await;
+    assert_eq!(plan_stage(&kit, change.id).await, PlanStage::Applied);
+    let listed = fulfillment.review_orders(10).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].order.order_id, change.id);
+    assert_eq!(listed[0].order.plan, PlanStage::Applied);
+    assert_eq!(
+        listed[0].actions,
+        vec![
+            ReviewAction::Redeliver,
+            ReviewAction::Recalculate,
+            ReviewAction::MarkFulfilled
+        ]
+    );
+    let current = subscription_by_id(&kit, subscription.id).await;
+    let renewal =
+        buy_with_balance(&kit.services, client_id, cart(&unblock, 30, Some(&current))).await;
+    let held = fulfillment.run(renewal.id).await.unwrap();
+    assert!(
+        matches!(&held, FulfillmentOutcome::Retry { reason, .. } if reason.contains(&change.public_id.to_string())),
+        "{held:?}"
+    );
+    fulfillment
+        .mark_fulfilled(change.id, "Пользователя удалили в панели вручную", ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(
+        events(&kit.services, client_id)
+            .await
+            .iter()
+            .filter(|e| matches!(
+                e,
+                DomainEvent::OrderFulfilled { order_id, .. } if *order_id == change.id
+            ))
+            .count(),
+        1
+    );
+    let done = fulfillment.run(renewal.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(kit.remna.users().len(), 1);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn список_заказов_на_проверке_показывает_причину_план_и_действия() {
+    let Some(kit) = kit().await else { return };
+    let stuck = stuck_renewal(&kit, 300).await;
+    let fulfillment = kit.services.fulfillment();
+    let listed = fulfillment.review_orders(10).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let item = &listed[0];
+    assert_eq!(item.order.order_id, stuck.order.id);
+    assert_eq!(item.order.public_id, stuck.order.public_id);
+    assert_eq!(item.order.client_id, stuck.client_id);
+    assert_eq!(item.order.subscription_id, Some(stuck.subscription.id));
+    assert_eq!(item.order.kind, OrderKind::Renewal);
+    assert_eq!(item.order.tariff.as_deref(), Some("Стандарт"));
+    assert_eq!(item.order.total, stuck.order.quote.total);
+    assert!(item.order.reason.as_deref().unwrap().contains("срок"));
+    assert_eq!(item.order.plan, PlanStage::Stale);
+    assert_eq!(item.order.plan_base_expire_at, Some(stuck.expire));
+    assert_eq!(
+        item.order.plan_target_expire_at,
+        Some(stuck.expire + Days::days(30))
+    );
+    assert!(!item.order.refund_pending);
+    assert_eq!(
+        item.order.job.as_ref().map(|j| j.status),
+        Some(sn_domain::jobs::JobStatus::Queued)
+    );
+    assert_eq!(
+        item.actions,
+        vec![ReviewAction::Recalculate, ReviewAction::MarkFulfilled]
+    );
+    let json = serde_json::to_value(item).unwrap();
+    assert_eq!(json["order_id"], stuck.order.id.0);
+    assert_eq!(json["plan"], "stale");
+    assert_eq!(
+        json["actions"],
+        serde_json::json!(["recalculate", "mark_fulfilled"])
+    );
+    let request = request_refund(&kit, stuck.order.id).await;
+    let listed = fulfillment.review_orders(10).await.unwrap();
+    assert!(listed[0].order.refund_pending);
+    assert_eq!(listed[0].actions, vec![ReviewAction::MarkFulfilled]);
+    for err in [
+        fulfillment
+            .recalculate(stuck.order.id, false, ADMIN)
+            .await
+            .unwrap_err(),
+        fulfillment
+            .redeliver(stuck.order.id, ADMIN)
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(err.code(), "order.refund_pending");
+    }
+    resolve_refund(&kit, request, "declined").await;
+    fulfillment
+        .mark_fulfilled(stuck.order.id, "Клиенту продлили вручную", ADMIN)
+        .await
+        .unwrap();
+    assert!(fulfillment.review_orders(10).await.unwrap().is_empty());
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn ручной_повтор_выдачи_с_ожидающим_возвратом_отклоняется() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 301).await;
+    let tariff = standard(&kit.services).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let order = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
+    job_given_up(&kit, order.id).await;
+    let request = request_refund(&kit, order.id).await;
+    let fulfillment = kit.services.fulfillment();
+    let err = fulfillment.redeliver(order.id, ADMIN).await.unwrap_err();
+    assert_eq!(err.code(), "order.refund_pending");
+    assert!(err.to_string().contains("возврат"), "{err}");
+    assert!(jobs(&kit.services).await.is_empty());
+    resolve_refund(&kit, request, "declined").await;
+    let queued = fulfillment.redeliver(order.id, ADMIN).await.unwrap();
+    assert_eq!(queued.state, "requeued");
+    let done = fulfillment.run(order.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn заказ_на_проверке_держит_автопродление_только_пока_его_план_в_работе() {
+    let Some(kit) = kit().await else { return };
+    let stuck = stuck_renewal(&kit, 302).await;
+    let paid = buy_with_balance(
+        &kit.services,
+        stuck.client_id,
+        cart(&stuck.tariff, 30, Some(&stuck.subscription)),
+    )
+    .await;
+    let mut conn = kit.services.store().conn().await.unwrap();
+    assert!(!holds_autorenew(&mut conn, stuck.order.id).await.unwrap());
+    assert!(holds_autorenew(&mut conn, paid.id).await.unwrap());
+    sqlx::query("UPDATE payments SET method = $2 WHERE order_id = $1")
+        .bind(stuck.order.id.0)
+        .bind(crate::autorenew::AUTORENEW_METHOD)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    assert!(holds_autorenew(&mut conn, stuck.order.id).await.unwrap());
+    sqlx::query("UPDATE payments SET method = NULL WHERE order_id = $1")
+        .bind(stuck.order.id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    conn.orders().reset_plan(stuck.order.id).await.unwrap();
+    assert!(!holds_autorenew(&mut conn, stuck.order.id).await.unwrap());
+    let plan = paid_plan(&stuck);
+    conn.orders()
+        .save_plan(stuck.order.id, &plan)
+        .await
+        .unwrap();
+    assert!(holds_autorenew(&mut conn, stuck.order.id).await.unwrap());
+    conn.orders()
+        .mark_review(stuck.order.id, "снова на проверке")
+        .await
+        .unwrap();
+    assert!(!holds_autorenew(&mut conn, stuck.order.id).await.unwrap());
+    conn.orders()
+        .mark_plan_applied(stuck.order.id, Utc::now())
+        .await
+        .unwrap();
+    assert!(holds_autorenew(&mut conn, stuck.order.id).await.unwrap());
+    drop(conn);
+    kit.db.cleanup().await;
+}
+
+fn paid_plan(stuck: &Stuck) -> FulfillmentPlan {
+    let mut plan = stuck.order.plan.clone().unwrap();
+    plan.base_expire_at = Some(stuck.expire + Days::days(7));
+    plan.target.expire_at = stuck.expire + Days::days(37);
+    plan
+}
+
+#[tokio::test]
+async fn пользователь_созданный_до_блокировки_отключается_при_повторе() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 303).await;
+    let tariff = standard(&kit.services).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let order = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("create_user", Fault::TimeoutAfterApply);
+    let first = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    assert_eq!(kit.remna.users().len(), 1);
+    assert_eq!(
+        kit.remna.users()[0].status,
+        sn_remnawave::UserStatus::Active
+    );
+    kit.services
+        .clients()
+        .block(client_id, Some("мошенничество"), ADMIN)
+        .await
+        .unwrap();
+    let second = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(second, FulfillmentOutcome::Done { .. }),
+        "{second:?}"
+    );
+    let order = self::order(&kit.services, order.id).await;
+    assert_eq!(order.status, OrderStatus::Fulfilled);
+    let subscription = subscription(&kit.services, &order).await;
+    let user = remna_user(&kit, &subscription).await;
+    assert_eq!(kit.remna.users().len(), 1);
+    assert_eq!(user.status, sn_remnawave::UserStatus::Disabled);
+    assert_eq!(
+        subscription.mirror.status,
+        Some(SubscriptionStatus::Disabled)
+    );
+    let audit = audit_actions(&kit, "subscription", subscription.id.0).await;
+    assert_eq!(
+        audit[0].action,
+        crate::subscriptions::actions::BLOCKED_DELIVERY
+    );
+    assert!(!jobs(&kit.services).await.iter().any(|job| matches!(
+        job,
+        JobPayload::Notify { template, .. } if template == "order.fulfilled"
+    )));
+    kit.services
+        .clients()
+        .unblock(client_id, ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(
+        remna_user(&kit, &subscription).await.status,
+        sn_remnawave::UserStatus::Active
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn блокировка_после_применения_плана_отключает_подписку_при_повторе() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 304).await;
+    let tariff = standard(&kit.services).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let order = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("get_user", Fault::Timeout);
+    let first = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    assert_eq!(plan_stage(&kit, order.id).await, PlanStage::Applied);
+    kit.services
+        .clients()
+        .block(client_id, Some("мошенничество"), ADMIN)
+        .await
+        .unwrap();
+    let second = fulfillment.run(order.id).await.unwrap();
+    assert!(
+        matches!(second, FulfillmentOutcome::Done { .. }),
+        "{second:?}"
+    );
+    let order = self::order(&kit.services, order.id).await;
+    let subscription = subscription(&kit.services, &order).await;
+    assert_eq!(
+        remna_user(&kit, &subscription).await.status,
+        sn_remnawave::UserStatus::Disabled
+    );
+    assert_eq!(
+        subscription.mirror.status,
+        Some(SubscriptionStatus::Disabled)
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пересчёт_применённого_плана_требует_подтверждения() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 305).await;
+    let standard = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &standard, 30).await;
+    let unblock_category = category(&kit.services, "Unblock").await;
+    let unblock = tariff(
+        &kit.services,
+        unblock_category,
+        "Unblock",
+        TrafficPolicy {
+            limit_bytes: Some(300 * GIB),
+            reset: TrafficReset::Month,
+        },
+        vec![squad(3), squad(1)],
+    )
+    .await;
+    let change = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&unblock, 30, Some(&subscription)),
+    )
+    .await;
+    let fulfillment = kit.services.fulfillment();
+    kit.remna.fail_on("reset_user_traffic", Fault::Timeout);
+    fulfillment.run(change.id).await.unwrap();
+    let old_user = subscription.remna.as_ref().unwrap().user_id;
+    kit.remna.delete_user(old_user).await.unwrap();
+    let lost = fulfillment.run(change.id).await.unwrap();
+    assert!(
+        matches!(lost, FulfillmentOutcome::Review { .. }),
+        "{lost:?}"
+    );
+    job_given_up(&kit, change.id).await;
+    let refused = fulfillment
+        .recalculate(change.id, false, ADMIN)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "order.plan_applied");
+    assert_eq!(plan_stage(&kit, change.id).await, PlanStage::Applied);
+    let queued = fulfillment
+        .recalculate(change.id, true, ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(queued.plan, PlanStage::Applied);
+    assert_eq!(plan_stage(&kit, change.id).await, PlanStage::None);
+    let done = fulfillment.run(change.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    let change = order(&kit.services, change.id).await;
+    assert_eq!(change.status, OrderStatus::Fulfilled);
+    let current = subscription_by_id(&kit, subscription.id).await;
+    let user = remna_user(&kit, &current).await;
+    assert_ne!(user.id, old_user);
+    assert_eq!(kit.remna.users().len(), 1);
+    assert_eq!(user.expire_at, term(change.paid_at, 30));
+    assert_eq!(user.squad_ids(), vec![squad(3), squad(1)]);
+    let audit = audit_actions(&kit, "order", change.id.0).await;
+    let record = audit
+        .iter()
+        .find(|a| a.action == "order.recalculate")
+        .unwrap();
+    assert_eq!(record.details["plan"], "applied");
+    assert_eq!(record.details["reapply"], true);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn заказ_с_ожидающим_возвратом_не_держит_следующие_заказы_подписки() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 306).await;
+    let tariff = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &tariff, 30).await;
+    let expire = moment(Days::days(10));
+    let subscription = expire_in(&kit, &subscription, expire, SubscriptionStatus::Active).await;
+    let refunded = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&tariff, 30, Some(&subscription)),
+    )
+    .await;
+    let request = request_refund(&kit, refunded.id).await;
+    let fulfillment = kit.services.fulfillment();
+    let waiting = fulfillment.run(refunded.id).await.unwrap();
+    assert!(
+        matches!(&waiting, FulfillmentOutcome::Retry { after_seconds, reason }
+            if *after_seconds >= 300 && reason.contains("возврат")),
+        "{waiting:?}"
+    );
+    let next = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&tariff, 30, Some(&subscription)),
+    )
+    .await;
+    let done = fulfillment.run(next.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(
+        expire_at(&kit, &subscription).await,
+        expire + Days::days(30)
+    );
+    resolve_refund(&kit, request, "declined").await;
+    let late = fulfillment.run(refunded.id).await.unwrap();
+    assert!(matches!(late, FulfillmentOutcome::Done { .. }), "{late:?}");
+    assert_eq!(
+        expire_at(&kit, &subscription).await,
+        expire + Days::days(60)
+    );
+    kit.db.cleanup().await;
+}
+
+fn listed(plan: PlanStage, job: Option<sn_domain::jobs::JobStatus>) -> sn_store::ReviewOrder {
+    sn_store::ReviewOrder {
+        order_id: OrderId(1),
+        public_id: Uuid::nil(),
+        client_id: ClientId(1),
+        subscription_id: Some(SubscriptionId(1)),
+        kind: OrderKind::Renewal,
+        tariff: Some("Стандарт".into()),
+        total: sn_domain::money::Money::new(299, sn_domain::money::Currency::Usd),
+        stars: None,
+        reason: None,
+        plan,
+        plan_base_expire_at: None,
+        plan_target_expire_at: None,
+        refund_pending: false,
+        job: job.map(|status| sn_store::ReviewJob {
+            id: sn_domain::ids::JobId(1),
+            status,
+            attempts: 1,
+            error: None,
+            updated_at: Utc::now(),
+        }),
+        paid_at: None,
+        updated_at: Utc::now(),
+    }
+}
+
+#[test]
+fn действия_над_заказом_на_проверке_зависят_от_плана_задачи_и_возврата() {
+    use ReviewAction::{MarkFulfilled, Recalculate, Redeliver};
+    use sn_domain::jobs::JobStatus;
+    assert_eq!(
+        review_actions(&listed(PlanStage::None, None)),
+        vec![Redeliver, MarkFulfilled]
+    );
+    assert_eq!(
+        review_actions(&listed(PlanStage::Stale, Some(JobStatus::Review))),
+        vec![Recalculate, MarkFulfilled]
+    );
+    assert_eq!(
+        review_actions(&listed(PlanStage::Applied, Some(JobStatus::Review))),
+        vec![Redeliver, Recalculate, MarkFulfilled]
+    );
+    for stage in [PlanStage::Saved, PlanStage::Applied] {
+        for status in [JobStatus::Queued, JobStatus::Running] {
+            assert_eq!(
+                review_actions(&listed(stage, Some(status))),
+                vec![Redeliver, MarkFulfilled]
+            );
+        }
+    }
+    let mut topup = listed(PlanStage::None, None);
+    topup.kind = OrderKind::TopUp;
+    assert_eq!(review_actions(&topup), vec![Redeliver, MarkFulfilled]);
+    let mut refund = listed(PlanStage::Stale, None);
+    refund.refund_pending = true;
+    assert_eq!(review_actions(&refund), vec![MarkFulfilled]);
+    assert!(abandoned_reason(12, "Remnawave недоступна").contains("за 12 попыток"));
 }

@@ -5,6 +5,7 @@ use crate::inbox::saved_method_context;
 use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
+use sn_domain::client::Client;
 use sn_domain::format;
 use sn_domain::ids::{ClientId, OrderId, PaymentId};
 use sn_domain::jobs::JobPayload;
@@ -27,9 +28,11 @@ use sn_store::{AttemptResult, Db, DueCursor, InvoiceUpdate, LockSpace, Tx, audit
 use std::sync::Arc;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub const AUTORENEW_METHOD: &str = "autorenew";
+pub const CHARGE_UNCLEAR_AUDIT: &str = "payment.autorenew_unclear";
+pub const CHARGE_BLOCKED_AUDIT: &str = "payment.autorenew_blocked";
 pub const ENDED_AFTER_DAYS: i64 = 90;
 const DUE_BATCH: i64 = 500;
 const DUE_MARGIN_DAYS: i64 = 7;
@@ -110,6 +113,90 @@ fn renewal_period<'t>(
 
 fn transient(err: &PaymentError) -> bool {
     err.is_retryable() || matches!(err, PaymentError::Http { status: 408 | 429 })
+}
+
+fn cycle_key(expire_at: DateTime<Utc>) -> String {
+    expire_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+fn charge_details(payment: &Payment, order: &Order, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "client_id": payment.client_id,
+        "order_id": order.id,
+        "subscription_id": order.subscription_id,
+        "amount": payment.amount,
+        "provider": payment.provider,
+        "provider_txid": payment.provider_txid,
+        "reason": reason,
+    })
+}
+
+async fn last_audit_reason(
+    db: &mut impl Db,
+    payment_id: PaymentId,
+    action: &str,
+) -> ServiceResult<Option<String>> {
+    let reason: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT details->>'reason' FROM audit_log \
+         WHERE entity_kind = $1 AND entity_id = $2 AND action = $3 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(audit_entity::PAYMENT)
+    .bind(payment_id.0)
+    .bind(action)
+    .fetch_optional(db.conn())
+    .await?;
+    Ok(reason.flatten())
+}
+
+async fn renewal_obstacle(
+    db: &mut impl Db,
+    order: &Order,
+    client: &Client,
+) -> ServiceResult<Option<&'static str>> {
+    if client.is_blocked() {
+        return Ok(Some("клиент уже заблокирован"));
+    }
+    let Some(subscription_id) = order.subscription_id else {
+        return Ok(Some("у заказа нет подписки"));
+    };
+    let subscription = db.subscriptions().get(subscription_id).await?;
+    if subscription.ended_at.is_some() {
+        return Ok(Some("подписка уже завершена"));
+    }
+    if !subscription.autorenew.enabled {
+        return Ok(Some("автопродление уже выключено"));
+    }
+    if subscription.mirror.status == Some(SubscriptionStatus::Disabled) {
+        return Ok(Some("подписка заблокирована"));
+    }
+    let cycle: Option<String> = sqlx::query_scalar(
+        "SELECT period_key FROM autorenew_attempts \
+         WHERE subscription_id = $1 AND order_id = $2 ORDER BY attempt_no DESC LIMIT 1",
+    )
+    .bind(subscription.id.0)
+    .bind(order.id.0)
+    .fetch_optional(db.conn())
+    .await?;
+    let Some(cycle) = cycle else {
+        return Ok(Some("попытка автопродления по этому заказу не найдена"));
+    };
+    if subscription.mirror.expire_at.map(cycle_key).as_deref() != Some(cycle.as_str()) {
+        return Ok(Some("срок подписки уже изменился"));
+    }
+    let undelivered: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM orders WHERE subscription_id = $1 AND id <> $2 \
+         AND status IN ('paid', 'review') AND kind NOT IN ('topup', 'module') ORDER BY id",
+    )
+    .bind(subscription.id.0)
+    .bind(order.id.0)
+    .fetch_all(db.conn())
+    .await?;
+    for other in undelivered {
+        if crate::fulfillment::holds_autorenew(db, OrderId(other)).await? {
+            return Ok(Some("подписка уже оплачена другим заказом"));
+        }
+    }
+    Ok(None)
 }
 
 pub struct AutoRenew<'a> {
@@ -236,7 +323,7 @@ impl<'a> AutoRenew<'a> {
         let Some(expire_at) = subscription.mirror.expire_at else {
             return Ok(Attempt::Skipped);
         };
-        let cycle = expire_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let cycle = cycle_key(expire_at);
         if now > expire_at + Duration::days(i64::from(settings.autorenew.retry_days)) {
             self.disable(subscription, &cycle).await?;
             return Ok(Attempt::Skipped);
@@ -466,8 +553,13 @@ impl<'a> AutoRenew<'a> {
             .filter(|o| o.subscription_id == Some(subscription.id))
         {
             match order.status {
-                OrderStatus::Paid | OrderStatus::Review => {
+                OrderStatus::Paid => {
                     return Ok(Some(format!("заказ {} ещё не выдан", order.public_id)));
+                }
+                OrderStatus::Review => {
+                    if crate::fulfillment::holds_autorenew(tx, order.id).await? {
+                        return Ok(Some(format!("заказ {} ещё не выдан", order.public_id)));
+                    }
                 }
                 OrderStatus::Pending => {
                     let payments = tx.payments().for_order(order.id).await?;
@@ -774,11 +866,63 @@ impl<'a> AutoRenew<'a> {
                 },
             )
             .await?;
-        Ok(if status == ProviderStatus::Paid {
-            ChargeState::Paid
-        } else {
-            ChargeState::Declined
-        })
+        if status != ProviderStatus::Paid {
+            return Ok(ChargeState::Declined);
+        }
+        self.flag_blocked_charge(payment.id).await?;
+        Ok(ChargeState::Paid)
+    }
+
+    async fn flag_blocked_charge(&self, payment_id: PaymentId) -> ServiceResult<()> {
+        let mut conn = self.services.store().conn().await?;
+        let payment = conn.payments().get(payment_id).await?;
+        if payment.status != PaymentStatus::Paid
+            || !conn.clients().get(payment.client_id).await?.is_blocked()
+        {
+            return Ok(());
+        }
+        let order = conn.orders().get(payment.order_id).await?;
+        if !matches!(order.status, OrderStatus::Paid | OrderStatus::Review)
+            || last_audit_reason(&mut conn, payment.id, CHARGE_BLOCKED_AUDIT)
+                .await?
+                .is_some()
+        {
+            return Ok(());
+        }
+        let reason = "касса подтвердила автосписание у заблокированного клиента: \
+                      заказ не выдаётся и ждёт ручной проверки";
+        conn.audit()
+            .record(&Actor::System.audit(
+                CHARGE_BLOCKED_AUDIT,
+                audit_entity::PAYMENT,
+                Some(payment.id.0),
+                charge_details(&payment, &order, reason),
+            ))
+            .await?;
+        tracing::warn!(payment = %payment.id, order = %order.id, client = %payment.client_id, "автосписание заблокированного клиента подтверждено кассой, заказ ждёт ручной проверки");
+        Ok(())
+    }
+
+    async fn note_unclear(&self, payment: &Payment, reason: &str) -> ServiceResult<()> {
+        let mut conn = self.services.store().conn().await?;
+        if last_audit_reason(&mut conn, payment.id, CHARGE_UNCLEAR_AUDIT)
+            .await?
+            .as_deref()
+            == Some(reason)
+        {
+            return Ok(());
+        }
+        let order = conn.orders().get(payment.order_id).await?;
+        conn.audit()
+            .record(&Actor::System.audit(
+                CHARGE_UNCLEAR_AUDIT,
+                audit_entity::PAYMENT,
+                Some(payment.id.0),
+                charge_details(payment, &order, reason),
+            ))
+            .await?;
+        tracing::warn!(payment = %payment.id, order = %order.id, %reason, "автосписание ждёт ручной проверки");
+        Ok(())
     }
 
     pub async fn check_charge(&self, payment_id: PaymentId) -> ServiceResult<Option<ChargeCheck>> {
@@ -796,14 +940,29 @@ impl<'a> AutoRenew<'a> {
         else {
             return Ok(None);
         };
+        let checked = self.inspect_charge(&payment, &*provider).await?;
+        if let ChargeCheck::Unclear(reason) = &checked {
+            self.note_unclear(&payment, reason).await?;
+        }
+        Ok(Some(checked))
+    }
+
+    async fn inspect_charge(
+        &self,
+        payment: &Payment,
+        provider: &dyn PaymentProvider,
+    ) -> ServiceResult<ChargeCheck> {
         if payment.status != PaymentStatus::Pending {
-            return Ok(Some(ChargeCheck::Settled));
+            if payment.status == PaymentStatus::Paid {
+                self.flag_blocked_charge(payment.id).await?;
+            }
+            return Ok(ChargeCheck::Settled);
         }
         let now = self.services.now();
         if payment.expires_at.is_some_and(|at| at <= now) {
-            return Ok(Some(ChargeCheck::Settled));
+            return Ok(ChargeCheck::Settled);
         }
-        let config = registry.config(provider.id());
+        let config = self.services.payments().config(provider.id());
         let outcome = match payment.provider_txid.as_deref() {
             Some(txid) => match provider.fetch_status(&config, txid).await {
                 Ok(Some(outcome)) => outcome,
@@ -811,33 +970,30 @@ impl<'a> AutoRenew<'a> {
                 | Err(PaymentError::NotImplemented(_))
                 | Err(PaymentError::Unsupported(_))
                 | Err(PaymentError::NotConfigured(_)) => {
-                    return Ok(Some(ChargeCheck::Unclear(
+                    return Ok(ChargeCheck::Unclear(
                         "касса не отдаёт статус автосписания: проверьте платёж в её кабинете"
                             .into(),
+                    ));
+                }
+                Err(err) if transient(&err) => return Ok(ChargeCheck::Pending),
+                Err(err) => {
+                    return Ok(ChargeCheck::Unclear(format!(
+                        "статус автосписания не получен: {err}"
                     )));
                 }
-                Err(err) if transient(&err) => return Ok(Some(ChargeCheck::Pending)),
-                Err(err) => {
-                    return Ok(Some(ChargeCheck::Unclear(format!(
-                        "статус автосписания не получен: {err}"
-                    ))));
-                }
             },
-            None => match self
-                .repeat_charge(&payment, &*provider, &config, now)
-                .await?
-            {
+            None => match self.repeat_charge(payment, provider, &config, now).await? {
                 Repeat::Answered(outcome) => outcome,
-                Repeat::Pending => return Ok(Some(ChargeCheck::Pending)),
-                Repeat::Unclear(reason) => return Ok(Some(ChargeCheck::Unclear(reason))),
+                Repeat::Pending => return Ok(ChargeCheck::Pending),
+                Repeat::Unclear(reason) => return Ok(ChargeCheck::Unclear(reason)),
             },
         };
-        match self.settle_charge(&payment, outcome).await? {
-            ChargeState::Pending => Ok(Some(ChargeCheck::Pending)),
-            ChargeState::Paid => Ok(Some(ChargeCheck::Settled)),
+        match self.settle_charge(payment, outcome).await? {
+            ChargeState::Pending => Ok(ChargeCheck::Pending),
+            ChargeState::Paid => Ok(ChargeCheck::Settled),
             ChargeState::Declined => {
-                self.notify_declined(&payment).await?;
-                Ok(Some(ChargeCheck::Settled))
+                self.notify_declined(payment).await?;
+                Ok(ChargeCheck::Settled)
             }
         }
     }
@@ -861,24 +1017,22 @@ impl<'a> AutoRenew<'a> {
                     .into(),
             ));
         };
-        let (order, client, blocked, record) = {
+        let (order, client, record) = {
             let mut conn = self.services.store().conn().await?;
             let order = conn.orders().get(payment.order_id).await?;
             let client = conn.clients().get(payment.client_id).await?;
-            let blocked = client.is_blocked();
+            if let Some(obstacle) = renewal_obstacle(&mut conn, &order, &client).await? {
+                return Ok(Repeat::Unclear(format!(
+                    "исход автосписания неизвестен, а {obstacle}: повторный запрос не отправлен, проверьте платёж в кабинете кассы"
+                )));
+            }
             let client = client_ref(&mut conn, &client).await?;
             let record = conn
                 .saved_methods()
                 .active(payment.client_id, provider.id())
                 .await?;
-            (order, client, blocked, record)
+            (order, client, record)
         };
-        if blocked {
-            return Ok(Repeat::Unclear(
-                "исход автосписания неизвестен, а клиент уже заблокирован: повторный запрос не отправлен, проверьте платёж в кабинете кассы"
-                    .into(),
-            ));
-        }
         let Some(record) = record else {
             return Ok(Repeat::Unclear(
                 "исход автосписания неизвестен, а сохранённой карты уже нет: проверьте платёж в кабинете кассы"
@@ -909,6 +1063,9 @@ impl<'a> AutoRenew<'a> {
     async fn notify_declined(&self, payment: &Payment) -> ServiceResult<()> {
         let subscription = {
             let mut conn = self.services.store().conn().await?;
+            if conn.clients().get(payment.client_id).await?.is_blocked() {
+                return Ok(());
+            }
             let order = conn.orders().get(payment.order_id).await?;
             match order.subscription_id {
                 Some(id) => conn.subscriptions().get(id).await?,

@@ -130,6 +130,13 @@ pub fn renewal_base(current_expire_at: DateTime<Utc>, paid_at: DateTime<Utc>) ->
     current_expire_at.max(paid_at)
 }
 
+pub fn whole_seconds(at: DateTime<Utc>) -> DateTime<Utc> {
+    if at.timestamp_subsec_nanos() == 0 {
+        return at;
+    }
+    DateTime::from_timestamp(at.timestamp() + 1, 0).unwrap_or(at)
+}
+
 pub fn new_expire_at(
     kind: PlanKind,
     current_expire_at: Option<DateTime<Utc>>,
@@ -140,7 +147,7 @@ pub fn new_expire_at(
         (PlanKind::Renewal, Some(current)) => renewal_base(current, paid_at),
         _ => paid_at,
     };
-    base + Duration::days(days as i64)
+    whole_seconds(base + Duration::days(days as i64))
 }
 
 fn merge_squads(primary: &[SquadId], extra: &[SquadId]) -> Vec<SquadId> {
@@ -176,7 +183,7 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
     let tag = input.tag.map(str::to_string);
 
     let Some(current) = input.current else {
-        let expire_at = input.paid_at + Duration::days(snapshot.days as i64);
+        let expire_at = new_expire_at(input.kind, None, input.paid_at, snapshot.days);
         return Ok(FulfillmentPlan {
             kind: input.kind,
             action: PlanAction::Create {
@@ -659,6 +666,88 @@ mod tests {
         assert_eq!(old.base_expire_at, None);
         assert_eq!(old.device_hold, None);
         assert_eq!(old.target, p.target);
+    }
+
+    fn paid_with_microseconds() -> DateTime<Utc> {
+        paid_at() + Duration::microseconds(600_007)
+    }
+
+    #[test]
+    fn цель_плана_округляется_вверх_до_целой_секунды() {
+        let exact = paid_at();
+        assert_eq!(whole_seconds(exact), exact);
+        assert_eq!(
+            whole_seconds(exact + Duration::microseconds(1)),
+            exact + Duration::seconds(1)
+        );
+        assert_eq!(
+            whole_seconds(exact + Duration::nanoseconds(999_999_999)),
+            exact + Duration::seconds(1)
+        );
+        let before_epoch = DateTime::from_timestamp(-10, 250_000_000).unwrap();
+        assert_eq!(
+            whole_seconds(before_epoch),
+            DateTime::from_timestamp(-9, 0).unwrap()
+        );
+        let paid = paid_with_microseconds();
+        let target = paid_at() + Duration::seconds(1) + Duration::days(30);
+        assert_eq!(new_expire_at(PlanKind::Change, None, paid, 30), target);
+        let expired = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
+        assert_eq!(
+            new_expire_at(PlanKind::Renewal, Some(expired), paid, 30),
+            target
+        );
+        let active =
+            Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap() + Duration::milliseconds(250);
+        assert_eq!(
+            new_expire_at(PlanKind::Renewal, Some(active), paid, 30),
+            Utc.with_ymd_and_hms(2027, 3, 16, 0, 0, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn план_от_оплаты_с_микросекундами_даёт_срок_без_долей_секунды() {
+        let tariff = standard();
+        let snapshot = tariff.snapshot(tariff.period(PeriodId(11)).unwrap());
+        let paid = paid_with_microseconds();
+        let target = paid_at() + Duration::seconds(1) + Duration::days(30);
+        let fresh = plan(&PlanInput {
+            kind: PlanKind::New,
+            snapshot: &snapshot,
+            extra_devices: 0,
+            held_devices: None,
+            paid_at: paid,
+            current: None,
+            keep_squads: &[],
+            profile: &profile(),
+            tag: None,
+        })
+        .unwrap();
+        assert_eq!(fresh.target.expire_at, target);
+        assert_eq!(fresh.period_started_at, paid);
+        assert_eq!(fresh.period_days, 30);
+        let expired = current(
+            SubscriptionStatus::Expired,
+            Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap(),
+        );
+        for kind in [PlanKind::Renewal, PlanKind::Change] {
+            let p = plan(&PlanInput {
+                kind,
+                snapshot: &snapshot,
+                extra_devices: 0,
+                held_devices: None,
+                paid_at: paid,
+                current: Some(&expired),
+                keep_squads: &[],
+                profile: &profile(),
+                tag: None,
+            })
+            .unwrap();
+            assert_eq!(p.target.expire_at, target);
+            assert_eq!(p.target.expire_at.timestamp_subsec_nanos(), 0);
+            assert_eq!(p.period_days, 30);
+            assert!(p.target.expire_at - paid >= Duration::days(30));
+        }
     }
 
     #[test]

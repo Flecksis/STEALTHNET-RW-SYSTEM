@@ -1,5 +1,8 @@
 use super::*;
-use crate::catalog::testing::{TestCore, client, context, order, paid_payment, usd};
+use crate::catalog::testing::{
+    TestCore, client, context, offline, order, paid_payment, pooled, usd,
+};
+use crate::catalog::web::{ClientAddr, address_network, is_internal};
 use crate::registry::ModuleRegistry;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -14,8 +17,10 @@ use sn_domain::tariff::{CurrencyPrices, DevicePolicy, Tariff, TariffPeriod};
 use sn_domain::traffic::TrafficPolicy;
 use sn_store::NewSubscription;
 use sn_store::testing::test_store;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 use tower::ServiceExt;
 
 fn code(kind: PromoKind) -> PromoCode {
@@ -1261,5 +1266,614 @@ async fn скидки_на_первую_покупку_не_складывают
         .find(|i| i.code.code == "WELCOME")
         .unwrap();
     assert_eq!((welcome_row.used, welcome_row.reserved), (1, 0));
+    db.cleanup().await;
+}
+
+fn any_check() -> Purpose {
+    Purpose::Check {
+        tariff: None,
+        currency: Currency::Usd,
+    }
+}
+
+async fn failures_of(store: &sn_store::Store, client_id: ClientId) -> i64 {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar(
+        "SELECT COALESCE(sum(failures), 0)::bigint FROM promo_attempts WHERE client_id = $1",
+    )
+    .bind(client_id.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn код_неверного_формата_отклоняется_без_обращения_к_базе() {
+    let store = offline();
+    let core = TestCore::new(&store);
+    let ctx = context(&store, &core, Currency::Usd);
+    let started = Instant::now();
+    for raw in ["", "AB", "%ZIMA%", "ЗИМА", "ZIMA 2026"] {
+        assert!(
+            matches!(
+                check(&ctx, ClientId(1), raw, checkout()).await,
+                Err(PromoError::Rejected(PromoRejection::NotFound))
+            ),
+            "проверка «{raw}»"
+        );
+        assert!(
+            matches!(
+                activate(&ctx, ClientId(1), raw, SubscriptionId(1)).await,
+                Err(PromoError::Rejected(PromoRejection::NotFound))
+            ),
+            "активация «{raw}»"
+        );
+        assert!(
+            matches!(
+                PromoModule
+                    .quote_adjustments(&ctx, &hook(ClientId(1), raw))
+                    .await,
+                Ok(_) | Err(ModuleError::Invalid(_))
+            ),
+            "расчёт «{raw}»"
+        );
+    }
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn маршруты_отклоняют_код_неверного_формата_без_обращения_к_базе() {
+    let store = offline();
+    let core = TestCore::new(&store);
+    let ctx = context(&store, &core, Currency::Usd);
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx);
+    let started = Instant::now();
+    for (path, body) in [
+        ("/promo/check", serde_json::json!({"code": "%ZIMA%"})),
+        (
+            "/promo/activate",
+            serde_json::json!({"code": "ЗИМА", "subscription_id": 1}),
+        ),
+    ] {
+        let (status, answer) =
+            post_from(&router, ClientId(1), Some("203.0.113.7"), path, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {answer}");
+        assert_eq!(answer["error"]["code"], "promo.not_found", "{path}");
+    }
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn параллельный_перебор_проверяет_не_больше_кодов_чем_разрешено() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let wide = pooled(&db, 16, std::time::Duration::from_secs(8)).await;
+    let core = TestCore::new(&wide);
+    let ctx = context(&wide, &core, Currency::Usd);
+    let guesser = client(&db.store).await;
+    let mut handles = Vec::new();
+    for n in 0..80 {
+        let ctx = ctx.clone();
+        handles.push(tokio::spawn(async move {
+            check(&ctx, guesser, &format!("WRONG{n:03}"), any_check()).await
+        }));
+    }
+    let (mut evaluated, mut limited) = (0, 0);
+    for handle in handles {
+        match handle.await.unwrap() {
+            Err(PromoError::Rejected(PromoRejection::NotFound)) => evaluated += 1,
+            Err(PromoError::Rejected(PromoRejection::TooManyAttempts)) => limited += 1,
+            other => panic!("неожиданный ответ: {other:?}"),
+        }
+    }
+    assert_eq!((evaluated, limited), (FAILURE_LIMIT, 80 - FAILURE_LIMIT));
+    assert_eq!(
+        failures_of(&db.store, guesser).await,
+        i64::from(FAILURE_LIMIT)
+    );
+    wide.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn удачная_проверка_и_отказ_без_перебора_не_расходуют_попытки() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("GOOD20", 20, None), None)
+        .await
+        .unwrap();
+    let mut week = percent("WEEK7", 1, None);
+    week.value = NewPromoValue::Days { days: 7 };
+    create(&ctx, &week, None).await.unwrap();
+    let buyer = client(&db.store).await;
+    for n in 0..FAILURE_LIMIT - 1 {
+        assert!(matches!(
+            check(&ctx, buyer, &format!("MISS{n}"), any_check()).await,
+            Err(PromoError::Rejected(PromoRejection::NotFound))
+        ));
+    }
+    for _ in 0..FAILURE_LIMIT * 2 {
+        assert!(check(&ctx, buyer, "good20", any_check()).await.is_ok());
+        assert!(matches!(
+            check(&ctx, buyer, "WEEK7", checkout()).await,
+            Err(PromoError::Rejected(PromoRejection::DaysCode))
+        ));
+    }
+    assert_eq!(
+        failures_of(&db.store, buyer).await,
+        i64::from(FAILURE_LIMIT - 1)
+    );
+    assert!(matches!(
+        check(&ctx, buyer, "MISSLAST", any_check()).await,
+        Err(PromoError::Rejected(PromoRejection::NotFound))
+    ));
+    assert!(matches!(
+        check(&ctx, buyer, "GOOD20", any_check()).await,
+        Err(PromoError::Rejected(PromoRejection::TooManyAttempts))
+    ));
+    assert_eq!(
+        failures_of(&db.store, buyer).await,
+        i64::from(FAILURE_LIMIT),
+        "отказ по лимиту не увеличивает счётчик"
+    );
+    db.cleanup().await;
+}
+
+async fn post_from(
+    router: &axum::Router,
+    who: ClientId,
+    address: Option<&str>,
+    path: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Request::post(path)
+        .header("content-type", "application/json")
+        .extension(customer(who));
+    if let Some(address) = address {
+        let ip: IpAddr = address.parse().unwrap();
+        request = request.extension(ClientAddr(Some(ip)));
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+#[test]
+fn адрес_ipv6_сводится_к_сети_64_а_ipv4_остаётся_адресом() {
+    let network = |raw: &str| address_network(raw.parse().unwrap());
+    assert_eq!(network("203.0.113.7"), "203.0.113.7");
+    assert_eq!(network("::ffff:203.0.113.7"), "203.0.113.7");
+    assert_eq!(
+        network("2001:db8:1:2:aaaa:bbbb:cccc:dddd"),
+        "2001:db8:1:2::/64"
+    );
+    assert_eq!(network("2001:db8:1:2::1"), "2001:db8:1:2::/64");
+    assert_ne!(network("2001:db8:1:3::1"), network("2001:db8:1:2::1"));
+    let limit = |raw: &str| ClientAddr(Some(raw.parse().unwrap())).limit_network();
+    assert_eq!(ClientAddr(None).limit_network(), None);
+    assert_eq!(limit("198.51.100.9").as_deref(), Some("198.51.100.9"));
+    assert_eq!(
+        limit("2001:db8:1:2::9").as_deref(),
+        Some("2001:db8:1:2::/64")
+    );
+    for internal in [
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.18.0.1",
+        "192.168.1.1",
+        "169.254.1.1",
+        "100.64.0.1",
+        "0.0.0.0",
+        "::1",
+        "::",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert!(is_internal(internal.parse().unwrap()), "{internal}");
+        assert_eq!(limit(internal), None, "{internal}");
+    }
+    for public in ["203.0.113.7", "8.8.8.8", "100.128.0.1", "2001:db8::1"] {
+        assert!(!is_internal(public.parse().unwrap()), "{public}");
+    }
+}
+
+#[tokio::test]
+async fn внутренний_адрес_прокси_не_становится_общим_лимитом_для_всех() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("REAL20", 20, None), None)
+        .await
+        .unwrap();
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx.clone());
+    for gateway in ["172.18.0.1", "127.0.0.1"] {
+        for account in 0..ADDRESS_FAILURE_LIMIT / FAILURE_LIMIT + 1 {
+            let who = client(&db.store).await;
+            for n in 0..FAILURE_LIMIT {
+                let (status, _) = post_from(
+                    &router,
+                    who,
+                    Some(gateway),
+                    "/promo/check",
+                    serde_json::json!({ "code": format!("GUESS{account}X{n}") }),
+                )
+                .await;
+                assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            }
+            let (status, _) = post_from(
+                &router,
+                who,
+                Some(gateway),
+                "/promo/check",
+                serde_json::json!({"code": "REAL20"}),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS,
+                "лимит клиента действует"
+            );
+        }
+        let fresh = client(&db.store).await;
+        let (status, body) = post_from(
+            &router,
+            fresh,
+            Some(gateway),
+            "/promo/check",
+            serde_json::json!({"code": "REAL20"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{gateway}: {body}");
+    }
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn перебор_с_одного_адреса_останавливается_и_для_новых_аккаунтов() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("REAL20", 20, None), None)
+        .await
+        .unwrap();
+    let mut week = percent("WEEK7", 1, None);
+    week.value = NewPromoValue::Days { days: 7 };
+    create(&ctx, &week, None).await.unwrap();
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx.clone());
+    let office = Some("203.0.113.7");
+    let accounts = ADDRESS_FAILURE_LIMIT / FAILURE_LIMIT;
+    for account in 0..accounts {
+        let who = client(&db.store).await;
+        for n in 0..FAILURE_LIMIT {
+            let (status, _) = post_from(
+                &router,
+                who,
+                office,
+                "/promo/check",
+                serde_json::json!({ "code": format!("GUESS{account}X{n}") }),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "аккаунт {account}, попытка {n}"
+            );
+        }
+    }
+    let fresh = client(&db.store).await;
+    let (status, body) = post_from(
+        &router,
+        fresh,
+        office,
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["error"]["code"], "promo.rate_limited");
+    let sub = subscription(&db, fresh).await;
+    let (status, _) = post_from(
+        &router,
+        fresh,
+        office,
+        "/promo/activate",
+        serde_json::json!({"code": "WEEK7", "subscription_id": sub}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(core.days().is_empty());
+    assert_eq!(
+        failures_of(&db.store, fresh).await,
+        0,
+        "отказ по адресу не тратит попытки клиента"
+    );
+    let (status, body) = post_from(
+        &router,
+        fresh,
+        Some("203.0.113.8"),
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post_from(
+        &router,
+        fresh,
+        None,
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        check(&ctx, fresh, "REAL20", any_check()).await.is_ok(),
+        "бот проверяет код без адреса: действует только лимит клиента"
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn адреса_одной_сети_ipv6_делят_общий_лимит_перебора() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("REAL20", 20, None), None)
+        .await
+        .unwrap();
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx.clone());
+    let mut host = 0;
+    for account in 0..ADDRESS_FAILURE_LIMIT / FAILURE_LIMIT {
+        let who = client(&db.store).await;
+        for n in 0..FAILURE_LIMIT {
+            host += 1;
+            let address = format!("2001:db8:1:2:{host:x}::{n:x}");
+            let (status, _) = post_from(
+                &router,
+                who,
+                Some(&address),
+                "/promo/check",
+                serde_json::json!({ "code": format!("GUESS{account}X{n}") }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{address}");
+        }
+    }
+    let fresh = client(&db.store).await;
+    let (status, body) = post_from(
+        &router,
+        fresh,
+        Some("2001:db8:1:2:ffff::1"),
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    let (status, body) = post_from(
+        &router,
+        fresh,
+        Some("2001:db8:1:3::1"),
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn удачные_проверки_не_расходуют_лимит_адреса() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("REAL20", 20, None), None)
+        .await
+        .unwrap();
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx.clone());
+    let office = Some("198.51.100.20");
+    for _ in 0..ADDRESS_FAILURE_LIMIT + 5 {
+        let who = client(&db.store).await;
+        let (status, body) = post_from(
+            &router,
+            who,
+            office,
+            "/promo/check",
+            serde_json::json!({"code": "REAL20"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let failures: i64 = {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query_scalar("SELECT COALESCE(sum(failures), 0)::bigint FROM promo_address_attempts")
+            .fetch_one(conn.conn())
+            .await
+            .unwrap()
+    };
+    assert_eq!(failures, 0);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn счётчики_старше_суток_удаляются_при_неудаче_в_новом_окне() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let old = client(&db.store).await;
+    let recent = client(&db.store).await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        for (who, age) in [(old, "2 days"), (recent, "2 hours")] {
+            sqlx::query(&format!(
+                "INSERT INTO promo_attempts (client_id, window_start, failures) \
+                 VALUES ($1, date_trunc('hour', now() - interval '{age}'), 7)"
+            ))
+            .bind(who.0)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+            sqlx::query(&format!(
+                "INSERT INTO promo_address_attempts (address, window_start, failures) \
+                 VALUES ($1, date_trunc('hour', now() - interval '{age}'), 7)"
+            ))
+            .bind(format!("198.51.100.{}", who.0 % 200))
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        }
+    }
+    let guesser = client(&db.store).await;
+    let office: IpAddr = "203.0.113.90".parse().unwrap();
+    assert!(
+        check_from(&ctx, guesser, Some(office), "GOOD20", any_check())
+            .await
+            .is_err()
+    );
+    let mut conn = db.store.conn().await.unwrap();
+    let clients: Vec<i64> =
+        sqlx::query_scalar("SELECT client_id FROM promo_attempts ORDER BY client_id")
+            .fetch_all(conn.conn())
+            .await
+            .unwrap();
+    assert_eq!(clients, vec![recent.0, guesser.0]);
+    let addresses: i64 = sqlx::query_scalar("SELECT count(*) FROM promo_address_attempts")
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+    assert_eq!(addresses, 2);
+    drop(conn);
+    db.cleanup().await;
+}
+
+async fn failures_until(store: &sn_store::Store, client_id: ClientId, expected: i64) -> i64 {
+    let mut seen = failures_of(store, client_id).await;
+    for _ in 0..150 {
+        if seen == expected {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        seen = failures_of(store, client_id).await;
+    }
+    seen
+}
+
+#[tokio::test]
+async fn оборванный_запрос_не_оставляет_засчитанной_попытки() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("GOOD20", 20, None), None)
+        .await
+        .unwrap();
+    let buyer = client(&db.store).await;
+    let office: IpAddr = "203.0.113.77".parse().unwrap();
+    let mut blocker = db.store.begin().await.unwrap();
+    let window = attempt_window(db_now(&mut blocker).await.unwrap());
+    sqlx::query(
+        "INSERT INTO promo_address_attempts (address, window_start, failures) VALUES ($1, $2, 0)",
+    )
+    .bind(address_network(office))
+    .bind(window)
+    .execute(blocker.conn())
+    .await
+    .unwrap();
+    let dropped = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        check_from(&ctx, buyer, Some(office), "GOOD20", any_check()),
+    )
+    .await;
+    assert!(dropped.is_err(), "запрос ждал счётчик адреса и был оборван");
+    assert_eq!(
+        failures_until(&db.store, buyer, 1).await,
+        1,
+        "попытка засчитана до проверки кода"
+    );
+    blocker.rollback().await.unwrap();
+    assert_eq!(
+        failures_until(&db.store, buyer, 0).await,
+        0,
+        "верный код прощён, хотя клиент не дождался ответа"
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оборванная_активация_доводится_до_конца_и_не_повторяется() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let mut week = percent("WEEK7", 1, None);
+    week.value = NewPromoValue::Days { days: 7 };
+    create(&ctx, &week, None).await.unwrap();
+    let owner = client(&db.store).await;
+    let sub = subscription(&db, owner).await;
+    core.slow_days_ms.store(400, Ordering::SeqCst);
+    let dropped = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        activate(&ctx, owner, "WEEK7", sub),
+    )
+    .await;
+    assert!(
+        dropped.is_err(),
+        "клиент оборвал запрос, пока ядро добавляло дни"
+    );
+    core.slow_days_ms.store(0, Ordering::SeqCst);
+    let mut status = String::new();
+    for _ in 0..150 {
+        let mut conn = db.store.conn().await.unwrap();
+        status = sqlx::query_scalar("SELECT status FROM promo_redemptions")
+            .fetch_optional(conn.conn())
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        drop(conn);
+        if status == "used" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(status, "used", "активация записана без участия клиента");
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query("UPDATE promo_redemptions SET reserved_until = now() - interval '1 minute'")
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        activate(&ctx, owner, "WEEK7", sub).await,
+        Err(PromoError::Rejected(PromoRejection::AlreadyUsed))
+    ));
+    assert_eq!(core.days().len(), 1, "дни добавлены один раз");
     db.cleanup().await;
 }

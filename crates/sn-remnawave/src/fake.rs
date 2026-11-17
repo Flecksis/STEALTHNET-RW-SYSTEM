@@ -120,6 +120,10 @@ pub struct FakeRemnawave {
     state: Mutex<State>,
 }
 
+pub fn panel_time(at: DateTime<Utc>) -> DateTime<Utc> {
+    DateTime::from_timestamp_millis(at.timestamp_millis()).unwrap_or(at)
+}
+
 pub fn sample_user(id: i64, username: &str) -> RemnaUser {
     let now = Utc::now();
     RemnaUser {
@@ -129,7 +133,7 @@ pub fn sample_user(id: i64, username: &str) -> RemnaUser {
         status: UserStatus::Active,
         traffic_limit_bytes: 0,
         traffic_limit_strategy: TrafficStrategy::NoReset,
-        expire_at: now + Duration::days(30),
+        expire_at: panel_time(now + Duration::days(30)),
         telegram_id: None,
         email: None,
         description: None,
@@ -281,7 +285,8 @@ impl FakeRemnawave {
         })
     }
 
-    pub fn insert_user(&self, user: RemnaUser) {
+    pub fn insert_user(&self, mut user: RemnaUser) {
+        user.expire_at = panel_time(user.expire_at);
         let mut state = self.lock();
         state.next_id = state.next_id.max(user.id.0);
         state.users.insert(user.id.0, user);
@@ -413,7 +418,7 @@ impl FakeRemnawave {
         state.next_id += 1;
         let mut user = sample_user(state.next_id, &request.username);
         user.status = request.status.unwrap_or(UserStatus::Active);
-        user.expire_at = request.expire_at;
+        user.expire_at = panel_time(request.expire_at);
         user.traffic_limit_bytes = request.traffic_limit_bytes;
         user.traffic_limit_strategy = request.traffic_limit_strategy;
         user.description = request.description.clone();
@@ -590,7 +595,7 @@ impl RemnawaveApi for FakeRemnawave {
                 user.traffic_limit_strategy = v;
             }
             if let Some(v) = request.expire_at {
-                user.expire_at = v;
+                user.expire_at = panel_time(v);
                 if user.status == UserStatus::Expired && v > Utc::now() {
                     user.status = UserStatus::Active;
                 }
@@ -639,12 +644,12 @@ impl RemnawaveApi for FakeRemnawave {
             |user| {
                 let now = Utc::now();
                 if user.status == UserStatus::Expired || user.expire_at < now {
-                    user.expire_at = now + Duration::days(days as i64);
+                    user.expire_at = panel_time(now + Duration::days(days as i64));
                     if user.status == UserStatus::Expired {
                         user.status = UserStatus::Active;
                     }
                 } else {
-                    user.expire_at += Duration::days(days as i64);
+                    user.expire_at = panel_time(user.expire_at + Duration::days(days as i64));
                 }
                 Ok(user.clone())
             },
@@ -830,7 +835,7 @@ impl RemnawaveApi for FakeRemnawave {
                         user.traffic_limit_strategy = v;
                     }
                     if let Some(v) = request.fields.expire_at {
-                        user.expire_at = v;
+                        user.expire_at = panel_time(v);
                     }
                     if let Some(v) = request.fields.hwid_device_limit {
                         user.hwid_device_limit = v;
@@ -859,7 +864,8 @@ impl RemnawaveApi for FakeRemnawave {
         self.run("bulk_extend_users", args(request), |state| {
             for id in &request.user_ids {
                 if let Some(user) = state.users.get_mut(&id.0) {
-                    user.expire_at += Duration::days(request.extend_days as i64);
+                    user.expire_at =
+                        panel_time(user.expire_at + Duration::days(request.extend_days as i64));
                 }
             }
             Ok(())
@@ -1695,6 +1701,56 @@ mod tests {
             active_internal_squads: vec![Uuid::nil()],
             external_squad_uuid: None,
         }
+    }
+
+    fn with_microseconds(days: i64) -> DateTime<Utc> {
+        panel_time(Utc::now() + Duration::days(days)) + Duration::microseconds(7)
+    }
+
+    #[tokio::test]
+    async fn срок_хранится_с_точностью_до_миллисекунд_как_в_панели() {
+        let fake = FakeRemnawave::new();
+        let mut request = create_request("sn_ms");
+        request.expire_at = with_microseconds(30);
+        let created = fake.create_user(&request).await.unwrap();
+        assert_eq!(created.expire_at, panel_time(request.expire_at));
+        assert_ne!(created.expire_at, request.expire_at);
+        assert_eq!(fake.user(created.id).unwrap().expire_at, created.expire_at);
+
+        let target = with_microseconds(60);
+        let mut patch = UpdateUserRequest::new(created.id);
+        patch.expire_at = Some(target);
+        let updated = fake.update_user(&patch).await.unwrap();
+        assert_eq!(updated.expire_at, panel_time(target));
+        assert_eq!(
+            fake.get_user(created.id).await.unwrap().expire_at,
+            panel_time(target)
+        );
+
+        fake.fail_on("update_user", Fault::TimeoutAfterApply);
+        let lost = with_microseconds(90);
+        patch.expire_at = Some(lost);
+        assert_eq!(fake.update_user(&patch).await, Err(RemnaError::Timeout));
+        assert_eq!(fake.user(created.id).unwrap().expire_at, panel_time(lost));
+
+        let extended = fake.extend_user(created.id, 7).await.unwrap();
+        assert_eq!(extended.expire_at, panel_time(lost) + Duration::days(7));
+
+        let mut expired = sample_user(40, "sn_ms_expired");
+        expired.status = UserStatus::Expired;
+        expired.expire_at = with_microseconds(-3);
+        let raw = expired.expire_at;
+        fake.insert_user(expired);
+        assert_eq!(
+            fake.user(RemnaUserId(40)).unwrap().expire_at,
+            panel_time(raw)
+        );
+        let revived = fake.extend_user(RemnaUserId(40), 30).await.unwrap();
+        assert_eq!(revived.expire_at, panel_time(revived.expire_at));
+        assert_eq!(revived.status, UserStatus::Active);
+
+        let sample = sample_user(41, "sn_ms_sample");
+        assert_eq!(sample.expire_at, panel_time(sample.expire_at));
     }
 
     #[tokio::test]

@@ -257,11 +257,19 @@ pub trait PaymentProvider: Send + Sync + 'static {
         false
     }
 
+    fn verifies_webhooks_by_api(&self) -> bool {
+        false
+    }
+
     fn supports_recurring(&self) -> bool {
         false
     }
 
     fn supports_refunds(&self) -> bool {
+        false
+    }
+
+    fn supports_refund_polling(&self) -> bool {
         false
     }
 

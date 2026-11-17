@@ -8,7 +8,7 @@ pub mod registry;
 
 pub use context::{BalanceChange, CoreApi, ModuleContext, Notification};
 pub use error::ModuleError;
-pub use module::{BotEntry, ItemHook, Module, ModuleConfig, QuoteHook, ScheduledTask};
+pub use module::{BotEntry, ItemHook, Module, ModuleConfig, QuoteHook, QuoteOrigin, ScheduledTask};
 pub use placeholder::Placeholder;
 pub use registry::{ModuleRegistry, ModuleView};
 pub use sn_domain::module::{CATALOG, CoreFeature, MenuEntry, ModuleGroup, ModuleId, ModuleInfo};

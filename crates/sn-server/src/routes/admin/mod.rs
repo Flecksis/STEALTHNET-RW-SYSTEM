@@ -5,7 +5,10 @@ mod delivery;
 mod infra;
 mod money;
 mod overview;
+#[cfg(test)]
+mod review_tests;
 mod settings;
+mod stars;
 mod support;
 
 use crate::error::{ApiError, ApiResult};
@@ -21,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .merge(overview::routes())
         .merge(clients::routes())
         .merge(money::routes())
+        .merge(stars::routes())
         .merge(delivery::routes())
         .merge(catalog::routes())
         .merge(infra::routes())

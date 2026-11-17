@@ -3,10 +3,11 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+use crate::catalog::web::ClientAddr;
 use crate::catalog::{db_now, installation_currency};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
-use crate::module::{BotEntry, Module, QuoteHook, ScheduledTask};
+use crate::module::{BotEntry, Module, QuoteHook, QuoteOrigin, ScheduledTask};
 use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, Duration, Utc};
@@ -21,6 +22,9 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{Payment, PaymentStatus};
 use sn_domain::pricing::{AdjustmentKind, AdjustmentSource, PriceAdjustment, Quote, QuoteLineKind};
 use sn_store::{Db, LockSpace, StoreError, Tx};
+use std::future::Future;
+use std::net::IpAddr;
+use tracing::Instrument;
 
 pub use store::ListFilter;
 
@@ -29,6 +33,7 @@ pub const SETTLE_TASK: &str = "settle";
 pub const ACTIVATION_HOLD_MINUTES: i64 = 15;
 pub const MAX_DAYS: u32 = 3_650;
 pub const FAILURE_LIMIT: u32 = 10;
+pub const ADDRESS_FAILURE_LIMIT: u32 = 30;
 pub const FAILURE_WINDOW_MINUTES: i64 = 15;
 
 const UNKNOWN_CODE: &str = "promo.not_found";
@@ -306,29 +311,74 @@ fn attempt_window(now: DateTime<Utc>) -> DateTime<Utc> {
     DateTime::from_timestamp(start, 0).unwrap_or(now)
 }
 
-async fn guard(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Attempt {
+    client_id: ClientId,
+    network: Option<String>,
+    window: DateTime<Utc>,
+}
+
+async fn admit(
     db: &mut impl Db,
     client_id: ClientId,
+    address: Option<IpAddr>,
     now: DateTime<Utc>,
-) -> Result<(), PromoError> {
-    if store::failures(db, client_id, attempt_window(now)).await? >= FAILURE_LIMIT {
+) -> Result<Attempt, PromoError> {
+    let attempt = Attempt {
+        client_id,
+        network: ClientAddr(address).limit_network(),
+        window: attempt_window(now),
+    };
+    let forget_before = now - Duration::days(1);
+    if store::strike_client(db, client_id, attempt.window, forget_before).await? > FAILURE_LIMIT {
+        store::forgive_client(db, client_id, attempt.window).await?;
         return Err(PromoError::Rejected(PromoRejection::TooManyAttempts));
+    }
+    if let Some(network) = &attempt.network
+        && store::strike_address(db, network, attempt.window, forget_before).await?
+            > ADDRESS_FAILURE_LIMIT
+    {
+        store::forgive_address(db, network, attempt.window).await?;
+        store::forgive_client(db, client_id, attempt.window).await?;
+        return Err(PromoError::Rejected(PromoRejection::TooManyAttempts));
+    }
+    Ok(attempt)
+}
+
+async fn forgive(db: &mut impl Db, attempt: &Attempt) -> Result<(), StoreError> {
+    store::forgive_client(db, attempt.client_id, attempt.window).await?;
+    if let Some(network) = &attempt.network {
+        store::forgive_address(db, network, attempt.window).await?;
     }
     Ok(())
 }
 
-async fn note_failure<T>(
-    db: &mut impl Db,
-    client_id: ClientId,
-    now: DateTime<Utc>,
-    result: &Result<T, PromoError>,
-) -> Result<(), PromoError> {
-    if let Err(PromoError::Rejected(rejection)) = result
-        && rejection.counts_as_failure()
-    {
-        store::add_failure(db, client_id, attempt_window(now), now - Duration::days(1)).await?;
+fn counted<T>(result: &Result<T, PromoError>) -> bool {
+    matches!(result, Err(PromoError::Rejected(rejection)) if rejection.counts_as_failure())
+}
+
+fn left_counted(attempt: &Attempt, err: &StoreError) {
+    tracing::warn!(
+        client = %attempt.client_id,
+        error = %err,
+        "попытка ввода промокода осталась засчитанной"
+    );
+}
+
+async fn detached<T, F>(work: F) -> Result<T, PromoError>
+where
+    F: Future<Output = Result<T, PromoError>> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::spawn(work.in_current_span()).await {
+        Ok(result) => result,
+        Err(err) => match err.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(err) => Err(PromoError::Module(ModuleError::Core(format!(
+                "операция с промокодом прервана: {err}"
+            )))),
+        },
     }
-    Ok(())
 }
 
 fn rejected(rejection: PromoRejection) -> ModuleError {
@@ -358,12 +408,11 @@ fn order_tariff(order: &Order) -> Option<TariffId> {
 async fn lookup(
     db: &mut impl Db,
     client_id: ClientId,
-    raw: &str,
+    code: &str,
     purpose: Purpose,
     now: DateTime<Utc>,
 ) -> Result<PromoCode, PromoError> {
-    let code = normalize_code(raw).ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
-    let promo = store::by_code(db, &code, false)
+    let promo = store::by_code(db, code, false)
         .await?
         .ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
     let usage = store::usage(db, promo.id, client_id, now, None).await?;
@@ -377,11 +426,37 @@ pub async fn check(
     raw: &str,
     purpose: Purpose,
 ) -> Result<PromoCode, PromoError> {
+    check_from(ctx, client_id, None, raw, purpose).await
+}
+
+pub async fn check_from(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    address: Option<IpAddr>,
+    raw: &str,
+    purpose: Purpose,
+) -> Result<PromoCode, PromoError> {
+    let code = normalize_code(raw).ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
+    let ctx = ctx.clone();
+    detached(async move { check_now(&ctx, client_id, address, &code, purpose).await }).await
+}
+
+async fn check_now(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    address: Option<IpAddr>,
+    code: &str,
+    purpose: Purpose,
+) -> Result<PromoCode, PromoError> {
     let mut conn = ctx.store.conn().await?;
     let now = db_now(&mut conn).await?;
-    guard(&mut conn, client_id, now).await?;
-    let result = lookup(&mut conn, client_id, raw, purpose, now).await;
-    note_failure(&mut conn, client_id, now, &result).await?;
+    let attempt = admit(&mut conn, client_id, address, now).await?;
+    let result = lookup(&mut conn, client_id, code, purpose, now).await;
+    if !counted(&result)
+        && let Err(err) = forgive(&mut conn, &attempt).await
+    {
+        left_counted(&attempt, &err);
+    }
     result
 }
 
@@ -511,10 +586,9 @@ pub struct Activation {
 async fn hold_days(
     ctx: &ModuleContext,
     client_id: ClientId,
-    raw: &str,
+    code: &str,
     subscription_id: SubscriptionId,
 ) -> Result<(PromoCode, u32, i64), PromoError> {
-    let code = normalize_code(raw).ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
     let mut tx = ctx.store.begin().await?;
     let subscription = match tx.subscriptions().get(subscription_id).await {
         Ok(subscription) => subscription,
@@ -529,7 +603,7 @@ async fn hold_days(
     {
         return Err(PromoError::Rejected(PromoRejection::NoSubscription));
     }
-    let promo = store::by_code(&mut tx, &code, true)
+    let promo = store::by_code(&mut tx, code, true)
         .await?
         .ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
     let now = db_now(&mut tx).await?;
@@ -561,16 +635,43 @@ pub async fn activate(
     raw: &str,
     subscription_id: SubscriptionId,
 ) -> Result<Activation, PromoError> {
-    let now = {
+    activate_from(ctx, client_id, None, raw, subscription_id).await
+}
+
+pub async fn activate_from(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    address: Option<IpAddr>,
+    raw: &str,
+    subscription_id: SubscriptionId,
+) -> Result<Activation, PromoError> {
+    let code = normalize_code(raw).ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
+    let ctx = ctx.clone();
+    detached(async move { activate_now(&ctx, client_id, address, &code, subscription_id).await })
+        .await
+}
+
+async fn activate_now(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    address: Option<IpAddr>,
+    code: &str,
+    subscription_id: SubscriptionId,
+) -> Result<Activation, PromoError> {
+    let attempt = {
         let mut conn = ctx.store.conn().await?;
         let now = db_now(&mut conn).await?;
-        guard(&mut conn, client_id, now).await?;
-        now
+        admit(&mut conn, client_id, address, now).await?
     };
-    let held = hold_days(ctx, client_id, raw, subscription_id).await;
-    if let Err(PromoError::Rejected(_)) = &held {
-        let mut conn = ctx.store.conn().await?;
-        note_failure(&mut conn, client_id, now, &held).await?;
+    let held = hold_days(ctx, client_id, code, subscription_id).await;
+    if !counted(&held) {
+        let forgiven = match ctx.store.conn().await {
+            Ok(mut conn) => forgive(&mut conn, &attempt).await,
+            Err(err) => Err(err),
+        };
+        if let Err(err) = forgiven {
+            left_counted(&attempt, &err);
+        }
     }
     let (promo, days, redemption) = held?;
     let applied = ctx
@@ -850,6 +951,16 @@ impl Module for PromoModule {
         ctx: &ModuleContext,
         hook: &QuoteHook,
     ) -> Result<Vec<PriceAdjustment>, ModuleError> {
+        self.quote_adjustments_from(ctx, hook, &QuoteOrigin::default())
+            .await
+    }
+
+    async fn quote_adjustments_from(
+        &self,
+        ctx: &ModuleContext,
+        hook: &QuoteHook,
+        origin: &QuoteOrigin,
+    ) -> Result<Vec<PriceAdjustment>, ModuleError> {
         let Some(raw) = hook
             .promo_code
             .as_deref()
@@ -862,7 +973,7 @@ impl Module for PromoModule {
             tariff: hook.tariff_id,
             currency: hook.currency,
         };
-        match check(ctx, hook.client_id, raw, purpose).await {
+        match check_from(ctx, hook.client_id, origin.address, raw, purpose).await {
             Ok(promo) => Ok(promo.adjustment().into_iter().collect()),
             Err(PromoError::Rejected(rejection)) => {
                 Err(ModuleError::Invalid(rejection.message().to_string()))

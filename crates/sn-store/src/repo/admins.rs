@@ -199,4 +199,137 @@ impl<'c> AdminsRepo<'c> {
             .await?;
         Ok(())
     }
+
+    pub async fn remember_login_address(
+        &mut self,
+        id: AdminId,
+        address: &str,
+        at: DateTime<Utc>,
+        forget_before: DateTime<Utc>,
+    ) -> StoreResult<()> {
+        sqlx::query("DELETE FROM admin_login_addresses WHERE admin_id = $1 AND last_login_at < $2")
+            .bind(id.0)
+            .bind(forget_before)
+            .execute(&mut *self.conn)
+            .await?;
+        sqlx::query(
+            "INSERT INTO admin_login_addresses (admin_id, address, last_login_at) VALUES ($1, $2, $3) \
+             ON CONFLICT (admin_id, address) DO UPDATE \
+             SET last_login_at = GREATEST(admin_login_addresses.last_login_at, EXCLUDED.last_login_at)",
+        )
+        .bind(id.0)
+        .bind(address)
+        .bind(at)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn logged_in_from(
+        &mut self,
+        email: &str,
+        address: &str,
+        since: DateTime<Utc>,
+    ) -> StoreResult<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM admin_login_addresses k JOIN admins a ON a.id = k.admin_id \
+             WHERE lower(a.email) = lower($1) AND k.address = $2 AND k.last_login_at > $3)",
+        )
+        .bind(email.trim())
+        .bind(address)
+        .bind(since)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::testing::test_store;
+    use chrono::{Duration, TimeZone};
+
+    async fn admin(db: &mut impl Db, email: &str) -> AdminId {
+        db.admins()
+            .create(&NewAdmin {
+                email: email.into(),
+                password_hash: "hash".into(),
+                role: AdminRole::Owner,
+                must_change_password: false,
+            })
+            .await
+            .unwrap()
+            .id
+    }
+
+    async fn addresses(db: &mut impl Db, id: AdminId) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT address FROM admin_login_addresses WHERE admin_id = $1 ORDER BY address",
+        )
+        .bind(id.0)
+        .fetch_all(db.conn())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn адрес_входа_запоминается_по_администратору_и_забывается_по_сроку() {
+        let Some(db) = test_store().await else { return };
+        let mut conn = db.store.conn().await.unwrap();
+        let owner = admin(&mut conn, "Owner@Example.com").await;
+        let other = admin(&mut conn, "support@example.com").await;
+        let at = Utc.with_ymd_and_hms(2026, 11, 16, 14, 52, 0).unwrap();
+        let month = Duration::days(30);
+        conn.admins()
+            .remember_login_address(owner, "203.0.113.7", at, at - month)
+            .await
+            .unwrap();
+        for (email, address, since, expected) in [
+            ("owner@example.com", "203.0.113.7", at - month, true),
+            (" OWNER@example.com ", "203.0.113.7", at - month, true),
+            ("owner@example.com", "203.0.113.7", at, false),
+            ("owner@example.com", "203.0.113.8", at - month, false),
+            ("support@example.com", "203.0.113.7", at - month, false),
+            ("nobody@example.com", "203.0.113.7", at - month, false),
+        ] {
+            assert_eq!(
+                conn.admins()
+                    .logged_in_from(email, address, since)
+                    .await
+                    .unwrap(),
+                expected,
+                "{email} {address} {since}"
+            );
+        }
+        conn.admins()
+            .remember_login_address(owner, "203.0.113.7", at - Duration::days(3), at - month)
+            .await
+            .unwrap();
+        assert!(
+            conn.admins()
+                .logged_in_from("owner@example.com", "203.0.113.7", at - Duration::days(1))
+                .await
+                .unwrap()
+        );
+        conn.admins()
+            .remember_login_address(other, "2001:db8:aaaa:1::/64", at, at - month)
+            .await
+            .unwrap();
+        let later = at + Duration::days(31);
+        conn.admins()
+            .remember_login_address(owner, "198.51.100.9", later, later - month)
+            .await
+            .unwrap();
+        assert_eq!(addresses(&mut conn, owner).await, ["198.51.100.9"]);
+        assert_eq!(addresses(&mut conn, other).await, ["2001:db8:aaaa:1::/64"]);
+        assert!(
+            conn.admins()
+                .remember_login_address(owner, "", later, later - month)
+                .await
+                .is_err()
+        );
+        drop(conn);
+        db.cleanup().await;
+    }
 }

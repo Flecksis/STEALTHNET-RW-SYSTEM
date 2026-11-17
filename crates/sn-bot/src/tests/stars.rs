@@ -29,12 +29,12 @@ impl Respond for Updates {
 }
 
 #[derive(Clone, Default)]
-struct Ledger {
+pub(super) struct Ledger {
     transactions: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl Ledger {
-    fn push(&self, transaction: serde_json::Value) {
+    pub(super) fn push(&self, transaction: serde_json::Value) {
         self.transactions.lock().unwrap().push(transaction);
     }
 }
@@ -57,7 +57,7 @@ impl Respond for Ledger {
     }
 }
 
-fn incoming(charge: &str, from: i64, payload: &str, stars: i64) -> serde_json::Value {
+pub(super) fn incoming(charge: &str, from: i64, payload: &str, stars: i64) -> serde_json::Value {
     serde_json::json!({
         "id": charge, "amount": stars, "date": 1_763_300_000,
         "source": {
@@ -68,7 +68,7 @@ fn incoming(charge: &str, from: i64, payload: &str, stars: i64) -> serde_json::V
     })
 }
 
-fn refund(charge: &str, to: i64, stars: i64) -> serde_json::Value {
+pub(super) fn refund(charge: &str, to: i64, stars: i64) -> serde_json::Value {
     serde_json::json!({
         "id": charge, "amount": stars, "date": 1_763_400_000,
         "receiver": {
@@ -78,7 +78,12 @@ fn refund(charge: &str, to: i64, stars: i64) -> serde_json::Value {
     })
 }
 
-fn paid_update(update_id: i64, from: i64, payment: &Payment, charge: &str) -> serde_json::Value {
+pub(super) fn paid_update(
+    update_id: i64,
+    from: i64,
+    payment: &Payment,
+    charge: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "update_id": update_id,
         "message": {
@@ -95,7 +100,7 @@ fn paid_update(update_id: i64, from: i64, payment: &Payment, charge: &str) -> se
     })
 }
 
-async fn serve_updates(server: &MockServer, updates: Vec<serde_json::Value>) {
+pub(super) async fn serve_updates(server: &MockServer, updates: Vec<serde_json::Value>) {
     Mock::given(method("POST"))
         .and(path_regex(r"/getUpdates$"))
         .respond_with(Updates { updates })
@@ -103,7 +108,7 @@ async fn serve_updates(server: &MockServer, updates: Vec<serde_json::Value>) {
         .await;
 }
 
-async fn serve_ledger(server: &MockServer, ledger: &Ledger) {
+pub(super) async fn serve_ledger(server: &MockServer, ledger: &Ledger) {
     Mock::given(method("POST"))
         .and(path_regex(r"/getStarTransactions$"))
         .respond_with(ledger.clone())
@@ -111,7 +116,7 @@ async fn serve_ledger(server: &MockServer, ledger: &Ledger) {
         .await;
 }
 
-fn quick(server: &MockServer) -> BotConfig {
+pub(super) fn quick(server: &MockServer) -> BotConfig {
     BotConfig {
         api_base: server.uri(),
         poll_timeout: Duration::from_secs(1),
@@ -121,7 +126,7 @@ fn quick(server: &MockServer) -> BotConfig {
     }
 }
 
-async fn stars_invoice(db: &TestDb, services: &Services, telegram_id: i64) -> Payment {
+pub(super) async fn stars_invoice(db: &TestDb, services: &Services, telegram_id: i64) -> Payment {
     let (client, _) = services
         .clients()
         .ensure_telegram(
@@ -219,17 +224,17 @@ async fn stars_invoice(db: &TestDb, services: &Services, telegram_id: i64) -> Pa
     payment
 }
 
-async fn payment_of(db: &TestDb, id: PaymentId) -> Payment {
+pub(super) async fn payment_of(db: &TestDb, id: PaymentId) -> Payment {
     let mut conn = db.store.conn().await.unwrap();
     conn.payments().get(id).await.unwrap()
 }
 
-async fn order_status(db: &TestDb, payment: &Payment) -> OrderStatus {
+pub(super) async fn order_status(db: &TestDb, payment: &Payment) -> OrderStatus {
     let mut conn = db.store.conn().await.unwrap();
     conn.orders().get(payment.order_id).await.unwrap().status
 }
 
-async fn wait_status(db: &TestDb, id: PaymentId, status: PaymentStatus) -> bool {
+pub(super) async fn wait_status(db: &TestDb, id: PaymentId, status: PaymentStatus) -> bool {
     for _ in 0..100 {
         if payment_of(db, id).await.status == status {
             return true;
@@ -332,14 +337,19 @@ async fn сбой_базы_при_проведении_оплаты_звёзда
     db.cleanup().await;
 }
 
-fn stars_event(update: serde_json::Value) -> sn_payments::providers::StarsPayment {
+pub(super) fn stars_event(update: serde_json::Value) -> sn_payments::providers::StarsPayment {
     let update: Update = serde_json::from_value(update).unwrap();
     ledger::from_updates(std::slice::from_ref(&update))
         .pop()
         .unwrap()
 }
 
-fn refund_update(update_id: i64, from: i64, payment: &Payment, charge: &str) -> serde_json::Value {
+pub(super) fn refund_update(
+    update_id: i64,
+    from: i64,
+    payment: &Payment,
+    charge: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "update_id": update_id,
         "message": {
@@ -366,7 +376,7 @@ async fn get_updates_offsets(server: &MockServer) -> Vec<serde_json::Value> {
         .collect()
 }
 
-async fn reviews(db: &TestDb, payment: PaymentId) -> i64 {
+pub(super) async fn reviews(db: &TestDb, payment: PaymentId) -> i64 {
     let mut conn = db.store.conn().await.unwrap();
     sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE entity_kind = 'payment' \

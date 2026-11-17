@@ -43,6 +43,8 @@ pub enum LedgerKind {
     Roulette,
     AdminAdjust,
     MigrationOpening,
+    RefundHold,
+    RefundRelease,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +55,7 @@ pub enum Direction {
 }
 
 impl LedgerKind {
-    pub const ALL: [LedgerKind; 12] = [
+    pub const ALL: [LedgerKind; 14] = [
         LedgerKind::TopUp,
         LedgerKind::Purchase,
         LedgerKind::AutoRenew,
@@ -66,6 +68,8 @@ impl LedgerKind {
         LedgerKind::Roulette,
         LedgerKind::AdminAdjust,
         LedgerKind::MigrationOpening,
+        LedgerKind::RefundHold,
+        LedgerKind::RefundRelease,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -82,6 +86,8 @@ impl LedgerKind {
             LedgerKind::Roulette => "roulette",
             LedgerKind::AdminAdjust => "admin_adjust",
             LedgerKind::MigrationOpening => "migration_opening",
+            LedgerKind::RefundHold => "refund_hold",
+            LedgerKind::RefundRelease => "refund_release",
         }
     }
 
@@ -98,11 +104,13 @@ impl LedgerKind {
             | LedgerKind::Refund
             | LedgerKind::ReferralCredit
             | LedgerKind::WithdrawalRelease
-            | LedgerKind::MigrationOpening => Direction::Credit,
+            | LedgerKind::MigrationOpening
+            | LedgerKind::RefundRelease => Direction::Credit,
             LedgerKind::Purchase
             | LedgerKind::AutoRenew
             | LedgerKind::ReferralReversal
-            | LedgerKind::WithdrawalHold => Direction::Debit,
+            | LedgerKind::WithdrawalHold
+            | LedgerKind::RefundHold => Direction::Debit,
             LedgerKind::Contest | LedgerKind::Roulette | LedgerKind::AdminAdjust => {
                 Direction::Either
             }
@@ -118,7 +126,9 @@ impl LedgerKind {
             LedgerKind::TopUp
             | LedgerKind::Purchase
             | LedgerKind::AutoRenew
-            | LedgerKind::Refund => {
+            | LedgerKind::Refund
+            | LedgerKind::RefundHold
+            | LedgerKind::RefundRelease => {
                 matches!(wallet, Wallet::Main)
             }
             LedgerKind::Contest
@@ -239,6 +249,40 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn удержание_под_возврат_списывает_основной_кошелёк_а_сторно_возвращает() {
+        assert!(
+            entry(LedgerKind::RefundHold, Wallet::Main, -100)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            entry(LedgerKind::RefundHold, Wallet::Main, 100)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            entry(LedgerKind::RefundHold, Wallet::Referral, -100)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            entry(LedgerKind::RefundRelease, Wallet::Main, 100)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            entry(LedgerKind::RefundRelease, Wallet::Main, -100)
+                .validate()
+                .is_err()
+        );
+        for kind in LedgerKind::ALL {
+            assert_eq!(LedgerKind::parse(kind.as_str()).unwrap(), kind);
+        }
+        assert_eq!(LedgerKind::RefundHold.as_str(), "refund_hold");
+        assert_eq!(LedgerKind::RefundRelease.as_str(), "refund_release");
     }
 
     #[test]

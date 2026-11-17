@@ -10,6 +10,8 @@ pub enum InboxOutcome {
     Ignored,
     RejectedSignature,
     RejectedPayload,
+    RejectedBusiness,
+    NotAccepted,
     PaymentNotFound,
     AmountMismatch,
     Error,
@@ -23,6 +25,8 @@ impl InboxOutcome {
             InboxOutcome::Ignored => "ignored",
             InboxOutcome::RejectedSignature => "rejected_signature",
             InboxOutcome::RejectedPayload => "rejected_payload",
+            InboxOutcome::RejectedBusiness => "rejected_business",
+            InboxOutcome::NotAccepted => "not_accepted",
             InboxOutcome::PaymentNotFound => "payment_not_found",
             InboxOutcome::AmountMismatch => "amount_mismatch",
             InboxOutcome::Error => "error",
@@ -36,6 +40,8 @@ impl InboxOutcome {
             "ignored" => InboxOutcome::Ignored,
             "rejected_signature" => InboxOutcome::RejectedSignature,
             "rejected_payload" => InboxOutcome::RejectedPayload,
+            "rejected_business" => InboxOutcome::RejectedBusiness,
+            "not_accepted" => InboxOutcome::NotAccepted,
             "payment_not_found" => InboxOutcome::PaymentNotFound,
             "amount_mismatch" => InboxOutcome::AmountMismatch,
             "error" => InboxOutcome::Error,
@@ -50,6 +56,16 @@ impl InboxOutcome {
                 | InboxOutcome::Ignored
                 | InboxOutcome::PaymentNotFound
                 | InboxOutcome::AmountMismatch
+        )
+    }
+
+    pub const fn is_unverified(self) -> bool {
+        matches!(
+            self,
+            InboxOutcome::RejectedSignature
+                | InboxOutcome::RejectedPayload
+                | InboxOutcome::NotAccepted
+                | InboxOutcome::Error
         )
     }
 }
@@ -68,6 +84,30 @@ pub struct InboxRecord {
     pub id: i64,
     pub duplicate: bool,
     pub outcome: InboxOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxEntry {
+    pub id: i64,
+    pub source: String,
+    pub outcome: InboxOutcome,
+    pub has_body: bool,
+    pub payment_id: Option<PaymentId>,
+    pub error: Option<String>,
+    pub remote_ip: Option<String>,
+    pub received_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct InboxEntryRow {
+    id: i64,
+    source: String,
+    outcome: String,
+    has_body: bool,
+    payment_id: Option<i64>,
+    error: Option<String>,
+    remote_ip: Option<String>,
+    received_at: DateTime<Utc>,
 }
 
 pub struct WebhooksRepo<'c> {
@@ -138,7 +178,7 @@ impl<'c> WebhooksRepo<'c> {
         outcome: InboxOutcome,
         error: Option<&str>,
     ) -> StoreResult<bool> {
-        if matches!(outcome, InboxOutcome::Received) || outcome.is_final() {
+        if !outcome.is_unverified() {
             return Err(StoreError::Invalid(format!(
                 "отказ вебхука не может иметь исход {}",
                 outcome.as_str()
@@ -159,6 +199,30 @@ impl<'c> WebhooksRepo<'c> {
         Ok(inserted.is_some())
     }
 
+    pub async fn recent(&mut self, limit: i64) -> StoreResult<Vec<InboxEntry>> {
+        let rows: Vec<InboxEntryRow> = sqlx::query_as(
+            "SELECT id, source, outcome, body IS NOT NULL AS has_body, payment_id, error, remote_ip, received_at \
+             FROM webhook_inbox ORDER BY id DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(InboxEntry {
+                    id: row.id,
+                    source: row.source,
+                    outcome: InboxOutcome::parse(&row.outcome)?,
+                    has_body: row.has_body,
+                    payment_id: row.payment_id.map(PaymentId),
+                    error: row.error,
+                    remote_ip: row.remote_ip,
+                    received_at: row.received_at,
+                })
+            })
+            .collect()
+    }
+
     pub async fn purge(
         &mut self,
         kept_since: DateTime<Utc>,
@@ -167,7 +231,7 @@ impl<'c> WebhooksRepo<'c> {
     ) -> StoreResult<u64> {
         let rejected = sqlx::query(
             "DELETE FROM webhook_inbox WHERE id IN (SELECT id FROM webhook_inbox \
-             WHERE (outcome IN ('rejected_signature', 'rejected_payload') OR body IS NULL) AND received_at < $1 \
+             WHERE (outcome = 'rejected_signature' OR body IS NULL) AND received_at < $1 \
              ORDER BY received_at LIMIT $2)",
         )
         .bind(rejected_kept_since)
@@ -239,6 +303,14 @@ mod tests {
         let again = conn.webhooks().record(&rejected).await.unwrap();
         assert!(again.duplicate);
         assert_eq!(again.outcome, InboxOutcome::RejectedSignature);
+        let journal = conn.webhooks().recent(10).await.unwrap();
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0].source, "cryptopay");
+        assert_eq!(journal[0].outcome, InboxOutcome::RejectedSignature);
+        assert!(!journal[0].has_body);
+        assert_eq!(journal[0].payment_id, None);
+        assert_eq!(journal[0].error.as_deref(), Some("подпись"));
+        assert_eq!(journal[0].remote_ip.as_deref(), Some("203.0.113.7"));
         let stored: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT body FROM webhook_inbox WHERE dedupe_key = 'rejected:aa'")
                 .fetch_one(conn.conn())
@@ -287,6 +359,47 @@ mod tests {
             .unwrap();
         assert_eq!(purged, 1);
         assert_eq!(keys(&mut conn).await, ["a-new", "r-new", "e-body"]);
+        drop(conn);
+        db.cleanup().await;
+    }
+    #[tokio::test]
+    async fn подлинные_отклонённые_уведомления_хранятся_дольше_отказов_по_подписи() {
+        let Some(db) = test_store().await else { return };
+        let mut conn = db.store.conn().await.unwrap();
+        let now = Utc::now();
+        for (key, outcome, body, days) in [
+            ("b-10", "rejected_business", Some(b"{}".as_slice()), 10),
+            ("b-31", "rejected_business", Some(b"{}".as_slice()), 31),
+            ("p-5", "rejected_payload", Some(b"{}".as_slice()), 5),
+            ("s-4", "rejected_signature", Some(b"junk".as_slice()), 4),
+            ("n-4", "not_accepted", None, 4),
+            ("n-1", "not_accepted", None, 1),
+        ] {
+            sqlx::query(
+                "INSERT INTO webhook_inbox (source, dedupe_key, outcome, body, received_at) \
+                 VALUES ('cryptopay', $1, $2, $3, $4)",
+            )
+            .bind(key)
+            .bind(outcome)
+            .bind(body)
+            .bind(now - Duration::days(days))
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        }
+        let purged = conn
+            .webhooks()
+            .purge(now - Duration::days(30), now - Duration::days(3), 100)
+            .await
+            .unwrap();
+        assert_eq!(purged, 3);
+        assert_eq!(keys(&mut conn).await, ["b-10", "p-5", "n-1"]);
+        assert!(
+            conn.webhooks()
+                .record_rejected(&hook("y", None), InboxOutcome::RejectedBusiness, None)
+                .await
+                .is_err()
+        );
         drop(conn);
         db.cleanup().await;
     }
