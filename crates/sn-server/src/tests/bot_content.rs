@@ -240,6 +240,30 @@ async fn картинки_бота_грузятся_проверяются_и_у
         .await;
         assert_eq!(status, expected, "{}", String::from_utf8_lossy(&body));
     }
+    let mut big = logo_png(1920, 1080, 7);
+    big.resize(3 * 1024 * 1024, 7);
+    let (status, _, body) = send_bytes(
+        &h,
+        Method::POST,
+        "/api/admin/bot/images/promo",
+        &owner,
+        "image/png",
+        big,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let mut huge = logo_png(1920, 1080, 7);
+    huge.resize(6 * 1024 * 1024, 7);
+    let (status, _, _) = send_bytes(
+        &h,
+        Method::POST,
+        "/api/admin/bot/images/promo",
+        &owner,
+        "image/png",
+        huge,
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     let (status, _, _) = send_bytes(
         &h,
         Method::POST,
