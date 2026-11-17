@@ -81,7 +81,7 @@ jobs:
         with:
           persist-credentials: false
       - name: install before this commit has an image
-        run: SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+        run: SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost ./install.sh | tee "$RUNNER_TEMP/install.log"
       - name: a published image was used and it works
         run: |
           grep -q 'готовая сборка скачана' "$RUNNER_TEMP/install.log"
@@ -104,7 +104,7 @@ jobs:
         with:
           persist-credentials: false
       - name: install as root
-        run: sudo SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+        run: sudo SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost ./install.sh | tee "$RUNNER_TEMP/install.log"
       - name: the stealthnet command works from any folder
         run: |
           grep -q 'готовая сборка скачана' "$RUNNER_TEMP/install.log"
@@ -116,8 +116,25 @@ jobs:
           test "${#password}" -eq 20
           curl -fsS -o /dev/null -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
-          sudo SN_DOMAIN=short.example.org stealthnet domain
-          sudo grep -q '^SN_PUBLIC_URL=https://short.example.org$' "$GITHUB_WORKSPACE/deploy/.env"
+      - name: the domain answers over HTTPS
+        run: |
+          grep -q 'сертификат выпущен, https://panel.localhost открывается' "$RUNNER_TEMP/install.log"
+          site="--resolve panel.localhost:443:127.0.0.1 --resolve panel.localhost:80:127.0.0.1"
+          test "$(curl -sk $site https://panel.localhost/api/health)" = '{"status":"ok"}'
+          curl -sk $site https://panel.localhost/ | grep -q 'STEALTHNET'
+          test "$(curl -s -o /dev/null -w '%{http_code}' $site http://panel.localhost/)" = 308
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/reset.log" | tail -n 1)
+          curl -fsSk $site -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" https://panel.localhost/api/admin/auth/login
+          if (cd deploy && sudo docker compose logs app) | grep -q 'SN_TRUSTED_PROXIES'; then exit 1; fi
+      - name: the domain can be changed
+        run: |
+          cd /
+          sudo SN_DOMAIN=short.localhost stealthnet domain | tee "$RUNNER_TEMP/domain.log"
+          sudo grep -q '^SN_PUBLIC_URL=https://short.localhost$' "$GITHUB_WORKSPACE/deploy/.env"
+          grep -q 'сертификат выпущен, https://short.localhost открывается' "$RUNNER_TEMP/domain.log"
+          site="--resolve short.localhost:443:127.0.0.1"
+          test "$(curl -sk $site https://short.localhost/api/health)" = '{"status":"ok"}'
           curl -fsS http://127.0.0.1:8080/api/health
 
   install:
@@ -136,7 +153,7 @@ jobs:
         with:
           persist-credentials: false
       - name: install from source
-        run: SN_BUILD=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+        run: SN_BUILD=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost ./install.sh | tee "$RUNNER_TEMP/install.log"
       - name: sign in with the generated password
         run: |
           password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/install.log" | tail -n 1)
@@ -176,9 +193,9 @@ jobs:
           status=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL")
           test "$status" = 401
-          SN_DOMAIN=new.example.org ./install.sh --domain
-          grep -q '^SN_PUBLIC_URL=https://new.example.org$' deploy/.env
-          test "$(cd deploy && docker compose exec -T app printenv SN_PUBLIC_URL)" = "https://new.example.org"
+          SN_DOMAIN=new.localhost ./install.sh --domain
+          grep -q '^SN_PUBLIC_URL=https://new.localhost$' deploy/.env
+          test "$(cd deploy && docker compose exec -T app printenv SN_PUBLIC_URL)" = "https://new.localhost"
           curl -fsS http://127.0.0.1:8080/api/health
       - name: publish the tested image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -211,7 +228,7 @@ jobs:
       - name: install from the published image
         run: |
           started=$SECONDS
-          SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+          SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost ./install.sh | tee "$RUNNER_TEMP/install.log"
           echo "install took $((SECONDS - started)) seconds"
       - name: the published image was used and it works
         run: |

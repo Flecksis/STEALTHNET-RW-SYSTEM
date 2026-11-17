@@ -27,7 +27,7 @@ def fresh():
 
 def drive(shell, answers, typed_early='', typed_on=None, extra_env=None):
     work = fresh()
-    env = dict(os.environ, FAKE_STATE=work + '/state', SN_BIN_DIR=work + '/bin', PATH=HERE + '/bin:' + os.environ['PATH'], TERM='xterm')
+    env = dict(os.environ, FAKE_STATE=work + '/state', SN_BIN_DIR=work + '/bin', SN_TEST_BUSY_PORTS='', PATH=HERE + '/bin:' + os.environ['PATH'], TERM='xterm')
     for key in ['SN_OWNER_EMAIL', 'SN_DOMAIN', 'NO_COLOR', 'SN_BUILD']:
         env.pop(key, None)
     env.update(extra_env or {})

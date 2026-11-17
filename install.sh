@@ -6,6 +6,9 @@ DEPLOY="$ROOT/deploy"
 ENV_FILE="$DEPLOY/.env"
 IMAGE_REPO=${SN_IMAGE_REPO:-ghcr.io/stealthnet-app/stealthnet-rw-system}
 HEALTH_TIMEOUT=${SN_HEALTH_TIMEOUT:-300}
+SITE_TIMEOUT=${SN_SITE_TIMEOUT:-90}
+SNIPPET_FILE="$DEPLOY/proxy-snippet.txt"
+SITE_READY=""
 BIN_DIR=${SN_BIN_DIR:-/usr/local/bin}
 WRAPPER="$BIN_DIR/stealthnet"
 SHORT=""
@@ -292,6 +295,12 @@ prepare_domain() {
 }
 
 port_busy() {
+    if [ "${SN_TEST_BUSY_PORTS+set}" = "set" ]; then
+        case " $SN_TEST_BUSY_PORTS " in
+            *" $1 "*) return 0 ;;
+        esac
+        return 1
+    fi
     if command -v ss >/dev/null 2>&1; then
         [ -n "$(ss -ltnH "sport = :$1" 2>/dev/null)" ]
     elif command -v lsof >/dev/null 2>&1; then
@@ -323,14 +332,108 @@ prepare_port() {
 }
 
 link_remnawave() {
-    if [ -n "$(env_value COMPOSE_FILE)" ]; then
+    if [ "$(env_value SN_REMNAWAVE_NETWORK)" = "1" ]; then
         return 0
     fi
+    case "$(env_value COMPOSE_FILE)" in
+        *compose.remnawave.yml*)
+            set_env SN_REMNAWAVE_NETWORK 1
+            return 0
+            ;;
+    esac
     if docker network inspect remnawave-network >/dev/null 2>&1; then
-        set_env COMPOSE_FILE "docker-compose.yml:compose.remnawave.yml"
+        set_env SN_REMNAWAVE_NETWORK 1
         step "Remnawave"
         done_line "панель найдена на этом сервере, подключаюсь к её сети"
     fi
+}
+
+site_host() {
+    url=$(env_value SN_PUBLIC_URL)
+    printf '%s' "${url#https://}"
+}
+
+write_snippet() {
+    host=$1
+    port=$(env_value SN_HTTP_PORT)
+    dollar='$'
+    {
+        printf 'Caddy:\n\n%s {\n    reverse_proxy 127.0.0.1:%s\n}\n\n' "$host" "${port:-8080}"
+        printf 'nginx, внутри блока server с сертификатом для %s:\n\n' "$host"
+        printf 'location / {\n'
+        printf '    proxy_pass http://127.0.0.1:%s;\n' "${port:-8080}"
+        printf '    proxy_set_header Host %shost;\n' "$dollar"
+        printf '    proxy_set_header X-Forwarded-For %sproxy_add_x_forwarded_for;\n' "$dollar"
+        printf '    proxy_set_header X-Forwarded-Proto %sscheme;\n' "$dollar"
+        printf '}\n'
+    } > "$SNIPPET_FILE"
+}
+
+prepare_https() {
+    host=$(site_host)
+    if [ -z "$host" ]; then
+        set_env SN_HTTPS ""
+        set_env SN_SITE ""
+        return 0
+    fi
+    set_env SN_SITE "$host"
+    if [ "$(env_value SN_HTTPS)" = "caddy" ]; then
+        return 0
+    fi
+    step "HTTPS"
+    case "$host" in
+        *:*)
+            set_env SN_HTTPS manual
+            write_snippet "$host"
+            done_line "адрес с портом: сертификат и прокси настраиваются отдельно, подсказка будет в конце"
+            return 0
+            ;;
+    esac
+    if port_busy 80 || port_busy 443; then
+        set_env SN_HTTPS manual
+        write_snippet "$host"
+        done_line "порты 80 и 443 заняты другой программой, подсказка будет в конце"
+    else
+        set_env SN_HTTPS caddy
+        done_line "сертификат выпустится сам при запуске"
+    fi
+}
+
+write_compose_files() {
+    files="docker-compose.yml"
+    if [ "$(env_value SN_HTTPS)" = "caddy" ]; then
+        files="$files:compose.https.yml"
+    fi
+    if [ "$(env_value SN_REMNAWAVE_NETWORK)" = "1" ]; then
+        files="$files:compose.remnawave.yml"
+    fi
+    set_env COMPOSE_FILE "$files"
+}
+
+check_site() {
+    SITE_READY=""
+    if [ "$(env_value SN_HTTPS)" != "caddy" ]; then
+        return 0
+    fi
+    step "Сайт"
+    host=$(site_host)
+    waited=0
+    while :; do
+        if [ -n "$(compose exec -T caddy find /data/caddy/certificates -name "$host.crt" 2>/dev/null)" ]; then
+            SITE_READY=1
+            done_line "сертификат выпущен, https://$host открывается"
+            return 0
+        fi
+        if [ "$waited" -ge "$SITE_TIMEOUT" ]; then
+            SITE_READY=0
+            hint "Сертификат пока не выпущен. Обычно причина одна из двух:"
+            hint "домен ещё не указывает на этот сервер или порты 80 и 443 закрыты снаружи."
+            hint "Когда это исправится, сертификат выпустится сам, запускать ничего не нужно."
+            return 0
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
 }
 
 host_arch() {
@@ -506,11 +609,14 @@ commands_list() {
 summary() {
     url=$(env_value SN_PUBLIC_URL)
     port=$(env_value SN_HTTP_PORT)
+    mode=$(env_value SN_HTTPS)
     printf '\n%sГотово.%s\n\n' "$BOLD" "$RESET"
-    if [ -n "$url" ]; then
-        printf '  Адрес панели:      %s\n' "$url"
-    else
+    if [ -z "$url" ]; then
         printf '  Адрес панели:      не задан\n'
+    elif [ "$mode" = "caddy" ] && [ "$SITE_READY" = "0" ]; then
+        printf '  Адрес панели:      %s (сертификат ещё выпускается)\n' "$url"
+    else
+        printf '  Адрес панели:      %s\n' "$url"
     fi
     printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
     if [ -n "${OWNER_PASSWORD:-}" ]; then
@@ -525,6 +631,10 @@ summary() {
     else
         commands_list "Дальше — этими командами:"
     fi
+    if [ -n "$url" ] && [ "$mode" = "manual" ]; then
+        printf '\nЧтобы адрес заработал, добавьте в программу, которая держит порты 80 и 443,\n'
+        printf 'блок из файла %s\n' "$SNIPPET_FILE"
+    fi
     printf '\nСекреты лежат в %s. Сохраните копию этого файла:\n' "$ENV_FILE"
     printf 'без него не расшифровать ключи платёжных систем и токены из админки.\n'
 }
@@ -536,9 +646,12 @@ install() {
     prepare_domain
     prepare_port
     link_remnawave
+    prepare_https
+    write_compose_files
     prepare_image
     start_stack
     wait_healthy
+    check_site
     install_short || true
     step "Владелец"
     find_owner
@@ -592,12 +705,25 @@ change_domain() {
     fi
     set_env SN_PUBLIC_URL "https://$domain"
     done_line "https://$domain"
+    link_remnawave
+    prepare_https
+    write_compose_files
     step "Запуск"
-    if ! compose up -d --no-build; then
+    if ! compose up -d --no-build --remove-orphans; then
         die "перезапуск не прошёл" "Сообщение об ошибке — выше."
     fi
     wait_healthy
-    printf '\n  Адрес панели:      https://%s\n' "$domain"
+    check_site
+    mode=$(env_value SN_HTTPS)
+    if [ "$mode" = "caddy" ] && [ "$SITE_READY" = "0" ]; then
+        printf '\n  Адрес панели:      https://%s (сертификат ещё выпускается)\n' "$domain"
+    else
+        printf '\n  Адрес панели:      https://%s\n' "$domain"
+    fi
+    if [ "$mode" = "manual" ]; then
+        printf '\nЧтобы адрес заработал, добавьте в программу, которая держит порты 80 и 443,\n'
+        printf 'блок из файла %s\n' "$SNIPPET_FILE"
+    fi
 }
 
 change_owner_email() {

@@ -20,7 +20,7 @@ fresh() {
     WORK=$(mktemp -d "$TMP_ROOT/work.XXXXXX")
     mkdir -p "$WORK/repo/deploy" "$WORK/state" "$WORK/bin"
     cp "$SRC/install.sh" "$WORK/repo/"
-    cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$WORK/repo/deploy/"
+    cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$SRC/deploy/compose.https.yml" "$SRC/deploy/Caddyfile" "$WORK/repo/deploy/"
     R="$WORK/repo"
     S="$WORK/state"
     FAKE_STATE="$S"
@@ -28,7 +28,7 @@ fresh() {
 }
 
 run() {
-    env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$PATH" "$@"
+    env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" SN_TEST_BUSY_PORTS="" PATH="$HERE/bin:$PATH" "$@"
 }
 
 INST() {
@@ -53,15 +53,11 @@ grep -qE '^POSTGRES_PASSWORD=[0-9a-f]{48}$' "$R/deploy/.env" && check ok "пар
 [ "$(sed -n 's/^SN_SECRET_KEY=//p' "$R/deploy/.env" | base64 -d | wc -c | tr -d ' ')" = "32" ] && check ok "ключ шифрования: 32 байта" || check no "ключ шифрования"
 [ "$(ls -l "$R/deploy/.env" | cut -c1-10)" = "-rw-------" ] && check ok "права на .env только у владельца" || check no "права на .env"
 grep "create-admin" "$S/calls.log" | grep -q "$stored" && check no "пароль попал в аргументы команды" || check ok "пароль не попал в аргументы команды"
-grep -q '^COMPOSE_FILE=' "$R/deploy/.env" && check no "COMPOSE_FILE записан без сети Remnawave" || check ok "без сети Remnawave COMPOSE_FILE не тронут"
+grep -q '^COMPOSE_FILE=.*remnawave' "$R/deploy/.env" && check no "сеть Remnawave подключена без панели" || check ok "без панели сеть Remnawave не подключается"
 grep -q '^compose up -d --build' "$S/calls.log" && check ok "без .git собирает из исходников" || check no "нет сборки из исходников"
 grep -q "^pull ghcr.io/stealthnet-app/stealthnet-rw-system:main\$" "$S/calls.log" && check ok "без .git пробует последнюю проверенную сборку" || check no "без .git не пробовал последнюю сборку"
 chosen=$(sed -n 's/^SN_HTTP_PORT=//p' "$R/deploy/.env")
-printf '%s' "$chosen" | grep -Eq '^80[0-9][0-9]$' && check ok "порт выбран: $chosen" || check no "порт не выбран: «$chosen»"
-if lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1; then
-    [ "$chosen" != "8080" ] && check ok "занятый 8080 пропущен" || check no "взят занятый порт 8080"
-    grep -q "8080 занят другой программой, беру $chosen" "$WORK/out1.txt" && check ok "человеку сказано про порт" || check no "нет сообщения про порт"
-fi
+[ "$chosen" = "8080" ] && check ok "порт выбран: $chosen" || check no "порт: «$chosen»"
 grep -q "Порт на сервере:   127.0.0.1:$chosen" "$WORK/out1.txt" && check ok "в итоге показан выбранный порт" || check no "в итоге не тот порт"
 
 echo "=== B. повторный запуск"
@@ -94,7 +90,7 @@ grep -q 'Адрес панели:      не задан' "$WORK/out.txt" && check
 echo "=== E. панель Remnawave на этом сервере"
 fresh
 run FAKE_REMNA_EXIT=0 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
-grep -q '^COMPOSE_FILE=docker-compose.yml:compose.remnawave.yml$' "$R/deploy/.env" && check ok "подключение к сети Remnawave записано" || check no "COMPOSE_FILE"
+grep -q '^COMPOSE_FILE=docker-compose.yml:compose.https.yml:compose.remnawave.yml$' "$R/deploy/.env" && check ok "подключение к сети Remnawave записано" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
 grep -q 'панель найдена' "$WORK/out.txt" && check ok "человеку об этом сказано" || check no "нет сообщения"
 
 echo "=== F. некому отвечать и почта не задана"
@@ -338,6 +334,60 @@ printf '%s\n' "$SHA" > "$R/.git/HEAD"
 run FAKE_GIT_STATUS=" M crates/x.rs" FAKE_PULL_EXIT=0 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 grep -q '^pull' "$S/calls.log" && check no "скачал сборку при изменённых исходниках" || check ok "при изменённых исходниках сборку не скачивает"
 grep -q '^compose up -d --build' "$S/calls.log" && check ok "собирает из исходников" || check no "нет сборки"
+
+echo "=== AB. HTTPS поднимается сам"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "код выхода 0" || check no "код выхода $code"
+grep -q '^SN_HTTPS=caddy$' "$R/deploy/.env" && check ok "выбран свой веб-сервер с сертификатом" || check no "SN_HTTPS: $(grep '^SN_HTTPS' "$R/deploy/.env")"
+grep -q '^SN_SITE=shop.example.org$' "$R/deploy/.env" && check ok "домен передан веб-серверу" || check no "SN_SITE: $(grep '^SN_SITE' "$R/deploy/.env")"
+grep -q '^COMPOSE_FILE=docker-compose.yml:compose.https.yml$' "$R/deploy/.env" && check ok "веб-сервер добавлен к службам" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
+grep -q 'сертификат выпущен, https://shop.example.org открывается' "$WORK/out.txt" && check ok "человеку сказано, что сайт открывается" || check no "нет сообщения про сайт"
+grep -q 'Адрес панели:      https://shop.example.org$' "$WORK/out.txt" && check ok "в итоге адрес без оговорок" || check no "в итоге адрес с оговоркой"
+cp "$R/deploy/.env" "$WORK/before.env"
+run SN_TEST_BUSY_PORTS="80 443" "$SHELL_BIN" "$R/install.sh" > "$WORK/out2.txt" 2>&1 </dev/null
+cmp -s "$R/deploy/.env" "$WORK/before.env" && check ok "повторный запуск не путает свой веб-сервер с чужим" || check no "повторный запуск сменил режим: $(grep '^SN_HTTPS' "$R/deploy/.env")"
+
+echo "=== AC. сертификат ещё не выпущен"
+fresh
+run FAKE_CERT=0 SN_SITE_TIMEOUT=3 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "установка дошла до конца" || check no "код выхода $code"
+grep -q 'https://shop.example.org (сертификат ещё выпускается)' "$WORK/out.txt" && check ok "в итоге сказано, что сертификат выпускается" || check no "нет оговорки про сертификат"
+grep -q 'домен ещё не указывает на этот сервер' "$WORK/out.txt" && check ok "названа вероятная причина" || check no "причина не названа"
+[ -s "$S/owner.txt" ] && check ok "владелец создан" || check no "владелец не создан"
+
+echo "=== AD. порты 80 и 443 заняты"
+fresh
+run SN_TEST_BUSY_PORTS="443" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "занятые порты не отказ" || check no "код выхода $code"
+grep -q '^SN_HTTPS=manual$' "$R/deploy/.env" && check ok "свой веб-сервер не ставится" || check no "SN_HTTPS: $(grep '^SN_HTTPS' "$R/deploy/.env")"
+grep -q '^COMPOSE_FILE=docker-compose.yml$' "$R/deploy/.env" && check ok "лишних служб нет" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
+grep -q 'reverse_proxy 127.0.0.1:8080' "$R/deploy/proxy-snippet.txt" && grep -q 'proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;' "$R/deploy/proxy-snippet.txt" && check ok "подсказка для чужого веб-сервера записана" || check no "нет подсказки"
+grep -q "блок из файла $R/deploy/proxy-snippet.txt" "$WORK/out.txt" && check ok "в итоге сказано, где подсказка" || check no "в итоге нет пути к подсказке"
+
+echo "=== AE. занятый порт приложения"
+fresh
+run SN_TEST_BUSY_PORTS="8080 8081" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^SN_HTTP_PORT=8082$' "$R/deploy/.env" && check ok "взят первый свободный порт 8082" || check no "порт: $(grep '^SN_HTTP_PORT' "$R/deploy/.env")"
+grep -q '8080 занят другой программой, беру 8082' "$WORK/out.txt" && check ok "человеку сказано про порт" || check no "нет сообщения про порт"
+
+echo "=== AF. домен указан позже"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN= "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+grep -q '^COMPOSE_FILE=docker-compose.yml$' "$R/deploy/.env" && check ok "без домена веб-сервер не ставится" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
+run SN_DOMAIN=late.example.org "$SHELL_BIN" "$R/install.sh" domain > "$WORK/out2.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && check ok "команда домена прошла" || check no "код выхода $code: $(tail -2 "$WORK/out2.txt")"
+grep -q '^SN_HTTPS=caddy$' "$R/deploy/.env" && grep -q '^COMPOSE_FILE=docker-compose.yml:compose.https.yml$' "$R/deploy/.env" && check ok "после указания домена поднят HTTPS" || check no "HTTPS не включён"
+grep -q 'сертификат выпущен, https://late.example.org открывается' "$WORK/out2.txt" && check ok "человеку сказано, что сайт открывается" || check no "нет сообщения про сайт"
+
+echo "=== AG. адрес с портом"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org:8443 "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^SN_HTTPS=manual$' "$R/deploy/.env" && check ok "для адреса с портом свой веб-сервер не ставится" || check no "SN_HTTPS: $(grep '^SN_HTTPS' "$R/deploy/.env")"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi

@@ -58,6 +58,9 @@ case "$*" in
         printf '%s' "$pw" > "$STATE/password.txt"
         echo "Владелец создан"
         exit 0 ;;
+    "compose exec -T caddy find "*)
+        if [ "${FAKE_CERT:-1}" = "1" ]; then echo "/data/caddy/certificates/acme/site/site.crt"; fi
+        exit 0 ;;
     "compose logs"*) echo "[fake] logs"; exit 0 ;;
 esac
 echo "fake docker: неизвестный вызов: $*" >&2

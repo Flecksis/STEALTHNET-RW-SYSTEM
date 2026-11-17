@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>STEALTHNET RW SYSTEM</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: #101525;
+  color: #f5f7ff;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+main { width: 100%; max-width: 520px; }
+.mark {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #000;
+  border: 1px solid #2a3350;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 26px;
+}
+h1 { margin: 20px 0 8px; font-size: 28px; line-height: 1.2; letter-spacing: -0.5px; }
+h1 span { color: #5b8cff; }
+p { margin: 0 0 12px; color: #b7c5e7; }
+.state { margin-top: 24px; padding-top: 16px; border-top: 1px solid #2a3350; color: #97a5c5; font-size: 15px; }
+.state b { color: #f5f7ff; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">S</div>
+  <h1>STEALTH<span>NET</span> RW SYSTEM</h1>
+  <p>Система установлена: сервер, Telegram-бот и приём платежей работают.</p>
+  <p>Веб-интерфейс админки и кабинета ещё в разработке, поэтому здесь пока эта страница.</p>
+  <div class="state">Сервер: <b id="state">проверяю…</b></div>
+</main>
+<script>
+fetch('/api/health', { cache: 'no-store' })
+  .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+  .then(function (d) { document.getElementById('state').textContent = d.status === 'ok' ? 'отвечает' : 'отвечает с ошибкой'; })
+  .catch(function () { document.getElementById('state').textContent = 'не отвечает'; });
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 /target
 .env
 deploy/.env
+deploy/proxy-snippet.txt
 *.log
 .DS_Store
