@@ -28,12 +28,15 @@ COPY --from=web /web/dist /usr/share/stealthnet/web
 USER 10001
 ARG SN_COMMIT=
 ARG SN_BUILT_AT=
+ARG SN_VERSION=
 LABEL org.opencontainers.image.revision=$SN_COMMIT \
-      org.opencontainers.image.created=$SN_BUILT_AT
+      org.opencontainers.image.created=$SN_BUILT_AT \
+      org.opencontainers.image.version=$SN_VERSION
 ENV SN_BIND=0.0.0.0:8080 \
     SN_WEB_DIR=/usr/share/stealthnet/web \
     SN_BUILD_COMMIT=$SN_COMMIT \
-    SN_BUILD_DATE=$SN_BUILT_AT
+    SN_BUILD_DATE=$SN_BUILT_AT \
+    SN_BUILD_VERSION=$SN_VERSION
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD curl -fsS http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["stealthnet"]

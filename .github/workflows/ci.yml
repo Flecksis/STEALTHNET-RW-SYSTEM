@@ -173,6 +173,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: install from source
         run: SN_BUILD=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost ./install.sh | tee "$RUNNER_TEMP/install.log"
       - name: sign in with the generated password
@@ -288,8 +289,9 @@ jobs:
           docker tag "$PUBLISHED:sha-$GITHUB_SHA" "$LOCAL:sha-$GITHUB_SHA"
           docker push "$LOCAL:sha-$GITHUB_SHA"
           later=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
-          printf 'FROM %s\nLABEL org.opencontainers.image.revision=%s org.opencontainers.image.created=%s\nENV SN_BUILD_COMMIT=%s SN_BUILD_DATE=%s\n' \
+          printf 'FROM %s\nLABEL org.opencontainers.image.revision=%s org.opencontainers.image.created=%s org.opencontainers.image.version=0.1.99999\nENV SN_BUILD_COMMIT=%s SN_BUILD_DATE=%s SN_BUILD_VERSION=0.1.99999\n' \
             "$PUBLISHED:sha-$GITHUB_SHA" "$NEXT" "$later" "$NEXT" "$later" > "$RUNNER_TEMP/next.Dockerfile"
+          test -n "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$PUBLISHED:sha-$GITHUB_SHA")"
           docker build -t "$LOCAL:main" -f "$RUNNER_TEMP/next.Dockerfile" "$RUNNER_TEMP"
           docker push "$LOCAL:main"
           docker image rm "$LOCAL:main" "$LOCAL:sha-$GITHUB_SHA" "$PUBLISHED:sha-$GITHUB_SHA"
@@ -317,7 +319,8 @@ jobs:
           test -n "$token"
           auth="Authorization: Bearer $token"
           curl -fsS -H "$auth" -X POST -H 'content-type: application/json' -d '{}' "$URL/api/admin/system/check" | tee "$RUNNER_TEMP/check.json"
-          grep -q "\"latest\":{\"commit\":\"$NEXT\"" "$RUNNER_TEMP/check.json"
+          grep -q "\"latest\":{\"label\":\"0.1.99999\",\"commit\":\"$NEXT\"" "$RUNNER_TEMP/check.json"
+          grep -q '"current":{"version":"[0-9.]*","label":"[0-9]*\.[0-9]*\.[0-9]*"' "$RUNNER_TEMP/check.json"
           grep -q '"can_update":true' "$RUNNER_TEMP/check.json"
           code=$(curl -s -H "$auth" -o "$RUNNER_TEMP/request.json" -w '%{http_code}' -H 'content-type: application/json' \
             -d "{\"target\":\"$NEXT\",\"password\":\"$password\"}" "$URL/api/admin/system/update")
@@ -339,9 +342,10 @@ jobs:
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$URL/api/admin/auth/login" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
           test -n "$token"
           curl -fsS -H "Authorization: Bearer $token" "$URL/api/admin/system" | tee "$RUNNER_TEMP/after.json"
-          grep -q "\"commit\":\"$NEXT\"" "$RUNNER_TEMP/after.json"
+          grep -q "\"label\":\"0.1.99999\",\"commit\":\"$NEXT\"" "$RUNNER_TEMP/after.json"
           grep -q '"update":{[^}]*"state":"done"' "$RUNNER_TEMP/after.json"
           test "$(sudo docker exec "$(cd /opt/stealthnet-rw/deploy && sudo docker compose ps -q postgres)" psql -U stealthnet -d postgres -Atc "SELECT count(*) FROM pg_database WHERE datname = 'stealthnet_prev'")" = 1
           sudo ls /opt/stealthnet-rw/deploy/backups/ | grep -q '\.dump$'
           sudo stealthnet status | tee "$RUNNER_TEMP/status.log"
-          grep -q 'Последнее обновление: .*установлено' "$RUNNER_TEMP/status.log"
+          grep -q 'Последнее обновление: .*установлено (версия 0.1.99999)' "$RUNNER_TEMP/status.log"
+          grep -q 'Версия:            0.1.99999 от ' "$RUNNER_TEMP/status.log"

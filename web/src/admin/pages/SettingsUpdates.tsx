@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, ApiError } from '../../lib/api';
 import { dateLong, dateTime, NBSP } from '../../lib/format';
 import { Switch } from '../ui';
+import { buildName } from '../version';
 import '../form.css';
 import './updates.css';
 import { SettingsLayout } from './SettingsLayout';
@@ -14,6 +15,8 @@ type Update = {
   state: 'requested' | 'waiting' | 'running' | 'done' | 'failed' | 'rolled_back' | 'attention';
   from: string | null;
   to: string | null;
+  from_label: string | null;
+  to_label: string | null;
   steps: Step[];
   requested_at: string | null;
   started_at: string | null;
@@ -30,16 +33,18 @@ type History = {
   error: string | null;
   from: string | null;
   to: string | null;
+  from_label: string | null;
+  to_label: string | null;
   started_at: string | null;
   finished_at: string | null;
   seconds: number | null;
   by: string | null;
 };
 type System = {
-  current: { version: string; commit: string | null; built_at: string | null; arch: string; source_url: string | null };
+  current: { version: string; label: string | null; commit: string | null; built_at: string | null; arch: string; source_url: string | null };
   components: { remnawave: string; postgres: string | null };
   check: { enabled: boolean; allowed: boolean; state: 'never' | 'ok' | 'unreachable' | 'invalid' | 'no_build'; last_checked_at: string | null; last_ok_at: string | null };
-  latest: { commit: string; built_at: string; source_url: string } | null;
+  latest: { label: string | null; commit: string; built_at: string; source_url: string } | null;
   helper: { installed: boolean; panel_updates: boolean; blocked: string | null };
   update: Update | null;
   history: History[];
@@ -340,7 +345,8 @@ export function SettingsUpdates() {
 
   const failed = !!update && ['failed', 'rolled_back', 'attention'].includes(update.state);
   const why = failed && update ? explain(update.error, update.downtime) : null;
-  const target = update?.to ?? latest?.commit ?? null;
+  const target = update ? buildName(update.to_label, update.to) : latest ? buildName(latest.label, latest.commit) : null;
+  const latestName = latest ? buildName(latest.label, latest.commit) : '';
   const elapsed = update?.started_at ? Math.max(0, Math.round((now - Date.parse(update.started_at)) / 1000)) : null;
   const restarting = offline !== null ? Math.max(0, Math.round((now - offline) / 1000)) : null;
   const doneSteps = update ? new Set(update.steps.filter((s) => s.state === 'done').map((s) => s.key)) : new Set<string>();
@@ -368,7 +374,7 @@ export function SettingsUpdates() {
     status = (
       <>
         <p className="upd-status strong">
-          {update.state === 'requested' ? `Обновление до сборки ${short(update.to)} запрошено` : `Обновляем до сборки ${short(update.to)}`}
+          {update.state === 'requested' ? `Обновление до ${target} запрошено` : `Обновляем до ${target}`}
           {elapsed !== null ? ` · прошло ${seconds(elapsed)}` : ''}
         </p>
         {update.state === 'waiting' ? (
@@ -398,10 +404,10 @@ export function SettingsUpdates() {
     status = (
       <>
         {update.state === 'attention' ? (
-          <p className="upd-status bad">Сборка {short(update.to)} запущена, но работает с ошибками.</p>
+          <p className="upd-status bad">Версия {target} запущена, но работает с ошибками.</p>
         ) : (
           <p className="upd-status">
-            <span className="bad">{target ? `Сборка ${short(target)} не установлена.` : 'Обновление не установлено.'}</span>{' '}
+            <span className="bad">{target ? `Версия ${target} не установлена.` : 'Обновление не установлено.'}</span>{' '}
             <span className="ink2">
               {update.downtime ? 'Работает прежняя версия, данные не изменились.' : 'Работает прежняя версия, панель не останавливалась.'}
             </span>
@@ -444,18 +450,18 @@ export function SettingsUpdates() {
       <>
         <p className="upd-status">
           <span className="strong">
-            Вышла новая сборка {short(latest.commit)} от {dateLong(latest.built_at)}
+            {latest.label ? `Вышла новая версия ${latest.label} от ${dateLong(latest.built_at)}` : `Вышла новая сборка от ${dateLong(latest.built_at)}`}
           </span>
           {check.last_checked_at ? <span className="muted"> · проверено {when(check.last_checked_at)}</span> : null}
         </p>
         <p className="cap">
-          Номер сборки — это коммит в репозитории. Сборку проверили автоматические тесты, прежде чем выложить.{' '}
+          Сборку проверили автоматические тесты, прежде чем выложить. Номер для поддержки: <code className="mono upd-hash">{short(latest.commit)}</code>.{' '}
           <a href={latest.source_url} target="_blank" rel="noreferrer">
             Исходный код новой сборки
           </a>
         </p>
         {blocked ? (
-          <p className="ink2">Сборка {short(latest.commit)} не подошла этому серверу: ошибка в самом обновлении. Кнопка появится, когда выйдет следующая сборка.</p>
+          <p className="ink2">Версия {latestName} не подошла этому серверу: ошибка в самом обновлении. Кнопка появится, когда выйдет следующая версия.</p>
         ) : !panelHelper ? (
           <div className="upd-why">
             <p>{helper.installed ? 'Обновление из админки на этом сервере выключено.' : 'Обновление из админки на этом сервере не установлено.'} Обновить можно командой на сервере:</p>
@@ -496,7 +502,7 @@ export function SettingsUpdates() {
     } else {
       line = (
         <p className="upd-status ink2">
-          Установлена последняя сборка{check.last_checked_at ? ` · проверено ${when(check.last_checked_at)}` : ''}
+          Установлена последняя версия{check.last_checked_at ? ` · проверено ${when(check.last_checked_at)}` : ''}
         </p>
       );
     }
@@ -511,7 +517,7 @@ export function SettingsUpdates() {
       {upgraded && update ? (
         <div role="status" className="upd-banner">
           <span>
-            <strong>Обновлено до сборки {short(update.to)}</strong> {when(update.finished_at)}
+            <strong>Обновлено до {target}</strong> {when(update.finished_at)}
             {update.started_at && update.finished_at ? ` за ${seconds(Math.round((Date.parse(update.finished_at) - Date.parse(update.started_at)) / 1000))}` : ''}. Копия базы перед обновлением сохранена.
           </span>
           {reloadNeeded ? (
@@ -530,7 +536,7 @@ export function SettingsUpdates() {
         <div className="upd-head">
           <div className="upd-title">
             <h2 id="upd-h" className="upd-version">
-              STEALTHNET {current.version}
+              STEALTHNET {current.label ?? current.version}
             </h2>
             {status}
           </div>
@@ -538,7 +544,7 @@ export function SettingsUpdates() {
             <div className="upd-buttons">
               {latest && data.can_update && !confirm ? (
                 <button type="button" className="btn-main btn" onClick={openConfirm}>
-                  Обновить до {short(latest.commit)}
+                  Обновить до {latestName}
                 </button>
               ) : null}
               <button type="button" className="btn-line hov" onClick={() => void checkNow()} disabled={checking || !check.allowed || ago < 60_000}>
@@ -549,7 +555,7 @@ export function SettingsUpdates() {
         </div>
         {confirm && latest && owner ? (
           <div className="upd-confirm">
-            <p className="strong">Обновить до сборки {short(latest.commit)}?</p>
+            <p className="strong">Обновить до {latestName}?</p>
             <div className="upd-fields">
               <label className="upd-field">
                 <span>Пароль владельца</span>
@@ -607,12 +613,12 @@ export function SettingsUpdates() {
           </p>
         ) : null}
         <div className="row">
-          <span className="rl">Сборка</span>
+          <span className="rl">Версия</span>
           <div className="rc upd-value">
             {current.commit ? (
               <span>
-                <code className="mono">{short(current.commit)}</code>
-                {current.built_at ? ` · ${dateLong(current.built_at, true)}` : ''}
+                {current.label ?? 'без номера'}
+                {current.built_at ? ` от ${dateLong(current.built_at, true)}` : ''} · <code className="mono upd-hash">{short(current.commit)}</code>
                 {current.source_url ? (
                   <>
                     {' · '}
@@ -702,7 +708,7 @@ export function SettingsUpdates() {
               <li key={item.id} className="upd-hrow">
                 <span className="num upd-hwhen">{when(item.started_at)}</span>
                 <span className="mono">
-                  {short(item.from) || '—'} → {short(item.to) || '—'}
+                  {item.from_label ?? (short(item.from) || '—')} → {item.to_label ?? (short(item.to) || '—')}
                 </span>
                 <span className={item.result === 'done' ? 'ink2' : 'bad'}>
                   {item.result === 'done'

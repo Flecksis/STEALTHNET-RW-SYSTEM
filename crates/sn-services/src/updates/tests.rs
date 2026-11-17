@@ -13,6 +13,7 @@ fn config(server: &MockServer, arch: &str) -> UpdateConfig {
     UpdateConfig {
         build: BuildInfo {
             version: "0.1.0".into(),
+            label: Some("0.1.59".into()),
             commit: Some(OLD.into()),
             built_at: parse_time("2026-11-17T12:00:00Z"),
             arch: arch.into(),
@@ -72,13 +73,15 @@ async fn сборка_читается_из_меток_образа() {
         "amd64",
         serde_json::json!({
             "org.opencontainers.image.revision": COMMIT.to_uppercase(),
-            "org.opencontainers.image.created": "2026-11-17T13:05:00Z"
+            "org.opencontainers.image.created": "2026-11-17T13:05:00Z",
+            "org.opencontainers.image.version": "0.1.60"
         }),
     )
     .await;
     let build = fetch_latest(&http(), &config(&server, "amd64"))
         .await
         .unwrap();
+    assert_eq!(build.label.as_deref(), Some("0.1.60"));
     assert_eq!(build.commit.as_deref(), Some(COMMIT));
     assert_eq!(build.built_at, parse_time("2026-11-17T13:05:00Z").unwrap());
     assert_eq!(build.digest, Some(digest(3)));
@@ -241,11 +244,13 @@ async fn реестр_недоступен_или_отвечает_мусоро�
 fn новизна_сборки_по_коммиту_и_дате() {
     let current = BuildInfo {
         version: "0.1.0".into(),
+        label: None,
         commit: Some(OLD.into()),
         built_at: parse_time("2026-11-17T12:00:00Z"),
         arch: "amd64".into(),
     };
     let build = |commit: Option<&str>, at: &str| PublishedBuild {
+        label: None,
         commit: commit.map(str::to_string),
         built_at: parse_time(at).unwrap(),
         arch: "amd64".into(),
@@ -302,6 +307,13 @@ fn сведения_о_сборке_из_окружения() {
     let bad = BuildInfo::new(Some("local"), Some("вчера"));
     assert_eq!(bad.commit, None);
     assert_eq!(bad.built_at, None);
+    assert_eq!(
+        build.with_label(Some(" 0.1.60 ")).label.as_deref(),
+        Some("0.1.60")
+    );
+    for wrong in ["0.1", "0.1.x", "v0.1.60", "0.1.60.1", "0..60", "<b>"] {
+        assert_eq!(clean_label(wrong), None, "{wrong}");
+    }
 }
 
 #[test]

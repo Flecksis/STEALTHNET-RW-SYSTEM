@@ -309,3 +309,8 @@ div.upd-why {
   font-weight: 600;
   color: var(--accent-ink);
 }
+
+.upd-hash {
+  font-size: 12px;
+  color: var(--muted);
+}

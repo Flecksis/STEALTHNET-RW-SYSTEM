@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { api } from '../../lib/api';
-import { buildText, shortCommit, UPDATES_PATH, upgradeText, type BuildSummary } from '../version';
+import { shortName, UPDATES_PATH, upgradeText, versionLine, type BuildSummary } from '../version';
 import '../settings.css';
 import './updates.css';
 
@@ -31,7 +31,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
       alive = false;
     };
   }, []);
-  const fresh = summary?.update ? shortCommit(summary.update.commit) : null;
+  const fresh = summary?.update ? shortName(summary.update.label, summary.update.commit, summary.update.built_at) : null;
   const upgrade = summary ? upgradeText(summary) : null;
   return (
     <>
@@ -45,10 +45,10 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
                 to={section.to}
                 className={section.to === UPDATES_PATH && fresh ? 'hov subnav-upd' : 'hov'}
                 aria-current={pathname === section.to || pathname.startsWith(`${section.to}/`) ? 'page' : undefined}
-                aria-label={section.to === UPDATES_PATH && fresh ? `${section.label}, вышла новая сборка ${fresh}` : undefined}
+                aria-label={section.to === UPDATES_PATH && fresh ? `${section.label}, вышла новая версия ${fresh}` : undefined}
               >
                 <span className="subnav-label">{section.label}</span>
-                {section.to === UPDATES_PATH && fresh ? <span className="subnav-new">новая сборка {fresh}</span> : null}
+                {section.to === UPDATES_PATH && fresh ? <span className="subnav-new">новая версия {fresh}</span> : null}
               </Link>
             ) : (
               <span key={section.label} title="Раздел в работе">
@@ -58,7 +58,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
           )}
           {summary ? (
             <Link to={UPDATES_PATH} className={upgrade ? 'subnav-version ver-new' : 'subnav-version'}>
-              STEALTHNET {upgrade ?? buildText(summary)}
+              {upgrade ? `STEALTHNET ${upgrade}` : versionLine('STEALTHNET', summary)}
             </Link>
           ) : null}
         </nav>

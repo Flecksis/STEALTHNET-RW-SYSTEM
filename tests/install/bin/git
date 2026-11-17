@@ -4,5 +4,7 @@ printf '%s\n' "$*" >> "$STATE/git.log"
 case "$*" in
     *" pull --ff-only") exit "${FAKE_GIT_PULL_EXIT:-0}" ;;
     *" status --porcelain"*) printf '%s' "${FAKE_GIT_STATUS:-}"; exit 0 ;;
+    *" rev-parse --is-shallow-repository") printf '%s\n' "${FAKE_GIT_SHALLOW:-false}"; exit 0 ;;
+    *" rev-list --count HEAD") printf '%s\n' "${FAKE_GIT_COUNT:-}"; exit 0 ;;
 esac
 exit 0

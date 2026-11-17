@@ -401,7 +401,7 @@ helper_install() {
     U="$WORK/updater"
     mkdir -p "$R/.git"
     printf '%s\n' "$SHA" > "$R/.git/HEAD"
-    printf '%s|%s|%s\n' "$REPO:sha-$SHA" "$SHA" "2026-11-17T10:00:00Z" "$NEWDIGEST" "$NEW" "2026-11-17T13:00:00Z" > "$S/labels"
+    printf '%s|%s|%s|%s\n' "$REPO:sha-$SHA" "$SHA" "2026-11-17T10:00:00Z" "0.1.59" "$NEWDIGEST" "$NEW" "2026-11-17T13:00:00Z" "0.1.60" > "$S/labels"
     run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" FAKE_PULL_OK=":sha-$SHA" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/install.txt" 2>&1 </dev/null
 }
 
@@ -449,6 +449,7 @@ code=$?
 [ "$code" -eq 0 ] && check ok "помощник отработал" || check no "код выхода $code: $(tail -3 "$WORK/updater.txt")"
 [ "$(field state)" = "done" ] && check ok "итог: обновлено" || check no "итог: $(cat "$U/ipc/status/update.json")"
 [ "$(field id)" = "$ID" ] && [ "$(field from)" = "$SHA" ] && [ "$(field to)" = "$NEW" ] && check ok "в ходе номер заявки и версии" || check no "ход: $(cat "$U/ipc/status/update.json")"
+[ "$(field from_version)" = "0.1.59" ] && [ "$(field to_version)" = "0.1.60" ] && check ok "в ходе человеческие имена версий" || check no "имена версий: $(cat "$U/ipc/status/update.json")"
 [ "$(grep -o '"state":"done"' "$U/ipc/status/update.json" | wc -l | tr -d ' ')" = "7" ] && check ok "все шесть шагов сделаны" || check no "шаги: $(cat "$U/ipc/status/update.json")"
 [ ! -e "$U/ipc/request/request.json" ] && check ok "заявка забрана" || check no "заявка осталась"
 grep -qx "SN_IMAGE=$NEWDIGEST" "$R/deploy/.env" && check ok "запущена новая сборка, закреплённая по отпечатку" || check no "SN_IMAGE: $(grep '^SN_IMAGE' "$R/deploy/.env")"
@@ -571,11 +572,16 @@ updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST" FAKE_MIGRATE_EXIT=1
 run SN_HELPER_TEST=1 "$SHELL_BIN" "$R/install.sh" status > "$WORK/status.txt" 2>&1 </dev/null
 grep -q 'Панель:            работает' "$WORK/status.txt" && grep -q 'Обновление из админки: включено' "$WORK/status.txt" && grep -q 'не установлено (migrate_failed), прежняя версия работает' "$WORK/status.txt" && check ok "status рассказывает про панель и последнее обновление" || check no "status: $(cat "$WORK/status.txt")"
 grep -q "Копии базы:        1" "$WORK/status.txt" && check ok "status показывает копии базы" || check no "нет копий в status"
+grep -q "Версия:            0.1.59 от 17.11.2026 (0123456)" "$WORK/status.txt" && check ok "status называет версию по номеру и дате, хеш рядом" || check no "версия в status: $(grep 'Версия' "$WORK/status.txt")"
 fresh
 mkdir -p "$R/.git"
 printf '%s\n' "$SHA" > "$R/.git/HEAD"
-run SN_BUILD=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
-grep -q "^commit=$SHA date=20[0-9-]*T[0-9:]*Z$" "$S/builds" && check ok "при сборке из исходников в образ уходят коммит и дата" || check no "builds: $(cat "$S/builds" 2>/dev/null)"
+cp "$SRC/Cargo.toml" "$R/Cargo.toml"
+run SN_BUILD=1 FAKE_GIT_COUNT=60 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q "^commit=$SHA date=20[0-9-]*T[0-9:]*Z version=0\.[0-9]*\.60$" "$S/builds" && check ok "при сборке из исходников в образ уходят коммит, дата и номер версии" || check no "builds: $(cat "$S/builds" 2>/dev/null)"
+: > "$S/builds"
+run SN_BUILD=1 FAKE_GIT_COUNT=60 FAKE_GIT_SHALLOW=true SN_OWNER_EMAIL=owner@example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q "^commit=$SHA date=20[0-9-]*T[0-9:]*Z version=$" "$S/builds" && check ok "у неполного клона номер не выдумывается" || check no "builds: $(cat "$S/builds" 2>/dev/null)"
 fresh
 mkdir -p "$R/.git"
 printf '%s\n' "$SHA" > "$R/.git/HEAD"

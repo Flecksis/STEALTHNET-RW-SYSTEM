@@ -49,7 +49,8 @@ async fn registry(commit: &str, created: &str) -> MockServer {
             "created": created,
             "config": { "Labels": {
                 "org.opencontainers.image.revision": commit,
-                "org.opencontainers.image.created": created
+                "org.opencontainers.image.created": created,
+                "org.opencontainers.image.version": "0.1.60"
             } }
         })))
         .mount(&server)
@@ -58,7 +59,9 @@ async fn registry(commit: &str, created: &str) -> MockServer {
 }
 
 fn configure(http: &Http, dir: &Path, server: &MockServer) {
-    let mut config = UpdateConfig::new(BuildInfo::new(Some(OLD), Some("2026-11-16T10:00:00Z")));
+    let mut config = UpdateConfig::new(
+        BuildInfo::new(Some(OLD), Some("2026-11-16T10:00:00Z")).with_label(Some("0.1.59")),
+    );
     config.dir = Some(dir.to_path_buf());
     config.registry = server.uri();
     http.services().set_update_config(Some(config));
@@ -107,7 +110,9 @@ async fn обновление_из_админки_заявка_пароль_от
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["check"]["state"], "ok");
     assert_eq!(body["latest"]["commit"], NEW);
+    assert_eq!(body["latest"]["label"], "0.1.60");
     assert_eq!(body["current"]["commit"], OLD);
+    assert_eq!(body["current"]["label"], "0.1.59");
     assert_eq!(body["helper"]["installed"], true);
     assert_eq!(body["can_update"], true);
     let (status, body) = http
@@ -124,9 +129,11 @@ async fn обновление_из_админки_заявка_пароль_от
     assert_eq!(summary["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(summary["commit"], OLD);
     assert_eq!(summary["built_at"], "2026-11-16T10:00:00Z");
+    assert_eq!(summary["label"], "0.1.59");
     assert_eq!(summary["update"], Value::Null);
     let (_, summary) = http.get("/api/admin/system/summary", &owner).await;
     assert_eq!(summary["update"]["commit"], NEW);
+    assert_eq!(summary["update"]["label"], "0.1.60");
 
     let update = |password: &str, target: &str| json!({ "target": target, "password": password });
     let (status, _) = http
@@ -190,6 +197,8 @@ async fn обновление_из_админки_заявка_пароль_от
     assert_eq!(audit_count(&http, "system.update_requested").await, 1);
     let (_, body) = http.get("/api/admin/system", &owner).await;
     assert_eq!(body["update"]["state"], "requested");
+    assert_eq!(body["update"]["from_label"], "0.1.59");
+    assert_eq!(body["update"]["to_label"], "0.1.60");
     assert_eq!(body["update"]["to"], NEW);
     assert_eq!(body["can_update"], false);
     let (status, body) = http
@@ -250,7 +259,7 @@ async fn обновление_из_админки_заявка_пароль_от
     std::fs::remove_file(request_file(&dir.0)).unwrap();
     let running = json!({
         "schema": 1, "id": id, "origin": "panel", "admin_id": 1,
-        "from": OLD, "to": NEW, "state": "running",
+        "from": OLD, "to": NEW, "from_version": "0.1.59", "to_version": "0.1.60", "state": "running",
         "steps": [
             { "key": "check", "state": "done", "seconds": 1 },
             { "key": "download", "state": "running" },
@@ -288,6 +297,8 @@ async fn обновление_из_админки_заявка_пароль_от
     assert_eq!(body["history"][0]["result"], "done");
     assert_eq!(body["history"][0]["by"], "owner@example.com");
     assert_eq!(body["history"][0]["seconds"], 48);
+    assert_eq!(body["history"][0]["to_label"], "0.1.60");
+    assert_eq!(body["history"][1]["to_label"], Value::Null);
     assert_eq!(body["history"][1]["result"], "rolled_back");
     assert_eq!(body["history"][1]["by"], Value::Null);
     http.get("/api/admin/system", &owner).await;

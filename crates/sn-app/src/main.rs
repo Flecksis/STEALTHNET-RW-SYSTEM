@@ -232,8 +232,12 @@ fn main() -> ExitCode {
             let build = sn_services::updates::BuildInfo::new(
                 std::env::var("SN_BUILD_COMMIT").ok().as_deref(),
                 std::env::var("SN_BUILD_DATE").ok().as_deref(),
+            )
+            .with_label(std::env::var("SN_BUILD_VERSION").ok().as_deref());
+            println!(
+                "stealthnet {}",
+                build.label.as_deref().unwrap_or(&build.version)
             );
-            println!("stealthnet {}", build.version);
             if let Some(commit) = build.commit {
                 println!("сборка {commit}");
             }

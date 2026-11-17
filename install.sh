@@ -573,11 +573,13 @@ start_stack() {
     else
         hint "Ниже ход сборки."
         SN_BUILD_COMMIT=""
+        SN_BUILD_VERSION=""
         if ! source_changed; then
             SN_BUILD_COMMIT=$(source_commit | tr -d ' \n')
+            SN_BUILD_VERSION=$(build_version)
         fi
         SN_BUILD_DATE=$(now_iso)
-        export SN_BUILD_COMMIT SN_BUILD_DATE
+        export SN_BUILD_COMMIT SN_BUILD_DATE SN_BUILD_VERSION
         if ! compose up -d --build; then
             die "сборка или запуск не прошли" \
                 "Сообщение об ошибке — выше. После исправления запустите установку ещё раз: $(command_for install)" \
@@ -674,6 +676,8 @@ summary() {
         printf '  Адрес панели:      %s\n' "$url"
     fi
     printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
+    built=$(env_value SN_IMAGE)
+    printf '  Версия:            %s\n' "$(image_name "${built:-stealthnet:local}")"
     if [ -n "${OWNER_PASSWORD:-}" ]; then
         printf '  Почта владельца:   %s\n' "$OWNER_EMAIL"
         printf '  Пароль владельца:  %s\n' "$OWNER_PASSWORD"
@@ -858,6 +862,46 @@ image_repo() {
 
 image_label() {
     docker image inspect -f "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null | sed -n '1p' || true
+}
+
+build_version() {
+    command -v git >/dev/null 2>&1 || return 0
+    [ "$(git -C "$ROOT" rev-parse --is-shallow-repository 2>/dev/null || true)" = "false" ] || return 0
+    count=$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || true)
+    case "$count" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    base=$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*"$/\1/p' "$ROOT/Cargo.toml" 2>/dev/null | sed -n '1p')
+    if [ -n "$base" ]; then
+        printf '%s.%s' "$base" "$count"
+    fi
+    return 0
+}
+
+image_version() {
+    version=$(image_label "$1" org.opencontainers.image.version)
+    if printf '%s' "$version" | grep -Eqx '[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}'; then
+        printf '%s' "$version"
+    fi
+    return 0
+}
+
+ru_date() {
+    printf '%.10s' "$1" | sed 's/^\([0-9][0-9]*\)-\([0-9][0-9]*\)-\([0-9][0-9]*\)$/\3.\2.\1/'
+}
+
+image_name() {
+    version=$(image_version "$1")
+    created=$(image_created "$1")
+    if [ -n "$version" ] && [ -n "$created" ]; then
+        printf '%s от %s' "$version" "$(ru_date "$created")"
+    elif [ -n "$version" ]; then
+        printf '%s' "$version"
+    elif [ -n "$created" ]; then
+        printf 'сборка от %s' "$(ru_date "$created")"
+    else
+        printf 'сборка без номера'
+    fi
 }
 
 image_commit() {
@@ -1073,7 +1117,7 @@ db_label() {
 
 save_run() {
     {
-        for key in U_ID U_ORIGIN U_ADMIN U_FROM U_TO U_STATE U_ERROR U_STARTED U_FINISHED U_BACKUP START_EPOCH DOWN_EPOCH FROM_IMAGE TO_IMAGE \
+        for key in U_ID U_ORIGIN U_ADMIN U_FROM U_TO U_FROM_V U_TO_V U_STATE U_ERROR U_STARTED U_FINISHED U_BACKUP START_EPOCH DOWN_EPOCH FROM_IMAGE TO_IMAGE \
             S_check S_download S_backup S_migrate S_start S_verify T_check T_download T_backup T_migrate T_start T_verify; do
             eval "value=\${$key:-}"
             printf '%s=%s\n' "$key" "$value"
@@ -1085,7 +1129,7 @@ save_run() {
 load_run() {
     while IFS='=' read -r key value; do
         case "$key" in
-            U_ID|U_ORIGIN|U_ADMIN|U_FROM|U_TO|U_STATE|U_ERROR|U_STARTED|U_FINISHED|U_BACKUP|START_EPOCH|DOWN_EPOCH|FROM_IMAGE|TO_IMAGE|S_*|T_*)
+            U_ID|U_ORIGIN|U_ADMIN|U_FROM|U_TO|U_FROM_V|U_TO_V|U_STATE|U_ERROR|U_STARTED|U_FINISHED|U_BACKUP|START_EPOCH|DOWN_EPOCH|FROM_IMAGE|TO_IMAGE|S_*|T_*)
                 case "$value" in
                     *[!A-Za-z0-9:._@/+-]*) value="" ;;
                 esac
@@ -1101,6 +1145,8 @@ reset_run() {
     U_ADMIN=""
     U_FROM=""
     U_TO=""
+    U_FROM_V=""
+    U_TO_V=""
     U_STATE=""
     U_ERROR=""
     U_STARTED=""
@@ -1116,8 +1162,8 @@ reset_run() {
 }
 
 status_json() {
-    printf '{"schema":1,"id":%s,"origin":"%s","admin_id":%s,"from":%s,"to":%s,"state":"%s","steps":[' \
-        "$(json_str "$U_ID")" "$U_ORIGIN" "$(json_num "$U_ADMIN")" "$(json_str "$U_FROM")" "$(json_str "$U_TO")" "$U_STATE"
+    printf '{"schema":1,"id":%s,"origin":"%s","admin_id":%s,"from":%s,"to":%s,"from_version":%s,"to_version":%s,"state":"%s","steps":[' \
+        "$(json_str "$U_ID")" "$U_ORIGIN" "$(json_num "$U_ADMIN")" "$(json_str "$U_FROM")" "$(json_str "$U_TO")" "$(json_str "$U_FROM_V")" "$(json_str "$U_TO_V")" "$U_STATE"
     sep=""
     for key in check download backup migrate start verify; do
         eval "st=\${S_$key:-pending}; sec=\${T_$key:-}"
@@ -1420,6 +1466,7 @@ update_steps() {
         esac
     fi
     rev=$(image_commit "$TO_IMAGE")
+    U_TO_V=$(image_version "$TO_IMAGE")
     if [ "$U_ORIGIN" = "panel" ] && [ "$rev" != "$U_TO" ]; then
         U_TO=$rev
         fail_step failed stale_request
@@ -1526,6 +1573,7 @@ update_run() {
     START_EPOCH=$(date +%s)
     current=$(env_value SN_IMAGE)
     U_FROM=$(image_commit "${current:-stealthnet:local}")
+    U_FROM_V=$(image_version "${current:-stealthnet:local}")
     U_STATE=running
     rm -f "$RUN_DIR/journal"
     write_status
@@ -1696,11 +1744,10 @@ show_status() {
     fi
     image=$(env_value SN_IMAGE)
     commit=$(image_commit "${image:-stealthnet:local}")
-    created=$(image_created "${image:-stealthnet:local}")
     if [ -n "$commit" ]; then
-        printf '  Сборка:            %.7s от %.10s\n' "$commit" "$created"
+        printf '  Версия:            %s (%.7s)\n' "$(image_name "${image:-stealthnet:local}")" "$commit"
     else
-        printf '  Сборка:            %s\n' "${image:-собрана на этом сервере}"
+        printf '  Версия:            %s\n' "$(image_name "${image:-stealthnet:local}")"
     fi
     id=$(compose ps -q app 2>/dev/null || true)
     state=""
@@ -1722,8 +1769,9 @@ show_status() {
         last_state=$(sed -n 's/.*"state":"\([a-z_]*\)","steps".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
         last_error=$(sed -n 's/.*"error":"\([a-z_]*\)".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
         last_at=$(sed -n 's/.*"started_at":"\([^"]*\)".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
+        last_to=$(sed -n 's/.*"to_version":"\([0-9.]*\)".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
         case "$last_state" in
-            done) printf '  Последнее обновление: %s, установлено\n' "$last_at" ;;
+            done) printf '  Последнее обновление: %s, установлено%s\n' "$last_at" "${last_to:+ (версия $last_to)}" ;;
             running|waiting) printf '  Последнее обновление: идёт сейчас\n' ;;
             rolled_back) printf '  Последнее обновление: %s, не установлено (%s), прежняя версия работает\n' "$last_at" "$last_error" ;;
             attention) printf '  Последнее обновление: %s, новая версия запущена с ошибками (%s)\n' "$last_at" "$last_error"

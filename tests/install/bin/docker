@@ -126,6 +126,10 @@ case "$*" in
         all="$*"
         label_of "${all##* }" 3
         exit 0 ;;
+    "image inspect -f {{index .Config.Labels \"org.opencontainers.image.version\"}} "*)
+        all="$*"
+        label_of "${all##* }" 4
+        exit 0 ;;
     "image inspect -f {{.Created}} "*) exit 0 ;;
     "image inspect"*)
         all="$*"
@@ -150,7 +154,7 @@ case "$*" in
         sleep "${FAKE_UP_SLEEP:-0}"
         if [ "${FAKE_UP_EXIT:-0}" -eq 0 ]; then
             : > "$STATE/started"
-            printf 'commit=%s date=%s\n' "${SN_BUILD_COMMIT:-}" "${SN_BUILD_DATE:-}" >> "$STATE/builds"
+            printf 'commit=%s date=%s version=%s\n' "${SN_BUILD_COMMIT:-}" "${SN_BUILD_DATE:-}" "${SN_BUILD_VERSION:-}" >> "$STATE/builds"
         fi
         exit "${FAKE_UP_EXIT:-0}" ;;
     "compose ps -q app"*)

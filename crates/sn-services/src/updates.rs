@@ -54,6 +54,7 @@ const USER_AGENT: &str = "stealthnet-update-check";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BuildInfo {
     pub version: String,
+    pub label: Option<String>,
     pub commit: Option<String>,
     pub built_at: Option<DateTime<Utc>>,
     pub arch: String,
@@ -63,11 +64,27 @@ impl BuildInfo {
     pub fn new(commit: Option<&str>, built_at: Option<&str>) -> Self {
         BuildInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
+            label: None,
             commit: commit.and_then(clean_commit),
             built_at: built_at.and_then(parse_time),
             arch: host_arch().to_string(),
         }
     }
+
+    pub fn with_label(mut self, label: Option<&str>) -> Self {
+        self.label = label.and_then(clean_label);
+        self
+    }
+}
+
+pub fn clean_label(value: &str) -> Option<String> {
+    let value = value.trim();
+    let parts: Vec<&str> = value.split('.').collect();
+    (parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit())))
+    .then(|| value.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +141,8 @@ fn valid_digest(value: &&str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishedBuild {
+    #[serde(default)]
+    pub label: Option<String>,
     pub commit: Option<String>,
     pub built_at: DateTime<Utc>,
     pub arch: String,
@@ -400,6 +419,7 @@ pub async fn fetch_latest(
         })
         .ok_or_else(|| CheckFailure::Invalid("нет даты сборки".into()))?;
     Ok(PublishedBuild {
+        label: label("org.opencontainers.image.version").and_then(clean_label),
         commit: label("org.opencontainers.image.revision").and_then(clean_commit),
         built_at,
         arch: arch.to_string(),
@@ -451,6 +471,10 @@ struct RequestMarker {
     requested_at: DateTime<Utc>,
     #[serde(default)]
     state: MarkerState,
+    #[serde(default)]
+    from_label: Option<String>,
+    #[serde(default)]
+    to_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -481,6 +505,10 @@ struct RunFile {
     from: Option<String>,
     #[serde(default)]
     to: Option<String>,
+    #[serde(default)]
+    from_version: Option<String>,
+    #[serde(default)]
+    to_version: Option<String>,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -516,6 +544,7 @@ fn token(value: &str, max: usize) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CurrentView {
     pub version: String,
+    pub label: Option<String>,
     pub commit: Option<String>,
     pub built_at: Option<DateTime<Utc>>,
     pub arch: String,
@@ -539,6 +568,7 @@ pub struct CheckView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LatestView {
+    pub label: Option<String>,
     pub commit: String,
     pub built_at: DateTime<Utc>,
     pub source_url: String,
@@ -558,6 +588,8 @@ pub struct UpdateView {
     pub state: String,
     pub from: Option<String>,
     pub to: Option<String>,
+    pub from_label: Option<String>,
+    pub to_label: Option<String>,
     pub steps: Vec<StepView>,
     pub requested_at: Option<DateTime<Utc>>,
     pub started_at: Option<DateTime<Utc>>,
@@ -576,6 +608,8 @@ pub struct HistoryView {
     pub error: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
+    pub from_label: Option<String>,
+    pub to_label: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub seconds: Option<u64>,
@@ -599,6 +633,7 @@ pub struct SystemView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SummaryView {
     pub version: String,
+    pub label: Option<String>,
     pub commit: Option<String>,
     pub built_at: Option<DateTime<Utc>>,
     pub update: Option<LatestView>,
@@ -631,6 +666,8 @@ fn clean_run(mut run: RunFile) -> Option<RunFile> {
     run.state = token(&run.state, 16)?;
     run.from = run.from.as_deref().and_then(clean_commit);
     run.to = run.to.as_deref().and_then(clean_commit);
+    run.from_version = run.from_version.as_deref().and_then(clean_label);
+    run.to_version = run.to_version.as_deref().and_then(clean_label);
     run.error = run.error.as_deref().and_then(|e| token(e, 40));
     run.backup = run.backup.as_deref().and_then(|b| token(b, 80));
     run.steps
@@ -773,6 +810,7 @@ impl<'a> Updates<'a> {
                 .and_then(|b| {
                     b.commit.map(|commit| LatestView {
                         source_url: source_url(&commit),
+                        label: b.label,
                         commit,
                         built_at: b.built_at,
                     })
@@ -780,6 +818,7 @@ impl<'a> Updates<'a> {
         }
         Ok(SummaryView {
             version: config.build.version,
+            label: config.build.label,
             commit: config.build.commit,
             built_at: config.build.built_at,
             update,
@@ -825,6 +864,8 @@ impl<'a> Updates<'a> {
                 error: run.error,
                 from: run.from,
                 to: run.to,
+                from_label: run.from_version,
+                to_label: run.to_version,
                 started_at: time(run.started_at.as_deref()),
                 finished_at: time(run.finished_at.as_deref()),
                 seconds: run.seconds,
@@ -836,6 +877,7 @@ impl<'a> Updates<'a> {
             .filter(|b| is_newer(&config.build, b))
             .and_then(|b| {
                 b.commit.as_ref().map(|commit| LatestView {
+                    label: b.label.clone(),
                     commit: commit.clone(),
                     built_at: b.built_at,
                     source_url: source_url(commit),
@@ -860,6 +902,7 @@ impl<'a> Updates<'a> {
             current: CurrentView {
                 source_url: config.build.commit.as_deref().map(source_url),
                 version: config.build.version.clone(),
+                label: config.build.label.clone(),
                 commit: config.build.commit.clone(),
                 built_at: config.build.built_at,
                 arch: config.build.arch.clone(),
@@ -964,6 +1007,8 @@ impl<'a> Updates<'a> {
             state: state.into(),
             from: marker.from.clone(),
             to: Some(marker.target.clone()),
+            from_label: marker.from_label.clone(),
+            to_label: marker.to_label.clone(),
             steps: STEP_KEYS
                 .iter()
                 .map(|key| StepView {
@@ -989,6 +1034,8 @@ impl<'a> Updates<'a> {
             state: run.state.clone(),
             from: run.from.clone(),
             to: run.to.clone(),
+            from_label: run.from_version.clone(),
+            to_label: run.to_version.clone(),
             steps: run.steps.clone(),
             requested_at,
             started_at: time(run.started_at.as_deref()),
@@ -1252,6 +1299,8 @@ impl<'a> Updates<'a> {
             admin_id: admin.0,
             requested_at: now,
             state: MarkerState::Requested,
+            from_label: config.build.label.clone(),
+            to_label: latest.label.clone(),
         };
         self.save(REQUEST_KEY, &marker).await?;
         self.audit(Self::entry(

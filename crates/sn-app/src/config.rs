@@ -61,7 +61,8 @@ fn updates(vars: &HashMap<String, String>) -> Result<UpdateConfig> {
     let build = BuildInfo::new(
         text(vars, "SN_BUILD_COMMIT").as_deref(),
         text(vars, "SN_BUILD_DATE").as_deref(),
-    );
+    )
+    .with_label(text(vars, "SN_BUILD_VERSION").as_deref());
     let mut config = UpdateConfig::new(build);
     config.dir = text(vars, "SN_UPDATER_DIR").map(std::path::PathBuf::from);
     if let Some(registry) = text(vars, "SN_UPDATE_REGISTRY") {
