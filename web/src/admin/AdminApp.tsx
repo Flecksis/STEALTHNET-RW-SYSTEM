@@ -5,6 +5,7 @@ import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { AdminTheme, Appearance, Me, Permission } from '../lib/types';
 import { Clients } from './clients/Clients';
+import { ClientPage } from './client/Client';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
@@ -121,7 +122,7 @@ export function AdminApp() {
         <Routes>
           <Route index element={<Pending title="Главная" />} />
           <Route path="clients" element={<Clients />} />
-          <Route path="clients/:id" element={<Pending title="Карточка клиента" />} />
+          <Route path="clients/:id" element={<ClientPage />} />
           <Route path="support/*" element={<Pending title="Поддержка" />} />
           <Route path="money/*" element={<Pending title="Деньги" />} />
           <Route path="tariffs/*" element={<Pending title="Тарифы" />} />

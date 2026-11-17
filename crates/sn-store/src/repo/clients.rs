@@ -356,6 +356,16 @@ impl<'c> ClientsRepo<'c> {
         Ok(Page::from_overfetch(items, page, |c| c.id.0))
     }
 
+    pub async fn delete_identities(&mut self, id: ClientId) -> StoreResult<u64> {
+        Ok(
+            sqlx::query("DELETE FROM client_identities WHERE client_id = $1")
+                .bind(id.0)
+                .execute(&mut *self.conn)
+                .await?
+                .rows_affected(),
+        )
+    }
+
     pub async fn soft_delete(&mut self, id: ClientId) -> StoreResult<()> {
         sqlx::query("UPDATE clients SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
             .bind(id.0)

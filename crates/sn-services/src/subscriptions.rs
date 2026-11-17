@@ -43,6 +43,7 @@ pub mod actions {
     pub const RESTORE_ACCESS: &str = "subscription.restore_access";
     pub const RELEASE_DEVICES: &str = "subscription.release_devices";
     pub const BLOCKED_DELIVERY: &str = "subscription.blocked_delivery";
+    pub const DELETED: &str = "subscription.deleted";
 }
 
 pub(crate) async fn with_subscription_lock<T, E, F>(
@@ -747,6 +748,45 @@ impl<'a> SubscriptionOps<'a> {
                 user_agent: record.user_agent,
             })
             .collect())
+    }
+
+    pub async fn end_by_admin(&self, id: SubscriptionId, actor: Actor) -> ServiceResult<()> {
+        let subscription = self.owned(id, actor).await?;
+        staff_only(actor)?;
+        ensure_live(&subscription)?;
+        if let Some(link) = &subscription.remna {
+            let remna = self.services.remna()?;
+            let user_id = link.user_id;
+            with_subscription_lock(self.services, id, async {
+                match remna.delete_user(user_id).await {
+                    Ok(()) => Ok(()),
+                    Err(err) if err.is_not_found() => Ok(()),
+                    Err(err) => Err(ServiceError::from(err)),
+                }
+            })
+            .await?;
+        }
+        let (actor_kind, actor_id) = actor_fields(actor);
+        let mut tx = self.services.store().begin().await?;
+        tx.subscriptions().end(id, self.services.now()).await?;
+        tx.audit()
+            .record(&AuditEntry {
+                actor_kind,
+                actor_id,
+                action: actions::DELETED.into(),
+                entity_kind: Some("subscription".into()),
+                entity_id: Some(id.0),
+                details: json!({
+                    "remna_user_id": subscription.remna.as_ref().map(|l| l.user_id),
+                    "remna_username": subscription.remna.as_ref().map(|l| l.username.clone()),
+                    "expire_at": subscription.mirror.expire_at,
+                }),
+                ip: None,
+            })
+            .await?;
+        tx.commit().await?;
+        self.cancel_added_notice(&subscription).await;
+        Ok(())
     }
 
     pub async fn set_autorenew(

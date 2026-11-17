@@ -475,6 +475,85 @@
   filter: none;
 }
 
+.segs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.segs button {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.segs button[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.dialog-back {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 20;
+}
+
+.dialog {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dialog h2 {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.btn-bad {
+  height: 44px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--bad);
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dialog .field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dialog label {
+  font-weight: 600;
+}
+
 @media (max-width: 760px) {
   .rail-hold {
     display: none;

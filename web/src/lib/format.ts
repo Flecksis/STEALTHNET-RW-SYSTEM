@@ -162,6 +162,12 @@ function amount(value: number): string {
   return fixed.replace('.', ',');
 }
 
+export function trafficPair(used: number, limit: number): string {
+  const unit = limit >= TB ? TB : GB;
+  const word = limit >= TB ? 'ТБ' : 'ГБ';
+  return `${amount(used / unit)}${NBSP}из${NBSP}${amount(limit / unit)}${NBSP}${word}`;
+}
+
 export function traffic(bytes: number | null | undefined): string {
   const value = bytes ?? 0;
   if (value >= TB) {

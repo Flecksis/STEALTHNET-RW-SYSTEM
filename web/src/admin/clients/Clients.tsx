@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import {
   avatarColor,
@@ -14,6 +14,7 @@ import {
   periodLabel,
 } from '../../lib/format';
 import { Icon } from '../../lib/icons';
+import { Dialog } from '../client/dialogs';
 import { useSession } from '../session';
 import { displayName, STATUS_WORD, type ClientRow, type Segment, type SegmentCounts } from './types';
 import './clients.css';
@@ -31,14 +32,82 @@ const SEGMENTS: Array<[Segment, string, keyof SegmentCounts]> = [
 
 type Page = { items: ClientRow[]; next: number | null };
 
-type Bulk = 'extend' | 'reset' | 'block' | 'unblock';
+type Bulk = 'extend' | 'reset' | 'block' | 'unblock' | 'message';
 
 const BULK_TEXT: Record<Bulk, { title: string; confirm: string; text: string }> = {
   extend: { title: 'Продлить на 7 дней', confirm: 'Продлить', text: 'Каждому выбранному клиенту с подпиской добавится 7 дней.' },
   reset: { title: 'Сбросить трафик', confirm: 'Сбросить', text: 'Счётчик трафика обнулится у выбранных подписок с лимитом трафика.' },
   block: { title: 'Заблокировать', confirm: 'Заблокировать', text: 'Подписки выбранных клиентов отключатся, вход в кабинет закроется, неоплаченные счета отменятся.' },
   unblock: { title: 'Разблокировать', confirm: 'Разблокировать', text: 'Подписки выбранных клиентов снова включатся.' },
+  message: { title: 'Написать', confirm: 'Отправить', text: 'Сообщение придёт от бота каждому выбранному клиенту с Telegram.' },
 };
+
+function PickClient({ onClose }: { onClose: () => void }) {
+  const navigate = useNavigate();
+  const [q, setQ] = useState('');
+  const [rows, setRows] = useState<ClientRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const query = q.trim();
+    if (!query) {
+      setRows(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      api<{ items: ClientRow[] }>(`/api/admin/clients?limit=8&q=${encodeURIComponent(query)}`)
+        .then((page) => {
+          setRows(page.items);
+          setError(null);
+        })
+        .catch((err) => setError(err instanceof ApiError ? err.message : 'Поиск не сработал'));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
+  return (
+    <Dialog title="Кому выдать подписку" onClose={onClose} wide>
+      <label className="cl-search" style={{ flex: 'none' }}>
+        <Icon name="search" size={18} stroke={1.9} />
+        <span className="sr-only">Поиск клиента</span>
+        <input type="search" placeholder="Имя, @username, ID или email" value={q} onChange={(e) => setQ(e.target.value)} maxLength={200} autoFocus />
+      </label>
+      {error ? (
+        <p className="err" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {rows && rows.length === 0 ? <p className="muted">Никого не нашли</p> : null}
+      {rows && rows.length > 0 ? (
+        <div className="pick-list">
+          {rows.map((row) => {
+            const name = displayName(row);
+            const handle = row.telegram_username ? `@${row.telegram_username}` : (row.email ?? (row.telegram_id ? `Telegram ${row.telegram_id}` : ''));
+            return (
+              <button key={row.client.id} type="button" className="pick-row hov" onClick={() => navigate(`/admin/clients/${row.client.id}?grant=1`)}>
+                <span className="av" aria-hidden="true" style={{ background: avatarColor(row.client.id) }}>
+                  {initials(name)}
+                </span>
+                <span className="two">
+                  <span className="main">{name}</span>
+                  <span className="sub">
+                    {handle}
+                    {handle ? ' · ' : ''}
+                    {STATUS_WORD[row.status][0]}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {rows === null ? <p className="cap">Найдите клиента, затем выберите тариф и срок в его карточке</p> : null}
+      <div className="dialog-actions">
+        <button type="button" className="btn-line hov" onClick={onClose}>
+          Отменить
+        </button>
+      </div>
+    </Dialog>
+  );
+}
 
 function rowView(row: ClientRow) {
   const name = displayName(row);
@@ -87,6 +156,8 @@ export function Clients() {
   const [bulk, setBulk] = useState<Bulk | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
+  const [bulkText, setBulkText] = useState('');
+  const [picking, setPicking] = useState(false);
   const requestRef = useRef(0);
   const writable = can('clients_write');
 
@@ -193,6 +264,7 @@ export function Clients() {
     setBulkBusy(true);
     let done = 0;
     let failed = 0;
+    let firstError: string | null = null;
     for (const row of chosen) {
       try {
         if (action === 'extend' && row.subscription && !row.subscription.ended_at) {
@@ -207,14 +279,25 @@ export function Clients() {
         } else if (action === 'unblock' && row.client.status === 'blocked') {
           await api(`/api/admin/clients/${row.client.id}/unblock`, { method: 'POST' });
           done += 1;
+        } else if (action === 'message' && row.telegram_id) {
+          await api(`/api/admin/clients/${row.client.id}/message`, { method: 'POST', body: { text: bulkText } });
+          done += 1;
         }
-      } catch {
+      } catch (err) {
         failed += 1;
+        if (!firstError && err instanceof ApiError) {
+          firstError = err.message;
+        }
       }
     }
     setBulkBusy(false);
     setBulk(null);
-    setBulkResult(failed ? `Готово: ${groupDigits(done)}, не получилось: ${groupDigits(failed)}` : `Готово: ${groupDigits(done)}`);
+    setBulkResult(
+      failed
+        ? `Готово: ${groupDigits(done)}, не получилось: ${groupDigits(failed)}${firstError ? ` (${firstError})` : ''}`
+        : `Готово: ${groupDigits(done)}`,
+    );
+    setBulkText('');
     setSelected(new Set());
     void reload();
   };
@@ -237,10 +320,12 @@ export function Clients() {
           <span className="sr-only">Поиск клиента</span>
           <input type="search" placeholder="Имя, @username, ID, email или ссылка" value={input} onChange={(e) => setInput(e.target.value)} maxLength={200} />
         </label>
-        <button type="button" className="cl-new btn" aria-disabled="true" title="Выдача подписки без оплаты появится позже">
-          <Icon name="plus" size={18} stroke={2.4} />
-          Выдать подписку
-        </button>
+        {writable ? (
+          <button type="button" className="cl-new btn" onClick={() => setPicking(true)}>
+            <Icon name="plus" size={18} stroke={2.4} />
+            Выдать подписку
+          </button>
+        ) : null}
       </header>
 
       <div role="group" aria-label="Кого показать" className="chips">
@@ -262,7 +347,7 @@ export function Clients() {
             <button type="button" className="b3 hov" onClick={() => setBulk('reset')}>
               Сбросить трафик
             </button>
-            <button type="button" className="b3 hov" aria-disabled="true" title="Рассылка выбранным появится вместе с модулем «Рассылки»">
+            <button type="button" className="b3 hov" onClick={() => setBulk('message')}>
               Написать
             </button>
             {segment === 'blocked' ? (
@@ -387,8 +472,25 @@ export function Clients() {
               {BULK_TEXT[bulk].title}: {chosen.length}
             </h2>
             <p className="muted">{BULK_TEXT[bulk].text}</p>
+            {bulk === 'message' ? (
+              <textarea
+                className="field"
+                rows={5}
+                maxLength={3500}
+                aria-label="Текст сообщения"
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                disabled={bulkBusy}
+                autoFocus
+              />
+            ) : null}
             <div className="dialog-actions">
-              <button type="button" className={bulk === 'block' ? 'btn-bad' : 'btn-main btn'} onClick={() => void runBulk(bulk)} disabled={bulkBusy}>
+              <button
+                type="button"
+                className={bulk === 'block' ? 'btn-bad' : 'btn-main btn'}
+                onClick={() => void runBulk(bulk)}
+                disabled={bulkBusy || (bulk === 'message' && !bulkText.trim())}
+              >
                 {bulkBusy ? 'Выполняем…' : BULK_TEXT[bulk].confirm}
               </button>
               <button type="button" className="btn-line hov" onClick={() => setBulk(null)} disabled={bulkBusy}>
@@ -398,6 +500,7 @@ export function Clients() {
           </div>
         </div>
       ) : null}
+      {picking ? <PickClient onClose={() => setPicking(false)} /> : null}
     </>
   );
 }

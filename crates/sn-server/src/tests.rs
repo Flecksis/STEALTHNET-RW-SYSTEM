@@ -1690,3 +1690,126 @@ async fn карточка_подписки_подключения_запросы
     assert_eq!(undone["details"]["days"], 37);
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn выдача_подписки_продление_и_удаление_через_http() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    h.remna.set_squads(vec![InternalSquad {
+        uuid: Uuid::from_u128(1),
+        name: "Основной".into(),
+        view_position: 0,
+        info: SquadInfo::default(),
+        inbounds: Vec::new(),
+    }]);
+    let tariff = h.tariff().await;
+    let period = tariff.periods[0].id.0;
+    let client = h.client(5_093_118_422).await;
+    let order_of = |public: Value| {
+        let services = h.services().clone();
+        async move {
+            let public: Uuid = serde_json::from_value(public).unwrap();
+            let mut conn = services.store().conn().await.unwrap();
+            let id = conn.orders().by_public_id(public).await.unwrap().id;
+            drop(conn);
+            services.fulfillment().run(id).await.unwrap();
+        }
+    };
+
+    let (status, options) = h.get("/api/admin/clients/grant-options", &support).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["tariffs"][0]["id"], tariff.id.0);
+    assert_eq!(options["tariffs"][0]["periods"][0]["days"], 90);
+    assert_eq!(options["tariffs"][0]["ready"], true);
+
+    let grant = format!("/api/admin/clients/{}/grant", client.0);
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &grant,
+            &support,
+            json!({ "tariff_id": tariff.id.0, "days": 0 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "grant.days");
+    let (status, granted) = h
+        .write(
+            Method::POST,
+            &grant,
+            &support,
+            json!({ "tariff_id": tariff.id.0, "period_id": period, "note": "компенсация" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    assert_eq!(granted["plan"], "new");
+    assert_eq!(granted["days"], 90);
+    order_of(granted["order_id"].clone()).await;
+
+    let card = format!("/api/admin/clients/{}", client.0);
+    let (status, body) = h.get(&card, &owner).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let subscription = &body["subscriptions"][0];
+    assert_eq!(subscription["kind"], "manual");
+    assert_eq!(subscription["tariff_id"], tariff.id.0);
+    let sub_id = subscription["id"].as_i64().unwrap();
+    let user_id = subscription["remna"]["user_id"].as_i64().unwrap();
+    let first_expire = h
+        .remna
+        .user(sn_domain::ids::RemnaUserId(user_id))
+        .unwrap()
+        .expire_at;
+    assert!(first_expire > Utc::now() + Duration::days(89));
+
+    let (status, renewed) = h
+        .write(
+            Method::POST,
+            &grant,
+            &owner,
+            json!({ "tariff_id": tariff.id.0, "days": 10, "subscription_id": sub_id }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{renewed}");
+    assert_eq!(renewed["plan"], "renewal");
+    order_of(renewed["order_id"].clone()).await;
+    let second_expire = h
+        .remna
+        .user(sn_domain::ids::RemnaUserId(user_id))
+        .unwrap()
+        .expire_at;
+    assert_eq!((second_expire - first_expire).num_days(), 10);
+
+    let (status, history) = h.get(&format!("{card}/history?limit=50"), &owner).await;
+    assert_eq!(status, StatusCode::OK);
+    let grants = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "order" && item["order"]["kind"] == "admin_grant")
+        .count();
+    assert_eq!(grants, 2, "{history}");
+
+    let remove = format!("/api/admin/subscriptions/{sub_id}/actions/delete");
+    let (status, _) = h.write(Method::POST, &remove, &support, json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h.write(Method::POST, &remove, &owner, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(h.remna.user(sn_domain::ids::RemnaUserId(user_id)).is_none());
+    let (_, body) = h.get(&card, &owner).await;
+    assert!(body["subscriptions"][0]["ended_at"].is_string(), "{body}");
+
+    let (status, _) = h
+        .write(Method::POST, &format!("{card}/delete"), &support, json!({}))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(Method::POST, &format!("{card}/delete"), &owner, json!({}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = h.get(&card, &owner).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let again = h.client(5_093_118_422).await;
+    assert_ne!(again, client);
+    h.db.cleanup().await;
+}

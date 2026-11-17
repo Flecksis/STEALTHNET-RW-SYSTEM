@@ -3,19 +3,23 @@ use crate::autorenew::AUTORENEW_METHOD;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sn_domain::client::{
     Client, ClientStatus, Identity, IdentityKind, Locale, NewIdentity, RegistrationSource,
     TelegramProfile,
 };
 use sn_domain::events::DomainEvent;
-use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, SubscriptionId, TariffId, TicketId};
+use sn_domain::ids::{
+    AdminId, CategoryId, ClientId, OrderId, PaymentId, PeriodId, SubscriptionId, TariffId, TicketId,
+};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Amount, Money};
-use sn_domain::order::{Order, OrderKind, OrderStatus, PurchaseIntent};
+use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{PaymentStatus, ProviderId};
+use sn_domain::plan::{CurrentTariff, PlanKind, classify};
+use sn_domain::pricing::{Quote, QuoteLine, QuoteLineKind};
 use sn_domain::subscription::Subscription;
 use sn_domain::support::TicketStatus;
 use sn_domain::tariff::{DevicePolicy, months_for_days};
@@ -122,6 +126,47 @@ pub struct CardStats {
     pub cabinet_seen_at: Option<DateTime<Utc>>,
     pub miniapp_seen_at: Option<DateTime<Utc>>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GrantPeriod {
+    pub id: PeriodId,
+    pub days: u32,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GrantTariff {
+    pub id: TariffId,
+    pub name: String,
+    pub category_id: CategoryId,
+    pub on_sale: bool,
+    pub devices: DevicePolicy,
+    pub traffic: TrafficPolicy,
+    pub periods: Vec<GrantPeriod>,
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GrantRequest {
+    pub tariff_id: TariffId,
+    #[serde(default)]
+    pub period_id: Option<PeriodId>,
+    #[serde(default)]
+    pub days: Option<u32>,
+    #[serde(default)]
+    pub subscription_id: Option<SubscriptionId>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GrantResult {
+    pub order_id: Uuid,
+    pub plan: PlanKind,
+    pub days: u32,
+}
+
+pub const MAX_GRANT_DAYS: u32 = 3650;
 
 fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) -> OrderBrief {
     let tariff_id = match &order.intent {
@@ -355,6 +400,236 @@ impl<'a> ClientOps<'a> {
                 "client",
                 Some(id.0),
                 serde_json::json!({ "cleared": note.is_none() }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn grant_options(&self) -> ServiceResult<Vec<GrantTariff>> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn
+            .tariffs()
+            .list(true)
+            .await?
+            .into_iter()
+            .map(|tariff| GrantTariff {
+                ready: !tariff.squads.is_empty(),
+                periods: tariff
+                    .periods
+                    .iter()
+                    .map(|period| GrantPeriod {
+                        id: period.id,
+                        days: period.days,
+                        active: period.active,
+                    })
+                    .collect(),
+                id: tariff.id,
+                name: tariff.name,
+                category_id: tariff.category_id,
+                on_sale: tariff.on_sale,
+                devices: tariff.devices,
+                traffic: tariff.traffic,
+            })
+            .collect())
+    }
+
+    pub async fn grant(
+        &self,
+        client_id: ClientId,
+        request: &GrantRequest,
+        actor: Actor,
+    ) -> ServiceResult<GrantResult> {
+        self.services.remna()?;
+        let note = request
+            .note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(|n| n.chars().take(500).collect::<String>());
+        let mut tx = self.services.store().begin().await?;
+        tx.lock(LockSpace::Client, client_id.0).await?;
+        let client = tx.clients().get(client_id).await?;
+        if client.is_blocked() {
+            return Err(ServiceError::rejected(
+                "grant.client_blocked",
+                "клиент заблокирован: сначала разблокируйте его",
+            ));
+        }
+        let tariff = match tx.tariffs().get(request.tariff_id).await {
+            Ok(tariff) => tariff,
+            Err(StoreError::NotFound(_)) => return Err(ServiceError::NotFound("тариф")),
+            Err(err) => return Err(err.into()),
+        };
+        if tariff.squads.is_empty() {
+            return Err(ServiceError::rejected(
+                "grant.no_squads",
+                "у тарифа нет сквадов: подписка выдалась бы без серверов",
+            ));
+        }
+        let base = match request.period_id {
+            Some(id) => tariff.period(id).ok_or_else(|| {
+                ServiceError::rejected("grant.period", "у тарифа нет такого срока")
+            })?,
+            None => tariff
+                .periods
+                .iter()
+                .find(|p| p.active)
+                .or_else(|| tariff.periods.first())
+                .ok_or_else(|| {
+                    ServiceError::rejected("grant.period", "у тарифа нет ни одного срока")
+                })?,
+        };
+        let days = match (request.period_id, request.days) {
+            (Some(_), _) => base.days,
+            (None, Some(days)) if (1..=MAX_GRANT_DAYS).contains(&days) => days,
+            _ => {
+                return Err(ServiceError::rejected(
+                    "grant.days",
+                    format!("выберите срок тарифа или укажите от 1 до {MAX_GRANT_DAYS} дней"),
+                ));
+            }
+        };
+        let current = match request.subscription_id {
+            Some(id) => {
+                let subscription = tx.subscriptions().get(id).await?;
+                if subscription.client_id != client_id {
+                    return Err(ServiceError::NotFound("подписка"));
+                }
+                if subscription.ended_at.is_some() {
+                    return Err(ServiceError::rejected(
+                        "subscription.ended",
+                        "подписка завершена",
+                    ));
+                }
+                let category = match subscription.tariff_id {
+                    Some(id) => match tx.tariffs().get(id).await {
+                        Ok(t) => Some(t.category_id),
+                        Err(StoreError::NotFound(_)) => None,
+                        Err(err) => return Err(err.into()),
+                    },
+                    None => None,
+                };
+                Some((subscription, category))
+            }
+            None => None,
+        };
+        let plan = classify(
+            tariff.category_id,
+            current.as_ref().map(|(s, category)| CurrentTariff {
+                kind: s.kind,
+                category_id: *category,
+            }),
+        );
+        let mut snapshot = tariff.snapshot(base);
+        snapshot.days = days;
+        let currency = self.services.settings().currency;
+        let order = tx
+            .orders()
+            .create(&NewOrder {
+                client_id,
+                subscription_id: current.as_ref().map(|(s, _)| s.id),
+                kind: OrderKind::AdminGrant,
+                intent: PurchaseIntent::AdminGrant {
+                    tariff_id: tariff.id,
+                    period_id: request.period_id,
+                    days,
+                    note: note.clone(),
+                },
+                quote: Quote {
+                    currency,
+                    lines: vec![QuoteLine {
+                        kind: QuoteLineKind::Period {
+                            tariff_id: tariff.id,
+                            period_id: base.id,
+                            days,
+                            months: months_for_days(days),
+                        },
+                        label: format!("{} · {}", tariff.name, sn_domain::format::days(days)),
+                        amount: Money::zero(currency),
+                        stars: None,
+                    }],
+                    subtotal: Money::zero(currency),
+                    discount: Money::zero(currency),
+                    total: Money::zero(currency),
+                    stars: None,
+                    days,
+                    extra_devices: 0,
+                },
+                snapshot: Some(snapshot),
+            })
+            .await?;
+        tx.orders().transition(order.id, OrderStatus::Paid).await?;
+        tx.jobs()
+            .enqueue(&JobPayload::FulfillOrder { order_id: order.id }, None)
+            .await?;
+        tx.audit()
+            .record(&actor.audit(
+                "client.grant",
+                "client",
+                Some(client_id.0),
+                serde_json::json!({
+                    "order_id": order.public_id,
+                    "tariff_id": tariff.id,
+                    "tariff": tariff.name,
+                    "days": days,
+                    "plan": plan,
+                    "subscription_id": current.as_ref().map(|(s, _)| s.id),
+                    "note": note,
+                }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(GrantResult {
+            order_id: order.public_id,
+            plan,
+            days,
+        })
+    }
+
+    pub async fn delete(&self, id: ClientId, actor: Actor) -> ServiceResult<()> {
+        let live: Vec<SubscriptionId> = {
+            let mut conn = self.services.store().conn().await?;
+            conn.clients().get(id).await?;
+            conn.subscriptions()
+                .by_client(id)
+                .await?
+                .into_iter()
+                .filter(|s| s.ended_at.is_none())
+                .map(|s| s.id)
+                .collect()
+        };
+        for subscription in &live {
+            self.services
+                .subscriptions()
+                .end_by_admin(*subscription, actor)
+                .await?;
+        }
+        let mut tx = self.services.store().begin().await?;
+        tx.clients().lock(id).await?;
+        tx.sessions().revoke_all_client(id).await?;
+        let invoices = cancel_open_invoices(&mut tx, id).await?;
+        let ctx = self.services.module_context();
+        for order_id in &invoices.orders {
+            let order = tx.orders().get(*order_id).await?;
+            self.services
+                .modules()
+                .order_canceled(&ctx, &mut tx, &order)
+                .await?;
+        }
+        let identities = tx.clients().delete_identities(id).await?;
+        tx.clients().soft_delete(id).await?;
+        tx.audit()
+            .record(&actor.audit(
+                "client.deleted",
+                "client",
+                Some(id.0),
+                serde_json::json!({
+                    "ended_subscriptions": live,
+                    "identities": identities,
+                    "canceled_payments": invoices.payments,
+                    "canceled_orders": invoices.orders,
+                }),
             ))
             .await?;
         tx.commit().await?;

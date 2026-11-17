@@ -292,30 +292,6 @@
   min-width: 0;
 }
 
-.segs {
-  display: inline-flex;
-  flex-wrap: wrap;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-
-.segs button {
-  height: 34px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ink-2);
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.segs button[aria-pressed='true'] {
-  background: var(--ink);
-  color: var(--bg);
-}
-
 .save-row {
   display: flex;
   flex-wrap: wrap;

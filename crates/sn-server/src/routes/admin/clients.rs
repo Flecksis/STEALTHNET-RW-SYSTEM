@@ -17,11 +17,14 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clients", get(list))
         .route("/clients/segments", get(segments))
+        .route("/clients/grant-options", get(grant_options))
         .route("/clients/{id}", get(card))
         .route("/clients/{id}/history", get(history))
         .route("/clients/{id}/note", put(note))
         .route("/clients/{id}/balance", post(balance))
         .route("/clients/{id}/message", post(message))
+        .route("/clients/{id}/grant", post(grant))
+        .route("/clients/{id}/delete", post(delete_client))
         .route("/clients/{id}/block", post(block))
         .route("/clients/{id}/unblock", post(unblock))
         .route("/subscriptions/{id}", get(subscription))
@@ -195,6 +198,46 @@ async fn note(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+async fn grant_options(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::ClientsWrite)?;
+    let tariffs = state.services.clients().grant_options().await?;
+    Ok(Json(serde_json::json!({ "tariffs": tariffs })))
+}
+
+async fn grant(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<sn_services::clients::GrantRequest>,
+) -> ApiResult<Json<sn_services::clients::GrantResult>> {
+    admin.require(Permission::ClientsWrite)?;
+    Ok(Json(
+        state
+            .services
+            .clients()
+            .grant(ClientId(id), &body, admin.actor())
+            .await?,
+    ))
+}
+
+async fn delete_client(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::ClientsWrite)?;
+    admin.require(Permission::Money)?;
+    state
+        .services
+        .clients()
+        .delete(ClientId(id), admin.actor())
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct MessageRequest {
     text: String,
@@ -326,6 +369,9 @@ async fn subscription_action(
     } else {
         Permission::ClientsWrite
     })?;
+    if action == "delete" {
+        admin.require(Permission::Money)?;
+    }
     let body = body.map(|b| b.0).unwrap_or_default();
     let ops = state.services.subscriptions();
     let actor = admin.actor();
@@ -345,6 +391,10 @@ async fn subscription_action(
             &ops.undo_add_days(id, body.count.unwrap_or(1), actor)
                 .await?,
         ),
+        "delete" => {
+            ops.end_by_admin(id, actor).await?;
+            Ok(serde_json::json!({ "ok": true }))
+        }
         "connections" => json(&ops.connections(id, body.job_id.as_deref(), actor).await?),
         "requests" => json(&ops.subscription_requests(id, actor).await?),
         "reset-traffic" => json(&ops.reset_traffic(id, actor).await?),
