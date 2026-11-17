@@ -44,16 +44,14 @@
 ```sh
 git clone https://github.com/STEALTHNET-APP/STEALTHNET-RW-SYSTEM.git
 cd STEALTHNET-RW-SYSTEM/deploy
-cp .env.example .env
+./setup.sh
 docker compose up -d --build
 docker compose exec -e SN_ADMIN_PASSWORD='пароль' app stealthnet create-admin --email owner@example.com
 ```
 
-Перед запуском заполните `.env`:
+`setup.sh` создаёт `.env` и сам генерирует пароль базы и ключ шифрования. Повторный запуск уже заданные значения не меняет.
 
-- `POSTGRES_PASSWORD` — возьмите из `openssl rand -hex 24`: пароль попадает в строку подключения, и спецсимволы её ломают;
-- `SN_SECRET_KEY` — возьмите из `openssl rand -base64 32` и сохраните: им зашифрованы ключи платёжных систем и токены, которые вводятся в админке, с другим ключом они не расшифруются;
-- `SN_PUBLIC_URL` — внешний адрес панели, начинается с `https://`.
+Файл `.env` сохраните: без `SN_SECRET_KEY` из него не расшифровать ключи платёжных систем и токены, которые вводятся в админке. Внешний адрес панели задаётся там же, в `SN_PUBLIC_URL`, и начинается с `https://`.
 
 Если Remnawave стоит на этом же сервере в своём compose, подключите приложение к её сети и укажите `REMNAWAVE_URL=http://remnawave:3000`:
 
