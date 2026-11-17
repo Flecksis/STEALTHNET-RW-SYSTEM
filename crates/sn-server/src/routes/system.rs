@@ -11,6 +11,18 @@ pub fn routes() -> Router<AppState> {
         .route("/api/health", get(health))
         .route("/api/version", get(version))
         .route("/api/public/site", get(site))
+        .route("/api/public/catalog", get(catalog))
+}
+
+async fn catalog(State(state): State<AppState>) -> Response {
+    match state.services.checkout().public_catalog().await {
+        Ok(offers) => Json(serde_json::json!({
+            "currency": state.services.settings().currency,
+            "tariffs": offers,
+        }))
+        .into_response(),
+        Err(err) => crate::error::ApiError::from(err).into_response(),
+    }
 }
 
 async fn site(State(state): State<AppState>) -> Response {

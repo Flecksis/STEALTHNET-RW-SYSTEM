@@ -1335,6 +1335,25 @@ async fn клиенты_ищутся_и_история_собирается_че
 }
 
 #[tokio::test]
+async fn открытый_каталог_без_входа_и_без_сквадов() {
+    let Some(h) = http().await else { return };
+    let tariff = h.tariff().await;
+    let (status, _, catalog) = h.send(Method::GET, "/api/public/catalog", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{catalog}");
+    assert_eq!(catalog["currency"], "USD");
+    let offer = &catalog["tariffs"][0];
+    assert_eq!(offer["tariff"]["id"], tariff.id.0);
+    assert_eq!(offer["tariff"]["name"], "Стандарт");
+    assert_eq!(offer["periods"][0]["price"]["minor"], 699);
+    assert!(offer["tariff"].get("squads").is_none());
+    assert!(offer["countries"].is_array());
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert!(site["trial"]["days"].is_number());
+    assert!(site["autorenew_days_before"].is_number());
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn оформление_сохраняется_и_видно_без_входа() {
     let Some(h) = http().await else { return };
     let owner = h.owner().await;

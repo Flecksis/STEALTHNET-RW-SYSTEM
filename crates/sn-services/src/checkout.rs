@@ -24,6 +24,7 @@ use sn_payments::{
     Unavailable,
 };
 use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -96,6 +97,30 @@ pub struct TariffOffer {
     pub tariff: Tariff,
     pub periods: Vec<PeriodOffer>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicTariff {
+    pub id: TariffId,
+    pub category_id: sn_domain::ids::CategoryId,
+    pub name: String,
+    pub description: Option<String>,
+    pub devices: sn_domain::tariff::DevicePolicy,
+    pub traffic: sn_domain::traffic::TrafficPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicOffer {
+    pub category: Category,
+    pub tariff: PublicTariff,
+    pub periods: Vec<PeriodOffer>,
+    pub countries: Vec<String>,
+}
+
+const COUNTRIES_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+type CountryCache = std::sync::Mutex<Option<(std::time::Instant, HashMap<Uuid, Vec<String>>)>>;
+
+static SQUAD_COUNTRIES: CountryCache = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRequest {
@@ -372,6 +397,83 @@ impl<'a> Checkout<'a> {
 
     pub async fn catalog(&self) -> ServiceResult<Vec<TariffOffer>> {
         self.catalog_in(None).await
+    }
+
+    async fn squad_countries(&self, squads: &[Uuid]) -> HashMap<Uuid, Vec<String>> {
+        if let Ok(guard) = SQUAD_COUNTRIES.lock()
+            && let Some((at, map)) = guard.as_ref()
+            && at.elapsed() < COUNTRIES_TTL
+            && squads.iter().all(|s| map.contains_key(s))
+        {
+            return map.clone();
+        }
+        let mut map = HashMap::new();
+        if let Ok(remna) = self.services.remna() {
+            for squad in squads {
+                let codes = match remna.squad_accessible_nodes(*squad).await {
+                    Ok(nodes) => {
+                        let mut codes: Vec<String> = Vec::new();
+                        for node in nodes.accessible_nodes {
+                            let code = node.country_code.to_uppercase();
+                            if !code.is_empty() && code != "XX" && !codes.contains(&code) {
+                                codes.push(code);
+                            }
+                        }
+                        codes
+                    }
+                    Err(err) => {
+                        tracing::warn!(squad = %squad, error = %err, "страны сквада не получены");
+                        Vec::new()
+                    }
+                };
+                map.insert(*squad, codes);
+            }
+        }
+        if let Ok(mut guard) = SQUAD_COUNTRIES.lock() {
+            *guard = Some((std::time::Instant::now(), map.clone()));
+        }
+        map
+    }
+
+    pub async fn public_catalog(&self) -> ServiceResult<Vec<PublicOffer>> {
+        let offers = self
+            .catalog_in(Some(sn_domain::access::ClientChannel::Cabinet))
+            .await?;
+        let mut squads: Vec<Uuid> = Vec::new();
+        for offer in &offers {
+            for squad in &offer.tariff.squads {
+                if !squads.contains(&squad.0) {
+                    squads.push(squad.0);
+                }
+            }
+        }
+        let countries = self.squad_countries(&squads).await;
+        Ok(offers
+            .into_iter()
+            .map(|offer| {
+                let mut codes: Vec<String> = Vec::new();
+                for squad in &offer.tariff.squads {
+                    for code in countries.get(&squad.0).into_iter().flatten() {
+                        if !codes.contains(code) {
+                            codes.push(code.clone());
+                        }
+                    }
+                }
+                PublicOffer {
+                    category: offer.category,
+                    tariff: PublicTariff {
+                        id: offer.tariff.id,
+                        category_id: offer.tariff.category_id,
+                        name: offer.tariff.name,
+                        description: offer.tariff.description,
+                        devices: offer.tariff.devices,
+                        traffic: offer.tariff.traffic,
+                    },
+                    periods: offer.periods,
+                    countries: codes,
+                }
+            })
+            .collect())
     }
 
     pub async fn catalog_in(

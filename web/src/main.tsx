@@ -9,6 +9,7 @@ const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m
 const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon })));
 const CabinetApp = lazy(() => import('./cabinet/CabinetApp').then((m) => ({ default: m.CabinetApp })));
 const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.MiniApp })));
+const Landing = lazy(() => import('./site/Landing').then((m) => ({ default: m.Landing })));
 
 function App() {
   return (
@@ -18,7 +19,8 @@ function App() {
           <Route path="/admin/*" element={<AdminApp />} />
           <Route path="/cabinet/*" element={<CabinetApp />} />
           <Route path="/app/*" element={<MiniApp />} />
-          <Route path="*" element={<Soon title="Сервис работает" text="Сайт ещё собирается. Подписку можно купить и продлить в Telegram-боте." />} />
+          <Route path="/" element={<Landing />} />
+          <Route path="*" element={<Soon title="Страница не найдена" text="Такой страницы нет. Перейдите на главную или откройте Telegram-бота." />} />
         </Routes>
       </Suspense>
     </BrowserRouter>
