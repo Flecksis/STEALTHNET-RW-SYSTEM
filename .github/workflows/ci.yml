@@ -349,3 +349,23 @@ jobs:
           sudo stealthnet status | tee "$RUNNER_TEMP/status.log"
           grep -q 'Последнее обновление: .*установлено (версия 0.1.99999)' "$RUNNER_TEMP/status.log"
           grep -q 'Версия:            0.1.99999 от ' "$RUNNER_TEMP/status.log"
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [fmt, clippy, test, web, installer, install-early, install, install-root, install-prebuilt, install-updater]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: publish the release with its notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/release.sh "$GITHUB_SHA"
