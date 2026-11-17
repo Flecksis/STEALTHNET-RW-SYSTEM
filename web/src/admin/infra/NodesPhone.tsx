@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { count, dateLong, groupDigits, money, NBSP, plural } from '../../lib/format';
+import { Flag } from '../../lib/Flag';
 import { minutesSince, spanText } from '../home/model';
 import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
@@ -268,6 +269,7 @@ export function NodesPhone() {
                 <li key={row.node.uuid} className="np-node">
                   <span className="np-node-body">
                     <span>
+                      <Flag code={row.node.countryCode} />
                       <strong>{row.node.name}</strong>
                       {row.city ? <span className="np-city"> · {row.city}</span> : null}
                     </span>

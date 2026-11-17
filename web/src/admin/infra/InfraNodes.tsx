@@ -3,6 +3,7 @@ import { api, ApiError } from '../../lib/api';
 import { count, dateLong, groupDigits, money, NBSP, plural, timeHM, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { countryName, minutesSince, spanText } from '../home/model';
+import { Flag } from '../../lib/Flag';
 import { usePhone } from '../../lib/media';
 import { InfraHead } from './InfraHead';
 import { NodesPhone } from './NodesPhone';
@@ -374,6 +375,7 @@ function InfraNodesDesktop() {
                           setAsk('');
                         }}
                       >
+                        <Flag code={row.node.countryCode} />
                         {row.node.name}
                       </button>
                       <span className="inf-sub">{placeOf(row)}</span>
@@ -487,6 +489,7 @@ function NodeDetails({ row, restarting, busy, ask, setAsk, act, onEdited }: Deta
       <div className="inf-dhead">
         <div className="inf-col" style={{ flex: '1 1 260px' }}>
           <h2 className="inf-h2">
+            <Flag code={row.node.countryCode} />
             {row.node.name}
             {row.city ? ` · ${row.city}` : ''}
           </h2>

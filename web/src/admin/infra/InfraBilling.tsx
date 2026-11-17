@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { count, dateLong, dayLabel, money, type Money } from '../../lib/format';
+import { Flag } from '../../lib/Flag';
 import { useSession } from '../session';
 import { countryName } from '../home/model';
 import { fromRaw, toRaw } from '../tariffs/model';
@@ -196,7 +197,10 @@ export function InfraBilling() {
                 <div key={row.uuid} className="bl-group">
                   <div role="row" className="bl-row">
                     <span role="cell" className="inf-col" style={{ minWidth: 0 }}>
-                      <strong>{row.node_name}</strong>
+                      <strong>
+                        <Flag code={row.country_code} />
+                        {row.node_name}
+                      </strong>
                       <span className="inf-sub sp-ell">{[row.city, countryName(row.country_code)].filter(Boolean).join(', ')}</span>
                     </span>
                     <span role="cell">{row.provider.name}</span>

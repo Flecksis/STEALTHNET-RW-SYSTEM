@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { count, groupDigits, plural } from '../../lib/format';
+import { Flag } from '../../lib/Flag';
 import { InfraHead } from './InfraHead';
 import { inboundLabel } from './InfraNodes';
 import '../form.css';
@@ -362,7 +363,10 @@ function SquadEditor({ squad, nodes, hosts, onCancel, onSaved }: EditorProps) {
           {order.map((n) => (
             <div key={n.node.uuid} role="group" aria-label={[n.node.name, n.city].filter(Boolean).join(', ')} className="sq-group">
               <span className="sq-node">
-                <strong>{n.node.name}</strong>
+                <strong>
+                  <Flag code={n.node.countryCode} />
+                  {n.node.name}
+                </strong>
                 {n.city ? <span className="muted">{n.city}</span> : null}
                 {n.state === 'down' ? <span className="sq-down">не отвечает</span> : null}
               </span>
