@@ -190,18 +190,18 @@ struct Envelope {
     scope: String,
     event: String,
     timestamp: DateTime<Utc>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     data: serde_json::Value,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     meta: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebhookMeta {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub not_connected_after_hours: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub expiration: Option<f64>,
 }
 
@@ -218,20 +218,20 @@ pub struct CrmEventData {
     pub provider_name: String,
     pub node_name: String,
     pub next_billing_at: DateTime<Utc>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub login_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginAttempt {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub username: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub ip: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub user_agent: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub description: Option<String>,
 }
 
@@ -247,35 +247,35 @@ pub struct SubpageConfigChange {
 pub struct ApiTokenInfo {
     pub name: String,
     pub uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub expire_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceEventData {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub login_attempt: Option<LoginAttempt>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub panel_version: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub subpage_config: Option<SubpageConfigChange>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub api_token: Option<ApiTokenInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ErrorsEventData {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TorrentEventUser {
     pub id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::models::nullable")]
     pub username: String,
 }
 

@@ -49,15 +49,15 @@ pub struct SquadRef {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserTraffic {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub used_traffic_bytes: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub lifetime_used_traffic_bytes: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub online_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub first_connected_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_connected_node_uuid: Option<Uuid>,
 }
 
@@ -71,29 +71,29 @@ pub struct RemnaUser {
     pub traffic_limit_bytes: i64,
     pub traffic_limit_strategy: TrafficStrategy,
     pub expire_at: DateTime<Utc>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub telegram_id: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub email: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub tag: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub hwid_device_limit: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub external_squad_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub sub_revoked_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_traffic_reset_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub subscription_url: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub active_internal_squads: Vec<SquadRef>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub user_traffic: UserTraffic,
 }
 
@@ -246,9 +246,9 @@ pub struct UsersStreamQuery {
 #[serde(rename_all = "camelCase")]
 pub struct UsersPage {
     pub users: Vec<RemnaUser>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub next_cursor: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub has_more: bool,
 }
 
@@ -257,15 +257,15 @@ pub struct UsersPage {
 pub struct HwidDevice {
     pub hwid: String,
     pub user_id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub platform: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub os_version: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub device_model: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub user_agent: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub request_ip: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -381,9 +381,9 @@ pub struct BulkExtendRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeVersions {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub xray: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub node: Option<String>,
 }
 
@@ -392,7 +392,7 @@ pub struct NodeVersions {
 pub struct NodeProvider {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub login_url: Option<String>,
 }
 
@@ -402,39 +402,39 @@ pub struct Node {
     pub uuid: Uuid,
     pub name: String,
     pub address: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub port: Option<i64>,
     pub is_connected: bool,
     pub is_disabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_connecting: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_status_change: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_status_message: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub traffic_reset_day: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub traffic_limit_bytes: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub traffic_used_bytes: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub notify_percent: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub consumption_multiplier: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub users_online: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub xray_uptime: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub versions: Option<NodeVersions>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub provider: Option<NodeProvider>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub note: Option<String>,
 }
 
@@ -478,25 +478,25 @@ impl Node {
 #[serde(rename_all = "camelCase")]
 pub struct Inbound {
     pub uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub profile_uuid: Option<Uuid>,
     pub tag: String,
     #[serde(rename = "type")]
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub network: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub security: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub port: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SquadInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub members_count: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub inbounds_count: i64,
 }
 
@@ -505,11 +505,11 @@ pub struct SquadInfo {
 pub struct InternalSquad {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub view_position: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub info: SquadInfo,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub inbounds: Vec<Inbound>,
 }
 
@@ -525,11 +525,11 @@ pub struct InternalSquads {
 pub struct AccessibleNode {
     pub uuid: Uuid,
     pub node_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub config_profile_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub config_profile_name: Option<String>,
 }
 
@@ -580,7 +580,7 @@ pub struct CustomRemarks {
 pub struct HwidSettings {
     pub enabled: bool,
     pub fallback_device_limit: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub max_devices_announce: Option<String>,
 }
 
@@ -588,15 +588,15 @@ pub struct HwidSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionSettings {
     pub uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_show_custom_remarks: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub custom_remarks: CustomRemarks,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub hwid_settings: Option<HwidSettings>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub randomize_hosts: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub serve_json_at_base_subscription: bool,
 }
 
@@ -621,71 +621,71 @@ pub struct SystemMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationsConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub webhook: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub expiration_notifications: Vec<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub not_connected_after: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub disable_user_usage_records: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub disable_srh_records: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MiscConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub sub_public_domain: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub short_uuid_length: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemConfiguration {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub notifications: NotificationsConfig,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub service: ServiceConfig,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub misc: MiscConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsersStats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub status_counts: HashMap<String, i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_users: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnlineStats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub online_now: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_day: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_week: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub never_online: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemStats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub users: UsersStats,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub online_stats: OnlineStats,
 }
 
@@ -694,11 +694,11 @@ pub struct SystemStats {
 pub struct SubscriptionRequest {
     pub request_at: DateTime<Utc>,
     pub srr_response_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub request_ip: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub user_agent: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub srr_rule_name: Option<String>,
 }
 
@@ -720,20 +720,20 @@ pub struct DateRange {
 pub struct UsageNode {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserUsage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub categories: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub sparkline_data: Vec<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub top_nodes: Vec<UsageNode>,
 }
 
@@ -761,9 +761,9 @@ pub struct ConnectionIp {
 pub struct NodeConnections {
     pub node_uuid: Uuid,
     pub node_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub ips: Vec<ConnectionIp>,
 }
 
@@ -772,15 +772,15 @@ pub struct NodeConnections {
 pub struct UserConnectionsResult {
     pub success: bool,
     pub user_id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub nodes: Vec<NodeConnections>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct JobProgress {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub completed: i64,
 }
 
@@ -788,11 +788,11 @@ pub struct JobProgress {
 #[serde(rename_all = "camelCase")]
 pub struct UserConnectionsStatus {
     pub is_completed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_failed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub progress: JobProgress,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub result: Option<UserConnectionsResult>,
 }
 
@@ -801,7 +801,7 @@ pub struct UserConnectionsStatus {
 pub struct BillingProvider {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub login_url: Option<String>,
 }
 
@@ -810,7 +810,7 @@ pub struct BillingProvider {
 pub struct BillingNodeRef {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
 }
 
@@ -818,13 +818,13 @@ pub struct BillingNodeRef {
 #[serde(rename_all = "camelCase")]
 pub struct BillingNode {
     pub uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub node_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub name: Option<String>,
     pub provider_uuid: Uuid,
     pub provider: BillingProvider,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub node: Option<BillingNodeRef>,
     pub next_billing_at: DateTime<Utc>,
 }
@@ -832,74 +832,74 @@ pub struct BillingNode {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BillingStats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub upcoming_nodes_count: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub current_month_payments: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_spent: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InfraBillingNodes {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_billing_nodes: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub billing_nodes: Vec<BillingNode>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub stats: BillingStats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeConfigProfile {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub active_config_profile_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub active_inbounds: Vec<Inbound>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeSystemInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub arch: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub cpus: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub cpu_model: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub memory_total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub platform: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub release: String,
     #[serde(default, rename = "type")]
     pub os_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeSystemStats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub memory_free: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub memory_used: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub uptime: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub load_avg: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeSystem {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub info: NodeSystemInfo,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub stats: NodeSystemStats,
 }
 
@@ -908,17 +908,17 @@ pub struct NodeSystem {
 pub struct NodeDetails {
     #[serde(flatten)]
     pub node: Node,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub provider_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_traffic_tracking_active: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub view_position: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub config_profile: Option<NodeConfigProfile>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub system: Option<NodeSystem>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -1060,7 +1060,7 @@ pub struct NodeKeygen {
 pub struct ConfigProfileNode {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
 }
 
@@ -1069,29 +1069,29 @@ pub struct ConfigProfileNode {
 pub struct ConfigProfile {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub view_position: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub inbounds: Vec<Inbound>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub nodes: Vec<ConfigProfileNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigProfiles {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub config_profiles: Vec<ConfigProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostInbound {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub config_profile_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub config_profile_inbound_uuid: Option<Uuid>,
 }
 
@@ -1099,7 +1099,7 @@ pub struct HostInbound {
 #[serde(rename_all = "camelCase")]
 pub struct HostSquadFilter {
     pub mode: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub squads: Vec<Uuid>,
 }
 
@@ -1149,26 +1149,26 @@ impl Host {
 #[serde(rename_all = "camelCase")]
 pub struct Host {
     pub uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub view_position: i64,
     pub remark: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub address: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub port: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_disabled: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_hidden: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub inbound: HostInbound,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub nodes: Vec<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub tags: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub server_description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub internal_squads: Option<HostSquadFilter>,
 }
 
@@ -1239,7 +1239,7 @@ pub struct SquadUsageQuery {
 #[serde(rename_all = "camelCase")]
 pub struct SquadUserUsage {
     pub id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_bytes: i64,
 }
 
@@ -1247,18 +1247,18 @@ pub struct SquadUserUsage {
 #[serde(rename_all = "camelCase")]
 pub struct SquadUsage {
     pub squad_uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub users: Vec<SquadUserUsage>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub next_cursor: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalSquadInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub members_count: i64,
 }
 
@@ -1267,24 +1267,24 @@ pub struct ExternalSquadInfo {
 pub struct ExternalSquad {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub view_position: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub info: ExternalSquadInfo,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub hwid_settings: Option<HwidSettings>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub custom_remarks: Option<CustomRemarks>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub subpage_config_uuid: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalSquads {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub external_squads: Vec<ExternalSquad>,
 }
 
@@ -1372,9 +1372,9 @@ impl<'de> Deserialize<'de> for BillingAmount {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderBillingSummary {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_amount: BillingAmount,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_bills: i64,
 }
 
@@ -1382,7 +1382,7 @@ pub struct ProviderBillingSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderBillingNodeDetails {
     pub node_uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
 }
 
@@ -1390,7 +1390,7 @@ pub struct ProviderBillingNodeDetails {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderBillingNode {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub details: Option<ProviderBillingNodeDetails>,
 }
 
@@ -1399,22 +1399,22 @@ pub struct ProviderBillingNode {
 pub struct InfraProvider {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub favicon_link: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub login_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub billing_history: ProviderBillingSummary,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub billing_nodes: Vec<ProviderBillingNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InfraProviders {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub providers: Vec<InfraProvider>,
 }
 
@@ -1454,16 +1454,16 @@ pub struct BillingRecord {
     pub provider_uuid: Uuid,
     pub amount: BillingAmount,
     pub billed_at: DateTime<Utc>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub provider: Option<BillingRecordProvider>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InfraBillingHistory {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub records: Vec<BillingRecord>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
 }
 
@@ -1502,7 +1502,7 @@ pub struct UpdateBillingNodesRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeMetadata {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -1537,25 +1537,25 @@ impl NodeMetadata {
 pub struct SubpageConfigRef {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub view_position: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubpageConfigs {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub configs: Vec<SubpageConfigRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubpageAccess {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub subpage_config_uuid: Option<Uuid>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub webpage_allowed: bool,
 }
 
@@ -1563,7 +1563,7 @@ pub struct SubpageAccess {
 #[serde(rename_all = "camelCase")]
 pub struct NodeUserIps {
     pub user_id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub ips: Vec<ConnectionIp>,
 }
 
@@ -1572,7 +1572,7 @@ pub struct NodeUserIps {
 pub struct NodeConnectionsResult {
     pub success: bool,
     pub node_uuid: Uuid,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub users: Vec<NodeUserIps>,
 }
 
@@ -1580,9 +1580,9 @@ pub struct NodeConnectionsResult {
 #[serde(rename_all = "camelCase")]
 pub struct NodeConnectionsStatus {
     pub is_completed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub is_failed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub result: Option<NodeConnectionsResult>,
 }
 
@@ -1600,35 +1600,35 @@ pub struct NodesUsageQuery {
 pub struct NodeUsageSeries {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub data: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodesUsage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub categories: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub sparkline_data: Vec<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub top_nodes: Vec<UsageNode>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub series: Vec<NodeUsageSeries>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BandwidthPeriod {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub current: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub previous: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub difference: String,
 }
 
@@ -1650,9 +1650,9 @@ pub struct BandwidthStats {
 #[serde(rename_all = "camelCase")]
 pub struct TrafficCounter {
     pub tag: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub upload: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub download: String,
 }
 
@@ -1661,21 +1661,29 @@ pub struct TrafficCounter {
 pub struct NodeMetrics {
     pub node_uuid: String,
     pub node_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub provider_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub users_online: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub inbounds_stats: Vec<TrafficCounter>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub outbounds_stats: Vec<TrafficCounter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodesMetrics {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub nodes: Vec<NodeMetrics>,
+}
+
+pub(crate) fn nullable<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn lenient_datetime<'de, D: Deserializer<'de>>(
@@ -1701,7 +1709,7 @@ pub struct TorrentReportsQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentUserRef {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub username: String,
 }
 
@@ -1710,17 +1718,17 @@ pub struct TorrentUserRef {
 pub struct TorrentNodeRef {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentActionReport {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub blocked: bool,
     pub ip: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub block_duration: i64,
     #[serde(default, deserialize_with = "lenient_datetime")]
     pub will_unblock_at: Option<DateTime<Utc>>,
@@ -1739,7 +1747,7 @@ pub struct TorrentReportDetails {
 pub struct TorrentReport {
     pub id: i64,
     pub user_id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub user: TorrentUserRef,
     pub node: TorrentNodeRef,
     pub report: TorrentReportDetails,
@@ -1749,20 +1757,20 @@ pub struct TorrentReport {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentReports {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub records: Vec<TorrentReport>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentStatsSummary {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub distinct_nodes: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub distinct_users: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_reports: i64,
     #[serde(rename = "reportsLast24Hours", default)]
     pub reports_last_24_hours: i64,
@@ -1772,9 +1780,9 @@ pub struct TorrentStatsSummary {
 #[serde(rename_all = "camelCase")]
 pub struct TorrentTopUser {
     pub user_id: RemnaUserId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub username: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
 }
 
@@ -1783,20 +1791,20 @@ pub struct TorrentTopUser {
 pub struct TorrentTopNode {
     pub uuid: Uuid,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub country_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentStats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub stats: TorrentStatsSummary,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub top_users: Vec<TorrentTopUser>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub top_nodes: Vec<TorrentTopNode>,
 }
 
@@ -1838,6 +1846,33 @@ mod tests {
             body,
             serde_json::json!({"dropBy": {"by": "userIds", "userIds": [7]}, "targetNodes": {"target": "allNodes"}})
         );
+    }
+
+    #[test]
+    fn null_вместо_списков_и_строк_не_ломает_разбор() {
+        let config: SystemConfiguration = serde_json::from_value(serde_json::json!({
+            "notifications": {
+                "webhook": true,
+                "expirationNotifications": null,
+                "notConnectedAfter": null
+            },
+            "service": { "disableUserUsageRecords": null, "disableSrhRecords": false },
+            "misc": { "subPublicDomain": null, "shortUuidLength": 16 }
+        }))
+        .unwrap();
+        assert!(config.notifications.webhook);
+        assert!(config.notifications.expiration_notifications.is_empty());
+        assert!(config.notifications.not_connected_after.is_empty());
+        assert!(!config.service.disable_user_usage_records);
+        assert_eq!(config.misc.sub_public_domain, "");
+        assert_eq!(config.misc.short_uuid_length, 16);
+        let empty: SystemConfiguration = serde_json::from_value(serde_json::json!({
+            "notifications": null,
+            "service": null,
+            "misc": null
+        }))
+        .unwrap();
+        assert_eq!(empty, SystemConfiguration::default());
     }
 
     #[test]
