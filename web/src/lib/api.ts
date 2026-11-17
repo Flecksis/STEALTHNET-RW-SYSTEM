@@ -15,6 +15,7 @@ type Options = {
   method?: Method;
   body?: unknown;
   signal?: AbortSignal;
+  keepalive?: boolean;
 };
 
 function errorFrom(status: number, data: unknown): ApiError {
@@ -54,6 +55,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
       body,
       credentials: 'same-origin',
       signal: options.signal,
+      keepalive: options.keepalive,
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') {

@@ -865,6 +865,13 @@
   white-space: nowrap;
 }
 
+.ph-title.center {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-align: center;
+}
+
 .ph-tools {
   display: flex;
   gap: 4px;

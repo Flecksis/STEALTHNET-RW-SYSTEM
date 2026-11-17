@@ -3,8 +3,10 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { avatarColor, count, dateLong, days, daysLeft, initials, money, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
+import { usePhone } from '../../lib/media';
 import { useSession } from '../session';
 import type { Subscription } from '../clients/types';
+import { ClientPhone } from './ClientPhone';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog } from './dialogs';
 import { eventsCount, historyLine } from './history';
 import { emailOf, liveSubscriptions, nextReset, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
@@ -26,6 +28,11 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function ClientPage() {
+  const phone = usePhone();
+  return phone ? <ClientPhone /> : <ClientDesktop />;
+}
+
+function ClientDesktop() {
   const { id } = useParams();
   const clientId = Number(id);
   const { can, me } = useSession();

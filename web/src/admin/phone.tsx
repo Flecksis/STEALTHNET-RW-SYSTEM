@@ -6,10 +6,11 @@ import { useSession } from './session';
 type HeaderProps = {
   title: string;
   back?: { to: string; label: string };
+  center?: boolean;
   children?: ReactNode;
 };
 
-export function PhoneHeader({ title, back, children }: HeaderProps) {
+export function PhoneHeader({ title, back, center = false, children }: HeaderProps) {
   const { theme, flipTheme } = useSession();
   const label = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
   return (
@@ -25,7 +26,7 @@ export function PhoneHeader({ title, back, children }: HeaderProps) {
           S
         </span>
       )}
-      <h1 className="ph-title">{title}</h1>
+      {center ? <span className="ph-title center">{title}</span> : <h1 className="ph-title">{title}</h1>}
       <span className="ph-tools">
         {children}
         <button type="button" className="ph-circ press" aria-label={label} onClick={flipTheme}>
