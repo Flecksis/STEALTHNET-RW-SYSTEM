@@ -57,7 +57,7 @@ enum Needle {
     Words { words: Vec<String>, exact: String },
 }
 
-fn escape_like(value: &str) -> String {
+pub(super) fn escape_like(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('%', "\\%")

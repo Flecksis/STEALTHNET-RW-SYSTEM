@@ -89,7 +89,7 @@ async fn обращения_делятся_на_ждущие_отвеченны�
     );
     let view = conn
         .tickets()
-        .list_view(TicketFilter::Waiting, PageRequest::default())
+        .list_view(TicketFilter::Waiting, PageRequest::default(), None)
         .await
         .unwrap();
     assert_eq!(view.items.len(), 3);
@@ -115,7 +115,7 @@ async fn обращения_делятся_на_ждущие_отвеченны�
     assert_eq!(ids(&mut conn, TicketFilter::Answered).await, [second]);
     let answered = conn
         .tickets()
-        .list_view(TicketFilter::Answered, PageRequest::default())
+        .list_view(TicketFilter::Answered, PageRequest::default(), None)
         .await
         .unwrap()
         .items;

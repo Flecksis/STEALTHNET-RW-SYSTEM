@@ -16,12 +16,15 @@ pub fn routes() -> Router<AppState> {
         .route("/support/tickets", get(list))
         .route("/support/tickets/{id}", get(thread).post(reply))
         .route("/support/tickets/{id}/close", post(close))
+        .route("/support/tickets/{id}/reopen", post(reopen))
 }
 
 #[derive(Deserialize)]
 struct ListQuery {
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    q: Option<String>,
     #[serde(default)]
     limit: Option<u32>,
     #[serde(default)]
@@ -54,7 +57,7 @@ async fn list(
     let (page, counts) = state
         .services
         .support()
-        .list_view(filter, paging.request())
+        .list_view(filter, paging.request(), query.q.as_deref())
         .await?;
     Ok(Json(serde_json::json!({
         "items": page.items,
@@ -100,6 +103,20 @@ async fn close(
         .services
         .support()
         .close(TicketId(id), admin.actor())
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn reopen(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Support)?;
+    state
+        .services
+        .support()
+        .reopen(TicketId(id), admin.actor())
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

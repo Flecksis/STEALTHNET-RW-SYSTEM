@@ -8,6 +8,7 @@ import { Clients } from './clients/Clients';
 import { ClientPage } from './client/Client';
 import { Tariffs } from './tariffs/Tariffs';
 import { Home } from './home/Home';
+import { Support } from './support/Support';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
@@ -144,7 +145,7 @@ export function AdminApp() {
           <Route index element={<Home />} />
           <Route path="clients" element={<Clients />} />
           <Route path="clients/:id" element={<ClientPage />} />
-          <Route path="support/*" element={<Pending title="Поддержка" />} />
+          <Route path="support" element={<Support />} />
           <Route path="money/*" element={<Pending title="Деньги" />} />
           <Route path="tariffs" element={<Tariffs />} />
           <Route path="infra/*" element={<Pending title="Инфраструктура" />} />

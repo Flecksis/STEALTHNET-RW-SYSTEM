@@ -34,9 +34,16 @@ pub struct ReplyRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdminName {
+    pub id: sn_domain::ids::AdminId,
+    pub email: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TicketThread {
     pub ticket: Ticket,
     pub messages: Vec<TicketMessage>,
+    pub admins: Vec<AdminName>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -148,9 +155,10 @@ impl<'a> SupportOps<'a> {
         &self,
         filter: TicketFilter,
         page: PageRequest,
+        query: Option<&str>,
     ) -> ServiceResult<(Page<sn_store::TicketListItem>, sn_store::TicketCounts)> {
         let mut conn = self.services.store().conn().await?;
-        let items = conn.tickets().list_view(filter, page).await?;
+        let items = conn.tickets().list_view(filter, page, query).await?;
         let counts = conn.tickets().counts().await?;
         Ok((items, counts))
     }
@@ -195,8 +203,36 @@ impl<'a> SupportOps<'a> {
     pub async fn thread(&self, id: TicketId, actor: Actor) -> ServiceResult<TicketThread> {
         let mut conn = self.services.store().conn().await?;
         let ticket = self.ticket_for(&mut conn, id, actor).await?;
+        if matches!(actor, Actor::Admin(_)) {
+            conn.tickets().mark_read(id).await?;
+        }
         let messages = conn.tickets().messages(id).await?;
-        Ok(TicketThread { ticket, messages })
+        let admins =
+            if matches!(actor, Actor::Admin(_)) && messages.iter().any(|m| m.admin_id.is_some()) {
+                conn.admins()
+                    .list()
+                    .await?
+                    .into_iter()
+                    .map(|admin| AdminName {
+                        id: admin.id,
+                        email: admin.email,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        Ok(TicketThread {
+            ticket,
+            messages,
+            admins,
+        })
+    }
+
+    pub async fn reopen(&self, id: TicketId, actor: Actor) -> ServiceResult<()> {
+        let mut conn = self.services.store().conn().await?;
+        self.ticket_for(&mut conn, id, actor).await?;
+        conn.tickets().reopen(id).await?;
+        Ok(())
     }
 
     pub async fn reply(

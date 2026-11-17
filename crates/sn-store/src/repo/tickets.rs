@@ -37,6 +37,8 @@ pub struct TicketListItem {
     pub waiting_since: Option<DateTime<Utc>>,
     pub last_message_at: Option<DateTime<Utc>>,
     pub preview: Option<String>,
+    pub last_author: Option<String>,
+    pub unread: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -163,6 +165,8 @@ struct ViewRow {
     waiting_since: Option<DateTime<Utc>>,
     last_message_at: Option<DateTime<Utc>>,
     preview: Option<String>,
+    preview_author: Option<String>,
+    unread: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -258,6 +262,16 @@ impl<'c> TicketsRepo<'c> {
         Ok(())
     }
 
+    pub async fn mark_read(&mut self, id: TicketId) -> StoreResult<u64> {
+        Ok(sqlx::query(
+            "UPDATE ticket_messages SET read_at = now() WHERE ticket_id = $1 AND author = 'client' AND read_at IS NULL",
+        )
+        .bind(id.0)
+        .execute(&mut *self.conn)
+        .await?
+        .rows_affected())
+    }
+
     pub async fn reopen(&mut self, id: TicketId) -> StoreResult<()> {
         sqlx::query(
             "UPDATE tickets SET status = 'open', closed_at = NULL WHERE id = $1 AND status = 'closed'",
@@ -300,14 +314,31 @@ impl<'c> TicketsRepo<'c> {
         &mut self,
         filter: TicketFilter,
         page: PageRequest,
+        query: Option<&str>,
     ) -> StoreResult<Page<TicketListItem>> {
         let (condition, key, direction, compare) = filter_order(filter);
+        let needle = query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| q.chars().take(100).collect::<String>());
+        let like = needle
+            .as_deref()
+            .map(|q| format!("%{}%", super::client_search::escape_like(q)));
+        let folded = needle.as_deref().map(|q| {
+            format!(
+                "%{}%",
+                super::client_search::escape_like(&super::clients::fold_case(q))
+            )
+        });
         let rows: Vec<ViewRow> = sqlx::query_as(&format!(
             "SELECT {COLUMNS}, {key} AS sort_key, tg.meta ->> 'first_name' AS first_name, \
              tg.meta ->> 'last_name' AS last_name, tg.meta ->> 'username' AS telegram_username, \
              em.value AS email, \
              CASE WHEN t.status = 'open' AND t.last_author = 'client' THEN wm.created_at END AS waiting_since, \
-             lm.created_at AS last_message_at, left(lm.body, {PREVIEW_CHARS}) AS preview \
+             lm.created_at AS last_message_at, left(lm.body, {PREVIEW_CHARS}) AS preview, \
+             lm.author AS preview_author, \
+             EXISTS (SELECT 1 FROM ticket_messages um WHERE um.ticket_id = t.id AND um.author = 'client' \
+                 AND um.read_at IS NULL) AS unread \
              FROM tickets t \
              LEFT JOIN ticket_messages wm ON wm.id = t.waiting_message_id \
              LEFT JOIN ticket_messages lm ON lm.id = t.last_message_id \
@@ -316,10 +347,16 @@ impl<'c> TicketsRepo<'c> {
              LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = t.client_id \
                  AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
              WHERE {condition} AND ($1::bigint IS NULL OR {key} {compare} $1) \
+             AND ($3::text IS NULL OR t.subject ILIKE $3 \
+                 OR EXISTS (SELECT 1 FROM ticket_messages qm WHERE qm.ticket_id = t.id AND qm.body ILIKE $3) \
+                 OR EXISTS (SELECT 1 FROM client_identities qi WHERE qi.client_id = t.client_id \
+                     AND qi.search_text LIKE $4)) \
              ORDER BY {key} {direction}, t.id {direction} LIMIT $2"
         ))
         .bind(page.after)
         .bind(page.fetch_limit())
+        .bind(like)
+        .bind(folded)
         .fetch_all(&mut *self.conn)
         .await?;
         let keyed = rows
@@ -338,6 +375,8 @@ impl<'c> TicketsRepo<'c> {
                         waiting_since: row.waiting_since,
                         last_message_at: row.last_message_at,
                         preview: row.preview,
+                        last_author: row.preview_author,
+                        unread: row.unread,
                     },
                 ))
             })

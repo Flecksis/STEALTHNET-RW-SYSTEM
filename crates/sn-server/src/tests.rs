@@ -2078,3 +2078,93 @@ async fn главная_сводка_лента_оплаты_и_обращени
     assert!(tickets["items"][0]["waiting_since"].is_string());
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn поддержка_поиск_прочтение_ответ_и_повторное_открытие() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let client = h.client(5_093_118_422).await;
+    let token = h.client_token(client).await;
+    let (status, opened) = h
+        .write(
+            Method::POST,
+            "/api/client/support/tickets",
+            &token,
+            json!({ "subject": "Не подключается", "body": "Happ пишет timeout после обновления" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+
+    let (status, list) = h
+        .get("/api/admin/support/tickets?filter=waiting", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let id = list["items"][0]["ticket"]["id"].as_i64().unwrap();
+    assert_eq!(list["items"][0]["unread"], true);
+    assert_eq!(list["items"][0]["last_author"], "client");
+    for q in ["timeout", "алексей", "подключ"] {
+        let (status, found) = h
+            .get(
+                &format!(
+                    "/api/admin/support/tickets?filter=waiting&q={}",
+                    urlencoding(q)
+                ),
+                &owner,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{found}");
+        assert_eq!(found["items"].as_array().unwrap().len(), 1, "{q}: {found}");
+    }
+    let (_, none) = h
+        .get(
+            "/api/admin/support/tickets?filter=waiting&q=nothing",
+            &owner,
+        )
+        .await;
+    assert!(none["items"].as_array().unwrap().is_empty());
+
+    let thread = format!("/api/admin/support/tickets/{id}");
+    let (status, body) = h.get(&thread, &owner).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list) = h
+        .get("/api/admin/support/tickets?filter=waiting", &owner)
+        .await;
+    assert_eq!(list["items"][0]["unread"], false);
+
+    let (status, replied) = h
+        .write(
+            Method::POST,
+            &thread,
+            &owner,
+            json!({ "body": "Обновите подписку", "close": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{replied}");
+    assert_eq!(replied["ticket"]["status"], "closed");
+    assert_eq!(replied["admins"][0]["email"], "owner@example.com");
+    let (_, counts) = h
+        .get("/api/admin/support/tickets?filter=closed", &owner)
+        .await;
+    assert_eq!(counts["counts"]["closed"], 1);
+    assert_eq!(counts["counts"]["waiting"], 0);
+
+    let (status, _) = h
+        .write(Method::POST, &format!("{thread}/reopen"), &owner, json!({}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = h.get(&thread, &owner).await;
+    assert_eq!(body["ticket"]["status"], "open");
+    let (_, mine) = h.get("/api/client/support/tickets", &token).await;
+    assert_eq!(mine[0]["id"], id);
+    h.db.cleanup().await;
+}
+
+fn urlencoding(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
