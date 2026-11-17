@@ -26,8 +26,10 @@ const TONKEEPER: &str = "https://app.tonkeeper.com/transfer";
 const COMMENT_PREFIX: &str = "SN-";
 const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const TRANSACTIONS_LIMIT: u32 = 100;
+const TRANSACTIONS_RETRY_LIMIT: u32 = 30;
 const CHAIN_TTL: Duration = Duration::from_secs(5);
 const REJECTED_KEY_PAUSE: Duration = Duration::from_secs(300);
+const LOG_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GramInvoice {
@@ -375,6 +377,7 @@ pub struct Gram {
     chain: Mutex<Chain>,
     rejected_key: Mutex<Option<(String, Instant, String)>>,
     issue: Mutex<Option<ProviderIssue>>,
+    logged: Mutex<HashMap<String, Instant>>,
 }
 
 fn guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -425,6 +428,7 @@ impl Gram {
             chain: Mutex::new(HashMap::new()),
             rejected_key: Mutex::new(None),
             issue: Mutex::new(None),
+            logged: Mutex::new(HashMap::new()),
         }
     }
 
@@ -443,6 +447,7 @@ impl Gram {
             chain: Mutex::new(HashMap::new()),
             rejected_key: Mutex::new(None),
             issue: Mutex::new(None),
+            logged: Mutex::new(HashMap::new()),
         }
     }
 
@@ -592,15 +597,45 @@ impl Gram {
         }
     }
 
+    fn log_due(&self, invoice: &str) -> bool {
+        let mut logged = guard(&self.logged);
+        logged.retain(|_, at| at.elapsed() < LOG_EVERY);
+        if logged.contains_key(invoice) {
+            return false;
+        }
+        logged.insert(invoice.to_string(), Instant::now());
+        true
+    }
+
     async fn request_chain(
         &self,
         base: &str,
         address: &str,
         key: Option<&str>,
     ) -> Result<Vec<Transaction>, (PaymentError, String)> {
+        match self
+            .request_page(base, address, key, TRANSACTIONS_LIMIT)
+            .await
+        {
+            Err((PaymentError::Http { status: 500..=599 } | PaymentError::BadPayload(_), _)) => {
+                self.request_page(base, address, key, TRANSACTIONS_RETRY_LIMIT)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    async fn request_page(
+        &self,
+        base: &str,
+        address: &str,
+        key: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Transaction>, (PaymentError, String)> {
         let mut request = self.http.get(format!("{base}/getTransactions")).query(&[
             ("address", address.to_string()),
-            ("limit", TRANSACTIONS_LIMIT.to_string()),
+            ("limit", limit.to_string()),
+            ("archival", "true".to_string()),
         ]);
         if let Some(key) = key {
             request = request.header("X-API-Key", key);
@@ -665,6 +700,7 @@ impl Gram {
                     );
                     *guard(&self.rejected_key) =
                         Some((key.to_string(), Instant::now(), message.clone()));
+                    tracing::warn!("{message}");
                     match self.request_chain(&base, address, None).await {
                         Ok(list) => {
                             self.note(message);
@@ -877,11 +913,19 @@ impl PaymentProvider for Gram {
         };
         let transactions = match self.transactions(config, &invoice.address).await {
             Ok(list) => list,
-            Err(err) if err.is_retryable() || matches!(err, PaymentError::Http { status: 429 }) => {
-                tracing::debug!(error = %err, "toncenter не ответил, проверим позже");
-                return Ok(Some(pending(&invoice)));
+            Err(err) => {
+                if self.log_due(&invoice.comment) {
+                    let reason = self
+                        .issue()
+                        .map(|issue| issue.message)
+                        .unwrap_or_else(|| err.to_string());
+                    tracing::warn!(invoice = %invoice.comment, "проверка оплаты GRAM не прошла: {reason}");
+                }
+                if err.is_retryable() || matches!(err, PaymentError::Http { status: 429 }) {
+                    return Ok(Some(pending(&invoice)));
+                }
+                return Err(err);
             }
-            Err(err) => return Err(err),
         };
         let paid = transactions.into_iter().find(|tx| {
             tx.in_msg.as_ref().is_some_and(|msg| {
@@ -1405,10 +1449,58 @@ mod tests {
         assert_eq!(outcome.status, ProviderStatus::Paid);
         assert_eq!(provider.issue(), None);
         let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
         assert!(
-            requests
-                .iter()
-                .all(|r| r.url.query_pairs().all(|(name, _)| name != "archival"))
+            requests[0]
+                .url
+                .query_pairs()
+                .any(|(name, value)| name == "archival" && value == "true")
         );
+    }
+
+    #[tokio::test]
+    async fn если_длинная_страница_не_отдалась_берём_короткую() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .and(query_param("limit", "100"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "ok": false,
+                "error": "LITE_SERVER_UNKNOWN: cannot locate transaction in block with specified logical time",
+                "code": 500
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let invoice = GramInvoice {
+            comment: "SN-WLPDQ6GT".into(),
+            nano: 1_160_000_000,
+            address: WALLET.into(),
+            amount: rub(10_000),
+        };
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .and(query_param("limit", "30"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(paid_list(&invoice.comment)))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let provider = Gram::with_endpoints(server.uri(), server.uri(), server.uri());
+        let outcome = provider
+            .fetch_status(&settings(&[]), &invoice.external_id())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Paid);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        assert_eq!(provider.issue(), None);
+    }
+
+    #[test]
+    fn предупреждение_в_журнал_не_чаще_раза_в_минуту_на_счёт() {
+        let provider = Gram::new();
+        assert!(provider.log_due("SN-AAAAAAAA"));
+        assert!(!provider.log_due("SN-AAAAAAAA"));
+        assert!(provider.log_due("SN-BBBBBBBB"));
     }
 }
