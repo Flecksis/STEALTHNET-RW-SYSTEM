@@ -40,6 +40,7 @@ mod mail;
 mod multi_subscriptions;
 mod password_reset;
 mod photos;
+mod robots;
 mod support_mode;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";

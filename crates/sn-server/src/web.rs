@@ -11,6 +11,41 @@ use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+const PREVIEW_BOTS: [&str; 9] = [
+    "TelegramBot",
+    "Twitterbot",
+    "facebookexternalhit",
+    "Slackbot",
+    "Discordbot",
+    "WhatsApp",
+    "vkShare",
+    "LinkedInBot",
+    "SkypeUriPreview",
+];
+
+pub fn preview_bot(user_agent: &str) -> Option<&'static str> {
+    let lower = user_agent.to_ascii_lowercase();
+    PREVIEW_BOTS
+        .into_iter()
+        .find(|bot| lower.contains(&bot.to_ascii_lowercase()))
+}
+
+pub fn robots_txt(indexing: bool) -> String {
+    let mut out = String::new();
+    for bot in PREVIEW_BOTS {
+        out.push_str(&format!("User-agent: {bot}\n"));
+    }
+    out.push_str("Allow: /\n\n");
+    out.push_str("User-agent: *\n");
+    if indexing {
+        out.push_str(
+            "Disallow: /admin\nDisallow: /cabinet\nDisallow: /app\nDisallow: /api/\nAllow: /\n",
+        );
+    } else {
+        out.push_str("Disallow: /\n");
+    }
+    out
+}
 const REVALIDATE: &str = "no-cache";
 const ICON: &str = "/api/public/icon.svg";
 
@@ -167,6 +202,16 @@ fn head(settings: &CoreSettings, page: Page) -> String {
         }
     }
     tags.push("<meta name=\"twitter:card\" content=\"summary\">".to_string());
+    tags.push(format!(
+        "<meta name=\"twitter:title\" content=\"{}\">",
+        escape_html(site_title)
+    ));
+    if let Some(description) = description {
+        tags.push(format!(
+            "<meta name=\"twitter:description\" content=\"{}\">",
+            escape_html(description)
+        ));
+    }
     tags.join("\n    ")
 }
 
@@ -206,6 +251,14 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     if renders_page(&path) {
+        if let Some(bot) = request
+            .headers()
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .and_then(preview_bot)
+        {
+            tracing::info!(bot, path = %path, "сборщик превью ссылок открыл страницу");
+        }
         return page(&state, &dir, &path).await;
     }
     serve(&dir, &path, request).await
@@ -253,6 +306,31 @@ mod tests {
     use super::*;
     use sn_domain::image::ImageKind;
     use sn_domain::settings::{ImageMeta, SiteSettings};
+
+    #[test]
+    fn сборщики_превью_узнаются_и_пускаются_в_robots() {
+        assert_eq!(
+            preview_bot("TelegramBot (like TwitterBot)"),
+            Some("TelegramBot")
+        );
+        assert_eq!(
+            preview_bot(
+                "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+            ),
+            Some("facebookexternalhit")
+        );
+        assert_eq!(
+            preview_bot("Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X)"),
+            None
+        );
+        let open = robots_txt(true);
+        assert!(open.starts_with("User-agent: TelegramBot\n"));
+        assert!(open.contains("User-agent: *\nDisallow: /admin\n"));
+        assert!(open.ends_with("Allow: /\n"));
+        let closed = robots_txt(false);
+        assert!(closed.contains("User-agent: TelegramBot\n"));
+        assert!(closed.ends_with("User-agent: *\nDisallow: /\n"));
+    }
 
     #[test]
     fn адреса_api_не_уходят_в_интерфейс() {

@@ -28,6 +28,18 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/landing/{file}", get(landing_image))
         .route("/api/public/icon.svg", get(icon))
         .route("/favicon.ico", get(favicon_ico))
+        .route("/robots.txt", get(robots))
+}
+
+async fn robots(State(state): State<AppState>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        crate::web::robots_txt(state.services.settings().site.indexing),
+    )
+        .into_response()
 }
 
 async fn catalog(State(state): State<AppState>) -> Response {
