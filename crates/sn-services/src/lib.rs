@@ -21,6 +21,7 @@ pub mod limits;
 pub mod login;
 pub mod mail;
 pub mod remna_sync;
+pub mod server_load;
 pub mod services;
 pub mod settings;
 pub mod stars_review;

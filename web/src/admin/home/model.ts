@@ -27,6 +27,20 @@ export type Dashboard = {
   support_waiting: number;
   remna: { online_now: number; users_total: number; nodes_total: number; nodes_online: number; nodes: NodeBrief[] } | null;
   remna_error: string | null;
+  server?: ServerLoad;
+};
+
+export type Usage = { used_bytes: number; total_bytes: number };
+
+export type ServerLoad = {
+  cpu_percent: number | null;
+  cores: number | null;
+  load: [number, number, number] | null;
+  memory: Usage | null;
+  disk: Usage | null;
+  uptime_seconds: number | null;
+  app_memory_bytes: number | null;
+  database_bytes: number | null;
 };
 
 export type Person = { client_id: number; name: string | null; telegram_username: string | null; telegram_id: string | null; email: string | null };

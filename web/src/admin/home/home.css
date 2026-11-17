@@ -504,3 +504,99 @@
   flex: 1 1 100%;
   justify-content: center;
 }
+
+.hm-side {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.hm-side .hm-nodes {
+  flex: none;
+}
+
+.hm-panel {
+  padding: 16px 22px 14px;
+}
+
+.hm-panel.day {
+  padding: 18px 20px 14px;
+}
+
+.hm-panel.phone {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.hm-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hm-panel.day .hm-meters {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+}
+
+.hm-panel.day .hm-meter {
+  flex: 1 1 200px;
+}
+
+.hm-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.hm-meter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.hm-meter-head span:first-child {
+  color: var(--ink-2);
+}
+
+.hm-meter-head span:last-child {
+  font-weight: 600;
+}
+
+.hm-meter-bar {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.hm-meter-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--ink-2);
+}
+
+.hm-meter.warn .hm-meter-bar span {
+  background: var(--warn);
+}
+
+.hm-meter.bad .hm-meter-bar span {
+  background: var(--bad);
+}
+
+.hm-meter.bad .hm-meter-head span:last-child {
+  color: var(--bad);
+}
+
+.hm-panel-foot {
+  margin: 12px 0 0;
+}

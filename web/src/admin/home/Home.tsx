@@ -34,6 +34,7 @@ import {
 import './home.css';
 import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
+import { PanelServer } from './PanelServer';
 
 export function useOverview() {
   const { can } = useSession();
@@ -339,6 +340,7 @@ function MainBoard() {
       <div className="hm-cols">
         <Feed nodes={nodes} restart={restart} restarting={restarting} canRestart={canRestart} variant="main" />
 
+        <div className="hm-side">
         <section aria-labelledby="nodes-h" className="hm-sec hm-nodes">
           <div className="hm-feedhead">
             <h2 id="nodes-h" className="hm-h2">
@@ -373,6 +375,8 @@ function MainBoard() {
             );
           })}
         </section>
+        <PanelServer load={dashboard?.server} variant="side" />
+        </div>
       </div>
       {picking ? <PickClient onClose={() => setPicking(false)} /> : null}
     </div>
@@ -629,6 +633,7 @@ function Daylight() {
           </div>
         ) : null}
       </section>
+      <PanelServer load={dashboard?.server} variant="day" />
       <Feed nodes={nodes} restart={restart} restarting={restarting} canRestart={canRestart} variant="day" />
       {picking ? <PickClient onClose={() => setPicking(false)} /> : null}
     </div>

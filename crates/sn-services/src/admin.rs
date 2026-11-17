@@ -80,7 +80,7 @@ pub struct RemnaOverview {
     pub nodes: Vec<NodeBrief>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DashboardView {
     pub currency: Currency,
     pub subscriptions: Option<DashboardCounts>,
@@ -93,6 +93,7 @@ pub struct DashboardView {
     pub refund_actions_failed: i64,
     pub remna: Option<RemnaOverview>,
     pub remna_error: Option<String>,
+    pub server: crate::server_load::ServerLoad,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -551,7 +552,14 @@ impl<'a> AdminOps<'a> {
         )
         .fetch_one(conn.conn())
         .await?;
+        let database_bytes: Option<i64> =
+            sqlx::query_scalar("SELECT pg_database_size(current_database())")
+                .fetch_one(conn.conn())
+                .await
+                .ok();
         drop(conn);
+        let mut server = crate::server_load::probe().sample().await;
+        server.database_bytes = database_bytes.and_then(|b| u64::try_from(b).ok());
         let (remna, remna_error) = match self.remna_overview().await {
             Ok(overview) => (Some(overview), None),
             Err(err) => (None, Some(err.to_string())),
@@ -568,6 +576,7 @@ impl<'a> AdminOps<'a> {
             refund_actions_failed,
             remna,
             remna_error,
+            server,
         })
     }
 

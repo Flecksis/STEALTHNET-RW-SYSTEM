@@ -7,6 +7,7 @@ import { amountText, lowerFirst, methodText } from '../client/history';
 import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { useOverview } from './Home';
+import { PanelServer } from './PanelServer';
 import { agoLong, minutesSince, orderLine, personName, spanText, type PaymentItem, type TicketItem } from './model';
 import './phone.css';
 import { Avatar } from '../Avatar';
@@ -258,6 +259,7 @@ export function HomePhone() {
           </div>
         </section>
       ) : null}
+      <PanelServer load={dashboard?.server} variant="phone" />
     </div>
   );
 }
