@@ -195,6 +195,26 @@ export function trafficLine(view: SubscriptionView): { used: string; tail: strin
   return { used: `${gb(used)} из ${gb(limit)}${NBSP}ГБ`, tail: reset === 'no_reset' ? ' на весь срок' : ` · ${when.tail}`, exhausted };
 }
 
+export type TrafficMeter = { used: string; limit: string; left: string; share: number; tail: string; exhausted: boolean };
+
+export function trafficMeter(view: SubscriptionView): TrafficMeter | null {
+  const limit = view.subscription.mirror.traffic_limit_bytes ?? view.tariff?.traffic.limit_bytes ?? 0;
+  if (!limit) {
+    return null;
+  }
+  const exhausted = view.status === 'limited';
+  const used = exhausted ? limit : Math.min(Math.max(view.subscription.mirror.traffic_used_bytes ?? 0, 0), limit);
+  const reset = view.tariff?.traffic.reset ?? 'no_reset';
+  return {
+    used: `${gb(used)}${NBSP}ГБ`,
+    limit: `${gb(limit)}${NBSP}ГБ`,
+    left: `${gb(Math.max(limit - used, 0))}${NBSP}ГБ`,
+    share: Math.min(1, used / limit),
+    tail: resetWhen(reset, view.subscription).tail,
+    exhausted,
+  };
+}
+
 export function explanation(view: SubscriptionView | null, blocked: boolean): string | null {
   if (blocked || view?.status === 'blocked') {
     return 'Подписка заблокирована. Напишите в поддержку.';

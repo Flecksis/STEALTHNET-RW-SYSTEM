@@ -4,7 +4,7 @@ import { BrandMark } from '../lib/brand';
 import { api } from '../lib/api';
 import { dateLong, money, plural } from '../lib/format';
 import { Icon, type IconName } from '../lib/icons';
-import { resetWhen, trafficLine, type Referral } from '../cabinet/model';
+import { resetWhen, trafficMeter, type Referral } from '../cabinet/model';
 import { ThemeCirc, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 
@@ -29,7 +29,8 @@ export function MiniHome() {
   const share = !view || expired || !total ? 0 : Math.min(1, left / total);
   const expire = view?.subscription.mirror.expire_at ?? null;
   const name = view?.tariff?.name ?? (view?.subscription.kind === 'trial' ? 'Пробный период' : 'Подписка');
-  const traffic = view ? trafficLine(view) : null;
+  const meter = view && !expired && !blocked ? trafficMeter(view) : null;
+  const tight = !!meter && (meter.exhausted || meter.share >= 0.9);
   const reset = view?.tariff?.traffic.reset ?? 'no_reset';
   const mode = site.connect?.mode ?? 'ours';
   const url = view?.subscription_url ?? null;
@@ -111,14 +112,31 @@ export function MiniHome() {
         <span className="mn-lines">
           <strong>{view ? `${name} · ${expire ? (expired ? `закончилась ${dateLong(expire, false)}` : `до ${dateLong(expire, false)}`) : ''}` : 'Выберите тариф'}</strong>
           <span className={`mn-tone ${line2.tone}`}>{line2.text}</span>
-          {traffic && !limited && !expired && !blocked ? (
-            <span className="mn-tone ink2">
-              Трафик: {traffic.used}
-              {traffic.tail}
-            </span>
-          ) : null}
         </span>
       </section>
+
+      {meter ? (
+        <section aria-label="Трафик" className="mn-traffic">
+          <span className="mn-traffic-top">
+            <span className="mn-traffic-name">Трафик</span>
+            <strong className={tight ? 'warn' : undefined}>{meter.exhausted ? 'закончился' : `осталось ${meter.left}`}</strong>
+          </span>
+          <span
+            className={tight ? 'mn-traffic-bar warn' : 'mn-traffic-bar'}
+            role="progressbar"
+            aria-label="Израсходовано трафика"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(meter.share * 100)}
+            aria-valuetext={`${meter.used} из ${meter.limit}`}
+          >
+            <span style={{ width: `${meter.share > 0 ? Math.max(meter.share * 100, 2) : 0}%` }} />
+          </span>
+          <span className="mn-traffic-sub">
+            {meter.used} из {meter.limit} · {meter.tail}
+          </span>
+        </section>
+      ) : null}
 
       {button(main, 'mn-main press', 20)}
       {view ? (

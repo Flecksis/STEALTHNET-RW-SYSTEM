@@ -206,6 +206,58 @@
   font-weight: 800;
 }
 
+.mn-traffic {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.mn-traffic-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mn-traffic-name {
+  font-weight: 700;
+}
+
+.mn-traffic-top strong {
+  font-weight: 800;
+}
+
+.mn-traffic-top strong.warn {
+  color: var(--warn);
+}
+
+.mn-traffic-bar {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.mn-traffic-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+}
+
+.mn-traffic-bar.warn span {
+  background: var(--warn);
+}
+
+.mn-traffic-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .mn-tone {
   font-weight: 600;
 }
