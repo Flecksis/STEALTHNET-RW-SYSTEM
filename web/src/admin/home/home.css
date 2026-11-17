@@ -476,3 +476,31 @@
     padding: 0 16px;
   }
 }
+
+.hm-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px 24px;
+  padding: 18px 20px;
+}
+
+.hm-import-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 360px;
+  min-width: 0;
+}
+
+.hm-import-go {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.hm-import.is-compact .hm-import-go {
+  flex: 1 1 100%;
+  justify-content: center;
+}

@@ -5,6 +5,7 @@ mod bot_content;
 mod catalog;
 mod clients;
 mod delivery;
+mod import;
 mod infra;
 mod landing;
 mod mail;
@@ -44,6 +45,7 @@ pub fn routes() -> Router<AppState> {
         .merge(landing::routes())
         .merge(system::routes())
         .merge(bot_content::routes())
+        .merge(import::routes())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

@@ -16,6 +16,7 @@ pub mod fulfillment;
 pub mod inbox;
 pub mod infra;
 pub mod landing;
+pub mod legacy;
 pub mod limits;
 pub mod login;
 pub mod mail;

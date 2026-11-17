@@ -368,6 +368,7 @@ code=$?
 grep -q '^SN_HTTPS=manual$' "$R/deploy/.env" && check ok "свой веб-сервер не ставится" || check no "SN_HTTPS: $(grep '^SN_HTTPS' "$R/deploy/.env")"
 grep -q '^COMPOSE_FILE=docker-compose.yml$' "$R/deploy/.env" && check ok "лишних служб нет" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
 grep -q 'reverse_proxy 127.0.0.1:8080' "$R/deploy/proxy-snippet.txt" && grep -q 'proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;' "$R/deploy/proxy-snippet.txt" && check ok "подсказка для чужого веб-сервера записана" || check no "нет подсказки"
+grep -q 'client_max_body_size 2g;' "$R/deploy/proxy-snippet.txt" && check ok "nginx пропускает выгрузку старого бота до 2 ГБ" || check no "nginx режет большие файлы выгрузки"
 grep -q "блок из файла $R/deploy/proxy-snippet.txt" "$WORK/out.txt" && check ok "в итоге сказано, где подсказка" || check no "в итоге нет пути к подсказке"
 
 echo "=== AE. занятый порт приложения"

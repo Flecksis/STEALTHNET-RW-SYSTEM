@@ -32,6 +32,9 @@ jsonwebtoken.workspace = true
 sqlx.workspace = true
 reqwest.workspace = true
 lettre.workspace = true
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true

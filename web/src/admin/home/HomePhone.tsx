@@ -10,6 +10,7 @@ import { useOverview } from './Home';
 import { agoLong, minutesSince, orderLine, personName, spanText, type PaymentItem, type TicketItem } from './model';
 import './phone.css';
 import { Avatar } from '../Avatar';
+import { ImportHint } from './ImportHint';
 
 type Withdrawal = { id: number; amount: Money; status: string; created_at: string };
 
@@ -137,6 +138,8 @@ export function HomePhone() {
           </span>
         </button>
       </PhoneHeader>
+
+      <ImportHint compact />
 
       <form role="search" onSubmit={search}>
         <label className="hp-search">

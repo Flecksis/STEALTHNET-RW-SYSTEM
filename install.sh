@@ -379,6 +379,7 @@ write_snippet() {
         printf 'nginx, внутри блока server с сертификатом для %s:\n\n' "$host"
         printf 'location / {\n'
         printf '    proxy_pass http://127.0.0.1:%s;\n' "${port:-8080}"
+        printf '    client_max_body_size 2g;\n'
         printf '    proxy_set_header Host %shost;\n' "$dollar"
         printf '    proxy_set_header X-Forwarded-For %sproxy_add_x_forwarded_for;\n' "$dollar"
         printf '    proxy_set_header X-Forwarded-Proto %sscheme;\n' "$dollar"

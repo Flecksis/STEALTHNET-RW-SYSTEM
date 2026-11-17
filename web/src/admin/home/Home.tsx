@@ -33,6 +33,7 @@ import {
 } from './model';
 import './home.css';
 import { Avatar } from '../Avatar';
+import { ImportHint } from './ImportHint';
 
 export function useOverview() {
   const { can } = useSession();
@@ -286,6 +287,8 @@ function MainBoard() {
         ) : null}
       </header>
 
+      <ImportHint />
+
       {error && !dashboard ? (
         <p className="err" role="alert">
           {error}
@@ -437,6 +440,8 @@ function Daylight() {
           </div>
         ) : null}
       </header>
+
+      <ImportHint />
 
       <section aria-label="Сводка за сегодня" className="hm-col" style={{ gap: 6 }}>
         <p className="hm-phrase">

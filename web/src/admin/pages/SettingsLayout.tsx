@@ -20,6 +20,7 @@ const SECTIONS: Array<{ label: string; to?: string; need?: Permission }> = [
   { label: 'Администраторы', to: '/admin/settings/admins', need: 'admins' },
   { label: 'API-ключи', to: '/admin/settings/api-keys' },
   { label: 'Обновления и резервные копии', to: UPDATES_PATH },
+  { label: 'Перенос из другого бота', to: '/admin/settings/import' },
 ];
 
 export function SettingsLayout({ children }: { children: ReactNode }) {

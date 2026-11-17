@@ -183,7 +183,15 @@ pub(crate) fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) ->
         id: order.public_id,
         kind: order.kind,
         status: order.status,
-        label: order.quote.lines.first().map(|line| line.label.clone()),
+        label: order
+            .quote
+            .lines
+            .first()
+            .map(|line| line.label.clone())
+            .or_else(|| match &order.intent {
+                PurchaseIntent::Imported { label, .. } => label.clone(),
+                _ => None,
+            }),
         tariff_id,
         tariff_name: tariff_id
             .and_then(|id| tariffs.get(&id).cloned())

@@ -5,7 +5,7 @@ pub enum Command {
     Serve,
     Migrate,
     CreateAdmin { email: String },
-    ImportLegacy { dry_run: bool },
+    ImportLegacy { dry_run: bool, file: Option<String> },
     GenSecretKey,
     Version,
     Help,
@@ -18,8 +18,11 @@ pub const USAGE: &str = "stealthnet — панель продажи VPN пове
   migrate                       применить миграции базы и выйти
   create-admin --email <почта>  создать владельца или сбросить ему пароль;
                                 пароль читается из SN_ADMIN_PASSWORD или первой строки stdin
-  import-legacy [--dry-run]      перенести данные из STEALTHNET 7.x;
-                                старая база берётся из LEGACY_DATABASE_URL
+  import-legacy [--dry-run] [файл]
+                                перенести клиентов из STEALTHNET 7.x или бота Бедолаги:
+                                файл резервной копии старой панели или бота;
+                                без файла — база STEALTHNET 7.x из LEGACY_DATABASE_URL;
+                                пароль zip-архива — из LEGACY_ARCHIVE_PASSWORD
   gen-secret-key                напечатать новый ключ для SN_SECRET_KEY
   version                       показать версию
   help                          эта справка";
@@ -37,13 +40,16 @@ pub fn parse(args: &[String]) -> Result<Command> {
         "help" | "--help" | "-h" => Command::Help,
         "import-legacy" => {
             let mut dry_run = false;
+            let mut file = None;
             for arg in rest.by_ref() {
                 match arg.as_str() {
                     "--dry-run" => dry_run = true,
-                    other => bail!("неизвестный аргумент: {other}"),
+                    other if other.starts_with('-') => bail!("неизвестный аргумент: {other}"),
+                    other if file.is_none() => file = Some(other.to_string()),
+                    other => bail!("лишний аргумент: {other}"),
                 }
             }
-            Command::ImportLegacy { dry_run }
+            Command::ImportLegacy { dry_run, file }
         }
         "create-admin" => {
             let mut email = None;
@@ -99,9 +105,20 @@ mod tests {
         assert!(parse(&args(&["create-admin"])).is_err());
         assert_eq!(
             parse(&args(&["import-legacy", "--dry-run"])).unwrap(),
-            Command::ImportLegacy { dry_run: true }
+            Command::ImportLegacy {
+                dry_run: true,
+                file: None
+            }
+        );
+        assert_eq!(
+            parse(&args(&["import-legacy", "backup.tar.gz"])).unwrap(),
+            Command::ImportLegacy {
+                dry_run: false,
+                file: Some("backup.tar.gz".into())
+            }
         );
         assert!(parse(&args(&["import-legacy", "--from", "postgres://old"])).is_err());
+        assert!(parse(&args(&["import-legacy", "a.sql", "b.sql"])).is_err());
         assert!(parse(&args(&["serve", "extra"])).is_err());
         assert!(parse(&args(&["deploy"])).is_err());
     }

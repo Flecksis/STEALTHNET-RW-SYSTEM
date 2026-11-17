@@ -149,6 +149,11 @@ pub enum PurchaseIntent {
         days: u32,
         note: Option<String>,
     },
+    Imported {
+        source: String,
+        old_id: String,
+        label: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

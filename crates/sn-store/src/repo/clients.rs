@@ -275,6 +275,26 @@ impl<'c> ClientsRepo<'c> {
         row.try_into()
     }
 
+    pub async fn add_identity_if_free(
+        &mut self,
+        client_id: ClientId,
+        identity: &NewIdentity,
+    ) -> StoreResult<bool> {
+        let added: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO client_identities (client_id, kind, value, verified, meta, search_text) \
+             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (kind, value) DO NOTHING RETURNING id",
+        )
+        .bind(client_id.0)
+        .bind(identity.kind.as_str())
+        .bind(&identity.value)
+        .bind(identity.verified)
+        .bind(&identity.meta)
+        .bind(search_text(&identity.value, &identity.meta))
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(added.is_some())
+    }
+
     pub async fn update_identity_meta(
         &mut self,
         kind: IdentityKind,

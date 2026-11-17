@@ -126,6 +126,9 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         .await
         .context("настройки из базы не загрузились")?;
     services.set_update_config(Some(config.updates.clone()));
+    if let Err(err) = services.legacy().recover().await {
+        tracing::warn!(error = %err, "состояние переноса из старого бота не восстановлено");
+    }
     let cancel = CancellationToken::new();
     let signals = cancel.clone();
     tokio::spawn(async move {
@@ -204,8 +207,8 @@ async fn serve(config: Config, store: Store) -> Result<()> {
 async fn run(command: Command) -> Result<()> {
     let config = Config::from_env()?;
     init_logging(&config);
-    if let Command::ImportLegacy { dry_run } = command {
-        return legacy::import(&std::env::vars().collect(), dry_run);
+    if let Command::ImportLegacy { file: None, .. } = &command {
+        legacy::source_url(&std::env::vars().collect())?;
     }
     let store = Store::connect(
         &config.database_url,
@@ -237,9 +240,24 @@ async fn run(command: Command) -> Result<()> {
             Ok(())
         }
         Command::Serve => serve(config, store).await,
-        Command::ImportLegacy { .. } | Command::GenSecretKey | Command::Version | Command::Help => {
-            Ok(())
+        Command::ImportLegacy { dry_run, file } => {
+            if store.pending_migrations().await? > 0 {
+                bail!("в базе не применены миграции: выполните `stealthnet migrate`");
+            }
+            let services = build_services(&config, store)?;
+            services
+                .reload()
+                .await
+                .context("настройки из базы не загрузились")?;
+            legacy::import(
+                &services,
+                &std::env::vars().collect(),
+                dry_run,
+                file.as_deref(),
+            )
+            .await
         }
+        Command::GenSecretKey | Command::Version | Command::Help => Ok(()),
     }
 }
 

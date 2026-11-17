@@ -351,6 +351,9 @@ impl<'a> Fulfillment<'a> {
             PurchaseIntent::Subscription { .. }
             | PurchaseIntent::Trial
             | PurchaseIntent::AdminGrant { .. } => self.subscription(order.clone()).await,
+            PurchaseIntent::Imported { .. } => Err(Halt::Review(
+                "заказ перенесён из старой системы и не выдаётся".into(),
+            )),
         };
         match result {
             Ok(subscription_id) => Ok(FulfillmentOutcome::Done { subscription_id }),
@@ -989,7 +992,9 @@ impl<'a> Fulfillment<'a> {
                 },
                 *extra_devices,
             ),
-            PurchaseIntent::TopUp { .. } | PurchaseIntent::Module { .. } => {
+            PurchaseIntent::TopUp { .. }
+            | PurchaseIntent::Module { .. }
+            | PurchaseIntent::Imported { .. } => {
                 return Err(Halt::Review("заказ не выдаёт подписку".into()));
             }
         };

@@ -1,0 +1,115 @@
+import type { Currency } from '../../lib/types';
+
+export type Source = 'stealthnet' | 'bedolaga';
+
+export type RunState =
+  | 'uploaded'
+  | 'checking'
+  | 'needs_password'
+  | 'ready'
+  | 'failed'
+  | 'running'
+  | 'done'
+  | 'interrupted'
+  | 'discarded';
+
+export type Counts = {
+  clients: number;
+  subscriptions: number;
+  tariffs: number;
+  promo_codes: number;
+  referrals: number;
+  payments: number;
+  tickets: number;
+};
+
+export type Skip = { code: string; count: number; text: string };
+
+export type Preview = {
+  detected: Source;
+  dumped_at: string | null;
+  counts: Counts;
+  balances: { clients: number; total_minor: number; currency: Currency };
+  currency: { source: Currency; install: Currency; switch: boolean; blocked: string | null };
+  remna: { connected: boolean; error: string | null; users: number; found: number; missing: number; ambiguous: number };
+  existing: { clients: number; matched: number; again: number };
+  tariff_mode: 'tariffs' | 'classic';
+  skipped: Skip[];
+};
+
+export type Stage = 'read' | 'tariffs' | 'clients' | 'subscriptions' | 'payments' | 'promo' | 'referrals' | 'tickets' | 'finish';
+
+export type Progress = { stage: Stage; done: number; total: number };
+
+export type Outcome = {
+  counts: Counts;
+  created: number;
+  merged: number;
+  updated: number;
+  issues: number;
+  currency_switched: boolean;
+  balance_total_minor: number;
+};
+
+export type Run = {
+  id: string;
+  source: Source;
+  state: RunState;
+  file: { name: string; size: number };
+  preview: Preview | null;
+  progress: Progress | null;
+  outcome: Outcome | null;
+  error: string | null;
+  issues: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  by: string | null;
+};
+
+export type BotLink = 'ok' | 'conflict' | 'webhook' | 'no_token' | 'unauthorized' | 'offline';
+
+export type ImportView = {
+  remna: boolean;
+  currency: Currency;
+  clients: number;
+  bot: BotLink;
+  run: Run | null;
+  history: Run[];
+};
+
+export const SOURCES: Array<{ id: Source; name: string; what: string }> = [
+  { id: 'stealthnet', name: 'STEALTHNET', what: 'Панель и бот STEALTHNET версии 7' },
+  { id: 'bedolaga', name: 'Бот Бедолаги', what: 'remnawave-bedolaga-telegram-bot' },
+];
+
+export const STAGES: Array<{ key: Stage; label: string }> = [
+  { key: 'read', label: 'Чтение файла' },
+  { key: 'tariffs', label: 'Тарифы' },
+  { key: 'clients', label: 'Клиенты и балансы' },
+  { key: 'subscriptions', label: 'Подписки' },
+  { key: 'payments', label: 'Платежи' },
+  { key: 'promo', label: 'Промокоды' },
+  { key: 'referrals', label: 'Рефералы' },
+  { key: 'tickets', label: 'Обращения' },
+  { key: 'finish', label: 'Сверка' },
+];
+
+export const COUNT_LABELS: Array<{ key: keyof Counts; label: string }> = [
+  { key: 'clients', label: 'Клиенты' },
+  { key: 'subscriptions', label: 'Подписки' },
+  { key: 'tariffs', label: 'Тарифы' },
+  { key: 'promo_codes', label: 'Промокоды' },
+  { key: 'referrals', label: 'Рефералы' },
+  { key: 'payments', label: 'Платежи' },
+  { key: 'tickets', label: 'Обращения' },
+];
+
+export const MAX_UPLOAD = 2 * 1024 * 1024 * 1024;
+
+export const ACCEPT: Record<Source, string> = {
+  stealthnet: '.sql,.gz',
+  bedolaga: '.gz,.tgz,.tar,.zip,.json',
+};
+
+export const ACTIVE: RunState[] = ['checking', 'running'];
