@@ -64,6 +64,7 @@ export function AdminApp() {
   }, [load]);
 
   const [supportBadge, setSupportBadge] = useState(0);
+  const [updateDot, setUpdateDot] = useState(false);
   const signedIn = state.kind === 'in';
   useEffect(() => {
     if (!signedIn) {
@@ -81,6 +82,25 @@ export function AdminApp() {
       window.clearInterval(timer);
     };
   }, [signedIn]);
+
+  const owner = state.kind === 'in' && state.me.admin.role === 'owner';
+  useEffect(() => {
+    if (!owner) {
+      setUpdateDot(false);
+      return;
+    }
+    let alive = true;
+    const tick = () =>
+      api<{ update: unknown }>('/api/admin/system/summary')
+        .then((s) => alive && setUpdateDot(!!s.update))
+        .catch(() => undefined);
+    void tick();
+    const timer = window.setInterval(tick, 15 * 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [owner]);
 
   const appearance: Appearance = state.kind === 'in' ? state.me.appearance : (site ?? DEFAULT_SITE).appearance;
   const canSettings = state.kind === 'in' && state.me.permissions.includes('settings');
@@ -153,7 +173,7 @@ export function AdminApp() {
 
   return (
     <SessionContext.Provider value={session}>
-      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge}>
+      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge} updateDot={updateDot}>
         <Routes>
           <Route index element={<Home />} />
           <Route path="clients" element={<Clients />} />

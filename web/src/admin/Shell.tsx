@@ -14,8 +14,11 @@ type Props = {
   theme: Theme;
   onFlipTheme: () => void;
   supportBadge?: number;
+  updateDot?: boolean;
   children: ReactNode;
 };
+
+const UPDATE_LABEL = 'вышла новая сборка';
 
 function initial(text: string | null | undefined): string {
   const first = (text ?? '').trim().charAt(0);
@@ -78,10 +81,10 @@ function Rail({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: str
           return (
             <span key={item.key} style={{ display: 'contents' }}>
               {sep ? <span className="rail-sep" aria-hidden="true" /> : null}
-              <Link to={item.to} className="rail-item hov" aria-current={current ? 'page' : undefined}>
+              <Link to={item.to} className="rail-item hov" aria-current={current ? 'page' : undefined} aria-label={item.dot ? `${item.label}, ${UPDATE_LABEL}` : undefined}>
                 <span className="rail-icon">
                   <Icon name={item.icon} />
-                  {item.badge ? <span className="rail-dot" aria-hidden="true" /> : null}
+                  {item.badge ? <span className="rail-dot" aria-hidden="true" /> : item.dot ? <span className="rail-dot upd" aria-hidden="true" /> : null}
                 </span>
                 <span className="lbl grow">{item.label}</span>
                 {item.badge ? <span className="lbl rail-count">{item.badge}</span> : null}
@@ -176,6 +179,7 @@ function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: s
                 onClick={() => setMoreOpen((v) => !v)}
               >
                 <span>Ещё</span>
+                {more.some((item) => item.dot) ? <span className="nav-dot" aria-hidden="true" /> : null}
                 <Icon name="chevron-down" size={15} stroke={2} />
               </button>
               {moreOpen ? (
@@ -186,8 +190,9 @@ function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: s
                     return (
                       <span key={item.key} style={{ display: 'contents' }}>
                         {sep ? <span className="more-sep" aria-hidden="true" /> : null}
-                        <Link to={item.to} className="hov" aria-current={isCurrent(item, path) ? 'page' : undefined}>
+                        <Link to={item.to} className="hov" aria-current={isCurrent(item, path) ? 'page' : undefined} aria-label={item.dot ? `${item.label}, ${UPDATE_LABEL}` : undefined}>
                           {item.label}
+                          {item.dot ? <span className="nav-dot" aria-hidden="true" /> : null}
                         </Link>
                       </span>
                     );
@@ -266,7 +271,10 @@ function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path:
               {more.map((item) => (
                 <Link key={item.key} to={item.to} className="psheet-row press" aria-current={isCurrent(item, path) ? 'page' : undefined}>
                   <Icon name={item.icon} size={21} />
-                  <span className="psheet-name">{item.label}</span>
+                  <span className="psheet-name">
+                    {item.label}
+                    {item.dot ? <span className="nav-dot" aria-hidden="true" /> : null}
+                  </span>
                   <Icon name="chevron-right" size={16} />
                 </Link>
               ))}
@@ -312,6 +320,7 @@ function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path:
           <button type="button" className="pnav-tab press" aria-expanded={open} aria-current={moreCurrent && !open ? 'page' : undefined} onClick={() => setOpen((v) => !v)}>
             <span className="pnav-icon">
               <Icon name="more" size={22} />
+              {more.some((item) => item.dot) ? <span className="nav-dot pnav-dot" aria-hidden="true" /> : null}
             </span>
             <span>Ещё</span>
           </button>
@@ -321,13 +330,13 @@ function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path:
   );
 }
 
-export function Shell({ theme, onFlipTheme, supportBadge, children }: Props) {
+export function Shell({ theme, onFlipTheme, supportBadge, updateDot, children }: Props) {
   const { me, can } = useSession();
   const location = useLocation();
   const narrow = useMedia('(max-width: 760px)');
   const phone = usePhone();
   const layout = narrow ? 'top' : me.appearance.admin;
-  const items = navItems(me, can, supportBadge);
+  const items = navItems(me, can, supportBadge, updateDot);
   if (phone) {
     return (
       <div className="adm" data-layout="phone">

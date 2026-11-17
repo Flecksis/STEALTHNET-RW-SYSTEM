@@ -9,6 +9,7 @@ export type NavItem = {
   to: string;
   group: 'core' | 'module' | 'system';
   badge?: number;
+  dot?: boolean;
 };
 
 const CORE: Array<{ key: string; label: string; icon: IconName; to: string; need?: Permission }> = [
@@ -20,7 +21,7 @@ const CORE: Array<{ key: string; label: string; icon: IconName; to: string; need
   { key: 'infra', label: 'Инфраструктура', icon: 'server', to: '/admin/infra', need: 'infrastructure' },
 ];
 
-export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?: number): NavItem[] {
+export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?: number, updateDot?: boolean): NavItem[] {
   const items: NavItem[] = CORE.filter((item) => !item.need || can(item.need)).map((item) => ({
     key: item.key,
     label: item.label,
@@ -42,7 +43,7 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
     items.push({ key: 'modules', label: 'Модули', icon: 'blocks', to: '/admin/modules', group: 'system' });
   }
   if (can('settings')) {
-    items.push({ key: 'settings', label: 'Настройки', icon: 'sliders', to: '/admin/settings', group: 'system' });
+    items.push({ key: 'settings', label: 'Настройки', icon: 'sliders', to: '/admin/settings', group: 'system', dot: updateDot || undefined });
   }
   return items;
 }

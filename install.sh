@@ -933,14 +933,14 @@ write_units() {
     } > "$SYSTEMD_DIR/stealthnet-rw-update.path"
     {
         printf '[Unit]\nDescription=STEALTHNET RW: обновление\nAfter=docker.service\nWants=docker.service\nStartLimitIntervalSec=0\n\n'
-        printf '[Service]\nType=oneshot\nEnvironment=SN_UPDATER_STATE=%s\n' "$UPDATER_STATE"
+        printf '[Service]\nType=oneshot\nEnvironment=SN_UPDATER_STATE=%s\nEnvironment=HOME=/root\n' "$UPDATER_STATE"
         printf 'ExecStart=/bin/sh %s/install.sh updater run\n' "$ROOT"
         printf 'ExecStopPost=/bin/sh %s/install.sh updater recover\n' "$ROOT"
         printf 'TimeoutStartSec=30min\nUMask=0077\nNoNewPrivileges=yes\nPrivateTmp=yes\n'
     } > "$SYSTEMD_DIR/stealthnet-rw-update.service"
     {
         printf '[Unit]\nDescription=STEALTHNET RW: завершение прерванного обновления\nAfter=docker.service\nWants=docker.service\n\n'
-        printf '[Service]\nType=oneshot\nEnvironment=SN_UPDATER_STATE=%s\n' "$UPDATER_STATE"
+        printf '[Service]\nType=oneshot\nEnvironment=SN_UPDATER_STATE=%s\nEnvironment=HOME=/root\n' "$UPDATER_STATE"
         printf 'ExecStart=/bin/sh %s/install.sh updater recover\n\n' "$ROOT"
         printf '[Install]\nWantedBy=multi-user.target\n'
     } > "$SYSTEMD_DIR/stealthnet-rw-recover.service"

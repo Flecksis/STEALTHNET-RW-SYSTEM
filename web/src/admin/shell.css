@@ -906,3 +906,29 @@
   background: var(--pill);
   color: var(--ink);
 }
+
+.rail-dot.upd {
+  top: -2px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+
+.nav-dot {
+  display: inline-block;
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+.pnav-dot {
+  position: absolute;
+  top: -1px;
+  right: -3px;
+  margin: 0;
+}

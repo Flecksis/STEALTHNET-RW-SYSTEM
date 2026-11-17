@@ -262,3 +262,86 @@ jobs:
           curl -fsS http://127.0.0.1:8080/api/health
           curl -fsS -o /dev/null -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
+
+  install-updater:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: install
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      URL: http://127.0.0.1:8080
+      PUBLISHED: ghcr.io/stealthnet-app/stealthnet-rw-system
+      LOCAL: localhost:5000/stealthnet-rw-system
+      NEXT: "0000000000000000000000000000000000000001"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: a local registry with this build and a newer one
+        run: |
+          set -x
+          docker run -d --name registry -p 5000:5000 registry:2
+          sleep 3
+          docker pull "$PUBLISHED:sha-$GITHUB_SHA"
+          docker tag "$PUBLISHED:sha-$GITHUB_SHA" "$LOCAL:sha-$GITHUB_SHA"
+          docker push "$LOCAL:sha-$GITHUB_SHA"
+          later=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
+          printf 'FROM %s\nLABEL org.opencontainers.image.revision=%s org.opencontainers.image.created=%s\nENV SN_BUILD_COMMIT=%s SN_BUILD_DATE=%s\n' \
+            "$PUBLISHED:sha-$GITHUB_SHA" "$NEXT" "$later" "$NEXT" "$later" > "$RUNNER_TEMP/next.Dockerfile"
+          docker build -t "$LOCAL:main" -f "$RUNNER_TEMP/next.Dockerfile" "$RUNNER_TEMP"
+          docker push "$LOCAL:main"
+          docker image rm "$LOCAL:main" "$LOCAL:sha-$GITHUB_SHA" "$PUBLISHED:sha-$GITHUB_SHA"
+      - name: install as root from a folder only root can change
+        run: |
+          set -x
+          sudo cp -a "$GITHUB_WORKSPACE" /opt/stealthnet-rw
+          sudo chown -R root:root /opt/stealthnet-rw
+          sudo chmod -R go-w /opt/stealthnet-rw
+          host=$(hostname -I | awk '{print $1}')
+          printf 'SN_UPDATE_REGISTRY=http://%s:5000\nSN_UPDATE_REPOSITORY=stealthnet-rw-system\n' "$host" | sudo tee /opt/stealthnet-rw/deploy/.env
+          sudo chmod 600 /opt/stealthnet-rw/deploy/.env
+          cd /
+          sudo SN_IMAGE_REPO="$LOCAL" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost /opt/stealthnet-rw/install.sh | tee "$RUNNER_TEMP/install.log"
+          grep -q 'включено, обновлять может только владелец с паролем' "$RUNNER_TEMP/install.log"
+          systemctl is-active stealthnet-rw-update.path
+          systemctl is-enabled stealthnet-rw-recover.service
+          sudo grep -q '"panel_updates":true' /var/lib/stealthnet-rw/ipc/status/helper.json
+      - name: the owner updates from the admin panel and systemd runs the helper
+        run: |
+          set -x
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/install.log" | tail -n 1)
+          token=$(curl -fsS -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$URL/api/admin/auth/login" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          test -n "$token"
+          auth="Authorization: Bearer $token"
+          curl -fsS -H "$auth" -X POST -H 'content-type: application/json' -d '{}' "$URL/api/admin/system/check" | tee "$RUNNER_TEMP/check.json"
+          grep -q "\"latest\":{\"commit\":\"$NEXT\"" "$RUNNER_TEMP/check.json"
+          grep -q '"can_update":true' "$RUNNER_TEMP/check.json"
+          code=$(curl -s -H "$auth" -o "$RUNNER_TEMP/request.json" -w '%{http_code}' -H 'content-type: application/json' \
+            -d "{\"target\":\"$NEXT\",\"password\":\"$password\"}" "$URL/api/admin/system/update")
+          cat "$RUNNER_TEMP/request.json"
+          test "$code" = 202
+          for i in $(seq 1 100); do
+            state=$(sudo sed -n 's/.*"state":"\([a-z_]*\)","steps".*/\1/p' /var/lib/stealthnet-rw/ipc/status/update.json 2>/dev/null || true)
+            case "$state" in
+              done|failed|rolled_back|attention) break ;;
+            esac
+            sleep 3
+          done
+          sudo cat /var/lib/stealthnet-rw/ipc/status/update.json
+          sudo journalctl -u stealthnet-rw-update.service --no-pager | tail -n 30
+          test "$state" = done
+          sudo grep -q "^SN_IMAGE=$LOCAL@sha256:" /opt/stealthnet-rw/deploy/.env
+          curl -fsS "$URL/api/health"
+          token=$(curl -fsS -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$URL/api/admin/auth/login" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          test -n "$token"
+          curl -fsS -H "Authorization: Bearer $token" "$URL/api/admin/system" | tee "$RUNNER_TEMP/after.json"
+          grep -q "\"commit\":\"$NEXT\"" "$RUNNER_TEMP/after.json"
+          grep -q '"update":{[^}]*"state":"done"' "$RUNNER_TEMP/after.json"
+          test "$(sudo docker exec "$(cd /opt/stealthnet-rw/deploy && sudo docker compose ps -q postgres)" psql -U stealthnet -d postgres -Atc "SELECT count(*) FROM pg_database WHERE datname = 'stealthnet_prev'")" = 1
+          sudo ls /opt/stealthnet-rw/deploy/backups/ | grep -q '\.dump$'
+          sudo stealthnet status | tee "$RUNNER_TEMP/status.log"
+          grep -q 'Последнее обновление: .*установлено' "$RUNNER_TEMP/status.log"
