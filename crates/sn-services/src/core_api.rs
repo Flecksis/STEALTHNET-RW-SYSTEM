@@ -5,7 +5,7 @@ use sn_domain::ids::{ClientId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::Money;
-use sn_modules::{BalanceChange, BotSender, CoreApi, ModuleError, Notification};
+use sn_modules::{BalanceChange, BotSender, CoreApi, MailSender, ModuleError, Notification};
 use sn_store::{Db, StoreError};
 use std::sync::Arc;
 
@@ -91,5 +91,9 @@ impl CoreApi for Services {
 
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
         Services::bot_sender(self)
+    }
+
+    fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
+        Some(Arc::new(crate::mail::MailBridge::new(self.clone())))
     }
 }

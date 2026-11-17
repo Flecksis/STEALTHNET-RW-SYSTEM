@@ -357,6 +357,10 @@ impl ModuleRegistry {
     pub fn client_router(self: &Arc<Self>, ctx: ModuleContext) -> Router {
         self.mount(|m| m.client_routes(ctx.clone()))
     }
+
+    pub fn public_router(self: &Arc<Self>, ctx: ModuleContext) -> Router {
+        self.mount(|m| m.public_routes(ctx.clone()))
+    }
 }
 
 #[cfg(test)]

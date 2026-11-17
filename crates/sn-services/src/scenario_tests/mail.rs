@@ -222,3 +222,231 @@ async fn письмо_через_resend_уходит_с_ключом_и_ошиб
     );
     env.db.cleanup().await;
 }
+
+async fn fake_smtp_rejecting(refused: &'static str) -> (u16, Letters) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let letters: Letters = Arc::new(StdMutex::new(Vec::new()));
+    let store = letters.clone();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let store = store.clone();
+            tokio::spawn(async move {
+                let (read, mut write) = socket.into_split();
+                let mut lines = BufReader::new(read).lines();
+                if write.write_all(b"220 fake ESMTP\r\n").await.is_err() {
+                    return;
+                }
+                let mut data = false;
+                let mut body = String::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if data {
+                        if line == "." {
+                            data = false;
+                            store.lock().unwrap().push(std::mem::take(&mut body));
+                            let _ = write.write_all(b"250 queued\r\n").await;
+                        } else {
+                            body.push_str(&line);
+                            body.push('\n');
+                        }
+                        continue;
+                    }
+                    let upper = line.to_ascii_uppercase();
+                    let reply: &[u8] = if upper.starts_with("EHLO") {
+                        b"250-fake\r\n250 OK\r\n"
+                    } else if upper.starts_with("RCPT") && line.contains(refused) {
+                        b"550 5.1.1 No such user here\r\n"
+                    } else if upper.starts_with("DATA") {
+                        data = true;
+                        b"354 go on\r\n"
+                    } else if upper.starts_with("QUIT") {
+                        let _ = write.write_all(b"221 bye\r\n").await;
+                        return;
+                    } else {
+                        b"250 OK\r\n"
+                    };
+                    if write.write_all(reply).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, letters)
+}
+
+async fn site_ready(services: &Services) {
+    let mut conn = services.store().conn().await.unwrap();
+    conn.settings()
+        .set(
+            sn_domain::settings::keys::PUBLIC_URL,
+            &serde_json::json!("https://vpn.example.com/"),
+            None,
+        )
+        .await
+        .unwrap();
+    drop(conn);
+    services.reload().await.unwrap();
+}
+
+const UNSUBSCRIBE: &str = "https://vpn.example.com/api/public/m/broadcast/unsubscribe/abc";
+
+fn rich(to: &str) -> sn_modules::MailOut<'_> {
+    sn_modules::MailOut {
+        to,
+        subject: "Новые серверы",
+        text: "Текст письма",
+        html: "<p>Текст <b>письма</b></p>",
+        unsubscribe: Some(UNSUBSCRIBE),
+    }
+}
+
+#[tokio::test]
+async fn письмо_рассылки_уходит_по_smtp_с_html_и_отпиской() {
+    use sn_modules::{MailDelivery, MailSender};
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let bridge = crate::mail::MailBridge::new(services.clone());
+    assert!(bridge.site().unwrap_err().contains("способ отправки"));
+    let (port, letters) = fake_smtp_rejecting("nobody@example.com").await;
+    configure(services, admin, port).await;
+    assert!(bridge.site().unwrap_err().contains("адрес сайта"));
+    site_ready(services).await;
+    let site = bridge.site().unwrap();
+    assert_eq!(site.base_url, "https://vpn.example.com");
+    assert_eq!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Sent
+    );
+    let raw = letters.lock().unwrap()[0].clone();
+    let unfolded = raw.replace("\n ", " ").replace("\n\t", " ");
+    assert!(unfolded.contains("List-Unsubscribe:"), "{raw}");
+    assert!(unfolded.contains(&format!("<{UNSUBSCRIBE}>")), "{raw}");
+    assert!(unfolded.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click"));
+    let lower = unfolded.to_ascii_lowercase();
+    assert!(lower.contains("multipart/alternative"), "{raw}");
+    assert!(lower.contains("text/plain") && lower.contains("text/html"));
+    assert_eq!(
+        bridge.send(&rich("nobody@example.com")).await,
+        MailDelivery::Rejected("Почтовый сервер отказал, код 550: 5.1.1 No such user here".into())
+    );
+    assert!(matches!(
+        bridge.send(&rich("не адрес")).await,
+        MailDelivery::Rejected(_)
+    ));
+    let closed = {
+        let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    configure(services, admin, closed).await;
+    assert!(matches!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Off(_)
+    ));
+    services
+        .settings_ops()
+        .toggle_module(ModuleId::Mail, false, admin)
+        .await
+        .unwrap();
+    assert!(bridge.site().unwrap_err().contains("выключен"));
+    assert!(matches!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Off(reason) if reason.contains("выключен")
+    ));
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn письмо_рассылки_через_resend_разбирает_ответы() {
+    use sn_modules::{MailDelivery, MailSender};
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let mut config = serde_json::Map::new();
+    config.insert("transport".into(), serde_json::json!("resend"));
+    config.insert("resend_api_key".into(), serde_json::json!("re_test"));
+    config.insert("from_email".into(), serde_json::json!("robot@example.com"));
+    let ops = services.settings_ops();
+    ops.update_module_config(
+        ModuleId::Mail,
+        &ModuleConfigUpdate {
+            config,
+            clear: Vec::new(),
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    ops.toggle_module(ModuleId::Mail, true, admin)
+        .await
+        .unwrap();
+    site_ready(services).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/emails"))
+        .and(body_partial_json(serde_json::json!({
+            "to": ["alex@example.com"],
+            "subject": "Новые серверы",
+            "text": "Текст письма",
+            "html": "<p>Текст <b>письма</b></p>",
+            "headers": {
+                "List-Unsubscribe": format!("<{UNSUBSCRIBE}>"),
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "1" })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let replies = [
+        ResponseTemplate::new(429)
+            .insert_header("retry-after", "3")
+            .set_body_json(serde_json::json!({ "message": "Too many requests" })),
+        ResponseTemplate::new(422).set_body_json(serde_json::json!({
+            "message": "Invalid `to` field. The email address needs to follow the `email@example.com` format."
+        })),
+        ResponseTemplate::new(422).set_body_json(
+            serde_json::json!({ "message": "The example.com domain is not verified" }),
+        ),
+        ResponseTemplate::new(500),
+    ];
+    for reply in replies {
+        Mock::given(method("POST"))
+            .and(path("/emails"))
+            .respond_with(reply)
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+    }
+    let bridge = crate::mail::MailBridge::new(services.clone()).with_resend_base(server.uri());
+    assert_eq!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Sent
+    );
+    assert_eq!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Wait(std::time::Duration::from_secs(3))
+    );
+    assert!(matches!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Rejected(reason) if reason.contains("`to`")
+    ));
+    assert!(matches!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Off(reason) if reason.contains("not verified")
+    ));
+    assert!(matches!(
+        bridge.send(&rich("alex@example.com")).await,
+        MailDelivery::Failed { retry: true, .. }
+    ));
+    env.db.cleanup().await;
+}

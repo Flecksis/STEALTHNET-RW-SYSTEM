@@ -1,16 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { api, upload } from '../../lib/api';
 import { Icon } from '../../lib/icons';
 import { displayName, type ClientRow } from '../clients/types';
+import { useSession } from '../session';
 import { unclosedTag, visibleLength } from '../pages/telegram';
-import { Preview } from './Preview';
+import { ChannelPreview } from './Preview';
 import {
   AUDIENCES,
   BASE,
+  CHANNELS,
+  addresses,
   at,
   audienceOf,
   clients,
   count,
+  hasBot,
+  hasEmail,
+  reachText,
+  reachTotal,
   failText,
   imageUrl,
   localInput,
@@ -18,6 +26,7 @@ import {
   type Audience,
   type AudienceKind,
   type Broadcast,
+  type Channel,
   type ButtonSpec,
   type Image,
   type Options,
@@ -32,6 +41,23 @@ type Target = { id: number; name: string; handle: string };
 type Note = { text: string; tone: 'ok' | 'bad' | 'plain' };
 
 const TEST_KEY = 'sn.broadcast.test';
+const MAIL_KEY = 'sn.broadcast.mailtest';
+
+function stored(key: string): string {
+  try {
+    return window.localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function keep(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    return;
+  }
+}
 const URL_START = /^(https?:\/\/[^\s/?#]+|tg:\/\/\S+|t\.me\/\S+|@\w+)/i;
 
 function toDraft(button: ButtonSpec): ButtonDraft {
@@ -120,9 +146,12 @@ type Props = {
 };
 
 export function Composer({ options, initial, onSaved, onDeleted }: Props) {
+  const { me } = useSession();
   const limits = options.limits;
   const start: Audience = initial?.audience ?? { kind: 'all' };
   const [id, setId] = useState<number | null>(initial?.id ?? null);
+  const [channel, setChannel] = useState<Channel>(initial?.channel ?? 'bot');
+  const [subject, setSubject] = useState(initial?.subject ?? '');
   const [text, setText] = useState(initial?.text ?? '');
   const [image, setImage] = useState<Image | null>(initial?.image ?? null);
   const [buttons, setButtons] = useState<ButtonDraft[]>(() => (initial ? initial.buttons.map(toDraft) : []));
@@ -142,6 +171,8 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
   const [findError, setFindError] = useState<string | null>(null);
   const [target, setTarget] = useState<Target | null>(storedTarget);
   const [testNote, setTestNote] = useState<Note | null>(null);
+  const [mailTo, setMailTo] = useState(() => stored(MAIL_KEY));
+  const [mailNote, setMailNote] = useState<Note | null>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const file = useRef<HTMLInputElement>(null);
 
@@ -150,9 +181,10 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
   const audience = kind === 'expiring' ? (daysOk ? audienceOf(kind, dayCount, tariff) : null) : audienceOf(kind, dayCount, tariff);
   const audienceKey = JSON.stringify(audience);
 
+  const subjectValue = hasEmail(channel) ? subject.trim().replace(/\s+/g, ' ') : subject.trim() ? subject.trim().replace(/\s+/g, ' ') : null;
   const body = useMemo(
-    () => ({ text, image_id: image?.id ?? null, buttons: buttons.map(toSpec), audience }),
-    [text, image, buttons, audience],
+    () => ({ channel, subject: subjectValue, text, image_id: image?.id ?? null, buttons: buttons.map(toSpec), audience }),
+    [channel, subjectValue, text, image, buttons, audience],
   );
   const bodyKey = JSON.stringify(body);
   const [savedKey, setSavedKey] = useState(() => (initial ? bodyKey : ''));
@@ -219,15 +251,29 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
           : `Telegram показывает до ${limit} знаков`
         : null;
   const buttonProblems = buttons.map((b) => buttonProblem(b, limits.button_text));
-  const contentOk = text.trim() !== '' && !markup && length <= limit && buttonProblems.every((p) => p === null);
+  const subjectLength = [...subject.trim()].length;
+  const subjectProblem = !hasEmail(channel)
+    ? null
+    : !subject.trim()
+      ? tried
+        ? 'Напишите тему письма'
+        : null
+      : subjectLength > limits.subject
+        ? `Тема длиннее ${limits.subject} знаков`
+        : null;
+  const subjectOk = !hasEmail(channel) || (subject.trim() !== '' && subjectLength <= limits.subject);
+  const messageOk = text.trim() !== '' && !markup && length <= limit && buttonProblems.every((p) => p === null);
+  const contentOk = messageOk && subjectOk;
+  const mailOff = hasEmail(channel) && !options.mail.ready;
   const laterDate = new Date(later);
   const laterOk =
     when === 'now' ||
     (!Number.isNaN(laterDate.getTime()) &&
       laterDate.getTime() > Date.now() + 60_000 &&
       laterDate.getTime() < Date.now() + limits.schedule_days * 86_400_000);
-  const nobody = reach !== null && reach.recipients === 0;
-  const canSend = contentOk && audience !== null && laterOk && !(when === 'now' && nobody) && busy === null;
+  const total = reach ? reachTotal(reach, channel) : null;
+  const nobody = total !== null && total === 0;
+  const canSend = contentOk && audience !== null && laterOk && !mailOff && !(when === 'now' && nobody) && busy === null;
 
   const wrap = (before: string, after: string, fallback: string) => {
     const el = area.current;
@@ -279,12 +325,15 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
         ? await api<Broadcast>(`${BASE}/broadcasts`, { method: 'POST', body })
         : await api<Broadcast>(`${BASE}/broadcasts/${id}`, { method: 'PUT', body });
     const normalized = {
+      channel: saved.channel,
+      subject: saved.subject,
       text: saved.text,
       image_id: saved.image?.id ?? null,
       buttons: saved.buttons.map((b) => toSpec(toDraft(b))),
       audience: saved.audience,
     };
     setId(saved.id);
+    setSubject(saved.subject ?? '');
     setText(saved.text);
     setButtons(saved.buttons.map(toDraft));
     setSavedKey(JSON.stringify(normalized));
@@ -371,6 +420,28 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
     }
   };
 
+  const testMail = async () => {
+    const address = mailTo.trim();
+    if (!address) {
+      return;
+    }
+    setTried(true);
+    setBusy('mail');
+    setMailNote(null);
+    keep(MAIL_KEY, address);
+    try {
+      const report = await api<{ result: 'sent' | 'blocked'; message: string }>(`${BASE}/test`, {
+        method: 'POST',
+        body: { email: address, subject: subject, text: body.text, image_id: body.image_id, buttons: body.buttons },
+      });
+      setMailNote({ text: report.message, tone: 'ok' });
+    } catch (err) {
+      setMailNote({ text: failText(err, 'Письмо не отправилось'), tone: 'bad' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const choose = (row: ClientRow) => {
     const picked = { id: row.client.id, name: displayName(row), handle: handleOf(row) };
     setTarget(picked);
@@ -381,14 +452,23 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
   };
 
   const imageSrc = image ? imageUrl(image.id) : null;
-  const preview = <Preview text={text} image={imageSrc} buttons={buttons.map(toSpec)} />;
+  const preview = (
+    <ChannelPreview channel={channel} subject={subject} text={text} image={imageSrc} buttons={buttons.map(toSpec)} brand={me.brand_name} />
+  );
+  const recipients = reach === null ? null : reachText(reach, channel);
   const sendLabel =
     when === 'later'
       ? laterOk
         ? `Запланировать на ${at(laterDate.toISOString())}`
         : 'Запланировать'
-      : reach && reach.recipients > 0
-        ? `Отправить ${clients(reach.recipients)}`
+      : total && total > 0
+        ? channel === 'bot' && reach
+          ? `Отправить ${clients(reach.recipients)}`
+          : channel === 'email' && reach
+            ? `Отправить на${'\u00a0'}${addresses(reach.emails)}`
+            : reach
+              ? `Отправить: ${count(reach.recipients)} в${'\u00a0'}бот, ${count(reach.emails)} на${'\u00a0'}почту`
+              : `Отправить: ${count(total)}`
         : 'Отправить';
 
   return (
@@ -401,6 +481,61 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
             </h2>
             <span className="muted">Текст с разметкой Telegram. Обычные эмодзи вставляются как есть.</span>
           </div>
+          <div className="row">
+            <span className="rl">Куда</span>
+            <div className="rc">
+              <span className="segs bc-channel" role="group" aria-label="Куда отправить">
+                {CHANNELS.map((option) => (
+                  <button
+                    key={option.key}
+                    type="button"
+                    aria-pressed={channel === option.key}
+                    disabled={option.key !== 'bot' && !options.mail.ready && channel !== option.key}
+                    onClick={() => {
+                      setChannel(option.key);
+                      setNote(null);
+                    }}
+                  >
+                    {option.title}
+                  </button>
+                ))}
+              </span>
+              {!options.mail.ready ? (
+                <span className={`bc-channel-note ${mailOff ? 'warn-line' : 'cap'}`}>
+                  {options.mail.reason ?? 'Почта не отправляет'}. <Link to="/admin/settings/mail">Настройки почты</Link>
+                </span>
+              ) : hasEmail(channel) ? (
+                <span className="cap">Письмо соберётся из того же текста, картинки и кнопок. Внизу будет ссылка «Отписаться от рассылок».</span>
+              ) : null}
+            </div>
+          </div>
+          {hasEmail(channel) ? (
+            <div className="row">
+              <label className="rl" htmlFor="bc-subject">
+                Тема письма
+              </label>
+              <div className="rc">
+                <input
+                  id="bc-subject"
+                  className="field"
+                  value={subject}
+                  maxLength={limits.subject * 2}
+                  placeholder="Например: Новые серверы в Нидерландах"
+                  aria-invalid={subjectProblem !== null}
+                  onChange={(e) => {
+                    setSubject(e.target.value);
+                    setNote(null);
+                  }}
+                />
+                <span className="bc-count">
+                  <span className={subjectProblem ? 'err' : 'cap'}>{subjectProblem ?? ''}</span>
+                  <span className={`cap num ${subjectLength > limits.subject ? 'err' : ''}`}>
+                    {count(subjectLength)} / {count(limits.subject)}
+                  </span>
+                </span>
+              </div>
+            </div>
+          ) : null}
           <div className="row">
             <div className="rc">
               <div className="bc-tools" role="toolbar" aria-label="Оформление текста">
@@ -602,7 +737,14 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
             <h2 id="bc-who-h" className="section-title">
               Кому
             </h2>
-            <span className="muted">Список получателей соберётся в момент отправки. Тем, кто остановил бота, сообщение не уходит.</span>
+            <span className="muted">
+              Список получателей соберётся в момент отправки.
+              {channel === 'bot'
+                ? ' Тем, кто остановил бота, сообщение не уходит.'
+                : channel === 'email'
+                  ? ' Тем, кто отписался от рассылок, письмо не уходит.'
+                  : ' Кто остановил бота, не получит сообщение в бот, кто отписался от рассылок — письмо.'}
+            </span>
           </div>
           <div className="row">
             <div className="rc bc-opts" role="radiogroup" aria-label="Кому отправить">
@@ -663,10 +805,22 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
               <span className="muted">Считаем получателей…</span>
             ) : (
               <>
-                <span>
-                  Получат: <strong className="num">{count(reach.recipients)}</strong>
-                </span>
-                {reach.stopped > 0 ? <span className="muted">ещё у {count(reach.stopped)} бот остановлен — им не отправим</span> : null}
+                {hasBot(channel) ? (
+                  <span className="bc-reach-line">
+                    <span>
+                      В бот: <strong className="num">{count(reach.recipients)}</strong>
+                    </span>
+                    {reach.stopped > 0 ? <span className="muted">ещё у {count(reach.stopped)} бот остановлен — им не отправим</span> : null}
+                  </span>
+                ) : null}
+                {hasEmail(channel) ? (
+                  <span className="bc-reach-line">
+                    <span>
+                      На почту: <strong className="num">{count(reach.emails)}</strong>
+                    </span>
+                    {reach.unsubscribed > 0 ? <span className="muted">ещё {addresses(reach.unsubscribed)} отписались — им не отправим</span> : null}
+                  </span>
+                ) : null}
               </>
             )}
           </div>
@@ -677,10 +831,11 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
             <h2 id="bc-test-h" className="section-title">
               Проверка
             </h2>
-            <span className="muted">Отправьте сообщение одному клиенту, например себе, и посмотрите, как оно выглядит в Telegram.</span>
+            <span className="muted">Отправьте рассылку себе и посмотрите, как она выглядит у клиента.</span>
           </div>
+          {hasBot(channel) ? (
           <div className="row">
-            <span className="rl">Кому отправить проверку</span>
+            <span className="rl">В бот, клиенту</span>
             <div className="rc">
               {target ? (
                 <span className="bc-picked">
@@ -724,8 +879,8 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
                 </>
               )}
               <span>
-                <button type="button" className="btn-line hov" onClick={() => void test()} disabled={!target || !contentOk || busy !== null}>
-                  {busy === 'test' ? 'Отправляем…' : 'Отправить проверку'}
+                <button type="button" className="btn-line hov" onClick={() => void test()} disabled={!target || !messageOk || busy !== null}>
+                  {busy === 'test' ? 'Отправляем…' : 'Отправить в бот'}
                 </button>
               </span>
               {testNote ? (
@@ -736,6 +891,44 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
               {!options.bot ? <span className="warn-line">Бот не подключён: проверка не уйдёт, пока не задан токен</span> : null}
             </div>
           </div>
+          ) : null}
+          {hasEmail(channel) ? (
+            <div className="row">
+              <label className="rl" htmlFor="bc-mail-to">
+                На почту, на адрес
+              </label>
+              <div className="rc">
+                <input
+                  id="bc-mail-to"
+                  className="field"
+                  type="email"
+                  inputMode="email"
+                  value={mailTo}
+                  maxLength={254}
+                  placeholder="you@example.com"
+                  onChange={(e) => {
+                    setMailTo(e.target.value);
+                    setMailNote(null);
+                  }}
+                />
+                <span>
+                  <button
+                    type="button"
+                    className="btn-line hov"
+                    onClick={() => void testMail()}
+                    disabled={!mailTo.trim() || !contentOk || mailOff || busy !== null}
+                  >
+                    {busy === 'mail' ? 'Отправляем…' : 'Отправить письмо'}
+                  </button>
+                </span>
+                {mailNote ? (
+                  <span role="status" className={`bc-result ${mailNote.tone === 'plain' ? '' : mailNote.tone}`}>
+                    {mailNote.text}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="sec" aria-labelledby="bc-send-h">
@@ -743,7 +936,10 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
             <h2 id="bc-send-h" className="section-title">
               Отправка
             </h2>
-            <span className="muted">Telegram принимает около 25 сообщений в секунду: тысяча получателей — примерно минута.</span>
+            <span className="muted">
+              {hasBot(channel) ? 'Telegram принимает около 25 сообщений в секунду: тысяча получателей — примерно минута. ' : ''}
+              {hasEmail(channel) ? 'Письма уходят по два в секунду, чтобы почтовый сервис не начал отказывать: тысяча писем — около восьми минут.' : ''}
+            </span>
           </div>
           <div className="row">
             <span className="rl">Когда</span>
@@ -779,13 +975,13 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
             <div className="bc-ask" role="group" aria-label="Подтверждение отправки">
               {when === 'now' ? (
                 <p>
-                  Сообщение уйдёт <strong>{reach ? clients(reach.recipients) : 'получателям'}</strong> сразу после подтверждения.{' '}
+                  Сообщение уйдёт <strong>{recipients ?? 'получателям'}</strong> сразу после подтверждения.{' '}
                   <span className="muted">Отправку можно остановить, пока она идёт: у тех, кому уже ушло, сообщение останется.</span>
                 </p>
               ) : (
                 <p>
                   Сообщение уйдёт <strong>{at(laterDate.toISOString())}</strong>. Получатели соберутся в этот момент
-                  {reach ? `, сейчас получателей: ${count(reach.recipients)}` : ''}. <span className="muted">До этого времени отправку можно отменить.</span>
+                  {recipients ? `, сейчас оно ушло бы ${recipients}` : ''}. <span className="muted">До этого времени отправку можно отменить.</span>
                 </p>
               )}
               <div className="bc-ask-btns">

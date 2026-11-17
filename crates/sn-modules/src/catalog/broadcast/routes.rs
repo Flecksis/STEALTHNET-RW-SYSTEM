@@ -1,13 +1,14 @@
+use super::page::{Form, page};
 use super::{
-    Audience, Broadcast, BroadcastError, ButtonSpec, Draft, IMAGE_MAX_BYTES, ImageMeta, ListItem,
-    Options, Reach, TestReport,
+    Audience, Broadcast, BroadcastError, ButtonSpec, Channel, Draft, IMAGE_MAX_BYTES, ImageMeta,
+    ListItem, Options, Reach, TestReport, TestTarget, Unsubscribe, UnsubscribeView,
 };
 use crate::catalog::web::{Admin, WebError};
 use crate::context::ModuleContext;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
@@ -16,6 +17,7 @@ use serde::de::DeserializeOwned;
 use sn_domain::access::Permission;
 use sn_domain::ids::ClientId;
 use sn_domain::paging::{Page, PageRequest};
+use uuid::Uuid;
 
 const UPLOAD_LIMIT: usize = IMAGE_MAX_BYTES + 64 * 1024;
 
@@ -183,7 +185,12 @@ async fn audience(
 
 #[derive(Deserialize)]
 struct TestBody {
-    client_id: ClientId,
+    #[serde(default)]
+    client_id: Option<ClientId>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
     #[serde(default)]
     text: String,
     #[serde(default)]
@@ -199,14 +206,29 @@ async fn test(
 ) -> Result<Json<TestReport>, WebError> {
     admin.require(Permission::Marketing)?;
     let body: TestBody = parse(&body)?;
+    let target = match (body.email, body.client_id) {
+        (Some(email), _) => TestTarget::Address(email),
+        (None, Some(client)) => TestTarget::Client(client),
+        (None, None) => {
+            return Err(WebError::rejected(
+                "validation.invalid_value",
+                "Выберите клиента или укажите адрес для проверки",
+            ));
+        }
+    };
     let draft = Draft {
+        channel: match target {
+            TestTarget::Address(_) => Channel::Email,
+            TestTarget::Client(_) => Channel::Bot,
+        },
+        subject: body.subject,
         text: body.text,
         image_id: body.image_id,
         buttons: body.buttons,
         audience: Audience::All,
     };
     Ok(Json(
-        super::send_test(&ctx, &draft, body.client_id, Some(admin.0.admin_id)).await?,
+        super::send_test(&ctx, &draft, target, Some(admin.0.admin_id)).await?,
     ))
 }
 
@@ -261,4 +283,137 @@ async fn image(
         HeaderValue::from_static("default-src 'none'; sandbox"),
     );
     Ok(response)
+}
+
+pub fn public(ctx: ModuleContext) -> Router {
+    Router::new()
+        .route("/images/{key}", get(public_image))
+        .route(
+            "/unsubscribe/{token}",
+            get(unsubscribe_page).post(unsubscribe_now),
+        )
+        .route("/resubscribe/{token}", post(resubscribe_now))
+        .with_state(ctx)
+}
+
+async fn public_image(
+    State(ctx): State<ModuleContext>,
+    Path(key): Path<Uuid>,
+) -> Result<Response, WebError> {
+    let Some((content_type, bytes)) = super::public_image(&ctx, key).await? else {
+        return Err(WebError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Картинка не найдена",
+        ));
+    };
+    let mut response = bytes.into_response();
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(&content_type) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    Ok(response)
+}
+
+fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
+    let email = view.email.as_deref().unwrap_or_default();
+    let unsubscribe = format!("/api/public/m/broadcast/unsubscribe/{token}");
+    let resubscribe = format!("/api/public/m/broadcast/resubscribe/{token}");
+    let (status, html) = match view.state {
+        Unsubscribe::Unknown => (
+            StatusCode::NOT_FOUND,
+            page(
+                &view.brand,
+                "Ссылка не найдена",
+                "Возможно, она устарела. Отписаться можно по ссылке из любого нового письма с рассылкой.",
+                None,
+            ),
+        ),
+        Unsubscribe::Preview => (
+            StatusCode::OK,
+            page(
+                &view.brand,
+                "Это проверочное письмо",
+                "В настоящей рассылке по этой ссылке получатель сможет отписаться от писем.",
+                None,
+            ),
+        ),
+        Unsubscribe::Asked => (
+            StatusCode::OK,
+            page(
+                &view.brand,
+                "Отписаться от рассылок?",
+                &format!(
+                    "Письма с новостями и предложениями на {email} больше не придут. Служебные письма, например коды входа, будут приходить как раньше."
+                ),
+                Some(Form {
+                    action: &unsubscribe,
+                    button: "Отписаться",
+                    quiet: false,
+                }),
+            ),
+        ),
+        Unsubscribe::Done => (
+            StatusCode::OK,
+            page(
+                &view.brand,
+                "Вы отписаны",
+                &format!("Рассылки на {email} больше не придут."),
+                Some(Form {
+                    action: &resubscribe,
+                    button: "Вернуть рассылки",
+                    quiet: true,
+                }),
+            ),
+        ),
+        Unsubscribe::Restored => (
+            StatusCode::OK,
+            page(
+                &view.brand,
+                "Рассылки вернутся",
+                &format!("Письма с новостями снова будут приходить на {email}."),
+                None,
+            ),
+        ),
+    };
+    let mut response = (status, Html(html)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        ),
+    );
+    response
+}
+
+async fn unsubscribe_page(
+    State(ctx): State<ModuleContext>,
+    Path(token): Path<Uuid>,
+) -> Result<Response, WebError> {
+    let view = super::unsubscribe_view(&ctx, token).await?;
+    Ok(rendered(&view, token))
+}
+
+async fn unsubscribe_now(
+    State(ctx): State<ModuleContext>,
+    Path(token): Path<Uuid>,
+) -> Result<Response, WebError> {
+    let view = super::unsubscribe(&ctx, token).await?;
+    Ok(rendered(&view, token))
+}
+
+async fn resubscribe_now(
+    State(ctx): State<ModuleContext>,
+    Path(token): Path<Uuid>,
+) -> Result<Response, WebError> {
+    let view = super::resubscribe(&ctx, token).await?;
+    Ok(rendered(&view, token))
 }

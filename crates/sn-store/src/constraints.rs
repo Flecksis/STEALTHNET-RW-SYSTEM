@@ -33,6 +33,9 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("referral_credits_payment_level_key", None),
     ("referral_withdrawals_public_id_key", None),
     ("broadcast_recipients_chat_key", None),
+    ("broadcast_images_public_key", None),
+    ("broadcast_recipients_email_key", None),
+    ("broadcast_recipients_unsubscribe_key", None),
 ];
 
 pub fn field_for(constraint: &str) -> Option<&'static str> {

@@ -49,3 +49,34 @@ pub trait BotSender: Send + Sync {
 
     async fn send(&self, chat_id: i64, message: &Outgoing<'_>) -> Delivery;
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailSite {
+    pub base_url: String,
+    pub brand: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailOut<'a> {
+    pub to: &'a str,
+    pub subject: &'a str,
+    pub text: &'a str,
+    pub html: &'a str,
+    pub unsubscribe: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MailDelivery {
+    Sent,
+    Wait(Duration),
+    Rejected(String),
+    Failed { error: String, retry: bool },
+    Off(String),
+}
+
+#[async_trait]
+pub trait MailSender: Send + Sync {
+    fn site(&self) -> Result<MailSite, String>;
+
+    async fn send(&self, mail: &MailOut<'_>) -> MailDelivery;
+}

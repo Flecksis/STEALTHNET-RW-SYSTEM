@@ -12,5 +12,7 @@ pub use error::ModuleError;
 pub use module::{BotEntry, ItemHook, Module, ModuleConfig, QuoteHook, QuoteOrigin, ScheduledTask};
 pub use placeholder::Placeholder;
 pub use registry::{MenuItem, ModuleRegistry, ModuleView};
-pub use sender::{BotSender, Delivery, OutButton, Outgoing, Photo};
+pub use sender::{
+    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
+};
 pub use sn_domain::module::{CATALOG, CoreFeature, MenuEntry, ModuleGroup, ModuleId, ModuleInfo};

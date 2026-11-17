@@ -5,13 +5,13 @@ import { plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { usePhone } from '../../lib/media';
 import { PhoneHeader } from '../phone';
-import { BASE, failText, outcome, percent, ROOT, statusLine, type ListItem, type Options } from './model';
+import { BASE, channelLabel, failText, outcome, percent, ROOT, statusLine, type ListItem, type Options } from './model';
 import '../home/phone.css';
 
 type PageData = { items: ListItem[]; next: number | null };
 
 function meta(item: ListItem): string {
-  const parts = [item.audience_label];
+  const parts = [item.audience_label, channelLabel(item.channel)];
   if (item.has_image) {
     parts.push('с картинкой');
   }
@@ -146,9 +146,10 @@ function ListDesktop({ items, next, options, error, more, loadMore }: Data) {
                   </span>
                 ) : null}
                 {(item.status === 'done' || item.status === 'canceled') && item.progress.total > 0 ? (
-                  <span className="bc-meta">{outcome(item.progress)}</span>
+                  <span className="bc-meta">{outcome(item.progress, item.channel)}</span>
                 ) : null}
                 {item.notice && item.status === 'sending' ? <span className="bc-meta">{item.notice}</span> : null}
+                {item.mail_notice && item.status === 'sending' ? <span className="bc-meta">{item.mail_notice}</span> : null}
               </span>
             </Link>
           );
@@ -203,9 +204,11 @@ function ListPhone({ items, next, options, error, more, loadMore }: Data) {
                     <span className="hp-title">{item.preview || `Рассылка №${item.id}`}</span>
                     <span className={`hp-note ${status.tone === 'warn' ? 'warn' : status.tone === 'muted' ? 'muted' : ''}`}>{status.text}</span>
                     {(item.status === 'done' || item.status === 'canceled') && item.progress.total > 0 ? (
-                      <span className="hp-note muted">{outcome(item.progress)}</span>
+                      <span className="hp-note muted">{outcome(item.progress, item.channel)}</span>
                     ) : (
-                      <span className="hp-note muted">{item.audience_label}</span>
+                      <span className="hp-note muted">
+                        {item.audience_label} · {channelLabel(item.channel)}
+                      </span>
                     )}
                   </span>
                   <Icon name="chevron-right" size={18} />

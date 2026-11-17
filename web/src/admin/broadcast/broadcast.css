@@ -304,6 +304,17 @@
   align-self: flex-start;
 }
 
+.bc-channel button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bc-channel-note a {
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
 .bc-opt {
   display: flex;
   align-items: flex-start;
@@ -518,10 +529,47 @@
   padding: 0 20px 14px;
 }
 
+.bc-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.bc-lane {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+}
+
+.bc-lane strong {
+  min-width: 80px;
+  font-weight: 600;
+}
+
 .bc-problem {
   flex-wrap: nowrap;
   align-items: baseline;
   justify-content: space-between;
+}
+
+.bc-failed {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.bc-failed-to {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.bc-failed-why {
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .bc-problem span:first-child {
@@ -642,6 +690,18 @@
   }
 }
 
+@media (max-width: 560px) {
+  .bc-col .rc > .bc-channel {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-self: stretch;
+  }
+
+  .bc-channel button:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 760px) {
   .bc-button {
     grid-template-columns: minmax(0, 1fr) 40px;
@@ -677,4 +737,106 @@
   .bc-facts dt {
     flex-basis: 100%;
   }
+}
+
+.bc-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.bc-preview-tabs {
+  align-self: flex-start;
+}
+
+.bc-reach-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  flex: 1 1 100%;
+}
+
+.bc-mail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.bc-mail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bc-mail-from {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.bc-mail-subject {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.bc-mail-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.bc-mail-img {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+}
+
+.bc-mail-body {
+  display: block;
+  padding: 14px 16px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+.bc-mail-body a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.bc-mail-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 16px 16px;
+}
+
+.bc-mail-key {
+  display: block;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--bg);
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.bc-mail-foot {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: center;
+}
+
+.bc-mail-link {
+  text-decoration: underline;
 }

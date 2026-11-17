@@ -112,6 +112,10 @@ pub trait Module: Send + Sync + 'static {
         None
     }
 
+    fn public_routes(&self, _ctx: ModuleContext) -> Option<Router> {
+        None
+    }
+
     fn tasks(&self) -> Vec<ScheduledTask> {
         Vec::new()
     }

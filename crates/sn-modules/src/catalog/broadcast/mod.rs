@@ -1,4 +1,6 @@
 mod engine;
+mod letter;
+mod page;
 mod routes;
 mod store;
 #[cfg(test)]
@@ -8,7 +10,9 @@ use crate::catalog::{options, promo, referral};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use crate::module::{Module, ScheduledTask};
-use crate::sender::{BotSender, Delivery, OutButton, Outgoing, Photo};
+use crate::sender::{
+    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
+};
 use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, Duration as Span, Utc};
@@ -20,10 +24,16 @@ use sn_domain::image::{self, ImageKind};
 use sn_domain::module::ModuleId;
 use sn_domain::paging::{Page, PageRequest};
 use sn_store::{ActorKind, AuditEntry, Db, StoreError};
+use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
-pub use engine::{Engine, EngineConfig};
-pub use store::{Broadcast, ImageMeta, ListItem, Problem, Progress, Reach};
+pub use engine::{Engine, EngineConfig, Sender};
+pub use letter::Letter;
+pub use store::{
+    Broadcast, ChannelProgress, FailedEmail, ImageMeta, ListItem, Problem, Progress, Reach,
+    Subscriber,
+};
 
 pub const CLEANUP_TASK: &str = "cleanup";
 pub const BUTTONS_MAX: usize = 6;
@@ -38,6 +48,8 @@ pub const IMAGE_MAX_SIDES: u32 = 10_000;
 pub const IMAGE_MAX_RATIO: u32 = 20;
 pub const CALLBACK_PREFIX: &str = "n:";
 pub const AUDIT_ENTITY: &str = "broadcast";
+pub const SUBJECT_MAX: usize = 150;
+pub const PREVIEW_TOKEN: Uuid = Uuid::nil();
 const ORPHAN_AFTER_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +83,73 @@ impl Status {
         ]
         .into_iter()
         .find(|s| s.as_str() == value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    #[default]
+    Bot,
+    Email,
+    Both,
+}
+
+impl Channel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Channel::Bot => "bot",
+            Channel::Email => "email",
+            Channel::Both => "both",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [Channel::Bot, Channel::Email, Channel::Both]
+            .into_iter()
+            .find(|c| c.as_str() == value)
+    }
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Channel::Bot => "В бот",
+            Channel::Email => "На почту",
+            Channel::Both => "В бот и на почту",
+        }
+    }
+
+    pub fn lanes(self) -> Vec<Lane> {
+        match self {
+            Channel::Bot => vec![Lane::Bot],
+            Channel::Email => vec![Lane::Email],
+            Channel::Both => vec![Lane::Bot, Lane::Email],
+        }
+    }
+
+    pub fn has(self, lane: Lane) -> bool {
+        self.lanes().contains(&lane)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lane {
+    Bot,
+    Email,
+}
+
+impl Lane {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Lane::Bot => "bot",
+            Lane::Email => "email",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [Lane::Bot, Lane::Email]
+            .into_iter()
+            .find(|l| l.as_str() == value)
     }
 }
 
@@ -160,6 +239,15 @@ impl BotSection {
     pub fn callback(self) -> String {
         format!("{CALLBACK_PREFIX}{}", self.data())
     }
+
+    pub const fn web_path(self) -> &'static str {
+        match self {
+            BotSection::Buy | BotSection::Promo => "/cabinet/pay",
+            BotSection::Balance => "/cabinet/topup",
+            BotSection::Documents => "/",
+            _ => "/cabinet",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +278,7 @@ impl Audience {
 
     pub fn describe(self, tariff: Option<&str>) -> String {
         match self {
-            Audience::All => "Все клиенты с Telegram".into(),
+            Audience::All => "Все клиенты".into(),
             Audience::Active => "С активной подпиской".into(),
             Audience::Expiring { days } => {
                 let n = u64::from(days);
@@ -240,6 +328,10 @@ impl ButtonSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Draft {
     #[serde(default)]
+    pub channel: Channel,
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub image_id: Option<i64>,
@@ -250,6 +342,8 @@ pub struct Draft {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cleaned {
+    pub channel: Channel,
+    pub subject: Option<String>,
     pub text: String,
     pub image_id: Option<i64>,
     pub buttons: Vec<ButtonSpec>,
@@ -399,6 +493,30 @@ pub fn clean_buttons(raw: &[ButtonSpec]) -> Result<Vec<ButtonSpec>, BroadcastErr
         .collect()
 }
 
+pub fn clean_subject(
+    raw: Option<&str>,
+    channel: Channel,
+) -> Result<Option<String>, BroadcastError> {
+    let subject = raw
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !channel.has(Lane::Email) {
+        return Ok(Some(subject).filter(|s| !s.is_empty()));
+    }
+    if subject.is_empty() {
+        return Err(invalid("Тема письма: напишите тему"));
+    }
+    if subject.chars().count() > SUBJECT_MAX {
+        return Err(invalid(format!("Тема письма длиннее {SUBJECT_MAX} знаков")));
+    }
+    if subject.chars().any(char::is_control) {
+        return Err(invalid("Тема письма: уберите служебные символы"));
+    }
+    Ok(Some(subject))
+}
+
 pub fn check_image(bytes: &[u8]) -> Result<image::ImageInfo, BroadcastError> {
     let bad = |message: String| rejected("broadcast.image", message);
     if bytes.is_empty() {
@@ -454,6 +572,8 @@ async fn cleaned(db: &mut impl Db, draft: &Draft) -> Result<Cleaned, BroadcastEr
         return Err(invalid("Кому: такого тарифа нет"));
     }
     Ok(Cleaned {
+        channel: draft.channel,
+        subject: clean_subject(draft.subject.as_deref(), draft.channel)?,
         text: clean_text(&draft.text, draft.image_id.is_some())?,
         image_id: draft.image_id,
         buttons: clean_buttons(&draft.buttons)?,
@@ -557,6 +677,8 @@ pub async fn copy(
     let mut tx = ctx.store.begin().await?;
     let source = store::view(&mut tx, id).await?;
     let content = Cleaned {
+        channel: source.channel,
+        subject: source.subject,
         text: source.text,
         image_id: source.image.map(|i| i.id),
         buttons: source.buttons,
@@ -589,6 +711,12 @@ pub async fn start(
     let now = crate::catalog::db_now(&mut tx).await?;
     let current = store::view(&mut tx, id).await?;
     current.audience.check()?;
+    if current.channel.has(Lane::Email) {
+        mail_site(ctx)?;
+        if current.subject.as_deref().is_none_or(str::is_empty) {
+            return Err(invalid("Тема письма: напишите тему"));
+        }
+    }
     match at {
         Some(at) if at > now + Span::seconds(30) => {
             if at > now + Span::days(SCHEDULE_DAYS_MAX) {
@@ -612,11 +740,20 @@ pub async fn start(
             ));
         }
         None => {
-            let total = store::launch(&mut tx, id, current.audience, now, admin).await?;
+            let total =
+                store::launch(&mut tx, id, current.audience, current.channel, now, admin).await?;
             if total == 0 {
                 return Err(rejected(
                     "broadcast.empty",
-                    "Получателей нет: в этой аудитории никого с Telegram, кто не остановил бота",
+                    match current.channel {
+                        Channel::Bot => {
+                            "Получателей нет: в этой аудитории никого с Telegram, кто не остановил бота"
+                        }
+                        Channel::Email => {
+                            "Получателей нет: в этой аудитории ни у кого нет почты или все отписались"
+                        }
+                        Channel::Both => "Получателей нет: в этой аудитории некому отправить",
+                    },
                 ));
             }
             tx.audit()
@@ -669,6 +806,14 @@ pub async fn cancel(
     Ok(view)
 }
 
+pub fn mail_site(ctx: &ModuleContext) -> Result<MailSite, BroadcastError> {
+    ctx.core
+        .mail_sender()
+        .ok_or_else(|| "почта не подключена".to_string())
+        .and_then(|sender| sender.site())
+        .map_err(|reason| rejected("broadcast.mail", format!("Почта не отправляет: {reason}")))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TestResult {
@@ -682,11 +827,38 @@ pub struct TestReport {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestTarget {
+    Client(ClientId),
+    Address(String),
+}
+
 pub async fn send_test(
     ctx: &ModuleContext,
     draft: &Draft,
-    client_id: ClientId,
+    target: TestTarget,
     admin: Option<AdminId>,
+) -> Result<TestReport, BroadcastError> {
+    let (report, client) = match target {
+        TestTarget::Client(client_id) => (test_bot(ctx, draft, client_id).await?, Some(client_id)),
+        TestTarget::Address(address) => (test_mail(ctx, draft, &address).await?, None),
+    };
+    let mut conn = ctx.store.conn().await?;
+    conn.audit()
+        .record(&audit(
+            "broadcast.test",
+            admin,
+            None,
+            serde_json::json!({ "client_id": client, "result": report.result }),
+        ))
+        .await?;
+    Ok(report)
+}
+
+async fn test_bot(
+    ctx: &ModuleContext,
+    draft: &Draft,
+    client_id: ClientId,
 ) -> Result<TestReport, BroadcastError> {
     let sender = ctx.core.bot_sender().ok_or_else(|| {
         rejected(
@@ -723,53 +895,120 @@ pub async fn send_test(
     {
         store::remember_file(&mut conn, image.id, bot, file_id).await?;
     }
-    let report = match delivery {
-        Delivery::Sent { .. } => TestReport {
+    match delivery {
+        Delivery::Sent { .. } => Ok(TestReport {
             result: TestResult::Sent,
             message: "Сообщение отправлено".into(),
-        },
+        }),
         Delivery::Blocked(_) => {
             conn.clients().set_bot_unreachable(client_id, true).await?;
-            TestReport {
+            Ok(TestReport {
                 result: TestResult::Blocked,
                 message: "Клиент остановил бота: сообщение не дошло".into(),
-            }
+            })
         }
-        Delivery::Wait(pause) => {
-            return Err(rejected(
-                "broadcast.telegram",
-                format!(
-                    "Telegram просит подождать {} с и повторить",
-                    pause.as_secs().max(1)
-                ),
-            ));
-        }
-        Delivery::NoBot(reason) => {
-            return Err(rejected(
-                "broadcast.bot",
-                format!("Бот не подключён: {reason}"),
-            ));
-        }
-        Delivery::StaleFile | Delivery::Failed { .. } => {
-            let reason = match delivery {
-                Delivery::Failed { error, .. } => error,
-                _ => "картинка не принята".into(),
-            };
-            return Err(rejected(
-                "broadcast.telegram",
-                format!("Telegram не принял сообщение: {reason}"),
-            ));
-        }
+        Delivery::Wait(pause) => Err(rejected(
+            "broadcast.telegram",
+            format!(
+                "Telegram просит подождать {} с и повторить",
+                pause.as_secs().max(1)
+            ),
+        )),
+        Delivery::NoBot(reason) => Err(rejected(
+            "broadcast.bot",
+            format!("Бот не подключён: {reason}"),
+        )),
+        Delivery::StaleFile => Err(rejected(
+            "broadcast.telegram",
+            "Telegram не принял сообщение: картинка не принята",
+        )),
+        Delivery::Failed { error, .. } => Err(rejected(
+            "broadcast.telegram",
+            format!("Telegram не принял сообщение: {error}"),
+        )),
+    }
+}
+
+pub fn letter_for(
+    subject: &str,
+    text: &str,
+    image: Option<Uuid>,
+    buttons: &[ButtonSpec],
+    site: &MailSite,
+) -> Letter {
+    Letter::new(
+        subject,
+        text,
+        image.map(|key| letter::image_url(site, key)),
+        buttons,
+        site,
+    )
+}
+
+async fn test_mail(
+    ctx: &ModuleContext,
+    draft: &Draft,
+    address: &str,
+) -> Result<TestReport, BroadcastError> {
+    let address = address.trim().to_lowercase();
+    if address.is_empty()
+        || address.len() > 254
+        || address.chars().any(char::is_whitespace)
+        || !address.contains('@')
+    {
+        return Err(rejected(
+            "broadcast.address",
+            "Адрес для проверки записан неверно",
+        ));
+    }
+    let site = mail_site(ctx)?;
+    let sender: Arc<dyn MailSender> = ctx
+        .core
+        .mail_sender()
+        .ok_or_else(|| rejected("broadcast.mail", "Почта не подключена"))?;
+    let mut email_draft = draft.clone();
+    email_draft.channel = Channel::Email;
+    let (content, key) = {
+        let mut conn = ctx.store.conn().await?;
+        let content = cleaned(&mut conn, &email_draft).await?;
+        let key = match content.image_id {
+            Some(id) => Some(store::image_key(&mut conn, id).await?),
+            None => None,
+        };
+        (content, key)
     };
-    conn.audit()
-        .record(&audit(
-            "broadcast.test",
-            admin,
-            None,
-            serde_json::json!({ "client_id": client_id, "result": report.result }),
-        ))
-        .await?;
-    Ok(report)
+    let subject = content.subject.clone().unwrap_or_default();
+    let letter = letter_for(&subject, &content.text, key, &content.buttons, &site);
+    let unsubscribe = letter::unsubscribe_url(&site, PREVIEW_TOKEN);
+    let delivery = sender
+        .send(&MailOut {
+            to: &address,
+            subject: &subject,
+            text: &letter.text(&unsubscribe),
+            html: &letter.html(&unsubscribe),
+            unsubscribe: Some(&unsubscribe),
+        })
+        .await;
+    match delivery {
+        MailDelivery::Sent => Ok(TestReport {
+            result: TestResult::Sent,
+            message: format!("Письмо отправлено на {address}"),
+        }),
+        MailDelivery::Rejected(reason) | MailDelivery::Failed { error: reason, .. } => Err(
+            rejected("broadcast.mail", format!("Письмо не отправилось: {reason}")),
+        ),
+        MailDelivery::Off(reason) => Err(rejected(
+            "broadcast.mail",
+            format!("Почта не отправляет: {reason}"),
+        )),
+        MailDelivery::Wait(pause) => Err(rejected(
+            "broadcast.mail",
+            format!(
+                "Почтовый сервис просит подождать {} с и повторить",
+                pause.as_secs().max(1)
+            ),
+        )),
+    }
 }
 
 async fn deliver_once(
@@ -851,6 +1090,7 @@ pub struct Limits {
     pub days: u16,
     pub schedule_days: i64,
     pub image_bytes: usize,
+    pub subject: usize,
 }
 
 pub const LIMITS: Limits = Limits {
@@ -863,12 +1103,20 @@ pub const LIMITS: Limits = Limits {
     days: DAYS_MAX,
     schedule_days: SCHEDULE_DAYS_MAX,
     image_bytes: IMAGE_MAX_BYTES,
+    subject: SUBJECT_MAX,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MailState {
+    pub ready: bool,
+    pub reason: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Options {
     pub bot: bool,
     pub bot_username: Option<String>,
+    pub mail: MailState,
     pub sections: Vec<SectionOption>,
     pub tariffs: Vec<TariffOption>,
     pub limits: Limits,
@@ -888,9 +1136,20 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
         .core
         .bot_sender()
         .is_some_and(|sender| sender.bot_id().is_some());
+    let mail = match mail_site(ctx) {
+        Ok(_) => MailState {
+            ready: true,
+            reason: None,
+        },
+        Err(err) => MailState {
+            ready: false,
+            reason: Some(err.to_string()),
+        },
+    };
     Ok(Options {
         bot,
         bot_username,
+        mail,
         sections: BotSection::ALL
             .into_iter()
             .map(|key| SectionOption {
@@ -904,6 +1163,119 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
         tariffs,
         limits: LIMITS,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsubscribe {
+    Unknown,
+    Preview,
+    Asked,
+    Done,
+    Restored,
+}
+
+pub struct UnsubscribeView {
+    pub state: Unsubscribe,
+    pub email: Option<String>,
+    pub brand: String,
+}
+
+async fn unsubscribe_step(
+    ctx: &ModuleContext,
+    token: Uuid,
+    act: Option<bool>,
+) -> Result<UnsubscribeView, BroadcastError> {
+    let mut conn = ctx.store.conn().await?;
+    let brand = match mail_site(ctx) {
+        Ok(site) => site.brand,
+        Err(_) => store::brand(&mut conn).await?,
+    };
+    if token == PREVIEW_TOKEN {
+        return Ok(UnsubscribeView {
+            state: Unsubscribe::Preview,
+            email: None,
+            brand,
+        });
+    }
+    let Some(who) = store::subscriber(&mut conn, token).await? else {
+        return Ok(UnsubscribeView {
+            state: Unsubscribe::Unknown,
+            email: None,
+            brand,
+        });
+    };
+    let state = match act {
+        None if who.unsubscribed => Unsubscribe::Done,
+        None => Unsubscribe::Asked,
+        Some(true) => {
+            if store::unsubscribe(&mut conn, &who).await? {
+                conn.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::Client,
+                        actor_id: Some(who.client_id.0),
+                        action: "broadcast.unsubscribed".into(),
+                        entity_kind: Some(AUDIT_ENTITY.into()),
+                        entity_id: Some(who.broadcast_id),
+                        details: serde_json::json!({}),
+                        ip: None,
+                    })
+                    .await?;
+            }
+            Unsubscribe::Done
+        }
+        Some(false) => {
+            if store::resubscribe(&mut conn, &who.email).await? {
+                conn.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::Client,
+                        actor_id: Some(who.client_id.0),
+                        action: "broadcast.resubscribed".into(),
+                        entity_kind: Some(AUDIT_ENTITY.into()),
+                        entity_id: Some(who.broadcast_id),
+                        details: serde_json::json!({}),
+                        ip: None,
+                    })
+                    .await?;
+            }
+            Unsubscribe::Restored
+        }
+    };
+    Ok(UnsubscribeView {
+        state,
+        email: Some(who.email),
+        brand,
+    })
+}
+
+pub async fn unsubscribe_view(
+    ctx: &ModuleContext,
+    token: Uuid,
+) -> Result<UnsubscribeView, BroadcastError> {
+    unsubscribe_step(ctx, token, None).await
+}
+
+pub async fn unsubscribe(
+    ctx: &ModuleContext,
+    token: Uuid,
+) -> Result<UnsubscribeView, BroadcastError> {
+    unsubscribe_step(ctx, token, Some(true)).await
+}
+
+pub async fn resubscribe(
+    ctx: &ModuleContext,
+    token: Uuid,
+) -> Result<UnsubscribeView, BroadcastError> {
+    unsubscribe_step(ctx, token, Some(false)).await
+}
+
+pub async fn public_image(
+    ctx: &ModuleContext,
+    key: Uuid,
+) -> Result<Option<(String, Vec<u8>)>, BroadcastError> {
+    let mut conn = ctx.store.conn().await?;
+    Ok(store::image_by_key(&mut conn, key)
+        .await?
+        .map(|image| (image.content_type, image.bytes)))
 }
 
 pub async fn cleanup(ctx: &ModuleContext) -> Result<u64, ModuleError> {
@@ -921,6 +1293,10 @@ impl Module for BroadcastModule {
 
     fn admin_routes(&self, ctx: ModuleContext) -> Option<Router> {
         Some(routes::admin(ctx))
+    }
+
+    fn public_routes(&self, ctx: ModuleContext) -> Option<Router> {
+        Some(routes::public(ctx))
     }
 
     fn tasks(&self) -> Vec<ScheduledTask> {

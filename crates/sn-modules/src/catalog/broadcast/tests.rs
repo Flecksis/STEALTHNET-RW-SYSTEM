@@ -102,6 +102,7 @@ impl BotSender for FakeSender {
 
 struct Core {
     sender: Option<Arc<dyn BotSender>>,
+    mail: Option<Arc<dyn MailSender>>,
 }
 
 #[async_trait]
@@ -134,6 +135,10 @@ impl CoreApi for Core {
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
         self.sender.clone()
     }
+
+    fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
+        self.mail.clone()
+    }
 }
 
 fn context(store: &Store, sender: Option<Arc<FakeSender>>) -> ModuleContext {
@@ -141,8 +146,95 @@ fn context(store: &Store, sender: Option<Arc<FakeSender>>) -> ModuleContext {
         store: store.clone(),
         core: Arc::new(Core {
             sender: sender.map(|s| s as Arc<dyn BotSender>),
+            mail: None,
         }),
         currency: Currency::Usd,
+    }
+}
+
+fn context_with(
+    store: &Store,
+    sender: Option<Arc<FakeSender>>,
+    mail: Option<Arc<FakeMail>>,
+) -> ModuleContext {
+    ModuleContext {
+        store: store.clone(),
+        core: Arc::new(Core {
+            sender: sender.map(|s| s as Arc<dyn BotSender>),
+            mail: mail.map(|m| m as Arc<dyn MailSender>),
+        }),
+        currency: Currency::Usd,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Mailed {
+    to: String,
+    subject: String,
+    html: String,
+    text: String,
+    unsubscribe: Option<String>,
+    at: Instant,
+}
+
+struct FakeMail {
+    ready: Mutex<Result<MailSite, String>>,
+    log: Mutex<Vec<Mailed>>,
+    script: Mutex<HashMap<String, VecDeque<MailDelivery>>>,
+    fallback: Mutex<Option<MailDelivery>>,
+}
+
+impl FakeMail {
+    fn new() -> Arc<Self> {
+        Arc::new(FakeMail {
+            ready: Mutex::new(Ok(MailSite {
+                base_url: "https://vpn.example.com".into(),
+                brand: "Тест & Ко".into(),
+            })),
+            log: Mutex::new(Vec::new()),
+            script: Mutex::new(HashMap::new()),
+            fallback: Mutex::new(None),
+        })
+    }
+
+    fn answer(&self, to: &str, deliveries: Vec<MailDelivery>) {
+        self.script
+            .lock()
+            .unwrap()
+            .entry(to.to_string())
+            .or_default()
+            .extend(deliveries);
+    }
+
+    fn mailed(&self) -> Vec<Mailed> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl MailSender for FakeMail {
+    fn site(&self) -> Result<MailSite, String> {
+        self.ready.lock().unwrap().clone()
+    }
+
+    async fn send(&self, mail: &MailOut<'_>) -> MailDelivery {
+        self.log.lock().unwrap().push(Mailed {
+            to: mail.to.to_string(),
+            subject: mail.subject.to_string(),
+            html: mail.html.to_string(),
+            text: mail.text.to_string(),
+            unsubscribe: mail.unsubscribe.map(str::to_string),
+            at: Instant::now(),
+        });
+        let scripted = self
+            .script
+            .lock()
+            .unwrap()
+            .get_mut(mail.to)
+            .and_then(VecDeque::pop_front);
+        scripted
+            .or_else(|| self.fallback.lock().unwrap().clone())
+            .unwrap_or(MailDelivery::Sent)
     }
 }
 
@@ -178,7 +270,7 @@ impl Running {
 
 fn spawn_engine(ctx: &ModuleContext, sender: &Arc<FakeSender>, config: EngineConfig) -> Running {
     let (stop, stopped) = oneshot::channel::<()>();
-    let engine = Engine::new(ctx.clone(), sender.clone(), || true, config);
+    let engine = Engine::new(ctx.clone(), Sender::Bot(sender.clone()), || true, config);
     let handle = tokio::spawn(engine.run(async move {
         let _ = stopped.await;
     }));
@@ -282,6 +374,8 @@ async fn exec(store: &Store, sql: &str, id: i64) {
 
 fn draft(text: &str, audience: Audience) -> Draft {
     Draft {
+        channel: Channel::Bot,
+        subject: None,
         text: text.into(),
         image_id: None,
         buttons: Vec::new(),
@@ -872,7 +966,7 @@ async fn захват_берёт_ровно_столько_сколько_про
         .unwrap();
     let id = queue(&mut conn).await;
     assert_ne!(earlier, id);
-    let claimed = store::claim(&mut conn, id, 1).await.unwrap();
+    let claimed = store::claim(&mut conn, id, Lane::Bot, 1).await.unwrap();
     assert_eq!(claimed.len(), 1);
     let flying: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM broadcast_recipients WHERE broadcast_id = $1 AND state = 'sending'",
@@ -882,7 +976,7 @@ async fn захват_берёт_ровно_столько_сколько_про
     .await
     .unwrap();
     assert_eq!(flying, 1);
-    let more = store::claim(&mut conn, id, 3).await.unwrap();
+    let more = store::claim(&mut conn, id, Lane::Bot, 3).await.unwrap();
     assert_eq!(more.len(), 3);
     assert!(more.iter().all(|c| c.client_id != claimed[0].client_id));
     drop(conn);
@@ -1119,23 +1213,33 @@ async fn проверка_уходит_выбранному_клиенту() {
     let image = upload_image(&ctx, &png(300, 300), None).await.unwrap();
     let mut message = draft("Проверка <i>оформления</i>", Audience::All);
     message.image_id = Some(image.id);
-    let report = send_test(&ctx, &message, client, None).await.unwrap();
+    let report = send_test(&ctx, &message, TestTarget::Client(client), None)
+        .await
+        .unwrap();
     assert_eq!(report.result, TestResult::Sent);
     let sent = sender.sent();
     assert_eq!(sent[0].chat, 9001);
     assert_eq!(sent[0].photo.as_deref(), Some("upload:image/png"));
-    send_test(&ctx, &message, client, None).await.unwrap();
+    send_test(&ctx, &message, TestTarget::Client(client), None)
+        .await
+        .unwrap();
     assert_eq!(sender.sent()[1].photo.as_deref(), Some("cached:F-1"));
     let mail = testing::client(store).await;
     assert_eq!(
-        code(send_test(&ctx, &message, mail, None).await.unwrap_err()),
+        code(
+            send_test(&ctx, &message, TestTarget::Client(mail), None)
+                .await
+                .unwrap_err()
+        ),
         "broadcast.no_telegram"
     );
     sender.answer(
         9001,
         vec![Delivery::Blocked("Клиент остановил бота".into())],
     );
-    let blocked = send_test(&ctx, &message, client, None).await.unwrap();
+    let blocked = send_test(&ctx, &message, TestTarget::Client(client), None)
+        .await
+        .unwrap();
     assert_eq!(blocked.result, TestResult::Blocked);
     let mut conn = store.conn().await.unwrap();
     assert!(conn.clients().get(client).await.unwrap().bot_unreachable);
@@ -1143,7 +1247,7 @@ async fn проверка_уходит_выбранному_клиенту() {
     let offline = context(store, None);
     assert_eq!(
         code(
-            send_test(&offline, &message, client, None)
+            send_test(&offline, &message, TestTarget::Client(client), None)
                 .await
                 .unwrap_err()
         ),
@@ -1394,5 +1498,657 @@ async fn админка_собирает_считает_отправляет_и_
     .unwrap();
     assert_eq!(audit, 3);
     drop(conn);
+    db.cleanup().await;
+}
+
+async fn mail_client(store: &Store, chat: Option<i64>, email: Option<&str>) -> ClientId {
+    let id = testing::client(store).await;
+    let mut conn = store.conn().await.unwrap();
+    if let Some(chat) = chat {
+        conn.clients()
+            .add_identity(
+                id,
+                &NewIdentity {
+                    kind: IdentityKind::Telegram,
+                    value: chat.to_string(),
+                    verified: true,
+                    meta: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    if let Some(email) = email {
+        conn.clients()
+            .add_identity(
+                id,
+                &NewIdentity {
+                    kind: IdentityKind::Email,
+                    value: email.to_string(),
+                    verified: false,
+                    meta: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    id
+}
+
+fn fast_mail() -> EngineConfig {
+    EngineConfig {
+        per_second: 200,
+        chat_gap: Duration::ZERO,
+        in_flight: 2,
+        idle: Duration::from_millis(40),
+        retries: 3,
+        retry_pause: Duration::from_millis(40),
+        bot_pause: Duration::from_millis(200),
+        lease: Duration::from_secs(2),
+        grace: Duration::from_secs(2),
+        reject_limit: 3,
+    }
+}
+
+fn spawn_mail(ctx: &ModuleContext, mail: &Arc<FakeMail>, config: EngineConfig) -> Running {
+    let (stop, stopped) = oneshot::channel::<()>();
+    let engine = Engine::new(ctx.clone(), Sender::Mail(mail.clone()), || true, config);
+    let handle = tokio::spawn(engine.run(async move {
+        let _ = stopped.await;
+    }));
+    Running { stop, handle }
+}
+
+fn mail_draft(text: &str, channel: Channel) -> Draft {
+    Draft {
+        channel,
+        subject: Some("Новости сервиса".into()),
+        ..draft(text, Audience::All)
+    }
+}
+
+async fn tokens(store: &Store, id: i64) -> HashMap<String, Uuid> {
+    let mut conn = store.conn().await.unwrap();
+    let rows: Vec<(String, Uuid)> = sqlx::query_as(
+        "SELECT email, unsubscribe FROM broadcast_recipients WHERE broadcast_id = $1 AND channel = 'email'",
+    )
+    .bind(id)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    rows.into_iter().collect()
+}
+
+#[test]
+fn тема_письма_нужна_для_почты() {
+    assert_eq!(clean_subject(None, Channel::Bot).unwrap(), None);
+    assert_eq!(
+        clean_subject(Some("  Новые   серверы "), Channel::Email)
+            .unwrap()
+            .as_deref(),
+        Some("Новые серверы")
+    );
+    assert!(clean_subject(Some("   "), Channel::Both).is_err());
+    assert!(clean_subject(None, Channel::Email).is_err());
+    assert!(clean_subject(Some("Тема\u{7}"), Channel::Email).is_err());
+    assert!(clean_subject(Some(&"т".repeat(SUBJECT_MAX + 1)), Channel::Email).is_err());
+    assert_eq!(Channel::Both.lanes(), vec![Lane::Bot, Lane::Email]);
+    assert!(Channel::Email.has(Lane::Email) && !Channel::Email.has(Lane::Bot));
+    assert_eq!(BotSection::Balance.web_path(), "/cabinet/topup");
+    assert_eq!(BotSection::Buy.web_path(), "/cabinet/pay");
+    assert_eq!(
+        serde_json::from_value::<Draft>(serde_json::json!({ "audience": { "kind": "all" } }))
+            .unwrap()
+            .channel,
+        Channel::Bot
+    );
+}
+
+#[test]
+fn письмо_собирается_из_того_же_текста() {
+    let site = MailSite {
+        base_url: "https://vpn.example.com".into(),
+        brand: "Тест & Ко".into(),
+    };
+    let text = clean_text(
+        "<b>Новые серверы</b>\nСкорость <a href=\"https://example.com/news?a=1&b=2\">выше</a> \
+         <tg-emoji emoji-id=\"5368324170671202286\">🔥</tg-emoji>\n<span class=\"tg-spoiler\">секрет</span> &amp; <code>код</code>",
+        false,
+    )
+    .unwrap();
+    let buttons = clean_buttons(&[
+        ButtonSpec {
+            text: "Продлить".into(),
+            url: None,
+            section: Some(BotSection::Buy),
+        },
+        ButtonSpec {
+            text: "Канал".into(),
+            url: Some("t.me/news".into()),
+            section: None,
+        },
+    ])
+    .unwrap();
+    let letter = letter_for("Новые серверы", &text, Some(Uuid::nil()), &buttons, &site);
+    let html = letter.html("https://vpn.example.com/u/1");
+    assert!(html.contains("<b>Новые серверы</b><br>Скорость"), "{html}");
+    assert!(html.contains("href=\"https://example.com/news?a=1&amp;b=2\""));
+    assert!(html.contains("🔥") && !html.contains("tg-emoji"));
+    assert!(html.contains("<span>секрет</span>"));
+    assert!(html.contains(
+        "src=\"https://vpn.example.com/api/public/m/broadcast/images/00000000-0000-0000-0000-000000000000\""
+    ));
+    assert!(html.contains("href=\"https://vpn.example.com/cabinet/pay\""));
+    assert!(html.contains("href=\"https://t.me/news\""));
+    assert!(html.contains("аккаунт в Тест &amp; Ко"));
+    assert!(html.contains("href=\"https://vpn.example.com/u/1\""));
+    assert!(html.contains("<title>Новые серверы</title>"));
+    let plain = letter.text("https://vpn.example.com/u/1");
+    assert!(
+        plain.starts_with(
+            "Новые серверы\nСкорость выше (https://example.com/news?a=1&b=2) 🔥\nсекрет & код"
+        ),
+        "{plain}"
+    );
+    assert!(plain.contains("\nПродлить: https://vpn.example.com/cabinet/pay"));
+    assert!(plain.contains("\nКанал: https://t.me/news"));
+    assert!(plain.ends_with("Отписаться от рассылок: https://vpn.example.com/u/1\n"));
+}
+
+#[tokio::test]
+async fn почта_считает_адреса_и_отписки_а_оба_канала_дают_обе_строки() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    mail_client(store, Some(11001), Some("both@example.com")).await;
+    mail_client(store, None, Some("mail@example.com")).await;
+    mail_client(store, Some(11003), None).await;
+    let gone = mail_client(store, None, Some("gone@example.com")).await;
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO broadcast_unsubscribes (email, client_id) VALUES ('gone@example.com', $1)",
+    )
+    .bind(gone.0)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    let r = reach(&ctx, Audience::All).await.unwrap();
+    assert_eq!(
+        (r.recipients, r.stopped, r.emails, r.unsubscribed),
+        (2, 0, 2, 1)
+    );
+    let mut nosubject = mail_draft("Привет", Channel::Email);
+    nosubject.subject = None;
+    assert_eq!(
+        code(create(&ctx, &nosubject, None).await.unwrap_err()),
+        "broadcast.invalid"
+    );
+    let created = create(&ctx, &mail_draft("Привет", Channel::Both), None)
+        .await
+        .unwrap();
+    assert_eq!(created.channel, Channel::Both);
+    assert_eq!(created.subject.as_deref(), Some("Новости сервиса"));
+    *mail.ready.lock().unwrap() = Err("модуль «Почта» выключен".into());
+    let off = start(&ctx, created.id, None, None).await.unwrap_err();
+    assert_eq!(code(off), "broadcast.mail");
+    let options = options(&ctx).await.unwrap();
+    assert!(!options.mail.ready);
+    assert!(options.mail.reason.unwrap().contains("выключен"));
+    *mail.ready.lock().unwrap() = Ok(MailSite {
+        base_url: "https://vpn.example.com".into(),
+        brand: "Тест".into(),
+    });
+    let started = start(&ctx, created.id, None, None).await.unwrap();
+    assert_eq!(started.progress.total, 4);
+    let lanes: Vec<(Lane, i64)> = started
+        .channels
+        .iter()
+        .map(|c| (c.channel, c.progress.total))
+        .collect();
+    assert_eq!(lanes, [(Lane::Bot, 2), (Lane::Email, 2)]);
+    let tokens = tokens(store, created.id).await;
+    assert_eq!(tokens.len(), 2);
+    assert!(tokens.contains_key("both@example.com") && tokens.contains_key("mail@example.com"));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn письма_уходят_с_темпом_отпиской_и_ошибками_по_адресам() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    for i in 1..=5 {
+        mail_client(store, None, Some(&format!("u{i}@example.com"))).await;
+    }
+    for refused in ["u2@example.com", "u5@example.com"] {
+        mail.answer(
+            refused,
+            vec![MailDelivery::Rejected(format!(
+                "Почтовый сервер отказал, код 550: 5.1.1 <{refused}>: нет такого ящика"
+            ))],
+        );
+    }
+    mail.answer(
+        "u3@example.com",
+        vec![
+            MailDelivery::Failed {
+                error: "Почтовый сервер попросил повторить позже".into(),
+                retry: true,
+            },
+            MailDelivery::Sent,
+        ],
+    );
+    mail.answer(
+        "u4@example.com",
+        vec![MailDelivery::Wait(Duration::from_millis(700))],
+    );
+    let mut message = mail_draft("<b>Скидка</b> на год", Channel::Email);
+    message.buttons = vec![ButtonSpec {
+        text: "Продлить".into(),
+        url: None,
+        section: Some(BotSection::Buy),
+    }];
+    let created = create(&ctx, &message, None).await.unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let tokens = tokens(store, created.id).await;
+    let engine = spawn_mail(
+        &ctx,
+        &mail,
+        EngineConfig {
+            per_second: 5,
+            in_flight: 1,
+            ..fast_mail()
+        },
+    );
+    let done = wait_status(store, created.id, Status::Done).await;
+    engine.stop().await;
+    assert_eq!((done.progress.sent, done.progress.failed), (3, 2));
+    assert_eq!(done.channels.len(), 1);
+    assert_eq!(done.channels[0].channel, Lane::Email);
+    assert_eq!(
+        done.problems,
+        [Problem {
+            channel: Lane::Email,
+            error: "Почтовый сервер отказал, код 550: 5.1.1 <адрес>: нет такого ящика".into(),
+            count: 2,
+        }]
+    );
+    assert_eq!(
+        done.failed_emails,
+        ["u2@example.com", "u5@example.com"]
+            .map(|email| FailedEmail {
+                email: email.into(),
+                error: format!(
+                    "Почтовый сервер отказал, код 550: 5.1.1 <{email}>: нет такого ящика"
+                ),
+            })
+            .to_vec()
+    );
+    assert_eq!(done.mail_notice, None);
+    let mailed = mail.mailed();
+    assert_eq!(mailed.len(), 7);
+    for letter in &mailed {
+        assert_eq!(letter.subject, "Новости сервиса");
+        let token = tokens[&letter.to];
+        let url = format!("https://vpn.example.com/api/public/m/broadcast/unsubscribe/{token}");
+        assert_eq!(letter.unsubscribe.as_deref(), Some(url.as_str()));
+        assert!(letter.html.contains(&url) && letter.text.contains(&url));
+        assert!(letter.html.contains("<b>Скидка</b> на год"));
+        assert!(letter.html.contains("https://vpn.example.com/cabinet/pay"));
+    }
+    for pair in mailed.windows(2) {
+        assert!(
+            pair[1].at.duration_since(pair[0].at) >= Duration::from_millis(180),
+            "письма чаще пяти в секунду"
+        );
+    }
+    let waited = mailed
+        .iter()
+        .position(|m| m.to == "u4@example.com")
+        .unwrap();
+    assert!(mailed[waited + 1].at.duration_since(mailed[waited].at) >= Duration::from_millis(650));
+    db.cleanup().await;
+}
+
+async fn wait_notice(store: &Store, id: i64) -> Broadcast {
+    let started = Instant::now();
+    loop {
+        let mut conn = store.conn().await.unwrap();
+        let view = store::view(&mut conn, id).await.unwrap();
+        drop(conn);
+        if view.mail_notice.is_some() {
+            return view;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "{view:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn сломанная_почта_держит_письма_в_очереди_и_потом_отправляет() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    for i in 1..=3 {
+        mail_client(store, None, Some(&format!("w{i}@example.com"))).await;
+    }
+    *mail.fallback.lock().unwrap() = Some(MailDelivery::Off(
+        "почтовый сервер не принял логин и пароль (535)".into(),
+    ));
+    let created = create(&ctx, &mail_draft("Ждём почту", Channel::Email), None)
+        .await
+        .unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let engine = spawn_mail(&ctx, &mail, fast_mail());
+    let waiting = wait_notice(store, created.id).await;
+    assert!(waiting.mail_notice.unwrap().contains("535"));
+    assert_eq!(waiting.notice, None);
+    assert_eq!(waiting.progress.sent, 0);
+    assert_eq!(waiting.status, Status::Sending);
+    *mail.fallback.lock().unwrap() = None;
+    let done = wait_status(store, created.id, Status::Done).await;
+    engine.stop().await;
+    assert_eq!(done.progress.sent, 3);
+    assert_eq!(done.mail_notice, None);
+    let mut conn = store.conn().await.unwrap();
+    let attempts: Vec<i32> = sqlx::query_scalar(
+        "SELECT attempts FROM broadcast_recipients WHERE broadcast_id = $1 ORDER BY client_id",
+    )
+    .bind(created.id)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    assert!(attempts.iter().all(|a| *a == 1), "{attempts:?}");
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_бот_и_на_почту_уходит_одновременно() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let bot = FakeSender::new();
+    let mail = FakeMail::new();
+    let ctx = context_with(store, Some(bot.clone()), Some(mail.clone()));
+    mail_client(store, Some(12001), Some("a@example.com")).await;
+    mail_client(store, Some(12002), None).await;
+    mail_client(store, None, Some("c@example.com")).await;
+    let created = create(&ctx, &mail_draft("Всем", Channel::Both), None)
+        .await
+        .unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let bots = spawn_engine(&ctx, &bot, fast());
+    let mails = spawn_mail(&ctx, &mail, fast_mail());
+    let done = wait_status(store, created.id, Status::Done).await;
+    bots.stop().await;
+    mails.stop().await;
+    assert_eq!(done.progress.sent, 4);
+    let lanes: Vec<(Lane, i64)> = done
+        .channels
+        .iter()
+        .map(|c| (c.channel, c.progress.sent))
+        .collect();
+    assert_eq!(lanes, [(Lane::Bot, 2), (Lane::Email, 2)]);
+    assert_eq!(bot.chats(), [12001, 12002]);
+    let mut to: Vec<String> = mail.mailed().into_iter().map(|m| m.to).collect();
+    to.sort();
+    assert_eq!(to, ["a@example.com", "c@example.com"]);
+    let mut conn = store.conn().await.unwrap();
+    let leases: Vec<String> =
+        sqlx::query_scalar("SELECT key FROM bot_state WHERE key LIKE 'broadcast.%' ORDER BY key")
+            .fetch_all(conn.conn())
+            .await
+            .unwrap();
+    assert!(leases.is_empty(), "{leases:?}");
+    drop(conn);
+    db.cleanup().await;
+}
+
+async fn text_of(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn отписка_по_ссылке_из_письма_и_картинка_для_писем() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    mail_client(store, None, Some("reader@example.com")).await;
+    mail_client(store, None, Some("other@example.com")).await;
+    let image = upload_image(&ctx, &png(640, 360), None).await.unwrap();
+    let mut message = mail_draft("С картинкой", Channel::Email);
+    message.image_id = Some(image.id);
+    let created = create(&ctx, &message, None).await.unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let token = tokens(store, created.id).await["reader@example.com"];
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.public_router(ctx.clone());
+    let get = |uri: String| Request::get(uri).body(Body::empty()).unwrap();
+    let post = |uri: String| {
+        Request::post(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("List-Unsubscribe=One-Click"))
+            .unwrap()
+    };
+    let page = router
+        .clone()
+        .oneshot(get(format!("/broadcast/unsubscribe/{token}")))
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    assert!(
+        page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("default-src 'none'")
+    );
+    let page = text_of(page).await;
+    assert!(page.contains("Отписаться от рассылок?") && page.contains("reader@example.com"));
+    assert_eq!(reach(&ctx, Audience::All).await.unwrap().unsubscribed, 0);
+    let done = router
+        .clone()
+        .oneshot(post(format!("/broadcast/unsubscribe/{token}")))
+        .await
+        .unwrap();
+    assert_eq!(done.status(), StatusCode::OK);
+    assert!(text_of(done).await.contains("Вы отписаны"));
+    let again = router
+        .clone()
+        .oneshot(post(format!("/broadcast/unsubscribe/{token}")))
+        .await
+        .unwrap();
+    assert!(text_of(again).await.contains("Вы отписаны"));
+    let counted = reach(&ctx, Audience::All).await.unwrap();
+    assert_eq!((counted.emails, counted.unsubscribed), (1, 1));
+    let back = router
+        .clone()
+        .oneshot(post(format!("/broadcast/resubscribe/{token}")))
+        .await
+        .unwrap();
+    assert!(text_of(back).await.contains("Рассылки вернутся"));
+    assert_eq!(reach(&ctx, Audience::All).await.unwrap().unsubscribed, 0);
+    let unknown = router
+        .clone()
+        .oneshot(get(format!("/broadcast/unsubscribe/{}", Uuid::new_v4())))
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    let preview = router
+        .clone()
+        .oneshot(post(format!("/broadcast/unsubscribe/{}", Uuid::nil())))
+        .await
+        .unwrap();
+    assert!(text_of(preview).await.contains("проверочное"));
+    let broken = router
+        .clone()
+        .oneshot(get("/broadcast/unsubscribe/abc".into()))
+        .await
+        .unwrap();
+    assert_eq!(broken.status(), StatusCode::BAD_REQUEST);
+    let mut conn = store.conn().await.unwrap();
+    let key = store::image_key(&mut conn, image.id).await.unwrap();
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action IN ('broadcast.unsubscribed', 'broadcast.resubscribed')",
+    )
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(audited, 2);
+    drop(conn);
+    let picture = router
+        .clone()
+        .oneshot(get(format!("/broadcast/images/{key}")))
+        .await
+        .unwrap();
+    assert_eq!(picture.status(), StatusCode::OK);
+    assert_eq!(picture.headers()["content-type"], "image/png");
+    assert!(
+        picture.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .starts_with("public")
+    );
+    let missing = router
+        .oneshot(get(format!("/broadcast/images/{}", Uuid::new_v4())))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn проверка_письмом_уходит_на_указанный_адрес() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    owner(&db).await;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    let mut message = mail_draft("Проверка <i>письма</i>", Channel::Bot);
+    message.subject = Some("Тема проверки".into());
+    let report = send_test(
+        &ctx,
+        &message,
+        TestTarget::Address(" Owner@Example.com ".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.result, TestResult::Sent);
+    assert!(report.message.contains("owner@example.com"));
+    let sent = &mail.mailed()[0];
+    assert_eq!(sent.to, "owner@example.com");
+    assert_eq!(sent.subject, "Тема проверки");
+    assert!(
+        sent.unsubscribe
+            .as_deref()
+            .unwrap()
+            .ends_with(&Uuid::nil().to_string())
+    );
+    assert!(sent.html.contains("<i>письма</i>"));
+    assert_eq!(
+        code(
+            send_test(
+                &ctx,
+                &message,
+                TestTarget::Address("нет адреса".into()),
+                None
+            )
+            .await
+            .unwrap_err()
+        ),
+        "broadcast.address"
+    );
+    let mut nosubject = message.clone();
+    nosubject.subject = None;
+    assert_eq!(
+        code(
+            send_test(
+                &ctx,
+                &nosubject,
+                TestTarget::Address("a@example.com".into()),
+                None
+            )
+            .await
+            .unwrap_err()
+        ),
+        "broadcast.invalid"
+    );
+    mail.answer(
+        "bad@example.com",
+        vec![MailDelivery::Rejected("Почтовый сервер отказал".into())],
+    );
+    assert_eq!(
+        code(
+            send_test(
+                &ctx,
+                &message,
+                TestTarget::Address("bad@example.com".into()),
+                None
+            )
+            .await
+            .unwrap_err()
+        ),
+        "broadcast.mail"
+    );
+    *mail.ready.lock().unwrap() = Err("в «Почте» не выбран способ отправки писем".into());
+    assert_eq!(
+        code(
+            send_test(
+                &ctx,
+                &message,
+                TestTarget::Address("a@example.com".into()),
+                None
+            )
+            .await
+            .unwrap_err()
+        ),
+        "broadcast.mail"
+    );
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    *mail.ready.lock().unwrap() = Ok(MailSite {
+        base_url: "https://vpn.example.com".into(),
+        brand: "Тест".into(),
+    });
+    let routed = registry
+        .admin_router(ctx.clone())
+        .oneshot(
+            Request::post("/broadcast/test")
+                .header("content-type", "application/json")
+                .extension(admin(AdminRole::Admin))
+                .body(Body::from(
+                    serde_json::json!({
+                        "email": "route@example.com",
+                        "subject": "Через маршрут",
+                        "text": "Привет"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(routed.status(), StatusCode::OK);
+    assert_eq!(json_of(routed).await["result"], "sent");
+    assert_eq!(mail.mailed().last().unwrap().to, "route@example.com");
     db.cleanup().await;
 }

@@ -1,8 +1,11 @@
+use super::letter::{self, Letter};
 use super::store::{self, Claimed, ImageData, Lease, Message, Outcome};
-use super::{ButtonSpec, Status, audit};
+use super::{ButtonSpec, Lane, PREVIEW_TOKEN, Status, audit, letter_for};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
-use crate::sender::{BotSender, Delivery, OutButton, Outgoing, Photo};
+use crate::sender::{
+    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
+};
 use sn_store::Db;
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,6 +17,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 pub const LEASE_KEY: &str = "broadcast.engine";
+pub const MAIL_LEASE_KEY: &str = "broadcast.mail";
 const DUE_BATCH: i64 = 5;
 const STALE_FLIGHT_SECS: i64 = 300;
 const CHAT_MEMORY: usize = 4096;
@@ -45,6 +49,52 @@ impl Default for EngineConfig {
             lease: Duration::from_secs(20),
             grace: Duration::from_secs(8),
             reject_limit: 10,
+        }
+    }
+}
+
+impl EngineConfig {
+    pub fn mail() -> Self {
+        EngineConfig {
+            per_second: 2,
+            chat_gap: Duration::ZERO,
+            in_flight: 2,
+            idle: Duration::from_secs(2),
+            retries: 3,
+            retry_pause: Duration::from_secs(15),
+            bot_pause: Duration::from_secs(60),
+            lease: Duration::from_secs(30),
+            grace: Duration::from_secs(25),
+            reject_limit: 10,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum Sender {
+    Bot(Arc<dyn BotSender>),
+    Mail(Arc<dyn MailSender>),
+}
+
+impl Sender {
+    fn lane(&self) -> Lane {
+        match self {
+            Sender::Bot(_) => Lane::Bot,
+            Sender::Mail(_) => Lane::Email,
+        }
+    }
+
+    fn lease_key(&self) -> &'static str {
+        match self {
+            Sender::Bot(_) => LEASE_KEY,
+            Sender::Mail(_) => MAIL_LEASE_KEY,
+        }
+    }
+
+    fn bot_id(&self) -> Option<i64> {
+        match self {
+            Sender::Bot(sender) => sender.bot_id(),
+            Sender::Mail(_) => None,
         }
     }
 }
@@ -120,32 +170,26 @@ impl Source {
     }
 }
 
-struct Prepared {
-    id: i64,
+struct BotMessage {
     text: Arc<str>,
     buttons: Arc<[OutButton]>,
     image: Option<Arc<ImageData>>,
     file: Option<(i64, Arc<str>)>,
-    rejected: u32,
-    notice: bool,
 }
 
-impl Prepared {
-    fn new(id: i64, message: Message) -> Self {
+impl BotMessage {
+    fn new(message: Message) -> Self {
         let file = message.image.as_ref().and_then(|image| {
             image
                 .file_bot
                 .zip(image.file_id.as_deref())
                 .map(|(bot, file)| (bot, Arc::from(file)))
         });
-        Prepared {
-            id,
+        BotMessage {
             text: Arc::from(message.text),
             buttons: message.buttons.iter().map(ButtonSpec::out).collect(),
             image: message.image.map(Arc::new),
             file,
-            rejected: 0,
-            notice: true,
         }
     }
 
@@ -160,9 +204,40 @@ impl Prepared {
     }
 }
 
+struct MailMessage {
+    letter: Arc<Letter>,
+    site: Arc<MailSite>,
+}
+
+enum Body {
+    Bot(BotMessage),
+    Mail(MailMessage),
+}
+
+struct Prepared {
+    id: i64,
+    body: Body,
+    rejected: u32,
+    notice: bool,
+}
+
+impl Prepared {
+    fn uploading(&self, bot: Option<i64>) -> bool {
+        match &self.body {
+            Body::Bot(message) => matches!(message.source(bot), Source::Upload(_)),
+            Body::Mail(_) => false,
+        }
+    }
+}
+
+enum Answer {
+    Bot(Delivery),
+    Mail(MailDelivery),
+}
+
 struct Flight {
     recipient: Claimed,
-    delivery: Delivery,
+    answer: Answer,
     cached: bool,
 }
 
@@ -174,7 +249,7 @@ struct State {
 
 pub struct Engine {
     ctx: ModuleContext,
-    sender: Arc<dyn BotSender>,
+    sender: Sender,
     enabled: Arc<dyn Fn() -> bool + Send + Sync>,
     config: EngineConfig,
     owner: String,
@@ -183,7 +258,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(
         ctx: ModuleContext,
-        sender: Arc<dyn BotSender>,
+        sender: Sender,
         enabled: impl Fn() -> bool + Send + Sync + 'static,
         config: EngineConfig,
     ) -> Self {
@@ -194,6 +269,10 @@ impl Engine {
             config,
             owner: Uuid::new_v4().to_string(),
         }
+    }
+
+    fn lane(&self) -> Lane {
+        self.sender.lane()
     }
 
     pub async fn run(self, shutdown: impl Future<Output = ()> + Send + 'static) {
@@ -207,7 +286,8 @@ impl Engine {
             lead: None,
             prepared: None,
         };
-        tracing::info!("рассылки: отправка запущена");
+        let lane = self.lane().as_str();
+        tracing::info!(lane, "рассылки: отправка запущена");
         loop {
             if *stop.borrow() {
                 break;
@@ -215,7 +295,7 @@ impl Engine {
             let pause = match self.step(&mut state, &mut stop).await {
                 Ok(pause) => pause,
                 Err(err) => {
-                    tracing::warn!(error = %err, "рассылки: отправка споткнулась, повторим");
+                    tracing::warn!(lane, error = %err, "рассылки: отправка споткнулась, повторим");
                     state.lead = None;
                     state.prepared = None;
                     self.config.idle * 3
@@ -231,11 +311,12 @@ impl Engine {
         }
         if state.lead.is_some()
             && let Ok(mut conn) = self.ctx.store.conn().await
-            && let Err(err) = store::drop_lease(&mut conn, LEASE_KEY, &self.owner).await
+            && let Err(err) =
+                store::drop_lease(&mut conn, self.sender.lease_key(), &self.owner).await
         {
             tracing::debug!(error = %err, "рассылки: аренда отправки не снята");
         }
-        tracing::info!("рассылки: отправка остановлена");
+        tracing::info!(lane, "рассылки: отправка остановлена");
     }
 
     async fn lead(&self, lead: &mut Option<Instant>) -> Result<bool, ModuleError> {
@@ -249,7 +330,7 @@ impl Engine {
         let taken = store::take_lease(
             &mut conn,
             &Lease {
-                key: LEASE_KEY,
+                key: self.sender.lease_key(),
                 owner: &self.owner,
                 seconds: self.config.lease.as_secs_f64(),
             },
@@ -260,10 +341,11 @@ impl Engine {
             return Ok(false);
         }
         if lead.is_none() {
-            let abandoned = store::abandon_flights(&mut conn, None).await?;
+            let abandoned = store::abandon_flights(&mut conn, self.lane(), None).await?;
             if abandoned > 0 {
                 tracing::warn!(
                     abandoned,
+                    lane = self.lane().as_str(),
                     "рассылки: сообщения, которые отправлялись до перезапуска, не повторяются"
                 );
             }
@@ -282,13 +364,19 @@ impl Engine {
         }
         self.start_due().await?;
         let mut conn = self.ctx.store.conn().await?;
-        let Some(id) = store::next_sending(&mut conn).await? else {
+        for id in store::complete_finished(&mut conn).await? {
+            tracing::info!(broadcast = id, "рассылка отправлена");
+        }
+        let Some(id) = store::next_sending(&mut conn, self.lane()).await? else {
             state.prepared = None;
             return Ok(self.config.idle);
         };
         let prepared = match state.prepared.take() {
             Some(prepared) if prepared.id == id => prepared,
-            _ => Prepared::new(id, store::message(&mut conn, id).await?),
+            _ => match self.prepare(&mut conn, id).await? {
+                Some(prepared) => prepared,
+                None => return Ok(self.config.bot_pause),
+            },
         };
         drop(conn);
         let mut prepared = prepared;
@@ -299,6 +387,46 @@ impl Engine {
         pumped
     }
 
+    async fn prepare(
+        &self,
+        conn: &mut sn_store::Conn,
+        id: i64,
+    ) -> Result<Option<Prepared>, ModuleError> {
+        let body = match &self.sender {
+            Sender::Bot(_) => Body::Bot(BotMessage::new(store::message(conn, id, true).await?)),
+            Sender::Mail(mail) => {
+                let site = match mail.site() {
+                    Ok(site) => site,
+                    Err(reason) => {
+                        let notice = format!(
+                            "Почта не отправляет: {reason}. Письма уйдут, когда почта заработает"
+                        );
+                        store::set_notice(conn, id, Lane::Email, Some(&notice)).await?;
+                        return Ok(None);
+                    }
+                };
+                let message = store::message(conn, id, false).await?;
+                let letter = letter_for(
+                    message.subject.as_deref().unwrap_or_default(),
+                    &message.text,
+                    message.image.as_ref().map(|image| image.public_key),
+                    &message.buttons,
+                    &site,
+                );
+                Body::Mail(MailMessage {
+                    letter: Arc::new(letter),
+                    site: Arc::new(site),
+                })
+            }
+        };
+        Ok(Some(Prepared {
+            id,
+            body,
+            rejected: 0,
+            notice: true,
+        }))
+    }
+
     async fn start_due(&self) -> Result<(), ModuleError> {
         let mut tx = self.ctx.store.begin().await?;
         let due = store::due(&mut tx, DUE_BATCH).await?;
@@ -307,8 +435,8 @@ impl Engine {
             return Ok(());
         }
         let now = crate::catalog::db_now(&mut tx).await?;
-        for (id, audience) in due {
-            let total = store::launch(&mut tx, id, audience, now, None).await?;
+        for (id, audience, channel) in due {
+            let total = store::launch(&mut tx, id, audience, channel, now, None).await?;
             if total == 0 {
                 store::finish_empty(&mut tx, id).await?;
             }
@@ -317,7 +445,12 @@ impl Engine {
                     "broadcast.started",
                     None,
                     Some(id),
-                    serde_json::json!({ "total": total, "scheduled": true, "audience": audience }),
+                    serde_json::json!({
+                        "total": total,
+                        "scheduled": true,
+                        "audience": audience,
+                        "channel": channel,
+                    }),
                 ))
                 .await?;
             tracing::info!(broadcast = id, total, "рассылка по расписанию начата");
@@ -371,14 +504,13 @@ impl Engine {
                 if !flights.is_empty() {
                     tracing::warn!(
                         left = flights.len(),
-                        "рассылки: не дождались ответа Telegram при остановке"
+                        "рассылки: не дождались ответа при остановке"
                     );
                     flights.abort_all();
                 }
                 return Ok(true);
             }
-            let uploading = matches!(prepared.source(self.sender.bot_id()), Source::Upload(_));
-            let limit = if uploading {
+            let limit = if prepared.uploading(self.sender.bot_id()) {
                 1
             } else {
                 self.config.in_flight.max(1)
@@ -415,14 +547,17 @@ impl Engine {
             }
             let claimed = {
                 let mut conn = self.ctx.store.conn().await?;
-                store::claim(&mut conn, id, 1).await?
+                store::claim(&mut conn, id, self.lane(), 1).await?
             };
             if claimed.is_empty() {
                 exhausted = true;
             }
             for recipient in claimed {
                 let slot = pace.take();
-                let delay = pace.chat(recipient.chat_id).max(slot);
+                let delay = match recipient.chat_id {
+                    Some(chat) if !self.config.chat_gap.is_zero() => pace.chat(chat).max(slot),
+                    _ => slot,
+                };
                 flights.spawn(self.flight(prepared, recipient, delay));
             }
         }
@@ -434,28 +569,100 @@ impl Engine {
         recipient: Claimed,
         delay: Duration,
     ) -> impl Future<Output = Flight> + Send + 'static {
-        let sender = self.sender.clone();
-        let text = prepared.text.clone();
-        let buttons = prepared.buttons.clone();
-        let source = prepared.source(self.sender.bot_id());
+        enum Job {
+            Bot {
+                sender: Arc<dyn BotSender>,
+                text: Arc<str>,
+                buttons: Arc<[OutButton]>,
+                source: Source,
+            },
+            Mail {
+                sender: Arc<dyn MailSender>,
+                letter: Arc<Letter>,
+                site: Arc<MailSite>,
+            },
+        }
+        let job = match (&self.sender, &prepared.body) {
+            (Sender::Bot(sender), Body::Bot(message)) => Some(Job::Bot {
+                sender: sender.clone(),
+                text: message.text.clone(),
+                buttons: message.buttons.clone(),
+                source: message.source(sender.bot_id()),
+            }),
+            (Sender::Mail(sender), Body::Mail(message)) => Some(Job::Mail {
+                sender: sender.clone(),
+                letter: message.letter.clone(),
+                site: message.site.clone(),
+            }),
+            _ => None,
+        };
         async move {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
-            let delivery = sender
-                .send(
-                    recipient.chat_id,
-                    &Outgoing {
-                        html: &text,
-                        photo: source.photo(),
-                        buttons: &buttons,
-                    },
-                )
-                .await;
-            Flight {
-                recipient,
-                delivery,
-                cached: matches!(source, Source::Cached(_)),
+            match job {
+                Some(Job::Bot {
+                    sender,
+                    text,
+                    buttons,
+                    source,
+                }) => {
+                    let delivery = match recipient.chat_id {
+                        Some(chat) => {
+                            sender
+                                .send(
+                                    chat,
+                                    &Outgoing {
+                                        html: &text,
+                                        photo: source.photo(),
+                                        buttons: &buttons,
+                                    },
+                                )
+                                .await
+                        }
+                        None => Delivery::Failed {
+                            error: "У получателя нет чата в Telegram".into(),
+                            retry: false,
+                        },
+                    };
+                    Flight {
+                        cached: matches!(source, Source::Cached(_)),
+                        recipient,
+                        answer: Answer::Bot(delivery),
+                    }
+                }
+                Some(Job::Mail {
+                    sender,
+                    letter,
+                    site,
+                }) => {
+                    let token = recipient.unsubscribe.unwrap_or(PREVIEW_TOKEN);
+                    let url = letter::unsubscribe_url(&site, token);
+                    let delivery = match recipient.email.as_deref() {
+                        Some(to) => {
+                            sender
+                                .send(&MailOut {
+                                    to,
+                                    subject: &letter.subject,
+                                    text: &letter.text(&url),
+                                    html: &letter.html(&url),
+                                    unsubscribe: Some(&url),
+                                })
+                                .await
+                        }
+                        None => MailDelivery::Rejected("У получателя нет адреса почты".into()),
+                    };
+                    Flight {
+                        cached: false,
+                        recipient,
+                        answer: Answer::Mail(delivery),
+                    }
+                }
+                None => Flight {
+                    cached: false,
+                    recipient,
+                    answer: Answer::Mail(MailDelivery::Off("отправитель не совпал".into())),
+                },
             }
         }
     }
@@ -474,89 +681,124 @@ impl Engine {
                 return Ok(());
             }
         };
-        let client = flight.recipient.client_id;
-        let mut conn = self.ctx.store.conn().await?;
-        match flight.delivery {
-            Delivery::Sent { file_id } => {
-                store::record(&mut conn, id, client, &Outcome::Sent).await?;
-                prepared.rejected = 0;
-                if let (Some(file_id), Some(image), Some(bot), false) = (
-                    file_id,
-                    prepared.image.as_ref(),
-                    self.sender.bot_id(),
+        match flight.answer {
+            Answer::Bot(delivery) => {
+                self.settle_bot(
+                    id,
+                    flight.recipient,
+                    delivery,
                     flight.cached,
-                ) {
+                    prepared,
+                    pace,
+                )
+                .await
+            }
+            Answer::Mail(delivery) => {
+                self.settle_mail(id, flight.recipient, delivery, prepared, pace)
+                    .await
+            }
+        }
+    }
+
+    async fn retry(
+        &self,
+        id: i64,
+        lane: Lane,
+        recipient: &Claimed,
+        after: Duration,
+        error: Option<&str>,
+        counted: bool,
+    ) -> Result<(), ModuleError> {
+        let mut conn = self.ctx.store.conn().await?;
+        store::record(
+            &mut conn,
+            id,
+            lane,
+            recipient.client_id,
+            &Outcome::Retry {
+                after_ms: millis(after),
+                error,
+                counted,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn settle_bot(
+        &self,
+        id: i64,
+        recipient: Claimed,
+        delivery: Delivery,
+        cached: bool,
+        prepared: &mut Prepared,
+        pace: &mut Pace,
+    ) -> Result<(), ModuleError> {
+        let lane = Lane::Bot;
+        let client = recipient.client_id;
+        let mut conn = self.ctx.store.conn().await?;
+        match delivery {
+            Delivery::Sent { file_id } => {
+                store::record(&mut conn, id, lane, client, &Outcome::Sent).await?;
+                prepared.rejected = 0;
+                if let (Some(file_id), Body::Bot(message), Some(bot), false) =
+                    (file_id, &mut prepared.body, self.sender.bot_id(), cached)
+                    && let Some(image) = message.image.as_ref()
+                {
                     store::remember_file(&mut conn, image.id, bot, &file_id).await?;
-                    prepared.file = Some((bot, Arc::from(file_id)));
+                    message.file = Some((bot, Arc::from(file_id)));
                 }
                 if prepared.notice {
-                    store::set_notice(&mut conn, id, None).await?;
+                    store::set_notice(&mut conn, id, lane, None).await?;
                     prepared.notice = false;
                 }
             }
             Delivery::Blocked(reason) => {
-                store::record(&mut conn, id, client, &Outcome::Blocked(&reason)).await?;
+                store::record(&mut conn, id, lane, client, &Outcome::Blocked(&reason)).await?;
             }
             Delivery::Wait(pause) => {
                 pace.pause(pause);
-                store::record(
-                    &mut conn,
-                    id,
-                    client,
-                    &Outcome::Retry {
-                        after_ms: millis(pause),
-                        error: None,
-                        counted: false,
-                    },
-                )
-                .await?;
+                drop(conn);
+                self.retry(id, lane, &recipient, pause, None, false).await?;
                 let notice = format!(
                     "Telegram попросил подождать {} с: отправка продолжится сама",
                     pause.as_secs().max(1)
                 );
-                store::set_notice(&mut conn, id, Some(&notice)).await?;
+                let mut conn = self.ctx.store.conn().await?;
+                store::set_notice(&mut conn, id, lane, Some(&notice)).await?;
                 prepared.notice = true;
             }
             Delivery::StaleFile => {
-                if let Some(image) = &prepared.image {
-                    store::forget_file(&mut conn, image.id).await?;
+                if let Body::Bot(message) = &mut prepared.body {
+                    if let Some(image) = &message.image {
+                        store::forget_file(&mut conn, image.id).await?;
+                    }
+                    message.file = None;
                 }
-                prepared.file = None;
-                store::record(
-                    &mut conn,
-                    id,
-                    client,
-                    &Outcome::Retry {
-                        after_ms: 0,
-                        error: None,
-                        counted: false,
-                    },
-                )
-                .await?;
+                drop(conn);
+                self.retry(id, lane, &recipient, Duration::ZERO, None, false)
+                    .await?;
             }
-            Delivery::Failed { error, retry: true }
-                if flight.recipient.attempts < self.config.retries =>
-            {
-                let factor = u32::try_from(flight.recipient.attempts.max(1)).unwrap_or(1);
-                store::record(
-                    &mut conn,
+            Delivery::Failed { error, retry: true } if recipient.attempts < self.config.retries => {
+                let factor = u32::try_from(recipient.attempts.max(1)).unwrap_or(1);
+                drop(conn);
+                self.retry(
                     id,
-                    client,
-                    &Outcome::Retry {
-                        after_ms: millis(self.config.retry_pause * factor),
-                        error: Some(&error),
-                        counted: true,
-                    },
+                    lane,
+                    &recipient,
+                    self.config.retry_pause * factor,
+                    Some(&error),
+                    true,
                 )
                 .await?;
             }
             Delivery::Failed { error, retry } => {
-                store::record(&mut conn, id, client, &Outcome::Failed(&error)).await?;
+                store::record(&mut conn, id, lane, client, &Outcome::Failed(&error)).await?;
                 if !retry {
                     prepared.rejected += 1;
                 }
                 if prepared.rejected >= self.config.reject_limit
-                    && store::sent_count(&mut conn, id).await? == 0
+                    && store::sent_count(&mut conn, id, lane).await? == 0
                 {
                     drop(conn);
                     let mut tx = self.ctx.store.begin().await?;
@@ -576,21 +818,80 @@ impl Engine {
             }
             Delivery::NoBot(reason) => {
                 pace.pause(self.config.bot_pause);
-                store::record(
-                    &mut conn,
-                    id,
-                    client,
-                    &Outcome::Retry {
-                        after_ms: 0,
-                        error: None,
-                        counted: false,
-                    },
-                )
-                .await?;
+                drop(conn);
+                self.retry(id, lane, &recipient, Duration::ZERO, None, false)
+                    .await?;
                 let notice = format!(
                     "Бот не подключён: {reason}. Отправка продолжится, когда бот заработает"
                 );
-                store::set_notice(&mut conn, id, Some(&notice)).await?;
+                let mut conn = self.ctx.store.conn().await?;
+                store::set_notice(&mut conn, id, lane, Some(&notice)).await?;
+                prepared.notice = true;
+            }
+        }
+        Ok(())
+    }
+
+    async fn settle_mail(
+        &self,
+        id: i64,
+        recipient: Claimed,
+        delivery: MailDelivery,
+        prepared: &mut Prepared,
+        pace: &mut Pace,
+    ) -> Result<(), ModuleError> {
+        let lane = Lane::Email;
+        let client = recipient.client_id;
+        match delivery {
+            MailDelivery::Sent => {
+                let mut conn = self.ctx.store.conn().await?;
+                store::record(&mut conn, id, lane, client, &Outcome::Sent).await?;
+                if prepared.notice {
+                    store::set_notice(&mut conn, id, lane, None).await?;
+                    prepared.notice = false;
+                }
+            }
+            MailDelivery::Rejected(reason) => {
+                let mut conn = self.ctx.store.conn().await?;
+                store::record(&mut conn, id, lane, client, &Outcome::Failed(&reason)).await?;
+            }
+            MailDelivery::Wait(pause) => {
+                pace.pause(pause);
+                self.retry(id, lane, &recipient, pause, None, false).await?;
+                let notice = format!(
+                    "Почтовый сервис попросил подождать {} с: отправка продолжится сама",
+                    pause.as_secs().max(1)
+                );
+                let mut conn = self.ctx.store.conn().await?;
+                store::set_notice(&mut conn, id, lane, Some(&notice)).await?;
+                prepared.notice = true;
+            }
+            MailDelivery::Failed { error, retry: true }
+                if recipient.attempts < self.config.retries =>
+            {
+                let factor = u32::try_from(recipient.attempts.max(1)).unwrap_or(1);
+                self.retry(
+                    id,
+                    lane,
+                    &recipient,
+                    self.config.retry_pause * factor,
+                    Some(&error),
+                    true,
+                )
+                .await?;
+            }
+            MailDelivery::Failed { error, .. } => {
+                let mut conn = self.ctx.store.conn().await?;
+                store::record(&mut conn, id, lane, client, &Outcome::Failed(&error)).await?;
+            }
+            MailDelivery::Off(reason) => {
+                pace.pause(self.config.bot_pause);
+                self.retry(id, lane, &recipient, Duration::ZERO, None, false)
+                    .await?;
+                let notice =
+                    format!("Почта не отправляет: {reason}. Письма уйдут, когда почта заработает");
+                let mut conn = self.ctx.store.conn().await?;
+                store::set_notice(&mut conn, id, lane, Some(&notice)).await?;
                 prepared.notice = true;
             }
         }
@@ -609,10 +910,11 @@ impl Engine {
         if store::status(&mut conn, id).await? != Some(Status::Sending) {
             return Ok(Duration::ZERO);
         }
-        if store::abandon_flights(&mut conn, Some((id, STALE_FLIGHT_SECS))).await? > 0 {
+        if store::abandon_flights(&mut conn, self.lane(), Some((id, STALE_FLIGHT_SECS))).await? > 0
+        {
             return Ok(Duration::ZERO);
         }
-        let wait = store::next_retry_ms(&mut conn, id)
+        let wait = store::next_retry_ms(&mut conn, id, self.lane())
             .await?
             .map_or(self.config.idle, |ms| {
                 Duration::from_millis(u64::try_from(ms).unwrap_or(0))
@@ -685,5 +987,13 @@ mod pace_tests {
         assert_eq!(pace.wait(), Duration::from_secs(7));
         tokio::time::advance(Duration::from_secs(7)).await;
         assert_eq!(pace.wait(), Duration::ZERO);
+    }
+
+    #[test]
+    fn почте_свой_темп_и_без_зазора_по_чату() {
+        let mail = EngineConfig::mail();
+        assert_eq!(mail.per_second, 2);
+        assert!(mail.chat_gap.is_zero());
+        assert!(mail.grace > Duration::from_secs(20));
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::broadcast::TelegramSender;
 use sn_modules::catalog::broadcast::{
-    self, Audience, BotSection, ButtonSpec, Draft, Engine, EngineConfig, Status,
+    self, Audience, BotSection, ButtonSpec, Channel, Draft, Engine, EngineConfig, Sender, Status,
 };
 use sn_modules::{BotSender, Delivery, OutButton, Outgoing, Photo};
 use std::time::Instant;
@@ -75,7 +75,7 @@ async fn send_all(services: &Services, server: &MockServer, draft: &Draft) -> br
     let sender: Arc<dyn BotSender> = Arc::new(TelegramSender::new(services.clone(), &server.uri()));
     let (stop, stopped) = oneshot::channel::<()>();
     let handle = tokio::spawn(
-        Engine::new(ctx.clone(), sender, || true, engine_config()).run(async move {
+        Engine::new(ctx.clone(), Sender::Bot(sender), || true, engine_config()).run(async move {
             let _ = stopped.await;
         }),
     );
@@ -116,6 +116,8 @@ async fn рассылка_уходит_через_bot_api_и_отмечает_з
         &services,
         &server,
         &Draft {
+            channel: Channel::Bot,
+            subject: None,
             text: "<b>Новые серверы</b> уже работают".into(),
             image_id: None,
             buttons: vec![
@@ -188,6 +190,8 @@ async fn ответ_429_выдерживает_паузу_и_не_дублиру
         &services,
         &server,
         &Draft {
+            channel: Channel::Bot,
+            subject: None,
             text: "Плановые работы ночью".into(),
             image_id: None,
             buttons: Vec::new(),
@@ -239,6 +243,8 @@ async fn картинка_уходит_файлом_один_раз_а_даль�
         &services,
         &server,
         &Draft {
+            channel: Channel::Bot,
+            subject: None,
             text: "Смотрите, что нового".into(),
             image_id: Some(image.id),
             buttons: Vec::new(),

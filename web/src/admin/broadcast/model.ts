@@ -6,6 +6,28 @@ export const ROOT = '/admin/m/broadcast';
 
 export type Status = 'draft' | 'scheduled' | 'sending' | 'done' | 'canceled';
 
+export type Channel = 'bot' | 'email' | 'both';
+
+export type Lane = 'bot' | 'email';
+
+export const CHANNELS: Array<{ key: Channel; title: string }> = [
+  { key: 'bot', title: 'В бот' },
+  { key: 'email', title: 'На почту' },
+  { key: 'both', title: 'В бот и на почту' },
+];
+
+export function hasBot(channel: Channel): boolean {
+  return channel !== 'email';
+}
+
+export function hasEmail(channel: Channel): boolean {
+  return channel !== 'bot';
+}
+
+export function channelLabel(channel: Channel): string {
+  return channel === 'bot' ? 'в бот' : channel === 'email' ? 'на почту' : 'в бот и на почту';
+}
+
 export type Section =
   | 'menu'
   | 'subscriptions'
@@ -36,11 +58,17 @@ export type Image = { id: number; content_type: string; width: number; height: n
 
 export type Progress = { total: number; sent: number; failed: number; blocked: number; skipped: number; pending: number };
 
-export type Problem = { error: string; count: number };
+export type Problem = { channel: Lane; error: string; count: number };
+
+export type ChannelProgress = { channel: Lane; progress: Progress };
+
+export type FailedEmail = { email: string; error: string };
 
 export type Broadcast = {
   id: number;
   status: Status;
+  channel: Channel;
+  subject: string | null;
   text: string;
   image: Image | null;
   buttons: ButtonSpec[];
@@ -52,14 +80,18 @@ export type Broadcast = {
   created_at: string;
   updated_at: string;
   notice: string | null;
+  mail_notice: string | null;
   progress: Progress;
+  channels: ChannelProgress[];
   problems: Problem[];
+  failed_emails: FailedEmail[];
   queued_behind: number | null;
 };
 
 export type ListItem = {
   id: number;
   status: Status;
+  channel: Channel;
   preview: string;
   has_image: boolean;
   buttons: number;
@@ -70,6 +102,7 @@ export type ListItem = {
   finished_at: string | null;
   created_at: string;
   notice: string | null;
+  mail_notice: string | null;
   progress: Progress;
 };
 
@@ -83,35 +116,32 @@ export type Limits = {
   days: number;
   schedule_days: number;
   image_bytes: number;
+  subject: number;
 };
 
 export type Options = {
   bot: boolean;
   bot_username: string | null;
+  mail: { ready: boolean; reason: string | null };
   sections: Array<{ key: Section; title: string; available: boolean }>;
   tariffs: Array<{ id: number; name: string }>;
   limits: Limits;
 };
 
-export type Reach = { recipients: number; stopped: number };
+export type Reach = { recipients: number; stopped: number; emails: number; unsubscribed: number };
 
-export type Draft = {
-  text: string;
-  image: Image | null;
-  buttons: ButtonSpec[];
-  audience: Audience;
-};
-
-export const EMPTY: Draft = { text: '', image: null, buttons: [], audience: { kind: 'all' } };
+export function reachTotal(reach: Reach, channel: Channel): number {
+  return (hasBot(channel) ? reach.recipients : 0) + (hasEmail(channel) ? reach.emails : 0);
+}
 
 export const AUDIENCES: Array<{ kind: AudienceKind; title: string; hint: string }> = [
-  { kind: 'all', title: 'Все клиенты с Telegram', hint: 'Каждый, кто запускал бота' },
+  { kind: 'all', title: 'Все клиенты', hint: 'Каждый, кто запускал бота или указал почту' },
   { kind: 'active', title: 'С активной подпиской', hint: 'Подписка действует, пробные не входят' },
   { kind: 'expiring', title: 'Подписка скоро закончится', hint: 'Действует ещё не больше указанного числа дней' },
   { kind: 'expired', title: 'Подписка закончилась', hint: 'Была подписка, сейчас не продлена' },
   { kind: 'never_connected', title: 'Не подключались', hint: 'Подписка есть, но ни одного подключения' },
   { kind: 'trial', title: 'На пробном периоде', hint: 'Сейчас действует пробная подписка' },
-  { kind: 'no_subscription', title: 'Ни разу не было подписки', hint: 'Запускали бота, но ничего не оформили' },
+  { kind: 'no_subscription', title: 'Ни разу не было подписки', hint: 'Есть аккаунт, но ничего не оформили' },
   { kind: 'tariff', title: 'По тарифу', hint: 'Действующая подписка на выбранном тарифе' },
 ];
 
@@ -138,6 +168,18 @@ export function clients(n: number): string {
   return `${groupDigits(n)}${' '}${plural(n, 'клиенту', 'клиентам', 'клиентам')}`;
 }
 
+export function addresses(n: number): string {
+  return `${groupDigits(n)}${' '}${plural(n, 'адрес', 'адреса', 'адресов')}`;
+}
+
+export function reachText(reach: Reach, channel: Channel): string | null {
+  const parts = [
+    hasBot(channel) && (reach.recipients > 0 || channel === 'bot') ? `${clients(reach.recipients)} в${'\u00a0'}бот` : null,
+    hasEmail(channel) && (reach.emails > 0 || channel === 'email') ? `письмом на${'\u00a0'}${addresses(reach.emails)}` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length ? parts.join(' и ') : null;
+}
+
 export function at(iso: string | null): string {
   if (!iso) {
     return '';
@@ -145,8 +187,11 @@ export function at(iso: string | null): string {
   return `${dateLong(iso)} в${' '}${timeHM(iso)}`;
 }
 
-export function eta(pending: number): string {
-  const seconds = Math.ceil(pending / 25);
+export function eta(channels: ChannelProgress[]): string {
+  const seconds = Math.max(
+    0,
+    ...channels.map((c) => Math.ceil(c.progress.pending / (c.channel === 'email' ? 2 : 25))),
+  );
   if (seconds < 60) {
     return 'осталось меньше минуты';
   }
@@ -167,7 +212,15 @@ export function percent(p: Progress): number {
 
 export type StatusLine = { text: string; tone: 'ink' | 'muted' | 'warn' | 'ok' };
 
-export function statusLine(b: { status: Status; send_at: string | null; finished_at: string | null; started_at: string | null; progress: Progress; notice: string | null }): StatusLine {
+export function statusLine(b: {
+  status: Status;
+  send_at: string | null;
+  finished_at: string | null;
+  started_at: string | null;
+  progress: Progress;
+  notice: string | null;
+  mail_notice: string | null;
+}): StatusLine {
   switch (b.status) {
     case 'draft':
       return { text: 'Черновик', tone: 'muted' };
@@ -176,7 +229,7 @@ export function statusLine(b: { status: Status; send_at: string | null; finished
     case 'sending':
       return {
         text: b.progress.total > 0 ? `Идёт отправка: ${count(done(b.progress))} из ${count(b.progress.total)}` : 'Готовится к отправке',
-        tone: b.notice ? 'warn' : 'ink',
+        tone: b.notice || b.mail_notice ? 'warn' : 'ink',
       };
     case 'done':
       return { text: b.progress.total > 0 ? `Отправлена ${at(b.finished_at)}` : 'Получателей не нашлось', tone: b.progress.total > 0 ? 'ok' : 'muted' };
@@ -185,8 +238,8 @@ export function statusLine(b: { status: Status; send_at: string | null; finished
   }
 }
 
-export function outcome(p: Progress): string {
-  const parts = [`доставлено ${count(p.sent)}`];
+export function outcome(p: Progress, kind: Channel | Lane = 'bot'): string {
+  const parts = [`${kind === 'bot' ? 'доставлено' : 'отправлено'} ${count(p.sent)}`];
   if (p.failed > 0) {
     parts.push(`не${' '}доставлено ${count(p.failed)}`);
   }
@@ -197,19 +250,6 @@ export function outcome(p: Progress): string {
     parts.push(`не${' '}отправлено ${count(p.skipped)}`);
   }
   return parts.join(' · ');
-}
-
-export function draftBody(draft: Draft) {
-  return {
-    text: draft.text,
-    image_id: draft.image?.id ?? null,
-    buttons: draft.buttons.map((b) => (b.section ? { text: b.text, section: b.section } : { text: b.text, url: b.url ?? '' })),
-    audience: draft.audience,
-  };
-}
-
-export function draftOf(b: Broadcast): Draft {
-  return { text: b.text, image: b.image, buttons: b.buttons, audience: b.audience };
 }
 
 export function imageUrl(id: number): string {

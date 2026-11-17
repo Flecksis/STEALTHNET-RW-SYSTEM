@@ -1,8 +1,27 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../../lib/api';
-import { Preview } from './Preview';
-import { BASE, ROOT, at, count, done, eta, failText, imageUrl, percent, statusLine, type Broadcast, type Reach } from './model';
+import { useSession } from '../session';
+import { ChannelPreview } from './Preview';
+import {
+  BASE,
+  CHANNELS,
+  ROOT,
+  at,
+  count,
+  done,
+  eta,
+  failText,
+  hasBot,
+  hasEmail,
+  imageUrl,
+  outcome,
+  percent,
+  reachText,
+  statusLine,
+  type Broadcast,
+  type Reach,
+} from './model';
 
 type Props = {
   broadcast: Broadcast;
@@ -11,6 +30,7 @@ type Props = {
 };
 
 export function Report({ broadcast, onChange, onCopy }: Props) {
+  const { me } = useSession();
   const b = broadcast;
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -60,6 +80,7 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
 
   const status = statusLine(b);
   const p = b.progress;
+  const mailFailed = b.channels.find((lane) => lane.channel === 'email')?.progress.failed ?? 0;
   const showProgress = p.total > 0 && b.status !== 'scheduled';
 
   return (
@@ -71,7 +92,7 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
               {b.status === 'scheduled' ? 'Отправка' : b.status === 'sending' ? 'Ход отправки' : 'Итог'}
             </h2>
             <span className={`bc-status ${status.tone}`}>
-              {b.status === 'sending' && p.total > 0 && !b.queued_behind ? eta(p.pending) : status.text}
+              {b.status === 'sending' && p.total > 0 && !b.queued_behind && !b.notice && !b.mail_notice ? eta(b.channels) : status.text}
             </span>
           </div>
           {showProgress ? (
@@ -81,17 +102,19 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
               </span>
               <dl className="bc-dl">
                 <div>
-                  <dt>Доставлено</dt>
+                  <dt>{b.channel === 'bot' ? 'Доставлено' : 'Отправлено'}</dt>
                   <dd className="num">{count(p.sent)}</dd>
                 </div>
                 <div>
                   <dt>Не доставлено</dt>
                   <dd className="num">{count(p.failed)}</dd>
                 </div>
-                <div>
-                  <dt>Бот остановлен</dt>
-                  <dd className="num">{count(p.blocked)}</dd>
-                </div>
+                {hasBot(b.channel) ? (
+                  <div>
+                    <dt>Бот остановлен</dt>
+                    <dd className="num">{count(p.blocked)}</dd>
+                  </div>
+                ) : null}
                 {b.status === 'sending' ? (
                   <div>
                     <dt>Осталось</dt>
@@ -111,9 +134,23 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
                   </dd>
                 </div>
               </dl>
+              {b.channel === 'both' ? (
+                <div className="bc-lanes">
+                  {b.channels.map((lane) => (
+                    <p key={lane.channel} className="bc-lane">
+                      <strong>{lane.channel === 'bot' ? 'В бот' : 'На почту'}</strong>
+                      <span className="muted">
+                        {outcome(lane.progress, lane.channel)}
+                        {b.status === 'sending' && lane.progress.pending > 0 ? ` · осталось ${count(lane.progress.pending)}` : ''}
+                      </span>
+                    </p>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
           {b.notice ? <p className="warn-line bc-note">{b.notice}</p> : null}
+          {b.mail_notice ? <p className="warn-line bc-note">{b.mail_notice}</p> : null}
           {b.queued_behind ? (
             <p className="cap bc-note">
               Ждёт очереди: сначала закончится <Link to={`${ROOT}/${b.queued_behind}`}>рассылка №{b.queued_behind}</Link>
@@ -121,7 +158,8 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
           ) : null}
           {b.status === 'scheduled' ? (
             <p className="bc-note">
-              Получатели соберутся в момент отправки{reach ? `, сейчас получателей: ${count(reach.recipients)}` : ''}.
+              Получатели соберутся в момент отправки
+              {reach ? (reachText(reach, b.channel) ? `, сейчас она ушла бы ${reachText(reach, b.channel)}` : ', сейчас отправлять некому') : ''}.
             </p>
           ) : null}
           {error ? (
@@ -176,14 +214,41 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
               <h2 id="bc-why-h" className="section-title">
                 Почему не доставлено
               </h2>
-              <span className="muted">Частые причины. Тем, у кого бот остановлен, сообщения больше не уходят, пока они снова не откроют бота.</span>
+              <span className="muted">
+                {hasBot(b.channel)
+                  ? 'Частые причины. Тем, у кого бот остановлен, сообщения в бот больше не уходят, пока они снова не откроют бота.'
+                  : 'Частые причины. Адреса — в списке ниже.'}
+              </span>
             </div>
             {b.problems.map((problem) => (
-              <div key={problem.error} className="row bc-problem">
-                <span>{problem.error}</span>
+              <div key={`${problem.channel}:${problem.error}`} className="row bc-problem">
+                <span>
+                  {b.channel === 'both' ? (problem.channel === 'bot' ? 'Бот: ' : 'Почта: ') : ''}
+                  {problem.error}
+                </span>
                 <span className="num">{count(problem.count)}</span>
               </div>
             ))}
+          </section>
+        ) : null}
+
+        {b.failed_emails.length ? (
+          <section className="sec" aria-labelledby="bc-failed-h">
+            <div className="sec-head">
+              <h2 id="bc-failed-h" className="section-title">
+                Адреса с ошибкой
+              </h2>
+              <span className="muted">Что ответил почтовый сервер. В следующих рассылках письма на эти адреса уйдут снова.</span>
+            </div>
+            {b.failed_emails.map((row) => (
+              <div key={row.email} className="row bc-failed">
+                <span className="bc-failed-to">{row.email}</span>
+                <span className="muted bc-failed-why">{row.error}</span>
+              </div>
+            ))}
+            {mailFailed > b.failed_emails.length ? (
+              <p className="cap bc-pad">И ещё {count(mailFailed - b.failed_emails.length)}</p>
+            ) : null}
           </section>
         ) : null}
 
@@ -194,6 +259,16 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
             </h2>
           </div>
           <dl className="bc-facts">
+            <div>
+              <dt>Куда</dt>
+              <dd>{CHANNELS.find((c) => c.key === b.channel)?.title}</dd>
+            </div>
+            {b.subject && hasEmail(b.channel) ? (
+              <div>
+                <dt>Тема письма</dt>
+                <dd>{b.subject}</dd>
+              </div>
+            ) : null}
             <div>
               <dt>Кому</dt>
               <dd>{b.audience_label}</dd>
@@ -217,11 +292,25 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
           </dl>
         </section>
         <div className="bc-inline">
-          <Preview text={b.text} image={b.image ? imageUrl(b.image.id) : null} buttons={b.buttons} />
+          <ChannelPreview
+            channel={b.channel}
+            subject={b.subject ?? ''}
+            text={b.text}
+            image={b.image ? imageUrl(b.image.id) : null}
+            buttons={b.buttons}
+            brand={me.brand_name}
+          />
         </div>
       </div>
       <aside className="bc-side">
-        <Preview text={b.text} image={b.image ? imageUrl(b.image.id) : null} buttons={b.buttons} />
+        <ChannelPreview
+          channel={b.channel}
+          subject={b.subject ?? ''}
+          text={b.text}
+          image={b.image ? imageUrl(b.image.id) : null}
+          buttons={b.buttons}
+          brand={me.brand_name}
+        />
       </aside>
     </div>
   );

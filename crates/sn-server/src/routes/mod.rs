@@ -65,8 +65,9 @@ pub fn router(state: AppState) -> Router {
         .admin_router(ctx.clone())
         .layer(from_fn_with_state(state.clone(), require_admin));
     let client_modules = modules
-        .client_router(ctx)
+        .client_router(ctx.clone())
         .layer(from_fn_with_state(state.clone(), require_client));
+    let public_modules = modules.public_router(ctx);
     let request_id = HeaderName::from_static(REQUEST_ID);
     Router::new()
         .merge(system::routes())
@@ -79,6 +80,7 @@ pub fn router(state: AppState) -> Router {
         )
         .nest_service("/api/admin/m", admin_modules)
         .nest_service("/api/client/m", client_modules)
+        .nest_service("/api/public/m", public_modules)
         .fallback(crate::web::fallback)
         .layer(DefaultBodyLimit::max(state.config.body_limit_bytes))
         .layer(cors(&state.config.cors_origins))

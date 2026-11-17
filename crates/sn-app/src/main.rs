@@ -146,16 +146,29 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         background.push(tokio::spawn(
             worker(services.clone(), &config).run(cancel.clone()),
         ));
+        let ctx = services.module_context();
         let registry = services.modules().clone();
         background.push(tokio::spawn(
             broadcast::Engine::new(
-                services.module_context(),
-                sender,
+                ctx.clone(),
+                broadcast::Sender::Bot(sender),
                 move || registry.is_enabled(ModuleId::Broadcast),
                 broadcast::EngineConfig::default(),
             )
             .run(cancel.clone().cancelled_owned()),
         ));
+        if let Some(mail) = ctx.core.mail_sender() {
+            let registry = services.modules().clone();
+            background.push(tokio::spawn(
+                broadcast::Engine::new(
+                    ctx,
+                    broadcast::Sender::Mail(mail),
+                    move || registry.is_enabled(ModuleId::Broadcast),
+                    broadcast::EngineConfig::mail(),
+                )
+                .run(cancel.clone().cancelled_owned()),
+            ));
+        }
     }
     if config.run_bot {
         background.push(tokio::spawn(
