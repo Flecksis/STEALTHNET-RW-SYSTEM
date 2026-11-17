@@ -9,7 +9,8 @@ use cli::Command;
 use config::{Config, LogFormat};
 use sn_bot::{Bot, BotConfig, NotifyHandler};
 use sn_domain::jobs::JobKind;
-use sn_modules::ModuleRegistry;
+use sn_modules::catalog::broadcast;
+use sn_modules::{BotSender, ModuleId, ModuleRegistry};
 use sn_payments::ProviderRegistry;
 use sn_server::AppState;
 use sn_services::{ServiceDeps, Services, SystemClock};
@@ -136,9 +137,24 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         tokio::spawn(watch::settings_changes(services.clone(), cancel.clone())),
         tokio::spawn(updates::checks(services.clone(), cancel.clone())),
     ];
+    let sender: Arc<dyn BotSender> = Arc::new(sn_bot::broadcast::TelegramSender::new(
+        services.clone(),
+        &config.telegram_api,
+    ));
+    services.set_bot_sender(Some(sender.clone()));
     if config.run_worker {
         background.push(tokio::spawn(
             worker(services.clone(), &config).run(cancel.clone()),
+        ));
+        let registry = services.modules().clone();
+        background.push(tokio::spawn(
+            broadcast::Engine::new(
+                services.module_context(),
+                sender,
+                move || registry.is_enabled(ModuleId::Broadcast),
+                broadcast::EngineConfig::default(),
+            )
+            .run(cancel.clone().cancelled_owned()),
         ));
     }
     if config.run_bot {

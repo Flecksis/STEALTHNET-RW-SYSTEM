@@ -1,3 +1,4 @@
+pub mod broadcast;
 pub mod mail;
 pub mod options;
 pub mod promo;
@@ -24,6 +25,7 @@ pub fn all() -> Vec<Arc<dyn Module>> {
         Arc::new(referral::ReferralModule),
         Arc::new(utm::UtmModule),
         Arc::new(mail::MailModule),
+        Arc::new(broadcast::BroadcastModule),
     ]
 }
 
@@ -89,7 +91,8 @@ mod tests {
                 ModuleId::Options,
                 ModuleId::Referral,
                 ModuleId::Utm,
-                ModuleId::Mail
+                ModuleId::Mail,
+                ModuleId::Broadcast
             ]
         );
         let registry = ModuleRegistry::new(modules).unwrap();

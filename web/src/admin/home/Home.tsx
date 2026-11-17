@@ -409,8 +409,8 @@ function Daylight() {
   if (modules.has('promo')) {
     quick.push({ label: 'Создать промокод', to: '/admin/m/promo' });
   }
-  if (modules.has('broadcasts')) {
-    quick.push({ label: 'Написать всем', to: '/admin/m/broadcasts' });
+  if (modules.has('broadcast') && can('marketing')) {
+    quick.push({ label: 'Написать всем', to: '/admin/m/broadcast/new' });
   }
   if (can('infrastructure')) {
     quick.push({ label: 'Добавить ноду', to: '/admin/infra' });

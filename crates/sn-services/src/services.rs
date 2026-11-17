@@ -19,7 +19,7 @@ use crate::support::SupportOps;
 use crate::tariffs::TariffAdmin;
 use chrono::{DateTime, Utc};
 use sn_domain::settings::CoreSettings;
-use sn_modules::{ModuleContext, ModuleRegistry};
+use sn_modules::{BotSender, ModuleContext, ModuleRegistry};
 use sn_payments::ProviderRegistry;
 use sn_remnawave::{GuardedRemnawave, RemnaConfig, RemnawaveApi, RemnawaveClient};
 use sn_store::{Db, SecretBox, Store};
@@ -57,6 +57,7 @@ struct Runtime {
     bot_token: Option<String>,
     updates: Option<Arc<crate::updates::UpdateConfig>>,
     bot_content: Arc<crate::bot_content::BotContent>,
+    bot_sender: Option<Arc<dyn BotSender>>,
 }
 
 struct Inner {
@@ -92,6 +93,7 @@ impl Services {
             bot_token: deps.env.bot_token.clone(),
             updates: None,
             bot_content: Arc::default(),
+            bot_sender: None,
         };
         Services {
             inner: Arc::new(Inner {
@@ -189,6 +191,14 @@ impl Services {
 
     pub fn bot_token(&self) -> Option<String> {
         self.read(|r| r.bot_token.clone())
+    }
+
+    pub fn set_bot_sender(&self, sender: Option<Arc<dyn BotSender>>) {
+        self.write(|r| r.bot_sender = sender);
+    }
+
+    pub fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
+        self.read(|r| r.bot_sender.clone())
     }
 
     pub fn bot_runtime(&self) -> &BotRuntime {

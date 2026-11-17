@@ -1,4 +1,5 @@
 use crate::error::ModuleError;
+use crate::sender::BotSender;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sn_domain::ids::{ClientId, OrderId, PaymentId, SubscriptionId};
@@ -44,6 +45,10 @@ pub trait CoreApi: Send + Sync {
     ) -> Result<(), ModuleError>;
 
     async fn enqueue(&self, job: JobPayload) -> Result<(), ModuleError>;
+
+    fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
+        None
+    }
 }
 
 #[derive(Clone)]

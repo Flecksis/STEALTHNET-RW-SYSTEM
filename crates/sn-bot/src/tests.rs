@@ -20,6 +20,7 @@ use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod balance_off;
+mod broadcast;
 mod content;
 mod gram_wallet;
 mod miniapp;

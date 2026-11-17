@@ -5,8 +5,9 @@ use sn_domain::ids::{ClientId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::Money;
-use sn_modules::{BalanceChange, CoreApi, ModuleError, Notification};
+use sn_modules::{BalanceChange, BotSender, CoreApi, ModuleError, Notification};
 use sn_store::{Db, StoreError};
+use std::sync::Arc;
 
 #[cfg(test)]
 mod tests;
@@ -86,5 +87,9 @@ impl CoreApi for Services {
         let mut conn = self.store().conn().await?;
         conn.jobs().enqueue(&job, None).await?;
         Ok(())
+    }
+
+    fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
+        Services::bot_sender(self)
     }
 }

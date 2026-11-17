@@ -13,7 +13,7 @@ use sn_domain::ids::TariffId;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
 use sn_domain::subscription::Subscription;
-use sn_modules::catalog::{options, promo, referral};
+use sn_modules::catalog::{broadcast, options, promo, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
 use sn_services::bot_content::{BotContent, Document};
@@ -197,13 +197,26 @@ async fn on_callback(ctx: &BotCtx, callback: CallbackQuery) -> Result<(), BotErr
     let Some(message) = callback.message.as_ref().filter(|m| m.chat.is_private()) else {
         return Ok(());
     };
-    let target = Target {
-        chat_id: message.chat.id,
-        message_id: Some(message.message_id),
-        photo: message.has_photo(),
+    let data = callback.data.clone().unwrap_or_default();
+    let (target, data) = match data.strip_prefix(broadcast::CALLBACK_PREFIX) {
+        Some(rest) => (
+            Target {
+                chat_id: message.chat.id,
+                message_id: None,
+                photo: false,
+            },
+            rest.to_string(),
+        ),
+        None => (
+            Target {
+                chat_id: message.chat.id,
+                message_id: Some(message.message_id),
+                photo: message.has_photo(),
+            },
+            data,
+        ),
     };
     let session = Session::load(&ctx.services, target.chat_id).await?;
-    let data = callback.data.clone().unwrap_or_default();
     run(ctx, &callback.from, target, session, Action::Callback(data)).await
 }
 
