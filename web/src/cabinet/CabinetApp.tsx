@@ -159,6 +159,45 @@ const TABS: Array<{ key: string; label: string; to: string }> = [
   { key: 'help', label: 'Помощь', to: '/cabinet#help' },
 ];
 
+let referralKnown: boolean | null = null;
+
+function useTabs() {
+  const { site } = useCabinet();
+  const [referral, setReferral] = useState<boolean | null>(referralKnown);
+  useEffect(() => {
+    if (referralKnown !== null) {
+      return;
+    }
+    let alive = true;
+    api('/api/client/m/referral/me')
+      .then(() => {
+        referralKnown = true;
+        if (alive) {
+          setReferral(true);
+        }
+      })
+      .catch(() => {
+        referralKnown = false;
+        if (alive) {
+          setReferral(false);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const help = Boolean(site.support_url || site.bot_username);
+  return TABS.filter((t) => (t.key === 'friends' ? referral === true : t.key === 'help' ? help : true));
+}
+
+function jump(to: string, location: { pathname: string; hash: string }) {
+  const [path, hash] = to.split('#');
+  if (!hash || location.pathname !== path || location.hash !== `#${hash}`) {
+    return;
+  }
+  document.getElementById(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function currentTab(path: string, hash: string): string {
   if (path.startsWith('/cabinet/security')) {
     return 'security';
@@ -224,13 +263,14 @@ function Header() {
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
   const tab = currentTab(location.pathname, location.hash);
+  const tabs = useTabs();
   return (
     <header className="cb-head">
       <div className="cb-head-in">
         <Brand />
         <nav aria-label="Кабинет" className="cb-tabs">
-          {TABS.map((t) => (
-            <Link key={t.key} to={t.to} className="cb-tab hov" aria-current={tab === t.key ? 'page' : undefined}>
+          {tabs.map((t) => (
+            <Link key={t.key} to={t.to} className="cb-tab hov" aria-current={tab === t.key ? 'page' : undefined} onClick={() => jump(t.to, location)}>
               {t.label}
             </Link>
           ))}
@@ -283,6 +323,7 @@ function PhoneHeader() {
     setOpen(false);
   }, [location.pathname, location.hash]);
   const tab = currentTab(location.pathname, location.hash);
+  const tabs = useTabs();
   return (
     <header className="cb-phead">
       <Brand small />
@@ -298,8 +339,17 @@ function PhoneHeader() {
       </button>
       {open ? (
         <nav aria-label="Разделы кабинета" className="cb-menu">
-          {TABS.map((t) => (
-            <Link key={t.key} to={t.to} className="cb-menu-item" aria-current={tab === t.key ? 'page' : undefined}>
+          {tabs.map((t) => (
+            <Link
+              key={t.key}
+              to={t.to}
+              className="cb-menu-item"
+              aria-current={tab === t.key ? 'page' : undefined}
+              onClick={() => {
+                setOpen(false);
+                jump(t.to, location);
+              }}
+            >
               {t.label}
             </Link>
           ))}
@@ -322,7 +372,13 @@ function Footer() {
   const { site } = useCabinet();
   return (
     <footer className="cb-foot">
-      {site.support_url ? <a href={site.support_url}>Помощь</a> : <Link to="/cabinet#help">Помощь</Link>}
+      {site.support_url ? (
+        <a href={site.support_url}>Помощь</a>
+      ) : site.bot_username ? (
+        <a href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
+          Помощь
+        </a>
+      ) : null}
       {(site.documents ?? []).map((doc) => (
         <a key={doc.url} href={doc.url} target="_blank" rel="noreferrer noopener">
           {doc.title}

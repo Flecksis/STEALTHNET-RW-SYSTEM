@@ -457,7 +457,17 @@ export function SubscriptionPage() {
     </Card>
   ) : null;
 
-  const devicesCard = view ? (
+  const devicesCard = !view ? (
+    <Card id="devices" className="cb-devices" label="Устройства">
+      <h2 className="cb-h2">Устройства</h2>
+      <p className="cb-ink2">Подключить телефон или компьютер можно сразу после покупки подписки.</p>
+      <div className="cb-btns">
+        <Link to="/cabinet/pay" className="cb-second">
+          Выбрать тариф
+        </Link>
+      </div>
+    </Card>
+  ) : (
     <Card id="devices" className="cb-devices" label="Устройства">
       <div className="cb-row">
         <h2 className="cb-h2">
@@ -527,7 +537,7 @@ export function SubscriptionPage() {
         </Fragment>
       ))}
     </Card>
-  ) : null;
+  );
 
   const autoSwitch = view ? (
     <button type="button" role="switch" className={phone ? 'cb-switch big' : 'cb-switch'} aria-checked={autoOn} aria-label="Автопродление" onClick={() => void toggleAuto()} disabled={blocked}>
@@ -633,6 +643,14 @@ export function SubscriptionPage() {
             <span>
               <strong>Нужна помощь?</strong>
               <span className="cb-small cb-muted">Откроется чат поддержки</span>
+            </span>
+            <Icon name="chevron-right" size={20} />
+          </a>
+        ) : site.bot_username ? (
+          <a id="help" className="cb-card cb-help hov" href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
+            <span>
+              <strong>Нужна помощь?</strong>
+              <span className="cb-small cb-muted">Напишите в Telegram-бота: раздел «Поддержка»</span>
             </span>
             <Icon name="chevron-right" size={20} />
           </a>

@@ -1616,3 +1616,8 @@
     padding: 0 8px 0 12px;
   }
 }
+
+.cb-card[id],
+a.cb-card[id] {
+  scroll-margin-top: 16px;
+}
