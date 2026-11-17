@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod admins;
 pub mod auth;
 pub mod autorenew;
 pub mod bot_content;

@@ -51,6 +51,7 @@ export type ModuleMenuItem = {
 export type Me = {
   admin: { admin_id: number; role: AdminRole; permissions: Permission[]; session_id: number };
   email: string | null;
+  must_change_password?: boolean;
   permissions: Permission[];
   menu: ModuleMenuItem[];
   currency: Currency;

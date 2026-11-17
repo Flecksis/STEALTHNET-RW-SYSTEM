@@ -162,16 +162,18 @@ async fn me(
         .filter(|p| admin.can(*p))
         .collect();
     let settings = state.services.settings();
-    let email = state
+    let security = state
         .services
         .auth()
         .admin_security(admin.0.admin_id)
         .await
-        .map(|security| security.email)
         .ok();
+    let must_change_password = security.as_ref().is_some_and(|s| s.must_change_password);
+    let email = security.map(|s| s.email);
     Ok(Json(serde_json::json!({
         "admin": admin.0,
         "email": email,
+        "must_change_password": must_change_password,
         "permissions": permissions,
         "menu": state.services.modules().menu(),
         "currency": settings.currency,

@@ -391,6 +391,7 @@
   text-overflow: ellipsis;
 }
 
+.profile-menu a,
 .profile-menu button {
   display: flex;
   align-items: center;

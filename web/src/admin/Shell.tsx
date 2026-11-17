@@ -135,6 +135,10 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
               {ROLE_LABEL[me.admin.role]}
             </span>
           </div>
+          <Link to="/admin/security" className="hov" onClick={() => setWhoOpen(false)}>
+            <Icon name="user" size={18} />
+            Безопасность
+          </Link>
           <button type="button" className="hov" onClick={() => void logout()}>
             <Icon name="logout" size={18} />
             Выйти
@@ -230,6 +234,10 @@ function TopBar({ items, path, theme, onFlipTheme, build }: MenuProps) {
                     {ROLE_LABEL[me.admin.role]}
                   </span>
                 </div>
+                <Link to="/admin/security" className="hov" onClick={() => setProfileOpen(false)}>
+                  <Icon name="user" size={18} />
+                  Безопасность
+                </Link>
                 <button type="button" className="hov" onClick={() => void logout()}>
                   <Icon name="logout" size={18} />
                   Выйти
@@ -283,6 +291,11 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
                   <Icon name="chevron-right" size={16} />
                 </Link>
               ))}
+              <Link to="/admin/security" className="psheet-row press" aria-current={path === '/admin/security' ? 'page' : undefined}>
+                <Icon name="user" size={21} />
+                <span className="psheet-name">Безопасность</span>
+                <Icon name="chevron-right" size={16} />
+              </Link>
               <button type="button" className="psheet-row press" onClick={onFlipTheme}>
                 <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={21} />
                 <span className="psheet-name">{ThemeLabel(theme)}</span>

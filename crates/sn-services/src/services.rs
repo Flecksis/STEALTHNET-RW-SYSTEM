@@ -267,6 +267,10 @@ impl Services {
         Auth::new(self)
     }
 
+    pub fn admins(&self) -> crate::admins::AdminsOps<'_> {
+        crate::admins::AdminsOps::new(self)
+    }
+
     pub fn clients(&self) -> ClientOps<'_> {
         ClientOps::new(self)
     }

@@ -1,0 +1,176 @@
+.adm-row {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.adm-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.adm-email {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adm-status {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.adm-status.warn {
+  color: var(--warn);
+}
+
+.adm-status.bad {
+  color: var(--bad);
+}
+
+.adm-role {
+  flex: 0 0 180px;
+}
+
+.adm-role select,
+.adm-new-role {
+  cursor: pointer;
+}
+
+.adm-acts {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.adm-acts a.b34 {
+  display: inline-flex;
+  align-items: center;
+}
+
+.b34.bad {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.adm-ask {
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface-2);
+}
+
+.adm-ask .cap {
+  flex: 1 1 280px;
+  color: var(--ink-2);
+}
+
+.adm-issued {
+  align-items: center;
+  background: var(--accent-soft);
+}
+
+.adm-pass {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.adm-new-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.adm-new-fields .field:first-child {
+  flex: 1 1 260px;
+}
+
+.adm-new-role {
+  flex: 0 0 180px;
+}
+
+@media (max-width: 760px) {
+  .adm-row {
+    flex-wrap: wrap;
+  }
+
+  .adm-role {
+    flex: 1 1 160px;
+  }
+
+  .adm-acts {
+    justify-content: flex-start;
+  }
+
+  .adm-new-role {
+    flex: 1 1 160px;
+  }
+}
+
+.sec-lead {
+  margin: -6px 0 16px;
+}
+
+.sec-notice {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.sec-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 760px;
+}
+
+.sec-form .row:first-child {
+  border-top: 1px solid var(--line);
+}
+
+.tf-setup {
+  align-items: center;
+  gap: 16px 24px;
+}
+
+.tf-setup .qr {
+  flex: 0 0 auto;
+  border-radius: 10px;
+}
+
+.tf-secret {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+.adm-new-fields .field.tf-code {
+  flex: 0 0 190px;
+  letter-spacing: 0.12em;
+}
+
+.adm-new-fields .field.tf-code:placeholder-shown {
+  letter-spacing: normal;
+}
+
+.adm-new-fields .field.tf-code + .field {
+  flex: 1 1 220px;
+}
+
+.forced {
+  max-width: 560px;
+}
+
+.forced .rl {
+  flex-basis: 160px;
+}

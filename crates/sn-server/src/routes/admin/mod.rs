@@ -1,3 +1,4 @@
+mod admins;
 mod auth;
 mod bot_content;
 mod catalog;
@@ -25,6 +26,7 @@ use sn_domain::paging::PageRequest;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(auth::routes())
+        .merge(admins::routes())
         .merge(overview::routes())
         .merge(clients::routes())
         .merge(photos::routes())

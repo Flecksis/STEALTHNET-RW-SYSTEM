@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use sn_domain::access::{AdminRole, Permission};
 use sn_domain::ids::AdminId;
 use sqlx::PgConnection;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminRecord {
@@ -198,6 +199,32 @@ impl<'c> AdminsRepo<'c> {
             .execute(&mut *self.conn)
             .await?;
         Ok(())
+    }
+
+    pub async fn enable(&mut self, id: AdminId) -> StoreResult<()> {
+        sqlx::query("UPDATE admins SET disabled_at = NULL WHERE id = $1")
+            .bind(id.0)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn lock_owners(&mut self) -> StoreResult<i64> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM admins WHERE role = 'owner' AND disabled_at IS NULL ORDER BY id FOR UPDATE",
+        )
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(ids.len() as i64)
+    }
+
+    pub async fn last_logins(&mut self) -> StoreResult<HashMap<AdminId, DateTime<Utc>>> {
+        let rows: Vec<(i64, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT admin_id, max(created_at) FROM admin_sessions GROUP BY admin_id",
+        )
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(rows.into_iter().map(|(id, at)| (AdminId(id), at)).collect())
     }
 
     pub async fn remember_login_address(

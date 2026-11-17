@@ -29,6 +29,8 @@ import { SettingsBotImages } from './pages/SettingsBotImages';
 import { SettingsBotTexts } from './pages/SettingsBotTexts';
 import { SettingsDocuments } from './pages/SettingsDocuments';
 import { SettingsLanding } from './pages/SettingsLanding';
+import { SettingsAdmins } from './pages/SettingsAdmins';
+import { ForcedPassword, Security } from './pages/Security';
 import { SettingsUpdates } from './pages/SettingsUpdates';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
@@ -197,6 +199,11 @@ export function AdminApp() {
   if (state.kind === 'guest' || !session) {
     return <Login brand={(site ?? DEFAULT_SITE).brand_name} logo={site?.logo_url ?? null} onDone={() => void load()} />;
   }
+  if (state.me.must_change_password) {
+    return (
+      <ForcedPassword brand={state.me.brand_name} logo={state.me.logo_url ?? null} onDone={() => void load()} onLogout={() => void session.logout()} />
+    );
+  }
 
   return (
     <SessionContext.Provider value={session}>
@@ -225,6 +232,8 @@ export function AdminApp() {
           <Route path="settings/bot/images" element={<SettingsBotImages />} />
           <Route path="settings/documents" element={<SettingsDocuments />} />
           <Route path="settings/landing" element={<SettingsLanding />} />
+          <Route path="settings/admins" element={<SettingsAdmins />} />
+          <Route path="security" element={<Security />} />
           <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
           <Route
             path="settings/*"

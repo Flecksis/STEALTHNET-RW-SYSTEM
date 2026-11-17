@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import { api } from '../../lib/api';
+import type { Permission } from '../../lib/types';
+import { useSession } from '../session';
 import { shortName, UPDATES_PATH, upgradeText, versionLine, type BuildSummary } from '../version';
 import '../settings.css';
 import './updates.css';
 
-const SECTIONS: Array<{ label: string; to?: string }> = [
+const SECTIONS: Array<{ label: string; to?: string; need?: Permission }> = [
   { label: 'Общие', to: '/admin/settings/general' },
   { label: 'Remnawave', to: '/admin/settings/remnawave' },
   { label: 'Оформление', to: '/admin/settings/look' },
@@ -15,13 +17,14 @@ const SECTIONS: Array<{ label: string; to?: string }> = [
   { label: 'Лендинг', to: '/admin/settings/landing' },
   { label: 'Кабинет и мини-приложение' },
   { label: 'Почта и уведомления' },
-  { label: 'Администраторы' },
+  { label: 'Администраторы', to: '/admin/settings/admins', need: 'admins' },
   { label: 'API-ключи' },
   { label: 'Обновления и резервные копии', to: UPDATES_PATH },
 ];
 
 export function SettingsLayout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
+  const { can } = useSession();
   const [summary, setSummary] = useState<BuildSummary | null>(null);
   useEffect(() => {
     let alive = true;
@@ -40,7 +43,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
       <div className="setgrid">
         <nav aria-label="Разделы настроек" className="subnav">
           {SECTIONS.map((section) =>
-            section.to ? (
+            section.to && (!section.need || can(section.need)) ? (
               <Link
                 key={section.label}
                 to={section.to}
@@ -52,7 +55,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
                 {section.to === UPDATES_PATH && fresh ? <span className="subnav-new">новая версия {fresh}</span> : null}
               </Link>
             ) : (
-              <span key={section.label} title="Раздел в работе">
+              <span key={section.label} title={section.to ? 'Раздел доступен владельцу' : 'Раздел в работе'}>
                 {section.label}
               </span>
             ),
