@@ -8,6 +8,7 @@ import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, MessageDialog } from './dialogs';
 import { historyLine } from './history';
+import { PasswordDialog } from './PasswordDialog';
 import { devicesWord, emailOf, liveSubscriptions, nextReset, personName, seenText, tariffOf, telegramOf } from './model';
 import { planTitle } from './SubscriptionBlock';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
@@ -17,7 +18,7 @@ import { Avatar } from '../Avatar';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
-type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete';
+type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 type SheetItem = { key: Dialogs; icon: IconName; label: string };
@@ -744,6 +745,11 @@ export function ClientPhone() {
             <button type="button" className="pc-dbtn press" onClick={() => setDialog('reset-2fa')} disabled={!card.two_factor.enabled}>
               Сбросить 2FA
             </button>
+            {emailOf(card) ? (
+              <button type="button" className="pc-dbtn wide press" onClick={() => setDialog('password')}>
+                Новый пароль для сайта
+              </button>
+            ) : null}
             {moneyOk && sub ? (
               <button type="button" className="pc-dbtn wide press" onClick={() => setDialog('delete-sub')}>
                 Удалить подписку
@@ -883,6 +889,9 @@ export function ClientPhone() {
             void loadHistory();
           }}
         />
+      ) : null}
+      {dialog === 'password' && emailOf(card) ? (
+        <PasswordDialog clientId={clientId} email={emailOf(card)?.value ?? ''} onClose={() => setDialog('')} onIssued={() => undefined} />
       ) : null}
       {dialog === 'reset-2fa' ? (
         <ConfirmDialog

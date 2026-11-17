@@ -3,6 +3,7 @@ import { api, ApiError } from '../../lib/api';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import type { ModuleConfig, ModulesData, ModuleView } from '../modules/model';
 import { useSession } from '../session';
+import { Switch } from '../ui';
 import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
@@ -10,9 +11,10 @@ import { SettingsLayout } from './SettingsLayout';
 const NO_SECRETS: SecretState = { clear: [], replacing: [] };
 
 type Transport = 'none' | 'smtp' | 'resend';
+type Login = 'password' | 'code';
 
 const TRANSPORTS: Array<[Transport, string]> = [
-  ['none', 'Без подтверждения'],
+  ['none', 'Не отправлять'],
   ['smtp', 'SMTP'],
   ['resend', 'Resend API'],
 ];
@@ -24,10 +26,23 @@ const FIELDS: Record<Transport, string[]> = {
 };
 
 const ABOUT: Record<Transport, string> = {
-  none: 'Клиенты регистрируются на сайте по почте и паролю, письма не отправляются. Восстановить пароль сами они не смогут — только через поддержку.',
-  smtp: 'Вход на сайте по коду из письма. Письма уходят через ваш почтовый сервер: Яндекс, Mail.ru, Gmail или свой.',
-  resend: 'Вход на сайте по коду из письма. Письма уходят через сервис Resend по ключу API; домен адреса отправителя должен быть подтверждён в Resend.',
+  none: 'Письма не уходят: ни коды, ни напоминания.',
+  smtp: 'Письма уходят через ваш почтовый сервер: Яндекс, Mail.ru, Gmail или свой.',
+  resend: 'Письма уходят через сервис Resend по ключу API. Домен адреса отправителя должен быть подтверждён в Resend.',
 };
+
+const LOGINS: Array<[Login, string]> = [
+  ['password', 'По паролю'],
+  ['code', 'По коду из письма'],
+];
+
+const LETTERS: Array<[string, string, string]> = [
+  ['letter_expiring', 'Окончание подписки', 'Напоминание перед концом срока и письма об автопродлении'],
+  ['letter_payments', 'Оплата', 'Оплата получена, подписка выдана или продлена, баланс пополнен'],
+  ['letter_support', 'Ответ поддержки', 'Текст ответа и ссылка на переписку в кабинете'],
+];
+
+const CUSTOM = new Set(['transport', 'login', ...LETTERS.map(([key]) => key)]);
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -35,6 +50,13 @@ function failText(err: unknown, fallback: string): string {
 
 function asTransport(value: unknown): Transport {
   return value === 'smtp' || value === 'resend' ? value : 'none';
+}
+
+function loginOf(value: unknown, transport: Transport): Login {
+  if (transport === 'none') {
+    return 'password';
+  }
+  return value === 'password' || value === 'code' ? value : 'code';
 }
 
 export function SettingsMail() {
@@ -52,7 +74,9 @@ export function SettingsMail() {
 
   const apply = (next: ModuleConfig) => {
     setCfg(next);
-    setValues(initialValues(next.schema, next.config));
+    const initial = initialValues(next.schema, next.config);
+    const saved = asTransport(next.config.transport);
+    setValues({ ...initial, login: loginOf(next.config.login, saved) });
     setSecrets(NO_SECRETS);
   };
 
@@ -99,8 +123,13 @@ export function SettingsMail() {
 
   const transport = asTransport(values.transport);
   const saved = asTransport(cfg.config.transport);
-  const visible = cfg.schema.filter((field) => FIELDS[transport].includes(field.key));
+  const login = loginOf(values.login, transport);
+  const visible = cfg.schema.filter((field) => FIELDS[transport].includes(field.key) && !CUSTOM.has(field.key));
   const sends = view.active && saved !== 'none';
+  const edit = (patch: FieldValues) => {
+    setValues({ ...values, ...patch });
+    setStatus(null);
+  };
 
   const save = async () => {
     if (busy) {
@@ -114,10 +143,14 @@ export function SettingsMail() {
     setBusy(true);
     setStatus(null);
     try {
+      const config = changedConfig(cfg.schema, cfg.config, { ...values, login });
+      if (cfg.config.login !== login) {
+        config.login = login;
+      }
       apply(
         await api<ModuleConfig>('/api/admin/modules/mail/config', {
           method: 'PUT',
-          body: { config: changedConfig(cfg.schema, cfg.config, values), clear: secrets.clear },
+          body: { config, clear: secrets.clear },
         }),
       );
       setStatus({ text: 'Сохранено', bad: false });
@@ -145,15 +178,22 @@ export function SettingsMail() {
     }
   };
 
+  const loginText =
+    login === 'code'
+      ? 'Пароль не нужен: при каждом входе на почту приходит код.'
+      : transport === 'none'
+        ? 'Клиент регистрируется с паролем, почту не подтверждает. Забытый пароль сам восстановить не сможет — его выдаёт поддержка: «Новый пароль» в карточке клиента.'
+        : 'Клиент регистрируется с паролем. Забытый пароль меняет сам по коду из письма.';
+
   return (
     <SettingsLayout>
       <div className="sec-stack">
         <section className="sec" aria-labelledby="mail-h">
           <div className="sec-head">
             <h2 id="mail-h" className="section-title">
-              Регистрация по почте
+              Отправка писем
             </h2>
-            <span className="muted">Как клиенты входят в кабинет на сайте по почте. Уведомления клиентам в Telegram отправляет бот, отдельно их настраивать не нужно.</span>
+            <span className="muted">Через что сервис отправляет письма клиентам: коды, напоминания, ответы поддержки и рассылки</span>
           </div>
           {!view.active ? (
             <div className="row adm-row">
@@ -170,18 +210,9 @@ export function SettingsMail() {
           ) : null}
           <div className="row">
             <span className="rc">
-              <span role="group" aria-label="Подтверждение почты" className="segs">
+              <span role="group" aria-label="Отправка писем" className="segs">
                 {TRANSPORTS.map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={transport === key}
-                    onClick={() => {
-                      setValues({ ...values, transport: key });
-                      setStatus(null);
-                    }}
-                    disabled={busy}
-                  >
+                  <button key={key} type="button" aria-pressed={transport === key} onClick={() => edit({ transport: key })} disabled={busy}>
                     {label}
                   </button>
                 ))}
@@ -194,21 +225,60 @@ export function SettingsMail() {
               <SchemaFields schema={visible} config={cfg.config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix="mail" />
             </div>
           ) : null}
+        </section>
+
+        <section className="sec" aria-labelledby="mail-login-h">
+          <div className="sec-head">
+            <h2 id="mail-login-h" className="section-title">
+              Вход на сайт по почте
+            </h2>
+            <span className="muted">Как клиент входит в кабинет, если выбрал почту, а не Telegram</span>
+          </div>
           <div className="row">
             <span className="rc">
-              {status ? (
-                <span className={status.bad ? 'err' : 'cap'} role={status.bad ? 'alert' : 'status'}>
-                  {status.text}
-                </span>
-              ) : null}
-              <span>
-                <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
-                  {busy ? 'Сохраняем…' : 'Сохранить'}
-                </button>
+              <span role="group" aria-label="Вход на сайт по почте" className="segs">
+                {LOGINS.map(([key, label]) => (
+                  <button key={key} type="button" aria-pressed={login === key} onClick={() => edit({ login: key })} disabled={busy || (key === 'code' && transport === 'none')}>
+                    {label}
+                  </button>
+                ))}
               </span>
+              <span className="cap">{loginText}</span>
             </span>
           </div>
         </section>
+
+        {transport !== 'none' ? (
+          <section className="sec" aria-labelledby="mail-letters-h">
+            <div className="sec-head">
+              <h2 id="mail-letters-h" className="section-title">
+                Письма клиентам
+              </h2>
+              <span className="muted">Приходят тем, кому нельзя написать в Telegram: Telegram не привязан или клиент остановил бота</span>
+            </div>
+            {LETTERS.map(([key, title, text]) => (
+              <div key={key} className="row adm-row">
+                <span className="adm-who">
+                  <span className="adm-email">{title}</span>
+                  <span className="adm-status">{text}</span>
+                </span>
+                <span className="adm-acts">
+                  <Switch on={values[key] === true} onToggle={() => edit({ [key]: values[key] !== true })} label={title} disabled={busy} />
+                </span>
+              </div>
+            ))}
+          </section>
+        ) : null}
+
+        <div className="save-row">
+          <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
+            {busy ? 'Сохраняем…' : 'Сохранить'}
+          </button>
+          <span role="status" className={status?.bad ? 'bad' : undefined}>
+            {status?.text ?? ''}
+          </span>
+        </div>
+
         {sends ? (
           <section className="sec" aria-labelledby="mail-test-h">
             <div className="sec-head">

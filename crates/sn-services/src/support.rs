@@ -328,7 +328,7 @@ impl<'a> SupportOps<'a> {
         if author != MessageAuthor::Client {
             for target in ticket.channel.reply_targets() {
                 match target {
-                    ReplyTarget::Telegram => {
+                    ReplyTarget::Telegram | ReplyTarget::Email => {
                         tx.jobs()
                             .enqueue(
                                 &JobPayload::Notify {
@@ -345,15 +345,6 @@ impl<'a> SupportOps<'a> {
                             .await?;
                     }
                     ReplyTarget::Cabinet => {}
-                    ReplyTarget::Email => {
-                        if !self
-                            .services
-                            .modules()
-                            .is_enabled(sn_domain::module::ModuleId::Mail)
-                        {
-                            tracing::debug!(ticket = %id, "модуль «Почта» выключен, ответ виден только в кабинете");
-                        }
-                    }
                 }
             }
             tx.events()

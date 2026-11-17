@@ -11,8 +11,11 @@ use sn_domain::format;
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::money::Money;
+use sn_modules::MailSite;
+use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
 use sn_modules::catalog::referral;
 use sn_services::Services;
+use sn_services::mail::{RichLetter, Undelivered};
 use sn_store::{Db, StoreError};
 use sn_worker::{CoreHandlers, JobHandler, JobResult};
 use std::sync::{Arc, Mutex};
@@ -266,9 +269,6 @@ impl NotifyHandler {
             after: retry_delay(attempt),
             error,
         };
-        let Some(token) = services.bot_token() else {
-            return retry("токен бота не задан".into());
-        };
         let mut conn = match services.store().conn().await {
             Ok(conn) => conn,
             Err(err) => return retry(err.to_string()),
@@ -282,18 +282,25 @@ impl NotifyHandler {
             Ok(identities) => identities,
             Err(err) => return retry(err.to_string()),
         };
-        let Some(chat_id) = identities
+        let chat = identities
             .iter()
             .find(|i| i.kind == IdentityKind::Telegram)
             .and_then(|i| i.value.parse::<i64>().ok())
-        else {
-            tracing::debug!(client = %client_id, template, "у клиента нет Telegram, уведомление пропущено");
-            return JobResult::Done;
+            .filter(|_| !client.bot_unreachable);
+        let Some(chat_id) = chat else {
+            drop(conn);
+            return match identities.iter().find(|i| i.kind == IdentityKind::Email) {
+                Some(email) => mail_notice(services, &email.value, template, params, attempt).await,
+                None => {
+                    tracing::debug!(client = %client_id, template, "клиенту не написать ни в Telegram, ни на почту");
+                    JobResult::Done
+                }
+            };
         };
-        if client.bot_unreachable {
-            return JobResult::Done;
-        }
         drop(conn);
+        let Some(token) = services.bot_token() else {
+            return retry("токен бота не задан".into());
+        };
         let sent = if template == gram_wallet::TEMPLATE {
             let Some(payment) = params
                 .get("payment_id")
@@ -351,6 +358,167 @@ impl NotifyHandler {
                 None => JobResult::Fail(err.to_string()),
             },
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LetterKind {
+    Expiring,
+    Payments,
+    Support,
+}
+
+pub struct LetterHead {
+    pub kind: LetterKind,
+    pub subject: String,
+    pub button: &'static str,
+    pub path: String,
+}
+
+pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterHead> {
+    let ticket = params
+        .get("ticket_id")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|id| *id > 0);
+    let head = |kind, subject: &str, button, path: &str| LetterHead {
+        kind,
+        subject: subject.to_string(),
+        button,
+        path: path.to_string(),
+    };
+    Some(match canonical(template, params) {
+        templates::PAYMENT_PAID => head(
+            LetterKind::Payments,
+            "Оплата получена",
+            "Открыть кабинет",
+            "/cabinet",
+        ),
+        templates::TOPUP_DONE => head(
+            LetterKind::Payments,
+            "Баланс пополнен",
+            "История оплат",
+            "/cabinet/payments",
+        ),
+        templates::SUBSCRIPTION_READY => head(
+            LetterKind::Payments,
+            "Подписка готова",
+            "Открыть кабинет",
+            "/cabinet",
+        ),
+        templates::SUBSCRIPTION_RENEWED => head(
+            LetterKind::Payments,
+            "Подписка продлена",
+            "Открыть кабинет",
+            "/cabinet",
+        ),
+        templates::SUBSCRIPTION_EXPIRING => head(
+            LetterKind::Expiring,
+            "Подписка скоро закончится",
+            "Продлить",
+            "/cabinet/pay",
+        ),
+        templates::AUTORENEW_UPCOMING => head(
+            LetterKind::Expiring,
+            "Скоро автопродление",
+            "Пополнить баланс",
+            "/cabinet/topup",
+        ),
+        templates::AUTORENEW_FAILED => head(
+            LetterKind::Expiring,
+            "Подписку не удалось продлить",
+            "Продлить",
+            "/cabinet/pay",
+        ),
+        templates::AUTORENEW_DISABLED => head(
+            LetterKind::Expiring,
+            "Автопродление выключено",
+            "Продлить",
+            "/cabinet/pay",
+        ),
+        templates::SUPPORT_REPLY => LetterHead {
+            kind: LetterKind::Support,
+            subject: match ticket {
+                Some(id) => format!("Ответ поддержки по обращению №{id}"),
+                None => "Ответ поддержки".to_string(),
+            },
+            button: "Открыть переписку",
+            path: match ticket {
+                Some(id) => format!("/cabinet/help/{id}"),
+                None => "/cabinet/help".to_string(),
+            },
+        },
+        _ => return None,
+    })
+}
+
+async fn mail_notice(
+    services: &Services,
+    email: &str,
+    template: &str,
+    params: &serde_json::Value,
+    attempt: u32,
+) -> JobResult {
+    let mail = services.mail();
+    let Some(letters) = mail.letters() else {
+        return JobResult::Done;
+    };
+    let Some(head) = letter_head(template, params) else {
+        return JobResult::Done;
+    };
+    let wanted = match head.kind {
+        LetterKind::Expiring => letters.expiring,
+        LetterKind::Payments => letters.payments,
+        LetterKind::Support => letters.support,
+    };
+    if !wanted {
+        return JobResult::Done;
+    }
+    let settings = services.settings();
+    let content = services.bot_content();
+    let Some(rendered) = render(&content.content, template, params, settings.remna_offset()) else {
+        return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
+    };
+    let base = settings
+        .public_url
+        .as_deref()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| url.starts_with("https://") || url.starts_with("http://"));
+    let buttons: Vec<ButtonSpec> = base
+        .iter()
+        .map(|base| ButtonSpec {
+            text: head.button.to_string(),
+            url: Some(format!("{base}{}", head.path)),
+            section: None,
+        })
+        .collect();
+    let site = MailSite {
+        base_url: base.clone().unwrap_or_default(),
+        brand: settings.brand_name.clone(),
+    };
+    let letter = letter_for(&head.subject, &rendered.text, None, &buttons, &site);
+    let rich = RichLetter {
+        to: email.to_string(),
+        subject: head.subject.clone(),
+        text: letter.notice_text(),
+        html: letter.notice_html(),
+        unsubscribe: None,
+    };
+    match mail.deliver(&rich).await {
+        Ok(()) => JobResult::Done,
+        Err(Undelivered::Off(_)) => JobResult::Done,
+        Err(Undelivered::Address(reason)) => {
+            tracing::info!(template, reason = %reason, "письмо клиенту не отправлено: адрес не принят");
+            JobResult::Done
+        }
+        Err(Undelivered::Limited(wait)) => JobResult::Retry {
+            after: chrono::Duration::from_std(wait)
+                .unwrap_or_else(|_| chrono::Duration::seconds(60)),
+            error: "почтовый сервис просит подождать".into(),
+        },
+        Err(Undelivered::Failed(error)) => JobResult::Retry {
+            after: retry_delay(attempt),
+            error,
+        },
     }
 }
 

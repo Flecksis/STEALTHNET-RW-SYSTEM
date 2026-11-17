@@ -31,6 +31,8 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
   const [totp, setTotp] = useState('');
   const [password, setPassword] = useState('');
   const [joining, setJoining] = useState(false);
+  const [reset, setReset] = useState<'off' | 'email' | 'code'>('off');
+  const [fresh, setFresh] = useState('');
   const emailAuth = site.email_auth === undefined ? 'code' : site.email_auth;
   const siteOpen = site.client_access?.site_login !== false;
   const timer = useRef<number | null>(null);
@@ -147,6 +149,45 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
         setJoining(false);
       }
       setError(failText(err, joining ? 'Аккаунт не создался' : 'Войти не получилось'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetStart = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/api/client/auth/email/reset', { method: 'POST', body: { email: email.trim() } });
+      setCode('');
+      setFresh('');
+      setReset('code');
+    } catch (err) {
+      setError(failText(err, 'Код не отправился'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetConfirm = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<Verified>('/api/client/auth/email/reset/confirm', {
+        method: 'POST',
+        body: { email: email.trim(), code: code.trim(), password: fresh },
+      });
+      setReset('off');
+      if (res.status === 'totp_required' && res.challenge) {
+        setChallenge(res.challenge);
+        setTotp('');
+        return;
+      }
+      onDone();
+    } catch (err) {
+      setError(failText(err, 'Пароль не сменился'));
     } finally {
       setBusy(false);
     }
@@ -273,6 +314,38 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
               </button>
             </div>
           )
+        ) : emailAuth === 'password' && reset === 'email' ? (
+          <form className="cb-login-form" onSubmit={resetStart}>
+            <p className="cb-login-note">Пришлём на почту код — с ним зададите новый пароль.</p>
+            <label className="cb-field">
+              <span>Почта</span>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
+            </label>
+            <button type="submit" className="cb-main" disabled={busy || !email.includes('@')}>
+              {busy ? 'Отправляем…' : 'Прислать код'}
+            </button>
+            <button type="button" className="cb-text" onClick={() => setReset('off')} disabled={busy}>
+              Вернуться ко входу
+            </button>
+          </form>
+        ) : emailAuth === 'password' && reset === 'code' ? (
+          <form className="cb-login-form" onSubmit={resetConfirm}>
+            <p className="cb-login-note">Если почта зарегистрирована, на {email.trim()} пришёл код. Он действует 15 минут.</p>
+            <label className="cb-field">
+              <span>Код из письма</span>
+              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="6 цифр" />
+            </label>
+            <label className="cb-field">
+              <span>Новый пароль</span>
+              <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder="Не короче 10 символов" />
+            </label>
+            <button type="submit" className="cb-main" disabled={busy || code.length !== 6 || fresh.length < 10}>
+              {busy ? 'Меняем…' : 'Сменить пароль и войти'}
+            </button>
+            <button type="button" className="cb-text" onClick={() => setReset('email')} disabled={busy}>
+              Прислать код ещё раз
+            </button>
+          </form>
         ) : emailAuth === 'password' ? (
           <form className="cb-login-form" onSubmit={byPassword}>
             <div role="group" aria-label="Есть ли аккаунт" className="cb-seg">
@@ -300,7 +373,19 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
             <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1)}>
               {busy ? (joining ? 'Создаём…' : 'Входим…') : joining ? 'Создать аккаунт' : 'Войти'}
             </button>
-            {joining ? null : (
+            {joining ? null : site.email_reset ? (
+              <button
+                type="button"
+                className="cb-text"
+                onClick={() => {
+                  setError(null);
+                  setReset('email');
+                }}
+                disabled={busy}
+              >
+                Забыли пароль?
+              </button>
+            ) : (
               <span className="cb-login-help cb-muted">
                 Забыли пароль —{' '}
                 {site.support_url ? (

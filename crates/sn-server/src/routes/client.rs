@@ -30,10 +30,13 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/email/verify", post(email_verify))
         .route("/auth/email/register", post(email_register))
         .route("/auth/email/password", post(email_password))
+        .route("/auth/email/reset", post(email_reset_start))
+        .route("/auth/email/reset/confirm", post(email_reset_confirm))
         .route("/auth/totp", post(totp_login))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
         .route("/security", get(security))
+        .route("/security/password", post(change_password))
         .route("/security/totp/setup", post(totp_setup))
         .route("/security/totp/enable", post(totp_enable))
         .route("/security/totp/disable", post(totp_disable))
@@ -212,6 +215,66 @@ async fn email_register(
     Ok(cabinet_response(&state, &login))
 }
 
+#[derive(Deserialize)]
+struct ResetStart {
+    email: String,
+}
+
+async fn email_reset_start(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<ResetStart>,
+) -> ApiResult<Json<sn_services::login::EmailLoginStart>> {
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .email_reset_start(&body.email, &meta)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct ResetConfirm {
+    email: String,
+    code: String,
+    password: String,
+}
+
+async fn email_reset_confirm(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<ResetConfirm>,
+) -> ApiResult<Response> {
+    let login = state
+        .services
+        .auth()
+        .email_reset_confirm(&body.email, &body.code, &body.password, &meta)
+        .await?;
+    Ok(cabinet_response(&state, &login))
+}
+
+#[derive(Deserialize)]
+struct PasswordChange {
+    #[serde(default)]
+    current: Option<String>,
+    password: String,
+}
+
+async fn change_password(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<PasswordChange>,
+) -> ApiResult<Json<serde_json::Value>> {
+    client.require_full()?;
+    state
+        .services
+        .auth()
+        .change_password(&client.0, body.current.as_deref(), &body.password)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn email_password(
     State(state): State<AppState>,
     Meta(meta): Meta,
@@ -337,6 +400,16 @@ async fn me(
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let card = state.services.clients().card(client.0.client_id).await?;
+    let email = card
+        .identities
+        .iter()
+        .find(|i| i.kind == sn_domain::client::IdentityKind::Email)
+        .map(|i| i.value.clone());
+    let has_password = state
+        .services
+        .auth()
+        .has_password(client.0.client_id)
+        .await?;
     let autorenew_card = state
         .services
         .autorenew()
@@ -353,6 +426,8 @@ async fn me(
         "full_access": client.0.full_access,
         "two_factor": card.two_factor,
         "payments_count": card.stats.payments_count,
+        "email": email,
+        "has_password": has_password,
     })))
 }
 

@@ -130,6 +130,7 @@ export function SecurityPage() {
   return (
     <div className="cb-secure">
       <h1 className="cb-title">Безопасность</h1>
+      <PasswordCard />
       <Card label="Вход по коду из приложения">
         <div className="cb-row wrap">
           <h2 className="cb-h2">Вход по коду из приложения</h2>
@@ -242,5 +243,66 @@ export function SecurityPage() {
         </p>
       </Card>
     </div>
+  );
+}
+
+function PasswordCard() {
+  const { me, site, reload } = useCabinet();
+  const [current, setCurrent] = useState('');
+  const [fresh, setFresh] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ text: string; bad: boolean } | null>(null);
+  if (!me.email || site.email_auth !== 'password') {
+    return null;
+  }
+  const has = me.has_password === true;
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setResult(null);
+    try {
+      await api('/api/client/security/password', { method: 'POST', body: { current: has ? current : undefined, password: fresh } });
+      setCurrent('');
+      setFresh('');
+      setResult({ text: has ? 'Пароль изменён. На других устройствах кабинет попросит войти заново.' : 'Пароль задан. Теперь можно входить по почте и паролю.', bad: false });
+      await reload();
+    } catch (err) {
+      setResult({ text: err instanceof ApiError ? err.message : 'Пароль не сохранился', bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card label="Пароль">
+      <div className="cb-row wrap">
+        <h2 className="cb-h2">Пароль</h2>
+        <span className="cb-status muted">{me.email}</span>
+      </div>
+      <p className="cb-note">{has ? 'Пароль для входа на сайт по почте.' : 'Пароля пока нет: вы входили через Telegram или по коду из письма. Задайте его, чтобы входить по почте и паролю.'}</p>
+      <form className="cb-secure-form" onSubmit={submit}>
+        {has ? (
+          <label className="cb-field">
+            <span>Текущий пароль</span>
+            <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" />
+          </label>
+        ) : null}
+        <label className="cb-field">
+          <span>Новый пароль</span>
+          <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder="Не короче 10 символов" />
+        </label>
+        {result ? (
+          <p className={result.bad ? 'cb-error' : 'cb-result'} role={result.bad ? 'alert' : 'status'}>
+            {result.text}
+          </p>
+        ) : null}
+        <span className="cb-btns">
+          <button type="submit" className="cb-main" disabled={busy || fresh.length < 10 || (has && !current)}>
+            {busy ? 'Сохраняем…' : has ? 'Сменить пароль' : 'Задать пароль'}
+          </button>
+        </span>
+      </form>
+    </Card>
   );
 }

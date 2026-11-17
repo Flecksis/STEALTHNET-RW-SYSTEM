@@ -1830,3 +1830,10 @@ a.cb-card[id] {
 .cb-phone .cb-msg {
   max-width: 92%;
 }
+
+.cb-login-note {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.45;
+}

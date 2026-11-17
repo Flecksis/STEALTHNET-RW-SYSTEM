@@ -28,6 +28,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clients/{id}/block", post(block))
         .route("/clients/{id}/unblock", post(unblock))
         .route("/clients/{id}/totp/reset", post(reset_two_factor))
+        .route("/clients/{id}/password", post(issue_password))
         .route("/subscriptions/{id}", get(subscription))
         .route(
             "/subscriptions/{id}/actions/{action}",
@@ -341,6 +342,21 @@ async fn reset_two_factor(
         .reset_two_factor(ClientId(id), admin.actor())
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn issue_password(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::ClientsWrite)?;
+    admin.require_session()?;
+    let password = state
+        .services
+        .auth()
+        .issue_client_password(ClientId(id), admin.actor())
+        .await?;
+    Ok(Json(serde_json::json!({ "password": password })))
 }
 
 async fn subscription(

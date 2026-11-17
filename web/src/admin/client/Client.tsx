@@ -9,6 +9,7 @@ import type { Subscription } from '../clients/types';
 import { ClientPhone } from './ClientPhone';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog } from './dialogs';
 import { eventsCount, historyLine } from './history';
+import { PasswordDialog } from './PasswordDialog';
 import { emailOf, liveSubscriptions, nextReset, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
 import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
@@ -18,7 +19,7 @@ import { Avatar } from '../Avatar';
 const FIRST_PAGE = 5;
 const MORE_PAGE = 20;
 
-type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'delete-sub' | 'delete-client' | 'reset-2fa';
+type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'delete-sub' | 'delete-client' | 'reset-2fa' | 'password';
 
 function fingerprint(card: ClientCard): string {
   return JSON.stringify(card.subscriptions.map((s) => [s.id, s.tariff_id, s.mirror.expire_at, s.ended_at, s.period_days]));
@@ -546,6 +547,11 @@ function ClientDesktop() {
                 <button type="button" className="b36 bad hov" onClick={() => setDialog('reset-2fa')} disabled={!card.two_factor.enabled}>
                   Сбросить 2FA
                 </button>
+                {emailOf(card) ? (
+                  <button type="button" className="b36 bad hov" onClick={() => setDialog('password')}>
+                    Новый пароль для сайта
+                  </button>
+                ) : null}
                 {moneyOk && sub ? (
                   <button type="button" className="b36 bad hov" onClick={() => setDialog('delete-sub')}>
                     Удалить подписку
@@ -621,6 +627,9 @@ function ClientDesktop() {
             refreshHistory();
           }}
         />
+      ) : null}
+      {dialog === 'password' && emailOf(card) ? (
+        <PasswordDialog clientId={clientId} email={emailOf(card)?.value ?? ''} onClose={() => setDialog('')} onIssued={refreshHistory} />
       ) : null}
       {dialog === 'reset-2fa' ? (
         <ConfirmDialog

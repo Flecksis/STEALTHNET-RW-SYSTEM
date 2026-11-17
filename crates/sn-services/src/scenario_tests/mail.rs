@@ -1,6 +1,8 @@
 use super::*;
 use crate::settings::ModuleConfigUpdate;
+use crate::two_factor::CabinetLogin;
 use base64::Engine;
+use sn_domain::access::{ClientChannel, ClientPrincipal};
 use sn_modules::catalog::mail::MailModule;
 use std::sync::Mutex as StdMutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -84,7 +86,14 @@ fn code_in(text: &str) -> String {
 }
 
 async fn configure(services: &Services, admin: AdminId, port: u16) {
+    configure_with(services, admin, port, serde_json::json!({})).await;
+}
+
+async fn configure_with(services: &Services, admin: AdminId, port: u16, extra: serde_json::Value) {
     let mut config = serde_json::Map::new();
+    if let serde_json::Value::Object(extra) = extra {
+        config.extend(extra);
+    }
     config.insert("transport".into(), serde_json::json!("smtp"));
     config.insert("smtp_host".into(), serde_json::json!("127.0.0.1"));
     config.insert("smtp_port".into(), serde_json::json!(port));
@@ -448,5 +457,169 @@ async fn письмо_рассылки_через_resend_разбирает_от
         bridge.send(&rich("alex@example.com")).await,
         MailDelivery::Failed { retry: true, .. }
     ));
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пароль_восстанавливается_кодом_из_письма_при_входе_по_паролю() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let auth = services.auth();
+    let who = meta("203.0.113.21");
+    auth.email_register("olga@example.com", "пароль-ольги-1", &who)
+        .await
+        .unwrap();
+    assert_eq!(
+        code(auth.email_reset_start("olga@example.com", &who).await),
+        "auth.reset_unavailable"
+    );
+    let (port, letters) = fake_smtp().await;
+    configure_with(
+        services,
+        admin,
+        port,
+        serde_json::json!({ "login": "password" }),
+    )
+    .await;
+    assert!(services.mail().available());
+    assert!(!services.mail().code_login());
+    assert_eq!(
+        code(auth.email_login_start("olga@example.com", &who).await),
+        "auth.email_password_mode"
+    );
+    auth.email_password_login("olga@example.com", "пароль-ольги-1", &who)
+        .await
+        .unwrap();
+    auth.email_reset_start("nobody@example.com", &who)
+        .await
+        .unwrap();
+    assert!(letters.lock().unwrap().is_empty());
+    auth.email_reset_start("Olga@Example.com", &who)
+        .await
+        .unwrap();
+    let letter = readable(&letters.lock().unwrap()[0]);
+    assert!(letter.contains("Код для смены пароля"), "{letter}");
+    let sent_code = code_in(&letter);
+    let wrong = if sent_code == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
+    assert_eq!(
+        code(
+            auth.email_reset_confirm("olga@example.com", wrong, "новый-пароль-оли", &who)
+                .await
+        ),
+        "auth.code_invalid"
+    );
+    let login = auth
+        .email_reset_confirm("olga@example.com", &sent_code, "новый-пароль-оли", &who)
+        .await
+        .unwrap();
+    assert!(matches!(login, CabinetLogin::Session(_)));
+    assert_eq!(
+        code(
+            auth.email_password_login("olga@example.com", "пароль-ольги-1", &who)
+                .await
+        ),
+        "auth.wrong_password"
+    );
+    auth.email_password_login("olga@example.com", "новый-пароль-оли", &who)
+        .await
+        .unwrap();
+    assert_eq!(
+        code(
+            auth.email_reset_confirm("olga@example.com", &sent_code, "ещё-один-пароль", &who)
+                .await
+        ),
+        "auth.code_invalid"
+    );
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пароль_меняется_в_кабинете_и_выдаётся_поддержкой() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let auth = services.auth();
+    let who = meta("203.0.113.22");
+    auth.email_register("ivan@example.com", "пароль-ивана-1", &who)
+        .await
+        .unwrap();
+    let client = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.clients()
+            .find_by_identity(IdentityKind::Email, "ivan@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert!(auth.has_password(client.id).await.unwrap());
+    let principal = ClientPrincipal {
+        client_id: client.id,
+        channel: ClientChannel::Cabinet,
+        full_access: true,
+        session_id: None,
+    };
+    assert_eq!(
+        code(
+            auth.change_password(&principal, Some("чужой-пароль-1"), "новый-пароль-ивана")
+                .await
+        ),
+        "auth.wrong_password"
+    );
+    auth.change_password(&principal, Some("пароль-ивана-1"), "новый-пароль-ивана")
+        .await
+        .unwrap();
+    auth.email_password_login("ivan@example.com", "новый-пароль-ивана", &who)
+        .await
+        .unwrap();
+    let issued = auth
+        .issue_client_password(client.id, Actor::Admin(admin))
+        .await
+        .unwrap();
+    assert_eq!(issued.chars().count(), 16);
+    assert_eq!(
+        code(
+            auth.email_password_login("ivan@example.com", "новый-пароль-ивана", &who)
+                .await
+        ),
+        "auth.wrong_password"
+    );
+    auth.email_password_login("ivan@example.com", &issued, &who)
+        .await
+        .unwrap();
+    let telegram_only = services
+        .clients()
+        .ensure_telegram(
+            &TelegramProfile {
+                id: 7_100_200,
+                username: None,
+                first_name: Some("Пётр".into()),
+                last_name: None,
+                language_code: None,
+                is_premium: false,
+            },
+            RegistrationSource::Bot,
+            None,
+        )
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(
+        code(
+            auth.issue_client_password(telegram_only.id, Actor::Admin(admin))
+                .await
+        ),
+        "client.no_email"
+    );
     env.db.cleanup().await;
 }

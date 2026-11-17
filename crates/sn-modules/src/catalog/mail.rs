@@ -8,6 +8,7 @@ use sn_domain::settings::SettingField;
 
 pub const TRANSPORT_OPTIONS: &[&str] = &["none", "smtp", "resend"];
 pub const SECURITY_OPTIONS: &[&str] = &["starttls", "tls", "none"];
+pub const LOGIN_OPTIONS: &[&str] = &["password", "code"];
 const NAME_MAX: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +34,26 @@ pub enum MailTransport {
     Resend { api_key: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailLogin {
+    Password,
+    Code,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientLetters {
+    pub expiring: bool,
+    pub payments: bool,
+    pub support: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailSettings {
     pub transport: MailTransport,
     pub from_email: String,
     pub from_name: Option<String>,
+    pub login: EmailLogin,
+    pub letters: ClientLetters,
 }
 
 fn optional_text(config: &ModuleConfig, key: &str) -> Option<String> {
@@ -107,6 +123,24 @@ impl MailSettings {
             None if transport == MailTransport::Off => String::new(),
             None => return Err("не указан адрес отправителя".into()),
         };
+        let login = match optional_text(config, "login").as_deref() {
+            Some("password") => EmailLogin::Password,
+            Some("code") => EmailLogin::Code,
+            None if transport == MailTransport::Off => EmailLogin::Password,
+            None => EmailLogin::Code,
+            Some(_) => return Err("вход по почте: password или code".into()),
+        };
+        let flag = |key: &str| {
+            config
+                .get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
+        };
+        let letters = ClientLetters {
+            expiring: flag("letter_expiring"),
+            payments: flag("letter_payments"),
+            support: flag("letter_support"),
+        };
         let from_name = optional_text(config, "from_name");
         if from_name
             .as_deref()
@@ -118,11 +152,17 @@ impl MailSettings {
             transport,
             from_email,
             from_name,
+            login,
+            letters,
         })
     }
 
     pub fn sends(&self) -> bool {
         self.transport != MailTransport::Off
+    }
+
+    pub fn code_login(&self) -> bool {
+        self.sends() && self.login == EmailLogin::Code
     }
 }
 
@@ -138,11 +178,36 @@ impl Module for MailModule {
         vec![
             SettingField::select(
                 "transport",
-                "Подтверждение почты",
-                "none — без подтверждения, вход по почте и паролю; smtp или resend — код письмом",
+                "Отправка писем",
+                "none — письма не отправляются; smtp — через ваш почтовый сервер; resend — через Resend",
                 TRANSPORT_OPTIONS,
             )
             .with_default("none"),
+            SettingField::select(
+                "login",
+                "Вход на сайт по почте",
+                "password — по паролю; code — по коду из письма, нужна отправка писем",
+                LOGIN_OPTIONS,
+            )
+            .optional(),
+            SettingField::flag(
+                "letter_expiring",
+                "Письмо об окончании подписки",
+                "Напоминание о конце подписки и об автопродлении",
+            )
+            .with_default("true"),
+            SettingField::flag(
+                "letter_payments",
+                "Письмо об оплате",
+                "Оплата прошла, подписка выдана или продлена, баланс пополнен",
+            )
+            .with_default("true"),
+            SettingField::flag(
+                "letter_support",
+                "Письмо с ответом поддержки",
+                "Ответ на обращение со ссылкой на переписку в кабинете",
+            )
+            .with_default("true"),
             SettingField::text(
                 "smtp_host",
                 "Сервер SMTP",
@@ -200,6 +265,32 @@ mod tests {
 
     fn config(value: serde_json::Value) -> ModuleConfig {
         ModuleConfig::from_value(&value)
+    }
+
+    #[test]
+    fn вход_по_почте_настраивается_отдельно_от_отправки() {
+        let off = MailSettings::parse(&config(json!({}))).unwrap();
+        assert_eq!(off.login, EmailLogin::Password);
+        assert!(!off.code_login());
+        assert!(off.letters.expiring && off.letters.payments && off.letters.support);
+        let smtp = json!({
+            "transport": "smtp",
+            "smtp_host": "smtp.example.com",
+            "from_email": "robot@example.com"
+        });
+        let earlier = MailSettings::parse(&config(smtp.clone())).unwrap();
+        assert_eq!(earlier.login, EmailLogin::Code);
+        assert!(earlier.code_login());
+        let mut chosen = smtp.clone();
+        chosen["login"] = json!("password");
+        chosen["letter_support"] = json!(false);
+        let password = MailSettings::parse(&config(chosen)).unwrap();
+        assert_eq!(password.login, EmailLogin::Password);
+        assert!(!password.code_login());
+        assert!(!password.letters.support && password.letters.payments);
+        let silent = MailSettings::parse(&config(json!({ "login": "code" }))).unwrap();
+        assert!(!silent.code_login());
+        assert!(MailSettings::parse(&config(json!({ "login": "magic" }))).is_err());
     }
 
     #[test]

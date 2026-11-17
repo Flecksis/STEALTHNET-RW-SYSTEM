@@ -24,6 +24,8 @@ pub const EMAIL_CODE_TTL_SECONDS: i64 = 900;
 pub const EMAIL_CODE_MAX_ATTEMPTS: i32 = 5;
 pub const EMAIL_CODE_DIGITS: usize = 6;
 pub const LOGIN_RETENTION_DAYS: i64 = 7;
+const METHOD_EMAIL: &str = "email";
+const METHOD_RESET: &str = "reset";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TelegramLoginStart {
@@ -460,7 +462,7 @@ impl<'a> Auth<'a> {
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         let mail = self.services.mail();
-        if !mail.available() {
+        if !mail.code_login() {
             return Err(ServiceError::rejected(
                 "auth.email_password_mode",
                 "Вход по почте — по паролю, без кода",
@@ -481,7 +483,7 @@ impl<'a> Auth<'a> {
     }
 
     fn email_by_password(&self) -> ServiceResult<()> {
-        if self.services.mail().available() {
+        if self.services.mail().code_login() {
             Err(ServiceError::rejected(
                 "auth.email_code_mode",
                 "Вход по почте — кодом из письма",
@@ -605,6 +607,15 @@ impl<'a> Auth<'a> {
         email: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<(String, EmailLoginStart)> {
+        self.issue_code(METHOD_EMAIL, email, meta).await
+    }
+
+    async fn issue_code(
+        &self,
+        method: &str,
+        email: &str,
+        meta: &RequestMeta,
+    ) -> ServiceResult<(String, EmailLoginStart)> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let code: String = {
             let mut rng = rand::rngs::OsRng;
@@ -617,14 +628,15 @@ impl<'a> Auth<'a> {
         let mut tx = self.services.store().begin().await?;
         sqlx::query(
             "UPDATE client_login_requests SET status = 'rejected' \
-             WHERE method = 'email' AND email = $1 AND status = 'pending'",
+             WHERE method = $2 AND email = $1 AND status = 'pending'",
         )
         .bind(&email)
+        .bind(method)
         .execute(tx.conn())
         .await?;
         sqlx::query(
             "INSERT INTO client_login_requests (method, code_hash, email, ip, user_agent, created_at, expires_at) \
-             VALUES ('email', $1, $2, $3, $4, $5, $6)",
+             VALUES ($7, $1, $2, $3, $4, $5, $6)",
         )
         .bind(token_hash(&format!("{email}:{code}")))
         .bind(&email)
@@ -632,6 +644,7 @@ impl<'a> Auth<'a> {
         .bind(&meta.user_agent)
         .bind(now)
         .bind(expires_at)
+        .bind(method)
         .execute(tx.conn())
         .await?;
         tx.commit().await?;
@@ -726,6 +739,253 @@ impl<'a> Auth<'a> {
         tx.commit().await?;
         Ok(login)
     }
+
+    pub async fn email_reset_start(
+        &self,
+        email: &str,
+        meta: &RequestMeta,
+    ) -> ServiceResult<EmailLoginStart> {
+        self.site_open()?;
+        self.email_by_password()?;
+        let mail = self.services.mail();
+        if !mail.available() {
+            return Err(ServiceError::rejected(
+                "auth.reset_unavailable",
+                "Восстановить пароль по почте нельзя: напишите в поддержку",
+            ));
+        }
+        let email = normalize_identity(IdentityKind::Email, email)?;
+        let limits = self.services.limits();
+        limits
+            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .await?;
+        limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        let known = {
+            let mut conn = self.services.store().conn().await?;
+            conn.clients()
+                .find_by_identity(IdentityKind::Email, &email)
+                .await?
+                .is_some_and(|client| !client.is_blocked())
+        };
+        let (code, start) = self.issue_code(METHOD_RESET, &email, meta).await?;
+        if known {
+            let brand = self.services.settings().brand_name.clone();
+            let minutes = EMAIL_CODE_TTL_SECONDS / 60;
+            mail.send(&crate::mail::Letter {
+                to: start.email.clone(),
+                subject: format!("Код для смены пароля в {brand}: {code}"),
+                text: format!(
+                    "Код для смены пароля в кабинете {brand}: {code}\n\nОн действует {minutes} минут. Если пароль меняете не вы, не используйте код — старый пароль продолжит работать."
+                ),
+            })
+            .await?;
+        }
+        Ok(start)
+    }
+
+    pub async fn email_reset_confirm(
+        &self,
+        email: &str,
+        code: &str,
+        password: &str,
+        meta: &RequestMeta,
+    ) -> ServiceResult<CabinetLogin> {
+        self.site_open()?;
+        self.email_by_password()?;
+        let email = normalize_identity(IdentityKind::Email, email)?;
+        let limits = self.services.limits();
+        limits
+            .hit_ip(rules::EMAIL_VERIFY_IP, meta.ip.as_deref())
+            .await?;
+        limits.hit(rules::EMAIL_VERIFY_ADDRESS, &email).await?;
+        let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        if code.len() != EMAIL_CODE_DIGITS || !code.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(code_invalid());
+        }
+        let hash = hash_password_async(password).await?;
+        let now = self.services.now();
+        let mut tx = self.services.store().begin().await?;
+        let row: Option<LoginRow> = sqlx::query_as(&format!(
+            "SELECT {LOGIN_COLUMNS} FROM client_login_requests \
+             WHERE method = 'reset' AND email = $1 AND status = 'pending' ORDER BY id DESC LIMIT 1 FOR UPDATE"
+        ))
+        .bind(&email)
+        .fetch_optional(tx.conn())
+        .await?;
+        let Some(row) = row.filter(|r| r.expires_at > now) else {
+            return Err(code_invalid());
+        };
+        if row.attempts >= EMAIL_CODE_MAX_ATTEMPTS {
+            return Err(ServiceError::rejected(
+                "auth.code_attempts",
+                "Слишком много неверных попыток, запросите новый код",
+            ));
+        }
+        if !same(&row.code_hash, &token_hash(&format!("{email}:{code}"))) {
+            sqlx::query("UPDATE client_login_requests SET attempts = attempts + 1 WHERE id = $1")
+                .bind(row.id)
+                .execute(tx.conn())
+                .await?;
+            tx.commit().await?;
+            return Err(code_invalid());
+        }
+        let client = match tx
+            .clients()
+            .find_by_identity(IdentityKind::Email, &email)
+            .await?
+        {
+            Some(client) if client.is_blocked() => return Err(ServiceError::Forbidden),
+            Some(client) => client,
+            None => return Err(code_invalid()),
+        };
+        store_password(&mut tx, client.id, &hash).await?;
+        let revoked = tx
+            .sessions()
+            .revoke_client_channel(client.id, SessionChannel::Cabinet)
+            .await?;
+        sqlx::query(
+            "UPDATE client_login_requests SET status = 'consumed', client_id = $2, confirmed_at = $3, consumed_at = $3 \
+             WHERE id = $1",
+        )
+        .bind(row.id)
+        .bind(client.id.0)
+        .bind(now)
+        .execute(tx.conn())
+        .await?;
+        tx.audit()
+            .record(&Actor::Client(client.id).audit(
+                "client.password_reset",
+                "client",
+                Some(client.id.0),
+                serde_json::json!({ "revoked_sessions": revoked }),
+            ))
+            .await?;
+        let login = cabinet_session(&mut tx, client.id, now, meta, false).await?;
+        tx.commit().await?;
+        Ok(login)
+    }
+
+    pub async fn has_password(&self, client_id: ClientId) -> ServiceResult<bool> {
+        let mut conn = self.services.store().conn().await?;
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT client_id FROM client_passwords WHERE client_id = $1")
+                .bind(client_id.0)
+                .fetch_optional(conn.conn())
+                .await?;
+        Ok(found.is_some())
+    }
+
+    pub async fn change_password(
+        &self,
+        principal: &ClientPrincipal,
+        current: Option<&str>,
+        password: &str,
+    ) -> ServiceResult<()> {
+        let client_id = principal.client_id;
+        let existing: Option<String> = {
+            let mut conn = self.services.store().conn().await?;
+            let email = conn
+                .clients()
+                .identities(client_id)
+                .await?
+                .into_iter()
+                .any(|i| i.kind == IdentityKind::Email);
+            if !email {
+                return Err(ServiceError::rejected(
+                    "auth.no_email",
+                    "К аккаунту не привязана почта: пароль для входа на сайт не нужен",
+                ));
+            }
+            sqlx::query_scalar("SELECT password_hash FROM client_passwords WHERE client_id = $1")
+                .bind(client_id.0)
+                .fetch_optional(conn.conn())
+                .await?
+        };
+        if existing.is_some() {
+            let valid = check_password(current.unwrap_or_default(), existing).await?;
+            if !valid {
+                return Err(ServiceError::rejected(
+                    "auth.wrong_password",
+                    "Текущий пароль не подошёл",
+                ));
+            }
+        }
+        let hash = hash_password_async(password).await?;
+        let mut tx = self.services.store().begin().await?;
+        store_password(&mut tx, client_id, &hash).await?;
+        let revoked: u64 = match principal.session_id {
+            Some(keep) => sqlx::query(
+                "UPDATE client_sessions SET revoked_at = now() \
+                 WHERE client_id = $1 AND channel = 'cabinet' AND revoked_at IS NULL AND id <> $2",
+            )
+            .bind(client_id.0)
+            .bind(keep)
+            .execute(tx.conn())
+            .await?
+            .rows_affected(),
+            None => 0,
+        };
+        tx.audit()
+            .record(&Actor::Client(client_id).audit(
+                "client.password_changed",
+                "client",
+                Some(client_id.0),
+                serde_json::json!({ "revoked_sessions": revoked }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn issue_client_password(
+        &self,
+        client_id: ClientId,
+        actor: Actor,
+    ) -> ServiceResult<String> {
+        let password = crate::admins::temporary_password();
+        let hash = hash_password_async(&password).await?;
+        let mut tx = self.services.store().begin().await?;
+        tx.clients().lock(client_id).await?;
+        let email = tx
+            .clients()
+            .identities(client_id)
+            .await?
+            .into_iter()
+            .any(|i| i.kind == IdentityKind::Email);
+        if !email {
+            return Err(ServiceError::rejected(
+                "client.no_email",
+                "У клиента нет почты: на сайт он входит через Telegram",
+            ));
+        }
+        store_password(&mut tx, client_id, &hash).await?;
+        let revoked = tx
+            .sessions()
+            .revoke_client_channel(client_id, SessionChannel::Cabinet)
+            .await?;
+        tx.audit()
+            .record(&actor.audit(
+                "client.password_issued",
+                "client",
+                Some(client_id.0),
+                serde_json::json!({ "revoked_sessions": revoked }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(password)
+    }
+}
+
+async fn store_password(tx: &mut Tx, client_id: ClientId, hash: &str) -> ServiceResult<()> {
+    sqlx::query(
+        "INSERT INTO client_passwords (client_id, password_hash) VALUES ($1, $2) \
+         ON CONFLICT (client_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated_at = now()",
+    )
+    .bind(client_id.0)
+    .bind(hash)
+    .execute(tx.conn())
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

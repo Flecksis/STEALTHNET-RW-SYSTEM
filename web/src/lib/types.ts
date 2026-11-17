@@ -26,6 +26,7 @@ export type Site = {
   trial?: { enabled: boolean; days: number };
   documents?: Array<{ title: string; url: string }>;
   email_auth?: 'password' | 'code' | null;
+  email_reset?: boolean;
   client_access?: { miniapp: boolean; site_login: boolean; devices: boolean; reissue: boolean };
 };
 

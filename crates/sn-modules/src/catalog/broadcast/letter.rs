@@ -203,6 +203,22 @@ impl Letter {
     }
 
     pub fn html(&self, unsubscribe: &str) -> String {
+        self.frame(&format!(
+            "Это письмо пришло, потому что у вас есть аккаунт в {}. \
+             <a href=\"{}\" style=\"color:{MUTED};text-decoration:underline;white-space:nowrap;\">Отписаться от рассылок</a>",
+            escape(&self.brand),
+            escape(unsubscribe)
+        ))
+    }
+
+    pub fn notice_html(&self) -> String {
+        self.frame(&format!(
+            "Это письмо о вашем аккаунте в {}.",
+            escape(&self.brand)
+        ))
+    }
+
+    fn frame(&self, footer: &str) -> String {
         let mut out = String::with_capacity(self.html.len() + 2048);
         out.push_str(&format!(
             "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">\
@@ -247,17 +263,23 @@ impl Letter {
             "</table>\
              <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:560px;\">\
              <tr><td style=\"padding:16px 24px;font-family:{FONT};font-size:12px;line-height:1.5;color:{MUTED};text-align:center;\">\
-             Это письмо пришло, потому что у вас есть аккаунт в {}. \
-             <a href=\"{}\" style=\"color:{MUTED};text-decoration:underline;white-space:nowrap;\">Отписаться от рассылок</a>\
+             {footer}\
              </td></tr></table>\
-             </td></tr></table></body></html>",
-            escape(&self.brand),
-            escape(unsubscribe)
+             </td></tr></table></body></html>"
         ));
         out
     }
 
-    pub fn text(&self, unsubscribe: &str) -> String {
+    pub fn notice_text(&self) -> String {
+        let mut out = self.body_text();
+        out.push_str(&format!(
+            "\n\n—\nЭто письмо о вашем аккаунте в {}.\n",
+            self.brand
+        ));
+        out
+    }
+
+    fn body_text(&self) -> String {
         let mut out = self.text.trim().to_string();
         if !self.buttons.is_empty() {
             out.push('\n');
@@ -265,6 +287,11 @@ impl Letter {
                 out.push_str(&format!("\n{label}: {href}"));
             }
         }
+        out
+    }
+
+    pub fn text(&self, unsubscribe: &str) -> String {
+        let mut out = self.body_text();
         out.push_str(&format!(
             "\n\n—\nЭто письмо пришло, потому что у вас есть аккаунт в {}.\nОтписаться от рассылок: {unsubscribe}\n",
             self.brand

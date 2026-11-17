@@ -34,6 +34,8 @@ export type ClientMe = {
   full_access: boolean;
   two_factor: TwoFactor;
   payments_count?: number;
+  email?: string | null;
+  has_password?: boolean;
 };
 
 export type TwoFactor = { enabled: boolean; enabled_at: string | null };

@@ -10,10 +10,9 @@ import { SettingsLayout } from './SettingsLayout';
 type Access = { miniapp: boolean; site_login: boolean; self_devices: boolean; self_reissue: boolean };
 type Core = { settings?: { public_url?: string | null } };
 
-const TRANSPORT_TEXT: Record<string, string> = {
-  none: 'по почте и паролю, без подтверждения',
-  smtp: 'по почте, кодом из письма через SMTP',
-  resend: 'по почте, кодом из письма через Resend',
+const LOGIN_TEXT: Record<string, string> = {
+  password: 'по почте и паролю',
+  code: 'по почте, кодом из письма',
 };
 
 function failText(err: unknown, fallback: string): string {
@@ -37,7 +36,7 @@ function Toggle({ title, text, on, busy, onToggle }: { title: string; text: stri
 export function SettingsClientAccess() {
   const [access, setAccess] = useState<Access | null>(null);
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
-  const [mailMode, setMailMode] = useState<string>('none');
+  const [mailMode, setMailMode] = useState<string>('password');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -53,7 +52,8 @@ export function SettingsClientAccess() {
       setPublicUrl(core.settings?.public_url ?? null);
       const mailOn = modules?.modules.find((m) => m.info.id === 'mail')?.active ?? false;
       const transport = String(mail?.config.transport ?? 'none');
-      setMailMode(mailOn ? transport : 'none');
+      const login = mail?.config.login;
+      setMailMode(mailOn && transport !== 'none' && login !== 'password' ? 'code' : 'password');
       setError(null);
     } catch (err) {
       setError(failText(err, 'Настройки не загрузились'));
@@ -149,7 +149,7 @@ export function SettingsClientAccess() {
               <span className="rc">
                 <span className="cap">Через Telegram: бот присылает запрос на вход, клиент подтверждает его.</span>
                 <span className="cap">
-                  По почте: {TRANSPORT_TEXT[mailMode] ?? TRANSPORT_TEXT.none}.{' '}
+                  По почте: {LOGIN_TEXT[mailMode] ?? LOGIN_TEXT.password}.{' '}
                   <Link className="link" to="/admin/settings/mail">
                     Изменить
                   </Link>

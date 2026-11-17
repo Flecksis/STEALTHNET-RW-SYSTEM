@@ -7,7 +7,9 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use sn_domain::client::{IdentityKind, normalize_identity};
 use sn_domain::module::ModuleId;
-use sn_modules::catalog::mail::{MailSecurity, MailSettings, MailTransport, SmtpSettings};
+use sn_modules::catalog::mail::{
+    ClientLetters, MailSecurity, MailSettings, MailTransport, SmtpSettings,
+};
 use sn_modules::{MailDelivery, MailOut, MailSender, MailSite};
 use std::time::Duration;
 
@@ -140,6 +142,14 @@ impl<'a> MailOps<'a> {
 
     pub fn available(&self) -> bool {
         self.settings().is_some_and(|s| s.sends())
+    }
+
+    pub fn code_login(&self) -> bool {
+        self.settings().is_some_and(|s| s.code_login())
+    }
+
+    pub fn letters(&self) -> Option<ClientLetters> {
+        self.settings().filter(|s| s.sends()).map(|s| s.letters)
     }
 
     pub fn readiness(&self) -> Result<MailSettings, String> {

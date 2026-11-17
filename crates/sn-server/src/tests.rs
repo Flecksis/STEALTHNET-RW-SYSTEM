@@ -37,6 +37,7 @@ mod import;
 mod landing;
 mod mail;
 mod multi_subscriptions;
+mod password_reset;
 mod photos;
 mod support_mode;
 

@@ -54,13 +54,15 @@ async fn site(State(state): State<AppState>) -> Response {
         Err(_) => None,
     };
     let access = settings.client_access;
+    let mail = state.services.mail();
     let email_auth = if !access.site_login {
         None
-    } else if state.services.mail().available() {
+    } else if mail.code_login() {
         Some("code")
     } else {
         Some("password")
     };
+    let email_reset = email_auth == Some("password") && mail.available();
     Json(serde_json::json!({
         "brand_name": settings.brand_name,
         "title": settings.site.title.as_deref().unwrap_or(&settings.brand_name),
@@ -75,6 +77,7 @@ async fn site(State(state): State<AppState>) -> Response {
         "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
         "documents": state.services.bot_content().documents,
         "email_auth": email_auth,
+        "email_reset": email_reset,
         "client_access": {
             "miniapp": access.miniapp,
             "site_login": access.site_login,

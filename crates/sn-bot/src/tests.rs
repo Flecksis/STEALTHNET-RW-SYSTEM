@@ -22,6 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 mod addons;
 mod balance_off;
 mod broadcast;
+mod client_letters;
 mod content;
 mod gram_wallet;
 mod miniapp;
