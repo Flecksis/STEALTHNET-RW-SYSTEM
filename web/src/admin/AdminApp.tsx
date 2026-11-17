@@ -12,6 +12,8 @@ import { Support } from './support/Support';
 import { InfraNodes } from './infra/InfraNodes';
 import { InfraSquads } from './infra/InfraSquads';
 import { InfraBilling } from './infra/InfraBilling';
+import { Modules } from './modules/Modules';
+import { ModulePage } from './modules/ModulePage';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
@@ -154,7 +156,8 @@ export function AdminApp() {
           <Route path="infra" element={<InfraNodes />} />
           <Route path="infra/squads" element={<InfraSquads />} />
           <Route path="infra/billing" element={<InfraBilling />} />
-          <Route path="modules" element={<Pending title="Модули" />} />
+          <Route path="modules" element={<Modules />} />
+          <Route path="modules/:id" element={<ModulePage />} />
           <Route path="m/:module/*" element={<Pending title="Модуль" />} />
           <Route path="settings/look" element={<SettingsLook />} />
           <Route path="settings/remnawave" element={<SettingsRemna />} />
