@@ -487,6 +487,10 @@ source_changed() {
     [ -n "$changes" ]
 }
 
+repo_digest() {
+    docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$2" 2>/dev/null | grep -F "$1@sha256:" | sed -n '1p' || true
+}
+
 use_image() {
     docker pull "$1" 2>/dev/null || return 1
     if [ "$(docker image inspect -f '{{.Architecture}}' "$1" 2>/dev/null)" != "$(host_arch)" ]; then
@@ -496,7 +500,7 @@ use_image() {
     fi
     pinned=$1
     if [ "${2:-}" = "pin" ]; then
-        digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$1" 2>/dev/null || true)
+        digest=$(repo_digest "${1%:*}" "$1")
         case "$digest" in
             *@sha256:*) pinned=$digest ;;
         esac
@@ -1403,7 +1407,7 @@ update_steps() {
             fail_step failed wrong_arch
             return 1
         fi
-        TO_IMAGE=$(docker image inspect -f '{{index .RepoDigests 0}}' "$ref" 2>/dev/null || true)
+        TO_IMAGE=$(repo_digest "$(image_repo)" "$ref")
         case "$TO_IMAGE" in
             *@sha256:*) ;;
             *) TO_IMAGE=$ref ;;

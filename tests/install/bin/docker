@@ -114,7 +114,10 @@ case "$*" in
         fi
         exit "$ok" ;;
     "image inspect -f {{.Architecture}}"*) echo "${FAKE_IMAGE_ARCH:-amd64}"; exit 0 ;;
-    "image inspect -f {{index .RepoDigests 0}}"*) echo "${FAKE_DIGEST:-ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:1111}"; exit 0 ;;
+    "image inspect -f {{range .RepoDigests}}{{println .}}{{end}}"*)
+        echo "${FAKE_OTHER_DIGEST:-}"
+        echo "${FAKE_DIGEST:-ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:1111}"
+        exit 0 ;;
     "image inspect -f {{index .Config.Labels \"org.opencontainers.image.revision\"}} "*)
         all="$*"
         label_of "${all##* }" 2

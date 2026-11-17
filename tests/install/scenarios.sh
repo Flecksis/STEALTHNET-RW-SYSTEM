@@ -217,7 +217,7 @@ echo "=== Q. сборки этого коммита ещё нет, есть по
 fresh
 mkdir -p "$R/.git"
 printf '%s\n' "$SHA" > "$R/.git/HEAD"
-run FAKE_PULL_OK=":main" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+run FAKE_PULL_OK=":main" FAKE_OTHER_DIGEST="sn-local@sha256:9999" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 code=$?
 [ "$code" -eq 0 ] && check ok "код выхода 0" || check no "код выхода $code"
 grep -q "^pull $REPO:sha-$SHA\$" "$S/calls.log" && check ok "сначала пробует сборку своего коммита" || check no "не пробовал сборку своего коммита"
@@ -442,7 +442,7 @@ helper_install
 ID=0b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10
 request "$ID" "$NEW"
 : > "$S/calls.log"
-updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST"
+updater FAKE_PULL_OK=":main" FAKE_DIGEST="$NEWDIGEST" FAKE_OTHER_DIGEST="sn-local@sha256:9999"
 code=$?
 [ "$code" -eq 0 ] && check ok "помощник отработал" || check no "код выхода $code: $(tail -3 "$WORK/updater.txt")"
 [ "$(field state)" = "done" ] && check ok "итог: обновлено" || check no "итог: $(cat "$U/ipc/status/update.json")"
