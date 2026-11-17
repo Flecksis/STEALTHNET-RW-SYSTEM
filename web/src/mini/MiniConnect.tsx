@@ -1,11 +1,11 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { APPS, appName, deviceIcon, guessPlatform, type Device, type Platform } from '../cabinet/model';
-import { BackHead, useMini } from './MiniApp';
+import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 
 function failText(err: unknown, fallback: string): string {
@@ -13,7 +13,7 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function MiniConnect() {
-  const { site, view, setView, devices, setDevices } = useMini();
+  const { site, view, ready, setView, devices, setDevices } = useMini();
   const [plat, setPlat] = useState<Platform>(() => {
     const g = guessPlatform();
     return g === 'ios' || g === 'android' ? g : 'pc';
@@ -24,6 +24,15 @@ export function MiniConnect() {
   const [copied, setCopied] = useState(false);
   const [qr, setQr] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const chosenId = view?.subscription.id ?? null;
+
+  useEffect(() => {
+    setAsk('');
+    setReissued(false);
+    setCopied(false);
+    setQr(false);
+    setError(null);
+  }, [chosenId]);
 
   const url = view?.subscription_url ?? null;
   const mode = site.connect?.mode ?? 'ours';
@@ -118,11 +127,12 @@ export function MiniConnect() {
   return (
     <main className="mn-page connect">
       <BackHead title="Подключение" />
+      <MiniSubSwitch />
       {mode === 'remnawave' ? (
         <div className="mn-card mn-remna">
           <strong className="mn-big">Всё на одной странице</strong>
           <span className="mn-ink2">На странице подключения есть приложения для вашего устройства и кнопки, которые сами добавят подписку.</span>
-          <span className="mn-url mono">{url ?? 'ссылка появится, когда подписка заработает'}</span>
+          <span className="mn-url mono">{url ?? (ready ? 'ссылка появится, когда подписка заработает' : 'загружаем ссылку…')}</span>
           <button type="button" className="mn-main sm press" onClick={() => url && openExternal(url)} disabled={!url}>
             Открыть страницу подключения
             <Icon name="external" size={18} />
@@ -207,7 +217,7 @@ export function MiniConnect() {
         </div>
         <div className="mn-list">
           {devices && devices.length === 0 ? <p className="mn-empty">Устройств нет: появятся, когда вы добавите подписку в приложение.</p> : null}
-          {devices === null ? <p className="mn-empty">Список устройств сейчас недоступен</p> : null}
+          {devices === null ? <p className="mn-empty">{ready ? 'Список устройств сейчас недоступен' : 'Загружаем устройства…'}</p> : null}
           {devices?.map((d) => (
             <Fragment key={d.hwid}>
               <div className="mn-dev">

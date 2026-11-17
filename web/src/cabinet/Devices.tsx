@@ -1,44 +1,24 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { api, ApiError } from '../lib/api';
 import { count, money } from '../lib/format';
 import { Card, useCabinet } from './CabinetApp';
 import { DevicesCard, deviceLimit } from './DevicesCard';
-import { stars, type Device, type SubscriptionView } from './model';
-
-function pickLive(list: SubscriptionView[]): SubscriptionView | null {
-  return list.find((v) => !v.subscription.ended_at) ?? null;
-}
+import { stars } from './model';
+import { SubSwitch, useSubDetail, useSubs } from './SubSwitch';
 
 export function DevicesPage() {
   const { me } = useCabinet();
-  const [view, setView] = useState<SubscriptionView | null | undefined>(undefined);
-  const [devices, setDevices] = useState<Device[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const live = pickLive(await api<SubscriptionView[]>('/api/client/subscriptions'));
-      if (!live) {
-        setView(null);
-        return;
-      }
-      const [detail, list] = await Promise.all([
-        api<SubscriptionView>(`/api/client/subscriptions/${live.subscription.id}`).catch(() => live),
-        api<Device[]>(`/api/client/subscriptions/${live.subscription.id}/devices`).catch(() => null),
-      ]);
-      setView(detail);
-      setDevices(list);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Устройства не загрузились');
-      setView((v) => (v === undefined ? null : v));
-    }
-  }, []);
+  const subs = useSubs();
+  const detail = useSubDetail(subs.chosen);
+  const view = subs.list === undefined ? undefined : detail.view;
+  const devices = detail.devices;
+  const chosenId = subs.chosen?.subscription.id ?? null;
+  const [pageError, setError] = useState<string | null>(null);
+  const error = pageError ?? subs.error;
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    setError(null);
+  }, [chosenId]);
 
   if (view === undefined) {
     return <p className="cb-muted cb-pad">Загружаем устройства…</p>;
@@ -58,22 +38,23 @@ export function DevicesPage() {
         <h1 className="cb-title">Устройства</h1>
         {view && limit && used >= limit ? <p className="cb-lead muted">Все места заняты: чтобы подключить новое устройство, отключите одно из старых.</p> : null}
       </header>
+      <SubSwitch subs={subs} />
       {error ? (
         <p className="cb-error" role="alert">
           {error}
         </p>
       ) : null}
-      <DevicesCard view={view} devices={devices} onDevices={setDevices} onError={setError} />
+      <DevicesCard view={view} devices={devices} loading={!detail.ready} onDevices={detail.setDevices} onError={setError} link={subs.link} />
       {view ? (
         <Card className="cb-devhelp" label="Новое устройство">
           <h2 className="cb-h2">Новое устройство</h2>
           <p className="cb-ink2">Установите приложение и добавьте в него подписку: ссылка, QR-код и шаги — на главной странице кабинета. Устройство появится в списке после первого подключения.</p>
           <div className="cb-btns">
-            <Link to="/cabinet#connect" className="cb-second">
+            <Link to={subs.link('/cabinet#connect')} className="cb-second">
               Как подключить
             </Link>
             {extra && !ended ? (
-              <Link to="/cabinet/addons?kind=devices" className="cb-second">
+              <Link to={subs.link('/cabinet/addons?kind=devices')} className="cb-second">
                 Добавить устройства
               </Link>
             ) : null}

@@ -5,7 +5,7 @@ import { api } from '../lib/api';
 import { dateLong, money, plural } from '../lib/format';
 import { Icon, type IconName } from '../lib/icons';
 import { resetWhen, trafficMeter, type Referral } from '../cabinet/model';
-import { ThemeCirc, useMini } from './MiniApp';
+import { MiniSubSwitch, ThemeCirc, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 import { supportLink, supportTickets } from '../lib/support';
 
@@ -104,6 +104,8 @@ export function MiniHome() {
         ) : null}
         <ThemeCirc />
       </header>
+
+      <MiniSubSwitch />
 
       <section aria-label="Подписка" className="mn-sub">
         <div className="mn-ring" role="img" aria-label={expired && expire ? `Подписка закончилась ${dateLong(expire, false)}` : `Осталось ${left} из ${total}`}>

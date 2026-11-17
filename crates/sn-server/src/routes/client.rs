@@ -419,6 +419,7 @@ async fn me(
         "client": card.client,
         "balance": card.balance,
         "balance_enabled": state.services.payments().balance_enabled(),
+        "multi_subscriptions": state.services.settings().multi_subscriptions,
         "autorenew_card": autorenew_card,
         "referral_balance": card.referral_balance,
         "currency": state.services.settings().currency,

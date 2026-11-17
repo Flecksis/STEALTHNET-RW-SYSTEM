@@ -27,6 +27,7 @@ export type ClientMe = {
   client: { id: number; status: 'active' | 'blocked'; created_at: string; locale: string };
   balance: Money;
   balance_enabled?: boolean;
+  multi_subscriptions?: boolean;
   autorenew_card?: boolean;
   referral_balance: Money;
   currency: Currency;

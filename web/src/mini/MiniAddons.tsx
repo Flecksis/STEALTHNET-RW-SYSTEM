@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api';
 import { dateLong, money, MINUS, traffic } from '../lib/format';
 import { stars } from '../cabinet/model';
 import { addonItem, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from '../cabinet/extras';
-import { BackHead, useMini } from './MiniApp';
+import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 
 function failText(err: unknown, fallback: string): string {
@@ -45,6 +45,11 @@ export function MiniAddons() {
   };
 
   useEffect(() => {
+    setOffer(null);
+    setQuote(null);
+    setError(null);
+    setNote(null);
+    setOtherWallet(null);
     if (subscriptionId !== null) {
       void load(subscriptionId, false);
     }
@@ -132,6 +137,7 @@ export function MiniAddons() {
     return (
       <main className="mn-page">
         <BackHead title="Докупить" />
+        <MiniSubSwitch />
         <div className="mn-card mn-pad">
           <strong>Нужна действующая подписка</strong>
           <span className="mn-ink2">Устройства и трафик докупаются к подписке, пока она действует.</span>
@@ -147,6 +153,7 @@ export function MiniAddons() {
     return (
       <main className="mn-page">
         <BackHead title="Докупить" />
+        <MiniSubSwitch />
         <p className={loadError ? 'mn-error' : 'mn-muted'}>{loadError ?? 'Загружаем…'}</p>
       </main>
     );
@@ -157,6 +164,7 @@ export function MiniAddons() {
     return (
       <main className="mn-page">
         <BackHead title="Докупить" />
+        <MiniSubSwitch />
         <div className="mn-card mn-pad">
           <strong>Докупить нечего</strong>
           <span className="mn-ink2">{reason}</span>
@@ -168,6 +176,7 @@ export function MiniAddons() {
   return (
     <main className="mn-page plans">
       <BackHead title="Докупить" />
+      <MiniSubSwitch />
       {devices && trafficOffer ? (
         <div role="group" aria-label="Что докупить" className="mn-seg" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
           <button type="button" aria-pressed={kind === 'devices'} onClick={() => setKind('devices')}>

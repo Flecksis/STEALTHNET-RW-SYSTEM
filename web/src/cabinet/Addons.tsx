@@ -4,8 +4,10 @@ import { api, ApiError } from '../lib/api';
 import { dateLong, money, MINUS, traffic } from '../lib/format';
 import { addonItem, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from './extras';
 import { Card, useCabinet } from './CabinetApp';
-import { stars, type SubscriptionView } from './model';
+import { stars } from './model';
 import { finished, type PaymentProgress } from './payments';
+import { SubSwitch, useSubs } from './SubSwitch';
+import { subName } from './subs';
 
 const ADDON_KEY = 'sn.cabinet.addon';
 
@@ -33,7 +35,8 @@ export function AddonsPage() {
   const { me, reload } = useCabinet();
   const [params, setParams] = useSearchParams();
   const [asked] = useState(() => params.get('kind'));
-  const [live, setLive] = useState<SubscriptionView | null | undefined>(undefined);
+  const subs = useSubs();
+  const live = subs.list === undefined ? undefined : subs.chosen;
   const [offer, setOffer] = useState<AddonsOffer | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [kind, setKind] = useState<AddonKind>('devices');
@@ -47,19 +50,19 @@ export function AddonsPage() {
   const [waiting, setWaiting] = useState<PaymentProgress | null>(null);
   const seq = useRef(0);
 
-  useEffect(() => {
-    api<SubscriptionView[]>('/api/client/subscriptions')
-      .then((list) => setLive(list.find((v) => !v.subscription.ended_at && v.status !== 'expired') ?? null))
-      .catch(() => setLive(null));
-  }, []);
-
-  const subscriptionId = live ? live.subscription.id : null;
+  const subscriptionId = live && live.status !== 'expired' ? live.subscription.id : null;
 
   useEffect(() => {
     if (subscriptionId === null) {
       return;
     }
     let alive = true;
+    setOffer(null);
+    setLoadError(null);
+    setQuote(null);
+    setCount(1);
+    setError(null);
+    setDone(null);
     api<AddonsOffer>(offerUrl(subscriptionId))
       .then((next) => {
         if (!alive) {
@@ -225,18 +228,31 @@ export function AddonsPage() {
     );
   }
 
-  if (live === undefined || (subscriptionId !== null && !offer && !loadError)) {
+  if (live === undefined) {
     return <p className="cb-muted cb-pad">Загружаем…</p>;
   }
 
-  if (live === null) {
+  const list = subs.list ?? [];
+  const switcher = <SubSwitch subs={subs} />;
+
+  if (subscriptionId !== null && !offer && !loadError) {
     return (
       <div className="cb-stack cb-narrow">
+        {switcher}
+        <p className="cb-muted cb-pad">Загружаем…</p>
+      </div>
+    );
+  }
+
+  if (live === null || subscriptionId === null) {
+    return (
+      <div className="cb-stack cb-narrow">
+        {switcher}
         <Card label="Докупка">
           <h1 className="cb-h1">Нужна действующая подписка</h1>
           <p className="cb-ink2">Устройства и трафик докупаются к подписке, пока она действует.</p>
           <div className="cb-btns">
-            <Link to="/cabinet/pay" className="cb-main">
+            <Link to={subs.link('/cabinet/pay')} className="cb-main">
               К тарифам
             </Link>
           </div>
@@ -247,15 +263,19 @@ export function AddonsPage() {
 
   if (loadError || !offer) {
     return (
-      <p className="cb-error cb-pad" role="alert">
-        {loadError ?? 'Не удалось загрузить предложения'}
-      </p>
+      <div className="cb-stack cb-narrow">
+        {switcher}
+        <p className="cb-error cb-pad" role="alert">
+          {loadError ?? 'Не удалось загрузить предложения'}
+        </p>
+      </div>
     );
   }
 
   if (!devices && !trafficOffer) {
     return (
       <div className="cb-stack cb-narrow">
+        {switcher}
         <Card label="Докупка">
           <h1 className="cb-h1">Докупить нечего</h1>
           <p className="cb-ink2">{offer.devices.unavailable?.message ?? offer.traffic.unavailable?.message ?? 'Для этой подписки докупить нечего.'}</p>
@@ -276,10 +296,11 @@ export function AddonsPage() {
       <header className="cb-pay-head">
         <h1 className="cb-title">Докупить к подписке</h1>
         <p className="cb-lead muted">
-          {live.tariff?.name ?? 'Подписка'}
+          {list.length > 1 ? subName(live, list) : (live.tariff?.name ?? 'Подписка')}
           {expire ? ` до ${dateLong(expire, true)}` : ''}. Докупка действует сразу и не меняет дату окончания.
         </p>
       </header>
+      {switcher}
       <div className="cb-cols">
         <div className="cb-col left">
           {devices && trafficOffer ? (

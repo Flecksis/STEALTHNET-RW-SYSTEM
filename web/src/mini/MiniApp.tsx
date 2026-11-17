@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Route, Routes, useLocation } from 'react-router';
 import { api, ApiError, setBearer } from '../lib/api';
 import { BrandMark } from '../lib/brand';
@@ -7,6 +7,7 @@ import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
+import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
 import { initData, loadTelegram } from './telegram';
 import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
@@ -19,16 +20,22 @@ import './mini.css';
 
 const TOKEN_KEY = 'sn.mini.token';
 const THEME_KEY = 'sn.mini.theme';
+export const MINI_SUB_KEY = 'sn.mini.sub';
 
 type Login = { token: string };
+
+type Detail = { view: SubscriptionView; devices: Device[] | null };
 
 export type MiniCtx = {
   me: ClientMe;
   site: Site;
+  subs: SubscriptionView[];
   view: SubscriptionView | null;
   devices: Device[] | null;
-  setView: (view: SubscriptionView | null) => void;
-  setDevices: (devices: Device[] | null) => void;
+  ready: boolean;
+  choose: (id: number) => void;
+  setView: (view: SubscriptionView) => void;
+  setDevices: (devices: Device[]) => void;
   reload: () => Promise<void>;
   theme: Theme;
   flipTheme: (() => void) | null;
@@ -70,31 +77,67 @@ export function MiniApp() {
   const site = useSite() ?? DEFAULT_SITE;
   const system = useSystemTheme();
   const [state, setState] = useState<State>({ kind: 'loading' });
-  const [view, setView] = useState<SubscriptionView | null>(null);
-  const [devices, setDevices] = useState<Device[] | null>(null);
+  const [subs, setSubs] = useState<SubscriptionView[]>([]);
+  const [chosenId, setChosenId] = useState<number | null>(null);
+  const cache = useRef(new Map<number, Detail>());
+  const [, setTick] = useState(0);
   const [tgScheme, setTgScheme] = useState<Theme | null>(null);
   const [personal, setPersonal] = useState<Theme | null>(() => {
     const v = readStored(THEME_KEY);
     return v === 'dark' || v === 'light' ? v : null;
   });
 
+  const fetchDetail = useCallback(async (live: SubscriptionView) => {
+    const id = live.subscription.id;
+    const [view, devices] = await Promise.all([
+      api<SubscriptionView>(`/api/client/subscriptions/${id}`).catch(() => live),
+      api<Device[]>(`/api/client/subscriptions/${id}/devices`).catch(() => null),
+    ]);
+    cache.current.set(id, { view, devices });
+    setTick((n) => n + 1);
+  }, []);
+
   const loadData = useCallback(async () => {
     const me = await api<ClientMe>('/api/client/me');
-    const list = await api<SubscriptionView[]>('/api/client/subscriptions');
-    const live = list.find((v) => !v.subscription.ended_at) ?? null;
+    const list = liveSubs(await api<SubscriptionView[]>('/api/client/subscriptions'));
+    const chosen = pickSub(list, readRemembered(MINI_SUB_KEY));
     setState({ kind: 'in', me });
-    setView(live);
-    if (live) {
-      const [detail, devs] = await Promise.all([
-        api<SubscriptionView>(`/api/client/subscriptions/${live.subscription.id}`).catch(() => live),
-        api<Device[]>(`/api/client/subscriptions/${live.subscription.id}/devices`).catch(() => null),
-      ]);
-      setView(detail);
-      setDevices(devs);
-    } else {
-      setDevices(null);
+    setSubs(list);
+    setChosenId(chosen?.subscription.id ?? null);
+    if (chosen) {
+      await fetchDetail(chosen);
     }
-  }, []);
+  }, [fetchDetail]);
+
+  const choose = useCallback(
+    (id: number) => {
+      const next = subs.find((v) => v.subscription.id === id);
+      if (!next) {
+        return;
+      }
+      rememberSub(MINI_SUB_KEY, id);
+      setChosenId(id);
+      void fetchDetail(next);
+    },
+    [subs, fetchDetail],
+  );
+
+  const base = subs.find((v) => v.subscription.id === chosenId) ?? null;
+  const hit = chosenId === null ? undefined : cache.current.get(chosenId);
+
+  const putDetail = useCallback(
+    (patch: Partial<Detail>) => {
+      if (!base) {
+        return;
+      }
+      const id = base.subscription.id;
+      cache.current.set(id, { ...(cache.current.get(id) ?? { view: base, devices: null }), ...patch });
+      setTick((n) => n + 1);
+    },
+    [base],
+  );
+  const setView = useCallback((next: SubscriptionView) => putDetail({ view: next }), [putDetail]);
+  const setDevices = useCallback((next: Device[]) => putDetail({ devices: next }), [putDetail]);
 
   const start = useCallback(async () => {
     const app = await loadTelegram();
@@ -153,9 +196,15 @@ export function MiniApp() {
     }
   }, [loadData]);
 
+  const view = hit?.view ?? base;
+  const devices = hit?.devices ?? null;
+  const ready = hit !== undefined;
   const ctx = useMemo<MiniCtx | null>(
-    () => (state.kind === 'in' ? { me: state.me, site, view, devices, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme } : null),
-    [state, site, view, devices, reload, theme, flipTheme, fixed],
+    () =>
+      state.kind === 'in'
+        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme }
+        : null,
+    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed],
   );
 
   if (state.kind === 'loading') {
@@ -257,3 +306,27 @@ export function BackHead({ title }: { title: string }) {
   );
 }
 
+export function MiniSubSwitch() {
+  const { me, subs, view, choose } = useMini();
+  const box = useRef<HTMLDivElement>(null);
+  const chosenId = view?.subscription.id ?? null;
+  useShowPressed(box, `${chosenId}:${subs.length}`);
+  if (subs.length < 2) {
+    return null;
+  }
+  const blocked = me.client.status === 'blocked';
+  return (
+    <div ref={box} role="group" aria-label="Подписки" className="mn-subs">
+      {subs.map((v) => {
+        const on = v.subscription.id === chosenId;
+        const state = subState(v, blocked);
+        return (
+          <button key={v.subscription.id} type="button" className="mn-subs-item press" aria-pressed={on} onClick={() => !on && choose(v.subscription.id)}>
+            <strong>{subName(v, subs)}</strong>
+            <span className={`mn-tone ${state.tone}`}>{state.text}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}

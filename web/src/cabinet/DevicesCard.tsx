@@ -13,14 +13,18 @@ export function deviceLimit(view: SubscriptionView | null): number | null {
 export function DevicesCard({
   view,
   devices,
+  loading,
   onDevices,
   onError,
+  link = (path) => path,
   addLink,
 }: {
   view: SubscriptionView | null;
   devices: Device[] | null;
+  loading?: boolean;
   onDevices: (list: Device[]) => void;
   onError: (text: string) => void;
+  link?: (path: string) => string;
   addLink?: boolean;
 }) {
   const { site, phone } = useCabinet();
@@ -68,13 +72,13 @@ export function DevicesCard({
           </span>
         </h2>
         {addLink && !phone ? (
-          <Link to={view.status === 'expired' ? '/cabinet/pay' : '/cabinet/addons?kind=devices'} className="cb-accent-link">
+          <Link to={link(view.status === 'expired' ? '/cabinet/pay' : '/cabinet/addons?kind=devices')} className="cb-accent-link">
             Добавить ещё
           </Link>
         ) : null}
       </div>
       {devices && devices.length === 0 ? <p className="cb-muted">Устройств нет: появятся, когда вы добавите подписку в приложение.</p> : null}
-      {devices === null ? <p className="cb-muted">Список устройств сейчас недоступен</p> : null}
+      {devices === null ? <p className="cb-muted">{loading ? 'Загружаем устройства…' : 'Список устройств сейчас недоступен'}</p> : null}
       {devices?.map((d) => (
         <Fragment key={d.hwid}>
           <div className="cb-device">

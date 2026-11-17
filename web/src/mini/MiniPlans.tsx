@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { count, money, MINUS, type Money } from '../lib/format';
 import { gb, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
-import { BackHead, useMini } from './MiniApp';
+import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
+import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 
 function failText(err: unknown, fallback: string): string {
@@ -14,7 +15,12 @@ function termName(months: number, daysCount: number): string {
 }
 
 export function MiniPlans() {
-  const { me, view, reload } = useMini();
+  const { me, subs, view: shown, choose, reload } = useMini();
+  const multi = me.multi_subscriptions === true;
+  const targets = useMemo(() => payTargets(subs, multi), [subs, multi]);
+  const [picked, setPicked] = useState<PayTarget | null>(null);
+  const target = resolveTarget(targets, subs, multi, picked ?? shown?.subscription.id ?? null);
+  const view = targetView(subs, target, multi);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [cat, setCat] = useState<number | null>(null);
   const [period, setPeriod] = useState<number | null>(null);
@@ -65,7 +71,28 @@ export function MiniPlans() {
   const extra = offer?.tariff.devices.extra ?? null;
   const maxDevices = included + (extra?.max ?? 0);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
-  const subscriptionId = view && !view.subscription.ended_at ? view.subscription.id : null;
+  const subscriptionId = typeof target === 'number' ? target : null;
+  const another = !view && subs.length > 0;
+
+  const pickTarget = (next: PayTarget) => {
+    if (next === target) {
+      return;
+    }
+    setPicked(next);
+    const v = targetView(subs, next, multi);
+    const own = v ? offers.find((o) => o.tariff.id === v.subscription.tariff_id) : undefined;
+    if (v && own) {
+      setCat(own.category.id);
+      const p = own.periods.find((x) => x.days === v.subscription.period_days) ?? own.periods.find((x) => x.months === periodOffer?.months) ?? own.periods[Math.min(1, own.periods.length - 1)];
+      setPeriod(p?.period_id ?? null);
+      setDevices(own.tariff.devices.included + v.subscription.extra_devices);
+    } else {
+      setDevices(included);
+    }
+    if (typeof next === 'number') {
+      choose(next);
+    }
+  };
 
   useEffect(() => {
     if (!offer || !periodOffer) {
@@ -108,7 +135,7 @@ export function MiniPlans() {
   const sameCategory = current && offer ? current.category.id === offer.category.id : null;
   const change = !!view && !!offer && (fromTrial || (sameCategory === null ? quote?.kind === 'change' : !sameCategory));
   const transition = change && !fromTrial;
-  const currentName = current?.tariff.name ?? view?.tariff?.name ?? null;
+  const currentName = view && subs.length > 1 ? subName(view, subs) : (current?.tariff.name ?? view?.tariff?.name ?? null);
   const limitBytes = offer?.tariff.traffic.limit_bytes ?? 0;
   const extraMonthly: Money | null = extra && catalog ? { minor: catalog.currency === 'RUB' ? (extra.monthly.rub ?? 0) : (extra.monthly.usd ?? 0), currency: catalog.currency } : null;
 
@@ -119,6 +146,9 @@ export function MiniPlans() {
     setBusy(true);
     setError(null);
     setOtherWallet(null);
+    if (another) {
+      remember(MINI_SUB_KEY, NEWEST);
+    }
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/checkout', {
         method: 'POST',
@@ -154,7 +184,29 @@ export function MiniPlans() {
 
   return (
     <main className="mn-page plans">
-      <BackHead title={!view ? 'Тарифы' : transition ? 'Переход' : fromTrial ? 'Оплата' : 'Продление'} />
+      <BackHead title={!view ? (another ? 'Новая подписка' : 'Тарифы') : transition ? 'Переход' : fromTrial ? 'Оплата' : 'Продление'} />
+      {targets.length > 1 ? (
+        <section aria-label="Что оплачиваем" className="mn-pay">
+          <div className="mn-pay-head">
+            <h2>Что оплачиваем</h2>
+          </div>
+          <div role="radiogroup" aria-label="Что оплачиваем" className="mn-terms">
+            {targets.map((t) => {
+              const v = typeof t === 'number' ? targetView(subs, t, multi) : null;
+              const state = v ? subState(v, me.client.status === 'blocked') : null;
+              return (
+                <button key={String(t)} type="button" role="radio" aria-checked={target === t} className="mn-term press" onClick={() => pickTarget(t)}>
+                  <span className="mn-dot" aria-hidden="true" />
+                  <span className="mn-term-text">
+                    <strong className="mn-target-name">{v ? `Продлить «${subName(v, subs)}»` : 'Новая подписка'}</strong>
+                    <span className={`mn-term-sub ${state?.tone ?? ''}`}>{state ? state.text : newTargetNote(subs, multi)}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
       {!catalog ? <p className="mn-muted">{error ?? 'Загружаем тарифы…'}</p> : null}
       {catalog && offers.length === 0 ? <p className="mn-muted">Тарифов пока нет.</p> : null}
       {categories.length > 1 ? (
@@ -185,9 +237,10 @@ export function MiniPlans() {
           <span>{transitionText(currentName)}</span>
         </div>
       ) : null}
-      {(fromTrial && offer) || limitBytes ? (
+      {(fromTrial && offer) || another || limitBytes ? (
         <div className="mn-notes">
           {fromTrial && offer ? <span>Пробный период закончится сразу после оплаты, тариф «{offer.tariff.name}» начнёт действовать с даты оплаты</span> : null}
+          {another ? <span>У новой подписки будет своя ссылка, текущие подписки останутся как есть</span> : null}
           {limitBytes ? (
             <span>
               Трафик: {gb(limitBytes)} ГБ {resetPlan(offer?.tariff.traffic.reset ?? 'no_reset')}

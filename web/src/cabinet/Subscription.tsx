@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, days, money, type Money } from '../lib/format';
@@ -9,37 +9,25 @@ import { siteInviteLink } from '../lib/referral';
 import { supportLink, supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { DevicesCard } from './DevicesCard';
-import {
-  APPS,
-  explanation,
-  guessPlatform,
-  periodTitle,
-  statusWord,
-  trafficLine,
-  type Catalog,
-  type Device,
-  type Platform,
-  type Referral,
-  type SubscriptionView,
-} from './model';
+import { SubSwitch, useSubDetail, useSubs } from './SubSwitch';
+import { APPS, explanation, guessPlatform, periodTitle, statusWord, trafficLine, type Catalog, type Platform, type Referral } from './model';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
-}
-
-function pickLive(list: SubscriptionView[]): SubscriptionView | null {
-  return list.find((v) => !v.subscription.ended_at) ?? null;
 }
 
 export function SubscriptionPage() {
   const { me, site, phone } = useCabinet();
   const location = useLocation();
   const navigate = useNavigate();
-  const [view, setView] = useState<SubscriptionView | null | undefined>(undefined);
-  const [devices, setDevices] = useState<Device[] | null>(null);
+  const subs = useSubs();
+  const detail = useSubDetail(subs.chosen);
+  const view = subs.list === undefined ? undefined : detail.view;
+  const devices = detail.devices;
+  const chosenId = subs.chosen?.subscription.id ?? null;
   const [referral, setReferral] = useState<Referral | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [pageError, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<string>('');
   const [reissued, setReissued] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -50,38 +38,24 @@ export function SubscriptionPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [qr, setQr] = useState(false);
   const [trialBusy, setTrialBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const list = await api<SubscriptionView[]>('/api/client/subscriptions');
-      const live = pickLive(list);
-      if (!live) {
-        setView(null);
-        return;
-      }
-      setView(live);
-      const [detail, devs] = await Promise.all([
-        api<SubscriptionView>(`/api/client/subscriptions/${live.subscription.id}`).catch(() => live),
-        api<Device[]>(`/api/client/subscriptions/${live.subscription.id}/devices`).catch(() => null),
-      ]);
-      setView(detail);
-      setDevices(devs);
-      setError(null);
-    } catch (err) {
-      setError(failText(err, 'Подписка не загрузилась'));
-      setView((v) => (v === undefined ? null : v));
-    }
-  }, []);
+  const error = pageError ?? subs.error;
 
   useEffect(() => {
-    void load();
     api<Referral>('/api/client/m/referral/me')
       .then(setReferral)
       .catch(() => setReferral(null));
     api<Catalog>('/api/client/catalog')
       .then(setCatalog)
       .catch(() => setCatalog(null));
-  }, [load]);
+  }, []);
+
+  useEffect(() => {
+    setAsk('');
+    setReissued(false);
+    setQr(false);
+    setCopied(null);
+    setError(null);
+  }, [chosenId]);
 
   useEffect(() => {
     const id = location.hash.replace('#', '');
@@ -107,8 +81,8 @@ export function SubscriptionPage() {
     setBusy(true);
     try {
       const res = await api<{ subscription_url: string }>(`/api/client/subscriptions/${view.subscription.id}/reissue`, { method: 'POST', body: {} });
-      setView({ ...view, subscription_url: res.subscription_url });
-      setDevices([]);
+      detail.setView({ ...view, subscription_url: res.subscription_url });
+      detail.setDevices([]);
       setReissued(true);
       setAsk('');
     } catch (err) {
@@ -124,14 +98,14 @@ export function SubscriptionPage() {
     }
     const enabled = !view.subscription.autorenew.enabled;
     const prev = view;
-    setView({ ...view, subscription: { ...view.subscription, autorenew: { ...view.subscription.autorenew, enabled } } });
+    detail.setView({ ...view, subscription: { ...view.subscription, autorenew: { ...view.subscription.autorenew, enabled } } });
     try {
       await api(`/api/client/subscriptions/${view.subscription.id}/autorenew`, {
         method: 'PUT',
         body: { enabled, period_id: view.subscription.autorenew.period_id },
       });
     } catch (err) {
-      setView(prev);
+      detail.setView(prev);
       setError(failText(err, 'Автопродление не переключилось'));
     }
   };
@@ -143,9 +117,7 @@ export function SubscriptionPage() {
       await api('/api/client/trial', { method: 'POST', body: {} });
       for (let i = 0; i < 10; i += 1) {
         await new Promise((r) => window.setTimeout(r, 1500));
-        const list = await api<SubscriptionView[]>('/api/client/subscriptions');
-        if (pickLive(list)) {
-          await load();
+        if ((await subs.reload()).length > 0) {
           break;
         }
       }
@@ -320,7 +292,7 @@ export function SubscriptionPage() {
             </a>
           ) : null
         ) : expired ? (
-          <Link to="/cabinet/pay" className="cb-main">
+          <Link to={subs.link('/cabinet/pay')} className="cb-main">
             Продлить
           </Link>
         ) : (
@@ -335,10 +307,10 @@ export function SubscriptionPage() {
                 Подключить устройство
               </button>
             )}
-            <Link to="/cabinet/pay" className="cb-second">
+            <Link to={subs.link('/cabinet/pay')} className="cb-second">
               Продлить
             </Link>
-            <Link to="/cabinet/addons" className="cb-second">
+            <Link to={subs.link('/cabinet/addons')} className="cb-second">
               Докупить
             </Link>
           </>
@@ -356,7 +328,7 @@ export function SubscriptionPage() {
             На странице подключения есть приложения для вашего устройства и кнопки, которые сами добавят подписку.{phone ? '' : ' Чтобы подключить телефон, отсканируйте QR-код.'}
           </p>
           <div className={phone ? 'cb-linkrow col' : 'cb-linkrow'}>
-            <span className="cb-link mono">{url ?? 'ссылка появится, когда подписка заработает'}</span>
+            <span className="cb-link mono">{url ?? (detail.ready ? 'ссылка появится, когда подписка заработает' : 'загружаем ссылку…')}</span>
             {phone && url ? (
               <a className="cb-main" href={url} target="_blank" rel="noreferrer">
                 Открыть страницу подключения
@@ -442,7 +414,7 @@ export function SubscriptionPage() {
     </Card>
   ) : null;
 
-  const devicesCard = <DevicesCard view={view} devices={devices} onDevices={setDevices} onError={setError} addLink />;
+  const devicesCard = <DevicesCard view={view} devices={devices} loading={!detail.ready} onDevices={detail.setDevices} onError={setError} link={subs.link} addLink />;
 
   const autoSwitch = view ? (
     <button type="button" role="switch" className={phone ? 'cb-switch big' : 'cb-switch'} aria-checked={autoOn} aria-label="Автопродление" onClick={() => void toggleAuto()} disabled={blocked}>
@@ -459,6 +431,7 @@ export function SubscriptionPage() {
   if (phone) {
     return (
       <div className="cb-stack">
+        <SubSwitch subs={subs} />
         {errorLine}
         {subCard}
         {connectCard}
@@ -478,6 +451,7 @@ export function SubscriptionPage() {
 
   return (
     <div className="cb-cols">
+      <SubSwitch subs={subs} />
       <div className="cb-col left">
         {errorLine}
         {subCard}

@@ -1837,3 +1837,124 @@ a.cb-card[id] {
   font-size: 14px;
   line-height: 1.45;
 }
+
+.cb-subs {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cb-cols > .cb-subs {
+  flex: 1 1 100%;
+}
+
+.cb-subs-item {
+  flex: 1 1 200px;
+  max-width: 260px;
+  min-width: 0;
+  min-height: 64px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--card-line, transparent);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cb-subs-item:not([aria-pressed='true']):hover {
+  background: var(--surface-2, var(--fill));
+}
+
+.cb-subs-item[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  cursor: default;
+}
+
+.cb-subs-item strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+}
+
+.cb-subs-state,
+.cb-target-note {
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
+.cb-subs-state.warn,
+.cb-target-note.warn {
+  color: var(--warn);
+}
+
+.cb-subs-state.muted,
+.cb-target-note.muted {
+  color: var(--muted);
+}
+
+.cb-subs-state.bad,
+.cb-target-note.bad {
+  color: var(--bad);
+}
+
+.cb-target strong {
+  overflow-wrap: anywhere;
+}
+
+.cb-phone .cb-subs {
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin: 0 -16px;
+  padding: 0 0 0 16px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scroll-padding: 0 16px;
+  scrollbar-width: none;
+}
+
+.cb-phone .cb-subs::-webkit-scrollbar {
+  display: none;
+}
+
+.cb-phone .cb-subs::after {
+  content: '';
+  flex: 0 0 8px;
+}
+
+.cb-phone .cb-subs-item {
+  flex: 0 0 auto;
+  min-width: calc(50% - 12px);
+  max-width: 82%;
+  min-height: 60px;
+  padding: 9px 12px;
+  border: 2px solid transparent;
+  border-radius: 16px;
+  scroll-snap-align: start;
+}
+
+.cb-phone .cb-subs-state {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-phone .cb-subs-item[aria-pressed='true'] {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+.cb-phone .cb-subs-state {
+  font-size: 13px;
+}

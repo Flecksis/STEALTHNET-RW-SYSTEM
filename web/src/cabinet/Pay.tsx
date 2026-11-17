@@ -4,7 +4,9 @@ import { api, ApiError } from '../lib/api';
 import { count, dateLong, money, MINUS, type Money } from '../lib/format';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
-import { gb, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type SubscriptionView, type TariffOffer } from './model';
+import { gb, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type TariffOffer } from './model';
+import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
+import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
 
@@ -34,7 +36,9 @@ export function Pay() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [live, setLive] = useState<SubscriptionView | null | undefined>(undefined);
+  const subs = useSubs();
+  const multi = me.multi_subscriptions === true;
+  const [target, setTarget] = useState<PayTarget | null>(null);
   const [cat, setCat] = useState<number | null>(null);
   const [period, setPeriod] = useState<number | null>(null);
   const [devices, setDevices] = useState<number>(0);
@@ -53,10 +57,19 @@ export function Pay() {
     api<Catalog>('/api/client/catalog')
       .then(setCatalog)
       .catch((err) => setError(failText(err, 'Тарифы не загрузились')));
-    api<SubscriptionView[]>('/api/client/subscriptions')
-      .then((list) => setLive(list.find((v) => !v.subscription.ended_at) ?? null))
-      .catch(() => setLive(null));
   }, []);
+
+  const list = subs.list ?? [];
+  const targets = useMemo(() => payTargets(list, multi), [list, multi]);
+  const asked: PayTarget | null = params.get('sub') === 'new' ? 'new' : (subs.chosen?.subscription.id ?? null);
+
+  useEffect(() => {
+    if (subs.list !== undefined && target === null) {
+      setTarget(resolveTarget(targets, subs.list, multi, asked));
+    }
+  }, [subs.list, target, targets, multi, asked]);
+
+  const live = subs.list === undefined || target === null ? undefined : targetView(list, target, multi);
 
   const offers = catalog?.tariffs ?? [];
   const categories = useMemo(() => {
@@ -96,7 +109,27 @@ export function Pay() {
   const extra = offer?.tariff.devices.extra ?? null;
   const maxDevices = included + (extra?.max ?? 0);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
-  const subscriptionId = live && !live.subscription.ended_at ? live.subscription.id : null;
+  const subscriptionId = typeof target === 'number' ? target : null;
+
+  const chooseTarget = (next: PayTarget) => {
+    if (next === target) {
+      return;
+    }
+    setTarget(next);
+    const view = targetView(list, next, multi);
+    const own = view ? offers.find((o) => o.tariff.id === view.subscription.tariff_id) : undefined;
+    if (view && own) {
+      setCat(own.category.id);
+      const p = own.periods.find((x) => x.days === view.subscription.period_days) ?? own.periods.find((x) => x.months === periodOffer?.months) ?? own.periods[Math.min(1, own.periods.length - 1)];
+      setPeriod(p?.period_id ?? null);
+      setDevices(own.tariff.devices.included + view.subscription.extra_devices);
+    } else {
+      setDevices(included);
+    }
+    if (typeof next === 'number') {
+      remember(CABINET_SUB_KEY, next);
+    }
+  };
 
   useEffect(() => {
     if (!offer || !periodOffer) {
@@ -204,13 +237,17 @@ export function Pay() {
   const transition = change && !fromTrial;
   const expired = live?.status === 'expired';
   const expire = live?.subscription.mirror.expire_at ?? null;
-  const title = !live ? 'Покупка подписки' : fromTrial ? 'Оплата подписки' : transition ? 'Переход на другой тариф' : 'Продление подписки';
-  const currentName = current?.tariff.name ?? live?.tariff?.name ?? null;
+  const another = !live && list.length > 0;
+  const title = !live ? (another ? 'Новая подписка' : 'Покупка подписки') : fromTrial ? 'Оплата подписки' : transition ? 'Переход на другой тариф' : 'Продление подписки';
+  const currentName = live && list.length > 1 ? subName(live, list) : (current?.tariff.name ?? live?.tariff?.name ?? null);
   const nextName = offer?.tariff.name ?? 'новый тариф';
   const lead: { text: ReactNode; tone: string } = blocked
     ? { text: 'Подписка заблокирована, оплата недоступна. Напишите в поддержку.', tone: 'bad' }
     : !live
-      ? { text: 'Подписка начнёт работать сразу после оплаты.', tone: 'muted' }
+      ? {
+          text: another ? 'Подписка начнёт работать сразу после оплаты, у неё будет своя ссылка. Текущие подписки останутся как есть.' : 'Подписка начнёт работать сразу после оплаты.',
+          tone: 'muted',
+        }
       : fromTrial
         ? { text: `Пробный период закончится сразу после оплаты, тариф «${nextName}» начнёт действовать с даты оплаты.`, tone: 'muted' }
         : transition
@@ -256,6 +293,9 @@ export function Pay() {
           return_url: `${window.location.origin}/cabinet/pay`,
         },
       });
+      if (another) {
+        remember(CABINET_SUB_KEY, NEWEST);
+      }
       if (res.type === 'redirect') {
         try {
           window.sessionStorage.setItem(PAYMENT_KEY, res.payment_id);
@@ -327,6 +367,26 @@ export function Pay() {
       </header>
       <div className="cb-cols">
         <div className="cb-col left">
+          {targets.length > 1 ? (
+            <Card className="cb-pick" label="Что оплачиваем">
+              <h2 className="cb-h2">Что оплачиваем</h2>
+              <div role="radiogroup" aria-label="Что оплачиваем" className="cb-method-grid">
+                {targets.map((t) => {
+                  const view = typeof t === 'number' ? targetView(list, t, multi) : null;
+                  const state = view ? subState(view, me.client.status === 'blocked') : null;
+                  return (
+                    <button key={String(t)} type="button" role="radio" aria-checked={target === t} className="cb-method cb-target" onClick={() => chooseTarget(t)}>
+                      <span className="cb-radio" aria-hidden="true" />
+                      <span className="cb-method-text">
+                        <strong>{view ? `Продлить «${subName(view, list)}»` : 'Новая подписка'}</strong>
+                        <span className={`cb-target-note ${state?.tone ?? 'muted'}`}>{state ? state.text : newTargetNote(list, multi)}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+          ) : null}
           <Card className="cb-pick" label="Тариф и срок">
             <div className="cb-row wrap">
               <h2 className="cb-h2">Тариф и срок</h2>
