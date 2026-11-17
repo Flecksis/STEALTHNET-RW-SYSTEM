@@ -492,7 +492,7 @@ async fn вход_администратора_и_переключение_мо�
         .unwrap();
     assert_eq!(toggle.status(), StatusCode::OK);
     assert_eq!(body_json(toggle).await["active"], true);
-    let nalog = router(state.clone())
+    let removed = router(state.clone())
         .oneshot(
             Request::patch("/api/admin/modules/nalog")
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -502,7 +502,7 @@ async fn вход_администратора_и_переключение_мо�
         )
         .await
         .unwrap();
-    assert_eq!(nalog.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(removed.status().is_client_error(), "{}", removed.status());
     let menu = router(state)
         .oneshot(
             Request::get("/api/admin/me")

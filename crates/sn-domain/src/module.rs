@@ -9,7 +9,6 @@ pub enum ModuleId {
     Promo,
     Gifts,
     Options,
-    Custom,
     Broadcast,
     Referral,
     Promolinks,
@@ -18,17 +17,12 @@ pub enum ModuleId {
     Roulette,
     Mail,
     Ai,
-    Proxy,
-    Singbox,
-    Awg,
     Antibot,
     Limits,
     Analytics,
-    Nalog,
     Landing,
     Oauth,
     Market,
-    Gramads,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -37,7 +31,6 @@ pub enum ModuleGroup {
     Sales,
     Marketing,
     Support,
-    Protocols,
     Protection,
     Accounting,
     Site,
@@ -45,11 +38,10 @@ pub enum ModuleGroup {
 }
 
 impl ModuleGroup {
-    pub const ALL: [ModuleGroup; 8] = [
+    pub const ALL: [ModuleGroup; 7] = [
         ModuleGroup::Sales,
         ModuleGroup::Marketing,
         ModuleGroup::Support,
-        ModuleGroup::Protocols,
         ModuleGroup::Protection,
         ModuleGroup::Accounting,
         ModuleGroup::Site,
@@ -61,7 +53,6 @@ impl ModuleGroup {
             ModuleGroup::Sales => "Продажи",
             ModuleGroup::Marketing => "Маркетинг",
             ModuleGroup::Support => "Поддержка и связь",
-            ModuleGroup::Protocols => "Протоколы",
             ModuleGroup::Protection => "Защита",
             ModuleGroup::Accounting => "Учёт",
             ModuleGroup::Site => "Сайт и вход",
@@ -121,7 +112,7 @@ const fn with_menu(
     module
 }
 
-pub static CATALOG: [ModuleInfo; 23] = [
+pub static CATALOG: [ModuleInfo; 17] = [
     with_menu(
         info(
             ModuleId::Promo,
@@ -155,14 +146,6 @@ pub static CATALOG: [ModuleInfo; 23] = [
         "Докупка устройств, трафика и сквадов к подписке",
         "Тарифы · бот · кабинет · мини-приложение",
         true,
-    ),
-    info(
-        ModuleId::Custom,
-        ModuleGroup::Sales,
-        "Собери сам",
-        "Клиент сам выбирает срок, устройства и трафик",
-        "Кабинет · мини-приложение",
-        false,
     ),
     with_menu(
         info(
@@ -247,30 +230,6 @@ pub static CATALOG: [ModuleInfo; 23] = [
         )
     },
     info(
-        ModuleId::Proxy,
-        ModuleGroup::Protocols,
-        "Прокси SOCKS5 и HTTP",
-        "Продажа прокси-слотов на отдельных серверах, не через Remnawave",
-        "Инфраструктура · кабинет",
-        false,
-    ),
-    info(
-        ModuleId::Singbox,
-        ModuleGroup::Protocols,
-        "sing-box",
-        "Отдельные серверы sing-box вне Remnawave, для протоколов, которых нет в Xray",
-        "Инфраструктура",
-        false,
-    ),
-    info(
-        ModuleId::Awg,
-        ModuleGroup::Protocols,
-        "AmneziaWG",
-        "WireGuard с маскировкой на отдельных серверах, не через Remnawave",
-        "Инфраструктура",
-        false,
-    ),
-    info(
         ModuleId::Antibot,
         ModuleGroup::Protection,
         "Антибот",
@@ -299,17 +258,6 @@ pub static CATALOG: [ModuleInfo; 23] = [
         "chart",
         6,
     ),
-    ModuleInfo {
-        only_currency: Some(Currency::Rub),
-        ..info(
-            ModuleId::Nalog,
-            ModuleGroup::Accounting,
-            "Мой налог",
-            "Чек самозанятого по каждой оплате",
-            "Деньги",
-            false,
-        )
-    },
     info(
         ModuleId::Landing,
         ModuleGroup::Site,
@@ -334,22 +282,13 @@ pub static CATALOG: [ModuleInfo; 23] = [
         "Админка",
         false,
     ),
-    info(
-        ModuleId::Gramads,
-        ModuleGroup::Rare,
-        "Gramads",
-        "Продвижение в рекламной сети Telegram",
-        "Админка",
-        false,
-    ),
 ];
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 23] = [
+    pub const ALL: [ModuleId; 17] = [
         ModuleId::Promo,
         ModuleId::Gifts,
         ModuleId::Options,
-        ModuleId::Custom,
         ModuleId::Broadcast,
         ModuleId::Referral,
         ModuleId::Promolinks,
@@ -358,17 +297,12 @@ impl ModuleId {
         ModuleId::Roulette,
         ModuleId::Mail,
         ModuleId::Ai,
-        ModuleId::Proxy,
-        ModuleId::Singbox,
-        ModuleId::Awg,
         ModuleId::Antibot,
         ModuleId::Limits,
         ModuleId::Analytics,
-        ModuleId::Nalog,
         ModuleId::Landing,
         ModuleId::Oauth,
         ModuleId::Market,
-        ModuleId::Gramads,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -376,7 +310,6 @@ impl ModuleId {
             ModuleId::Promo => "promo",
             ModuleId::Gifts => "gifts",
             ModuleId::Options => "options",
-            ModuleId::Custom => "custom",
             ModuleId::Broadcast => "broadcast",
             ModuleId::Referral => "referral",
             ModuleId::Promolinks => "promolinks",
@@ -385,17 +318,12 @@ impl ModuleId {
             ModuleId::Roulette => "roulette",
             ModuleId::Mail => "mail",
             ModuleId::Ai => "ai",
-            ModuleId::Proxy => "proxy",
-            ModuleId::Singbox => "singbox",
-            ModuleId::Awg => "awg",
             ModuleId::Antibot => "antibot",
             ModuleId::Limits => "limits",
             ModuleId::Analytics => "analytics",
-            ModuleId::Nalog => "nalog",
             ModuleId::Landing => "landing",
             ModuleId::Oauth => "oauth",
             ModuleId::Market => "market",
-            ModuleId::Gramads => "gramads",
         }
     }
 
@@ -513,12 +441,5 @@ mod tests {
                 "Аналитика"
             ]
         );
-    }
-
-    #[test]
-    fn мой_налог_только_в_рублях() {
-        assert!(!ModuleId::Nalog.available_in(Currency::Usd));
-        assert!(ModuleId::Nalog.available_in(Currency::Rub));
-        assert!(ModuleId::Promo.available_in(Currency::Usd));
     }
 }

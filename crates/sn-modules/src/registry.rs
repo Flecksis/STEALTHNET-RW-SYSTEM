@@ -428,26 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn мой_налог_заблокирован_при_долларах() {
-        let registry = ModuleRegistry::catalog_only();
-        let nalog = registry
-            .views()
-            .into_iter()
-            .find(|v| v.info.id == ModuleId::Nalog)
-            .unwrap();
-        assert_eq!(nalog.locked, Some(CURRENCY_LOCK));
-        registry.apply_rows(&[ModuleStateRow {
-            module: "nalog".into(),
-            enabled: true,
-            config: serde_json::json!({}),
-            updated_at: chrono::Utc::now(),
-        }]);
-        assert!(!registry.is_enabled(ModuleId::Nalog));
-        registry.set_currency(Currency::Rub);
-        assert!(registry.is_enabled(ModuleId::Nalog));
-    }
-
-    #[test]
     fn меню_строится_только_из_включённых_модулей() {
         let registry = ModuleRegistry::catalog_only();
         let labels: Vec<&str> = registry.menu().into_iter().map(|e| e.label).collect();
@@ -531,12 +511,6 @@ mod tests {
             .set_enabled(&db.store, ModuleId::Gifts, true, None)
             .await
             .unwrap();
-        assert!(matches!(
-            registry
-                .set_enabled(&db.store, ModuleId::Nalog, true, None)
-                .await,
-            Err(ModuleError::Unavailable { .. })
-        ));
         let fresh = ModuleRegistry::catalog_only();
         fresh.load(&db.store).await.unwrap();
         assert!(fresh.is_enabled(ModuleId::Gifts));
