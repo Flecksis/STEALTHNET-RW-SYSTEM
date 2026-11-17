@@ -1332,6 +1332,34 @@ async fn загрузка_проверка_и_перенос_идут_в_фон�
     assert!(!path.exists(), "файл выгрузки удаляется после переноса");
     let history = env.services.legacy().view().await.unwrap().history;
     assert_eq!(history.len(), 1);
+    let fresh = dir.join("fresh.upload");
+    std::fs::write(&fresh, bedolaga_dump()).unwrap();
+    let second = env
+        .services
+        .legacy()
+        .uploaded(
+            Source::Bedolaga,
+            "backup_fresh.tar.gz",
+            100,
+            &fresh,
+            Some(admin),
+        )
+        .await
+        .unwrap();
+    wait(
+        &env.services,
+        second.id,
+        &[RunState::Ready, RunState::Failed],
+    )
+    .await;
+    env.services.legacy().discard(second.id).await.unwrap();
+    let view = env.services.legacy().view().await.unwrap();
+    assert!(
+        view.run.is_none(),
+        "после отказа от файла не показывается прошлый перенос"
+    );
+    assert_eq!(view.history.len(), 1);
+    assert!(!fresh.exists());
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -1,4 +1,4 @@
-.imp-steps,
+.imp-wizard,
 .imp-stages,
 .imp-how,
 .imp-facts,
@@ -7,35 +7,6 @@
 .imp-counts,
 .imp-counts dd {
   margin: 0;
-}
-
-.imp-steps {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.imp-step {
-  padding: 16px 20px;
-}
-
-.imp-step.is-now {
-  padding-bottom: 20px;
-}
-
-.imp-step:not(.is-now):not(.is-done) .imp-step-title,
-.imp-step:not(.is-now):not(.is-done) .imp-num {
-  color: var(--muted);
-}
-
-.imp-step-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  min-height: 28px;
 }
 
 .imp-num {
@@ -52,7 +23,7 @@
   color: var(--ink-2);
 }
 
-.is-now > .imp-step-head .imp-num {
+.imp-wizard .is-now .imp-num {
   border-color: var(--ink);
   background: var(--ink);
   color: var(--bg);
@@ -68,25 +39,11 @@
   font-weight: 800;
 }
 
-.imp-step-sum {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  justify-content: flex-end;
-  text-align: right;
-}
-
 .imp-step-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding-top: 16px;
-}
-
-.imp-step-head + .imp-step-body {
-  padding-left: 40px;
 }
 
 .imp-link {
@@ -289,10 +246,6 @@
   padding-top: 18px;
 }
 
-.imp-step > .imp-actions {
-  padding-left: 40px;
-}
-
 .imp-run {
   display: flex;
   flex-direction: column;
@@ -358,6 +311,56 @@
   border-radius: 10px;
   background: var(--surface-2);
   color: var(--warn) !important;
+}
+
+.imp-wizard {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 6px;
+}
+
+.imp-wizard li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 14px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.imp-wizard li + li::before {
+  content: '';
+  width: 24px;
+  height: 1px;
+  margin-right: 8px;
+  background: var(--line);
+}
+
+.imp-wizard li.is-now {
+  color: var(--ink);
+}
+
+.imp-wizard li.is-done {
+  color: var(--ink-2);
+}
+
+.imp-card {
+  padding: 20px 24px 22px;
+}
+
+.imp-card > .imp-step-body:first-child {
+  padding-top: 0;
+}
+
+.imp-card > .imp-actions {
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+}
+
+.imp-phone-step {
+  color: var(--muted);
 }
 
 .imp-name {
@@ -455,19 +458,8 @@
 }
 
 @media (max-width: 600px) {
-  .imp-step {
-    padding: 14px 16px;
-  }
-
-  .imp-step-head + .imp-step-body,
-  .imp-step > .imp-actions {
-    padding-left: 0;
-  }
-
-  .imp-step-sum {
-    flex-basis: 100%;
-    justify-content: flex-start;
-    text-align: left;
+  .imp-card {
+    padding: 16px;
   }
 
   .imp-actions .btn-main,

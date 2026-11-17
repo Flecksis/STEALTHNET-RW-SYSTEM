@@ -285,12 +285,12 @@ pub async fn get(db: &mut impl Db, public_id: Uuid) -> ServiceResult<(RunRow, Ru
 }
 
 pub async fn current(db: &mut impl Db) -> ServiceResult<Option<(RunRow, RunView)>> {
-    let raw: Option<Raw> = sqlx::query_as(&format!(
-        "{SELECT} WHERE r.state <> 'discarded' ORDER BY r.id DESC LIMIT 1"
-    ))
-    .fetch_optional(db.conn())
-    .await?;
-    Ok(raw.map(row_of))
+    let raw: Option<Raw> = sqlx::query_as(&format!("{SELECT} ORDER BY r.id DESC LIMIT 1"))
+        .fetch_optional(db.conn())
+        .await?;
+    Ok(raw
+        .map(row_of)
+        .filter(|(row, _)| row.state != RunState::Discarded))
 }
 
 pub async fn history(db: &mut impl Db, limit: i64) -> ServiceResult<Vec<RunView>> {

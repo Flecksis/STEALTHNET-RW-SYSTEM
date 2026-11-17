@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { count, dateTime, groupDigits, money, NBSP } from '../../lib/format';
+import { usePhone } from '../../lib/media';
 import '../form.css';
 import './import.css';
 import { ACCEPT, ACTIVE, COUNT_LABELS, MAX_UPLOAD, SOURCES, STAGES, type ImportView, type Run, type Source } from './importModel';
@@ -31,7 +32,10 @@ type Ctx = {
   view: ImportView;
   run: Run | null;
   source: Source | null;
+  picked: boolean;
   pick: (source: Source) => void;
+  next: () => void;
+  back: () => void;
   uploading: Uploading | null;
   upload: (file: File) => void;
   cancelUpload: () => void;
@@ -405,12 +409,7 @@ function DoneView({ ctx, run }: { ctx: Ctx; run: Run }) {
       </ul>
       <h3 className="strong">Что сделать дальше</h3>
       <NextSteps ctx={ctx} />
-      <p className="cap">
-        Перед самым переключением можно загрузить свежую выгрузку: перенесётся только новое, дублей не будет.{' '}
-        <button type="button" className="imp-link" onClick={ctx.again}>
-          Загрузить свежую выгрузку
-        </button>
-      </p>
+      <p className="cap">Перед самым переключением можно загрузить свежую выгрузку: перенесётся только новое, дублей не будет.</p>
     </div>
   );
 }
@@ -443,7 +442,7 @@ function stepOf(ctx: Ctx): StepKey {
     return 'file';
   }
   if (!run) {
-    return ctx.source ? 'file' : 'source';
+    return ctx.source && ctx.picked ? 'file' : 'source';
   }
   switch (run.state) {
     case 'running':
@@ -526,75 +525,98 @@ function StartButton({ ctx }: { ctx: Ctx }) {
   );
 }
 
-function Steps({ ctx }: { ctx: Ctx }) {
+const ORDER: StepKey[] = ['source', 'file', 'check', 'run', 'done'];
+
+function Wizard({ ctx, phone }: { ctx: Ctx; phone: boolean }) {
   const step = stepOf(ctx);
-  const order: StepKey[] = ['source', 'file', 'check', 'run'];
-  const at = order.indexOf(step === 'done' ? 'run' : step);
+  const at = ORDER.indexOf(step);
   const run = ctx.run;
-  const locked = step === 'run' || step === 'done';
-  const body: Partial<Record<StepKey, ReactNode>> = {
-    source: (
+  let body: ReactNode = null;
+  let primary: ReactNode = null;
+  let back: (() => void) | null = null;
+  let note: string | null = null;
+  if (step === 'source') {
+    body = (
       <>
         <SourcePick value={ctx.source} onPick={ctx.pick} />
         {ctx.source ? <HowTo source={ctx.source} /> : null}
       </>
-    ),
-    file: <FileBody ctx={ctx} />,
-    check: run ? (
+    );
+    primary = (
+      <button type="button" className="btn-main btn" disabled={!ctx.source} onClick={ctx.next}>
+        Дальше
+      </button>
+    );
+  } else if (step === 'file') {
+    body = <FileBody ctx={ctx} />;
+    if (!run && !ctx.uploading) {
+      back = ctx.back;
+    }
+  } else if (step === 'check' && run) {
+    body = (
       <>
+        <FileLine run={run} />
         <Problem run={run} />
         <CheckView ctx={ctx} run={run} />
       </>
-    ) : null,
-    run: run?.state === 'running' ? <RunningView run={run} /> : run?.state === 'done' ? <DoneView ctx={ctx} run={run} /> : null,
-  };
-  const summary: Partial<Record<StepKey, ReactNode>> = {
-    source: ctx.source ? <span className="strong">{SOURCES.find((s) => s.id === (run?.source ?? ctx.source))?.name}</span> : null,
-    file: run ? <FileLine run={run} /> : null,
-    check: run?.preview ? (
-      <span className="muted">
-        {count(run.preview.counts.clients, 'клиент', 'клиента', 'клиентов')}, {count(run.preview.counts.subscriptions, 'подписка', 'подписки', 'подписок')}
-      </span>
-    ) : null,
-  };
+    );
+    primary = <StartButton ctx={ctx} />;
+    if (run.state === 'ready') {
+      back = () => void ctx.discard();
+    }
+    note = 'Перенос можно повторить: дублей не будет.';
+  } else if (step === 'run' && run) {
+    body = <RunningView run={run} />;
+  } else if (step === 'done' && run) {
+    body = <DoneView ctx={ctx} run={run} />;
+    primary = (
+      <button type="button" className="btn-line hov" onClick={ctx.again}>
+        Загрузить свежую выгрузку
+      </button>
+    );
+  }
   return (
     <>
       <Intro />
-      <ol className="imp-steps">
-        {order.map((key, i) => {
-          const done = i < at;
-          const now = i === at;
-          return (
-            <li key={key} className={`sec imp-step${done ? ' is-done' : ''}${now ? ' is-now' : ''}`}>
-              <div className="imp-step-head">
-                <span className="imp-num" aria-hidden="true">
-                  {i + 1}
-                </span>
-                <h3 className="imp-step-title">{key === 'run' && step === 'done' ? 'Готово' : STEP_TITLES[key]}</h3>
-                {done && summary[key] ? <span className="imp-step-sum">{summary[key]}</span> : null}
-                {done && !locked && (key === 'source' || key === 'file') ? (
-                  <button type="button" className="imp-link" onClick={() => void ctx.discard()} disabled={ctx.busy}>
-                    {key === 'source' ? 'Изменить' : 'Заменить'}
-                  </button>
-                ) : null}
-              </div>
-              {now ? <div className="imp-step-body">{body[key]}</div> : null}
-              {now && key === 'check' ? (
-                <div className="imp-actions">
-                  <StartButton ctx={ctx} />
-                  <span className="cap">Перенос можно повторить: дублей не будет.</span>
-                </div>
-              ) : null}
+      {phone ? (
+        <p className="imp-phone-step">
+          Шаг {at + 1} из {ORDER.length} · <span className="strong">{STEP_TITLES[step]}</span>
+        </p>
+      ) : (
+        <ol className="imp-wizard" aria-label="Шаги переноса">
+          {ORDER.map((key, i) => (
+            <li key={key} className={i < at ? 'is-done' : i === at ? 'is-now' : undefined} aria-current={i === at ? 'step' : undefined}>
+              <span className="imp-num" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span>{STEP_TITLES[key]}</span>
             </li>
-          );
-        })}
-      </ol>
+          ))}
+        </ol>
+      )}
+      <section className="sec imp-card" aria-label={STEP_TITLES[step]}>
+        {phone ? <h3 className="imp-step-title">{STEP_TITLES[step]}</h3> : null}
+        <div className="imp-step-body">{body}</div>
+        {back || primary ? (
+          <div className="imp-actions">
+            {back ? (
+              <button type="button" className="btn-line hov" onClick={back} disabled={ctx.busy}>
+                Назад
+              </button>
+            ) : null}
+            {primary}
+            {note ? <span className="cap">{note}</span> : null}
+          </div>
+        ) : null}
+      </section>
     </>
   );
 }
 
 export function SettingsImport() {
+  const phone = usePhone();
   const [view, setView] = useState<ImportView | null>(null);
+  const [picked, setPicked] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [source, setSource] = useState<Source | null>(null);
   const [uploading, setUploading] = useState<Uploading | null>(null);
@@ -702,8 +724,14 @@ export function SettingsImport() {
         view,
         run,
         source: chosen,
+        picked,
         pick: (s) => {
           setSource(s);
+          setError(null);
+        },
+        next: () => setPicked(true),
+        back: () => {
+          setPicked(false);
           setError(null);
         },
         uploading,
@@ -718,10 +746,10 @@ export function SettingsImport() {
             await act(() => api<void>(`/api/admin/import/${run.id}`, { method: 'DELETE' }), 'Файл не убрался');
           }
           setFresh(false);
-          setSource(null);
         },
         again: () => {
           setSource(view.run?.source ?? null);
+          setPicked(true);
           setFresh(true);
           setError(null);
         },
@@ -740,7 +768,7 @@ export function SettingsImport() {
       ) : null}
       {ctx ? (
         <>
-          <Steps ctx={ctx} />
+          <Wizard ctx={ctx} phone={phone} />
           {error ? (
             <p className="err imp-error" role="alert">
               {error}
