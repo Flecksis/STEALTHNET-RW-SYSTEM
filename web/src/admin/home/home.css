@@ -164,6 +164,11 @@
   padding: 16px 22px 6px;
 }
 
+.hm-dayfeed {
+  min-width: 0;
+  padding: 18px 20px 6px;
+}
+
 .hm-feedhead {
   display: flex;
   flex-wrap: wrap;

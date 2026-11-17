@@ -160,13 +160,21 @@ function FeedAvatar({ line, item }: { line: FeedLine; item: FeedItem }) {
 
 const TONES = ['var(--muted)', 'var(--warn)', 'var(--bad)'];
 
-function MainBoard() {
+type FeedFilter = 'highlights' | 'payments' | 'support' | 'nodes';
+
+type FeedProps = {
+  nodes: NodeBrief[];
+  restart: (uuid: string) => Promise<void>;
+  restarting: Set<string>;
+  canRestart: boolean;
+  variant: 'main' | 'day';
+};
+
+function Feed({ nodes, restart, restarting, canRestart, variant }: FeedProps) {
   const { can } = useSession();
   const navigate = useNavigate();
-  const { dashboard, error, nodes, restart, restarting, canRestart } = useOverview();
-  const [filter, setFilter] = useState<'highlights' | 'payments' | 'support' | 'nodes'>('highlights');
+  const [filter, setFilter] = useState<FeedFilter>('highlights');
   const [feed, setFeed] = useState<FeedPage | null>(null);
-  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -183,19 +191,84 @@ function MainBoard() {
     };
   }, [filter]);
 
+  const lines = (feed?.items ?? []).map((item) => ({ item, line: feedLine(item, nodes) })).filter((x): x is { item: FeedItem; line: FeedLine } => x.line !== null);
+  const chips: Array<[FeedFilter, string, boolean]> = [
+    ['highlights', 'Всё', true],
+    ['payments', 'Деньги', can('money')],
+    ['support', 'Поддержка', true],
+    ['nodes', 'Ноды', true],
+  ];
+
+  return (
+    <section aria-labelledby="feed-h" className={variant === 'main' ? 'hm-sec hm-feed' : 'hm-sec hm-dayfeed'}>
+      <div className="hm-feedhead">
+        <h2 id="feed-h" className={variant === 'main' ? 'hm-h2' : 'hm-h2b'}>
+          Что происходит
+        </h2>
+        <div role="group" aria-label="Фильтр ленты" className="hm-chips">
+          {chips
+            .filter(([, , ok]) => ok)
+            .map(([key, label]) => (
+              <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>
+                {label}
+              </button>
+            ))}
+        </div>
+      </div>
+      {feed === null ? <p className="hm-empty muted">Загружаем события…</p> : null}
+      {feed && lines.length === 0 ? <p className="hm-empty muted">Пока тихо: событий нет</p> : null}
+      {lines.map(({ item, line }) => (
+        <div key={line.key} className="hm-row">
+          <FeedAvatar line={line} item={item} />
+          <span className="hm-text">
+            <span className="hm-line" title={line.clientId ? `${line.who}: ${line.what}` : `${line.who} ${line.what}`}>
+              {line.clientId ? (
+                <>
+                  <Link to={`/admin/clients/${line.clientId}`} className="hm-who">
+                    {line.who}
+                  </Link>
+                  {line.what ? `: ${line.what}` : ''}
+                </>
+              ) : (
+                <>
+                  <strong>{line.who}</strong> {line.what}
+                </>
+              )}
+            </span>
+            {line.note ? (
+              <span className="hm-note" style={{ color: TONES[line.tone] }} title={line.note}>
+                {line.note}
+              </span>
+            ) : null}
+          </span>
+          {line.action && line.action.kind === 'restart' && canRestart ? (
+            <button type="button" className="b34 hov hm-act" aria-label={line.action.aria} onClick={() => void restart(line.action!.target)} disabled={restarting.has(line.action.target)}>
+              {restarting.has(line.action.target) ? 'Перезапускаем…' : line.action.label}
+            </button>
+          ) : null}
+          {line.action && line.action.kind === 'reply' ? (
+            <button type="button" className="b34 hov hm-act" aria-label={line.action.aria} onClick={() => navigate(`/admin/support?ticket=${line.action!.target}`)}>
+              {line.action.label}
+            </button>
+          ) : null}
+          <span className="hm-time num">{line.when}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function MainBoard() {
+  const { can } = useSession();
+  const { dashboard, error, nodes, restart, restarting, canRestart } = useOverview();
+  const [picking, setPicking] = useState(false);
+
   const revenue = dashboard?.revenue ?? null;
   const today = dashboard?.today ?? null;
   const subs = dashboard?.subscriptions ?? null;
   const delta =
     revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
   const summary = nodesSummary(nodes);
-  const lines = (feed?.items ?? []).map((item) => ({ item, line: feedLine(item, nodes) })).filter((x): x is { item: FeedItem; line: FeedLine } => x.line !== null);
-  const chips: Array<[typeof filter, string, boolean]> = [
-    ['highlights', 'Всё', true],
-    ['payments', 'Деньги', can('money')],
-    ['support', 'Поддержка', true],
-    ['nodes', 'Ноды', true],
-  ];
 
   return (
     <div className="hm">
@@ -261,61 +334,7 @@ function MainBoard() {
       </section>
 
       <div className="hm-cols">
-        <section aria-labelledby="feed-h" className="hm-sec hm-feed">
-          <div className="hm-feedhead">
-            <h2 id="feed-h" className="hm-h2">
-              Что происходит
-            </h2>
-            <div role="group" aria-label="Фильтр ленты" className="hm-chips">
-              {chips
-                .filter(([, , ok]) => ok)
-                .map(([key, label]) => (
-                  <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>
-                    {label}
-                  </button>
-                ))}
-            </div>
-          </div>
-          {feed === null ? <p className="hm-empty muted">Загружаем события…</p> : null}
-          {feed && lines.length === 0 ? <p className="hm-empty muted">Пока тихо: событий нет</p> : null}
-          {lines.map(({ item, line }) => (
-            <div key={line.key} className="hm-row">
-              <FeedAvatar line={line} item={item} />
-              <span className="hm-text">
-                <span className="hm-line" title={line.clientId ? `${line.who}: ${line.what}` : `${line.who} ${line.what}`}>
-                  {line.clientId ? (
-                    <>
-                      <Link to={`/admin/clients/${line.clientId}`} className="hm-who">
-                        {line.who}
-                      </Link>
-                      {line.what ? `: ${line.what}` : ''}
-                    </>
-                  ) : (
-                    <>
-                      <strong>{line.who}</strong> {line.what}
-                    </>
-                  )}
-                </span>
-                {line.note ? (
-                  <span className="hm-note" style={{ color: TONES[line.tone] }} title={line.note}>
-                    {line.note}
-                  </span>
-                ) : null}
-              </span>
-              {line.action && line.action.kind === 'restart' && canRestart ? (
-                <button type="button" className="b34 hov hm-act" aria-label={line.action.aria} onClick={() => void restart(line.action!.target)} disabled={restarting.has(line.action.target)}>
-                  {restarting.has(line.action.target) ? 'Перезапускаем…' : line.action.label}
-                </button>
-              ) : null}
-              {line.action && line.action.kind === 'reply' ? (
-                <button type="button" className="b34 hov hm-act" aria-label={line.action.aria} onClick={() => navigate(`/admin/support?ticket=${line.action!.target}`)}>
-                  {line.action.label}
-                </button>
-              ) : null}
-              <span className="hm-time num">{line.when}</span>
-            </div>
-          ))}
-        </section>
+        <Feed nodes={nodes} restart={restart} restarting={restarting} canRestart={canRestart} variant="main" />
 
         <section aria-labelledby="nodes-h" className="hm-sec hm-nodes">
           <div className="hm-feedhead">
@@ -605,6 +624,7 @@ function Daylight() {
           </div>
         ) : null}
       </section>
+      <Feed nodes={nodes} restart={restart} restarting={restarting} canRestart={canRestart} variant="day" />
       {picking ? <PickClient onClose={() => setPicking(false)} /> : null}
     </div>
   );
