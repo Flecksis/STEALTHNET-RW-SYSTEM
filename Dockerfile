@@ -1,3 +1,11 @@
+FROM node:22.22.0-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build \
+    && find dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.svg' -o -name '*.json' \) -exec gzip -k -9 {} +
+
 FROM rust:1.94.0-slim-bookworm AS build
 ENV RUSTUP_TOOLCHAIN=1.94.0
 WORKDIR /src
@@ -16,8 +24,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home stealthnet
 COPY --from=build /out/stealthnet /usr/local/bin/stealthnet
+COPY --from=web /web/dist /usr/share/stealthnet/web
 USER 10001
-ENV SN_BIND=0.0.0.0:8080
+ENV SN_BIND=0.0.0.0:8080 \
+    SN_WEB_DIR=/usr/share/stealthnet/web
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD curl -fsS http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["stealthnet"]

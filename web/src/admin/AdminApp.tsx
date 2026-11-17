@@ -1,0 +1,142 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Route, Routes } from 'react-router';
+import { api, ApiError } from '../lib/api';
+import { DEFAULT_SITE, useSite } from '../lib/site';
+import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
+import type { AdminTheme, Appearance, Me, Permission } from '../lib/types';
+import { Login } from './Login';
+import { Pending } from './pages/Pending';
+import { SettingsLayout } from './pages/SettingsLayout';
+import { SettingsLook } from './pages/SettingsLook';
+import { SessionContext, type Session } from './session';
+import { Shell } from './Shell';
+
+const THEME_KEY = 'sn.admin.theme';
+
+type State = { kind: 'loading' } | { kind: 'guest' } | { kind: 'in'; me: Me } | { kind: 'error'; message: string };
+
+function resolve(choice: AdminTheme, system: Theme): Theme {
+  return choice === 'system' ? system : choice;
+}
+
+function storedTheme(): Theme | null {
+  const value = readStored(THEME_KEY);
+  return value === 'dark' || value === 'light' ? value : null;
+}
+
+export function AdminApp() {
+  const site = useSite();
+  const system = useSystemTheme();
+  const [state, setState] = useState<State>({ kind: 'loading' });
+  const [personal, setPersonal] = useState<Theme | null>(storedTheme);
+
+  const load = useCallback(async () => {
+    try {
+      const me = await api<Me>('/api/admin/me');
+      setState({ kind: 'in', me });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setState({ kind: 'guest' });
+      } else {
+        setState({ kind: 'error', message: err instanceof ApiError ? err.message : 'Сервер не ответил' });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const appearance: Appearance = state.kind === 'in' ? state.me.appearance : (site ?? DEFAULT_SITE).appearance;
+  const canSettings = state.kind === 'in' && state.me.permissions.includes('settings');
+  const theme: Theme = !canSettings && personal ? personal : resolve(appearance.admin_theme, system);
+  useSurface('admin', theme, appearance.admin === 'top' ? 'b' : 'a');
+
+  const setAppearance = useCallback((next: Appearance) => {
+    setState((current) => (current.kind === 'in' ? { kind: 'in', me: { ...current.me, appearance: next } } : current));
+  }, []);
+
+  const flipTheme = useCallback(async () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    if (state.kind === 'in' && canSettings) {
+      const optimistic = { ...state.me.appearance, admin_theme: next };
+      setAppearance(optimistic);
+      try {
+        const saved = await api<Appearance>('/api/admin/settings/appearance', { method: 'PUT', body: optimistic });
+        setAppearance(saved);
+      } catch {
+        setAppearance(state.me.appearance);
+      }
+      return;
+    }
+    writeStored(THEME_KEY, next);
+    setPersonal(next);
+  }, [theme, state, canSettings, setAppearance]);
+
+  const session = useMemo<Session | null>(() => {
+    if (state.kind !== 'in') {
+      return null;
+    }
+    const me = state.me;
+    return {
+      me,
+      can: (permission: Permission) => me.permissions.includes(permission),
+      reload: load,
+      logout: async () => {
+        try {
+          await api('/api/admin/auth/logout', { method: 'POST' });
+        } finally {
+          setState({ kind: 'guest' });
+        }
+      },
+      setAppearance,
+    };
+  }, [state, load, setAppearance]);
+
+  if (state.kind === 'loading') {
+    return <div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />;
+  }
+  if (state.kind === 'error') {
+    return (
+      <div className="login">
+        <div className="login-box card login-card" role="alert">
+          <h1 style={{ fontSize: 22, fontWeight: 800 }}>Админка не открылась</h1>
+          <p className="muted">{state.message}</p>
+          <button type="button" className="btn-main btn" onClick={() => void load()}>
+            Повторить
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (state.kind === 'guest' || !session) {
+    return <Login brand={(site ?? DEFAULT_SITE).brand_name} onDone={() => void load()} />;
+  }
+
+  return (
+    <SessionContext.Provider value={session}>
+      <Shell theme={theme} onFlipTheme={() => void flipTheme()}>
+        <Routes>
+          <Route index element={<Pending title="Главная" />} />
+          <Route path="clients/*" element={<Pending title="Клиенты" />} />
+          <Route path="support/*" element={<Pending title="Поддержка" />} />
+          <Route path="money/*" element={<Pending title="Деньги" />} />
+          <Route path="tariffs/*" element={<Pending title="Тарифы" />} />
+          <Route path="infra/*" element={<Pending title="Инфраструктура" />} />
+          <Route path="modules" element={<Pending title="Модули" />} />
+          <Route path="m/:module/*" element={<Pending title="Модуль" />} />
+          <Route path="settings/look" element={<SettingsLook />} />
+          <Route
+            path="settings/*"
+            element={
+              <SettingsLayout>
+                <Pending title="Раздел настроек" />
+              </SettingsLayout>
+            }
+          />
+          <Route path="*" element={<Pending title="Страница не найдена" text="Такого раздела нет. Выберите раздел в меню." />} />
+        </Routes>
+      </Shell>
+    </SessionContext.Provider>
+  );
+}

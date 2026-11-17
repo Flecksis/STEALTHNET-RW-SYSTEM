@@ -209,6 +209,52 @@ impl PaymentOrder {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminDesign {
+    #[default]
+    Side,
+    Top,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminTheme {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientDesign {
+    #[default]
+    Accent,
+    Mono,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientTheme {
+    Dark,
+    Light,
+    #[default]
+    Client,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Appearance {
+    #[serde(default)]
+    pub admin: AdminDesign,
+    #[serde(default)]
+    pub admin_theme: AdminTheme,
+    #[serde(default)]
+    pub client: ClientDesign,
+    #[serde(default)]
+    pub client_theme: ClientTheme,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreSettings {
     pub currency: Currency,
@@ -221,6 +267,8 @@ pub struct CoreSettings {
     pub topup: TopUpSettings,
     pub payment_order: PaymentOrder,
     pub invoice_ttl_minutes: u32,
+    #[serde(default)]
+    pub appearance: Appearance,
 }
 
 impl Default for CoreSettings {
@@ -236,6 +284,7 @@ impl Default for CoreSettings {
             topup: TopUpSettings::default_for(Currency::Usd),
             payment_order: PaymentOrder::default(),
             invoice_ttl_minutes: 60,
+            appearance: Appearance::default(),
         }
     }
 }
@@ -266,6 +315,7 @@ pub mod keys {
     pub const TOPUP: &str = "billing.topup";
     pub const PAYMENT_ORDER: &str = "billing.payment_order";
     pub const INVOICE_TTL: &str = "billing.invoice_ttl_minutes";
+    pub const APPEARANCE: &str = "core.appearance";
     pub const BOT_USERNAME: &str = "bot.username";
 
     pub fn provider(id: &str) -> String {

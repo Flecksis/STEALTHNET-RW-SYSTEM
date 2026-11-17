@@ -8,7 +8,7 @@ use axum::middleware::from_fn_with_state;
 use serde::Serialize;
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::AdminId;
-use sn_domain::module::{MenuEntry, ModuleId, ModuleInfo};
+use sn_domain::module::{ModuleId, ModuleInfo};
 use sn_domain::money::Currency;
 use sn_domain::order::Order;
 use sn_domain::payment::Payment;
@@ -25,6 +25,14 @@ struct ModuleState {
 struct State {
     currency: Currency,
     modules: Vec<ModuleState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MenuItem {
+    pub module: ModuleId,
+    pub label: &'static str,
+    pub icon: &'static str,
+    pub order: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -165,11 +173,18 @@ impl ModuleRegistry {
         })
     }
 
-    pub fn menu(&self) -> Vec<MenuEntry> {
-        let mut entries: Vec<MenuEntry> = ModuleId::ALL
+    pub fn menu(&self) -> Vec<MenuItem> {
+        let mut entries: Vec<MenuItem> = ModuleId::ALL
             .into_iter()
             .filter(|id| self.is_enabled(*id))
-            .filter_map(|id| id.info().menu)
+            .filter_map(|id| {
+                id.info().menu.map(|entry| MenuItem {
+                    module: id,
+                    label: entry.label,
+                    icon: entry.icon,
+                    order: entry.order,
+                })
+            })
             .collect();
         entries.sort_by_key(|e| e.order);
         entries

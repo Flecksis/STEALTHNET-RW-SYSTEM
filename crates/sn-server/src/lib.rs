@@ -4,6 +4,7 @@ pub mod error;
 pub mod extract;
 pub mod routes;
 pub mod state;
+pub mod web;
 
 pub use config::ServerConfig;
 pub use error::{ApiError, ApiResult};

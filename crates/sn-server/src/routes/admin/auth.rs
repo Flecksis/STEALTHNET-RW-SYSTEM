@@ -161,10 +161,21 @@ async fn me(
         .into_iter()
         .filter(|p| admin.can(*p))
         .collect();
+    let settings = state.services.settings();
+    let email = state
+        .services
+        .auth()
+        .admin_security(admin.0.admin_id)
+        .await
+        .map(|security| security.email)
+        .ok();
     Ok(Json(serde_json::json!({
         "admin": admin.0,
+        "email": email,
         "permissions": permissions,
         "menu": state.services.modules().menu(),
-        "currency": state.services.settings().currency,
+        "currency": settings.currency,
+        "brand_name": settings.brand_name,
+        "appearance": settings.appearance,
     })))
 }

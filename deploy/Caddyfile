@@ -1,11 +1,4 @@
 {$SN_SITE} {
 	encode zstd gzip
-	handle /api/* {
-		reverse_proxy 127.0.0.1:{$SN_HTTP_PORT}
-	}
-	handle {
-		root * /srv
-		try_files {path} /index.html
-		file_server
-	}
+	reverse_proxy 127.0.0.1:{$SN_HTTP_PORT}
 }

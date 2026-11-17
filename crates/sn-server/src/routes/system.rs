@@ -4,11 +4,35 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use sn_store::Db;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/version", get(version))
+        .route("/api/public/site", get(site))
+}
+
+async fn site(State(state): State<AppState>) -> Response {
+    let settings = state.services.settings();
+    let bot_username = match state.services.store().conn().await {
+        Ok(mut conn) => conn
+            .settings()
+            .get(sn_domain::settings::keys::BOT_USERNAME)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value: serde_json::Value| value.as_str().map(str::to_string)),
+        Err(_) => None,
+    };
+    Json(serde_json::json!({
+        "brand_name": settings.brand_name,
+        "currency": settings.currency,
+        "support_url": settings.support_url,
+        "bot_username": bot_username,
+        "appearance": settings.appearance,
+    }))
+    .into_response()
 }
 
 async fn health(State(state): State<AppState>) -> Response {

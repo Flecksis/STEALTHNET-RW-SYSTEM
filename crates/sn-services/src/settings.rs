@@ -10,8 +10,8 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::Currency;
 use sn_domain::payment::providers;
 use sn_domain::settings::{
-    AutoRenewSettings, CoreSettings, FieldKind, PaymentOrder, SettingField, TopUpSettings,
-    TrialSettings, keys, secret_keys,
+    Appearance, AutoRenewSettings, CoreSettings, FieldKind, PaymentOrder, SettingField,
+    TopUpSettings, TrialSettings, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -91,6 +91,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::INVOICE_TTL => {
                 if let Some(v) = parse::<u32>(&key, value) {
                     settings.invoice_ttl_minutes = v.clamp(5, 24 * 60);
+                }
+            }
+            keys::APPEARANCE => {
+                if let Some(v) = parse::<Appearance>(&key, value) {
+                    settings.appearance = v;
                 }
             }
             _ => {}
@@ -836,6 +841,36 @@ impl<'a> SettingsOps<'a> {
         tx.commit().await?;
         self.saved().await?;
         Ok(self.core())
+    }
+
+    pub fn appearance(&self) -> Appearance {
+        self.services.settings().appearance
+    }
+
+    pub async fn update_appearance(
+        &self,
+        update: &Appearance,
+        admin: AdminId,
+    ) -> ServiceResult<Appearance> {
+        let current = self.appearance();
+        if *update == current {
+            return Ok(current);
+        }
+        let mut tx = self.services.store().begin().await?;
+        tx.settings()
+            .set_as(keys::APPEARANCE, update, Some(admin))
+            .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "settings.appearance",
+                "settings",
+                None,
+                serde_json::json!({ "from": current, "to": update }),
+            ))
+            .await?;
+        tx.commit().await?;
+        self.saved().await?;
+        Ok(self.appearance())
     }
 
     pub fn trial(&self) -> TrialSettings {

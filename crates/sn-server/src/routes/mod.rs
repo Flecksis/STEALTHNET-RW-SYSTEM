@@ -3,7 +3,6 @@ pub mod client;
 pub mod system;
 pub mod webhooks;
 
-use crate::error::ApiError;
 use crate::extract::{require_admin, require_client};
 use crate::state::AppState;
 use axum::Router;
@@ -11,7 +10,6 @@ use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Method, Request, header};
 use axum::middleware::from_fn_with_state;
-use axum::response::IntoResponse;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -19,10 +17,6 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 pub const REQUEST_ID: &str = "x-request-id";
-
-async fn fallback() -> impl IntoResponse {
-    ApiError::not_found()
-}
 
 fn cors(origins: &[String]) -> CorsLayer {
     let allowed: Vec<HeaderValue> = origins
@@ -79,7 +73,7 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/client", client::routes())
         .nest_service("/api/admin/m", admin_modules)
         .nest_service("/api/client/m", client_modules)
-        .fallback(fallback)
+        .fallback(crate::web::fallback)
         .layer(DefaultBodyLimit::max(state.config.body_limit_bytes))
         .layer(cors(&state.config.cors_origins))
         .layer(SetResponseHeaderLayer::if_not_present(

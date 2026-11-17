@@ -1,5 +1,6 @@
 use crate::extract::ProxyNet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
@@ -8,6 +9,7 @@ pub struct ServerConfig {
     pub trusted_proxies: Vec<ProxyNet>,
     pub cors_origins: Vec<String>,
     pub body_limit_bytes: usize,
+    pub web_dir: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -18,6 +20,7 @@ impl Default for ServerConfig {
             trusted_proxies: Vec::new(),
             cors_origins: Vec::new(),
             body_limit_bytes: 1024 * 1024,
+            web_dir: None,
         }
     }
 }

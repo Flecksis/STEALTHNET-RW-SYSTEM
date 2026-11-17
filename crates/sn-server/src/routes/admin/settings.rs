@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::module::ModuleId;
-use sn_domain::settings::{AutoRenewSettings, TrialSettings};
+use sn_domain::settings::{Appearance, AutoRenewSettings, TrialSettings};
 use sn_modules::ModuleView;
 use sn_services::settings::{
     BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
@@ -43,6 +43,7 @@ async fn read(
     let ops = state.services.settings_ops();
     let value = match section.as_str() {
         "core" => json(&ops.core())?,
+        "appearance" => json(&ops.appearance())?,
         "payments" => json(&ops.payments())?,
         "trial" => json(&ops.trial())?,
         "autorenew" => json(&ops.autorenew())?,
@@ -65,6 +66,10 @@ async fn write(
     let by = admin.0.admin_id;
     let value = match section.as_str() {
         "core" => json(&ops.update_core(&decode::<CoreUpdate>(body)?, by).await?)?,
+        "appearance" => json(
+            &ops.update_appearance(&decode::<Appearance>(body)?, by)
+                .await?,
+        )?,
         "payments" => json(
             &ops.update_payments(&decode::<PaymentsUpdate>(body)?, by)
                 .await?,

@@ -14,6 +14,7 @@ sn-payments.workspace = true
 sn-modules.workspace = true
 sn-services.workspace = true
 axum.workspace = true
+tower.workspace = true
 tower-http.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -27,7 +28,6 @@ tracing.workspace = true
 [dev-dependencies]
 sn-store = { workspace = true, features = ["test-util"] }
 sn-remnawave = { workspace = true, features = ["fake"] }
-tower.workspace = true
 
 [lints]
 workspace = true

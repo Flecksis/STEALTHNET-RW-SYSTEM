@@ -114,6 +114,7 @@ impl Config {
                 public_url: public_url.clone(),
                 trusted_proxies,
                 cors_origins: list(vars, "SN_CORS_ORIGINS"),
+                web_dir: text(vars, "SN_WEB_DIR").map(std::path::PathBuf::from),
                 ..ServerConfig::default()
             },
             env: EnvFallbacks {

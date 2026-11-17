@@ -1318,3 +1318,126 @@ async fn клиенты_ищутся_и_история_собирается_че
     assert_eq!(status, StatusCode::OK);
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn оформление_сохраняется_и_видно_без_входа() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let (status, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        site["appearance"],
+        json!({ "admin": "side", "admin_theme": "dark", "client": "accent", "client_theme": "client" })
+    );
+    assert_eq!(site["currency"], "USD");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/appearance",
+            &owner,
+            json!({ "admin": "top", "admin_theme": "system", "client": "mono", "client_theme": "light" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["admin"], "top");
+    let (_, me) = h.get("/api/admin/me", &owner).await;
+    assert_eq!(me["appearance"]["admin"], "top");
+    assert_eq!(me["appearance"]["admin_theme"], "system");
+    assert!(me["email"].as_str().is_some_and(|e| e.contains('@')));
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(site["appearance"]["client"], "mono");
+    assert_eq!(site["appearance"]["client_theme"], "light");
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/appearance",
+            &owner,
+            json!({ "admin": "middle" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    h.db.cleanup().await;
+}
+
+async fn web_state() -> (AppState, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("sn-web-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><title>STEALTHNET</title>",
+    )
+    .unwrap();
+    std::fs::write(dir.join("assets/main-1a2b.js"), "console.log(1)").unwrap();
+    let mut state = offline_state();
+    state.config = Arc::new(ServerConfig {
+        web_dir: Some(dir.clone()),
+        ..ServerConfig::default()
+    });
+    (state, dir)
+}
+
+async fn fetch(state: &AppState, method: Method, path: &str) -> (StatusCode, HeaderMap, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .body(Body::empty())
+        .unwrap();
+    let response = router(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+#[tokio::test]
+async fn интерфейс_раздаётся_сервером_с_возвратом_на_index() {
+    let (state, dir) = web_state().await;
+    let (status, headers, body) = fetch(&state, Method::GET, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("STEALTHNET"));
+    assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+    assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+    let (status, headers, body) = fetch(&state, Method::GET, "/admin/clients/42").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("STEALTHNET"));
+    assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+    let (status, headers, _) = fetch(&state, Method::GET, "/app/plans").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::X_FRAME_OPTIONS));
+    let (status, headers, body) = fetch(&state, Method::GET, "/assets/main-1a2b.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "console.log(1)");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+    let (status, headers, body) = fetch(&state, Method::GET, "/api/nothing-here").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("json")
+    );
+    assert!(body.contains("not_found"));
+    let (status, _, _) = fetch(&state, Method::POST, "/admin").await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn без_каталога_интерфейса_любой_путь_отвечает_json_404() {
+    let state = offline_state();
+    let (status, headers, _) = fetch(&state, Method::GET, "/admin").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .contains("json")
+    );
+}

@@ -58,6 +58,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22.22.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+
   installer:
     runs-on: ubuntu-24.04
     steps:
@@ -164,6 +181,8 @@ jobs:
           curl -fsS -o /dev/null -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
           printf '%s' "$password" > "$RUNNER_TEMP/password.txt"
+          curl -fsS http://127.0.0.1:8080/admin | grep -q '<div id="root">'
+          curl -fsS http://127.0.0.1:8080/api/public/site | grep -q '"appearance"'
       - name: rerun keeps secrets and the owner
         run: |
           cp deploy/.env "$RUNNER_TEMP/before.env"
