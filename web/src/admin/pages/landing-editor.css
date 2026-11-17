@@ -1,0 +1,539 @@
+.lde {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.lde-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.lde-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.lde-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.lde-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.lde-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.lde-block {
+  border-top: 1px solid var(--line);
+}
+
+.lde-block:first-child {
+  border-top: 0;
+}
+
+.lde-block.open {
+  background: var(--surface-2);
+}
+
+.lde-block.off .lde-row-name {
+  color: var(--ink-2);
+}
+
+.lde-block.dragging {
+  opacity: 0.5;
+}
+
+.lde-block.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.lde-block.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.lde-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 58px;
+  padding: 6px 16px 6px 8px;
+}
+
+.lde-grip,
+.lde-grip-space {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 36px;
+}
+
+.lde-grip {
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: grab;
+}
+
+.lde-grip:hover {
+  color: var(--ink-2);
+}
+
+.lde-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lde-row-main > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.lde-row-main[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+
+.lde-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.lde-row-name {
+  font-weight: 700;
+}
+
+.lde-row-sum {
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lde-pinned {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.lde-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 16px 18px;
+}
+
+.lde-body .field {
+  background: var(--surface);
+}
+
+.lde-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.lde-label {
+  font-weight: 600;
+}
+
+.lde-segs {
+  align-self: flex-start;
+}
+
+.lde-body-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.lde-body-foot .b36 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lde-reset,
+.lde-save-reset {
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lde-reset {
+  margin-left: auto;
+}
+
+.lde-reset:hover,
+.lde-save-reset:hover {
+  color: var(--ink-2);
+}
+
+.lde-links {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lde-link {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lde-link-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 176px) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.lde-link-row.none {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.lde-link-row:not(:has(.lde-icon)) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 176px);
+}
+
+.lde-link-row.none:not(:has(.lde-icon)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.lde-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.lde-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.lde-add {
+  align-self: flex-start;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lde-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lde-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.lde-body .lde-item .field {
+  background: var(--surface-2);
+}
+
+.lde-item-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 12px;
+}
+
+.lde-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lde-item-title {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.lde-item-tools {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.lde-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 12px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.lde-image {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.lde-thumb {
+  width: 128px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.lde-image-side {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lde-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lde-pv {
+  position: sticky;
+  top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  min-width: 0;
+}
+
+.adm[data-layout='top'] .lde-pv {
+  top: 86px;
+}
+
+.lde-pv-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lde-frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.lde-frame.phone {
+  display: flex;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+}
+
+.lde-frame-in {
+  position: relative;
+  overflow: hidden;
+}
+
+.lde-frame.phone .lde-frame-in {
+  border-radius: 16px;
+  border: 1px solid var(--line);
+}
+
+.lde-frame iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  border: 0;
+  transform-origin: 0 0;
+}
+
+.lde-save {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.lde-save [role='status'] {
+  color: var(--ink-2);
+}
+
+.lde-save .bad,
+.lde-save [role='status'].bad {
+  color: var(--bad);
+}
+
+.lde-grow {
+  flex: 1 1 auto;
+}
+
+.lde-under {
+  display: flex;
+  justify-content: center;
+}
+
+.lde-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg);
+}
+
+.lde-sheet-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.lde-sheet-title {
+  flex: 1 1 auto;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.lde-sheet-head .lde-pv-tools {
+  flex: 1 1 100%;
+}
+
+.lde-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.adm[data-layout='phone'] .lde-save {
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.lde-save-status {
+  font-size: 14px;
+}
+
+.lde-save-status.quiet {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.lde-save-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.lde-save-btns > button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+@media (max-width: 600px) {
+  .lde-link-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .lde-link-row > select {
+    grid-column: 1 / 2;
+  }
+
+  .lde-link-row:not(:has(.lde-icon)) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lde-row {
+    padding: 6px 12px 6px 4px;
+  }
+
+  .lde-grip-space {
+    flex-basis: 4px;
+    width: 4px;
+  }
+
+  .lde-body {
+    padding: 4px 12px 16px;
+  }
+}

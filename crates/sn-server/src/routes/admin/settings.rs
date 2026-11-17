@@ -150,9 +150,9 @@ async fn restart_bot(
     ))
 }
 
-const IMAGE_UPLOAD_LIMIT: usize = 4 * 1024 * 1024;
+pub(super) const IMAGE_UPLOAD_LIMIT: usize = 4 * 1024 * 1024;
 
-fn declared_type(headers: &HeaderMap) -> String {
+pub(super) fn declared_type(headers: &HeaderMap) -> String {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

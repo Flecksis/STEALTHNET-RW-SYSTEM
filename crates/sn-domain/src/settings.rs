@@ -1,5 +1,6 @@
 use crate::ids::SquadId;
 use crate::image::{FAVICON_RULES, ImageKind, ImageRules, LOGO_RULES};
+use crate::landing::LandingConfig;
 use crate::money::{Currency, Money};
 use crate::payment::providers;
 use crate::pricing::TopUpLimits;
@@ -370,6 +371,8 @@ pub struct CoreSettings {
     pub logo: Option<ImageMeta>,
     #[serde(default)]
     pub favicon: Option<ImageMeta>,
+    #[serde(default)]
+    pub landing: LandingConfig,
 }
 
 impl Default for CoreSettings {
@@ -390,6 +393,7 @@ impl Default for CoreSettings {
             site: SiteSettings::default(),
             logo: None,
             favicon: None,
+            landing: LandingConfig::standard(),
         }
     }
 }
@@ -439,6 +443,7 @@ pub mod keys {
     pub const SITE: &str = "core.site";
     pub const LOGO: &str = "core.logo";
     pub const FAVICON: &str = "core.favicon";
+    pub const LANDING: &str = "core.landing";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")

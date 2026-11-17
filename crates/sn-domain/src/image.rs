@@ -6,6 +6,9 @@ pub const LOGO_MAX_SIDE: u32 = 4096;
 pub const FAVICON_MAX_BYTES: usize = 512 * 1024;
 pub const FAVICON_MIN_SIDE: u32 = 16;
 pub const FAVICON_MAX_SIDE: u32 = 1024;
+pub const LANDING_MAX_BYTES: usize = 1024 * 1024;
+pub const LANDING_MIN_SIDE: u32 = 100;
+pub const LANDING_MAX_SIDE: u32 = 4096;
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 const ICO_SIGNATURE: [u8; 4] = [0, 0, 1, 0];
@@ -98,6 +101,14 @@ pub const FAVICON_RULES: ImageRules = ImageRules {
     square: true,
 };
 
+pub const LANDING_RULES: ImageRules = ImageRules {
+    kinds: &[ImageKind::Png, ImageKind::Jpeg, ImageKind::Webp],
+    max_bytes: LANDING_MAX_BYTES,
+    min_side: LANDING_MIN_SIDE,
+    max_side: LANDING_MAX_SIDE,
+    square: false,
+};
+
 pub fn inspect(bytes: &[u8]) -> Option<ImageInfo> {
     let kind = ImageKind::sniff(bytes)?;
     let (width, height) = match kind {
@@ -142,6 +153,10 @@ pub fn check_logo(bytes: &[u8]) -> Result<ImageInfo, ImageProblem> {
 
 pub fn check_favicon(bytes: &[u8]) -> Result<ImageInfo, ImageProblem> {
     check(bytes, &FAVICON_RULES)
+}
+
+pub fn check_landing(bytes: &[u8]) -> Result<ImageInfo, ImageProblem> {
+    check(bytes, &LANDING_RULES)
 }
 
 fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
@@ -411,6 +426,31 @@ mod tests {
         cut.truncate(40);
         assert_eq!(check_favicon(&cut), Err(ImageProblem::Damaged));
         assert_eq!(check_logo(&ico(&[(64, dib())])), Err(ImageProblem::Format));
+    }
+
+    #[test]
+    fn картинка_лендинга_png_jpeg_или_webp_до_мегабайта() {
+        assert_eq!(
+            check_landing(&png(1600, 900)).map(|i| (i.width, i.height)),
+            Ok((1600, 900))
+        );
+        assert_eq!(
+            check_landing(&jpeg(800, 600)).map(|i| i.kind),
+            Ok(ImageKind::Jpeg)
+        );
+        assert_eq!(
+            check_landing(&webp_extended(1200, 400)).map(|i| i.kind),
+            Ok(ImageKind::Webp)
+        );
+        assert_eq!(check_landing(&png(1600, 80)), Err(ImageProblem::TooSmall));
+        assert_eq!(check_landing(&png(5000, 1000)), Err(ImageProblem::TooLarge));
+        assert_eq!(
+            check_landing(&ico(&[(64, dib())])),
+            Err(ImageProblem::Format)
+        );
+        let mut heavy = png(800, 600);
+        heavy.resize(LANDING_MAX_BYTES + 1, 0);
+        assert_eq!(check_landing(&heavy), Err(ImageProblem::TooHeavy));
     }
 
     #[test]

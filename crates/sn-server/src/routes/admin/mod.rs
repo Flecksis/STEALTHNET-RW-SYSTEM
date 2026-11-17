@@ -4,6 +4,7 @@ mod catalog;
 mod clients;
 mod delivery;
 mod infra;
+mod landing;
 mod money;
 mod overview;
 pub(crate) mod photos;
@@ -34,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         .merge(infra::routes())
         .merge(support::routes())
         .merge(settings::routes())
+        .merge(landing::routes())
         .merge(system::routes())
         .merge(bot_content::routes())
 }

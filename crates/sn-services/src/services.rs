@@ -339,6 +339,10 @@ impl Services {
         crate::branding::BrandingOps::new(self)
     }
 
+    pub fn landing(&self) -> crate::landing::LandingOps<'_> {
+        crate::landing::LandingOps::new(self)
+    }
+
     pub fn bot_content(&self) -> Arc<crate::bot_content::BotContent> {
         self.read(|r| r.bot_content.clone())
     }

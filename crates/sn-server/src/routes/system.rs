@@ -2,7 +2,7 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use crate::web::escape_html;
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -14,6 +14,7 @@ const IMAGE_CACHE: &str = "public, max-age=31536000, immutable";
 const ICON_CACHE: &str = "public, max-age=300";
 const TAB_ICON_CACHE: &str = "public, max-age=3600";
 const IMAGE_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
+const LANDING_CACHE: &str = "no-cache";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -23,6 +24,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/catalog", get(catalog))
         .route("/api/public/logo/{file}", get(logo))
         .route("/api/public/favicon/{file}", get(favicon))
+        .route("/api/public/landing", get(landing))
+        .route("/api/public/landing/{file}", get(landing_image))
         .route("/api/public/icon.svg", get(icon))
         .route("/favicon.ico", get(favicon_ico))
 }
@@ -91,6 +94,57 @@ async fn logo(State(state): State<AppState>, Path(file): Path<String>) -> Respon
 
 async fn favicon(State(state): State<AppState>, Path(file): Path<String>) -> Response {
     image_file(&state, SiteImage::Favicon, &file).await
+}
+
+fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').map(str::trim).any(|candidate| {
+                candidate == "*" || candidate == etag || candidate.strip_prefix("W/") == Some(etag)
+            })
+        })
+}
+
+async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let public = state.services.landing().public();
+    let etag = format!("\"{}\"", public.version);
+    let Ok(tag) = HeaderValue::from_str(&etag) else {
+        return ApiError::not_found().into_response();
+    };
+    let cache = HeaderValue::from_static(LANDING_CACHE);
+    if etag_matches(&headers, &etag) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, tag), (header::CACHE_CONTROL, cache)],
+        )
+            .into_response();
+    }
+    (
+        [(header::ETAG, tag), (header::CACHE_CONTROL, cache)],
+        Json(public),
+    )
+        .into_response()
+}
+
+async fn landing_image(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let Some((tag, extension)) = file.split_once('.') else {
+        return ApiError::not_found().into_response();
+    };
+    match state.services.landing().image_file(tag).await {
+        Ok(Some((kind, bytes))) if kind.extension() == extension => (
+            [
+                (header::CONTENT_TYPE, kind.content_type()),
+                (header::CACHE_CONTROL, IMAGE_CACHE),
+                (header::CONTENT_SECURITY_POLICY, IMAGE_POLICY),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(_) => ApiError::not_found().into_response(),
+        Err(err) => ApiError::from(err).into_response(),
+    }
 }
 
 async fn favicon_ico(State(state): State<AppState>) -> Response {

@@ -6,6 +6,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sn_domain::ids::AdminId;
+use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
@@ -113,6 +114,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             }
             keys::LOGO => settings.logo = parse::<ImageMeta>(&key, value),
             keys::FAVICON => settings.favicon = parse::<ImageMeta>(&key, value),
+            keys::LANDING => {
+                if let Some(v) = parse::<LandingConfig>(&key, value) {
+                    settings.landing = v.arranged();
+                }
+            }
             _ => {}
         }
     }

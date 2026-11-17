@@ -12,6 +12,7 @@ const SECTIONS: Array<{ label: string; to?: string }> = [
   { label: 'Оплата', to: '/admin/settings/payments' },
   { label: 'Бот', to: '/admin/settings/bot' },
   { label: 'Документы', to: '/admin/settings/documents' },
+  { label: 'Лендинг', to: '/admin/settings/landing' },
   { label: 'Кабинет и мини-приложение' },
   { label: 'Почта и уведомления' },
   { label: 'Администраторы' },

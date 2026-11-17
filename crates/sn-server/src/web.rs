@@ -22,6 +22,20 @@ fn embeddable(path: &str) -> bool {
     path == "/app" || path.starts_with("/app/")
 }
 
+fn landing_preview(path: &str) -> bool {
+    path == "/admin/landing-preview" || path.starts_with("/admin/landing-preview/")
+}
+
+fn frame_option(path: &str) -> Option<&'static str> {
+    if embeddable(path) {
+        None
+    } else if landing_preview(path) {
+        Some("SAMEORIGIN")
+    } else {
+        Some("DENY")
+    }
+}
+
 fn hashed_asset(path: &str) -> bool {
     path.starts_with("/assets/")
 }
@@ -210,8 +224,8 @@ async fn page(state: &AppState, dir: &Path, path: &str) -> Response {
 fn protect(response: &mut Response, path: &str, cache: &'static str) {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
-    if !embeddable(path) {
-        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    if let Some(option) = frame_option(path) {
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static(option));
     }
 }
 
@@ -249,11 +263,23 @@ mod tests {
     }
 
     #[test]
-    fn во_фрейме_открывается_только_мини_приложение() {
+    fn во_фрейме_открываются_мини_приложение_и_превью_лендинга_из_админки() {
         assert!(embeddable("/app"));
         assert!(embeddable("/app/plans"));
         assert!(!embeddable("/admin"));
         assert!(!embeddable("/application"));
+        assert_eq!(frame_option("/app"), None);
+        assert_eq!(frame_option("/app/plans"), None);
+        assert_eq!(frame_option("/admin/landing-preview"), Some("SAMEORIGIN"));
+        assert_eq!(
+            frame_option("/admin/landing-preview/phone"),
+            Some("SAMEORIGIN")
+        );
+        assert_eq!(frame_option("/admin/landing-previewer"), Some("DENY"));
+        assert_eq!(frame_option("/admin"), Some("DENY"));
+        assert_eq!(frame_option("/admin/settings/landing"), Some("DENY"));
+        assert_eq!(frame_option("/"), Some("DENY"));
+        assert_eq!(frame_option("/landing-preview"), Some("DENY"));
     }
 
     #[test]

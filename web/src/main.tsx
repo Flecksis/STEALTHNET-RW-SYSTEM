@@ -11,6 +11,7 @@ const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon }))
 const CabinetApp = lazy(() => import('./cabinet/CabinetApp').then((m) => ({ default: m.CabinetApp })));
 const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.MiniApp })));
 const Landing = lazy(() => import('./site/Landing').then((m) => ({ default: m.Landing })));
+const LandingPreview = lazy(() => import('./site/Landing').then((m) => ({ default: m.LandingPreview })));
 const PayPage = lazy(() => import('./pay/PayPage').then((m) => ({ default: m.PayPage })));
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
     <BrowserRouter>
       <Suspense fallback={<div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />}>
         <Routes>
+          <Route path="/admin/landing-preview" element={<LandingPreview />} />
           <Route path="/admin/*" element={<AdminApp />} />
           <Route path="/cabinet/*" element={<CabinetApp />} />
           <Route path="/app/*" element={<MiniApp />} />

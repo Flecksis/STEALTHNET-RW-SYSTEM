@@ -27,6 +27,7 @@ import { SettingsBot } from './pages/SettingsBot';
 import { SettingsBotImages } from './pages/SettingsBotImages';
 import { SettingsBotTexts } from './pages/SettingsBotTexts';
 import { SettingsDocuments } from './pages/SettingsDocuments';
+import { SettingsLanding } from './pages/SettingsLanding';
 import { SettingsUpdates } from './pages/SettingsUpdates';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
@@ -222,6 +223,7 @@ export function AdminApp() {
           <Route path="settings/bot/texts" element={<SettingsBotTexts />} />
           <Route path="settings/bot/images" element={<SettingsBotImages />} />
           <Route path="settings/documents" element={<SettingsDocuments />} />
+          <Route path="settings/landing" element={<SettingsLanding />} />
           <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
           <Route
             path="settings/*"

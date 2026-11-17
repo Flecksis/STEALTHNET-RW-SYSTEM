@@ -29,6 +29,7 @@ mod bot_content;
 mod channels;
 mod gram;
 mod hosts;
+mod landing;
 mod photos;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";

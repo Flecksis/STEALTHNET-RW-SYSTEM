@@ -61,4 +61,39 @@ impl<'c> SiteAssetsRepo<'c> {
             .await?;
         Ok(done.rows_affected() > 0)
     }
+
+    pub async fn exists(&mut self, name: &str) -> StoreResult<bool> {
+        let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM site_assets WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&mut *self.conn)
+            .await?;
+        Ok(found.is_some())
+    }
+
+    pub async fn count_prefix(&mut self, prefix: &str) -> StoreResult<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT count(*) FROM site_assets WHERE starts_with(name, $1)")
+                .bind(prefix)
+                .fetch_one(&mut *self.conn)
+                .await?,
+        )
+    }
+
+    pub async fn prune(
+        &mut self,
+        prefix: &str,
+        keep: &[String],
+        older_than_seconds: i64,
+    ) -> StoreResult<u64> {
+        let done = sqlx::query(
+            "DELETE FROM site_assets WHERE starts_with(name, $1) AND NOT (name = ANY($2)) \
+             AND updated_at < now() - make_interval(secs => $3::float8)",
+        )
+        .bind(prefix)
+        .bind(keep)
+        .bind(older_than_seconds)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
 }

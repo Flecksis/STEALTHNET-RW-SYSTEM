@@ -13,6 +13,7 @@ pub mod events;
 pub mod fulfillment;
 pub mod inbox;
 pub mod infra;
+pub mod landing;
 pub mod limits;
 pub mod login;
 pub mod remna_sync;

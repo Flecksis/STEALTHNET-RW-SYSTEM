@@ -7,6 +7,7 @@ pub mod format;
 pub mod ids;
 pub mod image;
 pub mod jobs;
+pub mod landing;
 pub mod ledger;
 pub mod module;
 pub mod money;
