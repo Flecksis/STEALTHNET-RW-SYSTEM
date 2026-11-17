@@ -332,7 +332,8 @@ function MainBoard() {
                 <span className="hm-code">{node.name}</span>
                 <span className="hm-city muted">{countryName(node.country_code)}</span>
                 <span className="hm-state num">
-                  <span style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
+                  <span style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
+                    <span className={`st-dot ${state.tone}`} aria-hidden="true" />
                     {state.text}
                   </span>
                   {alert ? (
@@ -558,7 +559,8 @@ function Daylight() {
                   <span className="hm-bar" aria-hidden="true" />
                   <strong>{node.name}</strong>
                   <span className="muted">{countryName(node.country_code)}</span>
-                  <span className="num" style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
+                  <span className="num" style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
+                    <span className={`st-dot ${state.tone}`} aria-hidden="true" />
                     {state.text}
                   </span>
                   {alert ? (

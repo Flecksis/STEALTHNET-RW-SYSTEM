@@ -655,6 +655,29 @@
   padding: 16px 16px 120px;
 }
 
+.st-dot {
+  display: inline-block;
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--muted);
+}
+
+.st-dot.ok {
+  background: var(--ok);
+}
+
+.st-dot.bad {
+  background: var(--bad);
+}
+
+.st-dot.warn {
+  background: var(--warn);
+}
+
 .press {
   transition: opacity 0.12s ease;
 }

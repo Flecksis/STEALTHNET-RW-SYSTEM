@@ -149,7 +149,7 @@ export function agoLong(iso: string | null): string {
   return `${dateLong(iso)}, ${timeHM(iso)}`;
 }
 
-export function nodeStateText(node: NodeBrief, capital: boolean): { text: string; tone: 'ok' | 'bad' | 'muted' } {
+export function nodeStateText(node: NodeBrief, capital: boolean): { text: string; tone: 'ok' | 'bad' | 'warn' | 'muted' } {
   const cap = (s: string) => (capital ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   switch (node.state) {
     case 'online':
@@ -159,7 +159,7 @@ export function nodeStateText(node: NodeBrief, capital: boolean): { text: string
       return { text: cap(minutes === null ? 'не отвечает' : `не отвечает ${spanText(minutes)}`), tone: 'bad' };
     }
     case 'connecting':
-      return { text: cap('подключается'), tone: 'muted' };
+      return { text: cap('подключается'), tone: 'warn' };
     default:
       return { text: cap('выключена'), tone: 'muted' };
   }

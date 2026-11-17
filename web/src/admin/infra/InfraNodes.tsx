@@ -152,12 +152,12 @@ function placeOf(row: NodeRow): string {
   return [row.city, countryName(row.node.countryCode)].filter(Boolean).join(', ');
 }
 
-function stateText(row: NodeRow, restarting: boolean): { text: string; tone: 'ok' | 'bad' | 'muted'; reason: string } {
+function stateText(row: NodeRow, restarting: boolean): { text: string; tone: 'ok' | 'bad' | 'warn' | 'muted'; reason: string } {
   if (row.state === 'disabled') {
     return { text: 'выключена', tone: 'muted', reason: '' };
   }
   if (restarting || row.state === 'connecting') {
-    return { text: 'подключается', tone: 'muted', reason: '' };
+    return { text: 'подключается', tone: 'warn', reason: '' };
   }
   if (row.state === 'down') {
     const minutes = minutesSince(row.node.lastStatusChange);
@@ -379,7 +379,10 @@ function InfraNodesDesktop() {
                       <span className="inf-sub">{placeOf(row)}</span>
                     </span>
                     <span role="cell" className="inf-col">
-                      <span style={{ color: st.tone === 'bad' ? 'var(--bad)' : st.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: st.tone === 'bad' ? 600 : 500 }}>{st.text}</span>
+                      <span style={{ color: st.tone === 'bad' ? 'var(--bad)' : st.tone === 'warn' ? 'var(--warn)' : st.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: st.tone === 'bad' ? 600 : 500 }}>
+                        <span className={`st-dot ${st.tone}`} aria-hidden="true" />
+                        {st.text}
+                      </span>
                       {st.reason ? <span className="inf-sub">{st.reason}</span> : null}
                     </span>
                     <span role="cell" className="num right" style={{ paddingRight: 28, fontWeight: 600, color: row.state === 'online' ? 'var(--ink)' : 'var(--muted)' }}>
@@ -488,7 +491,8 @@ function NodeDetails({ row, restarting, busy, ask, setAsk, act, onEdited }: Deta
             {row.city ? ` · ${row.city}` : ''}
           </h2>
           <span>
-            <span style={{ color: st.tone === 'bad' ? 'var(--bad)' : st.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: 600 }}>
+            <span style={{ color: st.tone === 'bad' ? 'var(--bad)' : st.tone === 'warn' ? 'var(--warn)' : st.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: 600 }}>
+              <span className={`st-dot ${st.tone}`} aria-hidden="true" />
               {row.state === 'online' ? `в сети, работает ${uptimeDays(row.node.xrayUptime)}` : st.text}
             </span>
             <span className="muted">{stateLine}</span>

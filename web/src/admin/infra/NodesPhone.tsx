@@ -272,6 +272,7 @@ export function NodesPhone() {
                       {row.city ? <span className="np-city"> · {row.city}</span> : null}
                     </span>
                     <span className="hp-note muted">
+                      <span className={`st-dot ${row.state === 'disabled' ? 'muted' : busyRestart || row.state === 'connecting' ? 'warn' : row.state === 'down' ? 'bad' : 'ok'}`} aria-hidden="true" />
                       <span className={`np-st ${state.cls}`}>{state.text}</span> · {limit > 0 ? limitPair(used, limit) : tb(used)}
                       {limit > 0 && row.traffic_alert ? <span style={{ color: 'var(--warn)' }}> · {trafficPercent(row)}%</span> : null}
                     </span>
