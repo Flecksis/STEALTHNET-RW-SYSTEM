@@ -32,6 +32,7 @@ use uuid::Uuid;
 const PASSWORD: &str = "очень-надёжный-пароль";
 
 mod admins;
+mod alerts;
 mod api_keys;
 mod client_access;
 mod mail;

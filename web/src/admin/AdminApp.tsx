@@ -32,6 +32,7 @@ import { SettingsDocuments } from './pages/SettingsDocuments';
 import { SettingsLanding } from './pages/SettingsLanding';
 import { SettingsAdmins } from './pages/SettingsAdmins';
 import { SettingsApiKeys } from './pages/SettingsApiKeys';
+import { SettingsAlerts } from './pages/SettingsAlerts';
 import { SettingsMail } from './pages/SettingsMail';
 import { SettingsClientAccess } from './pages/SettingsClientAccess';
 import { ForcedPassword, Security } from './pages/Security';
@@ -240,6 +241,7 @@ export function AdminApp() {
           <Route path="settings/admins" element={<SettingsAdmins />} />
           <Route path="settings/api-keys" element={<SettingsApiKeys />} />
           <Route path="settings/mail" element={<SettingsMail />} />
+          <Route path="settings/alerts" element={<SettingsAlerts />} />
           <Route path="settings/client" element={<SettingsClientAccess />} />
           <Route path="settings/import" element={<SettingsImport />} />
           <Route path="security" element={<Security />} />

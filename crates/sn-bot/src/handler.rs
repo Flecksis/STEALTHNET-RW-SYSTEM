@@ -150,6 +150,14 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
     let Some(message) = update.message else {
         return Ok(());
     };
+    if message.chat.is_group() {
+        if let Some((command, args)) = message.text.as_deref().and_then(parse_command)
+            && command == "start"
+        {
+            return crate::alerts::bind_from_group(&ctx.services, &ctx.api, &message, &args).await;
+        }
+        return Ok(());
+    }
     if !message.chat.is_private() {
         return Ok(());
     }

@@ -217,3 +217,39 @@
 .adm-status .link:hover {
   text-decoration: underline;
 }
+
+.alerts-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+
+.alerts-kind .adm-acts {
+  align-items: center;
+  gap: 12px;
+}
+
+.alerts-topic {
+  width: 200px;
+  max-width: 40vw;
+}
+
+@media (max-width: 720px) {
+  .alerts-kind {
+    flex-wrap: wrap;
+  }
+
+  .alerts-kind .adm-acts {
+    width: 100%;
+  }
+
+  .alerts-topic {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: none;
+  }
+}

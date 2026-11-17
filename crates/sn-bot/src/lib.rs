@@ -1,4 +1,5 @@
 mod account;
+pub mod alerts;
 pub mod broadcast;
 mod buy;
 pub mod consent;
@@ -49,6 +50,8 @@ pub struct BotConfig {
     pub workers: usize,
     pub stars_retry_every: Duration,
     pub stars_reconcile_every: Duration,
+    pub alerts_tick: Duration,
+    pub alerts_every: Duration,
 }
 
 impl Default for BotConfig {
@@ -59,6 +62,8 @@ impl Default for BotConfig {
             workers: 8,
             stars_retry_every: Duration::from_secs(30),
             stars_reconcile_every: Duration::from_secs(60),
+            alerts_tick: Duration::from_secs(5),
+            alerts_every: Duration::from_secs(60),
         }
     }
 }
@@ -347,6 +352,17 @@ impl Bot {
             )
             .run(keeper_stop),
         );
+        let alerts_stop = cancel.child_token();
+        let alerts_guard = alerts_stop.clone().drop_guard();
+        let alerts_keeper = tokio::spawn(
+            alerts::Keeper::new(
+                self.services.clone(),
+                api.clone(),
+                self.config.alerts_tick,
+                self.config.alerts_every,
+            )
+            .run(alerts_stop),
+        );
         let since = self.services.now();
         let running = |at| BotState::Running {
             username: me.username.clone(),
@@ -447,6 +463,7 @@ impl Bot {
         };
         drop(senders);
         drop(keeper_guard);
+        drop(alerts_guard);
         for handle in handles {
             if tokio::time::timeout(Duration::from_secs(8), handle)
                 .await
@@ -460,6 +477,12 @@ impl Bot {
             .is_err()
         {
             tracing::warn!("сверка оплат звёздами не завершилась за 8 секунд");
+        }
+        if tokio::time::timeout(Duration::from_secs(8), alerts_keeper)
+            .await
+            .is_err()
+        {
+            tracing::warn!("уведомления администраторам не остановились за 8 секунд");
         }
         outcome
     }

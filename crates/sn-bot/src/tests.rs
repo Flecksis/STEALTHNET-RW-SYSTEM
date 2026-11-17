@@ -20,6 +20,7 @@ use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod addons;
+mod alerts;
 mod balance_off;
 mod broadcast;
 mod client_letters;

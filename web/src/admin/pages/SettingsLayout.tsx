@@ -17,6 +17,7 @@ const SECTIONS: Array<{ label: string; to?: string; need?: Permission }> = [
   { label: 'Лендинг', to: '/admin/settings/landing' },
   { label: 'Кабинет и мини-приложение', to: '/admin/settings/client' },
   { label: 'Почта и уведомления', to: '/admin/settings/mail' },
+  { label: 'Уведомления в Telegram', to: '/admin/settings/alerts' },
   { label: 'Администраторы', to: '/admin/settings/admins', need: 'admins' },
   { label: 'API-ключи', to: '/admin/settings/api-keys' },
   { label: 'Обновления и резервные копии', to: UPDATES_PATH },

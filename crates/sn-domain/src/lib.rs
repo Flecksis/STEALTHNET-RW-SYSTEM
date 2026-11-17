@@ -1,4 +1,5 @@
 pub mod access;
+pub mod alerts;
 pub mod bot_content;
 pub mod client;
 pub mod error;

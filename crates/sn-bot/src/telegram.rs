@@ -15,12 +15,28 @@ pub enum TelegramError {
         code: i64,
         description: String,
         retry_after: Option<u64>,
+        #[source]
+        migrated: Option<Migrated>,
     },
     #[error("ответ Telegram не разобран: {0}")]
     Decode(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("группа стала супергруппой {0}")]
+pub struct Migrated(pub i64);
+
 impl TelegramError {
+    pub fn migrated_to(&self) -> Option<i64> {
+        match self {
+            TelegramError::Api {
+                migrated: Some(Migrated(id)),
+                ..
+            } => Some(*id),
+            _ => None,
+        }
+    }
+
     pub fn retry_after(&self) -> Option<u64> {
         match self {
             TelegramError::Api {
@@ -34,6 +50,16 @@ impl TelegramError {
 
     pub fn is_forbidden(&self) -> bool {
         matches!(self, TelegramError::Api { code: 403, .. })
+    }
+
+    pub fn is_thread_missing(&self) -> bool {
+        matches!(self, TelegramError::Api { code: 400, description, .. }
+            if description.contains("thread not found") || description.contains("TOPIC_DELETED") || description.contains("TOPIC_CLOSED"))
+    }
+
+    pub fn is_chat_missing(&self) -> bool {
+        matches!(self, TelegramError::Api { code: 400, description, .. }
+            if description.contains("chat not found") || description.contains("upgraded to a supergroup"))
     }
 
     pub fn is_not_modified(&self) -> bool {
@@ -74,12 +100,27 @@ pub struct Chat {
     pub id: i64,
     #[serde(rename = "type", default)]
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_forum: Option<bool>,
 }
 
 impl Chat {
     pub fn is_private(&self) -> bool {
         self.kind == "private"
     }
+
+    pub fn is_group(&self) -> bool {
+        self.kind == "group" || self.kind == "supergroup"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ForumTopic {
+    pub message_thread_id: i64,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,6 +466,8 @@ pub enum PhotoInput<'a> {
 struct ResponseParameters {
     #[serde(default)]
     retry_after: Option<u64>,
+    #[serde(default)]
+    migrate_to_chat_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -623,6 +666,7 @@ impl TelegramApi {
                     code: i64::from(status.as_u16()),
                     description: status.to_string(),
                     retry_after: None,
+                    migrated: None,
                 }
             } else {
                 TelegramError::Decode(e.without_url().to_string())
@@ -630,15 +674,22 @@ impl TelegramApi {
         })?;
         match (envelope.ok, envelope.result) {
             (true, Some(result)) => Ok(result),
-            _ => Err(TelegramError::Api {
-                code: if envelope.error_code == 0 {
-                    i64::from(status.as_u16())
-                } else {
-                    envelope.error_code
-                },
-                description: envelope.description,
-                retry_after: envelope.parameters.and_then(|p| p.retry_after),
-            }),
+            _ => {
+                let parameters = envelope.parameters;
+                Err(TelegramError::Api {
+                    code: if envelope.error_code == 0 {
+                        i64::from(status.as_u16())
+                    } else {
+                        envelope.error_code
+                    },
+                    description: envelope.description,
+                    retry_after: parameters.as_ref().and_then(|p| p.retry_after),
+                    migrated: parameters
+                        .as_ref()
+                        .and_then(|p| p.migrate_to_chat_id)
+                        .map(Migrated),
+                })
+            }
         }
     }
 
@@ -739,6 +790,59 @@ impl TelegramApi {
             body["reply_markup"] = serde_json::json!(keyboard);
         }
         body
+    }
+
+    pub async fn send_to_thread(
+        &self,
+        chat_id: i64,
+        thread: Option<i64>,
+        text: &str,
+        keyboard: Option<&Keyboard>,
+    ) -> Result<Message, TelegramError> {
+        let with_thread = |mut body: serde_json::Value| {
+            if let Some(thread) = thread {
+                body["message_thread_id"] = serde_json::json!(thread);
+            }
+            body
+        };
+        match self
+            .call(
+                "sendMessage",
+                &with_thread(Self::message_body(chat_id, text, keyboard, true)),
+            )
+            .await
+        {
+            Err(err) if err.is_parse_error() => {
+                self.call(
+                    "sendMessage",
+                    &with_thread(Self::message_body(
+                        chat_id,
+                        &strip_tags(text),
+                        keyboard,
+                        false,
+                    )),
+                )
+                .await
+            }
+            other => other,
+        }
+    }
+
+    pub async fn create_forum_topic(
+        &self,
+        chat_id: i64,
+        name: &str,
+    ) -> Result<ForumTopic, TelegramError> {
+        self.call(
+            "createForumTopic",
+            &serde_json::json!({ "chat_id": chat_id, "name": name }),
+        )
+        .await
+    }
+
+    pub async fn get_chat(&self, chat_id: i64) -> Result<Chat, TelegramError> {
+        self.call("getChat", &serde_json::json!({ "chat_id": chat_id }))
+            .await
     }
 
     pub async fn send_message(

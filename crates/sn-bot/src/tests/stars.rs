@@ -123,6 +123,8 @@ pub(super) fn quick(server: &MockServer) -> BotConfig {
         workers: 2,
         stars_retry_every: Duration::from_millis(100),
         stars_reconcile_every: Duration::from_millis(200),
+        alerts_tick: Duration::from_millis(100),
+        alerts_every: Duration::from_millis(200),
     }
 }
 
