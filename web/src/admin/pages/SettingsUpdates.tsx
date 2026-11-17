@@ -213,7 +213,8 @@ export function SettingsUpdates() {
       setOffline(null);
       watching.current = !!next.update && ACTIVE.includes(next.update.state);
     } catch (err) {
-      if (watching.current && !(err instanceof ApiError && err.status < 500)) {
+      const down = !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
+      if (watching.current && down) {
         setOffline((value) => value ?? Date.now());
         return;
       }
