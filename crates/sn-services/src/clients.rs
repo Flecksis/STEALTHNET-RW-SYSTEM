@@ -31,8 +31,11 @@ use sn_store::{
 use std::collections::HashMap;
 use uuid::Uuid;
 
+mod payments;
 #[cfg(test)]
 mod tests;
+
+pub use payments::{ClientPayment, ClientPayments, Purchase};
 
 pub const MAX_BLOCK_REASON: usize = 500;
 pub const MAX_MESSAGE: usize = 3_500;

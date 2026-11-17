@@ -1498,3 +1498,121 @@
 .cb-solo-box .cb-error {
   color: var(--bad);
 }
+
+.cb-amounts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr));
+  gap: 10px;
+}
+
+.cb-amount {
+  align-items: center;
+  padding: 14px 12px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.cb-hint {
+  margin: -8px 0 0;
+}
+
+.cb-narrow {
+  width: 100%;
+  max-width: 560px;
+}
+
+.cb-history {
+  width: 100%;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.cb-paylist {
+  gap: 0;
+  padding: 4px 26px;
+}
+
+.cb-payrows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cb-payrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 16px;
+  padding: 16px 0;
+}
+
+.cb-payrow + .cb-payrow {
+  border-top: 1px solid var(--line);
+}
+
+.cb-payrow-main,
+.cb-payrow-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cb-payrow-main strong,
+.cb-payrow-side strong {
+  font-weight: 700;
+}
+
+.cb-payrow-side {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.cb-payrow-side strong {
+  white-space: nowrap;
+}
+
+.cb-payrow-pay {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: 8px;
+}
+
+.cb-more {
+  align-self: flex-start;
+}
+
+.cb-phone .cb-history {
+  gap: 12px;
+}
+
+.cb-phone .cb-paylist {
+  padding: 0 16px;
+}
+
+.cb-phone .cb-payrow {
+  padding: 12px 0;
+}
+
+.cb-phone .cb-payrow .cb-small {
+  font-size: 13px;
+}
+
+.cb-phone .cb-payrow-pay {
+  height: 44px;
+}
+
+.cb-phone .cb-amount {
+  font-size: 20px;
+  border-radius: 14px;
+}
+
+@media (max-width: 340px) {
+  .cb-phead {
+    padding: 0 8px 0 12px;
+  }
+}

@@ -29,6 +29,7 @@ mod api_keys;
 mod balance_off;
 mod bot_content;
 mod channels;
+mod client_payments;
 mod gram;
 mod hosts;
 mod landing;

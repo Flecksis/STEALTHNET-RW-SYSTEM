@@ -1,6 +1,6 @@
 use crate::cookies::{self, SameSite};
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{ApiJson, CLIENT_COOKIE, CurrentClient, Meta, request_credential};
+use crate::extract::{ApiJson, ApiQuery, CLIENT_COOKIE, CurrentClient, Meta, request_credential};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method};
@@ -35,8 +35,9 @@ pub fn routes() -> Router<AppState> {
         .route("/catalog", get(catalog))
         .route("/quote", post(quote))
         .route("/checkout", post(checkout))
-        .route("/topup", post(topup))
+        .route("/topup", get(topup_options).post(topup))
         .route("/trial", post(trial))
+        .route("/payments", get(payments))
         .route("/payments/{id}", get(payment))
         .route("/payments/{id}/telegram", post(gram_in_telegram))
         .route("/subscriptions", get(subscriptions))
@@ -305,6 +306,7 @@ async fn me(
         "channel": client.0.channel,
         "full_access": client.0.full_access,
         "two_factor": card.two_factor,
+        "payments_count": card.stats.payments_count,
     })))
 }
 
@@ -374,6 +376,21 @@ async fn checkout(
 struct TopUpBody {
     amount: String,
     provider: String,
+    #[serde(default)]
+    return_url: Option<String>,
+}
+
+async fn topup_options(
+    client: CurrentClient,
+    State(state): State<AppState>,
+) -> ApiResult<Json<sn_services::checkout::TopUpOptions>> {
+    Ok(Json(
+        state
+            .services
+            .checkout()
+            .topup_options(client.0.client_id, channel(&client))
+            .await?,
+    ))
 }
 
 async fn topup(
@@ -405,11 +422,12 @@ async fn topup(
         state
             .services
             .checkout()
-            .topup(
+            .topup_from(
                 client.0.client_id,
                 amount,
                 body.provider.trim(),
                 channel(&client),
+                body.return_url,
             )
             .await?,
     ))
@@ -440,6 +458,29 @@ async fn trial(
         .start_trial(client.0.client_id)
         .await?;
     Ok(Json(serde_json::json!({ "order_id": order_id })))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PaymentsQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    before: Option<Uuid>,
+}
+
+async fn payments(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<PaymentsQuery>,
+) -> ApiResult<Json<sn_services::clients::ClientPayments>> {
+    client.require_full()?;
+    Ok(Json(
+        state
+            .services
+            .clients()
+            .payments(client.0.client_id, query.before, query.limit)
+            .await?,
+    ))
 }
 
 async fn payment(

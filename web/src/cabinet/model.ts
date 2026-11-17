@@ -33,6 +33,7 @@ export type ClientMe = {
   channel: 'cabinet' | 'miniapp';
   full_access: boolean;
   two_factor: TwoFactor;
+  payments_count?: number;
 };
 
 export type TwoFactor = { enabled: boolean; enabled_at: string | null };

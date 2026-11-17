@@ -80,6 +80,7 @@ export function MiniHome() {
     rows.push({ label: 'Друзья', icon: 'share', value: referral.invited ? `${referral.invited} ${plural(referral.invited, 'пришёл', 'пришли', 'пришли')}` : undefined, to: '/app/profile' });
   }
   rows.push({ label: 'Промокод', icon: 'percent', to: '/app/plans' });
+  rows.push({ label: 'История оплат', icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });
   rows.push({ label: 'Инструкции', icon: 'book', to: '/app/connect' });
   if (site.support_url) {
     rows.push({ label: 'Поддержка', icon: 'chat', run: () => openExternal(site.support_url ?? '') });
@@ -91,7 +92,7 @@ export function MiniHome() {
         <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
         <h1 className="mn-brand">{site.brand_name.toUpperCase()}</h1>
         {me.balance_enabled !== false || me.balance.minor > 0 ? (
-          <Link to="/app/plans" className="mn-balance press" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}` : `Остаток на балансе ${money(me.balance)}`}>
+          <Link to={me.balance_enabled !== false ? '/app/topup' : '/app/plans'} className="mn-balance press" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}, пополнить` : `Остаток на балансе ${money(me.balance)}`}>
             <span>{money(me.balance)}</span>
           </Link>
         ) : null}

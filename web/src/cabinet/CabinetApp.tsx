@@ -11,8 +11,10 @@ import type { Site } from '../lib/types';
 import { Login } from './Login';
 import type { ClientMe } from './model';
 import { Pay } from './Pay';
+import { PaymentsHistory } from './PaymentHistory';
 import { SecurityPage } from './Security';
 import { SubscriptionPage } from './Subscription';
+import { TopUpPage } from './TopUp';
 import './cabinet.css';
 
 const THEME_KEY = 'sn.client.theme';
@@ -137,6 +139,8 @@ export function CabinetApp() {
           <Routes>
             <Route index element={<SubscriptionPage />} />
             <Route path="pay" element={<Pay />} />
+            <Route path="topup" element={<TopUpPage />} />
+            <Route path="payments" element={<PaymentsHistory />} />
             <Route path="security" element={<SecurityPage />} />
             <Route path="*" element={<SubscriptionPage />} />
           </Routes>
@@ -158,6 +162,9 @@ const TABS: Array<{ key: string; label: string; to: string }> = [
 function currentTab(path: string, hash: string): string {
   if (path.startsWith('/cabinet/security')) {
     return 'security';
+  }
+  if (path.startsWith('/cabinet/topup') || path.startsWith('/cabinet/payments')) {
+    return 'money';
   }
   if (path.startsWith('/cabinet/pay')) {
     return 'pay';
@@ -230,7 +237,7 @@ function Header() {
         </nav>
         <div className="cb-head-end">
           {me.balance_enabled !== false ? (
-            <Link to="/cabinet/pay" className="cb-balance hov" aria-label={`Баланс ${money(me.balance)}, пополнить`}>
+            <Link to="/cabinet/topup" className="cb-balance hov" aria-label={`Баланс ${money(me.balance)}, пополнить`}>
               <span>{money(me.balance)}</span>
               <span className="cb-accent">Пополнить</span>
             </Link>
@@ -247,6 +254,10 @@ function Header() {
             </button>
             {open ? (
               <div className="cb-pop" role="menu">
+                <Link to="/cabinet/payments" role="menuitem" className="cb-pop-item plain hov" onClick={() => setOpen(false)}>
+                  <Icon name="receipt" size={18} />
+                  История оплат
+                </Link>
                 <Link to="/cabinet/security" role="menuitem" className="cb-pop-item plain hov" onClick={() => setOpen(false)}>
                   <Icon name="sliders" size={18} />
                   Безопасность
@@ -277,7 +288,7 @@ function PhoneHeader() {
       <Brand small />
       <span className="cb-grow" />
       {me.balance_enabled !== false || me.balance.minor > 0 ? (
-        <Link to="/cabinet/pay" className="cb-chip" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}, пополнить` : `Остаток на балансе ${money(me.balance)}`}>
+        <Link to={me.balance_enabled !== false ? '/cabinet/topup' : '/cabinet/pay'} className="cb-chip" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}, пополнить` : `Остаток на балансе ${money(me.balance)}`}>
           <span>{money(me.balance)}</span>
         </Link>
       ) : null}
@@ -292,6 +303,9 @@ function PhoneHeader() {
               {t.label}
             </Link>
           ))}
+          <Link to="/cabinet/payments" className="cb-menu-item" aria-current={location.pathname.startsWith('/cabinet/payments') ? 'page' : undefined}>
+            История оплат
+          </Link>
           <Link to="/cabinet/security" className="cb-menu-item" aria-current={location.pathname.startsWith('/cabinet/security') ? 'page' : undefined}>
             Безопасность
           </Link>

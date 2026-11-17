@@ -10,8 +10,10 @@ import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { initData, loadTelegram } from './telegram';
 import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
+import { MiniPayments } from './MiniPayments';
 import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
+import { MiniTopUp } from './MiniTopUp';
 import './mini.css';
 
 const TOKEN_KEY = 'sn.mini.token';
@@ -194,6 +196,8 @@ export function MiniApp() {
           <Route path="plans" element={<MiniPlans />} />
           <Route path="connect" element={<MiniConnect />} />
           <Route path="profile" element={<MiniProfile />} />
+          <Route path="topup" element={<MiniTopUp />} />
+          <Route path="payments" element={<MiniPayments />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />
@@ -214,7 +218,7 @@ function MiniNav() {
   return (
     <nav aria-label="Меню" className="mn-nav">
       {TABS.map((t) => {
-        const current = t.to === '/app' ? pathname === '/app' || pathname === '/app/' : pathname.startsWith(t.to);
+        const current = t.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments'].includes(pathname) : pathname.startsWith(t.to);
         return (
           <Link key={t.to} to={t.to} className="mn-tab press" aria-current={current ? 'page' : undefined}>
             <Icon name={t.icon} size={23} />

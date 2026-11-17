@@ -221,6 +221,19 @@ pub struct TopUpLimits {
     pub max: Money,
 }
 
+pub fn topup_presets(limits: TopUpLimits) -> Vec<Money> {
+    let currency = limits.min.currency;
+    let steps: [i64; 4] = match currency {
+        Currency::Usd => [500, 1_000, 2_000, 5_000],
+        Currency::Rub => [30_000, 50_000, 100_000, 200_000],
+    };
+    steps
+        .into_iter()
+        .filter(|minor| (limits.min.minor..=limits.max.minor).contains(minor))
+        .map(|minor| Money::new(minor, currency))
+        .collect()
+}
+
 pub fn topup_quote(amount: Money, limits: TopUpLimits) -> Result<Quote, DomainError> {
     if amount.currency != limits.min.currency {
         return Err(DomainError::CurrencyMismatch {
@@ -403,5 +416,29 @@ mod tests {
         assert!(topup_quote(Money::new(1000, Currency::Usd), limits).is_ok());
         assert!(topup_quote(Money::new(50, Currency::Usd), limits).is_err());
         assert!(topup_quote(Money::new(1000, Currency::Rub), limits).is_err());
+    }
+
+    #[test]
+    fn готовые_суммы_пополнения_только_в_пределах() {
+        let usd = |min, max| TopUpLimits {
+            min: Money::new(min, Currency::Usd),
+            max: Money::new(max, Currency::Usd),
+        };
+        let minors = |limits| -> Vec<i64> {
+            topup_presets(limits)
+                .into_iter()
+                .map(|money| money.minor)
+                .collect()
+        };
+        assert_eq!(minors(usd(100, 100_000)), [500, 1_000, 2_000, 5_000]);
+        assert_eq!(minors(usd(1_000, 2_000)), [1_000, 2_000]);
+        assert!(minors(usd(6_000, 9_000)).is_empty());
+        let rub = topup_presets(TopUpLimits {
+            min: Money::new(10_000, Currency::Rub),
+            max: Money::new(10_000_000, Currency::Rub),
+        });
+        assert_eq!(rub.len(), 4);
+        assert!(rub.iter().all(|money| money.currency == Currency::Rub));
+        assert_eq!(rub[0].minor, 30_000);
     }
 }

@@ -10,7 +10,7 @@ use sn_domain::format;
 use sn_domain::ids::{SubscriptionId, TicketId};
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
-use sn_domain::pricing::topup_quote;
+use sn_domain::pricing::{topup_presets, topup_quote};
 use sn_domain::traffic::{NextReset, next_reset};
 use sn_payments::{MethodsContext, ProviderKind};
 use sn_services::bot_content::BotContent;
@@ -414,13 +414,6 @@ pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
     }
 }
 
-fn presets(currency: Currency) -> [i64; 4] {
-    match currency {
-        Currency::Usd => [500, 1_000, 2_000, 5_000],
-        Currency::Rub => [30_000, 50_000, 100_000, 200_000],
-    }
-}
-
 pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
     let content = services.bot_content();
@@ -458,16 +451,14 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
             .section(Section::Balance));
     }
     lines.add(ui::text(c, "bal.note", &[]));
-    let limits = settings.topup_limits();
-    let buttons: Vec<_> = presets(currency)
+    let buttons: Vec<_> = topup_presets(settings.topup_limits())
         .into_iter()
-        .filter(|m| *m >= limits.min.minor && *m <= limits.max.minor)
-        .filter_map(|minor| {
+        .filter_map(|amount| {
             ui::button(
                 c,
                 "bal.btn.preset",
-                &[("amount", Text(&format::money(Money::new(minor, currency))))],
-                format!("top:{minor}"),
+                &[("amount", Text(&format::money(amount)))],
+                format!("top:{}", amount.minor),
             )
         })
         .collect();

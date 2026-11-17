@@ -9,6 +9,7 @@ use sn_domain::payment::{
     NewPayment, Payment, PaymentStatus, ProviderId, RefundSubscriptionAction,
 };
 use sqlx::PgConnection;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +263,12 @@ pub struct InvoiceUpdate {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaymentOutcome {
+    pub refunded_minor: i64,
+    pub repeat: Option<RepeatAction>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusChange {
     Applied(Payment),
@@ -504,6 +511,31 @@ impl<'c> PaymentsRepo<'c> {
             .map(TryInto::try_into)
             .collect::<StoreResult<Vec<Payment>>>()?;
         Ok(Page::from_overfetch(items, page, |p| p.id.0))
+    }
+
+    pub async fn outcomes(
+        &mut self,
+        ids: &[PaymentId],
+    ) -> StoreResult<HashMap<PaymentId, PaymentOutcome>> {
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let rows: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+            "SELECT p.id, p.refunded_minor, r.action FROM payments p \
+             LEFT JOIN payment_repeats r ON r.payment_id = p.id WHERE p.id = ANY($1)",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter()
+            .map(|(id, refunded_minor, repeat)| {
+                Ok((
+                    PaymentId(id),
+                    PaymentOutcome {
+                        refunded_minor,
+                        repeat: repeat.as_deref().map(RepeatAction::parse).transpose()?,
+                    },
+                ))
+            })
+            .collect()
     }
 
     pub async fn chain_watch(

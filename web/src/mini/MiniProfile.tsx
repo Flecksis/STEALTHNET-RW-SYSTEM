@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { api } from '../lib/api';
 import { money } from '../lib/format';
 import { Icon } from '../lib/icons';
@@ -35,6 +36,9 @@ export function MiniProfile() {
         <div className="mn-card mn-pad">
           <span className="mn-muted">Баланс</span>
           <strong className="mn-big">{money(me.balance)}</strong>
+          <Link to="/app/topup" className="mn-btn2 press mn-btn-link">
+            Пополнить
+          </Link>
         </div>
       ) : me.balance.minor > 0 ? (
         <div className="mn-card mn-pad">
@@ -66,15 +70,21 @@ export function MiniProfile() {
           </span>
         </div>
       ) : null}
-      {site.support_url ? (
-        <div className="mn-list">
+      <div className="mn-list">
+        <Link to="/app/payments" className="mn-row press">
+          <Icon name="receipt" size={21} />
+          <span className="mn-row-name">История оплат</span>
+          {me.payments_count ? <span className="mn-row-val num">{me.payments_count}</span> : null}
+          <Icon name="chevron-right" size={16} />
+        </Link>
+        {site.support_url ? (
           <button type="button" className="mn-row press" onClick={() => openExternal(site.support_url ?? '')}>
             <Icon name="chat" size={21} />
             <span className="mn-row-name">Поддержка</span>
             <Icon name="chevron-right" size={16} />
           </button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </main>
   );
 }

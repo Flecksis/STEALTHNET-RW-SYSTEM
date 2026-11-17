@@ -48,6 +48,9 @@ mod single_tests;
 pub(crate) mod testkit;
 #[cfg(test)]
 mod tests;
+mod topup;
+
+pub use topup::{TopUpMethod, TopUpOptions};
 
 const POLL_DELAY_SECONDS: i64 = 120;
 const CHAIN_POLL_DELAY_SECONDS: i64 = 30;
@@ -922,12 +925,13 @@ impl<'a> Checkout<'a> {
         }
     }
 
-    pub async fn topup(
+    pub async fn topup_from(
         &self,
         client_id: ClientId,
         amount: Money,
         provider: &str,
         channel: Channel,
+        return_url: Option<String>,
     ) -> ServiceResult<CheckoutResult> {
         self.topup_open()?;
         let settings = self.services.settings();
@@ -970,8 +974,15 @@ impl<'a> Checkout<'a> {
             snapshot: None,
         };
         let description = describe(&settings.brand_name, &quote);
-        self.invoice(&client, &order, provider, amount.into(), description, None)
-            .await
+        self.invoice(
+            &client,
+            &order,
+            provider,
+            amount.into(),
+            description,
+            return_url,
+        )
+        .await
     }
 
     pub async fn start_trial(&self, client_id: ClientId) -> ServiceResult<OrderId> {

@@ -570,12 +570,17 @@ export function SubscriptionPage() {
           <Card className="cb-balance-card" label={showBalance ? 'Баланс' : 'Автопродление'}>
             {showBalance ? (
               <>
-                <span className="cb-label">{balanceOff ? 'Остаток на балансе' : 'Баланс'}</span>
+                <span className="cb-row">
+                  <span className="cb-label">{balanceOff ? 'Остаток на балансе' : 'Баланс'}</span>
+                  <Link to="/cabinet/payments" className="cb-accent-link cb-small">
+                    История оплат
+                  </Link>
+                </span>
                 <span className="cb-sum">{money(me.balance)}</span>
                 {balanceOff ? (
                   <span className="cb-small cb-muted">Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму</span>
                 ) : (
-                  <button type="button" className="cb-main wide" onClick={() => navigate('/cabinet/pay')}>
+                  <button type="button" className="cb-main wide" onClick={() => navigate('/cabinet/topup')}>
                     Пополнить
                   </button>
                 )}
