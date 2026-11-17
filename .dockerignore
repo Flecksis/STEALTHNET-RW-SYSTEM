@@ -1,0 +1,6 @@
+target
+.git
+.github
+deploy/.env
+*.log
+.DS_Store

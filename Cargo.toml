@@ -1,0 +1,74 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sn-domain",
+    "crates/sn-remnawave",
+    "crates/sn-store",
+    "crates/sn-payments",
+    "crates/sn-modules",
+    "crates/sn-services",
+    "crates/sn-server",
+    "crates/sn-worker",
+    "crates/sn-bot",
+    "crates/sn-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "GPL-2.0-only"
+publish = false
+
+[workspace.dependencies]
+sn-domain = { path = "crates/sn-domain" }
+sn-remnawave = { path = "crates/sn-remnawave" }
+sn-store = { path = "crates/sn-store" }
+sn-payments = { path = "crates/sn-payments" }
+sn-modules = { path = "crates/sn-modules" }
+sn-services = { path = "crates/sn-services" }
+sn-server = { path = "crates/sn-server" }
+sn-worker = { path = "crates/sn-worker" }
+sn-bot = { path = "crates/sn-bot" }
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit", "catch-panic", "request-id", "set-header", "timeout"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid", "json", "macros", "migrate"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+argon2 = "0.5"
+bcrypt = "0.19"
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+aes-gcm = "0.10"
+jsonwebtoken = "9"
+wiremock = "0.6"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

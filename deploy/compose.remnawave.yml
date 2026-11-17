@@ -1,0 +1,10 @@
+services:
+  app:
+    networks:
+      - default
+      - remnawave
+
+networks:
+  remnawave:
+    name: remnawave-network
+    external: true

@@ -1,0 +1,330 @@
+use crate::ids::SquadId;
+use crate::money::{Currency, Money};
+use crate::payment::providers;
+use crate::pricing::TopUpLimits;
+use crate::traffic::TrafficPolicy;
+use chrono::{FixedOffset, Offset, Utc};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FieldKind {
+    Text,
+    Secret,
+    Number,
+    Flag,
+    Url,
+    Select { options: &'static [&'static str] },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SettingField {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub hint: &'static str,
+    pub kind: FieldKind,
+    pub required: bool,
+    pub default: Option<&'static str>,
+}
+
+impl SettingField {
+    const fn base(
+        key: &'static str,
+        label: &'static str,
+        hint: &'static str,
+        kind: FieldKind,
+        required: bool,
+    ) -> Self {
+        SettingField {
+            key,
+            label,
+            hint,
+            kind,
+            required,
+            default: None,
+        }
+    }
+
+    pub const fn text(key: &'static str, label: &'static str, hint: &'static str) -> Self {
+        Self::base(key, label, hint, FieldKind::Text, true)
+    }
+
+    pub const fn secret(key: &'static str, label: &'static str, hint: &'static str) -> Self {
+        Self::base(key, label, hint, FieldKind::Secret, true)
+    }
+
+    pub const fn number(key: &'static str, label: &'static str, hint: &'static str) -> Self {
+        Self::base(key, label, hint, FieldKind::Number, false)
+    }
+
+    pub const fn flag(key: &'static str, label: &'static str, hint: &'static str) -> Self {
+        Self::base(key, label, hint, FieldKind::Flag, false)
+    }
+
+    pub const fn url(key: &'static str, label: &'static str, hint: &'static str) -> Self {
+        Self::base(key, label, hint, FieldKind::Url, true)
+    }
+
+    pub const fn select(
+        key: &'static str,
+        label: &'static str,
+        hint: &'static str,
+        options: &'static [&'static str],
+    ) -> Self {
+        Self::base(key, label, hint, FieldKind::Select { options }, true)
+    }
+
+    pub const fn optional(mut self) -> Self {
+        self.required = false;
+        self
+    }
+
+    pub const fn with_default(mut self, value: &'static str) -> Self {
+        self.default = Some(value);
+        self
+    }
+
+    pub const fn is_secret(&self) -> bool {
+        matches!(self.kind, FieldKind::Secret)
+    }
+}
+
+pub fn missing_required(
+    schema: &[SettingField],
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<&'static str> {
+    schema
+        .iter()
+        .filter(|f| f.required && f.default.is_none())
+        .filter(|f| match config.get(f.key) {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+            Some(_) => false,
+        })
+        .map(|f| f.key)
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoRenewSettings {
+    pub charge_days_before: u32,
+    pub retry_days: u32,
+    pub enable_for_new: bool,
+    pub use_saved_card: bool,
+}
+
+impl Default for AutoRenewSettings {
+    fn default() -> Self {
+        AutoRenewSettings {
+            charge_days_before: 1,
+            retry_days: 3,
+            enable_for_new: true,
+            use_saved_card: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrialSettings {
+    pub enabled: bool,
+    pub days: u32,
+    pub squads: Vec<SquadId>,
+    pub traffic: TrafficPolicy,
+    pub devices: u32,
+}
+
+impl Default for TrialSettings {
+    fn default() -> Self {
+        TrialSettings {
+            enabled: false,
+            days: 3,
+            squads: Vec::new(),
+            traffic: TrafficPolicy::UNLIMITED,
+            devices: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpSettings {
+    pub min_minor: i64,
+    pub max_minor: i64,
+}
+
+impl TopUpSettings {
+    pub const fn default_for(currency: Currency) -> Self {
+        match currency {
+            Currency::Usd => TopUpSettings {
+                min_minor: 100,
+                max_minor: 100_000,
+            },
+            Currency::Rub => TopUpSettings {
+                min_minor: 10_000,
+                max_minor: 10_000_000,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaymentOrder {
+    pub usd: Vec<String>,
+    pub rub: Vec<String>,
+}
+
+impl Default for PaymentOrder {
+    fn default() -> Self {
+        PaymentOrder {
+            usd: [
+                providers::CRYPTOPAY,
+                providers::HELEKET,
+                providers::LAVA,
+                providers::STARS,
+            ]
+            .map(String::from)
+            .to_vec(),
+            rub: [
+                providers::PLATEGA,
+                providers::YOOKASSA,
+                providers::YOOMONEY,
+                providers::STARS,
+                providers::CLOUDPAYMENTS,
+                providers::OVERPAY,
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
+}
+
+impl PaymentOrder {
+    pub fn for_currency(&self, currency: Currency) -> &[String] {
+        match currency {
+            Currency::Usd => &self.usd,
+            Currency::Rub => &self.rub,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreSettings {
+    pub currency: Currency,
+    pub brand_name: String,
+    pub public_url: Option<String>,
+    pub support_url: Option<String>,
+    pub remna_utc_offset_minutes: i32,
+    pub autorenew: AutoRenewSettings,
+    pub trial: TrialSettings,
+    pub topup: TopUpSettings,
+    pub payment_order: PaymentOrder,
+    pub invoice_ttl_minutes: u32,
+}
+
+impl Default for CoreSettings {
+    fn default() -> Self {
+        CoreSettings {
+            currency: Currency::Usd,
+            brand_name: "STEALTHNET".into(),
+            public_url: None,
+            support_url: None,
+            remna_utc_offset_minutes: 0,
+            autorenew: AutoRenewSettings::default(),
+            trial: TrialSettings::default(),
+            topup: TopUpSettings::default_for(Currency::Usd),
+            payment_order: PaymentOrder::default(),
+            invoice_ttl_minutes: 60,
+        }
+    }
+}
+
+impl CoreSettings {
+    pub fn remna_offset(&self) -> FixedOffset {
+        let seconds = self.remna_utc_offset_minutes.clamp(-1439, 1439) * 60;
+        FixedOffset::east_opt(seconds).unwrap_or_else(|| Utc.fix())
+    }
+
+    pub const fn topup_limits(&self) -> TopUpLimits {
+        TopUpLimits {
+            min: Money::new(self.topup.min_minor, self.currency),
+            max: Money::new(self.topup.max_minor, self.currency),
+        }
+    }
+}
+
+pub mod keys {
+    pub const CURRENCY: &str = "core.currency";
+    pub const BRAND_NAME: &str = "core.brand_name";
+    pub const PUBLIC_URL: &str = "core.public_url";
+    pub const SUPPORT_URL: &str = "core.support_url";
+    pub const REMNA_URL: &str = "remnawave.url";
+    pub const REMNA_UTC_OFFSET: &str = "remnawave.utc_offset_minutes";
+    pub const AUTORENEW: &str = "billing.autorenew";
+    pub const TRIAL: &str = "billing.trial";
+    pub const TOPUP: &str = "billing.topup";
+    pub const PAYMENT_ORDER: &str = "billing.payment_order";
+    pub const INVOICE_TTL: &str = "billing.invoice_ttl_minutes";
+    pub const BOT_USERNAME: &str = "bot.username";
+
+    pub fn provider(id: &str) -> String {
+        format!("payments.{id}")
+    }
+
+    pub fn module(id: &str) -> String {
+        format!("modules.{id}")
+    }
+}
+
+pub mod secret_keys {
+    pub const REMNA_TOKEN: &str = "remnawave.token";
+    pub const REMNA_COOKIE: &str = "remnawave.cookie";
+    pub const REMNA_WEBHOOK_SECRET: &str = "remnawave.webhook_secret";
+    pub const BOT_TOKEN: &str = "bot.token";
+
+    pub fn provider(id: &str, field: &str) -> String {
+        format!("payments.{id}.{field}")
+    }
+
+    pub fn module(id: &str, field: &str) -> String {
+        format!("modules.{id}.{field}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn обязательные_поля_ищутся_по_схеме() {
+        let schema = [
+            SettingField::secret("api_token", "Токен", ""),
+            SettingField::flag("testnet", "Тестовая сеть", ""),
+            SettingField::text("shop", "Магазин", "").with_default("main"),
+        ];
+        let mut config = serde_json::Map::new();
+        assert_eq!(missing_required(&schema, &config), ["api_token"]);
+        config.insert("api_token".into(), serde_json::json!("  "));
+        assert_eq!(missing_required(&schema, &config), ["api_token"]);
+        config.insert("api_token".into(), serde_json::json!("abc"));
+        assert!(missing_required(&schema, &config).is_empty());
+    }
+
+    #[test]
+    fn автопродление_по_умолчанию_как_в_настройках() {
+        let s = AutoRenewSettings::default();
+        assert_eq!(
+            (
+                s.charge_days_before,
+                s.retry_days,
+                s.enable_for_new,
+                s.use_saved_card
+            ),
+            (1, 3, true, true)
+        );
+        let order = PaymentOrder::default();
+        assert_eq!(order.for_currency(Currency::Usd)[0], "cryptopay");
+        assert_eq!(order.for_currency(Currency::Rub)[0], "platega");
+    }
+}

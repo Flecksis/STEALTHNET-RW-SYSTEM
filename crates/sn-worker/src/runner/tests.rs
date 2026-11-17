@@ -1,0 +1,1025 @@
+use super::*;
+use async_trait::async_trait;
+use sn_domain::client::{RegistrationSource, TelegramProfile};
+use sn_domain::ids::{ClientId, SquadId};
+use sn_domain::ledger::{LedgerKind, Wallet};
+use sn_domain::module::ModuleId;
+use sn_domain::money::{Amount, Currency, Money, PayCurrency, Stars};
+use sn_domain::order::{NewOrder, OrderKind, PurchaseIntent};
+use sn_domain::payment::{
+    NewPayment, Payment, ProviderId, RefundMethod, RefundSubscriptionAction, providers,
+};
+use sn_domain::pricing::{QuoteRequest, quote};
+use sn_domain::settings::{keys, secret_keys};
+use sn_domain::subscription::{AutoRenewState, RemnaMirror, SubscriptionKind, SubscriptionStatus};
+use sn_domain::tariff::{CurrencyPrices, DevicePolicy, Tariff};
+use sn_domain::traffic::TrafficPolicy;
+use sn_modules::{
+    BalanceChange, CoreApi, Module, ModuleContext, ModuleError, ModuleRegistry, ScheduledTask,
+};
+use sn_payments::providers::cryptopay_signature;
+use sn_payments::{
+    ClientLabel, Invoice, InvoiceRequest, PaymentError, PaymentProvider, PaymentResult,
+    ProviderConfig, ProviderRegistry, ProviderStatus, RefundOutcome, RefundRequest, WebhookOutcome,
+    WebhookReply, WebhookRequest,
+};
+use sn_remnawave::fake::FakeRemnawave;
+use sn_remnawave::{InternalSquad, SquadInfo};
+use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult};
+use sn_services::inbox::{InboundWebhook, RefundCommand};
+use sn_services::{Clock, EnvFallbacks, FixedClock, ServiceDeps, SystemClock};
+use sn_store::testing::{TestDb, test_store};
+use sn_store::{
+    NewCategory, NewPeriod, NewSubscription, NewTariff, ProviderRefundStatus, SecretBox,
+};
+use std::sync::Mutex;
+
+const CRYPTO_TOKEN: &str = "4321:TEST";
+const SQUAD: &str = "00000000-0000-0000-0000-000000000001";
+
+struct Ticker {
+    runs: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl Module for Ticker {
+    fn id(&self) -> ModuleId {
+        ModuleId::Broadcast
+    }
+
+    fn tasks(&self) -> Vec<ScheduledTask> {
+        vec![ScheduledTask {
+            name: "digest",
+            every: Duration::from_secs(3_600),
+        }]
+    }
+
+    async fn run_task(&self, _ctx: &ModuleContext, task: &str) -> Result<(), ModuleError> {
+        self.runs.lock().unwrap().push(task.to_string());
+        Ok(())
+    }
+}
+
+struct Setup {
+    db: TestDb,
+    services: Services,
+    remna: Arc<FakeRemnawave>,
+}
+
+fn squad() -> SquadId {
+    serde_json::from_value(serde_json::json!(SQUAD)).unwrap()
+}
+
+async fn setup(modules: Vec<Arc<dyn Module>>) -> Option<Setup> {
+    setup_with_clock(modules, Arc::new(SystemClock)).await
+}
+
+async fn setup_with_clock(modules: Vec<Arc<dyn Module>>, clock: Arc<dyn Clock>) -> Option<Setup> {
+    setup_full(modules, clock, ProviderRegistry::builtin()).await
+}
+
+async fn setup_full(
+    modules: Vec<Arc<dyn Module>>,
+    clock: Arc<dyn Clock>,
+    payments: ProviderRegistry,
+) -> Option<Setup> {
+    let db = test_store().await?;
+    let services = Services::new(ServiceDeps {
+        store: db.store.clone(),
+        payments: Arc::new(payments),
+        modules: Arc::new(ModuleRegistry::new(modules).unwrap()),
+        secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
+        clock,
+        env: EnvFallbacks::default(),
+    });
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        conn.settings()
+            .set(
+                keys::PUBLIC_URL,
+                &serde_json::json!("https://panel.example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+        sn_services::settings::write_secret(
+            &mut conn,
+            services.secrets(),
+            &secret_keys::provider(providers::CRYPTOPAY, "api_token"),
+            Some(CRYPTO_TOKEN),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    services.reload().await.unwrap();
+    let remna = Arc::new(FakeRemnawave::new());
+    remna.set_squads(vec![InternalSquad {
+        uuid: squad().0,
+        name: "Основной".into(),
+        view_position: 0,
+        info: SquadInfo::default(),
+        inbounds: Vec::new(),
+    }]);
+    services.set_remna(Some(remna.clone()));
+    Some(Setup {
+        db,
+        services,
+        remna,
+    })
+}
+
+async fn client(services: &Services, telegram_id: i64) -> ClientId {
+    let profile = TelegramProfile {
+        id: telegram_id,
+        username: None,
+        first_name: Some("Ксения".into()),
+        last_name: None,
+        language_code: Some("ru".into()),
+        is_premium: false,
+    };
+    services
+        .clients()
+        .ensure_telegram(&profile, RegistrationSource::Bot, None)
+        .await
+        .unwrap()
+        .0
+        .id
+}
+
+async fn tariff(services: &Services) -> Tariff {
+    let mut conn = services.store().conn().await.unwrap();
+    let category = conn
+        .tariffs()
+        .create_category(&NewCategory {
+            name: "Стандарт".into(),
+            sort: 0,
+            visible: true,
+        })
+        .await
+        .unwrap();
+    conn.tariffs()
+        .create(&NewTariff {
+            category_id: category.id,
+            name: "Стандарт".into(),
+            description: None,
+            on_sale: true,
+            sort: 0,
+            devices: DevicePolicy {
+                included: 3,
+                extra: None,
+            },
+            traffic: TrafficPolicy::UNLIMITED,
+            squads: vec![squad()],
+            external_squad: None,
+            periods: vec![NewPeriod {
+                days: 30,
+                prices: CurrencyPrices {
+                    usd: Some(299),
+                    rub: Some(19_900),
+                },
+                stars: Some(Stars(150)),
+                sort: 0,
+                active: true,
+            }],
+        })
+        .await
+        .unwrap()
+}
+
+async fn pending_crypto(
+    services: &Services,
+    client_id: ClientId,
+    tariff: &Tariff,
+    expires_at: DateTime<Utc>,
+) -> Payment {
+    pending_payment(
+        services,
+        client_id,
+        tariff,
+        expires_at,
+        providers::CRYPTOPAY,
+    )
+    .await
+}
+
+async fn pending_payment(
+    services: &Services,
+    client_id: ClientId,
+    tariff: &Tariff,
+    expires_at: DateTime<Utc>,
+    provider: &str,
+) -> Payment {
+    pending_payment_by(services, client_id, tariff, expires_at, provider, None).await
+}
+
+async fn pending_payment_by(
+    services: &Services,
+    client_id: ClientId,
+    tariff: &Tariff,
+    expires_at: DateTime<Utc>,
+    provider: &str,
+    method: Option<&str>,
+) -> Payment {
+    let period = &tariff.periods[0];
+    let q = quote(&QuoteRequest {
+        currency: Currency::Usd,
+        tariff,
+        period_id: period.id,
+        extra_devices: 0,
+        sell_extra_devices: false,
+        adjustments: &[],
+    })
+    .unwrap();
+    let mut tx = services.store().begin().await.unwrap();
+    let order = tx
+        .orders()
+        .create(&NewOrder {
+            client_id,
+            subscription_id: None,
+            kind: OrderKind::New,
+            intent: PurchaseIntent::Subscription {
+                tariff_id: tariff.id,
+                period_id: period.id,
+                extra_devices: 0,
+                target: None,
+            },
+            quote: q,
+            snapshot: Some(tariff.snapshot(period)),
+        })
+        .await
+        .unwrap();
+    let payment = tx
+        .payments()
+        .create(&NewPayment {
+            order_id: order.id,
+            client_id,
+            provider: ProviderId::from(provider),
+            method: method.map(str::to_string),
+            amount: Amount::new(299, PayCurrency::Usd),
+            expires_at: Some(expires_at),
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    payment
+}
+
+fn crypto_hook(payment: &Payment) -> InboundWebhook {
+    let body = serde_json::json!({
+        "update_id": 7, "update_type": "invoice_paid", "request_date": "2026-11-16T14:52:00.000Z",
+        "payload": {"invoice_id": 4242, "status": "paid", "currency_type": "fiat", "fiat": "USD",
+                    "amount": "2.99", "payload": payment.public_id.to_string()}
+    })
+    .to_string();
+    InboundWebhook {
+        provider: providers::CRYPTOPAY.into(),
+        request: WebhookRequest {
+            headers: vec![(
+                "crypto-pay-api-signature".into(),
+                cryptopay_signature(CRYPTO_TOKEN, body.as_bytes()),
+            )],
+            body: body.into_bytes().into(),
+            remote_ip: None,
+            route_suffix: None,
+            query: None,
+        },
+    }
+}
+
+async fn job_counts(services: &Services) -> Vec<(String, i64)> {
+    let mut conn = services.store().conn().await.unwrap();
+    conn.jobs().counts().await.unwrap()
+}
+
+#[tokio::test]
+async fn событие_remnawave_обрабатывается_задачей() {
+    let Some(db) = test_store().await else { return };
+    let services = Services::new(ServiceDeps {
+        store: db.store.clone(),
+        payments: Arc::new(ProviderRegistry::builtin()),
+        modules: Arc::new(ModuleRegistry::catalog_only()),
+        secrets: None,
+        clock: Arc::new(SystemClock),
+        env: EnvFallbacks::default(),
+    });
+    services.set_remna_webhook_secret(Some("0123456789abcdef0123456789abcdef".into()));
+    let body = br#"{"scope":"node","event":"node.connection_lost","timestamp":"2026-11-16T14:38:00.000Z","data":{"uuid":"00000000-0000-0000-0000-000000000002","name":"NL-2","address":"198.51.100.22","isConnected":false,"isDisabled":false}}"#;
+    let signature = sn_remnawave::webhook::sign("0123456789abcdef0123456789abcdef", body);
+    services
+        .remna_sync()
+        .accept_webhook(Some(&signature), body)
+        .await
+        .unwrap();
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    assert_eq!(worker.tick().await.unwrap(), 1);
+    assert_eq!(worker.tick().await.unwrap(), 0);
+    let mut conn = db.store.conn().await.unwrap();
+    assert_eq!(
+        conn.jobs().counts().await.unwrap(),
+        vec![("done".to_string(), 1)]
+    );
+    let feed = conn.remna_events().feed(None, 10).await.unwrap();
+    assert!(feed[0].processed_at.is_some());
+    assert_eq!(
+        feed[0].subject_id.as_deref(),
+        Some("00000000-0000-0000-0000-000000000002")
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn покупка_с_баланса_выдаётся_воркером() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 501).await;
+    let tariff = tariff(services).await;
+    services
+        .change_balance(BalanceChange {
+            client_id,
+            wallet: Wallet::Main,
+            amount: Money::new(500, Currency::Usd),
+            kind: LedgerKind::TopUp,
+            comment: None,
+            idempotency_key: "test:topup".into(),
+            order_id: None,
+            payment_id: None,
+        })
+        .await
+        .unwrap();
+    let result = services
+        .checkout()
+        .start(
+            client_id,
+            &CheckoutRequest {
+                cart: CartRequest {
+                    tariff_id: tariff.id,
+                    period_id: tariff.periods[0].id,
+                    extra_devices: 0,
+                    subscription_id: None,
+                    promo_code: None,
+                },
+                provider: providers::BALANCE.into(),
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, CheckoutResult::Completed { .. }));
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    worker.tick().await.unwrap();
+    assert_eq!(setup.remna.users().len(), 1);
+    let mut conn = services.store().conn().await.unwrap();
+    let subscriptions = conn.subscriptions().by_client(client_id).await.unwrap();
+    assert_eq!(subscriptions.len(), 1);
+    assert!(subscriptions[0].remna.is_some());
+    drop(conn);
+    let counts = job_counts(services).await;
+    assert!(counts.contains(&("done".to_string(), 1)), "{counts:?}");
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn периодическая_работа_не_чаще_интервала_и_пишет_итог() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let worker = Worker::new(setup.services.clone(), WorkerConfig::default());
+    let report = worker
+        .run_periodic(Periodic::Housekeeping)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(report["expired_payments"], 0);
+    assert_eq!(report["purged_webhooks"], 0);
+    assert_eq!(report["refunds"]["settled"], 0);
+    assert_eq!(report["refunds"]["failed"], 0);
+    assert_eq!(report["released_devices"], 0);
+    assert_eq!(
+        worker.run_periodic(Periodic::Housekeeping).await.unwrap(),
+        None
+    );
+    let state = periodic_state(&setup.services, Periodic::Housekeeping)
+        .await
+        .unwrap();
+    assert!(state.last_started_at.is_some());
+    assert!(state.last_success_at.is_some());
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.last_report, Some(report));
+    let renew = worker
+        .run_periodic(Periodic::AutoRenew)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renew["due"], 0);
+    let state = periodic_state(&setup.services, Periodic::AutoRenew)
+        .await
+        .unwrap();
+    assert!(state.last_success_at.is_some());
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn просроченный_счёт_отменяется_с_заказом_а_поздняя_оплата_проходит() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 502).await;
+    let tariff = tariff(services).await;
+    let payment = pending_crypto(
+        services,
+        client_id,
+        &tariff,
+        services.now() - chrono::Duration::minutes(5),
+    )
+    .await;
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    let report = worker
+        .run_periodic(Periodic::Housekeeping)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(report["expired_payments"], 1);
+    assert_eq!(report["canceled_orders"], 1);
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        assert_eq!(
+            conn.payments().get(payment.id).await.unwrap().status,
+            PaymentStatus::Canceled
+        );
+        assert_eq!(
+            conn.orders().get(payment.order_id).await.unwrap().status,
+            OrderStatus::Canceled
+        );
+    }
+    let reply = services
+        .inbox()
+        .handle(crypto_hook(&payment))
+        .await
+        .unwrap();
+    assert_eq!(reply.reply.status(), 200);
+    worker.tick().await.unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(payment.id).await.unwrap().status,
+        PaymentStatus::Paid
+    );
+    assert_eq!(
+        conn.orders().get(payment.order_id).await.unwrap().status,
+        OrderStatus::Fulfilled
+    );
+    drop(conn);
+    assert_eq!(setup.remna.users().len(), 1);
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn задачи_модулей_ставятся_раз_в_интервал() {
+    let ticker = Arc::new(Ticker {
+        runs: Mutex::new(Vec::new()),
+    });
+    let Some(setup) = setup(vec![ticker.clone()]).await else {
+        return;
+    };
+    let worker = Worker::new(setup.services.clone(), WorkerConfig::default());
+    let first = worker.schedule_module_tasks().await.unwrap();
+    assert_eq!(first["scheduled"], 1);
+    let second = worker.schedule_module_tasks().await.unwrap();
+    assert_eq!(second["scheduled"], 0);
+    assert_eq!(worker.tick().await.unwrap(), 1);
+    assert_eq!(*ticker.runs.lock().unwrap(), vec!["digest".to_string()]);
+    assert_eq!(
+        job_counts(&setup.services).await,
+        vec![("done".to_string(), 1)]
+    );
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn опрос_счёта_без_поддержки_у_кассы_завершается() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 503).await;
+    let tariff = tariff(services).await;
+    let payment = pending_payment(
+        services,
+        client_id,
+        &tariff,
+        services.now() + chrono::Duration::minutes(30),
+        providers::YOOMONEY,
+    )
+    .await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.payments()
+            .attach_invoice(
+                payment.id,
+                &sn_store::InvoiceUpdate {
+                    pay_url: Some("https://yoomoney.ru/quickpay/confirm".into()),
+                    provider_txid: Some("4242".into()),
+                    expires_at: None,
+                    payload: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        conn.jobs()
+            .enqueue(
+                &JobPayload::PollPayment {
+                    payment_id: payment.id,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    assert_eq!(worker.tick().await.unwrap(), 1);
+    assert_eq!(job_counts(services).await, vec![("done".to_string(), 1)]);
+    setup.db.cleanup().await;
+}
+
+struct Slow {
+    calls: Mutex<usize>,
+    pause: Duration,
+}
+
+#[async_trait]
+impl JobHandler for Slow {
+    async fn handle(
+        &self,
+        _services: &Services,
+        _payload: &JobPayload,
+        _attempt: u32,
+    ) -> JobResult {
+        *self.calls.lock().unwrap() += 1;
+        tokio::time::sleep(self.pause).await;
+        JobResult::Done
+    }
+}
+
+#[tokio::test]
+async fn долгая_задача_не_достаётся_второму_обработчику() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let slow = Arc::new(Slow {
+        calls: Mutex::new(0),
+        pause: Duration::from_millis(2_500),
+    });
+    {
+        let mut conn = setup.services.store().conn().await.unwrap();
+        conn.jobs()
+            .enqueue(&JobPayload::ProcessRemnaEvent { event_id: 1 }, None)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let first = Worker::new(
+        setup.services.clone(),
+        WorkerConfig {
+            lease: Duration::from_secs(1),
+            ..WorkerConfig::default()
+        },
+    )
+    .with_handler(slow.clone());
+    let second =
+        Worker::new(setup.services.clone(), WorkerConfig::default()).with_handler(slow.clone());
+    let (a, b) = tokio::join!(first.tick(), async {
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        second.tick().await
+    });
+    assert_eq!(a.unwrap(), 1);
+    assert_eq!(b.unwrap(), 0);
+    assert_eq!(*slow.calls.lock().unwrap(), 1);
+    assert_eq!(
+        job_counts(&setup.services).await,
+        vec![("done".to_string(), 1)]
+    );
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn давно_истёкшая_подписка_завершается_периодической_работой() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 504).await;
+    let subscription = {
+        let mut conn = services.store().conn().await.unwrap();
+        let identities: Vec<_> = conn
+            .clients()
+            .identities(client_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.kind, i.value))
+            .collect();
+        assert!(conn.trials().claim(client_id, &identities).await.unwrap());
+        let created = conn
+            .subscriptions()
+            .create(&NewSubscription {
+                client_id,
+                tariff_id: None,
+                kind: SubscriptionKind::Trial,
+                extra_devices: 0,
+                autorenew: AutoRenewState {
+                    enabled: true,
+                    period_id: None,
+                },
+            })
+            .await
+            .unwrap();
+        conn.subscriptions()
+            .apply_mirror(
+                created.id,
+                &RemnaMirror {
+                    status: Some(SubscriptionStatus::Expired),
+                    expire_at: Some(services.now() - chrono::Duration::days(120)),
+                    ..RemnaMirror::default()
+                },
+            )
+            .await
+            .unwrap();
+        created
+    };
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    for periodic in Periodic::ALL {
+        worker.run_periodic(periodic).await.unwrap();
+    }
+    let mut conn = services.store().conn().await.unwrap();
+    let current = conn.subscriptions().get(subscription.id).await.unwrap();
+    assert!(current.ended_at.is_some());
+    assert!(!current.autorenew.enabled);
+    drop(conn);
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оплаченный_заказ_после_исчерпания_попыток_выдаётся_досверкой() {
+    let clock = Arc::new(FixedClock::new(Utc::now()));
+    let Some(setup) = setup_with_clock(Vec::new(), clock.clone()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 505).await;
+    let tariff = tariff(services).await;
+    services
+        .change_balance(BalanceChange {
+            client_id,
+            wallet: Wallet::Main,
+            amount: Money::new(500, Currency::Usd),
+            kind: LedgerKind::TopUp,
+            comment: None,
+            idempotency_key: "test:topup:505".into(),
+            order_id: None,
+            payment_id: None,
+        })
+        .await
+        .unwrap();
+    let result = services
+        .checkout()
+        .start(
+            client_id,
+            &CheckoutRequest {
+                cart: CartRequest {
+                    tariff_id: tariff.id,
+                    period_id: tariff.periods[0].id,
+                    extra_devices: 0,
+                    subscription_id: None,
+                    promo_code: None,
+                },
+                provider: providers::BALANCE.into(),
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let CheckoutResult::Completed { order_id } = result else {
+        panic!("оплата с баланса должна проходить сразу: {result:?}");
+    };
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        let claimed = conn
+            .jobs()
+            .claim(10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        conn.jobs()
+            .review(claimed[0].id, "попытки кончились")
+            .await
+            .unwrap();
+    }
+    clock.set(Utc::now() + chrono::Duration::hours(2));
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    for periodic in Periodic::ALL {
+        let _ = worker.run_periodic(periodic).await;
+    }
+    worker.tick().await.unwrap();
+    assert_eq!(setup.remna.users().len(), 1);
+    let mut conn = services.store().conn().await.unwrap();
+    let order = conn.orders().by_public_id(order_id).await.unwrap();
+    assert_eq!(order.status, OrderStatus::Fulfilled);
+    drop(conn);
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn досверка_ставит_задачу_оплаченному_заказу_без_неё_и_не_трогает_ручную_проверку() {
+    let clock = Arc::new(FixedClock::new(Utc::now()));
+    let Some(setup) = setup_with_clock(Vec::new(), clock.clone()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 507).await;
+    let tariff = tariff(services).await;
+    let orphan = pending_payment(
+        services,
+        client_id,
+        &tariff,
+        services.now() + chrono::Duration::hours(1),
+        providers::CRYPTOPAY,
+    )
+    .await
+    .order_id;
+    let reviewed = pending_payment(
+        services,
+        client_id,
+        &tariff,
+        services.now() + chrono::Duration::hours(1),
+        providers::CRYPTOPAY,
+    )
+    .await
+    .order_id;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.orders()
+            .transition(orphan, OrderStatus::Paid)
+            .await
+            .unwrap();
+        conn.orders()
+            .transition(reviewed, OrderStatus::Paid)
+            .await
+            .unwrap();
+        conn.orders()
+            .mark_review(reviewed, "сквада нет в панели")
+            .await
+            .unwrap();
+    }
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    let early = worker
+        .run_periodic(Periodic::Redeliver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(early["requeued"], 0);
+    clock.set(Utc::now() + chrono::Duration::minutes(10));
+    let report = worker.redeliver().await.unwrap();
+    assert_eq!(report["stalled"], 1);
+    assert_eq!(report["requeued"], 1);
+    assert_eq!(worker.redeliver().await.unwrap()["requeued"], 0);
+    let mut conn = services.store().conn().await.unwrap();
+    let claimed = conn
+        .jobs()
+        .claim(10, Duration::from_secs(60))
+        .await
+        .unwrap();
+    let payloads: Vec<JobPayload> = claimed.iter().map(|j| j.typed().unwrap()).collect();
+    assert_eq!(
+        payloads,
+        vec![JobPayload::FulfillOrder { order_id: orphan }]
+    );
+    let audit = conn
+        .audit()
+        .for_entity(sn_store::audit_entity::ORDER, orphan.0, 10)
+        .await
+        .unwrap();
+    assert_eq!(audit[0].action, "order.redeliver");
+    assert_eq!(audit[0].actor_kind, "system");
+    drop(conn);
+    setup.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn опрос_автосписания_с_неизвестным_исходом_без_карты_уходит_на_ручную_проверку() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 506).await;
+    let tariff = tariff(services).await;
+    let payment = pending_payment_by(
+        services,
+        client_id,
+        &tariff,
+        services.now() + chrono::Duration::days(2),
+        providers::YOOKASSA,
+        Some(sn_services::autorenew::AUTORENEW_METHOD),
+    )
+    .await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.jobs()
+            .enqueue(
+                &JobPayload::PollPayment {
+                    payment_id: payment.id,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    assert_eq!(worker.tick().await.unwrap(), 1);
+    assert_eq!(job_counts(services).await, vec![("review".to_string(), 1)]);
+    let mut conn = services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(payment.id).await.unwrap().status,
+        PaymentStatus::Pending
+    );
+    drop(conn);
+    setup.db.cleanup().await;
+}
+
+struct RefundKassa;
+
+#[async_trait]
+impl PaymentProvider for RefundKassa {
+    fn id(&self) -> &'static str {
+        "refund_kassa"
+    }
+
+    fn title(&self) -> &'static str {
+        "Касса с отложенными возвратами"
+    }
+
+    fn currencies(&self) -> &'static [Currency] {
+        &Currency::ALL
+    }
+
+    fn client_label(&self, _currency: Currency) -> ClientLabel {
+        ClientLabel {
+            title: "Банковская карта",
+            hint: "Тестовая касса",
+        }
+    }
+
+    fn enabled_by_default(&self) -> bool {
+        true
+    }
+
+    fn supports_refunds(&self) -> bool {
+        true
+    }
+
+    async fn create_invoice(
+        &self,
+        _config: &ProviderConfig,
+        _request: &InvoiceRequest,
+    ) -> PaymentResult<Invoice> {
+        Err(PaymentError::Unsupported("счёт"))
+    }
+
+    async fn parse_webhook(
+        &self,
+        _config: &ProviderConfig,
+        _request: &WebhookRequest,
+    ) -> PaymentResult<WebhookOutcome> {
+        Err(PaymentError::BadSignature)
+    }
+
+    async fn refund(
+        &self,
+        _config: &ProviderConfig,
+        _request: &RefundRequest,
+    ) -> PaymentResult<RefundOutcome> {
+        Ok(RefundOutcome {
+            provider_refund_id: Some("kr-1".into()),
+            completed: false,
+        })
+    }
+
+    async fn fetch_refund(
+        &self,
+        _config: &ProviderConfig,
+        provider_refund_id: &str,
+    ) -> PaymentResult<Option<WebhookOutcome>> {
+        Ok(Some(WebhookOutcome {
+            event_key: format!("refund:{provider_refund_id}"),
+            payment: None,
+            provider_txid: None,
+            status: ProviderStatus::Refunded,
+            amount: None,
+            saved_method: None,
+            reply: WebhookReply::ok(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn опрос_оплаченного_автосписания_подтверждает_ожидающий_возврат() {
+    let Some(setup) = setup_full(
+        Vec::new(),
+        Arc::new(SystemClock),
+        ProviderRegistry::new(vec![Arc::new(RefundKassa)]),
+    )
+    .await
+    else {
+        return;
+    };
+    let services = &setup.services;
+    let client_id = client(services, 507).await;
+    let tariff = tariff(services).await;
+    let payment = pending_payment_by(
+        services,
+        client_id,
+        &tariff,
+        services.now() + chrono::Duration::days(2),
+        RefundKassa.id(),
+        Some(sn_services::autorenew::AUTORENEW_METHOD),
+    )
+    .await;
+    {
+        let mut tx = services.store().begin().await.unwrap();
+        tx.payments()
+            .transition(payment.id, PaymentStatus::Paid, Some("kx-507"), None)
+            .await
+            .unwrap();
+        tx.orders()
+            .transition(payment.order_id, OrderStatus::Paid)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    let (admin, _) = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap();
+    let requested = services
+        .inbox()
+        .refund(
+            payment.id,
+            &RefundCommand {
+                amount: None,
+                method: RefundMethod::Provider,
+                subscription_action: RefundSubscriptionAction::Keep,
+                reason: Some("Клиент передумал".into()),
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(requested.pending);
+    let result = CoreHandlers
+        .handle(
+            services,
+            &JobPayload::PollPayment {
+                payment_id: payment.id,
+            },
+            0,
+        )
+        .await;
+    assert_eq!(result, JobResult::Done);
+    let mut conn = services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(payment.id).await.unwrap().status,
+        PaymentStatus::Refunded,
+        "ожидающий возврат автосписания подтверждён опросом"
+    );
+    assert_eq!(
+        conn.payments().provider_refunds(payment.id).await.unwrap()[0].status,
+        ProviderRefundStatus::Succeeded
+    );
+    drop(conn);
+    setup.db.cleanup().await;
+}
+
+#[test]
+fn состояние_периодической_работы_читается_из_json() {
+    let at = DateTime::parse_from_rfc3339("2026-11-17T10:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let state = PeriodicState {
+        last_started_at: Some(at),
+        last_success_at: None,
+        last_error: Some("Remnawave недоступна".into()),
+        last_error_at: Some(at),
+        last_report: Some(serde_json::json!({"due": 3})),
+    };
+    assert_eq!(PeriodicState::from_json(&state.to_json()), state);
+    assert_eq!(
+        PeriodicState::from_json(&serde_json::json!({})),
+        PeriodicState::default()
+    );
+}

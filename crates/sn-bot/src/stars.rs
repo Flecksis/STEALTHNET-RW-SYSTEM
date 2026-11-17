@@ -1,0 +1,822 @@
+use crate::telegram::{Message, Update};
+use chrono::{DateTime, Utc};
+use sn_domain::ids::PaymentId;
+use sn_domain::payment::{Payment, PaymentStatus, providers};
+use sn_payments::providers::{
+    STARS_TOKEN_FIELD, StarTransaction, StarsPayment, StarsPaymentEvent, TelegramStars,
+};
+use sn_payments::{PaymentError, ProviderConfig};
+use sn_services::inbox::{AcceptResult, REPEAT_METHOD};
+use sn_services::{ServiceError, Services};
+use sn_store::{ActorKind, AuditEntry, Db, StoreError, StoreResult, audit_entity};
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+pub const OFFSET_PREFIX: &str = "telegram.stars_offset.";
+pub const QUICK_RETRIES: u32 = 3;
+pub const PAGE: u32 = 100;
+const PAGES_PER_RUN: u32 = 10;
+const BATCH: i64 = 50;
+const BATCHES_PER_TICK: u32 = 10;
+const GRACE: Duration = Duration::from_secs(60);
+const LEASE: Duration = Duration::from_secs(300);
+const MAX_DELAY: Duration = Duration::from_secs(1_800);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Update,
+    Reconcile,
+}
+
+impl Source {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Source::Update => "update",
+            Source::Reconcile => "reconcile",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Pending,
+    Done,
+    Skipped,
+    Review,
+}
+
+impl Status {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Status::Pending => "pending",
+            Status::Done => "done",
+            Status::Skipped => "skipped",
+            Status::Review => "review",
+        }
+    }
+
+    pub fn parse(value: &str) -> StoreResult<Self> {
+        match value {
+            "pending" => Ok(Status::Pending),
+            "done" => Ok(Status::Done),
+            "skipped" => Ok(Status::Skipped),
+            "review" => Ok(Status::Review),
+            other => Err(StoreError::Decode(format!(
+                "статус оплаты звёздами: {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settled {
+    Done,
+    Repeat,
+    Waiting(String),
+    Failed(String),
+}
+
+const REPEAT_NOTE: &str = "повторная оплата уже оплаченного счёта ждёт ручной проверки";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    Applied {
+        payment: Option<PaymentId>,
+        note: Option<String>,
+    },
+    Repeat(PaymentId),
+    Retry(String),
+    Skip(String),
+    Review {
+        payment: Option<PaymentId>,
+        error: String,
+    },
+}
+
+enum Prepared {
+    Ready,
+    Finished(Status),
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retried {
+    pub taken: u32,
+    pub applied: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reconciled {
+    pub read: u32,
+    pub recorded: u32,
+    pub more: bool,
+}
+
+pub fn offset_key(bot_id: i64) -> String {
+    format!("{OFFSET_PREFIX}{bot_id}")
+}
+
+pub const fn event_name(event: StarsPaymentEvent) -> &'static str {
+    match event {
+        StarsPaymentEvent::SuccessfulPayment => "successful_payment",
+        StarsPaymentEvent::RefundedPayment => "refunded_payment",
+    }
+}
+
+pub fn retry_delay(base: Duration, attempts: i32) -> Duration {
+    let step = u32::try_from(attempts.clamp(1, 7) - 1).unwrap_or(0);
+    base.saturating_mul(1 << step).min(MAX_DELAY)
+}
+
+pub fn from_message(message: &Message) -> Option<StarsPayment> {
+    let payer = message.from.as_ref().map_or(message.chat.id, |u| u.id);
+    if let Some(paid) = &message.successful_payment {
+        return Some(StarsPayment {
+            event: StarsPaymentEvent::SuccessfulPayment,
+            invoice_payload: paid.invoice_payload.clone(),
+            total_amount: paid.total_amount,
+            currency: paid.currency.clone(),
+            telegram_payment_charge_id: paid.telegram_payment_charge_id.clone(),
+            telegram_user_id: payer,
+        });
+    }
+    message
+        .refunded_payment
+        .as_ref()
+        .map(|refund| StarsPayment {
+            event: StarsPaymentEvent::RefundedPayment,
+            invoice_payload: refund.invoice_payload.clone(),
+            total_amount: refund.total_amount,
+            currency: refund.currency.clone(),
+            telegram_payment_charge_id: refund.telegram_payment_charge_id.clone(),
+            telegram_user_id: payer,
+        })
+}
+
+pub fn from_updates(updates: &[Update]) -> Vec<StarsPayment> {
+    updates
+        .iter()
+        .filter_map(|update| update.message.as_ref())
+        .filter_map(from_message)
+        .collect()
+}
+
+fn storable(event: &StarsPayment) -> bool {
+    !event.telegram_payment_charge_id.trim().is_empty()
+}
+
+fn later(services: &Services, delay: Duration) -> DateTime<Utc> {
+    services.now()
+        + chrono::Duration::from_std(delay).unwrap_or_else(|_| chrono::Duration::minutes(30))
+}
+
+async fn insert(
+    db: &mut impl Db,
+    event: &StarsPayment,
+    source: Source,
+    due: DateTime<Utc>,
+) -> StoreResult<bool> {
+    let inserted = sqlx::query(
+        "INSERT INTO bot_star_events (charge_id, event, payload, source, next_attempt_at) \
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (charge_id, event) DO NOTHING",
+    )
+    .bind(&event.telegram_payment_charge_id)
+    .bind(event_name(event.event))
+    .bind(serde_json::to_value(event)?)
+    .bind(source.as_str())
+    .bind(due)
+    .execute(db.conn())
+    .await?;
+    Ok(inserted.rows_affected() == 1)
+}
+
+pub async fn record(services: &Services, events: &[StarsPayment]) -> StoreResult<u32> {
+    let mut added = 0;
+    if events.is_empty() {
+        return Ok(added);
+    }
+    let due = later(services, GRACE);
+    let mut tx = services.store().begin().await?;
+    for event in events {
+        if !storable(event) {
+            tracing::warn!(
+                event = event_name(event.event),
+                "оплата звёздами пришла без идентификатора транзакции"
+            );
+            continue;
+        }
+        if insert(&mut tx, event, Source::Update, due).await? {
+            added += 1;
+        }
+    }
+    tx.commit().await?;
+    Ok(added)
+}
+
+async fn stored_status(db: &mut impl Db, event: &StarsPayment) -> StoreResult<Option<Status>> {
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM bot_star_events WHERE charge_id = $1 AND event = $2",
+    )
+    .bind(&event.telegram_payment_charge_id)
+    .bind(event_name(event.event))
+    .fetch_optional(db.conn())
+    .await?;
+    stored.as_deref().map(Status::parse).transpose()
+}
+
+pub async fn status(services: &Services, event: &StarsPayment) -> StoreResult<Option<Status>> {
+    let mut conn = services.store().conn().await?;
+    stored_status(&mut conn, event).await
+}
+
+async fn waits_for_payment(db: &mut impl Db, charge: &str) -> StoreResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM bot_star_events \
+         WHERE charge_id = $1 AND event = 'successful_payment' AND status = 'pending')",
+    )
+    .bind(charge)
+    .fetch_one(db.conn())
+    .await?)
+}
+
+async fn prepare(services: &Services, event: &StarsPayment) -> StoreResult<Prepared> {
+    let mut conn = services.store().conn().await?;
+    insert(&mut conn, event, Source::Update, later(services, GRACE)).await?;
+    let status = stored_status(&mut conn, event)
+        .await?
+        .unwrap_or(Status::Pending);
+    if status != Status::Pending {
+        return Ok(Prepared::Finished(status));
+    }
+    if event.event == StarsPaymentEvent::RefundedPayment
+        && waits_for_payment(&mut conn, &event.telegram_payment_charge_id).await?
+    {
+        return Ok(Prepared::Blocked);
+    }
+    Ok(Prepared::Ready)
+}
+
+pub async fn settle(services: &Services, event: &StarsPayment) -> Settled {
+    let kept = storable(event);
+    if kept {
+        match prepare(services, event).await {
+            Ok(Prepared::Ready) => {}
+            Ok(Prepared::Finished(Status::Done)) => return Settled::Done,
+            Ok(Prepared::Finished(status)) => {
+                return Settled::Failed(format!(
+                    "оплата уже разобрана со статусом {}",
+                    status.as_str()
+                ));
+            }
+            Ok(Prepared::Blocked) => {
+                return Settled::Waiting("возврат ждёт, пока проведётся оплата".into());
+            }
+            Err(err) => {
+                tracing::warn!(
+                    charge = %event.telegram_payment_charge_id,
+                    error = %err,
+                    "оплата звёздами не записана перед проведением"
+                );
+            }
+        }
+    }
+    let verdict = process(services, event, QUICK_RETRIES).await;
+    if kept && let Err(err) = finish(services, event, &verdict, Duration::ZERO).await {
+        tracing::warn!(
+            charge = %event.telegram_payment_charge_id,
+            error = %err,
+            "итог оплаты звёздами не сохранён, повторим"
+        );
+    }
+    match verdict {
+        Verdict::Applied { .. } => Settled::Done,
+        Verdict::Repeat(_) => Settled::Repeat,
+        Verdict::Retry(error) => Settled::Waiting(error),
+        Verdict::Skip(error) | Verdict::Review { error, .. } => Settled::Failed(error),
+    }
+}
+
+async fn process(services: &Services, event: &StarsPayment, retries: u32) -> Verdict {
+    let mut attempt: u32 = 0;
+    loop {
+        match services.inbox().stars_payment(event).await {
+            Ok(result) => return accepted(services, event, result).await,
+            Err(err) if err.is_retryable() && attempt < retries => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(400 * u64::from(attempt))).await;
+            }
+            Err(err) => return rejected(err),
+        }
+    }
+}
+
+async fn accepted(services: &Services, event: &StarsPayment, result: AcceptResult) -> Verdict {
+    match result {
+        AcceptResult::Accepted { payment_id, .. }
+            if event.event == StarsPaymentEvent::SuccessfulPayment =>
+        {
+            match is_repeat(services, payment_id).await {
+                Ok(true) => Verdict::Repeat(payment_id),
+                Ok(false) => Verdict::Applied {
+                    payment: Some(payment_id),
+                    note: None,
+                },
+                Err(err) => {
+                    tracing::warn!(payment = %payment_id, error = %err, "не удалось проверить, повторная ли это оплата звёздами");
+                    Verdict::Applied {
+                        payment: Some(payment_id),
+                        note: None,
+                    }
+                }
+            }
+        }
+        AcceptResult::Accepted { payment_id, .. }
+        | AcceptResult::StatusChanged { payment_id, .. } => Verdict::Applied {
+            payment: Some(payment_id),
+            note: None,
+        },
+        AcceptResult::AlreadyApplied { payment_id }
+            if event.event == StarsPaymentEvent::SuccessfulPayment =>
+        {
+            match recorded_charge(services, payment_id).await {
+                Ok(Some(charge)) if charge != event.telegram_payment_charge_id => Verdict::Review {
+                    payment: Some(payment_id),
+                    error: format!("счёт уже оплачен другой транзакцией Telegram {charge}"),
+                },
+                Ok(_) => Verdict::Applied {
+                    payment: Some(payment_id),
+                    note: None,
+                },
+                Err(err) => Verdict::Retry(err.to_string()),
+            }
+        }
+        AcceptResult::AlreadyApplied { payment_id } => Verdict::Applied {
+            payment: Some(payment_id),
+            note: None,
+        },
+        AcceptResult::Ignored { reason } => Verdict::Applied {
+            payment: None,
+            note: Some(reason),
+        },
+    }
+}
+
+async fn recorded_charge(services: &Services, payment: PaymentId) -> StoreResult<Option<String>> {
+    let mut conn = services.store().conn().await?;
+    Ok(conn.payments().get(payment).await?.provider_txid)
+}
+
+async fn is_repeat(services: &Services, payment: PaymentId) -> StoreResult<bool> {
+    let mut conn = services.store().conn().await?;
+    Ok(conn.payments().get(payment).await?.method.as_deref() == Some(REPEAT_METHOD))
+}
+
+fn rejected(err: ServiceError) -> Verdict {
+    if err.is_retryable() {
+        return Verdict::Retry(err.to_string());
+    }
+    match err {
+        ServiceError::Store(StoreError::NotFound(_))
+        | ServiceError::Payment(PaymentError::BadPayload(_)) => Verdict::Skip(err.to_string()),
+        other => Verdict::Review {
+            payment: None,
+            error: other.to_string(),
+        },
+    }
+}
+
+async fn mark_done(
+    db: &mut impl Db,
+    event: &StarsPayment,
+    payment: Option<PaymentId>,
+    note: Option<&str>,
+) -> StoreResult<()> {
+    sqlx::query(
+        "UPDATE bot_star_events SET status = 'done', attempts = attempts + 1, last_error = $3, \
+         payment_id = COALESCE($4, payment_id) \
+         WHERE charge_id = $1 AND event = $2 AND status = 'pending'",
+    )
+    .bind(&event.telegram_payment_charge_id)
+    .bind(event_name(event.event))
+    .bind(note)
+    .bind(payment.map(|p| p.0))
+    .execute(db.conn())
+    .await?;
+    Ok(())
+}
+
+async fn finish(
+    services: &Services,
+    event: &StarsPayment,
+    verdict: &Verdict,
+    delay: Duration,
+) -> StoreResult<()> {
+    let charge = &event.telegram_payment_charge_id;
+    let name = event_name(event.event);
+    let mut tx = services.store().begin().await?;
+    match verdict {
+        Verdict::Applied { payment, note } => {
+            mark_done(&mut tx, event, *payment, note.as_deref()).await?;
+        }
+        Verdict::Repeat(payment) => {
+            mark_done(&mut tx, event, Some(*payment), Some(REPEAT_NOTE)).await?;
+        }
+        Verdict::Retry(error) => {
+            sqlx::query(
+                "UPDATE bot_star_events SET attempts = attempts + 1, last_error = $3, next_attempt_at = $4 \
+                 WHERE charge_id = $1 AND event = $2 AND status = 'pending'",
+            )
+            .bind(charge)
+            .bind(name)
+            .bind(error)
+            .bind(later(services, delay))
+            .execute(tx.conn())
+            .await?;
+        }
+        Verdict::Skip(error) => {
+            sqlx::query(
+                "UPDATE bot_star_events SET status = 'skipped', attempts = attempts + 1, last_error = $3 \
+                 WHERE charge_id = $1 AND event = $2 AND status = 'pending'",
+            )
+            .bind(charge)
+            .bind(name)
+            .bind(error)
+            .execute(tx.conn())
+            .await?;
+            tracing::warn!(charge = %charge, event = name, error = %error, "оплата звёздами не к нашему счёту");
+        }
+        Verdict::Review { payment, error } => {
+            let payment = match payment {
+                Some(id) => Some(*id),
+                None => ours(&mut tx, &event.invoice_payload).await?.map(|p| p.id),
+            };
+            let flagged = sqlx::query(
+                "UPDATE bot_star_events SET status = 'review', attempts = attempts + 1, last_error = $3, \
+                 payment_id = COALESCE($4, payment_id) \
+                 WHERE charge_id = $1 AND event = $2 AND status = 'pending'",
+            )
+            .bind(charge)
+            .bind(name)
+            .bind(error)
+            .bind(payment.map(|p| p.0))
+            .execute(tx.conn())
+            .await?;
+            if flagged.rows_affected() > 0 {
+                tx.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::Bot,
+                        actor_id: None,
+                        action: "payment.stars_review".into(),
+                        entity_kind: payment.map(|_| audit_entity::PAYMENT.to_string()),
+                        entity_id: payment.map(|p| p.0),
+                        details: serde_json::json!({
+                            "event": name,
+                            "charge_id": charge,
+                            "stars": event.total_amount,
+                            "telegram_user_id": event.telegram_user_id,
+                            "invoice_payload": event.invoice_payload,
+                            "error": error,
+                        }),
+                        ip: None,
+                    })
+                    .await?;
+                tracing::error!(charge = %charge, event = name, error = %error, "оплата звёздами ждёт ручной проверки");
+            }
+        }
+    }
+    tx.commit().await
+}
+
+async fn claim(services: &Services) -> StoreResult<Vec<(String, String, serde_json::Value, i32)>> {
+    let mut conn = services.store().conn().await?;
+    Ok(sqlx::query_as(
+        "UPDATE bot_star_events SET next_attempt_at = $2 \
+         WHERE (charge_id, event) IN ( \
+             SELECT e.charge_id, e.event FROM bot_star_events e \
+             WHERE e.status = 'pending' AND e.next_attempt_at <= $1 \
+               AND NOT (e.event = 'refunded_payment' AND EXISTS ( \
+                   SELECT 1 FROM bot_star_events s \
+                   WHERE s.charge_id = e.charge_id AND s.event = 'successful_payment' \
+                     AND s.status = 'pending')) \
+             ORDER BY e.next_attempt_at \
+             LIMIT $3 \
+             FOR UPDATE OF e SKIP LOCKED) \
+         RETURNING charge_id, event, payload, attempts",
+    )
+    .bind(services.now())
+    .bind(later(services, LEASE))
+    .bind(BATCH)
+    .fetch_all(conn.conn())
+    .await?)
+}
+
+async fn quarantine(
+    services: &Services,
+    charge: &str,
+    event: &str,
+    error: &str,
+) -> StoreResult<()> {
+    let mut conn = services.store().conn().await?;
+    sqlx::query(
+        "UPDATE bot_star_events SET status = 'review', last_error = $3 \
+         WHERE charge_id = $1 AND event = $2 AND status = 'pending'",
+    )
+    .bind(charge)
+    .bind(event)
+    .bind(error)
+    .execute(conn.conn())
+    .await?;
+    tracing::error!(charge = %charge, event = %event, error = %error, "сохранённая оплата звёздами не разобрана");
+    Ok(())
+}
+
+pub async fn retry_due(services: &Services, base: Duration) -> StoreResult<Retried> {
+    let mut report = Retried::default();
+    for _ in 0..BATCHES_PER_TICK {
+        let claimed = claim(services).await?;
+        let full = claimed.len() as i64 >= BATCH;
+        for (charge, name, payload, attempts) in claimed {
+            report.taken += 1;
+            let event: StarsPayment = match serde_json::from_value(payload) {
+                Ok(event) => event,
+                Err(err) => {
+                    quarantine(services, &charge, &name, &err.to_string()).await?;
+                    continue;
+                }
+            };
+            let verdict = process(services, &event, 0).await;
+            if matches!(verdict, Verdict::Applied { .. } | Verdict::Repeat(_)) {
+                report.applied += 1;
+            }
+            let delay = retry_delay(base, attempts.saturating_add(1));
+            finish(services, &event, &verdict, delay).await?;
+        }
+        if !full {
+            break;
+        }
+    }
+    Ok(report)
+}
+
+async fn ours(db: &mut impl Db, payload: &str) -> StoreResult<Option<Payment>> {
+    let Ok(public_id) = Uuid::parse_str(payload.trim()) else {
+        return Ok(None);
+    };
+    match db.payments().by_public_id(public_id).await {
+        Ok(payment) if payment.provider.as_str() == providers::STARS => Ok(Some(payment)),
+        Ok(_) | Err(StoreError::NotFound(_)) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+async fn paid_with(db: &mut impl Db, charge: &str) -> StoreResult<Option<Payment>> {
+    if let Some(payment) = db
+        .payments()
+        .by_provider_txid(providers::STARS, charge)
+        .await?
+    {
+        return Ok(Some(payment));
+    }
+    let stored: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT payload FROM bot_star_events WHERE charge_id = $1 AND event = 'successful_payment'",
+    )
+    .bind(charge)
+    .fetch_optional(db.conn())
+    .await?;
+    match stored.and_then(|value| serde_json::from_value::<StarsPayment>(value).ok()) {
+        Some(paid) => ours(db, &paid.invoice_payload).await,
+        None => Ok(None),
+    }
+}
+
+async fn wanted(
+    db: &mut impl Db,
+    transaction: &StarTransaction,
+) -> StoreResult<Option<StarsPayment>> {
+    if let Some(event) = transaction.payment_event() {
+        let Some(payment) = ours(db, &event.invoice_payload).await? else {
+            return Ok(None);
+        };
+        let applied = payment.status.is_paid_like()
+            && payment.provider_txid.as_deref() == Some(transaction.id.as_str());
+        return Ok((!applied).then_some(event));
+    }
+    if !transaction.is_refund() {
+        return Ok(None);
+    }
+    let named = match transaction.invoice_payload.as_deref() {
+        Some(payload) => ours(db, payload).await?,
+        None => None,
+    };
+    let payment = match named {
+        Some(payment) => Some(payment),
+        None => paid_with(db, &transaction.id).await?,
+    };
+    Ok(payment
+        .filter(|p| p.status != PaymentStatus::Refunded)
+        .and_then(|p| transaction.refund_event(&p.public_id.to_string())))
+}
+
+pub async fn reconcile(
+    services: &Services,
+    stars: &TelegramStars,
+    config: &ProviderConfig,
+    bot_id: i64,
+) -> Result<Reconciled, ServiceError> {
+    let key = offset_key(bot_id);
+    let mut cursor = {
+        let mut conn = services.store().conn().await?;
+        conn.bot_state()
+            .get(&key)
+            .await?
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0)
+    };
+    let mut report = Reconciled::default();
+    for _ in 0..PAGES_PER_RUN {
+        let page = stars.star_transactions(config, cursor, PAGE).await?;
+        if page.is_empty() {
+            return Ok(report);
+        }
+        let read = u32::try_from(page.len()).unwrap_or(PAGE);
+        let due = services.now();
+        let mut tx = services.store().begin().await?;
+        for transaction in &page {
+            if let Some(event) = wanted(&mut tx, transaction).await?
+                && insert(&mut tx, &event, Source::Reconcile, due).await?
+            {
+                report.recorded += 1;
+            }
+        }
+        cursor = cursor.saturating_add(read);
+        tx.bot_state().set(&key, &serde_json::json!(cursor)).await?;
+        tx.commit().await?;
+        report.read += read;
+        if read < PAGE {
+            return Ok(report);
+        }
+    }
+    report.more = true;
+    Ok(report)
+}
+
+pub struct Keeper {
+    services: Services,
+    stars: TelegramStars,
+    config: ProviderConfig,
+    bot_id: i64,
+    retry_every: Duration,
+    reconcile_every: Duration,
+}
+
+impl Keeper {
+    pub fn new(
+        services: Services,
+        api_base: &str,
+        token: &str,
+        bot_id: i64,
+        retry_every: Duration,
+        reconcile_every: Duration,
+    ) -> Self {
+        let mut config = ProviderConfig::default();
+        config.set(
+            STARS_TOKEN_FIELD,
+            serde_json::Value::String(token.to_string()),
+        );
+        Keeper {
+            services,
+            stars: TelegramStars::with_api_base(api_base),
+            config,
+            bot_id,
+            retry_every: retry_every.max(Duration::from_millis(10)),
+            reconcile_every,
+        }
+    }
+
+    async fn reconcile_once(&self) -> bool {
+        match reconcile(&self.services, &self.stars, &self.config, self.bot_id).await {
+            Ok(report) => {
+                if report.recorded > 0 {
+                    tracing::info!(
+                        read = report.read,
+                        recorded = report.recorded,
+                        "сверка звёзд нашла непроведённые оплаты или возвраты"
+                    );
+                }
+                report.more
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "сверка транзакций звёзд не удалась");
+                false
+            }
+        }
+    }
+
+    pub async fn run(self, cancel: CancellationToken) {
+        let mut next_reconcile = tokio::time::Instant::now();
+        loop {
+            if cancel.is_cancelled() {
+                return;
+            }
+            if tokio::time::Instant::now() >= next_reconcile {
+                let more = self.reconcile_once().await;
+                next_reconcile = tokio::time::Instant::now()
+                    + if more {
+                        Duration::ZERO
+                    } else {
+                        self.reconcile_every
+                    };
+            }
+            match retry_due(&self.services, self.retry_every).await {
+                Ok(report) if report.taken > 0 => tracing::info!(
+                    taken = report.taken,
+                    applied = report.applied,
+                    "оплаты звёздами проведены повторно"
+                ),
+                Ok(_) => {}
+                Err(err) => tracing::warn!(error = %err, "повтор оплат звёздами не удался"),
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(self.retry_every) => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn пауза_между_повторами_растёт_до_получаса() {
+        let base = Duration::from_secs(30);
+        assert_eq!(retry_delay(base, 0), base);
+        assert_eq!(retry_delay(base, 1), base);
+        assert_eq!(retry_delay(base, 2), Duration::from_secs(60));
+        assert_eq!(retry_delay(base, 6), Duration::from_secs(960));
+        assert_eq!(retry_delay(base, 7), MAX_DELAY);
+        assert_eq!(retry_delay(base, i32::MAX), MAX_DELAY);
+        assert_eq!(
+            retry_delay(Duration::from_millis(100), 3),
+            Duration::from_millis(400)
+        );
+    }
+
+    #[test]
+    fn оплаты_и_возвраты_звёзд_извлекаются_из_апдейтов() {
+        let updates: Vec<Update> = serde_json::from_value(serde_json::json!([
+            {"update_id": 1, "message": {
+                "message_id": 1, "from": {"id": 42, "first_name": "А"},
+                "chat": {"id": 42, "type": "private"}, "date": 1,
+                "successful_payment": {"currency": "XTR", "total_amount": 350,
+                    "invoice_payload": "p-1", "telegram_payment_charge_id": "c-1"}}},
+            {"update_id": 2, "message": {
+                "message_id": 2, "chat": {"id": 43, "type": "private"}, "date": 1,
+                "refunded_payment": {"currency": "XTR", "total_amount": 150,
+                    "invoice_payload": "p-2", "telegram_payment_charge_id": "c-2"}}},
+            {"update_id": 3, "message": {
+                "message_id": 3, "from": {"id": 44, "first_name": "Б"},
+                "chat": {"id": 44, "type": "private"}, "date": 1, "text": "/start"}},
+            {"update_id": 4, "callback_query": {
+                "id": "cb", "from": {"id": 45, "first_name": "В"}, "data": "m"}}
+        ]))
+        .unwrap();
+        let events = from_updates(&updates);
+        assert_eq!(
+            events,
+            vec![
+                StarsPayment {
+                    event: StarsPaymentEvent::SuccessfulPayment,
+                    invoice_payload: "p-1".into(),
+                    total_amount: 350,
+                    currency: "XTR".into(),
+                    telegram_payment_charge_id: "c-1".into(),
+                    telegram_user_id: 42,
+                },
+                StarsPayment {
+                    event: StarsPaymentEvent::RefundedPayment,
+                    invoice_payload: "p-2".into(),
+                    total_amount: 150,
+                    currency: "XTR".into(),
+                    telegram_payment_charge_id: "c-2".into(),
+                    telegram_user_id: 43,
+                },
+            ]
+        );
+        assert!(events.iter().all(storable));
+        assert_eq!(offset_key(7_001), "telegram.stars_offset.7001");
+        assert_eq!(event_name(events[1].event), "refunded_payment");
+        for status in [
+            Status::Pending,
+            Status::Done,
+            Status::Skipped,
+            Status::Review,
+        ] {
+            assert_eq!(Status::parse(status.as_str()).unwrap(), status);
+        }
+        assert!(Status::parse("lost").is_err());
+    }
+}

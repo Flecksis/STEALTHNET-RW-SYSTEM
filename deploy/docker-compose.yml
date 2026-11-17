@@ -1,0 +1,38 @@
+name: stealthnet
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: stealthnet
+      POSTGRES_USER: stealthnet
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в deploy/.env}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stealthnet -d stealthnet"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: stealthnet:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://stealthnet:${POSTGRES_PASSWORD}@postgres:5432/stealthnet
+      SN_BIND: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  postgres-data:

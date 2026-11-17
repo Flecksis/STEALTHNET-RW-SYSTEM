@@ -1,0 +1,219 @@
+use super::{decode, json};
+use crate::error::{ApiError, ApiResult};
+use crate::extract::{ApiJson, CurrentAdmin};
+use crate::state::AppState;
+use axum::extract::{Path, State};
+use axum::routing::{get, patch, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use sn_domain::access::Permission;
+use sn_domain::module::ModuleId;
+use sn_domain::settings::{AutoRenewSettings, TrialSettings};
+use sn_modules::ModuleView;
+use sn_services::settings::{
+    BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
+    ProviderUpdate, RemnaCheck, RemnaCheckRequest, RemnaUpdate, SubscriptionSettingsUpdate,
+    WebhookSecret,
+};
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/settings/{section}", get(read).put(write))
+        .route("/settings/remnawave/check", post(check_remnawave))
+        .route("/settings/remnawave/webhook-secret", post(webhook_secret))
+        .route("/payments/providers", get(providers))
+        .route(
+            "/payments/providers/{id}",
+            get(provider).put(update_provider),
+        )
+        .route("/modules", get(modules))
+        .route("/modules/{id}", patch(toggle_module))
+        .route(
+            "/modules/{id}/config",
+            get(module_config).put(update_module_config),
+        )
+}
+
+async fn read(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(section): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    let ops = state.services.settings_ops();
+    let value = match section.as_str() {
+        "core" => json(&ops.core())?,
+        "payments" => json(&ops.payments())?,
+        "trial" => json(&ops.trial())?,
+        "autorenew" => json(&ops.autorenew())?,
+        "remnawave" => json(&ops.remnawave().await?)?,
+        "subscription" => json(&ops.subscription_settings().await?)?,
+        "bot" => json(&ops.bot().await?)?,
+        _ => return Err(ApiError::not_found()),
+    };
+    Ok(Json(value))
+}
+
+async fn write(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(section): Path<String>,
+    ApiJson(body): ApiJson<serde_json::Value>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    let ops = state.services.settings_ops();
+    let by = admin.0.admin_id;
+    let value = match section.as_str() {
+        "core" => json(&ops.update_core(&decode::<CoreUpdate>(body)?, by).await?)?,
+        "payments" => json(
+            &ops.update_payments(&decode::<PaymentsUpdate>(body)?, by)
+                .await?,
+        )?,
+        "trial" => json(
+            &ops.update_trial(&decode::<TrialSettings>(body)?, by)
+                .await?,
+        )?,
+        "autorenew" => json(
+            &ops.update_autorenew(&decode::<AutoRenewSettings>(body)?, by)
+                .await?,
+        )?,
+        "remnawave" => json(
+            &ops.update_remnawave(&decode::<RemnaUpdate>(body)?, by)
+                .await?,
+        )?,
+        "subscription" => json(
+            &ops.update_subscription_settings(&decode::<SubscriptionSettingsUpdate>(body)?, by)
+                .await?,
+        )?,
+        "bot" => json(&ops.update_bot(&decode::<BotUpdate>(body)?, by).await?)?,
+        _ => return Err(ApiError::not_found()),
+    };
+    Ok(Json(value))
+}
+
+async fn check_remnawave(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    body: Option<ApiJson<RemnaCheckRequest>>,
+) -> ApiResult<Json<RemnaCheck>> {
+    admin.require(Permission::Settings)?;
+    let body = body.map(|b| b.0).unwrap_or_default();
+    Ok(Json(
+        state.services.settings_ops().check_remnawave(&body).await?,
+    ))
+}
+
+async fn webhook_secret(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<WebhookSecret>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .generate_remna_webhook_secret(admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn providers(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    let payments = state.services.settings_ops().payments();
+    Ok(Json(serde_json::json!({
+        "currency": payments.currency,
+        "order": payments.order,
+        "providers": payments.providers,
+    })))
+}
+
+async fn provider(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ProviderDetails>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.settings_ops().provider(&id)?))
+}
+
+async fn update_provider(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ProviderUpdate>,
+) -> ApiResult<Json<ProviderDetails>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .update_provider(&id, &body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn modules(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Modules)?;
+    Ok(Json(serde_json::json!({
+        "modules": state.services.modules().views(),
+        "core": sn_domain::module::CoreFeature::ALL.map(|f| f.title_ru()),
+    })))
+}
+
+fn module_id(id: &str) -> ApiResult<ModuleId> {
+    ModuleId::parse(id).map_err(|_| ApiError::not_found())
+}
+
+#[derive(Deserialize)]
+struct ToggleRequest {
+    enabled: bool,
+}
+
+async fn toggle_module(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ToggleRequest>,
+) -> ApiResult<Json<ModuleView>> {
+    admin.require(Permission::Modules)?;
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .toggle_module(module_id(&id)?, body.enabled, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn module_config(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ModuleConfigView>> {
+    admin.require(Permission::Modules)?;
+    Ok(Json(
+        state.services.settings_ops().module_config(module_id(&id)?),
+    ))
+}
+
+async fn update_module_config(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ModuleConfigUpdate>,
+) -> ApiResult<Json<ModuleConfigView>> {
+    admin.require(Permission::Modules)?;
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .update_module_config(module_id(&id)?, &body, admin.0.admin_id)
+            .await?,
+    ))
+}

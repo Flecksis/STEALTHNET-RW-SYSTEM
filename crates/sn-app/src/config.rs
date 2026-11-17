@@ -1,0 +1,194 @@
+use anyhow::{Context, Result, bail};
+use sn_server::ServerConfig;
+use sn_services::{EnvFallbacks, RemnaConnection};
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub database_url: String,
+    pub db_max_connections: u32,
+    pub secret_key: Option<String>,
+    pub log_filter: String,
+    pub log_format: LogFormat,
+    pub migrate_on_start: bool,
+    pub run_worker: bool,
+    pub run_bot: bool,
+    pub server: ServerConfig,
+    pub env: EnvFallbacks,
+}
+
+fn flag(vars: &HashMap<String, String>, key: &str, default: bool) -> Result<bool> {
+    match vars.get(key).map(|v| v.trim().to_ascii_lowercase()) {
+        None => Ok(default),
+        Some(v) if v.is_empty() => Ok(default),
+        Some(v) if ["1", "true", "yes", "on"].contains(&v.as_str()) => Ok(true),
+        Some(v) if ["0", "false", "no", "off"].contains(&v.as_str()) => Ok(false),
+        Some(v) => bail!("{key}: ожидается true или false, получено «{v}»"),
+    }
+}
+
+fn text(vars: &HashMap<String, String>, key: &str) -> Option<String> {
+    vars.get(key)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn list(vars: &HashMap<String, String>, key: &str) -> Vec<String> {
+    text(vars, key)
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl Config {
+    pub fn from_env() -> Result<Self> {
+        Self::from_vars(&std::env::vars().collect())
+    }
+
+    pub fn from_vars(vars: &HashMap<String, String>) -> Result<Self> {
+        let database_url = text(vars, "DATABASE_URL").context("не задан DATABASE_URL")?;
+        let bind: SocketAddr = text(vars, "SN_BIND")
+            .unwrap_or_else(|| "0.0.0.0:8080".into())
+            .parse()
+            .context("SN_BIND: ожидается адрес вида 0.0.0.0:8080")?;
+        let public_url = text(vars, "SN_PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string());
+        if let Some(url) = &public_url
+            && !(url.starts_with("https://") || url.starts_with("http://"))
+        {
+            bail!("SN_PUBLIC_URL должен начинаться с https://");
+        }
+        let trusted_proxies = list(vars, "SN_TRUSTED_PROXIES")
+            .iter()
+            .map(|ip| {
+                ip.parse::<IpAddr>()
+                    .with_context(|| format!("SN_TRUSTED_PROXIES: «{ip}» не IP-адрес"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let db_max_connections = text(vars, "SN_DB_MAX_CONNECTIONS")
+            .map(|v| {
+                v.parse::<u32>()
+                    .context("SN_DB_MAX_CONNECTIONS: ожидается число")
+            })
+            .transpose()?
+            .unwrap_or(16)
+            .clamp(2, 200);
+        let log_format = match text(vars, "SN_LOG_FORMAT").as_deref() {
+            None | Some("text") => LogFormat::Text,
+            Some("json") => LogFormat::Json,
+            Some(other) => bail!("SN_LOG_FORMAT: text или json, получено «{other}»"),
+        };
+        let remna = match (text(vars, "REMNAWAVE_URL"), text(vars, "REMNAWAVE_TOKEN")) {
+            (url, token)
+                if url.is_some()
+                    || token.is_some()
+                    || text(vars, "REMNAWAVE_WEBHOOK_SECRET").is_some() =>
+            {
+                Some(RemnaConnection {
+                    url: url.unwrap_or_default(),
+                    token: token.unwrap_or_default(),
+                    cookie: text(vars, "REMNAWAVE_COOKIE"),
+                    webhook_secret: text(vars, "REMNAWAVE_WEBHOOK_SECRET"),
+                })
+            }
+            _ => None,
+        };
+        Ok(Config {
+            database_url,
+            db_max_connections,
+            secret_key: text(vars, "SN_SECRET_KEY"),
+            log_filter: text(vars, "SN_LOG").unwrap_or_else(|| "info".into()),
+            log_format,
+            migrate_on_start: flag(vars, "SN_MIGRATE_ON_START", true)?,
+            run_worker: flag(vars, "SN_RUN_WORKER", true)?,
+            run_bot: flag(vars, "SN_RUN_BOT", true)?,
+            server: ServerConfig {
+                bind,
+                public_url: public_url.clone(),
+                trusted_proxies,
+                cors_origins: list(vars, "SN_CORS_ORIGINS"),
+                ..ServerConfig::default()
+            },
+            env: EnvFallbacks {
+                public_url,
+                remna,
+                bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn без_базы_не_запускаемся() {
+        assert!(Config::from_vars(&vars(&[])).is_err());
+    }
+
+    #[test]
+    fn значения_по_умолчанию() {
+        let config = Config::from_vars(&vars(&[("DATABASE_URL", "postgres://sn@db/sn")])).unwrap();
+        assert_eq!(config.server.bind.to_string(), "0.0.0.0:8080");
+        assert!(config.migrate_on_start && config.run_worker && config.run_bot);
+        assert_eq!(config.db_max_connections, 16);
+        assert_eq!(config.log_format, LogFormat::Text);
+        assert!(config.env.remna.is_none());
+        assert!(config.secret_key.is_none());
+    }
+
+    #[test]
+    fn переменные_разбираются_строго() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_PUBLIC_URL", "https://panel.example.com/"),
+            ("SN_TRUSTED_PROXIES", "10.0.0.2, 10.0.0.3"),
+            ("SN_RUN_BOT", "false"),
+            ("REMNAWAVE_URL", "http://remnawave:3000"),
+            ("REMNAWAVE_TOKEN", "token"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.server.public_url.as_deref(),
+            Some("https://panel.example.com")
+        );
+        assert_eq!(config.server.trusted_proxies.len(), 2);
+        assert!(!config.run_bot);
+        assert_eq!(config.env.remna.unwrap().url, "http://remnawave:3000");
+        assert!(
+            Config::from_vars(&vars(&[("DATABASE_URL", "x"), ("SN_RUN_BOT", "maybe")])).is_err()
+        );
+        assert!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_TRUSTED_PROXIES", "proxy")
+            ]))
+            .is_err()
+        );
+        assert!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_PUBLIC_URL", "panel.example.com")
+            ]))
+            .is_err()
+        );
+    }
+}
