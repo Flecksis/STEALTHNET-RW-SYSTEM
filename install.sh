@@ -4,8 +4,9 @@ set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 DEPLOY="$ROOT/deploy"
 ENV_FILE="$DEPLOY/.env"
-EXAMPLE_URL="https://panel.example.com"
+IMAGE_REPO=${SN_IMAGE_REPO:-ghcr.io/stealthnet-app/stealthnet-rw-system}
 HEALTH_TIMEOUT=${SN_HEALTH_TIMEOUT:-300}
+USE_PREBUILT=0
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$(printf '\033[1m')
@@ -44,14 +45,19 @@ die() {
 
 usage() {
     cat <<'EOF'
-STEALTHNET RW SYSTEM — установка из исходников
+STEALTHNET RW SYSTEM — установка
 
   ./install.sh                   установить или продолжить установку
   ./install.sh --reset-password  выдать владельцу новый пароль
   ./install.sh --help            эта справка
 
 Без вопросов: задайте SN_OWNER_EMAIL и, если нужно, SN_DOMAIN.
+Собрать из исходников вместо готовой сборки: SN_BUILD=1 ./install.sh
 EOF
+}
+
+can_ask() {
+    [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null
 }
 
 ask() {
@@ -137,6 +143,7 @@ prepare_env() {
     umask 077
     if [ ! -f "$ENV_FILE" ]; then
         cp "$DEPLOY/.env.example" "$ENV_FILE"
+        set_env SN_PUBLIC_URL ""
     fi
     made=""
     if [ -z "$(env_value POSTGRES_PASSWORD)" ]; then
@@ -166,13 +173,13 @@ valid_domain() {
 prepare_domain() {
     step "Адрес панели"
     current=$(env_value SN_PUBLIC_URL)
-    if [ -n "$current" ] && [ "$current" != "$EXAMPLE_URL" ]; then
+    if [ -n "$current" ]; then
         done_line "$current"
         return 0
     fi
     if [ "${SN_DOMAIN+set}" = "set" ]; then
         domain=$(clean_domain "$SN_DOMAIN")
-    else
+    elif can_ask; then
         hint "Домен, по которому будет открываться панель, например panel.example.com."
         hint "Если домена ещё нет, нажмите Enter — его можно указать позже."
         while :; do
@@ -183,9 +190,10 @@ prepare_domain() {
             fi
             hint "Не похоже на домен. Нужен вид panel.example.com, без пробелов."
         done
+    else
+        domain=""
     fi
     if [ -z "$domain" ]; then
-        set_env SN_PUBLIC_URL ""
         done_line "укажете позже в deploy/.env, строка SN_PUBLIC_URL"
         return 0
     fi
@@ -194,6 +202,37 @@ prepare_domain() {
     fi
     set_env SN_PUBLIC_URL "https://$domain"
     done_line "https://$domain"
+}
+
+port_busy() {
+    if command -v ss >/dev/null 2>&1; then
+        [ -n "$(ss -ltnH "sport = :$1" 2>/dev/null)" ]
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -an 2>/dev/null | grep -Eq "[.:]$1[[:space:]].*LISTEN"
+    else
+        return 1
+    fi
+}
+
+prepare_port() {
+    if [ -n "$(env_value SN_HTTP_PORT)" ]; then
+        return 0
+    fi
+    port=8080
+    while port_busy "$port"; do
+        port=$((port + 1))
+        if [ "$port" -gt 8099 ]; then
+            die "все порты с 8080 по 8099 заняты" \
+                "Освободите один из них или впишите свободный порт в deploy/.env, строка SN_HTTP_PORT."
+        fi
+    done
+    set_env SN_HTTP_PORT "$port"
+    if [ "$port" -ne 8080 ]; then
+        step "Порт"
+        done_line "8080 занят другой программой, беру $port"
+    fi
 }
 
 link_remnawave() {
@@ -207,13 +246,76 @@ link_remnawave() {
     fi
 }
 
+host_arch() {
+    case "$(docker info -f '{{.Architecture}}' 2>/dev/null)" in
+        x86_64|amd64) printf 'amd64' ;;
+        aarch64|arm64) printf 'arm64' ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+source_commit() {
+    head_file="$ROOT/.git/HEAD"
+    [ -f "$head_file" ] || return 0
+    head=$(cat "$head_file")
+    case "$head" in
+        "ref: "*)
+            ref=${head#ref: }
+            if [ -f "$ROOT/.git/$ref" ]; then
+                cat "$ROOT/.git/$ref"
+            elif [ -f "$ROOT/.git/packed-refs" ]; then
+                sed -n "s|^\([0-9a-f]\{40\}\) $ref\$|\1|p" "$ROOT/.git/packed-refs" | head -n 1
+            fi
+            ;;
+        *) printf '%s' "$head" ;;
+    esac
+}
+
+source_changed() {
+    command -v git >/dev/null 2>&1 || return 1
+    changes=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null) || return 1
+    [ -n "$changes" ]
+}
+
+prepare_image() {
+    step "Сборка"
+    commit=""
+    if [ -z "${SN_BUILD:-}" ] && ! source_changed; then
+        commit=$(source_commit | tr -d ' \n')
+    fi
+    if printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+        image="$IMAGE_REPO:sha-$commit"
+        hint "Скачиваю готовую сборку."
+        if docker pull "$image" 2>/dev/null; then
+            if [ "$(docker image inspect -f '{{.Architecture}}' "$image" 2>/dev/null)" = "$(host_arch)" ]; then
+                set_env SN_IMAGE "$image"
+                USE_PREBUILT=1
+                done_line "готовая сборка скачана"
+                return 0
+            fi
+            docker image rm "$image" >/dev/null 2>&1 || true
+            hint "Готовая сборка есть, но для другого процессора."
+        fi
+    fi
+    set_env SN_IMAGE ""
+    done_line "готовой сборки для этого сервера нет, соберу из исходников: это 10–20 минут"
+}
+
 start_stack() {
-    step "Сборка и запуск"
-    hint "Первая сборка из исходников идёт 10–20 минут. Ниже её ход."
-    if ! compose up -d --build; then
-        die "сборка или запуск не прошли" \
-            "Сообщение об ошибке — выше. После исправления запустите ./install.sh ещё раз:" \
-            "установка продолжится, созданные секреты сохранятся."
+    step "Запуск"
+    if [ "$USE_PREBUILT" -eq 1 ]; then
+        if ! compose up -d --no-build; then
+            die "запуск не прошёл" \
+                "Сообщение об ошибке — выше. После исправления запустите ./install.sh ещё раз:" \
+                "установка продолжится, созданные секреты сохранятся."
+        fi
+    else
+        hint "Ниже ход сборки."
+        if ! compose up -d --build; then
+            die "сборка или запуск не прошли" \
+                "Сообщение об ошибке — выше. После исправления запустите ./install.sh ещё раз:" \
+                "установка продолжится, созданные секреты сохранятся."
+        fi
     fi
 }
 
@@ -283,11 +385,12 @@ set_owner_password() {
 
 summary() {
     url=$(env_value SN_PUBLIC_URL)
+    port=$(env_value SN_HTTP_PORT)
     printf '\n%sГотово.%s\n\n' "$BOLD" "$RESET"
     if [ -n "$url" ]; then
         printf '  Адрес панели:      %s\n' "$url"
     fi
-    printf '  Порт на сервере:   127.0.0.1:8080\n'
+    printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
     if [ -n "${OWNER_PASSWORD:-}" ]; then
         printf '  Почта владельца:   %s\n' "$OWNER_EMAIL"
         printf '  Пароль владельца:  %s\n' "$OWNER_PASSWORD"
@@ -306,7 +409,9 @@ install() {
     check_docker
     prepare_env
     prepare_domain
+    prepare_port
     link_remnawave
+    prepare_image
     start_stack
     wait_healthy
     step "Владелец"
