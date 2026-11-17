@@ -233,6 +233,13 @@ async fn admin_principal(
 ) -> ApiResult<AdminPrincipal> {
     let credential = request_credential(state, method, headers, ADMIN_COOKIE)?
         .ok_or_else(ApiError::unauthorized)?;
+    if !credential.from_cookie() && sn_services::api_keys::is_api_token(credential.token()) {
+        return Ok(state
+            .services
+            .api_keys()
+            .principal(credential.token())
+            .await?);
+    }
     Ok(state
         .services
         .auth()
@@ -705,6 +712,14 @@ impl CurrentAdmin {
             Ok(())
         } else {
             Err(ApiError::forbidden())
+        }
+    }
+
+    pub fn require_session(&self) -> ApiResult<()> {
+        if self.0.api_key.is_some() {
+            Err(ApiError::forbidden())
+        } else {
+            Ok(())
         }
     }
 

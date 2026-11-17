@@ -25,6 +25,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 mod admins;
+mod api_keys;
 mod balance_off;
 mod bot_content;
 mod channels;

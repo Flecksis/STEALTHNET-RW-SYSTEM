@@ -109,10 +109,15 @@ pub struct AdminPrincipal {
     pub role: AdminRole,
     pub permissions: Vec<Permission>,
     pub session_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<i64>,
 }
 
 impl AdminPrincipal {
     pub fn can(&self, permission: Permission) -> bool {
+        if self.api_key.is_some() {
+            return self.permissions.contains(&permission);
+        }
         is_allowed(self.role, &self.permissions, permission)
     }
 }

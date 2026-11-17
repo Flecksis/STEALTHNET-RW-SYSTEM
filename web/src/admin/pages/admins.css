@@ -174,3 +174,30 @@
 .forced .rl {
   flex-basis: 160px;
 }
+
+.off-row {
+  opacity: 0.6;
+}
+
+.key-grants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding-top: 4px;
+}
+
+.key-grant {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.key-grant input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}

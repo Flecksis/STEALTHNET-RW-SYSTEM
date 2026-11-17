@@ -175,6 +175,10 @@ pub trait Db: Send {
         AdminsRepo::new(self.conn())
     }
 
+    fn api_keys(&mut self) -> ApiKeysRepo<'_> {
+        ApiKeysRepo::new(self.conn())
+    }
+
     fn sessions(&mut self) -> SessionsRepo<'_> {
         SessionsRepo::new(self.conn())
     }

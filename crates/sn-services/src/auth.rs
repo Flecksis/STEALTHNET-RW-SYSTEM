@@ -531,6 +531,7 @@ impl<'a> Auth<'a> {
                 role: admin.role,
                 permissions: admin.permissions,
                 session_id,
+                api_key: None,
             },
             must_change_password: admin.must_change_password,
         })
@@ -721,6 +722,7 @@ impl<'a> Auth<'a> {
                 role: admin.role,
                 permissions: admin.permissions,
                 session_id,
+                api_key: None,
             },
             must_change_password: false,
         })
@@ -788,6 +790,7 @@ impl<'a> Auth<'a> {
             role: admin.role,
             permissions: admin.permissions,
             session_id: session.id,
+            api_key: None,
         })
     }
 

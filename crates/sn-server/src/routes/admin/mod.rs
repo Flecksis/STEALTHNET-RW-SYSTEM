@@ -1,4 +1,5 @@
 mod admins;
+mod api_keys;
 mod auth;
 mod bot_content;
 mod catalog;
@@ -27,6 +28,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(auth::routes())
         .merge(admins::routes())
+        .merge(api_keys::routes())
         .merge(overview::routes())
         .merge(clients::routes())
         .merge(photos::routes())

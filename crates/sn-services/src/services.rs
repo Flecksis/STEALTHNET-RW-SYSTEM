@@ -271,6 +271,10 @@ impl Services {
         crate::admins::AdminsOps::new(self)
     }
 
+    pub fn api_keys(&self) -> crate::api_keys::ApiKeysOps<'_> {
+        crate::api_keys::ApiKeysOps::new(self)
+    }
+
     pub fn clients(&self) -> ClientOps<'_> {
         ClientOps::new(self)
     }

@@ -73,6 +73,7 @@ async fn change_password(
     Meta(meta): Meta,
     ApiJson(body): ApiJson<PasswordRequest>,
 ) -> ApiResult<Response> {
+    admin.require_session()?;
     let login = state
         .services
         .auth()
@@ -92,6 +93,7 @@ async fn security(
     admin: CurrentAdmin,
     State(state): State<AppState>,
 ) -> ApiResult<Json<sn_services::auth::AdminSecurity>> {
+    admin.require_session()?;
     Ok(Json(
         state
             .services
@@ -105,6 +107,7 @@ async fn totp_setup(
     admin: CurrentAdmin,
     State(state): State<AppState>,
 ) -> ApiResult<Json<sn_services::auth::TotpSetup>> {
+    admin.require_session()?;
     Ok(Json(
         state
             .services
@@ -126,6 +129,7 @@ async fn totp_enable(
     State(state): State<AppState>,
     ApiJson(body): ApiJson<TotpEnableRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    admin.require_session()?;
     state
         .services
         .auth()
@@ -145,6 +149,7 @@ async fn totp_disable(
     State(state): State<AppState>,
     ApiJson(body): ApiJson<TotpDisableRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    admin.require_session()?;
     state
         .services
         .auth()

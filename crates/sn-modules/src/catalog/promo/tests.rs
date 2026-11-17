@@ -577,6 +577,7 @@ fn admin_as(admin_id: sn_domain::ids::AdminId, role: AdminRole) -> AdminPrincipa
         role,
         permissions: Vec::new(),
         session_id: 1,
+        api_key: None,
     }
 }
 

@@ -1,4 +1,5 @@
 mod admins;
+mod api_keys;
 mod audit;
 mod billing;
 mod bot_images;
@@ -24,6 +25,7 @@ mod trials;
 mod webhooks;
 
 pub use admins::*;
+pub use api_keys::*;
 pub use audit::*;
 pub use billing::*;
 pub use bot_images::*;
