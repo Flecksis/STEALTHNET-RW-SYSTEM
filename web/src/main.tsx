@@ -8,6 +8,7 @@ import { BrowserRouter, Route, Routes } from 'react-router';
 const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp })));
 const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon })));
 const CabinetApp = lazy(() => import('./cabinet/CabinetApp').then((m) => ({ default: m.CabinetApp })));
+const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.MiniApp })));
 
 function App() {
   return (
@@ -16,7 +17,7 @@ function App() {
         <Routes>
           <Route path="/admin/*" element={<AdminApp />} />
           <Route path="/cabinet/*" element={<CabinetApp />} />
-          <Route path="/app/*" element={<Soon title="Мини-приложение скоро откроется" text="Мини-приложение ещё собирается. Пока подписку можно купить и продлить в Telegram-боте." />} />
+          <Route path="/app/*" element={<MiniApp />} />
           <Route path="*" element={<Soon title="Сервис работает" text="Сайт ещё собирается. Подписку можно купить и продлить в Telegram-боте." />} />
         </Routes>
       </Suspense>

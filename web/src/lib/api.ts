@@ -30,8 +30,17 @@ function errorFrom(status: number, data: unknown): ApiError {
   return new ApiError(status, `http.${status}`, `Ошибка ${status}`);
 }
 
+let bearer: string | null = null;
+
+export function setBearer(token: string | null): void {
+  bearer = token;
+}
+
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
   const headers: Record<string, string> = { accept: 'application/json' };
+  if (bearer && path.startsWith('/api/client')) {
+    headers.authorization = `Bearer ${bearer}`;
+  }
   let body: string | undefined;
   if (options.body !== undefined) {
     headers['content-type'] = 'application/json';
