@@ -58,6 +58,40 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
+  installer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: sh tests/install/scenarios.sh sh
+      - run: bash tests/install/scenarios.sh bash
+      - run: python3 tests/install/dialog.py sh bash
+
+  install-early:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: install before this commit has an image
+        run: SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com ./install.sh | tee "$RUNNER_TEMP/install.log"
+      - name: a published image was used and it works
+        run: |
+          grep -q 'готовая сборка скачана' "$RUNNER_TEMP/install.log"
+          if docker image inspect stealthnet:local >/dev/null 2>&1; then exit 1; fi
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/install.log" | tail -n 1)
+          test "${#password}" -eq 20
+          curl -fsS http://127.0.0.1:8080/api/health
+          curl -fsS -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL"
+
   install:
     runs-on: ubuntu-24.04
     permissions:
@@ -104,6 +138,20 @@ jobs:
           status=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$old\"}" "$LOGIN_URL")
           test "$status" = 401
+          printf '%s' "$password" > "$RUNNER_TEMP/password.txt"
+      - name: change the owner e-mail and the domain
+        run: |
+          password=$(cat "$RUNNER_TEMP/password.txt")
+          SN_OWNER_EMAIL="o'brien@example.org" ./install.sh --owner-email
+          curl -fsS -o /dev/null -H 'content-type: application/json' \
+            -d "{\"email\":\"o'brien@example.org\",\"password\":\"$password\"}" "$LOGIN_URL"
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$LOGIN_URL")
+          test "$status" = 401
+          SN_DOMAIN=new.example.org ./install.sh --domain
+          grep -q '^SN_PUBLIC_URL=https://new.example.org$' deploy/.env
+          test "$(cd deploy && docker compose exec -T app printenv SN_PUBLIC_URL)" = "https://new.example.org"
+          curl -fsS http://127.0.0.1:8080/api/health
       - name: publish the tested image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
