@@ -1,8 +1,11 @@
 use super::testkit::*;
+use crate::Actor;
+use crate::clients::GrantRequest;
 use crate::fulfillment::FulfillmentOutcome;
 use crate::fulfillment::naming_tests::set_multi;
 use chrono::Duration;
 use sn_domain::events::DomainEvent;
+use sn_domain::ids::AdminId;
 use sn_domain::order::OrderKind;
 use sn_domain::plan::{PlanKind, whole_seconds};
 use sn_domain::subscription::Subscription;
@@ -278,5 +281,47 @@ async fn пробный_период_при_оплате_переводится_
     assert_eq!(paid.id, trial.id);
     assert_eq!(remna_user(&kit, &paid).await.username, "user316");
     assert_eq!(live(&kit, client_id).await.len(), 1);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn две_выдачи_админом_до_выдачи_первой_дают_одну_подписку() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 317).await;
+    let tariff = standard(&kit.services).await;
+    let request = GrantRequest {
+        tariff_id: tariff.id,
+        period_id: Some(tariff.periods[0].id),
+        days: None,
+        subscription_id: None,
+        note: None,
+    };
+    let admin = Actor::Admin(AdminId(1));
+    let first = kit
+        .services
+        .clients()
+        .grant(client_id, &request, admin)
+        .await
+        .unwrap();
+    let second = kit
+        .services
+        .clients()
+        .grant(client_id, &request, admin)
+        .await
+        .unwrap();
+    let first = order_by_public_id(&kit.services, first.order_id).await;
+    let second = order_by_public_id(&kit.services, second.order_id).await;
+    let created = deliver(&kit, first.id).await;
+    let renewed = deliver(&kit, second.id).await;
+    assert_eq!(renewed.id, created.id);
+    assert_eq!(
+        renewed.mirror.expire_at,
+        created.mirror.expire_at.map(|at| at + Duration::days(30))
+    );
+    let second = order(&kit.services, second.id).await;
+    assert_eq!(second.kind, OrderKind::AdminGrant);
+    assert_eq!(second.subscription_id, Some(created.id));
+    assert_eq!(live(&kit, client_id).await.len(), 1);
+    assert_eq!(kit.remna.users().len(), 1);
     kit.db.cleanup().await;
 }

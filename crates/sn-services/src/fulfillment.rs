@@ -907,12 +907,12 @@ impl<'a> Fulfillment<'a> {
         order: &Order,
         snapshot: &TariffSnapshot,
     ) -> Result<Option<Subscription>, Halt> {
-        if self.services.settings().multi_subscriptions
-            || !matches!(
-                order.intent,
-                PurchaseIntent::Subscription { target: None, .. }
-            )
-        {
+        let grant = matches!(order.intent, PurchaseIntent::AdminGrant { .. });
+        let purchase = matches!(
+            order.intent,
+            PurchaseIntent::Subscription { target: None, .. }
+        );
+        if self.services.settings().multi_subscriptions || !(grant || purchase) {
             return Ok(None);
         }
         let Some((existing, category)) =
@@ -920,16 +920,19 @@ impl<'a> Fulfillment<'a> {
         else {
             return Ok(None);
         };
-        let kind = classify(
-            snapshot.category_id,
-            Some(CurrentTariff {
-                kind: existing.kind,
-                category_id: category,
-            }),
-        );
-        tx.orders()
-            .attach(order.id, existing.id, kind.order_kind())
-            .await?;
+        let kind = if grant {
+            OrderKind::AdminGrant
+        } else {
+            classify(
+                snapshot.category_id,
+                Some(CurrentTariff {
+                    kind: existing.kind,
+                    category_id: category,
+                }),
+            )
+            .order_kind()
+        };
+        tx.orders().attach(order.id, existing.id, kind).await?;
         tx.audit()
             .record(&Actor::System.audit(
                 ORDER_ATTACHED,
@@ -937,7 +940,7 @@ impl<'a> Fulfillment<'a> {
                 Some(order.id.0),
                 serde_json::json!({
                     "subscription_id": existing.id,
-                    "order_kind": kind.order_kind(),
+                    "order_kind": kind,
                     "reason": "у клиента может быть только одна подписка",
                 }),
             ))

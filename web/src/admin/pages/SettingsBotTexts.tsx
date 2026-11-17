@@ -47,6 +47,7 @@ const STYLES: Array<{ value: Style | ''; label: string }> = [
 const SAMPLES: Record<string, string> = {
   name: 'Алексей',
   tariff: 'Стандарт',
+  current: 'Базовый',
   status: 'активна',
   date: '14 февраля 2027',
   days: '90 дней',

@@ -8,8 +8,10 @@ use crate::ui::{self, Html, Lines, Text};
 use crate::{BotError, account, buy, consent, extras, gram_wallet, login, media};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
+use sn_domain::format;
 use sn_domain::ids::TariffId;
 use sn_domain::ledger::Wallet;
+use sn_domain::money::Money;
 use sn_domain::subscription::Subscription;
 use sn_modules::catalog::{options, promo, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
@@ -579,13 +581,81 @@ pub fn status_text(
     ui::text(content, text::status_key(subscription, now), &[])
 }
 
-async fn has_balance(services: &Services, client: &Client) -> Result<bool, BotError> {
+async fn balance_of(services: &Services, client: &Client) -> Result<Money, BotError> {
     let mut conn = services.store().conn().await?;
-    let balance = conn
+    Ok(conn
         .ledger()
         .balance(client.id, Wallet::Main, services.settings().currency)
-        .await?;
-    Ok(balance.minor > 0)
+        .await?)
+}
+
+async fn has_balance(services: &Services, client: &Client) -> Result<bool, BotError> {
+    Ok(balance_of(services, client).await?.minor > 0)
+}
+
+fn single_lines(
+    c: &BotContent,
+    subscription: &Subscription,
+    tariff: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    offset: chrono::FixedOffset,
+) -> Vec<String> {
+    let status = status_text(c, subscription, now);
+    let mirror = &subscription.mirror;
+    let mut lines = vec![ui::text(
+        c,
+        "menu.single",
+        &[("tariff", Text(tariff)), ("status", Html(&status))],
+    )];
+    match mirror.expire_at {
+        Some(at) if at > now => lines.push(ui::text(
+            c,
+            "menu.single_until",
+            &[
+                ("date", Text(&text::date(at, offset))),
+                ("days", Text(&text::plural_days(text::days_left(at, now)))),
+            ],
+        )),
+        Some(at) => lines.push(ui::text(
+            c,
+            "menu.single_ended",
+            &[("date", Text(&text::date(at, offset)))],
+        )),
+        None => {}
+    }
+    lines.push(
+        match mirror.traffic_limit_bytes.filter(|limit| *limit > 0) {
+            Some(limit) => ui::text(
+                c,
+                "menu.single_traffic",
+                &[
+                    (
+                        "used",
+                        Text(&format::traffic(mirror.traffic_used_bytes.unwrap_or(0))),
+                    ),
+                    ("limit", Text(&format::traffic(limit))),
+                ],
+            ),
+            None => ui::text(c, "menu.single_traffic_unlimited", &[]),
+        },
+    );
+    match (mirror.devices_count, mirror.hwid_limit) {
+        (Some(count), Some(limit)) => lines.push(ui::text(
+            c,
+            "menu.single_devices",
+            &[
+                ("count", Text(&count.to_string())),
+                ("limit", Text(&limit.to_string())),
+            ],
+        )),
+        (None, Some(limit)) => lines.push(ui::text(
+            c,
+            "menu.single_devices_limit",
+            &[("limit", Text(&limit.to_string()))],
+        )),
+        _ => {}
+    }
+    lines
 }
 
 pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError> {
@@ -611,28 +681,44 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
     let mut lines = Lines::new();
     lines.add(ui::text(c, "menu.title", &head));
     lines.add(ui::text(c, "menu.greeting", &head));
-    if subscriptions.is_empty() {
-        lines.add(ui::text(c, "menu.no_subscription", &[]));
-    }
-    for subscription in &subscriptions {
-        let tariff = tariff_name(services, subscription.tariff_id).await;
-        let status = status_text(c, subscription, now);
-        lines.add(match subscription.mirror.expire_at {
-            Some(at) => ui::text(
-                c,
-                "menu.subscription",
-                &[
-                    ("tariff", Text(&tariff)),
-                    ("status", Html(&status)),
-                    ("date", Text(&text::date(at, offset))),
-                ],
-            ),
-            None => ui::text(
-                c,
-                "menu.subscription_open",
-                &[("tariff", Text(&tariff)), ("status", Html(&status))],
-            ),
-        });
+    match subscriptions.as_slice() {
+        [] => lines.add(ui::text(c, "menu.no_subscription", &[])),
+        [only] => {
+            let tariff = tariff_name(services, only.tariff_id).await;
+            for line in single_lines(c, only, &tariff, now, offset) {
+                lines.add(line);
+            }
+            if services.payments().balance_enabled() {
+                let balance = balance_of(services, client).await?;
+                lines.add(ui::text(
+                    c,
+                    "menu.balance",
+                    &[("balance", Text(&format::money(balance)))],
+                ));
+            }
+        }
+        many => {
+            for subscription in many {
+                let tariff = tariff_name(services, subscription.tariff_id).await;
+                let status = status_text(c, subscription, now);
+                lines.add(match subscription.mirror.expire_at {
+                    Some(at) => ui::text(
+                        c,
+                        "menu.subscription",
+                        &[
+                            ("tariff", Text(&tariff)),
+                            ("status", Html(&status)),
+                            ("date", Text(&text::date(at, offset))),
+                        ],
+                    ),
+                    None => ui::text(
+                        c,
+                        "menu.subscription_open",
+                        &[("tariff", Text(&tariff)), ("status", Html(&status))],
+                    ),
+                });
+            }
+        }
     }
     let mut buttons = Vec::new();
     if !subscriptions.is_empty() {
