@@ -1051,6 +1051,7 @@ impl UpdateNodeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeKeygen {
+    #[serde(alias = "pubKey")]
     pub secret_key: String,
 }
 
@@ -1102,6 +1103,48 @@ pub struct HostSquadFilter {
     pub squads: Vec<Uuid>,
 }
 
+impl HostSquadFilter {
+    pub const EXCLUDE: &'static str = "EXCLUDE";
+    pub const ALLOW_ONLY: &'static str = "ALLOW_ONLY";
+
+    pub fn exclude(squads: Vec<Uuid>) -> Self {
+        HostSquadFilter {
+            mode: Self::EXCLUDE.to_string(),
+            squads,
+        }
+    }
+
+    pub fn allow_only(squads: Vec<Uuid>) -> Self {
+        HostSquadFilter {
+            mode: Self::ALLOW_ONLY.to_string(),
+            squads,
+        }
+    }
+
+    pub fn is_allow_only(&self) -> bool {
+        self.mode == Self::ALLOW_ONLY
+    }
+
+    pub fn allows(&self, squad: Uuid) -> bool {
+        if self.is_allow_only() {
+            self.squads.contains(&squad)
+        } else {
+            !self.squads.contains(&squad)
+        }
+    }
+}
+
+impl Host {
+    pub fn shown_to(&self, squad: Uuid) -> bool {
+        !self.is_disabled
+            && !self.is_hidden
+            && self
+                .internal_squads
+                .as_ref()
+                .is_none_or(|filter| filter.allows(squad))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
@@ -1139,6 +1182,8 @@ pub struct UpdateHostRequest {
     pub is_disabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub internal_squads: Option<HostSquadFilter>,
 }
 
 impl UpdateHostRequest {
@@ -1148,7 +1193,15 @@ impl UpdateHostRequest {
             remark: None,
             is_disabled: None,
             is_hidden: None,
+            internal_squads: None,
         }
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.remark.is_none()
+            && self.is_disabled.is_none()
+            && self.is_hidden.is_none()
+            && self.internal_squads.is_none()
     }
 }
 
@@ -1785,6 +1838,17 @@ mod tests {
             body,
             serde_json::json!({"dropBy": {"by": "userIds", "userIds": [7]}, "targetNodes": {"target": "allNodes"}})
         );
+    }
+
+    #[test]
+    fn ключ_ноды_читается_из_обоих_имён_поля() {
+        for body in [
+            serde_json::json!({"secretKey": "a"}),
+            serde_json::json!({"pubKey": "a"}),
+        ] {
+            let key: NodeKeygen = serde_json::from_value(body).unwrap();
+            assert_eq!(key.secret_key, "a");
+        }
     }
 
     #[test]

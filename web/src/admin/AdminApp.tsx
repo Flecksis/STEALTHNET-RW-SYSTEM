@@ -9,6 +9,9 @@ import { ClientPage } from './client/Client';
 import { Tariffs } from './tariffs/Tariffs';
 import { Home } from './home/Home';
 import { Support } from './support/Support';
+import { InfraNodes } from './infra/InfraNodes';
+import { InfraSquads } from './infra/InfraSquads';
+import { InfraBilling } from './infra/InfraBilling';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { SettingsLayout } from './pages/SettingsLayout';
@@ -148,7 +151,9 @@ export function AdminApp() {
           <Route path="support" element={<Support />} />
           <Route path="money/*" element={<Pending title="Деньги" />} />
           <Route path="tariffs" element={<Tariffs />} />
-          <Route path="infra/*" element={<Pending title="Инфраструктура" />} />
+          <Route path="infra" element={<InfraNodes />} />
+          <Route path="infra/squads" element={<InfraSquads />} />
+          <Route path="infra/billing" element={<InfraBilling />} />
           <Route path="modules" element={<Pending title="Модули" />} />
           <Route path="m/:module/*" element={<Pending title="Модуль" />} />
           <Route path="settings/look" element={<SettingsLook />} />

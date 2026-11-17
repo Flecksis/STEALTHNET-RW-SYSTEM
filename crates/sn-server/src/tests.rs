@@ -2168,3 +2168,404 @@ fn urlencoding(value: &str) -> String {
         })
         .collect()
 }
+
+#[tokio::test]
+async fn инфраструктура_ноды_создание_город_сброс_и_удаление() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let inbound = Uuid::from_u128(31);
+    let profile = Uuid::from_u128(30);
+    h.remna
+        .set_config_profiles(vec![sn_remnawave::ConfigProfile {
+            uuid: profile,
+            name: "Основной профиль".into(),
+            view_position: 0,
+            inbounds: vec![sn_remnawave::Inbound {
+                uuid: inbound,
+                profile_uuid: Some(profile),
+                tag: "VLESS_REALITY".into(),
+                kind: "vless".into(),
+                network: Some("tcp".into()),
+                security: Some("reality".into()),
+                port: Some(443),
+            }],
+            nodes: Vec::new(),
+        }]);
+    let (status, profiles) = h.get("/api/admin/infra/profiles", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{profiles}");
+    assert_eq!(profiles[0]["inbounds"][0]["port"], 443);
+    let (status, _) = h.get("/api/admin/infra/nodes", &support).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/nodes",
+            &owner,
+            json!({ "name": " ", "address": "198.51.100.35", "profile_uuid": profile, "inbounds": [inbound] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "node.name");
+    let (status, created) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/nodes",
+            &owner,
+            json!({
+                "name": "NL-3", "address": "198.51.100.35", "country_code": "nl", "city": "Амстердам",
+                "profile_uuid": profile, "inbounds": [inbound]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["port"], 2222);
+    assert_eq!(created["secret_key"], "fake-node-secret-key");
+    let uuid = created["node"]["uuid"].as_str().unwrap().to_string();
+
+    let (status, list) = h.get("/api/admin/infra/nodes", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let node = list["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node"]["uuid"] == uuid.as_str())
+        .expect("новая нода в списке");
+    assert_eq!(node["city"], "Амстердам");
+    assert_eq!(node["node"]["countryCode"], "NL");
+    assert_eq!(node["inbounds"][0]["tag"], "VLESS_REALITY");
+    assert_eq!(node["state"], "down");
+    assert!(list["summary"]["attention"].as_u64().unwrap() >= 1);
+
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/nodes/{uuid}"),
+            &owner,
+            json!({ "name": "NL", "address": "198.51.100.36" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "node.name");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/nodes/{uuid}"),
+            &owner,
+            json!({ "name": "DE-3", "address": " 198.51.100.36 ", "country_code": "de", "city": "Франкфурт" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "DE-3");
+    let (_, list) = h.get("/api/admin/infra/nodes", &owner).await;
+    let node = list["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node"]["uuid"] == uuid.as_str())
+        .expect("нода после правки");
+    assert_eq!(node["node"]["address"], "198.51.100.36");
+    assert_eq!(node["node"]["countryCode"], "DE");
+    assert_eq!(node["city"], "Франкфурт");
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/nodes/{uuid}"),
+            &support,
+            json!({ "name": "DE-4", "address": "198.51.100.36" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/infra/nodes/{uuid}/actions/reset-traffic"),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(h.remna.calls().contains(&"reset_node_traffic".to_string()));
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/infra/nodes/{uuid}/actions/delete"),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list) = h.get("/api/admin/infra/nodes", &owner).await;
+    assert!(
+        list["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["node"]["uuid"] != uuid.as_str())
+    );
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn инфраструктура_сквады_провайдеры_и_оплата_серверов() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let profile = Uuid::from_u128(40);
+    let inbound = Uuid::from_u128(41);
+    h.remna
+        .set_config_profiles(vec![sn_remnawave::ConfigProfile {
+            uuid: profile,
+            name: "Основной профиль".into(),
+            view_position: 0,
+            inbounds: vec![sn_remnawave::Inbound {
+                uuid: inbound,
+                profile_uuid: Some(profile),
+                tag: "VLESS_REALITY".into(),
+                kind: "vless".into(),
+                network: Some("tcp".into()),
+                security: Some("reality".into()),
+                port: Some(443),
+            }],
+            nodes: Vec::new(),
+        }]);
+
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/squads",
+            &owner,
+            json!({ "name": "Europe", "inbounds": [] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "squad.inbounds");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/squads",
+            &owner,
+            json!({ "name": "Европа", "inbounds": [inbound] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "squad.name");
+    let (status, squad) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/squads",
+            &owner,
+            json!({ "name": "Europe", "inbounds": [inbound] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{squad}");
+    let squad_uuid = squad["uuid"].as_str().unwrap().to_string();
+    let squad_id = Uuid::parse_str(&squad_uuid).unwrap();
+    let other_squad = Uuid::from_u128(49);
+    let host = |n: u128, remark: &str, disabled: bool| sn_remnawave::Host {
+        uuid: Uuid::from_u128(n),
+        view_position: n as i64,
+        remark: remark.into(),
+        address: format!("{n}.example.com"),
+        port: 443,
+        is_disabled: disabled,
+        is_hidden: false,
+        inbound: sn_remnawave::HostInbound {
+            config_profile_uuid: Some(profile),
+            config_profile_inbound_uuid: Some(inbound),
+        },
+        nodes: Vec::new(),
+        tags: Vec::new(),
+        server_description: None,
+        internal_squads: None,
+    };
+    let mut excluded = host(46, "Финляндия", false);
+    excluded.internal_squads = Some(sn_remnawave::HostSquadFilter::exclude(vec![
+        squad_id,
+        other_squad,
+    ]));
+    h.remna.set_hosts(vec![
+        host(44, "Нидерланды", false),
+        host(45, "Германия", true),
+        excluded,
+    ]);
+    let (status, hosts) = h.get("/api/admin/infra/hosts", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{hosts}");
+    assert_eq!(hosts.as_array().unwrap().len(), 3);
+    assert_eq!(hosts[0]["remark"], "Нидерланды");
+
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/squads/{squad_uuid}"),
+            &owner,
+            json!({ "name": "Europe 2", "inbounds": [inbound], "hosts": [{ "uuid": Uuid::from_u128(44), "remark": " " }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "host.remark");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/squads/{squad_uuid}"),
+            &owner,
+            json!({ "name": "Europe 2", "inbounds": [inbound], "hosts": [{ "uuid": Uuid::from_u128(99), "shown": false }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let (status, renamed) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/squads/{squad_uuid}"),
+            &owner,
+            json!({ "name": "Europe-2", "inbounds": [inbound], "hosts": [
+                { "uuid": Uuid::from_u128(44), "remark": " Нидерланды, резерв ", "shown": false },
+                { "uuid": Uuid::from_u128(45), "remark": "Германия", "shown": true },
+                { "uuid": Uuid::from_u128(46), "shown": true }
+            ] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["name"], "Europe-2");
+    let hosts = h.remna.host_list();
+    let find = |n: u128| hosts.iter().find(|x| x.uuid == Uuid::from_u128(n)).unwrap();
+    assert_eq!(find(44).remark, "Нидерланды, резерв");
+    assert_eq!(
+        find(44).internal_squads,
+        Some(sn_remnawave::HostSquadFilter::exclude(vec![squad_id]))
+    );
+    assert!(!find(44).shown_to(squad_id));
+    assert!(find(44).shown_to(other_squad));
+    assert!(!find(45).is_disabled);
+    assert_eq!(
+        find(45).internal_squads,
+        Some(sn_remnawave::HostSquadFilter::allow_only(vec![squad_id]))
+    );
+    assert!(find(45).shown_to(squad_id));
+    assert!(!find(45).shown_to(other_squad));
+    assert!(find(46).shown_to(squad_id));
+    assert!(!find(46).shown_to(other_squad));
+    let updates = h
+        .remna
+        .calls()
+        .iter()
+        .filter(|c| c.as_str() == "update_host")
+        .count();
+    assert_eq!(updates, 3);
+
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/squads/{squad_uuid}"),
+            &owner,
+            json!({ "name": "Europe-2", "inbounds": [inbound], "hosts": [
+                { "uuid": Uuid::from_u128(44), "remark": "Нидерланды, резерв", "shown": true },
+                { "uuid": Uuid::from_u128(45), "shown": true }
+            ] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let hosts = h.remna.host_list();
+    let find = |n: u128| hosts.iter().find(|x| x.uuid == Uuid::from_u128(n)).unwrap();
+    assert!(find(44).shown_to(squad_id));
+    assert_eq!(
+        find(44).internal_squads,
+        Some(sn_remnawave::HostSquadFilter::exclude(Vec::new()))
+    );
+    assert_eq!(
+        h.remna
+            .calls()
+            .iter()
+            .filter(|c| c.as_str() == "update_host")
+            .count(),
+        updates + 1
+    );
+
+    let (status, provider) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/providers",
+            &owner,
+            json!({ "name": "Hetzner", "login_url": "https://accounts.hetzner.com" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{provider}");
+    let provider_uuid = provider["uuid"].as_str().unwrap().to_string();
+    let (status, bad) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/providers",
+            &owner,
+            json!({ "name": "X", "login_url": "ftp://x" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+
+    let due = (Utc::now() + Duration::days(2)).to_rfc3339();
+    let (status, created) = h
+        .write(
+            Method::POST,
+            "/api/admin/infra/nodes",
+            &owner,
+            json!({ "name": "FI-1", "address": "203.0.113.30", "country_code": "FI", "profile_uuid": profile,
+                    "inbounds": [inbound], "provider_uuid": provider_uuid, "next_billing_at": due }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let node_uuid = created["node"]["uuid"].as_str().unwrap().to_string();
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/infra/prices/{node_uuid}"),
+            &owner,
+            json!({ "amount_minor": 759 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, view) = h.get("/api/admin/infra/billing/view", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["rows"][0]["node_name"], "FI-1");
+    assert_eq!(view["rows"][0]["price"]["minor"], 759);
+    assert_eq!(view["month_total"]["minor"], 759);
+    assert_eq!(view["providers"][0]["nodes"], 1);
+    assert!(view["revenue_30d"].is_object());
+    let billing_uuid = view["rows"][0]["uuid"].as_str().unwrap().to_string();
+    let before = view["rows"][0]["next_billing_at"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/infra/billing/{billing_uuid}/paid"),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, view) = h.get("/api/admin/infra/billing/view", &owner).await;
+    let after = view["rows"][0]["next_billing_at"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(before, after);
+    assert!(
+        h.remna
+            .calls()
+            .contains(&"create_infra_billing_record".to_string())
+    );
+    assert_eq!(view["history"][0]["provider"], "Hetzner");
+    assert_eq!(view["history"][0]["nodes"], json!(["FI-1"]));
+    assert_eq!(view["history"][0]["amount"]["minor"], 759);
+    let (status, history) = h
+        .get("/api/admin/infra/billing/history?start=0&size=10", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert_eq!(history["total"], 1);
+    assert_eq!(history["records"][0]["nodes"], json!(["FI-1"]));
+    h.db.cleanup().await;
+}

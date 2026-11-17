@@ -1177,6 +1177,9 @@ impl RemnawaveApi for FakeRemnawave {
             if let Some(v) = request.is_hidden {
                 host.is_hidden = v;
             }
+            if let Some(v) = &request.internal_squads {
+                host.internal_squads = Some(v.clone());
+            }
             Ok(host.clone())
         })
     }

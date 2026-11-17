@@ -127,6 +127,22 @@ export function dateTime(iso: string | null | undefined): string {
   return `${dateLong(iso)}, ${time}`;
 }
 
+export function dayLabel(iso: string | null | undefined): string {
+  const date = parse(iso);
+  if (!date) {
+    return '';
+  }
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((startOf(new Date()) - startOf(date)) / 86_400_000);
+  if (diff === 0) {
+    return 'Сегодня';
+  }
+  if (diff === 1) {
+    return 'Вчера';
+  }
+  return dateLong(iso);
+}
+
 export function ago(iso: string | null | undefined): string {
   const date = parse(iso);
   if (!date) {

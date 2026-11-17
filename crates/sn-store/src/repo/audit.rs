@@ -98,6 +98,20 @@ impl<'c> AuditRepo<'c> {
         .await?)
     }
 
+    pub async fn recent_by_action(
+        &mut self,
+        action: &str,
+        limit: i64,
+    ) -> StoreResult<Vec<AuditRecord>> {
+        Ok(sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM audit_log WHERE action = $1 ORDER BY id DESC LIMIT $2"
+        ))
+        .bind(action)
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn by_ids(&mut self, ids: &[i64]) -> StoreResult<Vec<AuditRecord>> {
         Ok(sqlx::query_as(&format!(
             "SELECT {COLUMNS} FROM audit_log WHERE id = ANY($1) ORDER BY id"
