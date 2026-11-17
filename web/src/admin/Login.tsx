@@ -58,10 +58,10 @@ export function Login({ brand, onDone }: Props) {
         </div>
         <form className="card login-card" onSubmit={submit} noValidate>
           <h1>Вход в админку</h1>
-          <label className="field">
+          <label className="login-field">
             <span>Почта</span>
             <input
-              className="input"
+              className="login-input"
               type="email"
               autoComplete="username"
               value={email}
@@ -70,10 +70,10 @@ export function Login({ brand, onDone }: Props) {
               autoFocus
             />
           </label>
-          <label className="field">
+          <label className="login-field">
             <span>Пароль</span>
             <input
-              className="input"
+              className="login-input"
               type="password"
               autoComplete="current-password"
               value={password}
@@ -82,10 +82,10 @@ export function Login({ brand, onDone }: Props) {
             />
           </label>
           {needCode ? (
-            <label className="field">
+            <label className="login-field">
               <span>Код из приложения</span>
               <input
-                className="input"
+                className="login-input"
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 value={code}

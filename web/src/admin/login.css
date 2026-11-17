@@ -35,17 +35,17 @@
   letter-spacing: -0.01em;
 }
 
-.field {
+.login-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.field > span {
+.login-field > span {
   font-weight: 600;
 }
 
-.input {
+.login-input {
   height: 44px;
   padding: 0 12px;
   border: 1px solid var(--line);
@@ -55,7 +55,7 @@
   font-size: 15px;
 }
 
-.input:focus {
+.login-input:focus {
   outline: 2px solid var(--accent);
   outline-offset: 0;
   border-color: transparent;
