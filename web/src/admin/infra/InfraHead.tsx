@@ -7,12 +7,9 @@ type Props = { current: 'nodes' | 'squads' | 'billing'; nodes?: number; squads?:
 
 let panelCache: string | null | undefined;
 
-export function InfraHead({ current, nodes, squads, action }: Props) {
+export function useRemnaPanel(): string | null {
   const { can } = useSession();
   const [panel, setPanel] = useState<string | null>(panelCache ?? null);
-  const [squadCount, setSquadCount] = useState<number | null>(squads ?? null);
-  const [nodeCount, setNodeCount] = useState<number | null>(nodes ?? null);
-
   useEffect(() => {
     if (!can('settings') || panelCache !== undefined) {
       return;
@@ -26,6 +23,13 @@ export function InfraHead({ current, nodes, squads, action }: Props) {
         panelCache = null;
       });
   }, [can]);
+  return panel;
+}
+
+export function InfraHead({ current, nodes, squads, action }: Props) {
+  const panel = useRemnaPanel();
+  const [squadCount, setSquadCount] = useState<number | null>(squads ?? null);
+  const [nodeCount, setNodeCount] = useState<number | null>(nodes ?? null);
 
   useEffect(() => {
     if (squads !== undefined) {

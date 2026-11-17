@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
 import { api, ApiError } from '../lib/api';
+import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { AdminTheme, Appearance, Me, Permission } from '../lib/types';
@@ -83,7 +84,8 @@ export function AdminApp() {
   const appearance: Appearance = state.kind === 'in' ? state.me.appearance : (site ?? DEFAULT_SITE).appearance;
   const canSettings = state.kind === 'in' && state.me.permissions.includes('settings');
   const theme: Theme = !canSettings && personal ? personal : resolve(appearance.admin_theme, system);
-  useSurface('admin', theme, appearance.admin === 'top' ? 'b' : 'a');
+  const phone = usePhone();
+  useSurface(phone ? 'admin-phone' : 'admin', theme, appearance.admin === 'top' ? 'b' : 'a');
 
   const setAppearance = useCallback((next: Appearance) => {
     setState((current) => (current.kind === 'in' ? { kind: 'in', me: { ...current.me, appearance: next } } : current));
@@ -123,8 +125,10 @@ export function AdminApp() {
         }
       },
       setAppearance,
+      theme,
+      flipTheme: () => void flipTheme(),
     };
-  }, [state, load, setAppearance]);
+  }, [state, load, setAppearance, theme, flipTheme]);
 
   if (state.kind === 'loading') {
     return <div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />;

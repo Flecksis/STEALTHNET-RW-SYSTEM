@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react';
+import type { Theme } from '../lib/theme';
 import type { Appearance, Me, Permission } from '../lib/types';
 
 export type Session = {
@@ -7,6 +8,8 @@ export type Session = {
   reload: () => Promise<void>;
   logout: () => Promise<void>;
   setAppearance: (appearance: Appearance) => void;
+  theme: Theme;
+  flipTheme: () => void;
 };
 
 export const SessionContext = createContext<Session | null>(null);

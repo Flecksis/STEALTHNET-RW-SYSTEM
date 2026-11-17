@@ -16,3 +16,9 @@ export function useMedia(query: string): boolean {
   }, [query]);
   return matches;
 }
+
+export const PHONE_QUERY = '(max-width: 600px)';
+
+export function usePhone(): boolean {
+  return useMedia(PHONE_QUERY);
+}

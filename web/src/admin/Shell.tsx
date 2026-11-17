@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { Icon } from '../lib/icons';
-import { useMedia } from '../lib/media';
+import { useMedia, usePhone } from '../lib/media';
 import { readStored, writeStored, type Theme } from '../lib/theme';
 import { isCurrent, navItems, type NavItem } from './nav';
 import { ROLE_LABEL, useSession } from './session';
@@ -236,18 +236,109 @@ function TopBar({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: s
   );
 }
 
+const PHONE_TABS = ['home', 'clients', 'support', 'money'];
+
+function PhoneNav({ items, path, theme, onFlipTheme }: { items: NavItem[]; path: string; theme: Theme; onFlipTheme: () => void }) {
+  const { me, logout } = useSession();
+  const [open, setOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
+  const tabs = PHONE_TABS.map((key) => items.find((item) => item.key === key)).filter((item): item is NavItem => item !== undefined);
+  const more = items.filter((item) => !PHONE_TABS.includes(item.key));
+  const moreCurrent = more.some((item) => isCurrent(item, path));
+  return (
+    <>
+      {open ? (
+        <div className="psheet-back" role="presentation" onClick={() => setOpen(false)}>
+          <div className="psheet" role="dialog" aria-modal="true" aria-label="Ещё" onClick={(event) => event.stopPropagation()}>
+            <div className="psheet-list">
+              {more.map((item) => (
+                <Link key={item.key} to={item.to} className="psheet-row press" aria-current={isCurrent(item, path) ? 'page' : undefined}>
+                  <Icon name={item.icon} size={21} />
+                  <span className="psheet-name">{item.label}</span>
+                  <Icon name="chevron-right" size={16} />
+                </Link>
+              ))}
+              <button type="button" className="psheet-row press" onClick={onFlipTheme}>
+                <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={21} />
+                <span className="psheet-name">{ThemeLabel(theme)}</span>
+              </button>
+            </div>
+            <div className="psheet-who">
+              <span className="psheet-text">
+                <b title={me.email ?? undefined}>{me.email ?? 'Администратор'}</b>
+                <span className="muted">{ROLE_LABEL[me.admin.role]}</span>
+              </span>
+              <button type="button" className="psheet-out press" onClick={() => void logout()}>
+                <Icon name="logout" size={18} />
+                Выйти
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <nav aria-label="Меню" className="pnav" style={{ gridTemplateColumns: `repeat(${tabs.length + (more.length ? 1 : 0)}, minmax(0, 1fr))` }}>
+        {tabs.map((item) => (
+          <Link
+            key={item.key}
+            to={item.to}
+            className="pnav-tab press"
+            aria-current={isCurrent(item, path) ? 'page' : undefined}
+            aria-label={item.badge ? `${item.label}, ${item.badge} без ответа` : undefined}
+          >
+            <span className="pnav-icon">
+              <Icon name={item.icon} size={22} />
+              {item.badge ? (
+                <span className="pnav-badge" aria-hidden="true">
+                  {item.badge}
+                </span>
+              ) : null}
+            </span>
+            <span>{item.label}</span>
+          </Link>
+        ))}
+        {more.length ? (
+          <button type="button" className="pnav-tab press" aria-expanded={open} aria-current={moreCurrent && !open ? 'page' : undefined} onClick={() => setOpen((v) => !v)}>
+            <span className="pnav-icon">
+              <Icon name="more" size={22} />
+            </span>
+            <span>Ещё</span>
+          </button>
+        ) : null}
+      </nav>
+    </>
+  );
+}
+
 export function Shell({ theme, onFlipTheme, supportBadge, children }: Props) {
   const { me, can } = useSession();
   const location = useLocation();
   const narrow = useMedia('(max-width: 760px)');
+  const phone = usePhone();
   const layout = narrow ? 'top' : me.appearance.admin;
   const items = navItems(me, can, supportBadge);
-  const navigate = useNavigate();
-  useEffect(() => {
-    if (location.pathname === '/admin/settings' || location.pathname === '/admin/settings/') {
-      navigate('/admin/settings/look', { replace: true });
-    }
-  }, [location.pathname, navigate]);
+  if (phone) {
+    return (
+      <div className="adm" data-layout="phone">
+        <main className="page">{children}</main>
+        <PhoneNav items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} />
+      </div>
+    );
+  }
   return (
     <div className="adm" data-layout={layout}>
       {layout === 'side' ? (

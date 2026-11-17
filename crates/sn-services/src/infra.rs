@@ -73,6 +73,7 @@ pub struct InboundBrief {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeBilling {
+    pub uuid: Uuid,
     pub provider: String,
     pub login_url: Option<String>,
     pub next_billing_at: chrono::DateTime<chrono::Utc>,
@@ -414,6 +415,7 @@ impl<'a> InfraOps<'a> {
                     Some((
                         node,
                         NodeBilling {
+                            uuid: b.uuid,
                             provider: b.provider.name,
                             login_url: b.provider.login_url,
                             next_billing_at: b.next_billing_at,

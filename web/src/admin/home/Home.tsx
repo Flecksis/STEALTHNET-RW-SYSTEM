@@ -3,7 +3,8 @@ import { Link, useNavigate } from 'react-router';
 import { api } from '../../lib/api';
 import { avatarColor, count, dateLong, groupDigits, initials, money, NBSP, plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
-import { useMedia } from '../../lib/media';
+import { useMedia, usePhone } from '../../lib/media';
+import { HomePhone } from './HomePhone';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { PickClient } from '../clients/Clients';
 import { useSession } from '../session';
@@ -31,7 +32,7 @@ import {
 } from './model';
 import './home.css';
 
-function useOverview() {
+export function useOverview() {
   const { can } = useSession();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +97,11 @@ function useOverview() {
 export function Home() {
   const { me } = useSession();
   const narrow = useMedia('(max-width: 760px)');
+  const phone = usePhone();
   const layout = narrow ? 'top' : me.appearance.admin;
+  if (phone) {
+    return <HomePhone />;
+  }
   return layout === 'side' ? <MainBoard /> : <Daylight />;
 }
 

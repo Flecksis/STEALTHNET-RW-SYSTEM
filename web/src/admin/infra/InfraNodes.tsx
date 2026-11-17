@@ -3,13 +3,15 @@ import { api, ApiError } from '../../lib/api';
 import { count, dateLong, groupDigits, money, NBSP, plural, timeHM, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { countryName, minutesSince, spanText } from '../home/model';
+import { usePhone } from '../../lib/media';
 import { InfraHead } from './InfraHead';
+import { NodesPhone } from './NodesPhone';
 import '../form.css';
 import './infra.css';
 
 type Inbound = { uuid: string; tag: string; kind: string; security: string | null; network: string | null; port: number | null };
 
-type NodeRow = {
+export type NodeRow = {
   node: {
     uuid: string;
     name: string;
@@ -40,10 +42,10 @@ type NodeRow = {
   inbounds: Inbound[];
   profile_uuid: string | null;
   squads: string[];
-  billing: { provider: string; login_url: string | null; next_billing_at: string; price: Money | null } | null;
+  billing: { uuid: string; provider: string; login_url: string | null; next_billing_at: string; price: Money | null } | null;
 };
 
-type NodesData = { summary: { total: number; online: number; online_users: number; attention: number }; nodes: NodeRow[] };
+export type NodesData = { summary: { total: number; online: number; online_users: number; attention: number }; nodes: NodeRow[] };
 
 type Profile = { uuid: string; name: string; inbounds: Inbound[] };
 type Provider = { uuid: string; name: string; login_url: string | null };
@@ -61,7 +63,7 @@ function num1(value: number): string {
   return value.toFixed(1).replace('.', ',');
 }
 
-function tb(bytes: number): string {
+export function tb(bytes: number): string {
   return bytes >= 100 * GB ? `${num1(bytes / TB)}${NBSP}ТБ` : `${num1(bytes / GB)}${NBSP}ГБ`;
 }
 
@@ -70,7 +72,7 @@ function numTrim(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : num1(rounded);
 }
 
-function limitPair(used: number, limit: number): string {
+export function limitPair(used: number, limit: number): string {
   return `${num1(used / TB)} из ${numTrim(limit / TB)}${NBSP}ТБ`;
 }
 
@@ -116,7 +118,7 @@ function uptimeDays(seconds: number): string {
   return daysCount > 0 ? count(daysCount, 'день', 'дня', 'дней') : spanText(Math.floor(seconds / 60));
 }
 
-function trafficPercent(row: NodeRow): number | null {
+export function trafficPercent(row: NodeRow): number | null {
   const limit = row.node.trafficLimitBytes ?? 0;
   if (limit <= 0) {
     return null;
@@ -124,7 +126,7 @@ function trafficPercent(row: NodeRow): number | null {
   return Math.round(((row.node.trafficUsedBytes ?? 0) / limit) * 100);
 }
 
-function resetDate(day: number | null): string {
+export function resetDate(day: number | null): string {
   if (!day) {
     return '';
   }
@@ -184,6 +186,14 @@ function installCommand(port: number, secret: string): string {
 }
 
 export function InfraNodes() {
+  const phone = usePhone();
+  if (phone) {
+    return <NodesPhone />;
+  }
+  return <InfraNodesDesktop />;
+}
+
+function InfraNodesDesktop() {
   const [data, setData] = useState<NodesData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'attention'>('all');
