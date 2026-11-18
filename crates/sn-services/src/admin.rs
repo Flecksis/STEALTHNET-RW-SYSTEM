@@ -68,6 +68,7 @@ pub struct NodeBrief {
     pub traffic_reset_day: Option<i64>,
     pub last_status_change: Option<DateTime<Utc>>,
     pub last_status_message: Option<String>,
+    pub down_since: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -611,6 +612,12 @@ impl<'a> AdminOps<'a> {
         let remna = self.services.remna()?;
         let stats = remna.stats().await?;
         let nodes = remna.nodes().await?;
+        let down = self
+            .services
+            .node_watch()
+            .down_since()
+            .await
+            .unwrap_or_default();
         let briefs: Vec<NodeBrief> = nodes
             .iter()
             .map(|node| NodeBrief {
@@ -625,6 +632,10 @@ impl<'a> AdminOps<'a> {
                 traffic_reset_day: node.traffic_reset_day,
                 last_status_change: node.last_status_change,
                 last_status_message: node.last_status_message.clone(),
+                down_since: down
+                    .get(&node.uuid)
+                    .copied()
+                    .filter(|_| matches!(node.state(), NodeState::Down | NodeState::Connecting)),
             })
             .collect();
         Ok(RemnaOverview {

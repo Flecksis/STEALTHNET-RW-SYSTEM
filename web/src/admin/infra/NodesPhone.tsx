@@ -109,7 +109,7 @@ export function NodesPhone() {
   for (const row of nodes) {
     const busyRestart = restarting.has(row.node.uuid);
     if (row.state === 'down' || row.state === 'connecting' || busyRestart) {
-      const minutes = minutesSince(row.node.lastStatusChange);
+      const minutes = minutesSince(row.down_since ?? row.node.lastStatusChange);
       const down = row.state === 'down' && !busyRestart;
       attention.push({
         key: `s-${row.node.uuid}`,
@@ -257,7 +257,7 @@ export function NodesPhone() {
             {nodes.map((row) => {
               const limit = row.node.trafficLimitBytes ?? 0;
               const used = row.node.trafficUsedBytes ?? 0;
-              const minutes = minutesSince(row.node.lastStatusChange);
+              const minutes = minutesSince(row.down_since ?? row.node.lastStatusChange);
               const busyRestart = restarting.has(row.node.uuid);
               const state =
                 row.state === 'disabled'

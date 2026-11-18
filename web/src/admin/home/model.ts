@@ -18,6 +18,7 @@ export type NodeBrief = {
   traffic_reset_day: number | null;
   last_status_change: string | null;
   last_status_message: string | null;
+  down_since: string | null;
 };
 
 export type Dashboard = {
@@ -171,7 +172,7 @@ export function nodeStateText(node: NodeBrief, capital: boolean): { text: string
     case 'online':
       return { text: `${node.users_online.toLocaleString('ru-RU').replace(/\s/g, NBSP)}${NBSP}онлайн`, tone: 'ok' };
     case 'down': {
-      const minutes = minutesSince(node.last_status_change);
+      const minutes = minutesSince(node.down_since ?? node.last_status_change);
       return { text: cap(minutes === null ? 'не отвечает' : `не отвечает ${spanText(minutes)}`), tone: 'bad' };
     }
     case 'connecting':

@@ -52,7 +52,7 @@ impl Default for WorkerConfig {
             redeliver_interval: Duration::from_secs(300),
             end_expired_interval: Duration::from_secs(3_600),
             chain_watch_interval: Duration::from_secs(20),
-            node_watch_interval: Duration::from_secs(60),
+            node_watch_interval: Duration::from_secs(15),
             reconcile_batch: 500,
         }
     }

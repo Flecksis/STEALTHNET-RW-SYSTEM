@@ -713,6 +713,11 @@ impl<'a> AlertsOps<'a> {
         Ok(out)
     }
 
+    pub async fn collect_nodes(&self) -> ServiceResult<Vec<Alert>> {
+        let config = self.config().await?;
+        self.nodes(&config).await
+    }
+
     async fn nodes(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
         let notices = self
             .services

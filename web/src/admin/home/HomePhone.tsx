@@ -79,7 +79,7 @@ export function HomePhone() {
     if (node.state !== 'down' && !(node.state === 'connecting' && restarting.has(node.uuid))) {
       continue;
     }
-    const minutes = minutesSince(node.last_status_change);
+    const minutes = minutesSince(node.down_since ?? node.last_status_change);
     const busy = restarting.has(node.uuid);
     todos.push({
       key: `node-${node.uuid}`,

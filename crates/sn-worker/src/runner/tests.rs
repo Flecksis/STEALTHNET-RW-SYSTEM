@@ -1452,7 +1452,7 @@ fn состояние_периодической_работы_читается_�
 }
 
 #[tokio::test]
-async fn слежение_за_нодами_идёт_раз_в_минуту_и_пишет_переход_в_ленту() {
+async fn слежение_за_нодами_идёт_по_расписанию_и_пишет_переход_в_ленту() {
     let start = Utc::now();
     let clock = Arc::new(FixedClock::new(start));
     let Some(setup) = setup_with_clock(Vec::new(), clock.clone()).await else {
@@ -1473,7 +1473,7 @@ async fn слежение_за_нодами_идёт_раз_в_минуту_и_�
     node.is_connected = false;
     node.last_status_change = Some(start + chrono::Duration::seconds(20));
     setup.remna.set_nodes(vec![node]);
-    clock.set(start + chrono::Duration::seconds(30));
+    clock.set(start + chrono::Duration::seconds(10));
     assert!(
         worker
             .run_periodic(Periodic::NodeWatch)
@@ -1481,7 +1481,7 @@ async fn слежение_за_нодами_идёт_раз_в_минуту_и_�
             .unwrap()
             .is_none()
     );
-    clock.set(start + chrono::Duration::seconds(60));
+    clock.set(start + chrono::Duration::seconds(30));
     let second = worker
         .run_periodic(Periodic::NodeWatch)
         .await

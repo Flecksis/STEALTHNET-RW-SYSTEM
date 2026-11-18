@@ -5,9 +5,10 @@ use serde::Serialize;
 use sn_remnawave::webhook::{ParsedWebhook, RemnaEvent, body_digest, events, scopes};
 use sn_remnawave::{Node, NodeState};
 use sn_store::{Db, NewRemnaEvent, Tx};
+use std::collections::HashMap;
 use uuid::Uuid;
 
-pub const DOWN_ALERT_AFTER_SECONDS: i64 = 120;
+pub const DOWN_ALERT_AFTER_SECONDS: i64 = 60;
 
 const COLUMNS: &str = "node_uuid, name, state, since, event, message, seen_at, down_at, alerted_at";
 const INSERT: &str = "INSERT INTO remna_node_states \
@@ -412,6 +413,16 @@ impl<'a> NodeWatch<'a> {
         write(&mut tx, UPDATE, &track).await?;
         tx.commit().await?;
         Ok(written)
+    }
+
+    pub async fn down_since(&self) -> ServiceResult<HashMap<Uuid, DateTime<Utc>>> {
+        let mut conn = self.services.store().conn().await?;
+        let rows: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT node_uuid, COALESCE(down_at, since) FROM remna_node_states WHERE state = 'down'",
+        )
+        .fetch_all(conn.conn())
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 
     pub async fn notices(&self, send: bool) -> ServiceResult<Vec<NodeNotice>> {

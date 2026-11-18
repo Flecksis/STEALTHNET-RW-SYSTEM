@@ -427,15 +427,15 @@ async fn опрос_после_вебхука_не_пишет_то_же_собы
 }
 
 #[tokio::test]
-async fn уведомление_о_ноде_уходит_после_двух_минут() {
+async fn уведомление_о_ноде_уходит_через_минуту() {
     let Some(env) = env().await else { return };
     poll_at(&env, at(0), vec![germany()]).await;
     poll_at(&env, at(60), vec![down(germany(), at(60))]).await;
     assert!(node_alerts(&env, at(61)).await.is_empty());
+    poll_at(&env, at(90), vec![down(germany(), at(60))]).await;
+    assert!(node_alerts(&env, at(110)).await.is_empty());
     poll_at(&env, at(120), vec![down(germany(), at(60))]).await;
-    assert!(node_alerts(&env, at(150)).await.is_empty());
-    poll_at(&env, at(180), vec![down(germany(), at(60))]).await;
-    let alerts = node_alerts(&env, at(181)).await;
+    let alerts = node_alerts(&env, at(121)).await;
     assert_eq!(alerts.len(), 1, "{alerts:?}");
     assert_eq!(
         alerts[0].html,
@@ -475,7 +475,7 @@ async fn короткое_мигание_ноды_без_уведомлений(
         .await,
         RemnaWebhookResult::Accepted { .. }
     ));
-    assert!(node_alerts(&env, at(1060)).await.is_empty());
+    assert!(node_alerts(&env, at(1050)).await.is_empty());
     assert!(matches!(
         hook(
             &env,

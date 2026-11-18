@@ -168,3 +168,65 @@ async fn уведомления_уходят_в_группу_по_темам() {
     assert_eq!(checks, 10);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn нода_которая_лежит_уходит_в_группу_без_общего_обхода() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    forum_api(&server).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set_as(keys::BOT_USERNAME, &"stealth_test_bot", None)
+            .await
+            .unwrap();
+    }
+    let link = services.alerts().link().await.unwrap();
+    let start = link.link.split("startgroup=").nth(1).unwrap().to_string();
+    handle_update(
+        &ctx,
+        group_update(1, -100_500, &format!("/start@stealth_test_bot {start}")),
+    )
+    .await;
+    let since = chrono::Utc::now() - chrono::Duration::minutes(5);
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO remna_node_states \
+             (node_uuid, name, state, since, event, message, seen_at, down_at, alerted_at) \
+             VALUES ($1, 'Germany', 'down', $2, 'node.connection_lost', 'connect ETIMEDOUT', $2, $2, NULL)",
+        )
+        .bind(uuid::Uuid::from_u128(0xde))
+        .bind(since)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let keeper = Keeper::new(
+        services.clone(),
+        ctx.api.clone(),
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    );
+    keeper.nodes_step().await.unwrap();
+    let texts: Vec<String> = sent(&server)
+        .await
+        .into_iter()
+        .filter_map(|b| b["text"].as_str().map(str::to_string))
+        .filter(|t| t.contains("Нода Germany не отвечает"))
+        .collect();
+    assert_eq!(texts.len(), 1, "{texts:?}");
+    keeper.nodes_step().await.unwrap();
+    let again = sent(&server)
+        .await
+        .into_iter()
+        .filter(|b| {
+            b["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("Нода Germany не отвечает"))
+        })
+        .count();
+    assert_eq!(again, 1);
+    db.cleanup().await;
+}

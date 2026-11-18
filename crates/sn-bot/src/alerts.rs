@@ -9,21 +9,26 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+const NODES_EVERY: Duration = Duration::from_secs(15);
+
 pub struct Keeper {
     services: Services,
     api: Arc<TelegramApi>,
     tick: Duration,
     sweep_every: u32,
+    nodes_every: u32,
 }
 
 impl Keeper {
     pub fn new(services: Services, api: Arc<TelegramApi>, tick: Duration, sweep: Duration) -> Self {
         let ticks = (sweep.as_millis() / tick.as_millis().max(1)).max(1);
+        let nodes = (NODES_EVERY.as_millis() / tick.as_millis().max(1)).max(1);
         Keeper {
             services,
             api,
             tick,
             sweep_every: u32::try_from(ticks).unwrap_or(u32::MAX),
+            nodes_every: u32::try_from(nodes).unwrap_or(u32::MAX),
         }
     }
 
@@ -34,8 +39,15 @@ impl Keeper {
                 _ = cancel.cancelled() => return,
                 _ = tokio::time::sleep(self.tick) => {}
             }
-            if let Err(err) = self.step(ticks.is_multiple_of(self.sweep_every)).await {
+            let sweep = ticks.is_multiple_of(self.sweep_every);
+            if let Err(err) = self.step(sweep).await {
                 tracing::warn!(error = %err, "уведомления администраторам не отправлены");
+            }
+            if !sweep
+                && ticks.is_multiple_of(self.nodes_every)
+                && let Err(err) = self.nodes_step().await
+            {
+                tracing::warn!(error = %err, "уведомления о нодах не отправлены");
             }
             ticks = ticks.wrapping_add(1);
         }
@@ -63,6 +75,18 @@ impl Keeper {
             for alert in alerts.collect().await? {
                 self.deliver(&config, chat_id, &alert).await?;
             }
+        }
+        Ok(())
+    }
+
+    pub async fn nodes_step(&self) -> Result<(), BotError> {
+        let alerts = self.services.alerts();
+        let config = alerts.config().await?;
+        let Some(chat_id) = config.chat_id else {
+            return Ok(());
+        };
+        for alert in alerts.collect_nodes().await? {
+            self.deliver(&config, chat_id, &alert).await?;
         }
         Ok(())
     }

@@ -35,6 +35,7 @@ export type NodeRow = {
   };
   state: 'online' | 'connecting' | 'down' | 'disabled';
   traffic_alert: boolean;
+  down_since: string | null;
   city: string | null;
   system: {
     info: { cpus: number; memory_total?: number; memoryTotal?: number; platform: string; release: string; version?: string };
@@ -161,7 +162,7 @@ function stateText(row: NodeRow, restarting: boolean): { text: string; tone: 'ok
     return { text: 'подключается', tone: 'warn', reason: '' };
   }
   if (row.state === 'down') {
-    const minutes = minutesSince(row.node.lastStatusChange);
+    const minutes = minutesSince(row.down_since ?? row.node.lastStatusChange);
     return { text: minutes === null ? 'не отвечает' : `не отвечает ${spanText(minutes)}`, tone: 'bad', reason: row.node.lastStatusMessage ?? '' };
   }
   return { text: `в сети · ${uptimeDays(row.node.xrayUptime)}`, tone: 'ok', reason: '' };
@@ -307,7 +308,7 @@ function InfraNodesDesktop() {
           <div className="inf-alarm">
             <span style={{ color: alarm.state === 'down' && !restarting.has(alarm.node.uuid) ? 'var(--bad)' : 'var(--muted)', fontWeight: 600 }}>
               {alarm.state === 'down' && !restarting.has(alarm.node.uuid)
-                ? `${alarm.node.name} не отвечает${alarm.node.lastStatusChange ? ` с ${timeHM(alarm.node.lastStatusChange)}` : ''}`
+                ? `${alarm.node.name} не отвечает${(alarm.down_since ?? alarm.node.lastStatusChange) ? ` с ${timeHM(alarm.down_since ?? alarm.node.lastStatusChange)}` : ''}`
                 : `${alarm.node.name} подключается`}
             </span>
             <button
@@ -460,7 +461,7 @@ function NodeDetails({ row, restarting, busy, ask, setAsk, act, onEdited }: Deta
       : restarting
         ? ' · перезапуск отправлен'
         : row.state === 'down'
-          ? [row.node.lastStatusChange ? ` · С ${timeHM(row.node.lastStatusChange)}` : '', row.node.lastStatusMessage ? ` · ${row.node.lastStatusMessage}` : ''].join('')
+          ? [(row.down_since ?? row.node.lastStatusChange) ? ` · С ${timeHM(row.down_since ?? row.node.lastStatusChange)}` : '', row.node.lastStatusMessage ? ` · ${row.node.lastStatusMessage}` : ''].join('')
           : '';
   const facts: Array<[string, string, boolean?]> = [
     ['Адрес', `${row.node.address}${row.node.port ? `:${row.node.port}` : ''}`, true],

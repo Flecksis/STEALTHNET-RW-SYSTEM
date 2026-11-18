@@ -60,6 +60,7 @@ pub struct NodeView {
     pub profile_uuid: Option<Uuid>,
     pub squads: Vec<String>,
     pub billing: Option<NodeBilling>,
+    pub down_since: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -93,6 +94,7 @@ impl From<Node> for NodeView {
             profile_uuid: None,
             squads: Vec::new(),
             billing: None,
+            down_since: None,
         }
     }
 }
@@ -689,6 +691,12 @@ impl<'a> InfraOps<'a> {
                 .collect(),
             Err(_) => HashMap::new(),
         };
+        let down = self
+            .services
+            .node_watch()
+            .down_since()
+            .await
+            .unwrap_or_default();
         let mut nodes = Vec::with_capacity(details.len());
         for detail in details {
             let uuid = detail.node.uuid;
@@ -712,6 +720,10 @@ impl<'a> InfraOps<'a> {
             view.profile_uuid = profile_uuid;
             view.squads = squads_of.remove(&uuid).unwrap_or_default();
             view.billing = billing.get(&uuid).cloned();
+            view.down_since = down
+                .get(&uuid)
+                .copied()
+                .filter(|_| matches!(view.state, NodeState::Down | NodeState::Connecting));
             nodes.push(view);
         }
         let now = self.services.now();
