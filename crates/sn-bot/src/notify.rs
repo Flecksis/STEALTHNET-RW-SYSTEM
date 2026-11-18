@@ -852,6 +852,10 @@ pub fn letter_of(
             }
         }
         limits::TEMPLATE_LIFTED => (LetterId::TrafficLifted, Values::new()),
+        templates::SUBSCRIPTION_LINK => (
+            LetterId::SubscriptionLink,
+            Values::new().maybe("url", raw(params, "url")),
+        ),
         _ => return None,
     })
 }

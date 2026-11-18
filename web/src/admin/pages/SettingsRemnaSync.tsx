@@ -470,10 +470,10 @@ function Done({ run, onNotify, busy }: { run: Run; onNotify: () => void; busy: b
         <div className="imp-block">
           <span className="strong">У {count(run.link_changed, 'клиента', 'клиентов', 'клиентов')} новая ссылка подписки</span>
           {run.notified_at ? (
-            <span>Новые ссылки отправлены в бот {dateTime(run.notified_at).toLowerCase()}.</span>
+            <span>Новые ссылки отправлены {dateTime(run.notified_at).toLowerCase()}. Клиентам без Telegram — письмом.</span>
           ) : (
             <>
-              <span>Старая ссылка у них больше не работает. Отправьте каждому новую в бот — сообщение с кнопкой «Подписка».</span>
+              <span>Старая ссылка у них больше не работает. Отправьте каждому новую: в бот придёт сообщение с кнопкой «Подписка», а клиентам без Telegram — письмо.</span>
               <button type="button" className="btn-main btn" onClick={onNotify} disabled={busy}>
                 Отправить новую ссылку
               </button>

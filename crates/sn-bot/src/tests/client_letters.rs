@@ -573,3 +573,42 @@ async fn письмо_уходит_по_шаблону_оператора_на_�
     assert!(en.contains("The STEALTHNET team"), "{en}");
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn новая_ссылка_после_переноса_приходит_письмом_клиенту_без_телеграма() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    site_on(&services).await;
+    let client = email_client(&services, "vera@example.com").await;
+    let (port, letters) = fake_smtp().await;
+    mail_on(&services, port, serde_json::json!({})).await;
+    let handler = handler_for(&server);
+    assert_eq!(
+        notify(
+            &services,
+            &handler,
+            client,
+            notify::templates::SUBSCRIPTION_LINK,
+            serde_json::json!({"url": "https://sub.example.com/Nw7Link", "subscription_id": 7}),
+        )
+        .await,
+        JobResult::Done
+    );
+    let sent = letters.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].contains("vera@example.com"));
+    assert!(subject_of(&sent[0]).contains("Новая ссылка на подписку"));
+    let letter = decoded(&sent[0]);
+    assert!(
+        letter.contains("https://sub.example.com/Nw7Link"),
+        "{letter}"
+    );
+    assert!(letter.contains("старая больше не работает"), "{letter}");
+    assert!(
+        letter.contains("https://vpn.example.com/cabinet"),
+        "{letter}"
+    );
+    assert!(sent_to_telegram(&server).await.is_empty());
+    db.cleanup().await;
+}

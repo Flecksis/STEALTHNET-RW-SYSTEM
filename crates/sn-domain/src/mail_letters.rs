@@ -77,6 +77,7 @@ pub enum LetterId {
     TrafficWarning,
     TrafficRestricted,
     TrafficLifted,
+    SubscriptionLink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,13 +286,22 @@ const UNTIL: Var = var(
     Sample::Text("15 февраля, 10:00", "15 February, 10:00"),
 );
 
+const SUB_URL: Var = var(
+    "url",
+    "новая ссылка подписки",
+    Sample::Text(
+        "https://sub.example.com/7Q4M2KXP",
+        "https://sub.example.com/7Q4M2KXP",
+    ),
+);
+
 const NEW_EMAIL: Var = var(
     "new_email",
     "новый адрес, частично скрыт",
     Sample::Text("n***@example.com", "n***@example.com"),
 );
 
-pub const CATALOG: [Spec; 25] = [
+pub const CATALOG: [Spec; 26] = [
     Spec {
         id: LetterId::LoginCode,
         group: Group::Login,
@@ -843,6 +853,29 @@ pub const CATALOG: [Spec; 25] = [
             button: "Open your account",
         },
     },
+    Spec {
+        id: LetterId::SubscriptionLink,
+        group: Group::Service,
+        title: "Новая ссылка на подписку",
+        when: "После переноса в Remnawave у подписки сменилась ссылка",
+        vars: &[SUB_URL],
+        required: &["url"],
+        path: &["/cabinet"],
+        ru: Texts {
+            subject: &["Новая ссылка на подписку {brand}"],
+            text: &[
+                "Ссылка на вашу подписку сменилась, старая больше не работает. Новая ссылка:\n<code>{url}</code>\n\nДобавьте её в приложение заново.",
+            ],
+            button: "Открыть кабинет",
+        },
+        en: Texts {
+            subject: &["Your new {brand} subscription link"],
+            text: &[
+                "Your subscription link has changed and the old one no longer works. Your new link:\n<code>{url}</code>\n\nAdd it to your app again.",
+            ],
+            button: "Open your account",
+        },
+    },
 ];
 
 impl LetterId {
@@ -873,6 +906,7 @@ impl LetterId {
             LetterId::TrafficWarning => "traffic_warning",
             LetterId::TrafficRestricted => "traffic_restricted",
             LetterId::TrafficLifted => "traffic_lifted",
+            LetterId::SubscriptionLink => "subscription_link",
         }
     }
 
