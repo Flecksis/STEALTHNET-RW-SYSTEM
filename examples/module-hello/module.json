@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "id": "hello",
+  "name": "Привет",
+  "version": "1.0.0",
+  "author": "STEALTHNET",
+  "description": "Пример внешнего модуля: здоровается с новыми клиентами в боте и благодарит за оплату",
+  "webhook": "http://127.0.0.1:8090/events",
+  "events": ["client_registered", "payment_paid"],
+  "permissions": ["clients_read", "clients_write", "money"],
+  "page": {
+    "url": "http://127.0.0.1:8090/admin",
+    "title": "Привет: журнал"
+  },
+  "settings": [
+    {
+      "key": "greeting",
+      "type": "text",
+      "label": "Приветствие новому клиенту",
+      "hint": "Уходит в бот сразу после регистрации",
+      "large": true,
+      "default": "Спасибо, что с нами! Если появятся вопросы — пишите в поддержку."
+    },
+    {
+      "key": "thank_after_payment",
+      "type": "flag",
+      "label": "Благодарить за оплату",
+      "default": true
+    },
+    {
+      "key": "thanks",
+      "type": "text",
+      "label": "Текст благодарности",
+      "default": "Оплата получена, спасибо!"
+    }
+  ]
+}

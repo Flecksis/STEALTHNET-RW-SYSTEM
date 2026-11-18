@@ -152,6 +152,10 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         background.push(tokio::spawn(
             worker(services.clone(), &config).run(cancel.clone()),
         ));
+        background.push(tokio::spawn(
+            sn_services::ext_modules::Deliverer::new(services.clone())
+                .run(cancel.clone().cancelled_owned()),
+        ));
         let ctx = services.module_context();
         let registry = services.modules().clone();
         background.push(tokio::spawn(

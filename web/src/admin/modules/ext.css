@@ -1,0 +1,119 @@
+.ext-cred-label {
+  font-weight: 700;
+}
+
+.ext-cred,
+.ext-url {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.ext-cred {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.ext-facts .rl {
+  padding-top: 0;
+}
+
+.ext-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ext-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ext-item {
+  font-weight: 600;
+}
+
+.ext-new {
+  margin-left: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+.ext-problems {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.ext-pick {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ext-response {
+  flex: 1 1 100%;
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+}
+
+.ext-log-head {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.ext-log-title {
+  flex: 1 1 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.md-install {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 14px;
+}
+
+.md-link-inline {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.md-link-inline:hover {
+  text-decoration: underline;
+}
+
+.ext-frame-page {
+  gap: 14px;
+}
+
+.ext-frame {
+  display: block;
+  width: 100%;
+  height: calc(100dvh - 220px);
+  min-height: 480px;
+  background: var(--surface);
+}
+
+@media (max-width: 760px) {
+  .ext-frame {
+    height: calc(100dvh - 180px);
+    min-height: 420px;
+  }
+}

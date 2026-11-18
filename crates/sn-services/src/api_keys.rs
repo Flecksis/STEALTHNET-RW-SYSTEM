@@ -10,7 +10,7 @@ use sn_domain::access::{AdminPrincipal, Permission, is_allowed};
 use sn_store::{ApiKeyRecord, Db, NewApiKey};
 
 pub const TOKEN_PREFIX: &str = "snk_";
-const SHOWN_PREFIX_LEN: usize = 12;
+pub(crate) const SHOWN_PREFIX_LEN: usize = 12;
 const NAME_MAX: usize = 80;
 const TOUCH_EVERY_SECONDS: i64 = 60;
 pub const EXPIRY_DAYS_MAX: i64 = 3650;
@@ -47,7 +47,7 @@ pub fn is_api_token(raw: &str) -> bool {
     raw.trim().starts_with(TOKEN_PREFIX)
 }
 
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     let mut raw = [0u8; 24];
     OsRng.fill_bytes(&mut raw);
     format!("{TOKEN_PREFIX}{}", hex::encode(raw))

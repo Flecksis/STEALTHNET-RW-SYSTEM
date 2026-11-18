@@ -117,7 +117,12 @@ impl<'c> EventsRepo<'c> {
 
     pub async fn push(&mut self, event: &DomainEvent) -> StoreResult<EventId> {
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO domain_events (kind, client_id, payload) VALUES ($1, $2, $3) RETURNING id",
+            "WITH e AS (INSERT INTO domain_events (kind, client_id, payload) VALUES ($1, $2, $3) \
+             RETURNING id, occurred_at), \
+             queued AS (INSERT INTO ext_module_deliveries (module_id, event_id, kind, payload, occurred_at) \
+             SELECT m.id, e.id, $1, $3, e.occurred_at FROM ext_modules m, e \
+             WHERE m.enabled AND $1 = ANY (m.events)) \
+             SELECT id FROM e",
         )
         .bind(event.kind())
         .bind(event.client_id().0)

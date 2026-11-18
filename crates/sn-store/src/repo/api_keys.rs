@@ -147,7 +147,8 @@ impl<'c> ApiKeysRepo<'c> {
              a.permissions AS admin_permissions, k.last_used_at \
              FROM api_keys k JOIN admins a ON a.id = k.created_by \
              WHERE k.token_hash = $1 AND k.revoked_at IS NULL \
-             AND (k.expires_at IS NULL OR k.expires_at > $2) AND a.disabled_at IS NULL",
+             AND (k.expires_at IS NULL OR k.expires_at > $2) AND a.disabled_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM ext_modules m WHERE m.api_key_id = k.id AND NOT m.enabled)",
         )
         .bind(token_hash)
         .bind(now)
@@ -172,6 +173,22 @@ impl<'c> ApiKeysRepo<'c> {
             .execute(&mut *self.conn)
             .await?;
         Ok(())
+    }
+
+    pub async fn set_permissions(
+        &mut self,
+        id: i64,
+        permissions: &[Permission],
+    ) -> StoreResult<bool> {
+        let permissions: Vec<&str> = permissions.iter().map(|p| p.as_str()).collect();
+        let done = sqlx::query(
+            "UPDATE api_keys SET permissions = $2 WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(id)
+        .bind(&permissions)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
     }
 
     pub async fn revoke(&mut self, id: i64) -> StoreResult<bool> {

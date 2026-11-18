@@ -15,6 +15,7 @@ pub mod decisions;
 pub mod email_change;
 pub mod error;
 pub mod events;
+pub mod ext_modules;
 pub mod fulfillment;
 pub mod grants;
 pub mod inbox;

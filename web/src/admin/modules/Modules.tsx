@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { useSession } from '../session';
+import { extLink, type ExtCard, type ExtSummary } from './ext';
 import { GROUPS, setupLink, setupText, type ModulesData, type ModuleView } from './model';
 import '../form.css';
 import './modules.css';
+import './ext.css';
 
 type Filter = 'all' | 'on' | 'off';
 
@@ -13,15 +15,18 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function Modules() {
-  const { reload } = useSession();
+  const { reload, can } = useSession();
   const [data, setData] = useState<ModulesData | null>(null);
+  const [external, setExternal] = useState<ExtSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setData(await api<ModulesData>('/api/admin/modules'));
+      const [list, ext] = await Promise.all([api<ModulesData>('/api/admin/modules'), api<ExtSummary[]>('/api/admin/ext-modules')]);
+      setData(list);
+      setExternal(ext);
       setError(null);
     } catch (err) {
       setError(failText(err, 'Модули не загрузились'));
@@ -54,14 +59,37 @@ export function Modules() {
     }
   };
 
+  const toggleExternal = async (m: ExtSummary) => {
+    if (busy) {
+      return;
+    }
+    const enabled = !m.enabled;
+    const swap = (next: ExtSummary) => setExternal((list) => list.map((x) => (x.id === next.id ? next : x)));
+    setBusy(`ext:${m.id}`);
+    setError(null);
+    swap({ ...m, enabled });
+    try {
+      const card = await api<ExtCard>(`/api/admin/ext-modules/${m.id}`, { method: 'PATCH', body: { enabled } });
+      swap({ ...m, enabled: card.enabled, warning: card.warning });
+    } catch (err) {
+      swap(m);
+      setError(failText(err, `Модуль «${m.name}» не переключился`));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const modules = data?.modules ?? [];
-  const onCount = modules.filter((m) => m.active).length;
+  const total = modules.length + external.length;
+  const onCount = modules.filter((m) => m.active).length + external.filter((m) => m.enabled).length;
   const chips: Array<[Filter, string, number]> = [
-    ['all', 'Все', modules.length],
+    ['all', 'Все', total],
     ['on', 'Включены', onCount],
-    ['off', 'Выключены', modules.length - onCount],
+    ['off', 'Выключены', total - onCount],
   ];
   const fits = (m: ModuleView) => filter === 'all' || (filter === 'on') === m.active;
+  const shownExternal = external.filter((m) => filter === 'all' || (filter === 'on') === m.enabled);
+  const canInstall = can('modules') && can('settings');
 
   return (
     <div className="md">
@@ -78,6 +106,11 @@ export function Modules() {
             </button>
           ))}
         </div>
+        {canInstall ? (
+          <Link to="/admin/modules/install" className="btn-line hov md-install">
+            Установить модуль
+          </Link>
+        ) : null}
       </header>
       {error ? (
         <p className="err" role="alert">
@@ -151,6 +184,60 @@ export function Modules() {
             </section>
           );
         })}
+        {data && (shownExternal.length > 0 || (filter === 'all' && external.length === 0)) ? (
+          <section aria-labelledby="grp-external" className="card md-group">
+            <div className="md-group-head">
+              <h2 id="grp-external" className="section-title">
+                Внешние модули
+              </h2>
+              <span className="muted">
+                {external.length ? `${external.filter((m) => m.enabled).length} из ${external.length} включено` : 'Пока нет'}
+              </span>
+            </div>
+            <ul>
+              {shownExternal.map((m) => (
+                <li key={m.id} className="md-row">
+                  <div className="md-text">
+                    <span className="md-name">{m.name}</span>
+                    {m.description ? <span className="md-desc">{m.description}</span> : null}
+                    <span className="md-where">
+                      Внешний · версия {m.version} · {m.author}
+                    </span>
+                    {m.enabled && m.warning ? <span className="md-warn">{m.warning}</span> : null}
+                  </div>
+                  <Link to={extLink(m.id)} className="md-link" aria-label={`Открыть: ${m.name}`}>
+                    Открыть
+                  </Link>
+                  <button
+                    type="button"
+                    role="switch"
+                    className="sw"
+                    aria-checked={m.enabled}
+                    aria-label={m.name}
+                    onClick={() => void toggleExternal(m)}
+                    disabled={busy === `ext:${m.id}`}
+                  >
+                    <span aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+              {external.length === 0 ? (
+                <li className="md-row">
+                  <div className="md-text">
+                    <span className="md-desc">
+                      Свои модули: отдельная программа получает события панели с подписью и работает через API с правами, которые вы подтвердите.
+                    </span>
+                    {canInstall ? (
+                      <Link to="/admin/modules/install" className="md-link">
+                        Установить из файла
+                      </Link>
+                    ) : null}
+                  </div>
+                </li>
+              ) : null}
+            </ul>
+          </section>
+        ) : null}
       </div>
     </div>
   );

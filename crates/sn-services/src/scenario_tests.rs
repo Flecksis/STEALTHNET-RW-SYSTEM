@@ -39,6 +39,7 @@ mod api_keys;
 mod client_access;
 mod digest;
 mod email_change;
+mod ext_modules;
 mod limits;
 mod mail;
 mod nodes;

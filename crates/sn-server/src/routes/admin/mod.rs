@@ -8,6 +8,7 @@ mod clients;
 #[cfg(test)]
 mod decisions_tests;
 mod delivery;
+mod ext_modules;
 mod import;
 mod infra;
 mod landing;
@@ -34,6 +35,7 @@ pub fn routes() -> Router<AppState> {
         .merge(auth::routes())
         .merge(admins::routes())
         .merge(api_keys::routes())
+        .merge(ext_modules::routes())
         .merge(mail::routes())
         .merge(alerts::routes())
         .merge(overview::routes())

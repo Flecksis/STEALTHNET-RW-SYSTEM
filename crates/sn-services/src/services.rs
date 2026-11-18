@@ -315,6 +315,10 @@ impl Services {
         crate::api_keys::ApiKeysOps::new(self)
     }
 
+    pub fn ext_modules(&self) -> crate::ext_modules::ExtModulesOps<'_> {
+        crate::ext_modules::ExtModulesOps::new(self)
+    }
+
     pub fn oauth(&self) -> crate::oauth::OauthOps<'_> {
         crate::oauth::OauthOps::new(self)
     }

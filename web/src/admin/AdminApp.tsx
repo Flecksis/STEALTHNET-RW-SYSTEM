@@ -15,6 +15,9 @@ import { InfraNodes } from './infra/InfraNodes';
 import { InfraSquads } from './infra/InfraSquads';
 import { InfraHosts } from './infra/InfraHosts';
 import { InfraBilling } from './infra/InfraBilling';
+import { ExtInstall } from './modules/ExtInstall';
+import { ExtModule } from './modules/ExtModule';
+import { ExtPage } from './modules/ExtPage';
 import { Modules } from './modules/Modules';
 import { ModulePage } from './modules/ModulePage';
 import { ModuleScreen } from './modules/ModuleScreen';
@@ -247,6 +250,9 @@ export function AdminApp() {
           <Route path="infra/hosts" element={<InfraHosts />} />
           <Route path="infra/billing" element={<InfraBilling />} />
           <Route path="modules" element={<Modules />} />
+          <Route path="modules/install" element={<ExtInstall />} />
+          <Route path="modules/ext/:id" element={<ExtModule />} />
+          <Route path="modules/ext/:id/page" element={<ExtPage />} />
           <Route path="modules/:id" element={<ModulePage />} />
           <Route path="m/:module/*" element={<ModuleScreen />} />
           <Route path="settings/look" element={<SettingsLook />} />

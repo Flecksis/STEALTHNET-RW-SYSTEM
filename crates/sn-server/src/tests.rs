@@ -35,6 +35,7 @@ mod client_access;
 mod client_payments;
 mod config_warnings;
 mod cryptomus;
+mod ext_modules;
 mod gram;
 mod hosts;
 mod import;
