@@ -1234,3 +1234,43 @@ async fn в_зачёт_друзей_не_идут_отмеченные_и_сам
     assert_eq!(done.winners_list[0].client_id, host);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn призы_ждущие_подписку_не_задерживают_выдачу_остальных() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let days = create(&ctx, &draft(PrizeDraft::Days { days: 10 }, 50), None)
+        .await
+        .unwrap();
+    for n in 0..50 {
+        let waiting = tg_client(&db.store, 9300 + n).await;
+        join(&ctx, days.id, waiting).await.unwrap();
+    }
+    let money = create(
+        &ctx,
+        &draft(PrizeDraft::Balance { amount: "5".into() }, 1),
+        None,
+    )
+    .await
+    .unwrap();
+    let lucky = tg_client(&db.store, 9400).await;
+    join(&ctx, money.id, lucky).await.unwrap();
+    finish_now(&db.store, days.id).await;
+    finish_now(&db.store, money.id).await;
+    run(&ctx).await.unwrap();
+    run(&ctx).await.unwrap();
+    let view = contest(&ctx, money.id).await.unwrap();
+    assert_eq!(
+        view.winners_list
+            .iter()
+            .find(|w| w.client_id == lucky)
+            .and_then(|w| w.prize_state.clone())
+            .as_deref(),
+        Some("issued")
+    );
+    assert_eq!(balance(&db.store, lucky).await, 500);
+    db.cleanup().await;
+}

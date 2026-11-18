@@ -613,7 +613,10 @@ pub async fn due_draws(db: &mut impl Db, now: DateTime<Utc>) -> StoreResult<Vec<
 pub async fn prizes_due(db: &mut impl Db, limit: i64) -> StoreResult<Vec<(i64, i64)>> {
     Ok(sqlx::query_as(
         "SELECT e.contest_id, e.client_id FROM contest_entries e JOIN contests c ON c.id = e.contest_id \
-         WHERE e.prize_state IN ('pending', 'waiting') AND c.canceled_at IS NULL \
+         WHERE c.canceled_at IS NULL AND (e.prize_state = 'pending' OR (e.prize_state = 'waiting' AND EXISTS ( \
+             SELECT 1 FROM subscriptions s WHERE s.client_id = e.client_id AND s.ended_at IS NULL \
+             AND s.remna_user_id IS NOT NULL AND s.remna_missing_at IS NULL \
+             AND (s.status IS NULL OR s.status <> 'disabled')))) \
          ORDER BY e.contest_id, e.place LIMIT $1",
     )
     .bind(limit)
