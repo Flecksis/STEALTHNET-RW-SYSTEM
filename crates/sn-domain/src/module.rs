@@ -178,13 +178,18 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Админка · бот",
         false,
     ),
-    info(
-        ModuleId::Utm,
-        ModuleGroup::Marketing,
+    with_menu(
+        info(
+            ModuleId::Utm,
+            ModuleGroup::Marketing,
+            "UTM-метки",
+            "Ссылки с метками для рекламы и цифры по ним: переходы, регистрации, оплаты",
+            "Админка · бот · сайт · мини-приложение",
+            true,
+        ),
         "UTM-метки",
-        "Откуда пришли клиенты: метки в ссылках и отчёт",
-        "Клиенты · деньги",
-        true,
+        "pin",
+        7,
     ),
     with_menu(
         info(
@@ -247,7 +252,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
             ModuleId::Analytics,
             ModuleGroup::Accounting,
             "Бизнес-аналитика",
-            "MRR, удержание по когортам, сравнение платёжных систем",
+            "Деньги, клиенты, удержание, платёжки, источники, тарифы, экономика и поддержка",
             "Админка",
             false,
         ),

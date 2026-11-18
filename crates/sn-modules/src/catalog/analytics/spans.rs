@@ -4,7 +4,7 @@ use sn_store::{Db, Store, StoreResult};
 
 pub const GRACE_DAYS: i64 = 3;
 pub const MONTH_DAYS: i64 = 30;
-pub const VERSION: i32 = 1;
+pub const VERSION: i32 = 2;
 const LOCK: i64 = 7_240_001;
 const OVERLAP_MINUTES: i64 = 10;
 const CHUNK: usize = 2_000;
@@ -18,6 +18,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Kind::New => "new",
+            Kind::Renewal => "renewal",
+            Kind::Change => "change",
+        }
+    }
+
     fn parse(value: &str) -> Option<Kind> {
         match value {
             "new" => Some(Kind::New),
@@ -36,6 +44,7 @@ pub struct Purchase {
     pub paid_at: DateTime<Utc>,
     pub days: i64,
     pub value_minor: i64,
+    pub tariff_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +55,10 @@ pub struct Span {
     pub ends_at: DateTime<Utc>,
     pub monthly_minor: i64,
     pub continues: bool,
+    pub kind: Kind,
+    pub tariff_id: Option<i64>,
+    pub days: i64,
+    pub gap_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +106,10 @@ pub fn build(mut purchases: Vec<Purchase>) -> (Vec<Span>, Vec<Island>) {
             ends_at: starts_at + Duration::days(p.days),
             monthly_minor: monthly(p.value_minor, p.days),
             continues: false,
+            kind: p.kind,
+            tariff_id: p.tariff_id,
+            days: p.days,
+            gap_seconds: None,
         });
         last = Some(spans.len() - 1);
     }
@@ -104,6 +121,9 @@ pub fn build(mut purchases: Vec<Purchase>) -> (Vec<Span>, Vec<Island>) {
         let (starts_at, ends_at) = (spans[i].starts_at, spans[i].ends_at);
         if ends_at <= starts_at {
             continue;
+        }
+        if let Some(island) = islands.last() {
+            spans[i].gap_seconds = Some((spans[i].paid_at - island.ends_at).num_seconds());
         }
         match islands.last_mut() {
             Some(island) if starts_at <= island.ends_at + grace => {
@@ -123,14 +143,15 @@ pub fn build(mut purchases: Vec<Purchase>) -> (Vec<Span>, Vec<Island>) {
     (spans, islands)
 }
 
-type OrderRow = (i64, i64, Option<i64>, String, DateTime<Utc>, i64, i64);
+type OrderRow = (i64, i64, Option<i64>, String, DateTime<Utc>, i64, i64, Option<i64>);
 
 async fn rebuild(db: &mut impl Db, clients: &[i64], currency: Currency) -> StoreResult<()> {
     let rows: Vec<OrderRow> = sqlx::query_as(
         "SELECT o.id, o.client_id, o.subscription_id, o.kind, o.paid_at, \
            CASE WHEN jsonb_typeof(o.quote -> 'days') = 'number' \
              THEN LEAST(GREATEST((o.quote ->> 'days')::numeric, 0), 36600)::bigint ELSE 0 END, \
-           o.total_minor \
+           o.total_minor, \
+           CASE WHEN jsonb_typeof(o.snapshot -> 'tariff_id') = 'number' THEN (o.snapshot ->> 'tariff_id')::bigint END \
          FROM orders o \
          WHERE o.client_id = ANY($1) AND o.kind IN ('new', 'renewal', 'change') \
            AND o.status IN ('paid', 'fulfilled', 'review') AND o.paid_at IS NOT NULL \
@@ -160,7 +181,7 @@ async fn rebuild(db: &mut impl Db, clients: &[i64], currency: Currency) -> Store
         }
         let purchases = rows[start..end]
             .iter()
-            .filter_map(|(id, _, sub, kind, paid_at, days, total)| {
+            .filter_map(|(id, _, sub, kind, paid_at, days, total, tariff)| {
                 Kind::parse(kind).map(|kind| Purchase {
                     order_id: *id,
                     subscription_id: *sub,
@@ -168,6 +189,7 @@ async fn rebuild(db: &mut impl Db, clients: &[i64], currency: Currency) -> Store
                     paid_at: *paid_at,
                     days: *days,
                     value_minor: *total,
+                    tariff_id: *tariff,
                 })
             })
             .collect();
@@ -178,8 +200,10 @@ async fn rebuild(db: &mut impl Db, clients: &[i64], currency: Currency) -> Store
     }
     if !span_cols.order.is_empty() {
         sqlx::query(
-            "INSERT INTO analytics_spans (order_id, client_id, paid_at, starts_at, ends_at, monthly_minor, continues) \
-             SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::timestamptz[], $4::timestamptz[], $5::timestamptz[], $6::bigint[], $7::bool[])",
+            "INSERT INTO analytics_spans (order_id, client_id, paid_at, starts_at, ends_at, monthly_minor, continues, \
+               kind, tariff_id, period_days, gap_seconds) \
+             SELECT * FROM unnest($1::bigint[], $2::bigint[], $3::timestamptz[], $4::timestamptz[], $5::timestamptz[], \
+               $6::bigint[], $7::bool[], $8::text[], $9::bigint[], $10::int[], $11::bigint[])",
         )
         .bind(&span_cols.order)
         .bind(&span_cols.client)
@@ -188,6 +212,10 @@ async fn rebuild(db: &mut impl Db, clients: &[i64], currency: Currency) -> Store
         .bind(&span_cols.ends)
         .bind(&span_cols.monthly)
         .bind(&span_cols.continues)
+        .bind(&span_cols.kind)
+        .bind(&span_cols.tariff)
+        .bind(&span_cols.days)
+        .bind(&span_cols.gap)
         .execute(db.conn())
         .await?;
     }
@@ -215,6 +243,10 @@ struct SpanColumns {
     ends: Vec<DateTime<Utc>>,
     monthly: Vec<i64>,
     continues: Vec<bool>,
+    kind: Vec<&'static str>,
+    tariff: Vec<Option<i64>>,
+    days: Vec<i32>,
+    gap: Vec<Option<i64>>,
 }
 
 impl SpanColumns {
@@ -227,6 +259,10 @@ impl SpanColumns {
             self.ends.push(s.ends_at);
             self.monthly.push(s.monthly_minor);
             self.continues.push(s.continues);
+            self.kind.push(s.kind.as_str());
+            self.tariff.push(s.tariff_id);
+            self.days.push(i32::try_from(s.days).unwrap_or(i32::MAX));
+            self.gap.push(s.gap_seconds);
         }
     }
 }
@@ -337,6 +373,12 @@ pub async fn refresh(
             .execute(tx.conn())
             .await?;
     }
+    match since {
+        Some((since, _)) => {
+            super::facts::refresh_since(&mut tx, since, currency).await?;
+        }
+        None => super::facts::rebuild_all(&mut tx, currency).await?,
+    }
     let rebuilt_at = since.map_or(now, |(_, at)| at);
     sqlx::query(
         "INSERT INTO analytics_state (id, currency, version, watermark, refreshed_at, rebuilt_at) \
@@ -375,6 +417,7 @@ mod tests {
             paid_at: at(day),
             days,
             value_minor: value,
+            tariff_id: Some(3),
         }
     }
 

@@ -10,9 +10,9 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::settings::CoreSettings;
 use sn_modules::{
-    BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, Lifted,
-    MailSender, MethodTitle, ModuleConfig, ModuleError, Notification, PaymentTitle, Restricted,
-    SubscriptionGrant, TrafficReading, TrafficRestriction,
+    BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, HostingPayment,
+    Lifted, MailSender, MethodTitle, ModuleConfig, ModuleError, NodeOnline, NodeTraffic,
+    Notification, PaymentTitle, Restricted, SubscriptionGrant, TrafficReading, TrafficRestriction,
 };
 use sn_payments::ProviderConfig;
 use sn_store::{Db, StoreError, Tx};
@@ -23,6 +23,73 @@ mod tests;
 
 #[async_trait]
 impl CoreApi for Services {
+    async fn nodes_online(&self) -> Result<Vec<NodeOnline>, ModuleError> {
+        let remna = self.remna().map_err(traffic_error)?;
+        let nodes = remna
+            .nodes()
+            .await
+            .map_err(|e| ModuleError::Core(e.to_string()))?;
+        Ok(nodes
+            .into_iter()
+            .map(|n| NodeOnline {
+                uuid: n.uuid,
+                name: n.name,
+                online: n.users_online,
+                connected: n.is_connected && !n.is_disabled,
+            })
+            .collect())
+    }
+
+    async fn nodes_traffic(
+        &self,
+        from: chrono::NaiveDate,
+        to: chrono::NaiveDate,
+    ) -> Result<Vec<NodeTraffic>, ModuleError> {
+        let remna = self.remna().map_err(traffic_error)?;
+        let usage = remna
+            .nodes_usage(&sn_remnawave::models::NodesUsageQuery {
+                start: from,
+                end: to,
+                top_nodes_limit: None,
+            })
+            .await
+            .map_err(|e| ModuleError::Core(e.to_string()))?;
+        let mut out: Vec<NodeTraffic> = usage
+            .series
+            .into_iter()
+            .map(|s| NodeTraffic {
+                name: s.name,
+                bytes: s.total.max(0.0).round() as i64,
+            })
+            .collect();
+        out.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        Ok(out)
+    }
+
+    async fn hosting_payments(&self) -> Result<Vec<HostingPayment>, ModuleError> {
+        const SIZE: u32 = 500;
+        let remna = self.remna().map_err(traffic_error)?;
+        let mut out = Vec::new();
+        for page in 0..20_u32 {
+            let found = remna
+                .infra_billing_history(&sn_remnawave::models::BillingHistoryQuery {
+                    start: Some(page * SIZE),
+                    size: Some(SIZE),
+                })
+                .await
+                .map_err(|e| ModuleError::Core(e.to_string()))?;
+            let count = found.records.len();
+            out.extend(found.records.into_iter().map(|r| HostingPayment {
+                provider: r.provider.map(|p| p.name).unwrap_or_default(),
+                amount_minor: r.amount.minor(),
+                at: r.billed_at,
+            }));
+            if count < SIZE as usize {
+                break;
+            }
+        }
+        Ok(out)
+    }
     async fn change_balance(&self, change: BalanceChange) -> Result<Money, ModuleError> {
         let currency = self.settings().currency;
         if change.amount.currency != currency {

@@ -1,4 +1,5 @@
 pub mod clicks;
+pub mod links;
 
 use crate::catalog::installation_currency;
 use crate::catalog::start_param::Utm;
@@ -48,11 +49,19 @@ pub struct UtmRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LinkRef {
+    pub id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClientUtm {
     pub utm: Utm,
     pub start_param: String,
     pub registration_source: RegistrationSource,
     pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkRef>,
 }
 
 pub async fn record(
@@ -112,6 +121,7 @@ pub async fn for_client(db: &mut impl Db, client_id: ClientId) -> StoreResult<Op
                 start_param,
                 registration_source: RegistrationSource::parse(&registration)?,
                 created_at,
+                link: None,
             })
         },
     )
@@ -147,7 +157,7 @@ pub async fn report(
               sum(CASE WHEN p.currency = $1 THEN p.amount_minor - p.refunded_minor ELSE 0 END)::bigint AS revenue, \
               sum(CASE WHEN p.currency = 'XTR' THEN p.amount_minor - p.refunded_minor ELSE 0 END)::bigint AS stars \
             FROM payments p JOIN cohort c ON c.client_id = p.client_id \
-            WHERE p.status IN ('paid', 'partially_refunded', 'refunded') AND p.provider NOT IN ('balance', 'manual') \
+            WHERE p.status IN ('paid', 'partially_refunded', 'refunded') AND p.provider <> 'balance' \
             GROUP BY p.client_id \
          ) \
          SELECT c.source, c.medium, c.campaign, count(*)::bigint, \
@@ -215,7 +225,16 @@ async fn client_route(
 ) -> Result<Json<Option<ClientUtm>>, WebError> {
     admin.require(Permission::ClientsRead)?;
     let mut conn = ctx.store.conn().await?;
-    Ok(Json(for_client(&mut conn, client_id).await?))
+    let mut found = for_client(&mut conn, client_id).await?;
+    if let Some(f) = found.as_mut()
+        && let Some(link) = links::by_tags(&mut conn, &f.utm).await?
+    {
+        f.link = Some(LinkRef {
+            id: link.id,
+            title: link.title,
+        });
+    }
+    Ok(Json(found))
 }
 
 pub struct UtmModule;
@@ -231,6 +250,9 @@ impl Module for UtmModule {
             Router::new()
                 .route("/report", get(report_route))
                 .route("/clients/{client_id}", get(client_route))
+                .route("/links", get(links::links_route).post(links::create_route))
+                .route("/links/{id}", axum::routing::put(links::update_route))
+                .route("/links/{id}/archive", axum::routing::post(links::archive_route))
                 .with_state(ctx),
         )
     }

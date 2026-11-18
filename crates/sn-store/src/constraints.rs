@@ -30,6 +30,7 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("webhook_inbox_source_dedupe_key", None),
     ("remna_events_body_key", None),
     ("promo_codes_code_key", Some("Промокод")),
+    ("utm_links_tags_key", Some("Метки ссылки")),
     ("promo_redemptions_order_key", None),
     ("referral_codes_code_key", None),
     ("referral_credits_payment_level_key", None),

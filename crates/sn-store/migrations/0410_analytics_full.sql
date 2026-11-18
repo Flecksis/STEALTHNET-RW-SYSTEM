@@ -27,17 +27,29 @@ CREATE TABLE analytics_payments (
     promo_minor bigint NOT NULL DEFAULT 0,
     promo_code text,
     discount_minor bigint NOT NULL DEFAULT 0,
-    first_paid boolean NOT NULL DEFAULT false,
-    source_type text NOT NULL DEFAULT 'none',
-    source_key text NOT NULL DEFAULT '',
-    utm_medium text NOT NULL DEFAULT '',
-    utm_campaign text NOT NULL DEFAULT ''
+    addon_minor bigint NOT NULL DEFAULT 0
 );
 
 CREATE INDEX analytics_payments_paid_idx ON analytics_payments (paid_at);
 CREATE INDEX analytics_payments_client_idx ON analytics_payments (client_id, paid_at);
 
 CREATE INDEX payments_updated_at_idx ON payments (updated_at);
+
+CREATE TABLE analytics_clients (
+    client_id bigint PRIMARY KEY,
+    created_at timestamptz NOT NULL,
+    reg_channel text NOT NULL,
+    login_kind text NOT NULL DEFAULT '',
+    source_type text NOT NULL DEFAULT 'none',
+    source_key text NOT NULL DEFAULT '',
+    utm_medium text NOT NULL DEFAULT '',
+    utm_campaign text NOT NULL DEFAULT '',
+    first_paid_at timestamptz,
+    deleted boolean NOT NULL DEFAULT false
+);
+
+CREATE INDEX analytics_clients_created_idx ON analytics_clients (created_at);
+CREATE INDEX analytics_clients_first_paid_idx ON analytics_clients (first_paid_at) WHERE first_paid_at IS NOT NULL;
 
 CREATE TABLE analytics_snapshots (
     day date NOT NULL,

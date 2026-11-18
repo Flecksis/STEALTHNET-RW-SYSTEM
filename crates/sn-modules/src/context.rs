@@ -162,6 +162,27 @@ pub struct PaymentTitle {
     pub methods: Vec<MethodTitle>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NodeOnline {
+    pub uuid: Uuid,
+    pub name: String,
+    pub online: i64,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NodeTraffic {
+    pub name: String,
+    pub bytes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostingPayment {
+    pub provider: String,
+    pub amount_minor: i64,
+    pub at: DateTime<Utc>,
+}
+
 #[async_trait]
 pub trait CoreApi: Send + Sync {
     async fn change_balance(&self, change: BalanceChange) -> Result<Money, ModuleError>;
@@ -276,6 +297,22 @@ pub trait CoreApi: Send + Sync {
 
     fn paused(&self) -> bool {
         false
+    }
+
+    async fn nodes_online(&self) -> Result<Vec<NodeOnline>, ModuleError> {
+        Ok(Vec::new())
+    }
+
+    async fn nodes_traffic(
+        &self,
+        _from: chrono::NaiveDate,
+        _to: chrono::NaiveDate,
+    ) -> Result<Vec<NodeTraffic>, ModuleError> {
+        Ok(Vec::new())
+    }
+
+    async fn hosting_payments(&self) -> Result<Vec<HostingPayment>, ModuleError> {
+        Ok(Vec::new())
     }
 
     fn module_enabled(&self, _module: ModuleId) -> bool {

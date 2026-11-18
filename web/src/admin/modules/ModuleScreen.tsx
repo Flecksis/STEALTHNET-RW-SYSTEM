@@ -8,6 +8,7 @@ import { Promo } from '../promo/Promo';
 import { PromoLinks } from '../promolinks/PromoLinks';
 import { Referral } from '../referral/Referral';
 import { Roulette } from '../roulette/Roulette';
+import { Utm } from '../utm/Utm';
 
 export function ModuleScreen() {
   const { module = '' } = useParams();
@@ -28,6 +29,8 @@ export function ModuleScreen() {
       return <Contests />;
     case 'roulette':
       return <Roulette />;
+    case 'utm':
+      return <Utm />;
     default:
       return <Pending title="Модуль" />;
   }

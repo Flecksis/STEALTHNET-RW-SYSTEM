@@ -1,25 +1,9 @@
 import type { Currency } from '../../lib/types';
-import { avgCheck, monthName, sourceName, type Report } from './model';
+import { format, type Metric, type TabReport } from './model';
 
-export type CsvPart = 'months' | 'cohorts' | 'providers' | 'sources';
+type Cell = string | number | null;
 
-export const CSV_PARTS: Array<[CsvPart, string]> = [
-  ['months', 'Деньги и клиенты по месяцам'],
-  ['cohorts', 'Удержание по когортам'],
-  ['providers', 'Платёжки и способы оплаты'],
-  ['sources', 'Источники'],
-];
-
-function amount(minor: number, currency: Currency): string {
-  if (currency === 'RUB') {
-    return String(Math.round(minor / 100));
-  }
-  const sign = minor < 0 ? '-' : '';
-  const abs = Math.abs(minor);
-  return `${sign}${Math.floor(abs / 100)},${String(abs % 100).padStart(2, '0')}`;
-}
-
-function cell(value: string | number | null): string {
+function cell(value: Cell): string {
   if (value === null) {
     return '';
   }
@@ -27,70 +11,83 @@ function cell(value: string | number | null): string {
   return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function lines(rows: Array<Array<string | number | null>>): string {
-  return `﻿${rows.map((row) => row.map(cell).join(';')).join('\r\n')}\r\n`;
-}
-
-export function buildCsv(report: Report, part: CsvPart): string {
-  const c = report.currency;
-  const unit = c === 'RUB' ? 'руб.' : 'USD';
-  switch (part) {
-    case 'months':
-      return lines([
-        ['Месяц', `Выручка, ${unit}`, 'Звёзды', `Возвраты, ${unit}`, 'Оплат', `Средний чек, ${unit}`, `MRR, ${unit}`, 'Новые', 'Продлили', 'Вернулись', 'Ушли', 'Платящих на конец месяца', 'Взяли пробный', 'Купили после пробного'],
-        ...report.months.map((m) => [
-          monthName(m.month, true),
-          amount(m.revenue, c),
-          m.stars,
-          amount(m.refunds, c),
-          m.payments,
-          amount(avgCheck(m.revenue, m.payments), c),
-          amount(m.mrr, c),
-          m.new,
-          m.renewed,
-          m.returned,
-          m.churned,
-          m.paying,
-          m.trials,
-          m.trials_bought,
-        ]),
-      ]);
-    case 'cohorts': {
-      const width = Math.max(0, ...report.cohorts.map((k) => k.retained.length));
-      return lines([
-        ['Месяц первой покупки', 'Клиентов', `Принёс клиент, ${unit}`, ...Array.from({ length: width }, (_, k) => `Через ${k + 1} мес., клиентов`)],
-        ...report.cohorts.map((k) => [
-          monthName(k.month, true),
-          k.size,
-          amount(k.size ? Math.round(k.revenue / k.size) : 0, c),
-          ...Array.from({ length: width }, (_, i) => k.retained[i] ?? null),
-        ]),
-      ]);
-    }
-    case 'providers':
-      return lines([
-        ['Платёжка', 'Способ', `Оборот, ${unit}`, 'Звёзды', 'Оплат', 'Счетов', 'Не оплатили', 'Возвратов', `Возвращено, ${unit}`],
-        ...report.providers.flatMap((p) => [
-          [p.title, '', amount(p.revenue, c), p.stars, p.payments, p.invoices, p.failed, p.refunds, amount(p.refunded, c)],
-          ...(p.methods.length > 1 ? p.methods : []).map((m) => [p.title, m.title, amount(m.revenue, c), m.stars, m.payments, m.invoices, m.failed, m.refunds, amount(m.refunded, c)]),
-        ]),
-      ]);
-    case 'sources':
-      return lines([
-        ['Источник', 'Пришли', 'Купили', `Принесли, ${unit}`, 'Звёзды'],
-        ...report.sources.map((s) => [sourceName(s.source), s.clients, s.paying, amount(s.revenue, c), s.stars]),
-      ]);
+function plain(value: number | null | undefined, unit: Metric['unit'], currency: Currency): string {
+  if (value === null || value === undefined) {
+    return '';
   }
+  if (unit === 'money') {
+    const major = value / 100;
+    return currency === 'RUB' ? String(Math.round(major)) : major.toFixed(2).replace('.', ',');
+  }
+  if (unit === 'percent') {
+    return value.toFixed(1).replace('.', ',');
+  }
+  return format(value, unit, currency).replace(/\s/g, '');
 }
 
-export function downloadCsv(report: Report, part: CsvPart) {
-  const blob = new Blob([buildCsv(report, part)], { type: 'text/csv;charset=utf-8' });
+export function downloadRows(title: string, rows: Cell[][]): void {
+  const text = `﻿${rows.map((r) => r.map(cell).join(';')).join('\r\n')}\r\n`;
+  const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `analytics-${part}-${report.from}-${report.to}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${title.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'analytics'}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export function metricRows(metric: Metric, report: TabReport): Cell[][] {
+  const c = report.currency;
+  const d = metric.detail;
+  const out: Cell[][] = [[metric.title, plain(metric.value, metric.unit, c), metric.note ?? '']];
+  switch (d.type) {
+    case 'series':
+      out.push([]);
+      out.push(['Дата', 'Значение', d.prev.length ? 'Прошлый период' : '']);
+      d.points.forEach((p, i) => out.push([p.at, plain(p.value, metric.unit, c), d.prev[i] ? plain(d.prev[i].value, metric.unit, c) : '']));
+      for (const b of d.breakdowns) {
+        out.push([]);
+        out.push([b.title, 'Значение', 'Штук', 'Прошлый период']);
+        b.rows.forEach((r) => out.push([r.label, plain(r.value, metric.unit, c), r.count ?? '', r.prev === undefined ? '' : plain(r.prev, metric.unit, c)]));
+      }
+      break;
+    case 'table':
+      out.push([]);
+      out.push(['', ...d.columns.map((col) => col.title)]);
+      for (const r of d.rows) {
+        out.push([r.label, ...r.cells.map((v, i) => plain(v, d.columns[i]?.unit ?? 'count', c))]);
+        for (const ch of r.children ?? []) {
+          out.push([`  ${ch.label}`, ...ch.cells.map((v, i) => plain(v, d.columns[i]?.unit ?? 'count', c))]);
+        }
+      }
+      break;
+    case 'bars':
+      out.push([]);
+      d.bars.forEach((b) => out.push([b.label, b.value]));
+      break;
+    case 'cohorts':
+      out.push([]);
+      out.push(['Месяц первой оплаты', 'Клиентов', ...Array.from({ length: d.columns }, (_, k) => `Через ${k + 1} мес., клиентов`)]);
+      d.rows.forEach((r) => out.push([r.month, r.size, ...r.kept.map((v) => v ?? '')]));
+      out.push([]);
+      out.push(['Месяц первой оплаты', 'Клиентов', ...Array.from({ length: d.columns }, (_, k) => `Через ${k + 1} мес., выручка`)]);
+      d.rows.forEach((r) => out.push([r.month, r.size, ...r.money.map((v) => (v === null ? '' : plain(v, 'money', c)))]));
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+export function tabRows(report: TabReport): Cell[][] {
+  const c = report.currency;
+  const out: Cell[][] = [['Показатель', 'Значение', 'Прошлый период', 'Заметка']];
+  for (const g of report.groups) {
+    for (const m of g.metrics) {
+      out.push([g.title ? `${g.title}: ${m.title}` : m.title, plain(m.value, m.unit, c), plain(m.prev ?? null, m.unit, c), m.note ?? '']);
+    }
+  }
+  return out;
 }
