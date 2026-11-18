@@ -22,7 +22,6 @@ pub enum ModuleId {
     Analytics,
     Landing,
     Oauth,
-    Market,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -34,18 +33,16 @@ pub enum ModuleGroup {
     Protection,
     Accounting,
     Site,
-    Rare,
 }
 
 impl ModuleGroup {
-    pub const ALL: [ModuleGroup; 7] = [
+    pub const ALL: [ModuleGroup; 6] = [
         ModuleGroup::Sales,
         ModuleGroup::Marketing,
         ModuleGroup::Support,
         ModuleGroup::Protection,
         ModuleGroup::Accounting,
         ModuleGroup::Site,
-        ModuleGroup::Rare,
     ];
 
     pub const fn title_ru(self) -> &'static str {
@@ -56,7 +53,6 @@ impl ModuleGroup {
             ModuleGroup::Protection => "Защита",
             ModuleGroup::Accounting => "Учёт",
             ModuleGroup::Site => "Сайт и вход",
-            ModuleGroup::Rare => "Редко нужно",
         }
     }
 }
@@ -112,7 +108,7 @@ const fn with_menu(
     module
 }
 
-pub static CATALOG: [ModuleInfo; 17] = [
+pub static CATALOG: [ModuleInfo; 16] = [
     with_menu(
         info(
             ModuleId::Promo,
@@ -274,18 +270,10 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Кабинет",
         false,
     ),
-    info(
-        ModuleId::Market,
-        ModuleGroup::Rare,
-        "Маркетплейс",
-        "Обмен с другими панелями STEALTHNET",
-        "Админка",
-        false,
-    ),
 ];
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 17] = [
+    pub const ALL: [ModuleId; 16] = [
         ModuleId::Promo,
         ModuleId::Gifts,
         ModuleId::Options,
@@ -302,7 +290,6 @@ impl ModuleId {
         ModuleId::Analytics,
         ModuleId::Landing,
         ModuleId::Oauth,
-        ModuleId::Market,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -323,7 +310,6 @@ impl ModuleId {
             ModuleId::Analytics => "analytics",
             ModuleId::Landing => "landing",
             ModuleId::Oauth => "oauth",
-            ModuleId::Market => "market",
         }
     }
 

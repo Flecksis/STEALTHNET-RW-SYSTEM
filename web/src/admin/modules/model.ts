@@ -1,6 +1,6 @@
 import type { SettingField } from '../SchemaFields';
 
-export type ModuleGroup = 'sales' | 'marketing' | 'support' | 'protection' | 'accounting' | 'site' | 'rare';
+export type ModuleGroup = 'sales' | 'marketing' | 'support' | 'protection' | 'accounting' | 'site';
 
 export type ModuleInfo = {
   id: string;
@@ -38,7 +38,6 @@ export const GROUPS: Array<[ModuleGroup, string]> = [
   ['protection', 'Защита'],
   ['accounting', 'Учёт'],
   ['site', 'Сайт и вход'],
-  ['rare', 'Редко нужно'],
 ];
 
 const ELSEWHERE: Record<string, string> = {
