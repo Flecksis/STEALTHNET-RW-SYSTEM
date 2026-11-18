@@ -163,6 +163,10 @@ impl<'a> RemnaSync<'a> {
         };
         let subject = parsed.subject();
         let mut tx = self.services.store().begin().await?;
+        if !crate::node_watch::accept_webhook(&mut tx, &parsed, self.services.now()).await? {
+            tx.rollback().await?;
+            return Ok(RemnaWebhookResult::Duplicate);
+        }
         let inserted = tx
             .remna_events()
             .insert(&NewRemnaEvent {

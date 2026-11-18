@@ -1450,3 +1450,65 @@ fn состояние_периодической_работы_читается_�
         PeriodicState::default()
     );
 }
+
+#[tokio::test]
+async fn слежение_за_нодами_идёт_раз_в_минуту_и_пишет_переход_в_ленту() {
+    let start = Utc::now();
+    let clock = Arc::new(FixedClock::new(start));
+    let Some(setup) = setup_with_clock(Vec::new(), clock.clone()).await else {
+        return;
+    };
+    let uuid =
+        serde_json::from_value(serde_json::json!("00000000-0000-4000-8000-0000000000de")).unwrap();
+    let mut node = sn_remnawave::fake::sample_node(uuid, "Germany", "DE");
+    setup.remna.set_nodes(vec![node.clone()]);
+    let worker = Worker::new(setup.services.clone(), WorkerConfig::default());
+    let first = worker
+        .run_periodic(Periodic::NodeWatch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first["nodes"], 1);
+    assert_eq!(first["events"], 0);
+    node.is_connected = false;
+    node.last_status_change = Some(start + chrono::Duration::seconds(20));
+    setup.remna.set_nodes(vec![node]);
+    clock.set(start + chrono::Duration::seconds(30));
+    assert!(
+        worker
+            .run_periodic(Periodic::NodeWatch)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    clock.set(start + chrono::Duration::seconds(60));
+    let second = worker
+        .run_periodic(Periodic::NodeWatch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second["events"], 1);
+    let state = periodic_state(&setup.services, Periodic::NodeWatch)
+        .await
+        .unwrap();
+    assert_eq!(state.last_report, Some(second));
+    let mut conn = setup.services.store().conn().await.unwrap();
+    let feed = conn.remna_events().feed(None, 10).await.unwrap();
+    assert_eq!(feed.len(), 1);
+    assert_eq!(feed[0].event, "node.connection_lost");
+    assert_eq!(
+        feed[0].subject_id.as_deref(),
+        Some("00000000-0000-4000-8000-0000000000de")
+    );
+    assert!(feed[0].processed_at.is_some());
+    drop(conn);
+    setup.services.set_remna(None);
+    clock.set(start + chrono::Duration::seconds(120));
+    let skipped = worker
+        .run_periodic(Periodic::NodeWatch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(skipped["skipped"], "not_configured");
+    setup.db.cleanup().await;
+}

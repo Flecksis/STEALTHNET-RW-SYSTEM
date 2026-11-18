@@ -6,7 +6,14 @@ async fn настройка_уведомлений_в_группу_через_ht
     let owner = h.owner().await;
     let (status, view) = h.get("/api/admin/alerts", &owner).await;
     assert_eq!(status, StatusCode::OK, "{view}");
-    assert_eq!(view["kinds"].as_array().map(Vec::len), Some(6));
+    assert_eq!(view["kinds"].as_array().map(Vec::len), Some(7));
+    let nodes = view["kinds"]
+        .as_array()
+        .and_then(|kinds| kinds.iter().find(|k| k["kind"] == "nodes"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(nodes["on"], true);
+    assert_eq!(nodes["default_topic"], "Ноды");
     assert_eq!(view["chat_id"], Value::Null);
     let (status, body) = h
         .write(Method::POST, "/api/admin/alerts/link", &owner, json!({}))

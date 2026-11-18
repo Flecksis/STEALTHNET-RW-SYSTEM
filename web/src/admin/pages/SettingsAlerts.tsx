@@ -5,7 +5,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments';
+type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes';
 
 type KindView = { kind: Kind; title: string; default_topic: string; on: boolean; topic: string | null };
 
@@ -27,6 +27,8 @@ const ABOUT: Record<Kind, string> = {
   refunds: 'Оплату заблокированного клиента вернули автоматически, или подписку после возврата нужно поменять вручную',
   withdrawals: 'Клиент попросил вывести заработанное по рефералке',
   payments: 'Спор или чарджбэк, возврат без привязки к оплате, деньги для ручного зачисления',
+  traffic: 'Клиент превысил порог трафика за сутки или за неделю',
+  nodes: 'Нода не отвечает дольше двух минут. Когда она снова в сети, придёт ещё одно сообщение',
 };
 
 function failText(err: unknown, fallback: string): string {

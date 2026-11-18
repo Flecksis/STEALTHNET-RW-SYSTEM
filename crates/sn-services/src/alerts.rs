@@ -1,8 +1,9 @@
 use crate::auth::token_hash;
 use crate::error::{ServiceError, ServiceResult};
 use crate::inbox::{BLOCKED_REFUND_AUDIT, BLOCKED_REFUND_REQUESTED_AUDIT};
+use crate::node_watch::NodeNotice;
 use crate::services::Services;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, FixedOffset, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sn_domain::alerts::{
@@ -30,6 +31,7 @@ const TRAFFIC_SETTLE_SECONDS: i64 = 60;
 const BODY_MAX: usize = 300;
 const NOTICE_MAX: usize = 600;
 const SCAN_LIMIT: i64 = 500;
+const NODES_PATH: &str = "/admin/infra";
 
 fn seen_key(kind: AlertKind) -> String {
     format!("alerts.seen.{}", kind.as_str())
@@ -239,11 +241,85 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
             ),
             "/admin/clients/limits",
         ),
+        AlertKind::Nodes => (
+            format!(
+                "Ещё {rest} {}",
+                format::plural_ru(n, "нода не отвечает", "ноды не отвечают", "нод не отвечают")
+            ),
+            NODES_PATH,
+        ),
     };
     Alert {
         kind,
         html: text,
         path: path.to_string(),
+    }
+}
+
+fn clock_text(at: DateTime<Utc>, offset: FixedOffset, now: DateTime<Utc>) -> String {
+    let local = at.with_timezone(&offset);
+    if local.date_naive() == now.with_timezone(&offset).date_naive() {
+        local.format("%H:%M").to_string()
+    } else {
+        format!("{} в {}", local.format("%d.%m"), local.format("%H:%M"))
+    }
+}
+
+pub fn outage_text(span: Duration) -> String {
+    let minutes = ((span.num_seconds() + 30) / 60).max(1);
+    let n = minutes.unsigned_abs();
+    if minutes < 60 {
+        return format!(
+            "{minutes} {}",
+            format::plural_ru(n, "минуту", "минуты", "минут")
+        );
+    }
+    if minutes < 24 * 60 {
+        let (hours, rest) = (minutes / 60, minutes % 60);
+        return if rest == 0 {
+            format!("{hours} ч")
+        } else {
+            format!("{hours} ч {rest} мин")
+        };
+    }
+    let (days, hours) = (minutes / (24 * 60), minutes % (24 * 60) / 60);
+    let day = format::plural_ru(days.unsigned_abs(), "день", "дня", "дней");
+    if hours == 0 {
+        format!("{days} {day}")
+    } else {
+        format!("{days} {day} {hours} ч")
+    }
+}
+
+fn node_alert(notice: &NodeNotice, offset: FixedOffset, now: DateTime<Utc>) -> Alert {
+    let lines = match notice {
+        NodeNotice::Down {
+            name,
+            since,
+            message,
+        } => {
+            let mut lines = vec![
+                format!("<b>Нода {} не отвечает</b>", escape(name)),
+                format!("С {}", clock_text(*since, offset, now)),
+            ];
+            if let Some(message) = message.as_deref().filter(|m| !m.trim().is_empty()) {
+                lines.push(format!("Причина: {}", escape(&cut(message, BODY_MAX))));
+            }
+            lines
+        }
+        NodeNotice::Back {
+            name,
+            down_at,
+            back_at,
+        } => vec![
+            format!("<b>Нода {} снова в сети</b>", escape(name)),
+            format!("Лежала {}", outage_text(*back_at - *down_at)),
+        ],
+    };
+    Alert {
+        kind: AlertKind::Nodes,
+        html: lines.join("\n"),
+        path: NODES_PATH.to_string(),
     }
 }
 
@@ -541,6 +617,45 @@ impl<'a> AlertsOps<'a> {
         }
         out.extend(self.auto_refunds(&config).await?);
         out.extend(self.traffic(&config).await?);
+        out.extend(self.nodes(&config).await?);
+        Ok(out)
+    }
+
+    async fn nodes(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let notices = self
+            .services
+            .node_watch()
+            .notices(config.route(AlertKind::Nodes).on)
+            .await?;
+        let offset = self.services.settings().remna_offset();
+        let now = self.services.now();
+        let (down, back): (Vec<NodeNotice>, Vec<NodeNotice>) = notices
+            .into_iter()
+            .partition(|notice| matches!(notice, NodeNotice::Down { .. }));
+        let mut out: Vec<Alert> = down
+            .iter()
+            .take(PER_KIND)
+            .map(|notice| node_alert(notice, offset, now))
+            .collect();
+        if down.len() > PER_KIND {
+            out.push(summary(AlertKind::Nodes, down.len() - PER_KIND));
+        }
+        out.extend(
+            back.iter()
+                .take(PER_KIND)
+                .map(|notice| node_alert(notice, offset, now)),
+        );
+        if back.len() > PER_KIND {
+            let rest = back.len() - PER_KIND;
+            out.push(Alert {
+                kind: AlertKind::Nodes,
+                html: format!(
+                    "Ещё {rest} {} снова в сети",
+                    format::plural_ru(rest as u64, "нода", "ноды", "нод")
+                ),
+                path: NODES_PATH.to_string(),
+            });
+        }
         Ok(out)
     }
 
@@ -1065,7 +1180,7 @@ impl<'a> AlertsOps<'a> {
                     });
                 }
             }
-            AlertKind::Support | AlertKind::Payments | AlertKind::Traffic => {}
+            AlertKind::Support | AlertKind::Payments | AlertKind::Traffic | AlertKind::Nodes => {}
         }
         Ok(items)
     }

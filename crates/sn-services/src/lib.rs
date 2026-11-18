@@ -22,6 +22,7 @@ pub mod legacy;
 pub mod limits;
 pub mod login;
 pub mod mail;
+pub mod node_watch;
 pub mod oauth;
 pub mod remna_sync;
 pub mod server_load;

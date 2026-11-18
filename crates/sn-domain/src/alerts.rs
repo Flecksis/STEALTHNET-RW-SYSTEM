@@ -15,10 +15,11 @@ pub enum AlertKind {
     Withdrawals,
     Payments,
     Traffic,
+    Nodes,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 7] = [
+    pub const ALL: [AlertKind; 8] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
@@ -26,6 +27,7 @@ impl AlertKind {
         AlertKind::Withdrawals,
         AlertKind::Payments,
         AlertKind::Traffic,
+        AlertKind::Nodes,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -37,6 +39,7 @@ impl AlertKind {
             AlertKind::Withdrawals => "withdrawals",
             AlertKind::Payments => "payments",
             AlertKind::Traffic => "traffic",
+            AlertKind::Nodes => "nodes",
         }
     }
 
@@ -49,6 +52,7 @@ impl AlertKind {
             AlertKind::Withdrawals => "Заявки на вывод",
             AlertKind::Payments => "Споры и возвраты в платёжных системах",
             AlertKind::Traffic => "Превышения трафика",
+            AlertKind::Nodes => "Ноды",
         }
     }
 
@@ -61,6 +65,7 @@ impl AlertKind {
             AlertKind::Withdrawals => "Выводы",
             AlertKind::Payments => "Платежи",
             AlertKind::Traffic => "Трафик",
+            AlertKind::Nodes => "Ноды",
         }
     }
 }
@@ -146,5 +151,27 @@ mod tests {
         assert_eq!(config.topic_for(AlertKind::Refunds), None);
         config.forum = false;
         assert_eq!(config.topic_for(AlertKind::Stars), None);
+    }
+
+    #[test]
+    fn ноды_включены_по_умолчанию_и_идут_в_свою_тему() {
+        let config = AlertsConfig {
+            forum: true,
+            ..AlertsConfig::default()
+        };
+        assert!(config.route(AlertKind::Nodes).on);
+        assert_eq!(config.topic_for(AlertKind::Nodes).as_deref(), Some("Ноды"));
+        assert_eq!(
+            serde_json::to_value(AlertKind::Nodes).unwrap(),
+            serde_json::json!("nodes")
+        );
+        let saved: AlertsConfig = serde_json::from_value(serde_json::json!({
+            "chat_id": -100_500,
+            "forum": true,
+            "routes": {"support": {"on": false, "topic": null}}
+        }))
+        .unwrap();
+        assert!(saved.route(AlertKind::Nodes).on);
+        assert!(!saved.route(AlertKind::Support).on);
     }
 }

@@ -341,6 +341,10 @@ impl Services {
         RemnaSync::new(self)
     }
 
+    pub fn node_watch(&self) -> crate::node_watch::NodeWatch<'_> {
+        crate::node_watch::NodeWatch::new(self)
+    }
+
     pub fn autorenew(&self) -> AutoRenew<'_> {
         AutoRenew::new(self)
     }
