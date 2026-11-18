@@ -262,11 +262,12 @@ pub async fn delete(db: &mut impl Db, id: i64) -> StoreResult<()> {
 }
 
 pub async fn lock(db: &mut impl Db, id: i64) -> StoreResult<Status> {
-    let status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM broadcasts WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(db.conn())
-            .await?;
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM broadcasts WHERE id = $1 AND rule_id IS NULL FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(db.conn())
+    .await?;
     let status = status.ok_or(StoreError::NotFound("рассылка"))?;
     Status::parse(&status)
         .ok_or_else(|| StoreError::Decode(format!("состояние рассылки: {status}")))
@@ -327,7 +328,7 @@ pub async fn image_meta(db: &mut impl Db, id: i64) -> StoreResult<Option<ImageMe
 
 pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
     let row: Row = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM broadcasts b WHERE b.id = $1"
+        "SELECT {COLUMNS} FROM broadcasts b WHERE b.id = $1 AND b.rule_id IS NULL"
     ))
     .bind(id)
     .fetch_optional(db.conn())
@@ -366,8 +367,8 @@ pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
     .await?;
     let queued_behind = if parsed.status == Status::Sending {
         sqlx::query_scalar(
-            "SELECT b.id FROM broadcasts b WHERE b.status = 'sending' AND (b.started_at, b.id) < ($1, $2) \
-             ORDER BY b.started_at, b.id LIMIT 1",
+            "SELECT b.id FROM broadcasts b WHERE b.status = 'sending' AND b.rule_id IS NULL \
+             AND (b.started_at, b.id) < ($1, $2) ORDER BY b.started_at, b.id LIMIT 1",
         )
         .bind(row.started_at)
         .bind(id)
@@ -415,7 +416,8 @@ pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
 
 pub async fn list(db: &mut impl Db, page: PageRequest) -> StoreResult<Page<ListItem>> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM broadcasts b WHERE ($1::bigint IS NULL OR b.id < $1) ORDER BY b.id DESC LIMIT $2"
+        "SELECT {COLUMNS} FROM broadcasts b WHERE b.rule_id IS NULL AND ($1::bigint IS NULL OR b.id < $1) \
+         ORDER BY b.id DESC LIMIT $2"
     ))
     .bind(page.after)
     .bind(page.fetch_limit())
@@ -733,7 +735,8 @@ pub async fn forget_file(db: &mut impl Db, id: i64) -> StoreResult<()> {
 pub async fn prune_images(db: &mut impl Db, older_than_hours: i64) -> StoreResult<u64> {
     Ok(sqlx::query(
         "DELETE FROM broadcast_images i WHERE i.created_at < now() - make_interval(hours => $1::int) \
-         AND NOT EXISTS (SELECT 1 FROM broadcasts b WHERE b.image_id = i.id)",
+         AND NOT EXISTS (SELECT 1 FROM broadcasts b WHERE b.image_id = i.id) \
+         AND NOT EXISTS (SELECT 1 FROM auto_broadcasts a WHERE a.image_id = i.id)",
     )
     .bind(i32::try_from(older_than_hours).unwrap_or(i32::MAX))
     .execute(db.conn())

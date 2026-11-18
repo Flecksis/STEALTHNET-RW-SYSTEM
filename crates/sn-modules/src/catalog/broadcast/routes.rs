@@ -1,7 +1,8 @@
 use super::page::{Form, page};
 use super::{
-    Audience, Broadcast, BroadcastError, ButtonSpec, Channel, Draft, IMAGE_MAX_BYTES, ImageMeta,
-    ListItem, Options, Reach, TestReport, TestTarget, Unsubscribe, UnsubscribeView,
+    Audience, AutoReach, Broadcast, BroadcastError, ButtonSpec, Channel, Draft, IMAGE_MAX_BYTES,
+    ImageMeta, ListItem, Options, Reach, ReachQuery, Rule, RuleDraft, RuleItem, TestReport,
+    TestTarget, Unsubscribe, UnsubscribeView,
 };
 use crate::catalog::web::{Admin, WebError};
 use crate::context::ModuleContext;
@@ -45,6 +46,13 @@ pub fn admin(ctx: ModuleContext) -> Router {
             post(upload).layer(DefaultBodyLimit::max(UPLOAD_LIMIT)),
         )
         .route("/images/{id}", get(image))
+        .route("/auto", get(auto_list).post(auto_create))
+        .route("/auto/reach", post(auto_reach))
+        .route(
+            "/auto/{id}",
+            get(auto_view).put(auto_update).delete(auto_remove),
+        )
+        .route("/auto/{id}/switch", post(auto_switch))
         .with_state(ctx)
 }
 
@@ -166,6 +174,93 @@ async fn copy(
 ) -> Result<Json<Broadcast>, WebError> {
     admin.require(Permission::Marketing)?;
     Ok(Json(super::copy(&ctx, id, Some(admin.0.admin_id)).await?))
+}
+
+#[derive(serde::Serialize)]
+struct RuleList {
+    items: Vec<RuleItem>,
+}
+
+async fn auto_list(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+) -> Result<Json<RuleList>, WebError> {
+    admin.require(Permission::Marketing)?;
+    Ok(Json(RuleList {
+        items: super::rules(&ctx).await?,
+    }))
+}
+
+async fn auto_create(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    body: Bytes,
+) -> Result<Json<Rule>, WebError> {
+    admin.require(Permission::Marketing)?;
+    let draft: RuleDraft = parse(&body)?;
+    Ok(Json(
+        super::create_rule(&ctx, &draft, Some(admin.0.admin_id)).await?,
+    ))
+}
+
+async fn auto_view(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Path(id): Path<i64>,
+) -> Result<Json<Rule>, WebError> {
+    admin.require(Permission::Marketing)?;
+    Ok(Json(super::rule(&ctx, id).await?))
+}
+
+async fn auto_update(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> Result<Json<Rule>, WebError> {
+    admin.require(Permission::Marketing)?;
+    let draft: RuleDraft = parse(&body)?;
+    Ok(Json(
+        super::update_rule(&ctx, id, &draft, Some(admin.0.admin_id)).await?,
+    ))
+}
+
+async fn auto_remove(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, WebError> {
+    admin.require(Permission::Marketing)?;
+    super::delete_rule(&ctx, id, Some(admin.0.admin_id)).await?;
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[derive(Deserialize)]
+struct SwitchBody {
+    enabled: bool,
+}
+
+async fn auto_switch(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> Result<Json<Rule>, WebError> {
+    admin.require(Permission::Marketing)?;
+    let body: SwitchBody = parse(&body)?;
+    Ok(Json(
+        super::switch_rule(&ctx, id, body.enabled, Some(admin.0.admin_id)).await?,
+    ))
+}
+
+async fn auto_reach(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    body: Bytes,
+) -> Result<Json<AutoReach>, WebError> {
+    admin.require(Permission::Marketing)?;
+    let query: ReachQuery = parse(&body)?;
+    Ok(Json(super::rule_reach(&ctx, &query).await?))
 }
 
 #[derive(Deserialize)]

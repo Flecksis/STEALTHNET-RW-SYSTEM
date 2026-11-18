@@ -26,7 +26,7 @@ struct Sent {
     at: Instant,
 }
 
-struct FakeSender {
+pub(super) struct FakeSender {
     bot: Option<i64>,
     delay: Duration,
     log: Mutex<Vec<Sent>>,
@@ -34,7 +34,7 @@ struct FakeSender {
 }
 
 impl FakeSender {
-    fn new() -> Arc<Self> {
+    pub(super) fn new() -> Arc<Self> {
         Self::slow(Duration::ZERO)
     }
 
@@ -47,7 +47,7 @@ impl FakeSender {
         })
     }
 
-    fn answer(&self, chat: i64, deliveries: Vec<Delivery>) {
+    pub(super) fn answer(&self, chat: i64, deliveries: Vec<Delivery>) {
         self.script
             .lock()
             .unwrap()
@@ -60,7 +60,7 @@ impl FakeSender {
         self.log.lock().unwrap().clone()
     }
 
-    fn chats(&self) -> Vec<i64> {
+    pub(super) fn chats(&self) -> Vec<i64> {
         let mut chats: Vec<i64> = self.sent().into_iter().map(|s| s.chat).collect();
         chats.sort_unstable();
         chats
@@ -152,7 +152,7 @@ fn context(store: &Store, sender: Option<Arc<FakeSender>>) -> ModuleContext {
     }
 }
 
-fn context_with(
+pub(super) fn context_with(
     store: &Store,
     sender: Option<Arc<FakeSender>>,
     mail: Option<Arc<FakeMail>>,
@@ -168,24 +168,24 @@ fn context_with(
 }
 
 #[derive(Debug, Clone)]
-struct Mailed {
-    to: String,
+pub(super) struct Mailed {
+    pub(super) to: String,
     subject: String,
     html: String,
     text: String,
-    unsubscribe: Option<String>,
+    pub(super) unsubscribe: Option<String>,
     at: Instant,
 }
 
-struct FakeMail {
-    ready: Mutex<Result<MailSite, String>>,
+pub(super) struct FakeMail {
+    pub(super) ready: Mutex<Result<MailSite, String>>,
     log: Mutex<Vec<Mailed>>,
     script: Mutex<HashMap<String, VecDeque<MailDelivery>>>,
     fallback: Mutex<Option<MailDelivery>>,
 }
 
 impl FakeMail {
-    fn new() -> Arc<Self> {
+    pub(super) fn new() -> Arc<Self> {
         Arc::new(FakeMail {
             ready: Mutex::new(Ok(MailSite {
                 base_url: "https://vpn.example.com".into(),
@@ -206,7 +206,7 @@ impl FakeMail {
             .extend(deliveries);
     }
 
-    fn mailed(&self) -> Vec<Mailed> {
+    pub(super) fn mailed(&self) -> Vec<Mailed> {
         self.log.lock().unwrap().clone()
     }
 }
@@ -238,7 +238,7 @@ impl MailSender for FakeMail {
     }
 }
 
-fn fast() -> EngineConfig {
+pub(super) fn fast() -> EngineConfig {
     EngineConfig {
         per_second: 500,
         chat_gap: Duration::from_millis(400),
@@ -253,13 +253,13 @@ fn fast() -> EngineConfig {
     }
 }
 
-struct Running {
+pub(super) struct Running {
     stop: oneshot::Sender<()>,
     handle: JoinHandle<()>,
 }
 
 impl Running {
-    async fn stop(self) {
+    pub(super) async fn stop(self) {
         let _ = self.stop.send(());
         tokio::time::timeout(Duration::from_secs(10), self.handle)
             .await
@@ -268,7 +268,11 @@ impl Running {
     }
 }
 
-fn spawn_engine(ctx: &ModuleContext, sender: &Arc<FakeSender>, config: EngineConfig) -> Running {
+pub(super) fn spawn_engine(
+    ctx: &ModuleContext,
+    sender: &Arc<FakeSender>,
+    config: EngineConfig,
+) -> Running {
     let (stop, stopped) = oneshot::channel::<()>();
     let engine = Engine::new(ctx.clone(), Sender::Bot(sender.clone()), || true, config);
     let handle = tokio::spawn(engine.run(async move {
@@ -294,7 +298,7 @@ async fn wait_status(store: &Store, id: i64, wanted: Status) -> Broadcast {
     }
 }
 
-async fn tg_client(store: &Store, chat: i64) -> ClientId {
+pub(super) async fn tg_client(store: &Store, chat: i64) -> ClientId {
     let id = testing::client(store).await;
     let mut conn = store.conn().await.unwrap();
     conn.clients()
@@ -383,7 +387,7 @@ fn draft(text: &str, audience: Audience) -> Draft {
     }
 }
 
-fn png(width: u32, height: u32) -> Vec<u8> {
+pub(super) fn png(width: u32, height: u32) -> Vec<u8> {
     let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
     bytes.extend_from_slice(b"IHDR");
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -392,7 +396,7 @@ fn png(width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
-fn code(err: BroadcastError) -> &'static str {
+pub(super) fn code(err: BroadcastError) -> &'static str {
     match err {
         BroadcastError::Rejected { code, .. } => code,
         BroadcastError::Module(err) => panic!("ожидался отказ, а пришла ошибка {err}"),
@@ -1294,7 +1298,7 @@ async fn отклоняемое_телеграмом_сообщение_оста
     db.cleanup().await;
 }
 
-fn admin(role: AdminRole) -> AdminPrincipal {
+pub(super) fn admin(role: AdminRole) -> AdminPrincipal {
     AdminPrincipal {
         admin_id: sn_domain::ids::AdminId(1),
         role,
@@ -1304,14 +1308,14 @@ fn admin(role: AdminRole) -> AdminPrincipal {
     }
 }
 
-async fn json_of(response: axum::response::Response) -> serde_json::Value {
+pub(super) async fn json_of(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn owner(db: &TestDb) {
+pub(super) async fn owner(db: &TestDb) {
     let mut conn = db.store.conn().await.unwrap();
     conn.admins()
         .create(&sn_store::NewAdmin {
@@ -1501,7 +1505,7 @@ async fn админка_собирает_считает_отправляет_и_
     db.cleanup().await;
 }
 
-async fn mail_client(store: &Store, chat: Option<i64>, email: Option<&str>) -> ClientId {
+pub(super) async fn mail_client(store: &Store, chat: Option<i64>, email: Option<&str>) -> ClientId {
     let id = testing::client(store).await;
     let mut conn = store.conn().await.unwrap();
     if let Some(chat) = chat {
@@ -1535,7 +1539,7 @@ async fn mail_client(store: &Store, chat: Option<i64>, email: Option<&str>) -> C
     id
 }
 
-fn fast_mail() -> EngineConfig {
+pub(super) fn fast_mail() -> EngineConfig {
     EngineConfig {
         per_second: 200,
         chat_gap: Duration::ZERO,
@@ -1550,7 +1554,11 @@ fn fast_mail() -> EngineConfig {
     }
 }
 
-fn spawn_mail(ctx: &ModuleContext, mail: &Arc<FakeMail>, config: EngineConfig) -> Running {
+pub(super) fn spawn_mail(
+    ctx: &ModuleContext,
+    mail: &Arc<FakeMail>,
+    config: EngineConfig,
+) -> Running {
     let (stop, stopped) = oneshot::channel::<()>();
     let engine = Engine::new(ctx.clone(), Sender::Mail(mail.clone()), || true, config);
     let handle = tokio::spawn(engine.run(async move {

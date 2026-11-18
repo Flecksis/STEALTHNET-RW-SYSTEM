@@ -840,3 +840,109 @@
 .bc-mail-link {
   text-decoration: underline;
 }
+
+.bc-tabs {
+  margin-top: -6px;
+}
+
+.bc-lead {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 780px;
+  margin-top: -4px;
+}
+
+.bc-lead p {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.bc-lead p.muted {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.bc-lead a {
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.bc-rule {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.bc-rule:first-child {
+  border-top: 0;
+}
+
+.bc-rule > .bc-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-top: 0;
+}
+
+.bc-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bc-meta.warn {
+  color: var(--warn);
+}
+
+.ar-days {
+  margin: 0;
+}
+
+.ar-days .fld {
+  width: 64px;
+}
+
+.ar-check {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.bc-reach > .muted {
+  flex-basis: 100%;
+}
+
+.bc-phone .bc-lead {
+  margin-top: -8px;
+  padding: 0 4px;
+}
+
+.bc-phone .bc-tabs {
+  margin-top: -8px;
+  align-self: stretch;
+}
+
+.bc-phone .bc-tabs a {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.bc-prule .bc-prow {
+  min-width: 0;
+}
+
+.bc-prule .hp-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bc-prule .hp-title {
+  white-space: normal;
+}

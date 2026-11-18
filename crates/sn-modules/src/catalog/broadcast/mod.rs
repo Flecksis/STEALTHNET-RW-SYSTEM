@@ -1,3 +1,7 @@
+mod auto;
+mod auto_store;
+#[cfg(test)]
+mod auto_tests;
 mod engine;
 mod letter;
 mod page;
@@ -28,6 +32,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+pub use auto::{
+    AUTO_EVERY_SECS, AUTO_TASK, AutoReach, CATCH_UP_HOURS, CheckReport, ReachQuery, Rule,
+    RuleDraft, RuleItem, RuleStats, Trigger, check as check_rules, create_rule, delete_rule, rule,
+    rule_reach, rules, switch_rule, update_rule,
+};
 pub use engine::{Engine, EngineConfig, Sender};
 pub use letter::Letter;
 pub use store::{
@@ -1120,6 +1129,7 @@ pub struct Options {
     pub sections: Vec<SectionOption>,
     pub tariffs: Vec<TariffOption>,
     pub limits: Limits,
+    pub auto: auto::AutoOptions,
 }
 
 pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
@@ -1162,6 +1172,7 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
             .collect(),
         tariffs,
         limits: LIMITS,
+        auto: auto::options(),
     })
 }
 
@@ -1300,20 +1311,35 @@ impl Module for BroadcastModule {
     }
 
     fn tasks(&self) -> Vec<ScheduledTask> {
-        vec![ScheduledTask {
-            name: CLEANUP_TASK,
-            every: Duration::from_secs(6 * 3600),
-        }]
+        vec![
+            ScheduledTask {
+                name: CLEANUP_TASK,
+                every: Duration::from_secs(6 * 3600),
+            },
+            ScheduledTask {
+                name: AUTO_TASK,
+                every: Duration::from_secs(AUTO_EVERY_SECS),
+            },
+        ]
     }
 
     async fn run_task(&self, ctx: &ModuleContext, task: &str) -> Result<(), ModuleError> {
-        if task != CLEANUP_TASK {
-            return Err(ModuleError::Invalid(format!("у модуля нет задачи {task}")));
+        match task {
+            CLEANUP_TASK => {
+                let removed = cleanup(ctx).await?;
+                if removed > 0 {
+                    tracing::info!(removed, "рассылки: удалены неиспользуемые картинки");
+                }
+                Ok(())
+            }
+            AUTO_TASK => {
+                let now = {
+                    let mut conn = ctx.store.conn().await?;
+                    crate::catalog::db_now(&mut conn).await?
+                };
+                auto::check(ctx, now).await.map(|_| ())
+            }
+            other => Err(ModuleError::Invalid(format!("у модуля нет задачи {other}"))),
         }
-        let removed = cleanup(ctx).await?;
-        if removed > 0 {
-            tracing::info!(removed, "рассылки: удалены неиспользуемые картинки");
-        }
-        Ok(())
     }
 }

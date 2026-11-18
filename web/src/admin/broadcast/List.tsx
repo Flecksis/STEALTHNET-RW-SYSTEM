@@ -6,6 +6,7 @@ import { Icon } from '../../lib/icons';
 import { usePhone } from '../../lib/media';
 import { PhoneHeader } from '../phone';
 import { BASE, channelLabel, failText, outcome, percent, ROOT, statusLine, type ListItem, type Options } from './model';
+import { BroadcastTabs } from './Tabs';
 import '../home/phone.css';
 
 type PageData = { items: ListItem[]; next: number | null };
@@ -114,6 +115,7 @@ function ListDesktop({ items, next, options, error, more, loadMore }: Data) {
           Новая рассылка
         </Link>
       </div>
+      <BroadcastTabs />
       <BotWarning options={options} />
       <section className="card bc-list" aria-label="Все рассылки">
         {error ? (
@@ -176,6 +178,7 @@ function ListPhone({ items, next, options, error, more, loadMore }: Data) {
           </span>
         </Link>
       </PhoneHeader>
+      <BroadcastTabs />
       <BotWarning options={options} />
       {error ? (
         <p className="err" role="alert">

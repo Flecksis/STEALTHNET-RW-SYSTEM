@@ -4,6 +4,8 @@ import { api, ApiError } from '../../lib/api';
 import { Icon } from '../../lib/icons';
 import { usePhone } from '../../lib/media';
 import { PhoneHeader } from '../phone';
+import { AutoList } from './AutoList';
+import { RuleDetail } from './AutoRule';
 import { Composer } from './Composer';
 import { BotWarning, List } from './List';
 import { BASE, ROOT, failText, type Broadcast, type Options } from './model';
@@ -15,6 +17,8 @@ export function Broadcasts() {
   return (
     <Routes>
       <Route index element={<List />} />
+      <Route path="auto" element={<AutoList />} />
+      <Route path="auto/:id" element={<RuleDetail />} />
       <Route path=":id" element={<Detail />} />
     </Routes>
   );

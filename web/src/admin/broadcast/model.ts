@@ -119,6 +119,15 @@ export type Limits = {
   subject: number;
 };
 
+export type Trigger = 'expiring' | 'expired' | 'trial_ended' | 'no_purchase' | 'not_connected';
+
+export type AutoOptions = {
+  every_minutes: number;
+  catch_up_hours: number;
+  rules_max: number;
+  triggers: Array<{ key: Trigger; title: string; min_days: number }>;
+};
+
 export type Options = {
   bot: boolean;
   bot_username: string | null;
@@ -126,7 +135,87 @@ export type Options = {
   sections: Array<{ key: Section; title: string; available: boolean }>;
   tariffs: Array<{ id: number; name: string }>;
   limits: Limits;
+  auto: AutoOptions;
 };
+
+export const AUTO_ROOT = `${ROOT}/auto`;
+
+export type RuleStats = { cases: number; unreachable: number; progress: Progress; last_sent_at: string | null };
+
+export type Rule = {
+  id: number;
+  trigger: Trigger;
+  days: number;
+  with_autorenew: boolean;
+  title: string;
+  timing: string;
+  channel: Channel;
+  subject: string | null;
+  text: string;
+  image: Image | null;
+  buttons: ButtonSpec[];
+  enabled: boolean;
+  notice: string | null;
+  sending_notices: string[];
+  checked_at: string | null;
+  created_at: string;
+  updated_at: string;
+  stats: RuleStats;
+  problems: Problem[];
+};
+
+export type RuleItem = {
+  id: number;
+  trigger: Trigger;
+  days: number;
+  with_autorenew: boolean;
+  title: string;
+  timing: string;
+  channel: Channel;
+  preview: string;
+  has_image: boolean;
+  buttons: number;
+  enabled: boolean;
+  notice: string | null;
+  stats: RuleStats;
+};
+
+export type AutoReach = { cases: number; recipients: number; stopped: number; emails: number; unsubscribed: number };
+
+export const TRIGGER_HINTS: Record<Trigger, string> = {
+  expiring: 'Подписка действует, до конца осталось столько дней. Пробные тоже',
+  expired: 'Подписку не продлили, другой действующей нет. Пробные — отдельным событием',
+  trial_ended: 'Пробный период закончился, оплаченных покупок у клиента нет',
+  no_purchase: 'Прошло столько дней с регистрации, оплаченных покупок нет. Пробный период — не покупка',
+  not_connected: 'Оплаченная подписка действует, но с покупки ни одного подключения',
+};
+
+export const TRIGGER_DAYS: Record<Trigger, { before: string; after: string; start: number }> = {
+  expiring: { before: 'За', after: 'до окончания подписки', start: 3 },
+  expired: { before: 'Через', after: 'после окончания подписки', start: 1 },
+  trial_ended: { before: 'Через', after: 'после окончания пробного периода', start: 0 },
+  no_purchase: { before: 'Через', after: 'после регистрации', start: 3 },
+  not_connected: { before: 'Через', after: 'после покупки', start: 2 },
+};
+
+export function dayWord(n: number): string {
+  return plural(n, 'день', 'дня', 'дней');
+}
+
+export function timing(trigger: Trigger, days: number): string {
+  const span = `${days}${'\u00a0'}${dayWord(days)}`;
+  switch (trigger) {
+    case 'expiring':
+      return `за ${span} до окончания`;
+    case 'expired':
+    case 'trial_ended':
+      return days === 0 ? 'сразу после окончания' : `через ${span} после окончания`;
+    case 'no_purchase':
+      return `через ${span} после регистрации`;
+    case 'not_connected':
+      return `через ${span} после покупки`;
+  }
+}
 
 export type Reach = { recipients: number; stopped: number; emails: number; unsubscribed: number };
 
