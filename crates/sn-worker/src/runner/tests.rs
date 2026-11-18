@@ -485,7 +485,8 @@ async fn задачи_модулей_ставятся_раз_в_интервал
     let ticker = Arc::new(Ticker {
         runs: Mutex::new(Vec::new()),
     });
-    let Some(setup) = setup(vec![ticker.clone()]).await else {
+    let clock = Arc::new(FixedClock::new(Utc::now()));
+    let Some(setup) = setup_with_clock(vec![ticker.clone()], clock).await else {
         return;
     };
     let worker = Worker::new(setup.services.clone(), WorkerConfig::default());

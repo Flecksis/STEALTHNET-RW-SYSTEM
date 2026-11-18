@@ -9,7 +9,7 @@ use sn_domain::money::Currency;
 use sn_domain::order::{OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::pricing::Quote;
 use sn_store::Store;
-use sn_store::testing::test_store;
+use sn_store::testing::{DAY, test_store, wait_for_window_room};
 
 fn squad(n: u128) -> SquadId {
     SquadId(Uuid::from_u128(n))
@@ -373,6 +373,7 @@ async fn отмеченный_получает_подписку_по_ссылк�
     let Some(db) = test_store().await else {
         return;
     };
+    wait_for_window_room(&db.store, DAY).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     mode(&db.store, "confirm").await;
@@ -501,6 +502,7 @@ async fn в_режиме_запрета_подписки_по_ссылке_не�
     let Some(db) = test_store().await else {
         return;
     };
+    wait_for_window_room(&db.store, DAY).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     mode(&db.store, "block").await;

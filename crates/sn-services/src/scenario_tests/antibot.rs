@@ -7,6 +7,7 @@ use sn_domain::paging::PageRequest;
 use sn_modules::ModuleConfig;
 use sn_modules::catalog::antibot::{self, AntibotModule, JournalFilter};
 use sn_store::Db;
+use sn_store::testing::{DAY, wait_for_window_room};
 use std::sync::Arc;
 
 async fn antibot_kit() -> Option<Kit> {
@@ -147,6 +148,7 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let Some(kit) = antibot_kit().await else {
         return;
     };
+    wait_for_window_room(kit.services.store(), DAY).await;
     let services = &kit.services;
     mode(services, "block").await;
     let checkout = services.checkout();

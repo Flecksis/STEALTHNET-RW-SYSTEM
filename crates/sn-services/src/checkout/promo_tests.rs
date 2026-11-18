@@ -3,6 +3,7 @@ use super::*;
 use sn_domain::paging::PageRequest;
 use sn_modules::catalog::promo::{self, ListFilter, NewPromo, NewPromoValue, PromoModule};
 use sn_payments::{PaymentRef, ProviderStatus, WebhookOutcome, WebhookReply};
+use sn_store::testing::wait_for_window_room;
 
 async fn promo_kit() -> Option<Kit> {
     kit_with(vec![Arc::new(PromoModule)]).await
@@ -572,6 +573,8 @@ async fn сбой_кассы_сразу_освобождает_промокод(
 #[tokio::test]
 async fn расчёт_и_оформление_считают_неудачные_промокоды_по_адресу() {
     let Some(kit) = promo_kit().await else { return };
+    let window = std::time::Duration::from_secs(promo::FAILURE_WINDOW_MINUTES.unsigned_abs() * 60);
+    wait_for_window_room(kit.services.store(), window).await;
     create_promo(&kit, percent("REAL20", 20, None)).await;
     let tariff = standard(&kit.services).await;
     let office: IpAddr = "203.0.113.40".parse().unwrap();

@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-util = []
+test-util = ["dep:tokio"]
 
 [dependencies]
 sn-domain.workspace = true
@@ -23,6 +23,7 @@ rand.workspace = true
 sha2.workspace = true
 hex.workspace = true
 tracing.workspace = true
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio.workspace = true

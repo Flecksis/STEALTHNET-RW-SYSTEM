@@ -1,13 +1,13 @@
 use super::*;
-use crate::{EnvFallbacks, ServiceDeps, SystemClock};
+use crate::{Clock, EnvFallbacks, FixedClock, ServiceDeps, SystemClock};
 use sn_domain::alerts::AlertsConfig;
 use sn_domain::payment::providers;
 use sn_domain::settings::{keys, secret_keys};
 use sn_modules::ModuleRegistry;
 use sn_payments::ProviderRegistry;
 use sn_remnawave::fake::{FakeRemnawave, sample_user};
-use sn_store::testing::{TestDb, test_database_url, test_store};
-use sn_store::{Store, StoreOptions};
+use sn_store::Store;
+use sn_store::testing::{TestDb, empty_test_store, test_store};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use wiremock::matchers::{method, path};
@@ -17,38 +17,17 @@ const TOKEN: &str = "4321:TEST";
 const BOT: &str = "123456:BOTTOKEN";
 
 struct Env {
-    db: Option<TestDb>,
+    db: TestDb,
     store: Store,
     services: Services,
     fake: Arc<FakeRemnawave>,
     dir: PathBuf,
-    extra_schema: Option<String>,
 }
 
 impl Env {
     async fn cleanup(self) {
         let _ = std::fs::remove_dir_all(&self.dir);
-        if let Some(schema) = self.extra_schema {
-            self.store.close().await;
-            if let Some(url) = test_database_url()
-                && let Ok(admin) = Store::connect(
-                    &url,
-                    StoreOptions {
-                        max_connections: 1,
-                        ..StoreOptions::default()
-                    },
-                )
-                .await
-            {
-                let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-                    .execute(admin.pool())
-                    .await;
-                admin.close().await;
-            }
-        }
-        if let Some(db) = self.db {
-            db.cleanup().await;
-        }
+        self.db.cleanup().await;
     }
 
     fn ops(&self) -> BackupOps<'_> {
@@ -67,13 +46,14 @@ async fn services_for(
     key: &str,
     dir: &Path,
     telegram_api: &str,
+    clock: Arc<dyn Clock>,
 ) -> (Services, Arc<FakeRemnawave>) {
     let services = Services::new(ServiceDeps {
         store,
         payments: Arc::new(ProviderRegistry::builtin()),
         modules: Arc::new(ModuleRegistry::catalog_only()),
         secrets: Some(SecretBox::from_base64(key).unwrap()),
-        clock: Arc::new(SystemClock),
+        clock,
         env: EnvFallbacks {
             bot_token: Some(BOT.into()),
             ..EnvFallbacks::default()
@@ -95,17 +75,20 @@ async fn services_for(
 }
 
 async fn env_with(key: &str, telegram_api: &str) -> Option<Env> {
+    env_on(key, telegram_api, Arc::new(SystemClock)).await
+}
+
+async fn env_on(key: &str, telegram_api: &str, clock: Arc<dyn Clock>) -> Option<Env> {
     let db = test_store().await?;
     let dir = temp_dir();
     let store = db.store.clone();
-    let (services, fake) = services_for(store.clone(), key, &dir, telegram_api).await;
+    let (services, fake) = services_for(store.clone(), key, &dir, telegram_api, clock).await;
     Some(Env {
-        db: Some(db),
+        db,
         store,
         services,
         fake,
         dir,
-        extra_schema: None,
     })
 }
 
@@ -114,32 +97,8 @@ async fn env() -> Option<Env> {
 }
 
 async fn partial_env(key: &str, last: i64) -> Option<Env> {
-    let url = test_database_url()?;
-    let schema = format!("sn_t_{}", &Uuid::new_v4().simple().to_string()[..16]);
-    let admin = Store::connect(
-        &url,
-        StoreOptions {
-            max_connections: 1,
-            ..StoreOptions::default()
-        },
-    )
-    .await
-    .unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(admin.pool())
-        .await
-        .unwrap();
-    admin.close().await;
-    let store = Store::connect(
-        &url,
-        StoreOptions {
-            max_connections: 4,
-            search_path: Some(schema.clone()),
-            ..StoreOptions::default()
-        },
-    )
-    .await
-    .unwrap();
+    let db = empty_test_store().await?;
+    let store = db.store.clone();
     let migrator = sqlx::migrate::Migrator {
         migrations: std::borrow::Cow::Owned(
             sn_store::MIGRATOR
@@ -154,14 +113,20 @@ async fn partial_env(key: &str, last: i64) -> Option<Env> {
     };
     migrator.run(store.pool()).await.unwrap();
     let dir = temp_dir();
-    let (services, fake) = services_for(store.clone(), key, &dir, "http://127.0.0.1:9").await;
+    let (services, fake) = services_for(
+        store.clone(),
+        key,
+        &dir,
+        "http://127.0.0.1:9",
+        Arc::new(SystemClock),
+    )
+    .await;
     Some(Env {
-        db: None,
+        db,
         store,
         services,
         fake,
         dir,
-        extra_schema: Some(schema),
     })
 }
 
@@ -618,7 +583,11 @@ async fn на_сервере_хранятся_только_последние_к
 
 #[tokio::test]
 async fn копия_по_расписанию_делается_один_раз_за_слот() {
-    let Some(env) = env().await else { return };
+    let clock = Arc::new(FixedClock::new(Utc::now()));
+    let key = SecretBox::generate_key_base64();
+    let Some(env) = env_on(&key, "http://127.0.0.1:9", clock).await else {
+        return;
+    };
     {
         let mut conn = env.store.conn().await.unwrap();
         conn.settings()

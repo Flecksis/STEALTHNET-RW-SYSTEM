@@ -978,11 +978,12 @@ mod tests {
     use sn_payments::ProviderRegistry;
     use sn_services::auth::{RequestMeta, sign_init_data};
     use sn_services::support::OpenTicket;
-    use sn_services::{Actor, EnvFallbacks, ServiceDeps, Services, SystemClock};
-    use sn_store::testing::{TestDb, test_store};
+    use sn_services::{Actor, Clock, EnvFallbacks, FixedClock, ServiceDeps, Services, SystemClock};
+    use sn_store::testing::{TestDb, test_store, wait_for_window_room};
     use sn_store::{Db, SessionChannel};
     use std::net::SocketAddr;
     use std::sync::Arc;
+    use std::time::Duration;
     use tower::ServiceExt;
 
     const BOT: &str = "123456:TEST-token";
@@ -990,13 +991,17 @@ mod tests {
     const PASSWORD: &str = "очень-надёжный-пароль";
 
     async fn state() -> Option<(TestDb, AppState)> {
+        state_on(Arc::new(SystemClock)).await
+    }
+
+    async fn state_on(clock: Arc<dyn Clock>) -> Option<(TestDb, AppState)> {
         let db = test_store().await?;
         let services = Services::new(ServiceDeps {
             store: db.store.clone(),
             payments: Arc::new(ProviderRegistry::builtin()),
             modules: Arc::new(ModuleRegistry::catalog_only()),
             secrets: None,
-            clock: Arc::new(SystemClock),
+            clock,
             env: EnvFallbacks {
                 bot_token: Some(BOT.into()),
                 ..EnvFallbacks::default()
@@ -1154,6 +1159,11 @@ mod tests {
         Some((db, AppState::new(config, services)))
     }
 
+    async fn promo_window_room(state: &AppState) {
+        let minutes = sn_modules::catalog::promo::FAILURE_WINDOW_MINUTES.unsigned_abs();
+        wait_for_window_room(state.services.store(), Duration::from_secs(minutes * 60)).await;
+    }
+
     async fn session(state: &AppState, telegram_id: i64) -> String {
         let (client, _) = state
             .services
@@ -1199,6 +1209,7 @@ mod tests {
         )
         .await
         .unwrap();
+        promo_window_room(&state).await;
         let attacker: SocketAddr = "203.0.113.7:40000".parse().unwrap();
         let other: SocketAddr = "203.0.113.8:40000".parse().unwrap();
         for account in 0..3 {
@@ -1282,6 +1293,7 @@ mod tests {
         forwarded: Option<&str>,
         first_account: i64,
     ) {
+        promo_window_room(state).await;
         let accounts = sn_modules::catalog::promo::ADDRESS_FAILURE_LIMIT
             / sn_modules::catalog::promo::FAILURE_LIMIT;
         for account in 0..i64::from(accounts) {
@@ -1419,7 +1431,8 @@ mod tests {
 
     #[tokio::test]
     async fn клиенты_за_прокси_на_loopback_не_делят_лимит_входа() {
-        let Some((db, state)) = state().await else {
+        let clock = Arc::new(FixedClock::new(chrono::Utc::now()));
+        let Some((db, state)) = state_on(clock).await else {
             return;
         };
         {

@@ -16,7 +16,7 @@ use sn_domain::subscription::{AutoRenewState, RemnaLink, SubscriptionKind};
 use sn_domain::tariff::{CurrencyPrices, DevicePolicy, Tariff, TariffPeriod};
 use sn_domain::traffic::TrafficPolicy;
 use sn_store::NewSubscription;
-use sn_store::testing::test_store;
+use sn_store::testing::{test_store, wait_for_window_room};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -1072,11 +1072,17 @@ async fn несуществующий_и_неподходящий_код_нео�
     db.cleanup().await;
 }
 
+async fn window_room(store: &sn_store::Store) {
+    let window = std::time::Duration::from_secs(FAILURE_WINDOW_MINUTES.unsigned_abs() * 60);
+    wait_for_window_room(store, window).await;
+}
+
 #[tokio::test]
 async fn перебор_промокодов_останавливается_после_серии_ошибок() {
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("REAL20", 20, None), None)
@@ -1491,6 +1497,7 @@ async fn параллельный_перебор_проверяет_не_бол�
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let wide = pooled(&db, 16, std::time::Duration::from_secs(8)).await;
     let core = TestCore::new(&wide);
     let ctx = context(&wide, &core, Currency::Usd);
@@ -1524,6 +1531,7 @@ async fn удачная_проверка_и_отказ_без_перебора_�
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("GOOD20", 20, None), None)
@@ -1637,6 +1645,7 @@ async fn внутренний_адрес_прокси_не_становится_
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("REAL20", 20, None), None)
@@ -1691,6 +1700,7 @@ async fn перебор_с_одного_адреса_останавливает�
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("REAL20", 20, None), None)
@@ -1800,6 +1810,7 @@ async fn лимит_по_адресу_не_действует_на_клиент�
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("REAL20", 20, None), None)
@@ -1883,6 +1894,7 @@ async fn адреса_одной_сети_ipv6_делят_общий_лимит_
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("REAL20", 20, None), None)
@@ -2035,6 +2047,7 @@ async fn оборванный_запрос_не_оставляет_засчит�
     let Some(db) = test_store().await else {
         return;
     };
+    window_room(&db.store).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     create(&ctx, &percent("GOOD20", 20, None), None)

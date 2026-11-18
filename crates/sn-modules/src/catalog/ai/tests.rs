@@ -11,7 +11,7 @@ use sn_domain::subscription::{AutoRenewState, RemnaMirror, SubscriptionKind, Sub
 use sn_domain::support::{AiState, MessageAuthor, TicketAi};
 use sn_domain::tariff::{CurrencyPrices, DevicePolicy, ExtraDevices};
 use sn_domain::traffic::TrafficPolicy;
-use sn_store::testing::TestDb;
+use sn_store::testing::{DAY, TestDb, wait_for_window_room};
 use sn_store::{NewCategory, NewClient, NewPeriod, NewSubscription, NewTariff, NewTicket, Store};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -558,6 +558,7 @@ async fn недоступная_модель_и_неверный_ключ_тож
 #[tokio::test]
 async fn лимит_ответов_клиенту_и_дневной_бюджет_переводят_на_оператора() {
     let Some(db) = setup().await else { return };
+    wait_for_window_room(&db.store, DAY).await;
     let server = MockServer::start().await;
     groq_mock(
         &server,

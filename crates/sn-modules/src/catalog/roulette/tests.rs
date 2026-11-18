@@ -9,7 +9,7 @@ use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::order::PurchaseIntent;
 use sn_domain::pricing::{Quote, QuoteLine, QuoteLineKind};
 use sn_domain::subscription::{AutoRenewState, RemnaLink, SubscriptionKind};
-use sn_store::testing::test_store;
+use sn_store::testing::{DAY, test_store, wait_for_window_room};
 use sn_store::{NewSubscription, Store};
 use std::time::Duration as StdDuration;
 
@@ -642,6 +642,7 @@ async fn антибот_в_режиме_запрета_не_даёт_беспл�
     let Some(db) = test_store().await else {
         return;
     };
+    wait_for_window_room(&db.store, DAY).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     save(&ctx, &wheel(), None).await.unwrap();
@@ -704,6 +705,7 @@ async fn антибот_просит_подтвердить_перед_бесп�
     let Some(db) = test_store().await else {
         return;
     };
+    wait_for_window_room(&db.store, DAY).await;
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Usd);
     save(&ctx, &wheel(), None).await.unwrap();
