@@ -1,6 +1,6 @@
 use crate::error::StoreResult;
 use chrono::{DateTime, Utc};
-use sn_domain::ids::{ClientId, PaymentId};
+use sn_domain::ids::{AdminId, ClientId, PaymentId};
 use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::payment::NoticeKind;
 use sqlx::PgConnection;
@@ -67,6 +67,9 @@ impl TryFrom<NoticeRow> for PaymentNotice {
 
 const COLUMNS: &str = "id, provider, event_key, kind, payment_id, client_id, amount_minor, currency, text, created_at";
 
+pub const WAITING_NOTICES: &str =
+    "resolved_at IS NULL AND kind IN ('manual_credit', 'refund_reported')";
+
 pub struct PaymentNoticesRepo<'c> {
     conn: &'c mut PgConnection,
 }
@@ -116,6 +119,47 @@ impl<'c> PaymentNoticesRepo<'c> {
         .fetch_all(&mut *self.conn)
         .await?;
         rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn waiting(&mut self, limit: i64) -> StoreResult<Vec<PaymentNotice>> {
+        let rows: Vec<NoticeRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM payment_notices WHERE {WAITING_NOTICES} ORDER BY created_at, id LIMIT $1"
+        ))
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub async fn get(&mut self, id: i64) -> StoreResult<PaymentNotice> {
+        let row: Option<NoticeRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM payment_notices WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.ok_or(crate::error::StoreError::NotFound("оповещение"))?
+            .try_into()
+    }
+
+    pub async fn close(
+        &mut self,
+        id: i64,
+        admin: AdminId,
+        note: &str,
+        at: DateTime<Utc>,
+    ) -> StoreResult<bool> {
+        let closed: Option<i64> = sqlx::query_scalar(&format!(
+            "UPDATE payment_notices SET resolved_at = $2, resolved_by = $3, resolution = $4 \
+             WHERE id = $1 AND {WAITING_NOTICES} RETURNING id"
+        ))
+        .bind(id)
+        .bind(at)
+        .bind(admin.0)
+        .bind(note)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(closed.is_some())
     }
 
     pub async fn for_payment(&mut self, payment_id: PaymentId) -> StoreResult<Vec<PaymentNotice>> {

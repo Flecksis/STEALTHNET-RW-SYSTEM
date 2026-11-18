@@ -585,6 +585,48 @@ impl<'c> PaymentsRepo<'c> {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    pub async fn latest_waiting(
+        &mut self,
+        client_id: ClientId,
+        provider: &str,
+        now: DateTime<Utc>,
+    ) -> StoreResult<Option<Payment>> {
+        let row: Option<PaymentRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM payments WHERE client_id = $1 AND provider = $2 \
+             AND status = 'pending' AND (expires_at IS NULL OR expires_at > $3) \
+             ORDER BY id DESC LIMIT 1"
+        ))
+        .bind(client_id.0)
+        .bind(provider)
+        .bind(now)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.map(TryInto::try_into).transpose()
+    }
+
+    pub async fn latest_in_series(
+        &mut self,
+        provider: &str,
+        prefix: &str,
+    ) -> StoreResult<Option<Payment>> {
+        let pattern = format!(
+            "{}%",
+            prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let row: Option<PaymentRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM payments WHERE provider = $1 AND provider_txid LIKE $2 ESCAPE '\\' \
+             AND status IN ('paid', 'refunded', 'partially_refunded') ORDER BY id DESC LIMIT 1"
+        ))
+        .bind(provider)
+        .bind(pattern)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.map(TryInto::try_into).transpose()
+    }
+
     pub async fn for_order(&mut self, order_id: OrderId) -> StoreResult<Vec<Payment>> {
         let rows: Vec<PaymentRow> = sqlx::query_as(&format!(
             "SELECT {COLUMNS} FROM payments WHERE order_id = $1 ORDER BY id"

@@ -109,11 +109,14 @@ export function TopUpPage() {
   }, [params, reload]);
 
   const currency = options?.currency ?? me.currency;
-  const typed = custom.trim() ? parseAmount(custom, currency) : null;
-  const amount = custom.trim() ? typed : preset;
+  const methods = useMemo(() => options?.methods ?? [], [options]);
+  const chosen = methods.find((m) => methodKey(m) === method) ?? methods[0] ?? null;
+  const fixed = chosen?.amounts && chosen.amounts.length > 0 ? chosen.amounts : null;
+  const typed = custom.trim() && !fixed ? parseAmount(custom, currency) : null;
+  const amount = custom.trim() && !fixed ? typed : preset;
   const inRange = !!options && amount !== null && amount >= options.min.minor && amount <= options.max.minor;
   const amountError =
-    options && custom.trim()
+    options && custom.trim() && !fixed
       ? typed === null
         ? currency === 'RUB'
           ? t('Укажите сумму целым числом рублей, например 700')
@@ -122,10 +125,18 @@ export function TopUpPage() {
           ? t('Сумма должна быть {limits}', { limits: limitsText(options) })
           : null
       : null;
-  const methods = useMemo(() => options?.methods ?? [], [options]);
-  const chosen = methods.find((m) => methodKey(m) === method) ?? methods[0] ?? null;
   const sum = amount !== null && inRange ? money({ minor: amount, currency }) : null;
   const after = amount !== null && inRange ? money({ minor: me.balance.minor + amount, currency }) : null;
+
+  useEffect(() => {
+    if (!fixed || (preset !== null && fixed.some((m) => m.minor === preset) && !custom.trim())) {
+      return;
+    }
+    const wanted = (custom.trim() ? parseAmount(custom, currency) : preset) ?? 0;
+    const next = fixed.find((m) => m.minor >= wanted) ?? fixed[fixed.length - 1];
+    setPreset(next?.minor ?? null);
+    setCustom('');
+  }, [fixed, preset, custom, currency]);
 
   const pay = async () => {
     if (!options || amount === null || !inRange || !chosen) {
@@ -246,9 +257,9 @@ export function TopUpPage() {
         <div className="cb-col left">
           <Card className="cb-pick" label={t('Сумма')}>
             <h2 className="cb-h2">{t('Сумма')}</h2>
-            {options.presets.length > 0 ? (
+            {(fixed ?? options.presets).length > 0 ? (
               <div role="radiogroup" aria-label={t('Сумма пополнения')} className="cb-amounts">
-                {options.presets.map((p) => (
+                {(fixed ?? options.presets).map((p) => (
                   <button
                     key={p.minor}
                     type="button"
@@ -265,21 +276,27 @@ export function TopUpPage() {
                 ))}
               </div>
             ) : null}
-            <label className="cb-field">
-              <span>{options.presets.length > 0 ? t('Другая сумма') : t('Сумма пополнения')}</span>
-              <input
-                value={custom}
-                onChange={(e) => setCustom(e.target.value)}
-                inputMode={currency === 'RUB' ? 'numeric' : 'decimal'}
-                placeholder={currency === 'RUB' ? t('Например, 700') : t('Например, 15')}
-                aria-invalid={amountError ? true : undefined}
-                aria-describedby="topup-hint"
-                maxLength={12}
-              />
-            </label>
-            <p id="topup-hint" className={amountError ? 'cb-error cb-hint' : 'cb-small cb-muted cb-hint'}>
-              {amountError ?? t('Можно {limits}', { limits: limitsText(options) })}
-            </p>
+            {fixed && chosen ? (
+              <p className="cb-small cb-muted cb-hint">{t('Через {method} пополнение идёт только этими суммами', { method: chosen.title })}</p>
+            ) : (
+              <>
+                <label className="cb-field">
+                  <span>{options.presets.length > 0 ? t('Другая сумма') : t('Сумма пополнения')}</span>
+                  <input
+                    value={custom}
+                    onChange={(e) => setCustom(e.target.value)}
+                    inputMode={currency === 'RUB' ? 'numeric' : 'decimal'}
+                    placeholder={currency === 'RUB' ? t('Например, 700') : t('Например, 15')}
+                    aria-invalid={amountError ? true : undefined}
+                    aria-describedby="topup-hint"
+                    maxLength={12}
+                  />
+                </label>
+                <p id="topup-hint" className={amountError ? 'cb-error cb-hint' : 'cb-small cb-muted cb-hint'}>
+                  {amountError ?? t('Можно {limits}', { limits: limitsText(options) })}
+                </p>
+              </>
+            )}
           </Card>
 
           <Card className="cb-methods" label={t('Способ оплаты')}>

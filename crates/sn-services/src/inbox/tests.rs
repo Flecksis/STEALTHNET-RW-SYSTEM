@@ -32,6 +32,7 @@ mod journal;
 mod notices;
 mod polling;
 mod resume;
+mod tribute;
 
 const KASSA: &str = "kassa";
 const KASSA_SECRET: &str = "kassa-secret";

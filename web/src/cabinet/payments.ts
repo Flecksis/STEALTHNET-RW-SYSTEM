@@ -33,7 +33,7 @@ export type ClientPayment = {
 
 export type PaymentsPage = { items: ClientPayment[]; next: string | null };
 
-export type TopUpMethod = { provider: string; method: string | null; title: string; hint: string };
+export type TopUpMethod = { provider: string; method: string | null; title: string; hint: string; amounts?: Money[] };
 
 export type TopUpOptions = {
   currency: Currency;

@@ -12,7 +12,7 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::PaymentStatus;
 use sn_services::admin::{MarkPaidRequest, MarkPaidResult, PaymentFilter, RefundRequest};
 use sn_services::decisions::{
-    CHARGES_LIMIT, ChargeReviewItem, RefundActionView, RefundRequestView,
+    CHARGES_LIMIT, CREDITS_LIMIT, ChargeReviewItem, CreditView, RefundActionView, RefundRequestView,
 };
 use sn_services::inbox::{JournalCard, JournalPage, JournalQuery, OutcomeGroup, RefundOptions};
 
@@ -24,6 +24,8 @@ pub fn routes() -> Router<AppState> {
         .route("/payments/{id}/mark-paid", post(mark_paid))
         .route("/payments/{id}/refund", get(refund_options).post(refund))
         .route("/charges/review", get(charges_review))
+        .route("/credits", get(credits))
+        .route("/credits/{id}/close", post(close_credit))
         .route("/refunds/pending", get(pending_refunds))
         .route("/refunds/actions", get(refund_actions))
         .route("/refunds/{id}/cancel", post(cancel_refund_request))
@@ -183,6 +185,37 @@ async fn charges_review(
             .charges(query.limit.unwrap_or(CHARGES_LIMIT))
             .await?,
     ))
+}
+
+async fn credits(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<LimitQuery>,
+) -> ApiResult<Json<Vec<CreditView>>> {
+    admin.require(Permission::Money)?;
+    Ok(Json(
+        state
+            .services
+            .decisions()
+            .credits(query.limit.unwrap_or(CREDITS_LIMIT))
+            .await?,
+    ))
+}
+
+async fn close_credit(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: Option<ApiJson<NoteRequest>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Money)?;
+    let note = body.and_then(|b| b.0.note).unwrap_or_default();
+    state
+        .services
+        .decisions()
+        .close_credit(id, admin.0.admin_id, &note)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
 
 async fn pending_refunds(

@@ -514,7 +514,21 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
             "tp:{}",
             crate::buy::pay_target(method.provider, method.method.as_deref())
         );
-        keyboard = keyboard.push(if method.hint.is_empty() {
+        let charged = method
+            .amount
+            .and_then(sn_domain::money::Amount::as_money)
+            .filter(|charged| *charged != amount);
+        keyboard = keyboard.push(if let Some(charged) = charged {
+            ui::button(
+                c,
+                "bal.btn.method_hint",
+                &[
+                    ("method", Text(&method.title)),
+                    ("hint", Text(&text::money(charged))),
+                ],
+                data,
+            )
+        } else if method.hint.is_empty() {
             ui::button(
                 c,
                 "bal.btn.method",
@@ -591,7 +605,25 @@ pub async fn topup_start(
     };
     let services = turn.services().clone();
     let content = services.bot_content_in(lang::current());
-    let amount = Money::new(minor, services.settings().currency);
+    let currency = services.settings().currency;
+    let asked = Money::new(minor, currency);
+    let registry = services.payments();
+    let amount = registry
+        .get(provider)
+        .and_then(|found| {
+            sn_payments::charge(
+                found.as_ref(),
+                &registry.config(found.id()),
+                &MethodsContext {
+                    currency,
+                    total: asked,
+                    stars_total: None,
+                    balance: None,
+                    channel: Some(sn_domain::access::ClientChannel::Bot),
+                },
+            )
+        })
+        .unwrap_or(asked);
     match services
         .checkout()
         .topup(client.id, amount, provider, method, Channel::Bot)

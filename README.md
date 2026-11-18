@@ -34,7 +34,7 @@
 |---|---|
 | Серверная часть: API админки, кабинета и мини-приложения | Интерфейс админки, кабинета и мини-приложения |
 | Telegram-бот: покупка, оплата, вход на сайт, уведомления | Установщик одной командой и готовые сборки |
-| Оплата: Crypto Pay, Telegram Stars, Heleket, Cryptomus, Lava.top, ЮKassa, Platega, ЮMoney, CloudPayments, MulenPay, PayPalych, Kassa.ai, AuraPay | Обновление из админки |
+| Оплата: Crypto Pay, Telegram Stars, Heleket, Cryptomus, Tribute, Lava.top, ЮKassa, Platega, ЮMoney, CloudPayments, MulenPay, PayPalych, Kassa.ai, AuraPay | Обновление из админки |
 | Выдача, продление, автопродление и возвраты через Remnawave 3.4 | |
 | Перенос из STEALTHNET 7.x, бота Бедолаги, Remnawave Telegram Shop, Chill Remna bot, Remnashop и Minishop: в админке и командой `import-legacy` | |
 

@@ -10,6 +10,7 @@ import { useSession } from '../session';
 import { Switch } from '../ui';
 import '../form.css';
 import { SettingsLayout } from './SettingsLayout';
+import { TributeSetup, tributeValue, type TributeValue } from './TributeSetup';
 
 type Channels = { cabinet: boolean; bot: boolean; miniapp: boolean };
 
@@ -199,6 +200,7 @@ const ACCEPTS: Record<string, string> = {
   pal24: 'Карты и СБП',
   kassa_ai: 'СБП, карты, SberPay',
   aurapay: 'Карты и СБП',
+  tribute: 'Товары и подписки Tribute: оплата в Telegram',
 };
 
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'], pal24: ['', 'refund', 'chargeback'] };
@@ -221,6 +223,8 @@ const HOOK_HINTS: Record<string, string> = {
     'Это «URL оповещения» в настройках магазина Kassa.ai, метод POST. Уведомления приходят с адресов 168.119.157.136, 168.119.60.227, 178.154.197.79 и 51.250.54.238. Если в магазине включён тестовый режим, тестовые оплаты засчитываются как настоящие: после проверки выключите его.',
   aurapay:
     'Панель передаёт этот адрес с каждым счётом. Если в настройках кассы AuraPay стоит адрес старого бота, замените его этим. Возвратов через API у AuraPay нет: деньги возвращает поддержка AuraPay, а в панели возврат отмечается вручную.',
+  tribute:
+    'В Tribute это поле Webhook URL: кабинет автора → ⋯ → «Настройки» → «API-ключи». Оплату панель находит по Telegram ID покупателя, поэтому Tribute видят только клиенты с привязанным Telegram.',
 };
 
 function failText(err: unknown, fallback: string): string {
@@ -712,6 +716,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const [check, setCheck] = useState<CheckRecord | null>(provider.check ?? null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [tribute, setTribute] = useState<TributeValue>({ products: [], plans: [] });
+  const [savedTribute, setSavedTribute] = useState(JSON.stringify({ products: [], plans: [] }));
+  const withTribute = provider.id === 'tribute';
 
   useEffect(() => {
     api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
@@ -719,6 +726,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         setSchema(d.schema);
         setConfig(d.provider.settings);
         setValues(initialValues(d.schema, d.provider.settings));
+        const loadedTribute = tributeValue(d.provider.settings);
+        setTribute(loadedTribute);
+        setSavedTribute(JSON.stringify(loadedTribute));
         const loaded = settle(methodRows(d.provider.methods));
         setRows(loaded);
         setSavedRows(JSON.stringify(chosenMethods(loaded)));
@@ -767,8 +777,12 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
     });
 
   const keysPending = schema !== null && (Object.keys(changedConfig(schema, config, values)).length > 0 || secrets.clear.length > 0);
+  const tributePending = withTribute && JSON.stringify(tribute) !== savedTribute;
   const pending =
-    keysPending || JSON.stringify(chosenMethods(rows)) !== savedRows || JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel;
+    keysPending ||
+    tributePending ||
+    JSON.stringify(chosenMethods(rows)) !== savedRows ||
+    JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel;
   const checkable = provider.kind !== 'balance';
 
   const runCheck = async () => {
@@ -803,13 +817,14 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       const result = await api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`, {
         method: 'PUT',
         body: {
-          config: changedConfig(schema, config, values),
+          config: { ...changedConfig(schema, config, values), ...(tributePending ? { products: tribute.products, plans: tribute.plans } : {}) },
           clear: secrets.clear,
           ...(JSON.stringify(methods) !== savedRows ? { methods } : {}),
           ...(JSON.stringify(label) !== savedLabel ? { label: { title: label[0] || null, hint: label[1] || null } } : {}),
         },
       });
       onSaved(result.provider);
+      setSavedTribute(JSON.stringify(tribute));
       if (!keysChanged || !checkable || !result.provider.configured) {
         onClose();
         return;
@@ -839,6 +854,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       {schema && schema.length > 0 ? (
         <SchemaFields schema={schema} config={config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`pay-${provider.id}`} />
       ) : null}
+      {schema && withTribute ? <TributeSetup value={tribute} onChange={setTribute} busy={busy} connected={connected} currency={currency} /> : null}
       {rows.length ? (
         <div className="sf-field" style={{ maxWidth: 'none' }} role="group" aria-labelledby={`pay-m-${provider.id}`}>
           <span className="sf-label" id={`pay-m-${provider.id}`}>

@@ -754,6 +754,10 @@ fn reference_text(reference: &PaymentRef) -> String {
         PaymentRef::Payment(id) => format!("№{id}"),
         PaymentRef::PublicId(id) => id.to_string(),
         PaymentRef::ProviderTxid(txid) => format!("транзакция {txid}"),
+        PaymentRef::Buyer(buyer) => format!(
+            "покупатель с Telegram ID {}, {}",
+            buyer.telegram_id, buyer.txid
+        ),
     }
 }
 

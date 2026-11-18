@@ -1,25 +1,29 @@
 use crate::clients::{OrderBrief, order_brief};
-use crate::error::ServiceResult;
+use crate::error::{ServiceError, ServiceResult};
 use crate::fulfillment::ReviewItem;
 use crate::inbox::{PENDING_REFUNDS_MAX, PendingRefundRequest, RefundActionReview};
 use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
-use sn_domain::ids::{ClientId, OrderId, PaymentId, TariffId};
+use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, TariffId};
 use sn_domain::money::{Amount, PayCurrency};
-use sn_domain::payment::Payment;
-use sn_store::{ClientPerson, Db, charge_review_filter, poll_key_prefix};
+use sn_domain::payment::{NoticeKind, Payment};
+use sn_store::{ActorKind, AuditEntry, ClientPerson, Db, charge_review_filter, poll_key_prefix};
 use std::collections::HashMap;
 use uuid::Uuid;
 
 pub const STUCK_REFUND_HOURS: i64 = 24;
 pub const CHARGES_LIMIT: i64 = 50;
 pub const CHARGES_MAX: i64 = 200;
+pub const CREDITS_LIMIT: i64 = 100;
+const CREDIT_NOTE_LIMIT: usize = 300;
 
 const ORDERS: &str = "FROM orders o WHERE o.status = 'review'";
 const STARS: &str = "FROM bot_star_events e WHERE e.status = 'review'";
 const ACTIONS: &str = "FROM provider_refunds r WHERE r.action_status = 'failed'";
 const REQUESTS: &str = "FROM provider_refunds r WHERE r.status = 'pending' AND r.created_at <= $1";
+const CREDITS: &str = "FROM payment_notices n WHERE n.resolved_at IS NULL \
+     AND n.kind IN ('manual_credit', 'refund_reported')";
 const SAME_TOTAL: &str = "CASE WHEN count(DISTINCT currency) = 1 THEN sum(amount_minor)::bigint END AS total, \
      min(currency) AS currency";
 
@@ -57,6 +61,7 @@ pub struct Decisions {
     pub refund_requests: Option<Group>,
     pub charges: Option<Group>,
     pub stars: Option<Group>,
+    pub credits: Option<Group>,
 }
 
 impl Decisions {
@@ -71,6 +76,7 @@ impl Decisions {
             &self.refund_requests,
             &self.charges,
             &self.stars,
+            &self.credits,
         ]
         .into_iter()
         .flatten()
@@ -83,6 +89,7 @@ impl Decisions {
             &mut self.refund_requests,
             &mut self.charges,
             &mut self.stars,
+            &mut self.credits,
         ]
         .into_iter()
         .flatten()
@@ -136,6 +143,21 @@ pub struct ChargeReviewItem {
     pub closes_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreditView {
+    pub id: i64,
+    pub provider: String,
+    pub provider_title: String,
+    pub kind: NoticeKind,
+    pub title: &'static str,
+    pub amount: Option<Amount>,
+    pub client_id: Option<ClientId>,
+    pub client: Option<ClientPerson>,
+    pub payment_id: Option<PaymentId>,
+    pub text: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(sqlx::FromRow)]
 struct CountRow {
     count: i64,
@@ -183,17 +205,17 @@ impl<'a> DecisionsOps<'a> {
             return Ok(0);
         }
         let mut conn = self.services.store().conn().await?;
-        let (orders, charges, stars, actions, requests): (i64, i64, i64, i64, i64) =
+        let (orders, charges, stars, actions, requests, credits): (i64, i64, i64, i64, i64, i64) =
             sqlx::query_as(&format!(
                 "SELECT (SELECT count(*) {ORDERS}), (SELECT count(*) {}), (SELECT count(*) {STARS}), \
-                 (SELECT count(*) {ACTIONS}), (SELECT count(*) {REQUESTS})",
+                 (SELECT count(*) {ACTIONS}), (SELECT count(*) {REQUESTS}), (SELECT count(*) {CREDITS})",
                 charges_from()
             ))
             .bind(self.stuck_before())
             .fetch_one(conn.conn())
             .await?;
         let money = if scope.money {
-            orders + charges + stars
+            orders + charges + stars + credits
         } else {
             0
         };
@@ -253,6 +275,19 @@ impl<'a> DecisionsOps<'a> {
                              THEN (e.payload ->> 'total_amount')::bigint END AS minor, \
                          'XTR' AS currency, e.last_error AS reason, NULL::text AS action {STARS} \
                          ORDER BY e.created_at, e.id LIMIT 1"
+                    ),
+                    None,
+                )
+                .await?,
+            );
+            out.credits = Some(
+                self.group(
+                    &format!(
+                        "SELECT count(*) AS count, min(n.created_at) AS since, {SAME_TOTAL} {CREDITS}"
+                    ),
+                    &format!(
+                        "SELECT n.client_id, n.amount_minor AS minor, n.currency, n.text AS reason, \
+                         n.kind AS action {CREDITS} ORDER BY n.created_at, n.id LIMIT 1"
                     ),
                     None,
                 )
@@ -467,6 +502,77 @@ impl<'a> DecisionsOps<'a> {
                 }
             })
             .collect())
+    }
+
+    pub async fn credits(&self, limit: i64) -> ServiceResult<Vec<CreditView>> {
+        let notices = {
+            let mut conn = self.services.store().conn().await?;
+            conn.payment_notices()
+                .waiting(limit.clamp(1, CREDITS_LIMIT))
+                .await?
+        };
+        let clients: Vec<ClientId> = notices.iter().filter_map(|n| n.client_id).collect();
+        let found = self.found(&clients, &[], &[]).await?;
+        Ok(notices
+            .into_iter()
+            .map(|notice| CreditView {
+                provider_title: self.provider_title(&notice.provider),
+                title: notice.kind.title_ru(),
+                client: notice
+                    .client_id
+                    .and_then(|id| found.people.get(&id).cloned()),
+                id: notice.id,
+                provider: notice.provider,
+                kind: notice.kind,
+                amount: notice.amount,
+                client_id: notice.client_id,
+                payment_id: notice.payment_id,
+                text: notice.text,
+                created_at: notice.created_at,
+            })
+            .collect())
+    }
+
+    pub async fn close_credit(&self, id: i64, admin: AdminId, note: &str) -> ServiceResult<()> {
+        let note: String = note.trim().chars().take(CREDIT_NOTE_LIMIT).collect();
+        if note.is_empty() {
+            return Err(ServiceError::rejected(
+                "notice.close_note",
+                "Напишите, что сделано с деньгами",
+            ));
+        }
+        let mut tx = self.services.store().begin().await?;
+        let notice = tx.payment_notices().get(id).await?;
+        if !tx
+            .payment_notices()
+            .close(id, admin, &note, self.services.now())
+            .await?
+        {
+            return Err(ServiceError::rejected(
+                "notice.closed",
+                "Это оповещение уже закрыто",
+            ));
+        }
+        tx.audit()
+            .record(&AuditEntry {
+                actor_kind: ActorKind::Admin,
+                actor_id: Some(admin.0),
+                action: "payment.notice_closed".into(),
+                entity_kind: Some("payment_notice".into()),
+                entity_id: Some(id),
+                details: serde_json::json!({
+                    "provider": notice.provider,
+                    "kind": notice.kind.as_str(),
+                    "payment_id": notice.payment_id,
+                    "client_id": notice.client_id,
+                    "amount": notice.amount,
+                    "note": note,
+                }),
+                ip: None,
+            })
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn charges(&self, limit: i64) -> ServiceResult<Vec<ChargeReviewItem>> {

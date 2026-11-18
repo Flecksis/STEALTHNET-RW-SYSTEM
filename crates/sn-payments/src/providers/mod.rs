@@ -14,6 +14,7 @@ mod paypalych;
 mod platega;
 mod rollypay;
 mod stars;
+mod tribute;
 mod yookassa;
 mod yoomoney;
 
@@ -34,6 +35,9 @@ pub use rollypay::{RollyPay, signature as rollypay_signature};
 pub use stars::{
     STARS_TOKEN_FIELD, StarDirection, StarTransaction, StarsPayment, StarsPaymentEvent,
     StarsPreCheckout, TelegramStars,
+};
+pub use tribute::{
+    PLANS as TRIBUTE_PLANS, PRODUCTS as TRIBUTE_PRODUCTS, Tribute, signature as tribute_signature,
 };
 pub use yookassa::YooKassa;
 pub use yoomoney::YooMoney;
@@ -58,6 +62,7 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(PayPalych::new()),
         Arc::new(KassaAi::new()),
         Arc::new(AuraPay::new()),
+        Arc::new(Tribute::new()),
         Arc::new(TelegramStars::new()),
         Arc::new(Balance),
     ]
@@ -132,6 +137,16 @@ mod tests {
                 ("secret_key", json!("s")),
             ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
+            providers::TRIBUTE => config(&[
+                ("api_key", json!("k")),
+                (
+                    "products",
+                    json!([
+                        {"id": 1, "amount": 100_000, "currency": "RUB", "link": "https://t.me/tribute/app?startapp=p1"},
+                        {"id": 2, "amount": 100_000, "currency": "USD", "link": "https://t.me/tribute/app?startapp=p2"}
+                    ]),
+                ),
+            ]),
             _ => config(&[]),
         }
     }
@@ -164,6 +179,7 @@ mod tests {
                     providers::LAVA,
                     providers::STARS,
                     providers::CRYPTOMUS,
+                    providers::TRIBUTE,
                     providers::BALANCE,
                 ],
             ),
@@ -184,6 +200,7 @@ mod tests {
                     providers::PAL24,
                     providers::KASSA_AI,
                     providers::AURAPAY,
+                    providers::TRIBUTE,
                     providers::BALANCE,
                 ],
             ),
@@ -220,6 +237,7 @@ mod tests {
                 assert!(!registry.is_available(id, Currency::Usd), "{id}");
                 assert!(registry.accepts_webhooks(id), "{id}");
             }
+            assert!(registry.accepts_webhooks(providers::TRIBUTE));
         }
     }
 
@@ -246,6 +264,7 @@ mod tests {
             providers::PAL24,
             providers::KASSA_AI,
             providers::AURAPAY,
+            providers::TRIBUTE,
             providers::STARS,
             providers::BALANCE,
         ] {

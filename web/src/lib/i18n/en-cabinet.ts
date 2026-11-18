@@ -109,6 +109,7 @@ export const CABINET: Record<string, string> = {
   'Сейчас на балансе {amount}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.': 'You have {amount} on your balance. You can use it to pay for a subscription or a renewal if it covers the full amount.',
   'Сумма пополнения': 'Top-up amount',
   'Другая сумма': 'Other amount',
+  'Через {method} пополнение идёт только этими суммами': 'With {method} you can top up only by these amounts',
   'Например, 700': 'e.g. 700',
   'Например, 15': 'e.g. 15',
   'Можно {limits}': 'Any amount {limits}',

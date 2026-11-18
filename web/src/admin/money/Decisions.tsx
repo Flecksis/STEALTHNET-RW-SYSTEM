@@ -11,13 +11,14 @@ import { useSession } from '../session';
 import { GroupFrame, type Outcome } from './group';
 import { StarsReview } from './StarsReview';
 
-type Key = 'refunds' | 'orders' | 'stars' | 'charges' | 'requests';
+type Key = 'refunds' | 'orders' | 'stars' | 'charges' | 'credits' | 'requests';
 
 export const TODO_ANCHOR: Record<Key, string> = {
   refunds: 'todo-refunds',
   orders: 'todo-orders',
   stars: 'todo-stars',
   charges: 'todo-charges',
+  credits: 'todo-credits',
   requests: 'todo-requests',
 };
 
@@ -92,6 +93,20 @@ type Charge = {
   reason: string | null;
   charged_at: string;
   closes_at: string | null;
+};
+
+type Credit = {
+  id: number;
+  provider: string;
+  provider_title: string;
+  kind: string;
+  title: string;
+  amount: Amount | null;
+  client_id: number | null;
+  client: Person | null;
+  payment_id: number | null;
+  text: string;
+  created_at: string;
 };
 
 type Watch = { id: number; name: string; mark: string | null; since: number };
@@ -614,6 +629,68 @@ function Charges({ report, changed, round }: GroupProps) {
   );
 }
 
+function Credits({ report, changed, round }: GroupProps) {
+  const { items, error, load } = useList<Credit>('/api/admin/credits', 'Деньги без решения не загрузились', round);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [ask, setAsk] = useState<Ask | null>(null);
+  useReport('credits', report, items, outcome, error);
+  if (!items || (items.length === 0 && !outcome && !error)) {
+    return null;
+  }
+
+  const close = (item: Credit) => {
+    setAsk({
+      title: 'Закрыть с пометкой?',
+      text: 'Закрывайте, когда деньги зачислены вручную, возвращены или решено их не трогать. Пометку увидят другие администраторы.',
+      confirm: 'Закрыть',
+      note: 'Что сделано с деньгами',
+      run: async (note) => {
+        await api(`/api/admin/credits/${item.id}/close`, { method: 'POST', body: { note } });
+        await load();
+        return { text: `${item.provider_title}: закрыто с пометкой`, tone: 'ok' };
+      },
+    });
+  };
+
+  return (
+    <GroupFrame
+      id={TODO_ANCHOR.credits}
+      title="Деньги без решения"
+      total={items.length}
+      lead="Платёжная система прислала деньги, которые панель не смогла зачислить сама, или вернула покупателю больше, чем осталось на балансе. Решите вручную в карточке клиента, затем закройте с пометкой."
+      outcome={outcome}
+      error={error}
+    >
+      {items.map((item) => (
+        <div key={item.id} className="mo-row">
+          <Who clientId={item.client_id} person={item.client} line={[item.title, item.provider_title].join(' · ')} />
+          <span className="mo-sum">
+            <strong className="num">{item.amount ? amountText(item.amount) : '—'}</strong>
+            <span className="muted">{agoLong(item.created_at)}</span>
+          </span>
+          <span className="mo-act mo-acts">
+            <button type="button" className="btn-line hov" onClick={() => close(item)}>
+              Закрыть с пометкой
+            </button>
+          </span>
+          <span className="muted mo-reason">{item.text}</span>
+        </div>
+      ))}
+      {ask ? (
+        <AskDialog
+          ask={ask}
+          onClose={() => setAsk(null)}
+          onDone={(result) => {
+            setAsk(null);
+            setOutcome(result);
+            changed();
+          }}
+        />
+      ) : null}
+    </GroupFrame>
+  );
+}
+
 export function Decisions({ onChanged }: { onChanged: () => void }) {
   const { can, refreshBadges } = useSession();
   const { hash } = useLocation();
@@ -663,7 +740,7 @@ export function Decisions({ onChanged }: { onChanged: () => void }) {
       list.push('refunds');
     }
     if (canMoney) {
-      list.push('orders', 'stars', 'charges');
+      list.push('orders', 'stars', 'charges', 'credits');
     }
     if (canRefunds) {
       list.push('requests');
@@ -699,6 +776,7 @@ export function Decisions({ onChanged }: { onChanged: () => void }) {
       {canMoney ? <Orders report={report} changed={changed} round={round} /> : null}
       {canMoney ? <StarsReview id={TODO_ANCHOR.stars} onChanged={changed} onState={stars} round={round} /> : null}
       {canMoney ? <Charges report={report} changed={changed} round={round} /> : null}
+      {canMoney ? <Credits report={report} changed={changed} round={round} /> : null}
       {canRefunds ? <Requests report={report} changed={changed} round={round} /> : null}
     </section>
   );

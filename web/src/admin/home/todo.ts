@@ -20,6 +20,7 @@ export type Decisions = {
   refund_requests: DecisionGroup | null;
   charges: DecisionGroup | null;
   stars: DecisionGroup | null;
+  credits?: DecisionGroup | null;
 };
 
 export type TodoTone = 'bad' | 'warn' | 'muted';
@@ -46,6 +47,7 @@ export const TODO_LINK = {
   orders: '/admin/money#todo-orders',
   stars: '/admin/money#todo-stars',
   charges: '/admin/money#todo-charges',
+  credits: '/admin/money#todo-credits',
   requests: '/admin/money#todo-requests',
 };
 
@@ -148,6 +150,19 @@ export function moneyTodos(decisions: Decisions | null | undefined): Todo[] {
       action: 'Открыть',
       label: 'Открыть списания с карты на проверке',
       to: TODO_LINK.charges,
+    });
+  }
+  const credits = decisions?.credits;
+  if (open(credits)) {
+    const one = credits.count === 1;
+    out.push({
+      key: 'credits',
+      title: one ? 'Деньги без решения' : `${count(credits.count, 'платёж', 'платежа', 'платежей')} без решения`,
+      note: one ? line(who(credits.oldest), sum(credits.oldest?.amount)) : credits.total ? `Всего ${amountText(credits.total)}` : '',
+      tone: 'warn',
+      action: 'Открыть',
+      label: 'Открыть деньги без решения',
+      to: TODO_LINK.credits,
     });
   }
   const requests = decisions?.refund_requests;

@@ -4,7 +4,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::ids::{ClientId, PaymentId};
-use sn_domain::money::{Amount, Currency};
+use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::payment::NoticeKind;
 use sn_domain::settings::{SettingField, missing_required};
 use std::net::IpAddr;
@@ -168,11 +168,32 @@ impl WebhookRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum BuyerPurpose {
+    TopUp,
+    Plan { plan: String, series: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Buyer {
+    pub telegram_id: i64,
+    pub txid: String,
+    pub purpose: BuyerPurpose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanBinding {
+    pub tariff_id: i64,
+    pub period_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum PaymentRef {
     Payment(PaymentId),
     PublicId(Uuid),
     ProviderTxid(String),
+    Buyer(Buyer),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -555,6 +576,22 @@ pub trait PaymentProvider: Send + Sync + 'static {
 
     fn precheck_reply(&self, _verdict: PrecheckVerdict) -> WebhookReply {
         WebhookReply::ok()
+    }
+
+    fn needs_telegram(&self) -> bool {
+        false
+    }
+
+    fn fixed_amounts(&self, _config: &ProviderConfig, _currency: Currency) -> Option<Vec<Money>> {
+        None
+    }
+
+    fn plan_binding(&self, _config: &ProviderConfig, _plan: &str) -> Option<PlanBinding> {
+        None
+    }
+
+    async fn catalog(&self, _config: &ProviderConfig) -> PaymentResult<Option<serde_json::Value>> {
+        Ok(None)
     }
 
     async fn create_invoice(

@@ -26,7 +26,7 @@ use sn_modules::catalog::{antibot, promo};
 use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook, QuoteOrigin};
 use sn_payments::{
     CheckoutMethod, ClientRef, InvoiceRequest, MethodsContext, PaymentProvider, ProviderKind,
-    Unavailable,
+    ProviderRegistry, Unavailable,
 };
 use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx, audit_entity};
 use std::collections::HashMap;
@@ -216,6 +216,7 @@ struct Basis {
     current_tariff: Option<Tariff>,
     kind: PlanKind,
     balance: Money,
+    telegram: bool,
 }
 
 struct Prepared {
@@ -379,6 +380,29 @@ pub(crate) async fn client_ref(db: &mut impl Db, client: &Client) -> ServiceResu
             .find(|i| i.kind == IdentityKind::Email)
             .map(|i| i.value.clone()),
     })
+}
+
+pub(crate) async fn telegram_linked(db: &mut impl Db, client_id: ClientId) -> ServiceResult<bool> {
+    Ok(db
+        .clients()
+        .identities(client_id)
+        .await?
+        .iter()
+        .any(|i| i.kind == IdentityKind::Telegram))
+}
+
+pub(crate) fn reachable(
+    registry: &ProviderRegistry,
+    methods: Vec<CheckoutMethod>,
+    telegram: bool,
+) -> Vec<CheckoutMethod> {
+    if telegram {
+        return methods;
+    }
+    methods
+        .into_iter()
+        .filter(|m| registry.get(m.provider).is_none_or(|p| !p.needs_telegram()))
+        .collect()
 }
 
 pub(crate) fn describe(brand: &str, quote: &Quote) -> String {
@@ -844,6 +868,7 @@ impl<'a> Checkout<'a> {
             .ledger()
             .balance(client_id, Wallet::Main, currency)
             .await?;
+        let telegram = telegram_linked(&mut conn, client_id).await?;
         Ok(Basis {
             client,
             tariff,
@@ -851,6 +876,7 @@ impl<'a> Checkout<'a> {
             current_tariff,
             kind,
             balance,
+            telegram,
         })
     }
 
@@ -876,6 +902,7 @@ impl<'a> Checkout<'a> {
             current_tariff,
             kind,
             balance,
+            telegram,
         } = self.basis(client_id, cart, currency).await?;
         let hook = QuoteHook {
             client_id,
@@ -896,13 +923,17 @@ impl<'a> Checkout<'a> {
             sell_extra_devices: modules.is_enabled(ModuleId::Options),
             adjustments: &adjustments,
         })?;
-        let methods = self.services.payments().checkout_methods(&MethodsContext {
-            currency,
-            total: quote.total,
-            stars_total: quote.stars.map(|s| s.total),
-            balance: Some(balance),
-            channel,
-        });
+        let methods = reachable(
+            self.services.payments(),
+            self.services.payments().checkout_methods(&MethodsContext {
+                currency,
+                total: quote.total,
+                stars_total: quote.stars.map(|s| s.total),
+                balance: Some(balance),
+                channel,
+            }),
+            telegram,
+        );
         Ok(Prepared {
             client,
             tariff,
@@ -1149,24 +1180,26 @@ impl<'a> Checkout<'a> {
                 format!("Баланс пополняется в {}", settings.currency),
             ));
         }
-        let quote = topup_quote(amount, settings.topup_limits())?;
-        let client = {
+        topup_quote(amount, settings.topup_limits())?;
+        let (client, telegram) = {
             let mut conn = self.services.store().conn().await?;
-            conn.clients().get(client_id).await?
+            let client = conn.clients().get(client_id).await?;
+            let telegram = telegram_linked(&mut conn, client_id).await?;
+            (client, telegram)
         };
         if client.is_blocked() {
             return Err(ServiceError::Forbidden);
         }
         let registry = self.services.payments();
         let code = method.map(str::trim).filter(|c| !c.is_empty());
-        let chosen = registry
-            .checkout_methods(&MethodsContext {
-                currency: amount.currency,
-                total: amount,
-                stars_total: None,
-                balance: None,
-                channel: channel.client(),
-            })
+        let methods = registry.checkout_methods(&MethodsContext {
+            currency: amount.currency,
+            total: amount,
+            stars_total: None,
+            balance: None,
+            channel: channel.client(),
+        });
+        let chosen = reachable(registry, methods, telegram)
             .into_iter()
             .find(|m| {
                 m.kind == ProviderKind::External
@@ -1174,14 +1207,23 @@ impl<'a> Checkout<'a> {
                     && m.provider == provider
                     && (code.is_none() || m.method.as_deref() == code)
             });
-        let (provider, method) = chosen
-            .and_then(|m| registry.get(m.provider).map(|p| (p, m.method)))
+        let (provider, method, charged) = chosen
+            .and_then(|m| {
+                let charged = m
+                    .amount
+                    .and_then(Amount::as_money)
+                    .filter(|charged| charged.currency == amount.currency)
+                    .unwrap_or(amount);
+                registry.get(m.provider).map(|p| (p, m.method, charged))
+            })
             .ok_or_else(|| {
                 ServiceError::rejected(
                     "checkout.method_unavailable",
                     "Пополнить баланс этим способом нельзя",
                 )
             })?;
+        let amount = charged;
+        let quote = topup_quote(amount, settings.topup_limits())?;
         let order = NewOrder {
             client_id,
             subscription_id: None,
@@ -1200,6 +1242,34 @@ impl<'a> Checkout<'a> {
             return_url,
         )
         .await
+    }
+
+    pub(crate) async fn plan_order(
+        &self,
+        client_id: ClientId,
+        cart: &CartRequest,
+    ) -> ServiceResult<NewOrder> {
+        let prepared = self
+            .prepare(client_id, cart, &QuoteOrigin { address: None }, None)
+            .await?;
+        let period = prepared
+            .tariff
+            .period(cart.period_id)
+            .ok_or(DomainError::PeriodNotFound(cart.period_id))?;
+        let target = prepared.current.as_ref().map(|s| s.id);
+        Ok(NewOrder {
+            client_id,
+            subscription_id: target,
+            kind: prepared.kind.order_kind(),
+            intent: PurchaseIntent::Subscription {
+                tariff_id: prepared.tariff.id,
+                period_id: period.id,
+                extra_devices: cart.extra_devices,
+                target,
+            },
+            quote: prepared.quote.clone(),
+            snapshot: Some(prepared.tariff.snapshot(period)),
+        })
     }
 
     pub async fn start_trial(&self, client_id: ClientId) -> ServiceResult<OrderId> {
@@ -1342,7 +1412,7 @@ impl<'a> Checkout<'a> {
         if !modules.is_enabled(item.module) {
             return Err(sn_modules::ModuleError::Disabled(item.module).into());
         }
-        let (client, balance) = {
+        let (client, balance, telegram) = {
             let mut conn = self.services.store().conn().await?;
             let client = conn.clients().get(client_id).await?;
             if client.is_blocked() {
@@ -1358,7 +1428,8 @@ impl<'a> Checkout<'a> {
                 .ledger()
                 .balance(client_id, Wallet::Main, currency)
                 .await?;
-            (client, balance)
+            let telegram = telegram_linked(&mut conn, client_id).await?;
+            (client, balance, telegram)
         };
         let quote = modules
             .get(item.module)
@@ -1378,13 +1449,17 @@ impl<'a> Checkout<'a> {
                 "модуль посчитал цену не в валюте установки",
             ));
         }
-        let methods = self.services.payments().checkout_methods(&MethodsContext {
-            currency,
-            total: quote.total,
-            stars_total: quote.stars.map(|s| s.total),
-            balance: Some(balance),
-            channel,
-        });
+        let methods = reachable(
+            self.services.payments(),
+            self.services.payments().checkout_methods(&MethodsContext {
+                currency,
+                total: quote.total,
+                stars_total: quote.stars.map(|s| s.total),
+                balance: Some(balance),
+                channel,
+            }),
+            telegram,
+        );
         Ok((client, quote, methods))
     }
 

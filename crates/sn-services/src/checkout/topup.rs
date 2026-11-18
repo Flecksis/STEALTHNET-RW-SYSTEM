@@ -1,4 +1,4 @@
-use super::{Channel, Checkout, CheckoutResult};
+use super::{Channel, Checkout, CheckoutResult, reachable, telegram_linked};
 use crate::error::{ServiceError, ServiceResult};
 use serde::Serialize;
 use sn_domain::ids::ClientId;
@@ -14,6 +14,8 @@ pub struct TopUpMethod {
     pub method: Option<String>,
     pub title: String,
     pub hint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amounts: Option<Vec<Money>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -47,33 +49,55 @@ impl Checkout<'_> {
         self.topup_open()?;
         let settings = self.services.settings();
         let currency = settings.currency;
-        let balance = {
+        let (balance, telegram) = {
             let mut conn = self.services.store().conn().await?;
             if conn.clients().get(client_id).await?.is_blocked() {
                 return Err(ServiceError::Forbidden);
             }
-            conn.ledger()
+            let balance = conn
+                .ledger()
                 .balance(client_id, Wallet::Main, currency)
-                .await?
+                .await?;
+            (balance, telegram_linked(&mut conn, client_id).await?)
         };
         let limits = settings.topup_limits();
-        let methods = self
-            .services
-            .payments()
-            .checkout_methods(&MethodsContext {
-                currency,
-                total: limits.min,
-                stars_total: None,
-                balance: None,
-                channel: channel.client(),
-            })
+        let registry = self.services.payments();
+        let found = registry.checkout_methods(&MethodsContext {
+            currency,
+            total: limits.min,
+            stars_total: None,
+            balance: None,
+            channel: channel.client(),
+        });
+        let methods = reachable(registry, found, telegram)
             .into_iter()
             .filter(|method| method.kind == ProviderKind::External && method.unavailable.is_none())
-            .map(|method| TopUpMethod {
-                provider: method.provider,
-                method: method.method,
-                title: method.title,
-                hint: method.hint,
+            .filter_map(|method| {
+                let amounts = registry.get(method.provider).and_then(|provider| {
+                    provider.fixed_amounts(&registry.config(provider.id()), currency)
+                });
+                let amounts = match amounts {
+                    None => None,
+                    Some(list) => {
+                        let fits: Vec<Money> = list
+                            .into_iter()
+                            .filter(|amount| {
+                                amount.minor >= limits.min.minor && amount.minor <= limits.max.minor
+                            })
+                            .collect();
+                        if fits.is_empty() {
+                            return None;
+                        }
+                        Some(fits)
+                    }
+                };
+                Some(TopUpMethod {
+                    provider: method.provider,
+                    method: method.method,
+                    title: method.title,
+                    hint: method.hint,
+                    amounts,
+                })
             })
             .collect();
         Ok(TopUpOptions {

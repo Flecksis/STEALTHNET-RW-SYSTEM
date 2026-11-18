@@ -26,6 +26,7 @@ pub mod providers {
     pub const PAL24: &str = "pal24";
     pub const KASSA_AI: &str = "kassa_ai";
     pub const AURAPAY: &str = "aurapay";
+    pub const TRIBUTE: &str = "tribute";
 }
 
 const fn shown() -> bool {

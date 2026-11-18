@@ -1877,6 +1877,56 @@ impl<'a> SettingsOps<'a> {
         self.provider(id)
     }
 
+    pub async fn provider_catalog(&self, id: &str) -> ServiceResult<Value> {
+        let registry = self.services.payments();
+        let provider = registry
+            .get(id)
+            .filter(|p| p.kind() == ProviderKind::External)
+            .ok_or(ServiceError::NotFound("платёжная система"))?;
+        let id = provider.id();
+        let config = registry.config(id);
+        let secrets: Vec<&str> = provider
+            .settings_schema()
+            .iter()
+            .filter(|f| f.is_secret())
+            .map(|f| config.get(f.key))
+            .collect::<Option<Vec<&str>>>()
+            .ok_or_else(|| {
+                ServiceError::rejected(
+                    CHECK_UNCONFIGURED,
+                    format!(
+                        "Сначала сохраните ключ {}, потом загрузите список",
+                        provider.title()
+                    ),
+                )
+            })?;
+        crate::limits::RateLimits::new(self.services)
+            .hit(crate::limits::rules::PAYMENT_CATALOG, id)
+            .await?;
+        let scrub = |text: String| {
+            secrets
+                .iter()
+                .filter(|s| s.len() >= 6)
+                .fold(text, |text, secret| text.replace(secret, "•••"))
+        };
+        match tokio::time::timeout(PROVIDER_CHECK_TIMEOUT, provider.catalog(&config)).await {
+            Err(_) => Err(ServiceError::rejected(
+                "payments.catalog_timeout",
+                format!(
+                    "{} не ответила за {} секунд, попробуйте позже",
+                    provider.title(),
+                    PROVIDER_CHECK_TIMEOUT.as_secs()
+                ),
+            )),
+            Ok(Err(err)) => Err(ServiceError::rejected(
+                "payments.catalog_failed",
+                scrub(format!("Список из {} не получен: {err}", provider.title())),
+            )),
+            Ok(Ok(None)) => Err(ServiceError::NotFound("список товаров")),
+            Ok(Ok(Some(catalog))) => Ok(catalog),
+        }
+    }
+
     pub async fn check_provider(&self, id: &str, admin: AdminId) -> ServiceResult<CheckRecord> {
         let registry = self.services.payments();
         let provider = registry

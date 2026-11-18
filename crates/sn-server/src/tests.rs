@@ -53,6 +53,7 @@ mod provider_check;
 mod robots;
 mod rollypay;
 mod support_mode;
+mod tribute;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
 const PASSWORD: &str = "очень-надёжный-пароль";

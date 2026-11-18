@@ -125,6 +125,11 @@ pub mod rules {
         limit: 10,
         window_seconds: 600,
     };
+    pub const PAYMENT_CATALOG: RateRule = RateRule {
+        scope: "payment_catalog",
+        limit: 30,
+        window_seconds: 600,
+    };
 }
 
 pub fn ip_key(ip: IpAddr) -> String {

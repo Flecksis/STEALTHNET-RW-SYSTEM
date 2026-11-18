@@ -48,6 +48,7 @@ pub fn routes() -> Router<AppState> {
             get(provider).put(update_provider),
         )
         .route("/payments/providers/{id}/check", post(check_provider))
+        .route("/payments/providers/{id}/catalog", get(provider_catalog))
         .route("/modules", get(modules))
         .route("/modules/{id}", patch(toggle_module))
         .route(
@@ -351,6 +352,17 @@ async fn update_provider(
             .settings_ops()
             .update_provider(&id, &body, admin.0.admin_id)
             .await?,
+    ))
+}
+
+async fn provider_catalog(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state.services.settings_ops().provider_catalog(&id).await?,
     ))
 }
 

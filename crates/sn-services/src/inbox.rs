@@ -18,7 +18,7 @@ use sn_domain::payment::{
 use sn_modules::ModuleError;
 use sn_payments::providers::{StarsPayment, StarsPreCheckout};
 use sn_payments::{
-    OutcomeSignal, PaymentError, PaymentProvider, PaymentRef, PrecheckVerdict, ProviderKind,
+    Buyer, OutcomeSignal, PaymentError, PaymentProvider, PaymentRef, PrecheckVerdict, ProviderKind,
     ProviderNotice, ProviderStatus, RefundRequest, SavedMethod, WebhookOutcome, WebhookReply,
     WebhookRequest,
 };
@@ -31,6 +31,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 mod blocked_refund;
+mod buyer;
 mod journal;
 mod masking;
 mod refund_action;
@@ -516,7 +517,7 @@ async fn find_payment(
     let id = match reference {
         PaymentRef::Payment(id) => *id,
         PaymentRef::PublicId(public_id) => tx.payments().by_public_id(*public_id).await?.id,
-        PaymentRef::ProviderTxid(txid) => {
+        PaymentRef::ProviderTxid(txid) | PaymentRef::Buyer(Buyer { txid, .. }) => {
             tx.payments()
                 .by_provider_txid(provider, txid)
                 .await?
@@ -535,7 +536,9 @@ async fn lookup(
     let found = match reference {
         PaymentRef::Payment(id) => db.payments().get(*id).await.map(Some),
         PaymentRef::PublicId(public_id) => db.payments().by_public_id(*public_id).await.map(Some),
-        PaymentRef::ProviderTxid(txid) => db.payments().by_provider_txid(provider, txid).await,
+        PaymentRef::ProviderTxid(txid) | PaymentRef::Buyer(Buyer { txid, .. }) => {
+            db.payments().by_provider_txid(provider, txid).await
+        }
     };
     match found {
         Ok(payment) => Ok(payment.filter(|p| p.provider.as_str() == provider)),
@@ -911,6 +914,11 @@ impl<'a> PaymentInbox<'a> {
                 reason: "событие без нашего платежа".into(),
             });
         };
+        if let PaymentRef::Buyer(buyer) = reference
+            && outcome.status == ProviderStatus::Paid
+        {
+            return self.accept_buyer(provider, buyer, outcome).await;
+        }
         match outcome.status {
             ProviderStatus::Pending
                 if outcome
@@ -2269,6 +2277,24 @@ impl<'a> PaymentInbox<'a> {
         }
         if debit.minor < refunded.minor {
             tracing::warn!(payment = %payment.id, "возврат пополнения больше остатка на балансе");
+            let short = Money::new(refunded.minor - debit.minor, refunded.currency);
+            tx.payment_notices()
+                .record(&NewPaymentNotice {
+                    provider: payment.provider.as_str().to_string(),
+                    event_key: format!("refund_shortfall:{refund_id}"),
+                    kind: NoticeKind::RefundReported,
+                    payment_id: Some(payment.id),
+                    client_id: Some(payment.client_id),
+                    amount: Some(short.into()),
+                    text: format!(
+                        "Платёжная система вернула покупателю {}, но клиент уже потратил часть \
+                         пополнения: с баланса списано {}, не хватило {}. Решите вручную",
+                        format::money(refunded),
+                        format::money(debit),
+                        format::money(short)
+                    ),
+                })
+                .await?;
             tx.audit()
                 .record(&AuditEntry {
                     actor_kind: ActorKind::System,

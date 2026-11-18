@@ -106,6 +106,22 @@ fn method_views(
     views
 }
 
+pub fn charge(
+    provider: &dyn PaymentProvider,
+    config: &ProviderConfig,
+    ctx: &MethodsContext,
+) -> Option<Money> {
+    match provider.fixed_amounts(config, ctx.currency) {
+        None => Some(ctx.total),
+        Some(amounts) => amounts
+            .into_iter()
+            .filter(|amount| {
+                amount.currency == ctx.total.currency && amount.minor >= ctx.total.minor
+            })
+            .min_by_key(|amount| amount.minor),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRecord {
     pub at: DateTime<Utc>,
@@ -357,7 +373,11 @@ impl ProviderRegistry {
                         .unwrap_or_default();
                     let chosen = chosen_methods(provider.as_ref(), choices, ctx.currency);
                     if chosen.is_empty() {
-                        (Some(ctx.total.into()), None)
+                        let config = state.map_or(&empty, |state| &state.config);
+                        match charge(provider.as_ref(), config, ctx) {
+                            Some(amount) => (Some(amount.into()), None),
+                            None => continue,
+                        }
                     } else {
                         for (method, title) in chosen {
                             if method.min_minor.is_some_and(|min| ctx.total.minor < min) {
