@@ -1683,6 +1683,15 @@ impl<'a> PaymentInbox<'a> {
                     _ => None,
                 };
                 let config = self.services.payments().config(provider.id());
+                let email = tx
+                    .clients()
+                    .identities(payment.client_id)
+                    .await?
+                    .into_iter()
+                    .find(|i| i.kind == sn_domain::client::IdentityKind::Email)
+                    .map(|i| i.value);
+                let description =
+                    crate::checkout::describe(&self.services.settings().brand_name, &order.quote);
                 let outcome = provider
                     .refund(
                         &config,
@@ -1692,6 +1701,8 @@ impl<'a> PaymentInbox<'a> {
                             amount,
                             reason: command.reason.clone(),
                             key: Uuid::new_v4(),
+                            email,
+                            description: Some(description),
                         },
                     )
                     .await?;

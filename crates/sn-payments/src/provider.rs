@@ -240,6 +240,8 @@ pub struct RefundRequest {
     pub amount: Amount,
     pub reason: Option<String>,
     pub key: Uuid,
+    pub email: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

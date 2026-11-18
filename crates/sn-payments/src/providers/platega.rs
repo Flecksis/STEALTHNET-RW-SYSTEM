@@ -706,6 +706,8 @@ mod tests {
             amount,
             reason: None,
             key: Uuid::from_u128(amount.minor as u128),
+            email: None,
+            description: None,
         };
         let full = platega
             .refund(&settings(), &refund(rub(49_900)))

@@ -1141,6 +1141,8 @@ mod tests {
                     amount: rub(10_000),
                     reason: Some("Не подошёл тариф".into()),
                     key: uuid::Uuid::from_u128(5),
+                    email: None,
+                    description: None,
                 },
             )
             .await

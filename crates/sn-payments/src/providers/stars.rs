@@ -582,6 +582,8 @@ mod tests {
             amount: Amount::new(stars, PayCurrency::Xtr),
             reason: None,
             key: Uuid::from_u128(5),
+            email: None,
+            description: None,
         }
     }
 
