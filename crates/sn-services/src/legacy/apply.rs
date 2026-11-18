@@ -6,12 +6,12 @@ use crate::Services;
 use crate::error::{ServiceError, ServiceResult};
 use chrono::{DateTime, Utc};
 use sn_domain::client::{IdentityKind, NewIdentity, RegistrationSource};
-use sn_domain::ids::{AdminId, ClientId, SquadId, SubscriptionId};
+use sn_domain::ids::{AdminId, CategoryId, ClientId, SquadId, SubscriptionId, TariffId};
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Currency, Money, Stars};
 use sn_domain::order::{OrderKind, PurchaseIntent};
 use sn_domain::pricing::{Quote, StarsTotal};
-use sn_domain::tariff::{CurrencyPrices, DevicePolicy, ExtraDevices};
+use sn_domain::tariff::{CurrencyPrices, DevicePolicy, ExtraDevices, check_device_discounts};
 use sn_domain::traffic::TrafficPolicy;
 use sn_store::{Db, NewCategory, NewPeriod, NewTariff, StoreError, Tx};
 use std::collections::{HashMap, HashSet};
@@ -283,10 +283,26 @@ impl<'a> Applier<'a> {
         let mut tx = self.services.store().begin().await?;
         let mut cat_rows = Vec::new();
         for category in &self.legacy.categories {
-            if let Some((id, _)) = cat_map.get(&category.old_id)
+            let limit = self.legacy.category_limits.get(&category.old_id).copied();
+            if let Some((id, data)) = cat_map.get(&category.old_id)
                 && alive(&mut tx, "tariff_categories", *id).await?
             {
                 self.categories.insert(category.old_id.clone(), *id);
+                if let Some(limit) = limit
+                    && data.get("limit").is_none()
+                {
+                    let current = tx.tariffs().category(CategoryId(*id)).await?;
+                    if current.subscription_limit.is_none() {
+                        tx.tariffs()
+                            .set_subscription_limit(CategoryId(*id), Some(limit))
+                            .await?;
+                    }
+                    cat_rows.push((
+                        category.old_id.clone(),
+                        *id,
+                        serde_json::json!({ "limit": limit }),
+                    ));
+                }
                 continue;
             }
             let created = tx
@@ -297,9 +313,18 @@ impl<'a> Applier<'a> {
                     visible: true,
                 })
                 .await?;
+            if let Some(limit) = limit {
+                tx.tariffs()
+                    .set_subscription_limit(created.id, Some(limit))
+                    .await?;
+            }
             self.categories
                 .insert(category.old_id.clone(), created.id.0);
-            cat_rows.push((category.old_id.clone(), created.id.0, serde_json::json!({})));
+            let data = match limit {
+                Some(limit) => serde_json::json!({ "limit": limit }),
+                None => serde_json::json!({}),
+            };
+            cat_rows.push((category.old_id.clone(), created.id.0, data));
         }
         remember(
             &mut tx,
@@ -312,9 +337,28 @@ impl<'a> Applier<'a> {
         let mut period_rows = Vec::new();
         let mut fallback: Option<i64> = None;
         for (done, tariff) in self.legacy.tariffs.iter().enumerate() {
-            if let Some((id, _)) = tariff_map.get(&tariff.old_id)
+            let ladder = self.legacy.device_discounts.get(&tariff.old_id);
+            if let Some((id, data)) = tariff_map.get(&tariff.old_id)
                 && alive(&mut tx, "tariffs", *id).await?
             {
+                if let Some(ladder) = ladder
+                    && data.get("discounts").is_none()
+                {
+                    let current = tx.tariffs().get(TariffId(*id)).await?;
+                    let max = current.devices.extra.as_ref().map_or(0, |e| e.max);
+                    if current.device_discounts.is_empty()
+                        && check_device_discounts(ladder, max).is_ok()
+                    {
+                        tx.tariffs()
+                            .set_device_discounts(TariffId(*id), ladder)
+                            .await?;
+                    }
+                    let mut marked = data.clone();
+                    if let Some(object) = marked.as_object_mut() {
+                        object.insert("discounts".into(), serde_json::Value::Bool(true));
+                    }
+                    tariff_rows.push((tariff.old_id.clone(), *id, marked));
+                }
                 let periods: Vec<(i64, i32)> =
                     sqlx::query_as("SELECT id, days FROM tariff_periods WHERE tariff_id = $1")
                         .bind(id)
@@ -419,9 +463,19 @@ impl<'a> Applier<'a> {
             };
             let created = tx.tariffs().create(&new).await?;
             let id = created.id.0;
+            let max = created.devices.extra.as_ref().map_or(0, |e| e.max);
+            let data = match ladder {
+                Some(ladder) if check_device_discounts(ladder, max).is_ok() => {
+                    tx.tariffs()
+                        .set_device_discounts(created.id, ladder)
+                        .await?;
+                    serde_json::json!({ "discounts": true })
+                }
+                _ => serde_json::json!({}),
+            };
             self.tariffs.insert(tariff.old_id.clone(), id);
             self.tariff_names.insert(id, created.name.clone());
-            tariff_rows.push((tariff.old_id.clone(), id, serde_json::json!({})));
+            tariff_rows.push((tariff.old_id.clone(), id, data));
             for period in &created.periods {
                 self.periods_by_days.insert((id, period.days), period.id.0);
             }

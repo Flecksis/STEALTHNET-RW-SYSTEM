@@ -2805,3 +2805,234 @@ async fn почта_старой_панели_переносится_и_не_з�
         "выключенную после переноса почту повторный перенос не включает"
     );
 }
+
+fn tariff_rules_dump() -> Vec<u8> {
+    let mut sql = String::from("-- Created at: 2026-11-17T09:00:00.000Z\n\n");
+    sql += &copy(
+        "system_settings",
+        &["id", "key", "value"],
+        &[&[Some("ss1"), Some("default_currency"), Some("rub")]],
+    );
+    sql += &copy(
+        "tariff_categories",
+        &["id", "name", "sort_order", "single_subscription_mode"],
+        &[
+            &[Some("cat1"), Some("Одна подписка"), Some("0"), Some("t")],
+            &[Some("cat2"), Some("Сколько угодно"), Some("1"), Some("f")],
+        ],
+    );
+    sql += &copy(
+        "tariffs",
+        &[
+            "id",
+            "category_id",
+            "name",
+            "duration_days",
+            "price",
+            "currency",
+            "max_extra_devices",
+            "price_per_extra_device",
+            "device_discount_tiers",
+        ],
+        &[
+            &[
+                Some("t1"),
+                Some("cat1"),
+                Some("Месяц"),
+                Some("30"),
+                Some("300"),
+                Some("rub"),
+                Some("5"),
+                Some("50"),
+                Some(
+                    r#"[{"minExtraDevices":2,"discountPercent":10},{"minExtraDevices":4,"discountPercent":20},{"minExtraDevices":3,"discountPercent":5},{"minExtraDevices":9,"discountPercent":30},{"minDevices":1,"discountPercent":0}]"#,
+                ),
+            ],
+            &[
+                Some("t2"),
+                Some("cat2"),
+                Some("Год"),
+                Some("365"),
+                Some("2000"),
+                Some("rub"),
+                Some("0"),
+                None,
+                Some(r#"[{"minExtraDevices":1,"discountPercent":10}]"#),
+            ],
+        ],
+    );
+    sql += &copy(
+        "clients",
+        &["id", "role", "balance", "telegram_id", "telegram_username"],
+        &[&[
+            Some("k1"),
+            Some("CLIENT"),
+            Some("0"),
+            Some("4001"),
+            Some("payer"),
+        ]],
+    );
+    sql.into_bytes()
+}
+
+#[test]
+fn лесенка_скидок_старой_панели_приводится_к_новой() {
+    use sn_domain::tariff::DeviceDiscount;
+    let step = |from, percent| DeviceDiscount { from, percent };
+    let (ladder, dropped) = super::stealthnet::device_ladder(
+        Some(serde_json::json!([
+            {"minExtraDevices": 4, "discountPercent": 20},
+            {"minExtraDevices": 2, "discountPercent": 9.6},
+            {"minExtraDevices": 3, "discountPercent": 5},
+            {"minDevices": 1, "discountPercent": 0},
+            {"minExtraDevices": 9, "discountPercent": 30},
+            {"minExtraDevices": "x", "discountPercent": 30}
+        ])),
+        5,
+    );
+    assert_eq!(ladder, vec![step(2, 10), step(4, 20)]);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(dropped[0].contains("от 3 доп. устройств"), "{dropped:?}");
+    let (text, _) = super::stealthnet::device_ladder(
+        Some(serde_json::Value::String(
+            r#"[{"minExtraDevices":1,"discountPercent":15}]"#.into(),
+        )),
+        3,
+    );
+    assert_eq!(text, vec![step(1, 15)]);
+    assert!(super::stealthnet::device_ladder(None, 3).0.is_empty());
+}
+
+#[tokio::test]
+async fn лимит_подписок_категории_и_скидки_за_устройства_переносятся() {
+    use sn_domain::ids::{CategoryId, TariffId};
+    use sn_domain::tariff::DeviceDiscount;
+    use sn_store::Db;
+    let Some(env) = env().await else { return };
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+    let (preview, _) = import(&env, &tariff_rules_dump(), Some(admin)).await;
+    assert_eq!(preview.counts.tariffs, 2);
+    let category = |old: &'static str| {
+        format!(
+            "SELECT new_id FROM legacy_ids WHERE entity = 'stealthnet:category' AND old_id = '{old}'"
+        )
+    };
+    let one = CategoryId(scalar(s, &category("cat1")).await);
+    let many = CategoryId(scalar(s, &category("cat2")).await);
+    let month = TariffId(
+        scalar(
+            s,
+            "SELECT new_id FROM legacy_ids WHERE entity = 'stealthnet:tariff' AND old_id = 't1'",
+        )
+        .await,
+    );
+    let year = TariffId(
+        scalar(
+            s,
+            "SELECT new_id FROM legacy_ids WHERE entity = 'stealthnet:tariff' AND old_id = 't2'",
+        )
+        .await,
+    );
+    let mut conn = s.store().conn().await.unwrap();
+    assert_eq!(
+        conn.tariffs()
+            .category(one)
+            .await
+            .unwrap()
+            .subscription_limit,
+        Some(1)
+    );
+    assert_eq!(
+        conn.tariffs()
+            .category(many)
+            .await
+            .unwrap()
+            .subscription_limit,
+        None
+    );
+    assert_eq!(
+        conn.tariffs().get(month).await.unwrap().device_discounts,
+        vec![
+            DeviceDiscount {
+                from: 2,
+                percent: 10
+            },
+            DeviceDiscount {
+                from: 4,
+                percent: 20
+            }
+        ]
+    );
+    assert!(
+        conn.tariffs()
+            .get(year)
+            .await
+            .unwrap()
+            .device_discounts
+            .is_empty()
+    );
+    let run = scalar(s, "SELECT max(id) FROM import_runs").await;
+    let issues = runs::issues(&mut conn, run).await.unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "tariff_note" && i.details.contains("от 3 доп. устройств")),
+        "{issues:?}"
+    );
+
+    conn.tariffs()
+        .set_subscription_limit(one, None)
+        .await
+        .unwrap();
+    conn.tariffs()
+        .set_device_discounts(month, &[])
+        .await
+        .unwrap();
+    drop(conn);
+    import(&env, &tariff_rules_dump(), Some(admin)).await;
+    let mut conn = s.store().conn().await.unwrap();
+    assert_eq!(
+        conn.tariffs()
+            .category(one)
+            .await
+            .unwrap()
+            .subscription_limit,
+        None,
+        "снятый оператором лимит повторный перенос не возвращает"
+    );
+    assert!(
+        conn.tariffs()
+            .get(month)
+            .await
+            .unwrap()
+            .device_discounts
+            .is_empty()
+    );
+
+    sqlx::query("UPDATE legacy_ids SET data = '{}' WHERE entity IN ('stealthnet:category', 'stealthnet:tariff')")
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    import(&env, &tariff_rules_dump(), Some(admin)).await;
+    let mut conn = s.store().conn().await.unwrap();
+    assert_eq!(
+        conn.tariffs()
+            .category(one)
+            .await
+            .unwrap()
+            .subscription_limit,
+        Some(1),
+        "категории, перенесённые до этих правил, получают лимит при повторном переносе"
+    );
+    assert_eq!(
+        conn.tariffs()
+            .get(month)
+            .await
+            .unwrap()
+            .device_discounts
+            .len(),
+        2
+    );
+}

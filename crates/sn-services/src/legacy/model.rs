@@ -374,6 +374,8 @@ pub struct Legacy {
     pub gifts: Vec<LGift>,
     pub auto_rules: Vec<LAutoRule>,
     pub invoices: Vec<LInvoice>,
+    pub category_limits: std::collections::HashMap<String, u32>,
+    pub device_discounts: std::collections::HashMap<String, Vec<sn_domain::tariff::DeviceDiscount>>,
     pub skipped: Vec<Skip>,
     pub problems: Vec<Problem>,
 }
@@ -399,6 +401,8 @@ impl Legacy {
             gifts: Vec::new(),
             auto_rules: Vec::new(),
             invoices: Vec::new(),
+            category_limits: std::collections::HashMap::new(),
+            device_discounts: std::collections::HashMap::new(),
             skipped: Vec::new(),
             problems: Vec::new(),
         }

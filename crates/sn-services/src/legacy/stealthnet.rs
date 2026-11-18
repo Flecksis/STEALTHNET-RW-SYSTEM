@@ -2,6 +2,7 @@ use super::model::*;
 use super::table::{Dump, Row, minor_from_float};
 use sn_domain::money::Currency;
 use sn_domain::subscription::SubscriptionKind;
+use sn_domain::tariff::{DeviceDiscount, MAX_DEVICE_DISCOUNT_PERCENT, MAX_DEVICE_DISCOUNTS};
 use sn_domain::traffic::TrafficReset;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -260,6 +261,9 @@ fn tariffs(dump: &Dump, legacy: &mut Legacy) -> HashMap<String, u32> {
         let (Some(old_id), Some(name)) = (row.string("id"), row.string("name")) else {
             continue;
         };
+        if row.flag("single_subscription_mode") {
+            legacy.category_limits.insert(old_id.clone(), 1);
+        }
         legacy.categories.push(LCategory {
             old_id,
             name,
@@ -336,6 +340,13 @@ fn tariffs(dump: &Dump, legacy: &mut Legacy) -> HashMap<String, u32> {
             .f64("price_per_extra_device")
             .and_then(minor_from_float)
             .filter(|v| *v > 0);
+        if extra_price.is_some() && extra_max > 0 {
+            let (steps, dropped) = device_ladder(row.json("device_discount_tiers"), extra_max);
+            notes.extend(dropped);
+            if !steps.is_empty() {
+                legacy.device_discounts.insert(old_id.clone(), steps);
+            }
+        }
         legacy.tariffs.push(LTariff {
             category_old_id: category,
             name,
@@ -362,6 +373,64 @@ fn tariffs(dump: &Dump, legacy: &mut Legacy) -> HashMap<String, u32> {
         });
     }
     option_days
+}
+
+pub fn device_ladder(
+    raw: Option<serde_json::Value>,
+    max_extra: u32,
+) -> (Vec<DeviceDiscount>, Vec<String>) {
+    let mut steps: Vec<(u32, u8)> = Vec::new();
+    let mut raw = raw;
+    if let Some(serde_json::Value::String(text)) = &raw {
+        raw = serde_json::from_str(text).ok();
+    }
+    for item in raw
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let number = |key: &str| item.get(key).and_then(serde_json::Value::as_f64);
+        let Some(from) = number("minExtraDevices").or_else(|| number("minDevices")) else {
+            continue;
+        };
+        let Some(percent) = number("discountPercent") else {
+            continue;
+        };
+        if !from.is_finite() || !percent.is_finite() || from < 1.0 || percent < 0.0 {
+            continue;
+        }
+        let from = from.floor().min(f64::from(u32::MAX)) as u32;
+        let percent = percent.round().min(100.0) as u8;
+        steps.push((from, percent));
+    }
+    steps.sort_by_key(|(from, percent)| (*from, std::cmp::Reverse(*percent)));
+    steps.dedup_by_key(|(from, _)| *from);
+    let mut ladder: Vec<DeviceDiscount> = Vec::new();
+    let mut dropped = Vec::new();
+    for (from, percent) in steps {
+        if from > max_extra {
+            continue;
+        }
+        let previous = ladder.last().map_or(0, |d| d.percent);
+        if percent == 0 && ladder.is_empty() {
+            continue;
+        }
+        if percent <= previous || percent > MAX_DEVICE_DISCOUNT_PERCENT {
+            dropped.push(format!(
+                "ступень скидки от {from} доп. устройств ({percent} %) не перенесена: в новой панели скидка растёт с числом устройств и не больше {MAX_DEVICE_DISCOUNT_PERCENT} %"
+            ));
+            continue;
+        }
+        if ladder.len() == MAX_DEVICE_DISCOUNTS {
+            dropped.push(format!(
+                "ступень скидки от {from} доп. устройств ({percent} %) не перенесена: ступеней может быть не больше {MAX_DEVICE_DISCOUNTS}"
+            ));
+            continue;
+        }
+        ladder.push(DeviceDiscount { from, percent });
+    }
+    (ladder, dropped)
 }
 
 fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
