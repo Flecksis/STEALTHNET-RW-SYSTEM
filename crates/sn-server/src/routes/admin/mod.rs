@@ -2,6 +2,7 @@ mod admins;
 mod alerts;
 mod api_keys;
 mod auth;
+mod backups;
 mod bot_content;
 mod catalog;
 mod clients;
@@ -53,6 +54,7 @@ pub fn routes() -> Router<AppState> {
         .merge(landing::routes())
         .merge(connect_apps::routes())
         .merge(system::routes())
+        .merge(backups::routes())
         .merge(bot_content::routes())
         .merge(import::routes())
         .merge(remna_sync::routes())

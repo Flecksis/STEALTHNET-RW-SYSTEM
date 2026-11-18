@@ -40,6 +40,9 @@ impl Keeper {
                 _ = cancel.cancelled() => return,
                 _ = tokio::time::sleep(self.tick) => {}
             }
+            if self.services.pause_gate().is_paused() {
+                continue;
+            }
             let sweep = ticks.is_multiple_of(self.sweep_every);
             if let Err(err) = self.step(sweep).await {
                 tracing::warn!(error = %err, "уведомления администраторам не отправлены");

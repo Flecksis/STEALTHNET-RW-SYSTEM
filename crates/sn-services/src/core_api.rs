@@ -252,6 +252,10 @@ impl CoreApi for Services {
             .collect()
     }
 
+    fn paused(&self) -> bool {
+        self.pause_gate().is_paused()
+    }
+
     fn module_enabled(&self, module: ModuleId) -> bool {
         self.modules().is_enabled(module)
     }

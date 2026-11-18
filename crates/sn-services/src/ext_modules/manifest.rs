@@ -162,6 +162,7 @@ pub const fn permission_title(permission: Permission) -> &'static str {
         Permission::Admins => "Администраторы",
         Permission::ClientsLogin => "Вход за клиента",
         Permission::RemnaSync => "Синхронизация с Remnawave",
+        Permission::Backups => "Резервные копии",
     }
 }
 
@@ -186,6 +187,7 @@ pub const fn permission_about(permission: Permission) -> &'static str {
             "выдавать клиенту пароль для сайта и снимать ему вход по коду из приложения"
         }
         Permission::RemnaSync => "переносить клиентов и подписки между панелью и Remnawave",
+        Permission::Backups => "делать, скачивать и восстанавливать резервные копии",
     }
 }
 
@@ -409,6 +411,7 @@ fn permission(raw: &str) -> Result<Permission, String> {
         Ok(Permission::RemnaSync) => {
             Err("право «Синхронизация с Remnawave» модулю дать нельзя".into())
         }
+        Ok(Permission::Backups) => Err("право «Резервные копии» модулю дать нельзя".into()),
         Ok(permission) => Ok(permission),
         Err(_) => Err(format!(
             "неизвестное право «{raw}». Есть: {}",
@@ -417,7 +420,10 @@ fn permission(raw: &str) -> Result<Permission, String> {
                 .filter(|p| {
                     !matches!(
                         p,
-                        Permission::Admins | Permission::ClientsLogin | Permission::RemnaSync
+                        Permission::Admins
+                            | Permission::ClientsLogin
+                            | Permission::RemnaSync
+                            | Permission::Backups
                     )
                 })
                 .map(|p| p.as_str())

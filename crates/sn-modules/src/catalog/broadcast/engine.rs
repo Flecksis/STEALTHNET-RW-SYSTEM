@@ -294,6 +294,13 @@ impl Engine {
             if *stop.borrow() {
                 break;
             }
+            if self.ctx.core.paused() {
+                tokio::select! {
+                    _ = stop.changed() => {}
+                    _ = tokio::time::sleep(self.config.idle) => {}
+                }
+                continue;
+            }
             let pause = match self.step(&mut state, &mut stop).await {
                 Ok(pause) => pause,
                 Err(err) => {

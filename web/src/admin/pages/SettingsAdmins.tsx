@@ -19,6 +19,7 @@ type AdminItem = {
   created_at: string;
   last_login_at: string | null;
   remna_sync: boolean;
+  backups: boolean;
 };
 
 type Issued = { admin: AdminItem; password: string };
@@ -252,6 +253,17 @@ export function SettingsAdmins() {
                     on={item.remna_sync}
                     onToggle={() => void act(item.id, 'remna-sync', { on: !item.remna_sync })}
                     label={`Синхронизация с Remnawave для ${item.email}`}
+                    disabled={busy !== null}
+                  />
+                </div>
+              ) : null}
+              {item.role === 'admin' && !self && !item.disabled ? (
+                <div className="row adm-grant">
+                  <span className="cap">Резервные копии: делать, скачивать и восстанавливать базу из копии</span>
+                  <Switch
+                    on={item.backups}
+                    onToggle={() => void act(item.id, 'backups', { on: !item.backups })}
+                    label={`Резервные копии для ${item.email}`}
                     disabled={busy !== null}
                   />
                 </div>

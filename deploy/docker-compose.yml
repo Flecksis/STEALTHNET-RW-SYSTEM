@@ -35,6 +35,9 @@ services:
     environment:
       DATABASE_URL: postgres://stealthnet:${POSTGRES_PASSWORD}@postgres:5432/stealthnet
       SN_BIND: 0.0.0.0:8080
+      SN_BACKUP_DIR: /var/lib/stealthnet/backups
+    volumes:
+      - ./backups/panel:/var/lib/stealthnet/backups
     ports:
       - "127.0.0.1:${SN_HTTP_PORT:-8080}:8080"
 

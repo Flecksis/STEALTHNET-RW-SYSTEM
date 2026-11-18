@@ -2233,6 +2233,7 @@ name = "sn-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "sn-bot",
  "sn-domain",
  "sn-modules",
@@ -2400,6 +2401,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flate2",
+ "futures-util",
  "hex",
  "hmac 0.12.1",
  "jsonwebtoken",

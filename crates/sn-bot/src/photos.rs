@@ -114,7 +114,8 @@ impl PhotoKeeper {
 
     pub async fn run(self, cancel: CancellationToken) {
         loop {
-            if let Some(token) = self.services.bot_token()
+            if !self.services.pause_gate().is_paused()
+                && let Some(token) = self.services.bot_token()
                 && let Err(err) = self.round(&token).await
             {
                 tracing::debug!(error = %err, "фото клиентов не обновлены");

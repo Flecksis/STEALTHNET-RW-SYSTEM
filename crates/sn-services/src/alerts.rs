@@ -308,6 +308,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
             ),
             crate::remna_transfer::SYNC_PATH,
         ),
+        AlertKind::Backups => (
+            format!(
+                "Ещё {rest} {} с резервными копиями",
+                format::plural_ru(n, "событие", "события", "событий")
+            ),
+            crate::backups::PAGE_PATH,
+        ),
     };
     Alert {
         kind,
@@ -753,6 +760,48 @@ impl<'a> AlertsOps<'a> {
         out.extend(self.nodes(&config).await?);
         out.extend(self.new_clients(&config).await?);
         out.extend(self.new_sales(&config).await?);
+        out.extend(self.backups(&config).await?);
+        Ok(out)
+    }
+
+    async fn backups(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let cursor = self
+            .state(crate::backups::ALERTS_CURSOR)
+            .await?
+            .and_then(|v| v.as_i64());
+        let Some(cursor) = cursor else {
+            let mut conn = self.services.store().conn().await?;
+            let newest: Option<i64> = sqlx::query_scalar("SELECT max(id) FROM backup_runs")
+                .fetch_one(conn.conn())
+                .await?;
+            drop(conn);
+            self.put_state(
+                crate::backups::ALERTS_CURSOR,
+                &serde_json::json!(newest.unwrap_or(0)),
+            )
+            .await?;
+            return Ok(Vec::new());
+        };
+        let (items, last) = self.services.backups().alerts_since(cursor).await?;
+        if last != cursor {
+            self.put_state(crate::backups::ALERTS_CURSOR, &serde_json::json!(last))
+                .await?;
+        }
+        if !config.route(AlertKind::Backups).on {
+            return Ok(Vec::new());
+        }
+        let mut out: Vec<Alert> = items
+            .iter()
+            .take(PER_KIND)
+            .map(|(_, html)| Alert {
+                kind: AlertKind::Backups,
+                html: html.clone(),
+                path: crate::backups::PAGE_PATH.to_string(),
+            })
+            .collect();
+        if items.len() > PER_KIND {
+            out.push(summary(AlertKind::Backups, items.len() - PER_KIND));
+        }
         Ok(out)
     }
 
@@ -1467,7 +1516,8 @@ impl<'a> AlertsOps<'a> {
             | AlertKind::Traffic
             | AlertKind::Nodes
             | AlertKind::Clients
-            | AlertKind::Sales => {}
+            | AlertKind::Sales
+            | AlertKind::Backups => {}
         }
         Ok(items)
     }

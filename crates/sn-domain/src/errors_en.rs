@@ -2,6 +2,9 @@ pub fn by_code(code: &str) -> Option<&'static str> {
     Some(match code {
         "not_found" | "remnawave.not_found" => "Not found.",
         "auth.required" => "Please sign in again.",
+        "system.restoring" => {
+            "The service is being restored from a backup. Please try again in a few minutes."
+        }
         "auth.forbidden" => "Access denied.",
         "auth.rate_limited" => "Too many attempts. Please wait a little and try again.",
         "auth.app_code_required" => "Enter the code from your authenticator app.",

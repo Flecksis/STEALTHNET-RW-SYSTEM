@@ -22,6 +22,13 @@ pub enum Command {
         dry_run: bool,
         fix: bool,
     },
+    Backup,
+    Restore {
+        file: String,
+        check: bool,
+        yes: bool,
+        password_stdin: bool,
+    },
     GenSecretKey,
     Version,
     Help,
@@ -53,6 +60,14 @@ pub const USAGE: &str = "stealthnet — панель продажи VPN пове
                                 найти клиента по Telegram ID, почте или имени, иначе
                                 создать клиента и подписку; тариф подбирается по сквадам
                                 и лимитам; --dry-run только показывает, что будет сделано
+  backup                        сделать резервную копию сейчас: база, подписки и снимок
+                                Remnawave; пароль копий и отправка — из настроек админки
+  restore [--check] [--yes] [--password-stdin] <файл>
+                                восстановить базу из резервной копии: сначала проверяет
+                                файл и сохраняет копию текущей базы, копию старой версии
+                                обновляет до текущей; --check — только проверить файл;
+                                пароль зашифрованной копии — из SN_BACKUP_PASSWORD или
+                                первой строки stdin с --password-stdin
   gen-secret-key                напечатать новый ключ для SN_SECRET_KEY
   version                       показать версию
   help                          эта справка";
@@ -99,6 +114,28 @@ pub fn parse(args: &[String]) -> Result<Command> {
         "gen-secret-key" => Command::GenSecretKey,
         "version" | "--version" | "-V" => Command::Version,
         "help" | "--help" | "-h" => Command::Help,
+        "backup" => Command::Backup,
+        "restore" => {
+            let mut file = None;
+            let (mut check, mut yes, mut password_stdin) = (false, false, false);
+            for arg in rest.by_ref() {
+                match arg.as_str() {
+                    "--check" => check = true,
+                    "--yes" | "-y" => yes = true,
+                    "--password-stdin" => password_stdin = true,
+                    other if other.starts_with('-') => bail!("неизвестный аргумент: {other}"),
+                    other if file.is_none() => file = Some(other.to_string()),
+                    other => bail!("лишний аргумент: {other}"),
+                }
+            }
+            Command::Restore {
+                file: file
+                    .ok_or_else(|| anyhow!("укажите файл копии: stealthnet restore <файл>"))?,
+                check,
+                yes,
+                password_stdin,
+            }
+        }
         "import-legacy" => {
             let mut dry_run = false;
             let mut file = None;
@@ -283,6 +320,41 @@ mod tests {
         assert!(parse(&args(&["import-legacy", "a.sql", "b.sql"])).is_err());
         assert!(parse(&args(&["serve", "extra"])).is_err());
         assert!(parse(&args(&["deploy"])).is_err());
+    }
+
+    #[test]
+    fn команды_копий_разбираются() {
+        assert_eq!(parse(&args(&["backup"])).unwrap(), Command::Backup);
+        assert_eq!(
+            parse(&args(&["restore", "/backups/a.tar.gz"])).unwrap(),
+            Command::Restore {
+                file: "/backups/a.tar.gz".into(),
+                check: false,
+                yes: false,
+                password_stdin: false,
+            }
+        );
+        assert_eq!(
+            parse(&args(&[
+                "restore",
+                "--check",
+                "--password-stdin",
+                "-y",
+                "a.tar.gz.enc"
+            ]))
+            .unwrap(),
+            Command::Restore {
+                file: "a.tar.gz.enc".into(),
+                check: true,
+                yes: true,
+                password_stdin: true,
+            }
+        );
+        assert!(parse(&args(&["restore"])).is_err());
+        assert!(parse(&args(&["restore", "a", "b"])).is_err());
+        assert!(parse(&args(&["restore", "--force", "a"])).is_err());
+        assert!(parse(&args(&["backup", "now"])).is_err());
+        assert!(USAGE.contains("restore [--check] [--yes] [--password-stdin] <файл>"));
     }
 
     #[test]

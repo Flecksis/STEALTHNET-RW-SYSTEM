@@ -608,6 +608,9 @@ impl Worker {
     }
 
     async fn periodic(&self, periodic: Periodic) {
+        let Some(_work) = self.services.pause_gate().try_enter() else {
+            return;
+        };
         match self.run_periodic(periodic).await {
             Ok(_) => {}
             Err(ServiceError::NotImplemented(what)) => {
@@ -653,11 +656,17 @@ impl Worker {
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = jobs.tick() => {
+                    let Some(_work) = self.services.pause_gate().try_enter() else {
+                        continue;
+                    };
                     if let Err(err) = self.tick().await {
                         tracing::warn!(error = %err, "очередь задач недоступна");
                     }
                 }
                 _ = events.tick() => {
+                    let Some(_work) = self.services.pause_gate().try_enter() else {
+                        continue;
+                    };
                     if let Err(err) = self.services.events().dispatch_pending(100).await {
                         tracing::warn!(error = %err, "события не разосланы модулям");
                     }

@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router';
 import { api } from '../../lib/api';
 import type { Permission } from '../../lib/types';
 import { useSession } from '../session';
-import { shortName, UPDATES_PATH, upgradeText, versionLine, type BuildSummary } from '../version';
+import { BACKUPS_PATH, shortName, UPDATES_PATH, upgradeText, versionLine, type BuildSummary } from '../version';
 import '../settings.css';
 import './updates.css';
 
@@ -21,7 +21,8 @@ const SECTIONS: Array<{ label: string; to?: string; need?: Permission }> = [
   { label: 'Уведомления в Telegram', to: '/admin/settings/alerts' },
   { label: 'Администраторы', to: '/admin/settings/admins', need: 'admins' },
   { label: 'API-ключи', to: '/admin/settings/api-keys' },
-  { label: 'Обновления и резервные копии', to: UPDATES_PATH },
+  { label: 'Обновления', to: UPDATES_PATH },
+  { label: 'Резервные копии', to: BACKUPS_PATH, need: 'backups' },
   { label: 'Перенос из другого бота', to: '/admin/settings/import' },
 ];
 

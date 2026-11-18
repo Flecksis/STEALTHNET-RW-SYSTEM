@@ -46,7 +46,8 @@ export type Permission =
   | 'settings'
   | 'admins'
   | 'clients_login'
-  | 'remna_sync';
+  | 'remna_sync'
+  | 'backups';
 
 export type AdminRole = 'owner' | 'admin' | 'support' | 'read_only';
 

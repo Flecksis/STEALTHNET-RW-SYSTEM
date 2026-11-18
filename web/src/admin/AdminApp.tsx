@@ -46,6 +46,7 @@ import { SettingsClientAccess } from './pages/SettingsClientAccess';
 import { SettingsLanguages } from './pages/SettingsLanguages';
 import { ForcedPassword, Security } from './pages/Security';
 import { SettingsUpdates } from './pages/SettingsUpdates';
+import { SettingsBackups } from './pages/SettingsBackups';
 import { SettingsImport } from './pages/SettingsImport';
 import { BugReport } from './report/BugReport';
 import { SessionContext, type Session } from './session';
@@ -263,6 +264,7 @@ export function AdminApp() {
           <Route path="settings/general" element={<SettingsGeneral />} />
           <Route path="settings/bot" element={<SettingsBot />} />
           <Route path="settings/updates" element={<SettingsUpdates />} />
+          <Route path="settings/backups" element={<SettingsBackups />} />
           <Route path="settings/bot/texts" element={<SettingsBotTexts />} />
           <Route path="settings/bot/images" element={<SettingsBotImages />} />
           <Route path="settings/documents" element={<SettingsDocuments />} />

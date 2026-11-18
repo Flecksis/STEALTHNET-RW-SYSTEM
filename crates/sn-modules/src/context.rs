@@ -274,6 +274,10 @@ pub trait CoreApi: Send + Sync {
         Vec::new()
     }
 
+    fn paused(&self) -> bool {
+        false
+    }
+
     fn module_enabled(&self, _module: ModuleId) -> bool {
         false
     }

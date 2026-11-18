@@ -26,6 +26,8 @@ pub struct Config {
     pub server: ServerConfig,
     pub env: EnvFallbacks,
     pub updates: UpdateConfig,
+    pub backup_dir: Option<std::path::PathBuf>,
+    pub backup_host_dir: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -161,6 +163,8 @@ impl Config {
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
             },
             updates: updates(vars)?,
+            backup_dir: text(vars, "SN_BACKUP_DIR").map(std::path::PathBuf::from),
+            backup_host_dir: text(vars, "SN_BACKUP_HOST_DIR"),
             warnings,
         })
     }
@@ -192,6 +196,25 @@ mod tests {
         assert!(config.env.remna.is_none());
         assert!(config.secret_key.is_none());
         assert_eq!(config.telegram_api, "https://api.telegram.org");
+        assert!(config.backup_dir.is_none());
+    }
+
+    #[test]
+    fn папка_копий_задаётся_переменной() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_BACKUP_DIR", "/var/lib/stealthnet/backups"),
+            ("SN_BACKUP_HOST_DIR", "/opt/stealthnet/deploy/backups/panel"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.backup_dir.as_deref(),
+            Some(std::path::Path::new("/var/lib/stealthnet/backups"))
+        );
+        assert_eq!(
+            config.backup_host_dir.as_deref(),
+            Some("/opt/stealthnet/deploy/backups/panel")
+        );
     }
 
     #[test]

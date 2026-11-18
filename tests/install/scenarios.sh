@@ -701,6 +701,50 @@ run FAKE_UNLOCK_EXIT=1 "$SHELL_BIN" "$R/install.sh" unlock-login > "$WORK/unlock
 env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help.txt" 2>&1 </dev/null
 grep -q '^  stealthnet unlock-login \[--ip адрес\]$' "$WORK/help.txt" && check ok "команда есть в справке" || check no "в справке нет команды"
 
+echo "=== AV. резервная копия и восстановление командой"
+fresh
+run "$SHELL_BIN" "$R/install.sh" backup > "$WORK/out.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "до установки копировать нечего" || check no "копия до установки"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+[ -d "$R/deploy/backups/panel" ] && [ "$(ls -ld "$R/deploy/backups/panel" | cut -c1-10)" = "drwx------" ] && check ok "папка копий панели создана только для владельца" || check no "папка копий: $(ls -ld "$R/deploy/backups/panel" 2>&1)"
+grep -q "^SN_BACKUP_HOST_DIR=$R/deploy/backups/panel\$" "$R/deploy/.env" && check ok "путь к папке копий записан для админки" || check no "путь к копиям: $(grep SN_BACKUP_HOST_DIR "$R/deploy/.env")"
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" backup > "$WORK/backup.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 0 ] && grep -q '^compose exec -T app stealthnet backup$' "$S/calls.log" && grep -q 'Копия сохранена' "$WORK/backup.txt"; then check ok "копия сделана командой"; else check no "копия командой: код $code, $(tail -2 "$WORK/backup.txt")"; fi
+run FAKE_BACKUP_EXIT=1 "$SHELL_BIN" "$R/install.sh" backup > "$WORK/backup2.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'копия не сделана' "$WORK/backup2.txt" && check ok "сбой копии объяснён" || check no "сбой копии"
+run "$SHELL_BIN" "$R/install.sh" restore > "$WORK/restore0.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'укажите файл копии' "$WORK/restore0.txt" && check ok "без файла восстановление объясняет, что нужно" || check no "restore без файла"
+run "$SHELL_BIN" "$R/install.sh" restore "$WORK/nope.tar.gz" > "$WORK/restore1.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'файл не найден' "$WORK/restore1.txt" && check ok "несуществующий файл объяснён" || check no "restore без файла на диске"
+printf 'SNBACKUP-fake' > "$WORK/copy.tar.gz.enc"
+: > "$S/calls.log"
+run SN_BACKUP_PASSWORD='пароль копии' "$SHELL_BIN" "$R/install.sh" restore --yes "$WORK/copy.tar.gz.enc" > "$WORK/restore2.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 0 ] && [ -f "$S/restored" ] && grep -q '^compose stop -t 60 app$' "$S/calls.log" && grep -q '^compose up -d --no-build' "$S/calls.log"; then check ok "восстановление остановило панель, заменило базу и запустило снова"; else check no "восстановление: код $code, $(tail -3 "$WORK/restore2.txt")"; fi
+[ "$(cat "$S/restore_password.txt" 2>/dev/null)" = "пароль копии" ] && check ok "пароль копии передан через stdin" || check no "пароль копии"
+grep -q 'пароль копии' "$S/calls.log" && check no "пароль копии попал в аргументы" || check ok "пароль копии не попал в аргументы"
+grep -q 'restore --password-stdin --check /var/lib/stealthnet/backups/.restore-' "$S/calls.log" && check ok "файл со стороны передан через папку копий" || check no "путь файла: $(grep restore "$S/calls.log" | head -1)"
+ls "$R/deploy/backups/panel"/.restore-* > /dev/null 2>&1 && check no "временная копия файла не удалена" || check ok "временная копия файла удалена"
+rm -f "$S/restored"
+run FAKE_RESTORE_CHECK_EXIT=1 SN_BACKUP_PASSWORD=p "$SHELL_BIN" "$R/install.sh" restore --yes "$WORK/copy.tar.gz.enc" > "$WORK/restore3.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 1 ] && grep -q 'копия не прошла проверку, база не менялась' "$WORK/restore3.txt" && [ ! -f "$S/restored" ] && check ok "битая копия остановлена до замены базы" || check no "битая копия: код $code"
+printf 'a' > "$WORK/big.tar.gz.part001"
+printf 'b' > "$WORK/big.tar.gz.part002"
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" restore --yes "$WORK/big.tar.gz.part002" > "$WORK/restore4.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && grep -q 'собрано: 2 части' "$WORK/restore4.txt" && check ok "части из Telegram собраны в один файл" || check no "части: код $code, $(tail -2 "$WORK/restore4.txt")"
+run FAKE_RESTORE_EXIT=1 SN_BACKUP_PASSWORD=p "$SHELL_BIN" "$R/install.sh" restore --yes "$WORK/copy.tar.gz.enc" > "$WORK/restore5.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 1 ] && grep -q 'восстановление не прошло, база осталась прежней' "$WORK/restore5.txt" && [ -f "$S/started" ] && check ok "сбой восстановления объяснён, панель запущена снова" || check no "сбой восстановления: код $code"
+run "$SHELL_BIN" "$R/install.sh" restore "$WORK/copy.tar.gz.enc" > "$WORK/restore6.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'некому ввести пароль копии' "$WORK/restore6.txt" && check ok "без терминала пароль копии просит через SN_BACKUP_PASSWORD" || check no "пароль без терминала: $(tail -2 "$WORK/restore6.txt")"
+env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help.txt" 2>&1 </dev/null
+grep -q '^  stealthnet backup$' "$WORK/help.txt" && grep -q '^  stealthnet restore файл$' "$WORK/help.txt" && check ok "команды копий есть в справке" || check no "в справке нет команд копий"
+
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi
 exit "$fail"

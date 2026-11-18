@@ -1,3 +1,4 @@
+mod backups;
 mod cli;
 mod config;
 mod legacy;
@@ -130,6 +131,7 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         .await
         .context("настройки из базы не загрузились")?;
     services.set_update_config(Some(config.updates.clone()));
+    services.set_backup_env(Some(backups::env(&config)));
     if let Err(err) = services.legacy().recover().await {
         tracing::warn!(error = %err, "состояние переноса из старого бота не восстановлено");
     }
@@ -158,6 +160,7 @@ async fn serve(config: Config, store: Store) -> Result<()> {
     let mut background = vec![
         tokio::spawn(watch::settings_changes(services.clone(), cancel.clone())),
         tokio::spawn(updates::checks(services.clone(), cancel.clone())),
+        tokio::spawn(backups::schedule(services.clone(), cancel.clone())),
     ];
     let sender: Arc<dyn BotSender> = Arc::new(sn_bot::broadcast::TelegramSender::new(
         services.clone(),
@@ -305,6 +308,27 @@ async fn run(command: Command) -> Result<()> {
                 .context("настройки из базы не загрузились")?;
             remna::run(&services, pull, dry_run, fix).await
         }
+        Command::Backup | Command::Restore { .. } => {
+            if store.pending_migrations().await? > 0 {
+                bail!("в базе не применены миграции: выполните `stealthnet migrate`");
+            }
+            let services = build_services(&config, store)?;
+            services
+                .reload()
+                .await
+                .context("настройки из базы не загрузились")?;
+            services.set_update_config(Some(config.updates.clone()));
+            services.set_backup_env(Some(backups::env(&config)));
+            match command {
+                Command::Restore {
+                    file,
+                    check,
+                    yes,
+                    password_stdin,
+                } => backups::restore(&services, &file, check, yes, password_stdin).await,
+                _ => backups::backup(&services).await,
+            }
+        }
         Command::GenSecretKey | Command::Version | Command::Help => Ok(()),
     }
 }
@@ -359,6 +383,10 @@ fn main() -> ExitCode {
     };
     match runtime.block_on(run(command)) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(err) if err.downcast_ref::<backups::NeedPassword>().is_some() => {
+            eprintln!("{err:#}");
+            ExitCode::from(3)
+        }
         Err(err) => {
             tracing::error!(error = %format!("{err:#}"), "остановка с ошибкой");
             eprintln!("ошибка: {err:#}");

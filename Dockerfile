@@ -22,7 +22,8 @@ LABEL org.opencontainers.image.source="https://github.com/STEALTHNET-APP/STEALTH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --no-create-home stealthnet
+    && useradd --system --uid 10001 --no-create-home stealthnet \
+    && install -d -m 700 -o 10001 /var/lib/stealthnet/backups
 COPY --from=build /out/stealthnet /usr/local/bin/stealthnet
 COPY --from=web /web/dist /usr/share/stealthnet/web
 USER 10001

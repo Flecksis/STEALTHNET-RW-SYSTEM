@@ -66,6 +66,7 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
         "client_identities_one_oauth_idx",
         Some("Вход через Google или Apple"),
     ),
+    ("backup_runs_slot_key", None),
 ];
 
 pub fn field_for(constraint: &str) -> Option<&'static str> {

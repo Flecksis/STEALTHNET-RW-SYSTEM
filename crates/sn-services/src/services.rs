@@ -67,6 +67,7 @@ struct Runtime {
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
     updates: Option<Arc<crate::updates::UpdateConfig>>,
+    backup_env: Option<Arc<crate::backups::BackupEnv>>,
     bot_content: Arc<crate::bot_content::BotContent>,
     bot_content_en: Arc<crate::bot_content::BotContent>,
     bot_sender: Option<Arc<dyn BotSender>>,
@@ -83,6 +84,8 @@ struct Inner {
     instance: Uuid,
     runtime: RwLock<Runtime>,
     bot: BotRuntime,
+    pause: crate::pause::PauseGate,
+    backups: crate::backups::Runtime,
 }
 
 #[derive(Clone)]
@@ -105,6 +108,7 @@ impl Services {
                 .and_then(|r| r.webhook_secret.clone()),
             bot_token: deps.env.bot_token.clone(),
             updates: None,
+            backup_env: None,
             bot_content: Arc::default(),
             bot_content_en: Arc::new(
                 crate::bot_content::BotContent::default().in_locale(Locale::En),
@@ -123,6 +127,8 @@ impl Services {
                 instance: Uuid::new_v4(),
                 runtime: RwLock::new(runtime),
                 bot: BotRuntime::default(),
+                pause: crate::pause::PauseGate::default(),
+                backups: crate::backups::Runtime::default(),
             }),
         }
     }
@@ -401,6 +407,26 @@ impl Services {
 
     pub fn updates(&self) -> crate::updates::Updates<'_> {
         crate::updates::Updates::new(self)
+    }
+
+    pub fn pause_gate(&self) -> &crate::pause::PauseGate {
+        &self.inner.pause
+    }
+
+    pub fn backups_runtime(&self) -> &crate::backups::Runtime {
+        &self.inner.backups
+    }
+
+    pub fn backup_env(&self) -> Option<Arc<crate::backups::BackupEnv>> {
+        self.read(|r| r.backup_env.clone())
+    }
+
+    pub fn set_backup_env(&self, env: Option<crate::backups::BackupEnv>) {
+        self.write(|r| r.backup_env = env.map(Arc::new));
+    }
+
+    pub fn backups(&self) -> crate::backups::BackupOps<'_> {
+        crate::backups::BackupOps::new(self)
     }
 
     pub fn infra(&self) -> InfraOps<'_> {

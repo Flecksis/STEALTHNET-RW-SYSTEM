@@ -212,6 +212,22 @@ case "$*" in
         [ "${FAKE_UNLOCK_EXIT:-0}" -eq 0 ] || exit "${FAKE_UNLOCK_EXIT}"
         echo "Вход для $(cat "$STATE/owner.txt") с новых адресов был закрыт из-за подбора пароля. Блокировка снята."
         exit 0 ;;
+    "compose exec -T app stealthnet backup")
+        [ "${FAKE_BACKUP_EXIT:-0}" -eq 0 ] || exit "${FAKE_BACKUP_EXIT}"
+        echo "Копия сохранена: /var/lib/stealthnet/backups/stealthnet-backup-20261118-040000-manual.tar.gz"
+        exit 0 ;;
+    "compose run --rm --no-deps -T -e SN_RUN_BOT=false -e SN_RUN_WORKER=false app restore --password-stdin --check "*)
+        IFS= read -r pw
+        printf '%s' "$pw" > "$STATE/restore_password.txt"
+        [ "${FAKE_RESTORE_CHECK_EXIT:-0}" -eq 0 ] || { echo "ошибка: файл копии повреждён"; exit "${FAKE_RESTORE_CHECK_EXIT}"; }
+        echo "Копия от 18.11.2026 04:00 (+03:00), по расписанию, версия 0.1.200"
+        exit 0 ;;
+    "compose run --rm --no-deps -T -e SN_RUN_BOT=false -e SN_RUN_WORKER=false app restore --password-stdin --yes "*)
+        cat > /dev/null
+        [ "${FAKE_RESTORE_EXIT:-0}" -eq 0 ] || exit "${FAKE_RESTORE_EXIT}"
+        : > "$STATE/restored"
+        echo "Готово: база восстановлена из копии."
+        exit 0 ;;
     "compose exec -T caddy find "*)
         if [ "${FAKE_CERT:-1}" = "1" ]; then echo "/data/caddy/certificates/acme/site/site.crt"; fi
         exit 0 ;;

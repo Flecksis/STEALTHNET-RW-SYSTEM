@@ -316,6 +316,7 @@ fn spawn_workers(ctx: &BotCtx, count: usize) -> (Vec<mpsc::Sender<Update>>, Vec<
         let ctx = ctx.clone();
         handles.push(tokio::spawn(async move {
             while let Some(update) = rx.recv().await {
+                let _work = ctx.services.pause_gate().enter().await;
                 handle_update(&ctx, update).await;
             }
         }));
@@ -444,6 +445,13 @@ impl Bot {
             if self.services.bot_token().as_deref() != Some(token) {
                 break Ok(Stop::TokenChanged);
             }
+            if self.services.pause_gate().is_paused() {
+                tokio::select! {
+                    _ = cancel.cancelled() => break Ok(Stop::Cancelled),
+                    _ = self.services.pause_gate().cleared() => {}
+                }
+                continue;
+            }
             sync_menu(&api, &self.services, &mut menu).await;
             sync_commands(&api, &self.services, &mut commands).await;
             let polled = tokio::select! {
@@ -477,7 +485,10 @@ impl Bot {
                         next = next.max(update.update_id + 1);
                         if update.pre_checkout_query.is_some() {
                             let ctx = ctx.clone();
-                            tokio::spawn(async move { handle_update(&ctx, update).await });
+                            tokio::spawn(async move {
+                                let _work = ctx.services.pause_gate().enter().await;
+                                handle_update(&ctx, update).await
+                            });
                             continue;
                         }
                         let shard = shard_for(update.chat_key(), senders.len());

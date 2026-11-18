@@ -377,6 +377,9 @@ impl Deliverer {
                     }
                 }
                 _ = tick.tick() => {
+                    if self.services.pause_gate().is_paused() {
+                        continue;
+                    }
                     let due = match self.due().await {
                         Ok(due) => due,
                         Err(err) => {

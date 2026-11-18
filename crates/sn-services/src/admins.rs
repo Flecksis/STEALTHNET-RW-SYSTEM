@@ -26,6 +26,7 @@ pub struct AdminView {
     pub created_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
     pub remna_sync: bool,
+    pub backups: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -88,6 +89,7 @@ fn view(admin: AdminRecord, logins: &HashMap<AdminId, DateTime<Utc>>) -> AdminVi
         must_change_password: admin.must_change_password,
         created_at: admin.created_at,
         remna_sync: is_allowed(admin.role, &admin.permissions, Permission::RemnaSync),
+        backups: is_allowed(admin.role, &admin.permissions, Permission::Backups),
     }
 }
 
@@ -222,6 +224,25 @@ impl<'a> AdminsOps<'a> {
         id: AdminId,
         on: bool,
     ) -> ServiceResult<AdminView> {
+        self.grant(actor, id, Permission::RemnaSync, on).await
+    }
+
+    pub async fn set_backups(
+        &self,
+        actor: AdminId,
+        id: AdminId,
+        on: bool,
+    ) -> ServiceResult<AdminView> {
+        self.grant(actor, id, Permission::Backups, on).await
+    }
+
+    async fn grant(
+        &self,
+        actor: AdminId,
+        id: AdminId,
+        right: Permission,
+        on: bool,
+    ) -> ServiceResult<AdminView> {
         not_self(actor, id, "Свои права поменять нельзя")?;
         let mut tx = self.services.store().begin().await?;
         if Self::actor_role(&mut tx, actor).await? != AdminRole::Owner {
@@ -234,16 +255,16 @@ impl<'a> AdminsOps<'a> {
                 "У владельца это право есть всегда",
             ));
         }
-        let had = admin.permissions.contains(&Permission::RemnaSync);
+        let had = admin.permissions.contains(&right);
         if had != on {
             let mut permissions: Vec<Permission> = admin
                 .permissions
                 .iter()
                 .copied()
-                .filter(|p| *p != Permission::RemnaSync)
+                .filter(|p| *p != right)
                 .collect();
             if on {
-                permissions.push(Permission::RemnaSync);
+                permissions.push(right);
             }
             tx.admins().set_role(id, admin.role, &permissions).await?;
             tx.audit()
@@ -251,7 +272,7 @@ impl<'a> AdminsOps<'a> {
                     "admin.permission_changed",
                     "admin",
                     Some(id.0),
-                    serde_json::json!({ "permission": Permission::RemnaSync.as_str(), "on": on }),
+                    serde_json::json!({ "permission": right.as_str(), "on": on }),
                 ))
                 .await?;
         }

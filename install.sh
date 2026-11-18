@@ -21,6 +21,8 @@ APP_UID=${SN_UPDATER_APP_UID:-10001}
 VERIFY_TIMEOUT=${SN_VERIFY_TIMEOUT:-90}
 VERIFY_PAUSE=${SN_VERIFY_PAUSE:-2}
 BACKUPS_DIR="$DEPLOY/backups"
+PANEL_BACKUPS="$BACKUPS_DIR/panel"
+APP_BACKUPS=/var/lib/stealthnet/backups
 IPC_DIR="$UPDATER_STATE/ipc"
 STATUS_DIR="$IPC_DIR/status"
 REQUEST_DIR="$IPC_DIR/request"
@@ -110,6 +112,8 @@ usage() {
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
     printf '  %s\n      снять блокировку входа владельца, если его почту подбирают;\n      с --ip вход с этого адреса не закроется, даже пока подбор идёт\n' "$(command_for 'unlock-login [--ip адрес]')"
     printf '  %s\n      скачать новую версию и обновить систему\n' "$(command_for update)"
+    printf '  %s\n      сделать резервную копию сейчас\n' "$(command_for backup)"
+    printf '  %s\n      восстановить базу из резервной копии; части из Telegram (.part001…)\n      соберутся сами, пароль копии спросит или возьмёт из SN_BACKUP_PASSWORD\n' "$(command_for 'restore файл')"
     printf '  %s\n      показать версию, состояние и итог последнего обновления\n' "$(command_for status)"
     printf '  %s\n      разрешить или запретить обновление из админки\n' "$(command_for 'helper on|off')"
     printf '  %s\n      запустить систему, например после перезагрузки сервера\n' "$(command_for start)"
@@ -150,6 +154,25 @@ drain_input() {
         done
     fi
     restore_tty
+}
+
+ask_hidden() {
+    ANSWER=""
+    if ! can_ask; then
+        die "некому ввести пароль копии" \
+            "Передайте его так: SN_BACKUP_PASSWORD='пароль' $(command_for 'restore файл')"
+    fi
+    drain_input
+    printf '%s%s%s ' "$BOLD" "$1" "$RESET"
+    TTY_SAVED=$(on_tty stty -g 2>/dev/null) || TTY_SAVED=""
+    on_tty stty -echo 2>/dev/null || true
+    if [ -t 0 ]; then
+        IFS= read -r ANSWER || ANSWER=""
+    else
+        IFS= read -r ANSWER < /dev/tty || ANSWER=""
+    fi
+    restore_tty
+    printf '\n'
 }
 
 ask() {
@@ -803,6 +826,7 @@ install() {
     prepare_https
     prepare_helper
     write_compose_files
+    prepare_backups
     OLD_IMAGE=$(env_value SN_IMAGE)
     RUNNING_APP=$(compose ps -q app 2>/dev/null || true)
     prepare_image
@@ -1934,6 +1958,162 @@ show_status() {
         printf '  Копии базы:        %s, последняя %s\n' "$count" "$(basename "$newest" .dump)"
         printf '  Где лежат:         %s\n' "$BACKUPS_DIR"
     fi
+    count=$(ls -1 "$PANEL_BACKUPS"/stealthnet-backup-* 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${count:-0}" -gt 0 ]; then
+        newest=$(ls -1t "$PANEL_BACKUPS"/stealthnet-backup-* 2>/dev/null | sed -n '1p')
+        printf '  Резервные копии:   %s, последняя %s\n' "$count" "$(basename "$newest")"
+        printf '  Где лежат:         %s\n' "$PANEL_BACKUPS"
+    fi
+}
+
+prepare_backups() {
+    mkdir -p "$PANEL_BACKUPS" 2>/dev/null || true
+    chmod 700 "$BACKUPS_DIR" "$PANEL_BACKUPS" 2>/dev/null || true
+    if [ "$(id -u)" -eq 0 ]; then
+        chown "$APP_UID:$APP_UID" "$PANEL_BACKUPS" 2>/dev/null || true
+    fi
+    if [ "$(env_value SN_BACKUP_HOST_DIR)" != "$PANEL_BACKUPS" ]; then
+        set_env SN_BACKUP_HOST_DIR "$PANEL_BACKUPS"
+    fi
+}
+
+backup_command() {
+    printf '%sSTEALTHNET RW SYSTEM — резервная копия%s\n\n' "$BOLD" "$RESET"
+    need_installed
+    docker_ready backup
+    prepare_backups
+    if [ -z "$(compose ps -q app 2>/dev/null || true)" ]; then
+        die "панель не запущена" "Запустите её: $(command_for start)"
+    fi
+    step "Копия"
+    if ! compose exec -T app stealthnet backup; then
+        die "копия не сделана" "Сообщение об ошибке — выше."
+    fi
+    printf '\nКопии лежат в папке %s\n' "$PANEL_BACKUPS"
+}
+
+restore_tool() {
+    printf '%s\n' "$RESTORE_PASSWORD" | compose run --rm --no-deps -T \
+        -e SN_RUN_BOT=false -e SN_RUN_WORKER=false \
+        app restore --password-stdin "$@" "$APP_BACKUPS/$RESTORE_NAME"
+}
+
+restore_command() {
+    printf '%sSTEALTHNET RW SYSTEM — восстановление из копии%s\n\n' "$BOLD" "$RESET"
+    need_installed
+    yes=""
+    file=""
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) yes=1 ;;
+            -*) die "не понял «$arg»" "Пример: $(command_for 'restore /root/stealthnet-backup-20261118-040000-auto.tar.gz')" ;;
+            *)
+                if [ -n "$file" ]; then
+                    die "лишний аргумент «$arg»" "Укажите один файл копии."
+                fi
+                file=$arg
+                ;;
+        esac
+    done
+    if [ -z "$file" ]; then
+        die "укажите файл копии" \
+            "Пример: $(command_for 'restore /root/stealthnet-backup-20261118-040000-auto.tar.gz')" \
+            "Копии панели лежат в папке $PANEL_BACKUPS"
+    fi
+    docker_ready restore
+    prepare_backups
+    RESTORE_COPY=""
+    case "$file" in
+        *.part[0-9][0-9][0-9])
+            base=${file%.part[0-9][0-9][0-9]}
+            if [ ! -f "$base.part001" ]; then
+                die "нет первой части копии: $base.part001"
+            fi
+            RESTORE_NAME=".restore-$(random_hex 4)-$(basename "$base")"
+            RESTORE_COPY="$PANEL_BACKUPS/$RESTORE_NAME"
+            step "Сборка частей"
+            if ! cat "$base".part[0-9][0-9][0-9] > "$RESTORE_COPY"; then
+                rm -f "$RESTORE_COPY"
+                die "части копии не собрались: не хватает места на диске?"
+            fi
+            done_line "собрано: $(ls -1 "$base".part[0-9][0-9][0-9] | wc -l | tr -d ' ') части"
+            ;;
+        *)
+            if [ ! -f "$file" ]; then
+                die "файл не найден: $file"
+            fi
+            dir=$(cd "$(dirname "$file")" && pwd)
+            if [ "$dir" = "$(cd "$PANEL_BACKUPS" && pwd)" ]; then
+                RESTORE_NAME=$(basename "$file")
+            else
+                RESTORE_NAME=".restore-$(random_hex 4)-$(basename "$file")"
+                RESTORE_COPY="$PANEL_BACKUPS/$RESTORE_NAME"
+                if ! cp "$file" "$RESTORE_COPY"; then
+                    rm -f "$RESTORE_COPY"
+                    die "файл не скопировался в папку копий: не хватает места на диске?"
+                fi
+            fi
+            ;;
+    esac
+    if [ -n "$RESTORE_COPY" ]; then
+        chmod 600 "$RESTORE_COPY" 2>/dev/null || true
+        if [ "$(id -u)" -eq 0 ]; then
+            chown "$APP_UID:$APP_UID" "$RESTORE_COPY" 2>/dev/null || true
+        fi
+    fi
+    RESTORE_PASSWORD=""
+    if [ "$(head -c 8 "$PANEL_BACKUPS/$RESTORE_NAME" 2>/dev/null)" = "SNBACKUP" ]; then
+        if [ -n "${SN_BACKUP_PASSWORD:-}" ]; then
+            RESTORE_PASSWORD=$SN_BACKUP_PASSWORD
+        else
+            ask_hidden "Пароль копии:"
+            RESTORE_PASSWORD=$ANSWER
+        fi
+    fi
+    step "Проверка копии"
+    if ! restore_tool --check; then
+        if [ -n "$RESTORE_COPY" ]; then
+            rm -f "$RESTORE_COPY"
+        fi
+        die "копия не прошла проверку, база не менялась" "Сообщение об ошибке — выше."
+    fi
+    if [ -z "$yes" ]; then
+        printf '\n'
+        ask "Заменить текущую базу этой копией? Панель и бот остановятся на время восстановления, перед заменой сохраню копию текущей базы. [д/Н]"
+        case "$ANSWER" in
+            д*|Д*|y*|Y*) ;;
+            *)
+                if [ -n "$RESTORE_COPY" ]; then
+                    rm -f "$RESTORE_COPY"
+                fi
+                printf 'Ничего не сделано.\n'
+                return 0
+                ;;
+        esac
+    fi
+    step "Остановка панели"
+    if ! compose stop -t 60 app >/dev/null 2>&1; then
+        die "панель не остановилась" "Сообщение об ошибке — выше. База не менялась."
+    fi
+    step "Восстановление"
+    if ! restore_tool --yes; then
+        if [ -n "$RESTORE_COPY" ]; then
+            rm -f "$RESTORE_COPY"
+        fi
+        compose up -d --no-build >/dev/null 2>&1 || true
+        die "восстановление не прошло, база осталась прежней" \
+            "Сообщение об ошибке — выше. Панель снова запускается: $(command_for status)"
+    fi
+    if [ -n "$RESTORE_COPY" ]; then
+        rm -f "$RESTORE_COPY"
+    fi
+    step "Запуск"
+    if ! compose up -d --no-build; then
+        die "панель не запустилась" "Сообщение об ошибке — выше."
+    fi
+    wait_healthy
+    done_line "база восстановлена"
+    show_address
 }
 
 cli_update() {
@@ -2100,6 +2280,8 @@ case "${1:-}" in
     unlock-login|--unlock-login) shift; unlock_login "$@" ;;
     update|--update) update ;;
     status|--status) show_status ;;
+    backup|--backup) backup_command ;;
+    restore|--restore) shift; restore_command "$@" ;;
     helper|--helper) helper_command "${2:-}" ;;
     updater) updater_command "${2:-}" ;;
     start|--start) start_system ;;

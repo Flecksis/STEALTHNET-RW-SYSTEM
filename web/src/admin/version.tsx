@@ -10,6 +10,7 @@ export type BuildSummary = {
 };
 
 export const UPDATES_PATH = '/admin/settings/updates';
+export const BACKUPS_PATH = '/admin/settings/backups';
 
 export function shortCommit(commit: string | null | undefined): string {
   return commit ? commit.slice(0, 7) : '';

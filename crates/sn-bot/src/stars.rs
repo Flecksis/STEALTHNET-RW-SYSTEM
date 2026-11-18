@@ -517,6 +517,13 @@ impl Keeper {
             if cancel.is_cancelled() {
                 return;
             }
+            if self.services.pause_gate().is_paused() {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = self.services.pause_gate().cleared() => {}
+                }
+                continue;
+            }
             if tokio::time::Instant::now() >= next_reconcile {
                 let more = self.reconcile_once().await;
                 next_reconcile = tokio::time::Instant::now()

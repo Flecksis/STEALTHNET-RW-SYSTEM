@@ -61,6 +61,43 @@ pub fn request_span(request: &Request<Body>) -> tracing::Span {
     )
 }
 
+const RESTORE_STATUS: &str = "/api/admin/backups/restore/status";
+
+async fn restoring(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+    if !path.starts_with("/api/")
+        || path == "/api/health"
+        || path == "/api/version"
+        || path == RESTORE_STATUS
+    {
+        return next.run(request).await;
+    }
+    match state.services.pause_gate().try_enter() {
+        Some(work) => {
+            let response = next.run(request).await;
+            drop(work);
+            response
+        }
+        None => {
+            use axum::response::IntoResponse;
+            let mut response = crate::error::ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "system.restoring",
+                "Идёт восстановление из резервной копии. Панель заработает через несколько минут",
+            )
+            .into_response();
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+            response
+        }
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     let ctx = state.services.module_context();
     let modules = state.services.modules().clone();
@@ -92,6 +129,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             crate::lang::client_language,
         ))
+        .layer(from_fn_with_state(state.clone(), restoring))
         .layer(DefaultBodyLimit::max(state.config.body_limit_bytes))
         .layer(cors(&state.config.cors_origins))
         .layer(SetResponseHeaderLayer::if_not_present(

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, ApiError } from '../../lib/api';
 import { dateLong, dateTime, NBSP } from '../../lib/format';
 import { Switch } from '../ui';
-import { buildName } from '../version';
+import { Link } from 'react-router';
+import { useSession } from '../session';
+import { BACKUPS_PATH, buildName } from '../version';
 import '../form.css';
 import './updates.css';
 import { SettingsLayout } from './SettingsLayout';
@@ -192,6 +194,7 @@ function Steps({ update, now }: { update: Update; now: number }) {
 }
 
 export function SettingsUpdates() {
+  const { can } = useSession();
   const [data, setData] = useState<System | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState<number | null>(null);
@@ -677,7 +680,7 @@ export function SettingsUpdates() {
       <section className="sec" aria-labelledby="upd-b-h">
         <div className="sec-head">
           <h2 id="upd-b-h" className="section-title">
-            Резервные копии
+            Копия перед обновлением
           </h2>
           <span className="muted">
             Перед каждым обновлением сервер сохраняет копию базы и файла с ключами. Хранятся три последние копии.
@@ -692,7 +695,8 @@ export function SettingsUpdates() {
           </div>
         </div>
         <p className="upd-foot cap">
-          Скачать копию отсюда нельзя: с ключами из неё расшифровываются токены платёжных систем. Храните копию не только на этом сервере и никому её не отправляйте — в том числе тем, кто назвался поддержкой.
+          Копии по расписанию, отправка в Telegram и S3, скачивание и восстановление — в разделе{' '}
+          {can('backups') ? <Link to={BACKUPS_PATH}>«Резервные копии»</Link> : '«Резервные копии»'}. Копию с ключами никому не отправляйте — в том числе тем, кто назвался поддержкой.
         </p>
       </section>
 
