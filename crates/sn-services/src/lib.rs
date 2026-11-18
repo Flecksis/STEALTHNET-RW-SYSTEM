@@ -14,6 +14,7 @@ pub mod clock;
 pub mod connect_apps;
 pub mod core_api;
 pub mod decisions;
+pub mod email_admin;
 pub mod email_change;
 pub mod error;
 pub mod events;

@@ -27,6 +27,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "menu.btn.gifts" => "Gift a subscription",
         "menu.btn.documents" => "Documents",
         "menu.btn.support" => "Support",
+        "menu.btn.email" => "Sign in by email",
         "menu.btn.language" => "Language",
         "lang.choose" => "Choose your language:",
         "status.active" => "active",
@@ -365,6 +366,59 @@ pub fn default(key: &str) -> Option<&'static str> {
         "pay.what_devices" => "extra devices: +{count}",
         "pay.what_gift" => "gift: “{tariff}” for {term}",
         "pay.what_traffic" => "traffic: +{gb} GB",
+        "email.title" => "<b>Sign in by email</b>",
+        "email.none" => {
+            "No email is linked. Link one to sign in to your account on the website when Telegram doesn't work."
+        }
+        "email.current" => "Email: {email}",
+        "email.password_yes" => "Website password is set.",
+        "email.password_no" => "Website password is not set.",
+        "email.how_password" => {
+            "If Telegram doesn't work, open {url}, choose “Email” and sign in with {email} and your password. Forgot it? Tap “Forgot your password?” and a code for a new password will come by email."
+        }
+        "email.how_code" => {
+            "If Telegram doesn't work, open {url}, choose “Email”, enter {email} and tap “Send code”: a sign-in code will come by email."
+        }
+        "email.ask" => {
+            "Send your email address in one message. A confirmation code will be sent to it."
+        }
+        "email.invalid" => {
+            "The address looks wrong. Send it in full, for example name@example.com."
+        }
+        "email.ask_app_code" => {
+            "Your account is protected with an app code. To link {email}, send the six-digit code from your authenticator app."
+        }
+        "email.ask_password" => {
+            "To change your email to {email}, send your current website password. The bot deletes the message with the password right away, but its text may stay in phone notifications."
+        }
+        "email.change_in_app" => {
+            "Changing the email needs your website password. Enter it in the app so it doesn't stay in the chat."
+        }
+        "email.code_sent" => {
+            "The code was sent to {email}. Send it here, it's valid for {minutes}."
+        }
+        "email.code_again" => "Send the code from the email to {email} or ask for a new one.",
+        "email.linked" => "The email {email} is linked.",
+        "email.set_password_app" => {
+            "Now set a website password: the button below opens it in the app."
+        }
+        "email.set_password_chat" => {
+            "Now set a website password: send it in the next message, at least 10 characters. The bot deletes the message with the password right away, but its text may stay in phone notifications. If you'd rather not send it in the chat, set it in your account on the website: {url}"
+        }
+        "email.password_saved" => "The website password is set.",
+        "email.secret_left" => {
+            "Your message couldn't be deleted from the chat. Please delete it yourself."
+        }
+        "email.off" => {
+            "An email can't be linked right now: website sign-in is off or emails aren't being sent. If you need help, contact support."
+        }
+        "email.error" => "{error}",
+        "email.btn.link" => "Link email",
+        "email.btn.change" => "Change email",
+        "email.btn.change_app" => "Change email in the app",
+        "email.btn.password" => "Set password",
+        "email.btn.resend" => "Send the code again",
+        "email.btn.other" => "Use another email",
         "login.title" => "<b>Account sign-in</b>",
         "login.account" => "Account: {who}",
         "login.ip" => "From: {ip}",
@@ -457,6 +511,12 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.oauth_unlinked" => {
             "You confirmed your email with a code, so we unlinked the Google or Apple sign-in that was added before the confirmation and signed out all website sessions. If you added it yourself, link it again under Security."
         }
+        "notify.email_set" => {
+            "An administrator set the email {email} on your account. If you didn't ask for this, contact support right away."
+        }
+        "notify.email_removed" => {
+            "An administrator removed the email {email} from your account, so you can no longer sign in to the website with it. If you didn't ask for this, contact support right away."
+        }
         "notify.password_issued" => {
             "An administrator issued you a temporary password for the website. Set your own password when you first sign in with it. If you didn't ask for a new password, contact support right away."
         }
@@ -487,6 +547,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.btn.support" => "Support",
         "notify.btn.referral" => "Invite a friend",
         "notify.btn.contests" => "Giveaways",
+        "notify.btn.email" => "Sign in by email",
         "common.btn.menu" => "Main menu",
         "common.btn.back" => "Back",
         "common.btn.cancel" => "Cancel",

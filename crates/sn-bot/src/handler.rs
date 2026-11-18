@@ -5,7 +5,9 @@ use crate::telegram::{
 };
 use crate::text::{self, escape};
 use crate::ui::{self, Html, Lines, Text};
-use crate::{BotError, account, buy, consent, contests, extras, gifts, gram_wallet, login, media};
+use crate::{
+    BotError, account, buy, consent, contests, email, extras, gifts, gram_wallet, login, media,
+};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, Locale, RegistrationSource, TelegramProfile};
 use sn_domain::ids::{SubscriptionId, TariffId};
@@ -98,6 +100,7 @@ pub struct Turn<'a> {
     pub target: Target,
     pub session: Session,
     pub locale: Locale,
+    pub secret_left: bool,
 }
 
 impl Turn<'_> {
@@ -213,7 +216,10 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
         return ctx.show(target, &emoji_codes(&message)).await;
     }
     let session = Session::load(&ctx.services, target.chat_id).await?;
-    let action = match parse_command(text) {
+    let command = parse_command(text);
+    let secret = command.is_none() && session.awaiting.is_some_and(Awaiting::secret);
+    let secret_left = secret && !forget(ctx, target.chat_id, message.message_id).await;
+    let action = match command {
         Some((command, args)) => match command.as_str() {
             "start" => Action::Start(Some(args).filter(|a| !a.is_empty())),
             "paysupport" => Action::PaySupport,
@@ -221,11 +227,22 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
             _ => Action::Menu,
         },
         None => match session.awaiting {
+            Some(awaiting) if awaiting.secret() => Action::Input(awaiting, text.to_string()),
             Some(awaiting) => Action::Input(awaiting, text.trim().to_string()),
             None => Action::Text(text.trim().to_string()),
         },
     };
-    run(ctx, &user, target, session, action).await
+    run_with(ctx, &user, target, session, action, secret_left).await
+}
+
+async fn forget(ctx: &BotCtx, chat_id: i64, message_id: i64) -> bool {
+    match ctx.api.delete_message(chat_id, message_id).await {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::warn!(error = %err, "сообщение с паролем или кодом не удалилось из чата");
+            false
+        }
+    }
 }
 
 async fn on_callback(ctx: &BotCtx, callback: CallbackQuery) -> Result<(), BotError> {
@@ -265,6 +282,17 @@ async fn run(
     session: Session,
     action: Action,
 ) -> Result<(), BotError> {
+    run_with(ctx, user, target, session, action, false).await
+}
+
+async fn run_with(
+    ctx: &BotCtx,
+    user: &BotUser,
+    target: Target,
+    session: Session,
+    action: Action,
+    secret_left: bool,
+) -> Result<(), BotError> {
     let locale = user_locale(&ctx.services, user).await?;
     let mut turn = Turn {
         ctx,
@@ -272,6 +300,7 @@ async fn run(
         target,
         session,
         locale,
+        secret_left,
     };
     let screen = lang::scope(locale, process(&mut turn, action)).await?;
     if !screen.text.is_empty() {
@@ -492,6 +521,10 @@ async fn input(
         Awaiting::WithdrawalAmount => extras::withdrawal_amount(turn, client, text).await,
         Awaiting::WithdrawalDetails => extras::withdrawal_details(turn, client, text).await,
         Awaiting::GiftCode => gifts::code_entered(turn, client, text).await,
+        Awaiting::EmailAddress => email::address_entered(turn, client, text).await,
+        Awaiting::EmailProof => email::proof_entered(turn, client, text).await,
+        Awaiting::EmailCode => email::code_entered(turn, client, text).await,
+        Awaiting::SitePassword => email::password_entered(turn, client, text).await,
     }
 }
 
@@ -591,6 +624,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "gr" => gifts::redeem(turn, client, rest).await?,
         gifts::PROMO_CONFIRM => gifts::promo_link_confirmed(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
+        email::CALLBACK => email::action(turn, client, rest).await?,
         "docs" => documents_screen(&turn.content()),
         "lang" if rest.is_empty() => language_screen(turn, client).await?,
         "lang" => set_language(turn, client, rest).await?,
@@ -929,6 +963,9 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
             buttons.extend(ui::link(c, "menu.btn.support", &[], url));
         }
         _ => buttons.extend(ui::button(c, "menu.btn.support", &[], "sup")),
+    }
+    if email::offered(services) {
+        buttons.extend(ui::button(c, "menu.btn.email", &[], email::CALLBACK));
     }
     if settings.languages.several() {
         buttons.extend(ui::button(c, "menu.btn.language", &[], "lang"));

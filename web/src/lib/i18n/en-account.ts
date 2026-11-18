@@ -42,4 +42,8 @@ export const ACCOUNT: Record<string, string> = {
   'Если кнопка не открыла приложение, добавьте ключ вручную:': 'If the button didn\'t open the app, add the key manually:',
   'Не получилось скопировать: выделите ключ вручную': 'Couldn\'t copy. Select the key manually',
   'Код из приложения, 6 цифр': '6-digit code from the app',
+  'Теперь задайте пароль для сайта': 'Now set a website password',
+  'С почтой и паролем можно войти в кабинет на сайте, если Telegram не работает.': 'With your email and password you can sign in to your account on the website when Telegram doesn\'t work.',
+  'Теперь на сайт можно входить по этой почте: код для входа придёт в письме.': 'You can now sign in on the website with this email: a sign-in code will come by email.',
+  'Теперь задайте пароль: с почтой и паролем можно войти в кабинет, если Telegram не работает.': 'Now set a password: with your email and password you can sign in to your account when Telegram doesn\'t work.',
 };

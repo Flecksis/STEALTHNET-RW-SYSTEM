@@ -76,10 +76,12 @@ export function AccountCard() {
 }
 
 export function MiniEmail() {
-  const { site, reload } = useMini();
+  const { me, site, reload } = useMini();
   const flow = useEmailChange(reload);
   const { info, sent } = flow;
   const siteLogin = site.client_access?.site_login !== false;
+  const passwordNext = !!flow.done && siteLogin && site.email_auth === 'password' && me.has_password !== true;
+  const codeNext = !!flow.done && siteLogin && site.email_auth === 'code';
 
   if (!info) {
     return (
@@ -110,6 +112,16 @@ export function MiniEmail() {
           {doneText(flow.done)}
         </p>
       ) : null}
+      {passwordNext ? (
+        <div className="mn-card mn-pad">
+          <strong>{t('Теперь задайте пароль для сайта')}</strong>
+          <span className="mn-muted small">{t('С почтой и паролем можно войти в кабинет на сайте, если Telegram не работает.')}</span>
+          <Link to="/app/profile/password" className="mn-main sm press mn-btn-link">
+            {t('Задать пароль')}
+          </Link>
+        </div>
+      ) : null}
+      {codeNext ? <p className="mn-notes">{t('Теперь на сайт можно входить по этой почте: код для входа придёт в письме.')}</p> : null}
       {!info.available ? (
         <p className="mn-note">{t('Письма сейчас не отправляются, поэтому сменить почту нельзя.')}</p>
       ) : sent ? (

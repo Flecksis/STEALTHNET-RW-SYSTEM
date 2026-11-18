@@ -4,6 +4,7 @@ pub mod broadcast;
 mod buy;
 pub mod consent;
 pub mod contests;
+mod email;
 mod extras;
 mod gifts;
 pub mod gram_wallet;

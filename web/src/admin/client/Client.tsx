@@ -9,6 +9,7 @@ import { ClientProtect } from '../protect/ClientProtect';
 import type { Subscription } from '../clients/types';
 import { ClientPhone } from './ClientPhone';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog } from './dialogs';
+import { EmailDialog, EmailRow } from './EmailDialog';
 import { eventsCount, historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
@@ -24,7 +25,7 @@ import { ExtendDialog } from './ExtendDialog';
 const FIRST_PAGE = 5;
 const MORE_PAGE = 20;
 
-type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'extend' | 'delete-sub' | 'delete-client' | 'reset-2fa' | 'password';
+type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'extend' | 'delete-sub' | 'delete-client' | 'reset-2fa' | 'password' | 'email';
 
 function fingerprint(card: ClientCard): string {
   return JSON.stringify(card.subscriptions.map((s) => [s.id, s.tariff_id, s.mirror.expire_at, s.ended_at, s.period_days]));
@@ -502,10 +503,7 @@ function ClientDesktop() {
               <span className="muted">Telegram</span>
               <span>{tg ? (tg.meta?.username ? `@${tg.meta.username}` : tg.value) : 'нет'}</span>
             </div>
-            <div className="cc-prof">
-              <span className="muted">Email</span>
-              <span>{email ? email.value : 'нет'}</span>
-            </div>
+            <EmailRow email={email} editable={loginOk} onEdit={() => setDialog('email')} />
             {oauthLogins(card).map((login) => (
               <div className="cc-prof" key={login.title}>
                 <span className="muted">{login.title}</span>
@@ -695,6 +693,19 @@ function ClientDesktop() {
       ) : null}
       {dialog === 'password' && emailOf(card) ? (
         <PasswordDialog clientId={clientId} email={emailOf(card)?.value ?? ''} onClose={() => setDialog('')} onIssued={refreshHistory} />
+      ) : null}
+      {dialog === 'email' ? (
+        <EmailDialog
+          clientId={clientId}
+          current={email}
+          onClose={() => setDialog('')}
+          onDone={(text) => {
+            setDialog('');
+            setNotice(text);
+            void loadCard();
+            refreshHistory();
+          }}
+        />
       ) : null}
       {dialog === 'reset-2fa' ? (
         <ConfirmDialog

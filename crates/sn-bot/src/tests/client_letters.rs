@@ -10,9 +10,9 @@ use std::sync::Mutex as StdMutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-type Letters = Arc<StdMutex<Vec<String>>>;
+pub(super) type Letters = Arc<StdMutex<Vec<String>>>;
 
-async fn fake_smtp() -> (u16, Letters) {
+pub(super) async fn fake_smtp() -> (u16, Letters) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let letters: Letters = Arc::new(StdMutex::new(Vec::new()));
@@ -62,7 +62,7 @@ async fn fake_smtp() -> (u16, Letters) {
     (port, letters)
 }
 
-fn decoded(letter: &str) -> String {
+pub(super) fn decoded(letter: &str) -> String {
     use base64::Engine;
     let mut out = letter.to_string();
     let mut block = String::new();
@@ -108,7 +108,7 @@ fn decoded(letter: &str) -> String {
     out
 }
 
-async fn mail_on(services: &Services, port: u16, extra: serde_json::Value) {
+pub(super) async fn mail_on(services: &Services, port: u16, extra: serde_json::Value) {
     let (owner, _) = services
         .auth()
         .upsert_owner("owner@example.com", "очень-надёжный-пароль")

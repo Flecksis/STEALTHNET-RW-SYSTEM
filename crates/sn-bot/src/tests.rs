@@ -26,6 +26,7 @@ mod broadcast;
 mod client_letters;
 mod content;
 mod contests;
+mod email_link;
 mod gifts;
 mod gram_wallet;
 mod languages;

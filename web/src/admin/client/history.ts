@@ -296,6 +296,16 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
           const devices = before !== null && after !== null && before !== after ? `устройств было ${before}, стало ${after}` : null;
           return { ...base, what: 'Изменены лимиты', note: devices ? `${actor}: ${devices}` : actor, sum: '' };
         }
+        case 'client.email_set': {
+          const email = str(details.email);
+          const previous = str(details.previous);
+          const what = email ? (previous ? `Почта изменена администратором на ${email}` : `Почта ${email} указана администратором`) : 'Почта изменена администратором';
+          return { ...base, what, note: previous ? `${actor}, прежняя ${previous}` : actor, sum: '' };
+        }
+        case 'client.email_removed': {
+          const email = str(details.email);
+          return { ...base, what: email ? `Почта ${email} отвязана администратором` : 'Почта отвязана администратором', note: actor, sum: '' };
+        }
         case 'subscription.remna_linked': {
           const name = str(details.remna_username);
           return { ...base, what: name ? `Подписка привязана к пользователю Remnawave ${name}` : 'Подписка привязана к пользователю Remnawave', note: actor, sum: '' };

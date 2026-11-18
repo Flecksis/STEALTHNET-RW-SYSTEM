@@ -9,9 +9,9 @@ use tokio::net::TcpListener;
 
 const BOT: &str = "123456:TEST-token";
 
-type Letters = Arc<Mutex<Vec<String>>>;
+pub(super) type Letters = Arc<Mutex<Vec<String>>>;
 
-async fn local_smtp() -> (u16, Letters) {
+pub(super) async fn local_smtp() -> (u16, Letters) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let letters: Letters = Arc::new(Mutex::new(Vec::new()));
@@ -80,7 +80,7 @@ fn unbase64(text: &str) -> Vec<u8> {
     out
 }
 
-fn letter_code(raw: &str) -> String {
+pub(super) fn letter_code(raw: &str) -> String {
     let (head, body) = raw.split_once("\n\n").unwrap_or((raw, ""));
     let text = if head
         .to_ascii_lowercase()
@@ -96,7 +96,7 @@ fn letter_code(raw: &str) -> String {
         .to_string()
 }
 
-async fn mini_http() -> Option<Http> {
+pub(super) async fn mini_http() -> Option<Http> {
     let db = test_store().await?;
     let clock = Arc::new(FixedClock::new(start()));
     let services = Services::new(ServiceDeps {

@@ -47,6 +47,8 @@ pub mod templates {
     pub const PAYMENT_CREDITED: &str = sn_services::inbox::PAYMENT_CREDITED_TEMPLATE;
     pub const PAYMENT_REVIEW: &str = sn_services::inbox::PAYMENT_REVIEW_TEMPLATE;
     pub const SUBSCRIPTION_LINK: &str = sn_services::remna_transfer::LINK_TEMPLATE;
+    pub const EMAIL_SET: &str = sn_services::email_admin::TEMPLATE_EMAIL_SET;
+    pub const EMAIL_REMOVED: &str = sn_services::email_admin::TEMPLATE_EMAIL_REMOVED;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,6 +442,20 @@ pub fn render(
         ),
         oauth::TEMPLATE_PASSWORD_ISSUED => (
             t("notify.password_issued", &[]),
+            Some(("notify.btn.support", "sup")),
+        ),
+        templates::EMAIL_SET => (
+            t(
+                "notify.email_set",
+                &[("email", Text(params.get("email")?.as_str()?))],
+            ),
+            Some(("notify.btn.email", "em")),
+        ),
+        templates::EMAIL_REMOVED => (
+            t(
+                "notify.email_removed",
+                &[("email", Text(params.get("email")?.as_str()?))],
+            ),
             Some(("notify.btn.support", "sup")),
         ),
         oauth::TEMPLATE_LINKED => (

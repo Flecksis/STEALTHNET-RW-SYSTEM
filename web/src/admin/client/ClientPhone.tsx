@@ -9,6 +9,7 @@ import { useSession } from '../session';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, MessageDialog } from './dialogs';
 import { historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
+import { EmailDialog } from './EmailDialog';
 import { RefundDialog } from './RefundDialog';
 import { devicesWord, emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, tariffOf, telegramOf } from './model';
 import { RemnaAddDialog, RemnaLinkNote } from './RemnaLink';
@@ -23,7 +24,7 @@ import { ExtendDialog } from './ExtendDialog';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
-type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'extend' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password' | 'remna-add';
+type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'extend' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password' | 'remna-add' | 'email';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 type SheetItem = { key: Dialogs; icon: IconName; label: string };
@@ -344,6 +345,9 @@ export function ClientPhone() {
   }
   if (writable && !blocked && (!sub || card.multi_subscriptions)) {
     sheetItems.push({ key: 'remna-add', icon: 'plus', label: 'Добавить подписку из Remnawave' });
+  }
+  if (loginOk) {
+    sheetItems.push({ key: 'email', icon: 'mail', label: email ? 'Изменить почту' : 'Указать почту' });
   }
 
   const undoExtend = async () => {
@@ -969,6 +973,19 @@ export function ClientPhone() {
       ) : null}
       {dialog === 'password' && emailOf(card) ? (
         <PasswordDialog clientId={clientId} email={emailOf(card)?.value ?? ''} onClose={() => setDialog('')} onIssued={() => undefined} />
+      ) : null}
+      {dialog === 'email' ? (
+        <EmailDialog
+          clientId={clientId}
+          current={email}
+          onClose={() => setDialog('')}
+          onDone={(text) => {
+            setDialog('');
+            show({ kind: 'info', head: text });
+            void loadCard();
+            void loadHistory();
+          }}
+        />
       ) : null}
       {dialog === 'reset-2fa' ? (
         <ConfirmDialog

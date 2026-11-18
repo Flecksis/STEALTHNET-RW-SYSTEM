@@ -3,6 +3,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiJson, ApiQuery, CurrentAdmin};
 use crate::state::AppState;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -11,6 +13,7 @@ use sn_domain::ids::{ClientId, SubscriptionId};
 use sn_domain::money::Money;
 use sn_domain::subscription::admin_status;
 use sn_services::clients::HistoryPage;
+use sn_services::email_admin::{EMAIL_TAKEN, EmailRemoved, EmailSet};
 use sn_store::{ClientFilter, ClientListItem, ClientSegment};
 
 pub fn routes() -> Router<AppState> {
@@ -29,6 +32,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clients/{id}/unblock", post(unblock))
         .route("/clients/{id}/totp/reset", post(reset_two_factor))
         .route("/clients/{id}/password", post(issue_password))
+        .route("/clients/{id}/email", put(set_email).delete(remove_email))
         .route("/subscriptions/{id}", get(subscription))
         .route(
             "/subscriptions/{id}/actions/{action}",
@@ -360,6 +364,54 @@ async fn issue_password(
         .issue_client_password(ClientId(id), admin.actor())
         .await?;
     Ok(Json(serde_json::json!({ "password": password })))
+}
+
+#[derive(Deserialize)]
+struct EmailRequest {
+    email: String,
+}
+
+async fn set_email(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<EmailRequest>,
+) -> ApiResult<Response> {
+    admin.require(Permission::ClientsLogin)?;
+    let result = state
+        .services
+        .clients()
+        .set_email(ClientId(id), &body.email, admin.actor())
+        .await?;
+    Ok(match result {
+        EmailSet::Taken { client_id } => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": {
+                    "code": EMAIL_TAKEN,
+                    "message": "Эта почта уже указана у другого клиента",
+                    "client_id": client_id,
+                }
+            })),
+        )
+            .into_response(),
+        saved @ EmailSet::Saved { .. } => Json(saved).into_response(),
+    })
+}
+
+async fn remove_email(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<EmailRemoved>> {
+    admin.require(Permission::ClientsLogin)?;
+    Ok(Json(
+        state
+            .services
+            .clients()
+            .remove_email(ClientId(id), admin.actor())
+            .await?,
+    ))
 }
 
 async fn subscription(

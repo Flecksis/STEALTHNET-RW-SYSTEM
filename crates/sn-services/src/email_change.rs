@@ -8,7 +8,7 @@ use crate::login::{
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use serde::Serialize;
-use sn_domain::access::ClientPrincipal;
+use sn_domain::access::{ClientChannel, ClientPrincipal};
 use sn_domain::client::{IdentityKind, NewIdentity, normalize_identity};
 use sn_domain::ids::ClientId;
 use sn_domain::mail_letters::{LetterId, Values};
@@ -86,6 +86,15 @@ pub fn masked_email(email: &str) -> String {
             format!("{first}***@{domain}")
         }
         None => "***".to_string(),
+    }
+}
+
+fn source(principal: &ClientPrincipal, meta: &RequestMeta) -> String {
+    match principal.channel {
+        ClientChannel::Bot => format!("bot:{}", principal.client_id.0),
+        ClientChannel::Cabinet | ClientChannel::Miniapp => {
+            crate::limits::address_key(meta.ip.as_deref())
+        }
     }
 }
 
@@ -214,7 +223,7 @@ impl<'a> Auth<'a> {
             .hit(rules::EMAIL_CHANGE_CLIENT, &client_id.to_string())
             .await?;
         limits
-            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .hit(rules::EMAIL_START_IP, &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         {
@@ -291,7 +300,7 @@ impl<'a> Auth<'a> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
-            .hit_ip(rules::EMAIL_VERIFY_IP, meta.ip.as_deref())
+            .hit(rules::EMAIL_VERIFY_IP, &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_VERIFY_ADDRESS, &email).await?;
         let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();

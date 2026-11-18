@@ -254,8 +254,14 @@ export function SecurityPage() {
   );
 }
 
+function focusPassword() {
+  const field = document.getElementById('cb-new-password');
+  field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  field?.focus({ preventScroll: true });
+}
+
 function EmailCard() {
-  const { site, reload } = useCabinet();
+  const { me, site, reload } = useCabinet();
   const flow = useEmailChange(reload);
   const [open, setOpen] = useState(false);
   const { info, sent } = flow;
@@ -270,6 +276,8 @@ function EmailCard() {
     ) : null;
   }
   const editing = (open && !flow.done) || sent !== null;
+  const siteLogin = site.client_access?.site_login !== false;
+  const askPassword = !!flow.done && siteLogin && site.email_auth === 'password' && me.has_password !== true;
   const note =
     info.proof === 'totp'
       ? t('Для смены почты нужен код из приложения-аутентификатора, затем код из письма на новый адрес.')
@@ -288,16 +296,25 @@ function EmailCard() {
         <h2 className="cb-h2">{t('Почта')}</h2>
         <span className="cb-status muted">{info.email ?? t('не указана')}</span>
       </div>
-      <p className="cb-note">{site.client_access?.site_login !== false ? t('На эту почту приходят письма, по ней же можно входить на сайт.') : t('На эту почту приходят письма.')}</p>
+      <p className="cb-note">{siteLogin ? t('На эту почту приходят письма, по ней же можно входить на сайт.') : t('На эту почту приходят письма.')}</p>
       {flow.done ? (
         <p className="cb-result" role="status">
           {doneText(flow.done)}
         </p>
       ) : null}
+      {askPassword ? <p className="cb-note">{t('Теперь задайте пароль: с почтой и паролем можно войти в кабинет, если Telegram не работает.')}</p> : null}
+      {flow.done && siteLogin && site.email_auth === 'code' ? (
+        <p className="cb-note">{t('Теперь на сайт можно входить по этой почте: код для входа придёт в письме.')}</p>
+      ) : null}
       {!info.available ? (
         <p className="cb-note">{t('Письма сейчас не отправляются, поэтому сменить почту нельзя.')}</p>
       ) : !editing ? (
         <span className="cb-btns">
+          {askPassword ? (
+            <button type="button" className="cb-main" onClick={focusPassword}>
+              {t('Задать пароль')}
+            </button>
+          ) : null}
           <button
             type="button"
             className="cb-second"
@@ -424,7 +441,7 @@ function PasswordCard() {
         ) : null}
         <label className="cb-field">
           <span>{t('Новый пароль')}</span>
-          <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder={t('Не короче 10 символов')} />
+          <input id="cb-new-password" type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder={t('Не короче 10 символов')} />
         </label>
         {result ? (
           <p className={result.bad ? 'cb-error' : 'cb-result'} role={result.bad ? 'alert' : 'status'}>

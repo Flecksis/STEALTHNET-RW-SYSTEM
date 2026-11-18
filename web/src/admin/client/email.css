@@ -1,0 +1,44 @@
+.em-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 2px;
+}
+
+.em-note {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.em-edit,
+.em-remove {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.em-edit {
+  color: var(--accent-ink);
+}
+
+.em-remove {
+  align-self: flex-start;
+  min-height: 32px;
+  color: var(--bad);
+}
+
+.em-edit:disabled,
+.em-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.em-link {
+  color: var(--accent-ink);
+  font-weight: 700;
+}

@@ -16,6 +16,16 @@ pub enum Awaiting {
     WithdrawalAmount,
     WithdrawalDetails,
     GiftCode,
+    EmailAddress,
+    EmailProof,
+    EmailCode,
+    SitePassword,
+}
+
+impl Awaiting {
+    pub fn secret(self) -> bool {
+        matches!(self, Awaiting::EmailProof | Awaiting::SitePassword)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +76,8 @@ pub struct Session {
     pub promo_link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 impl Session {

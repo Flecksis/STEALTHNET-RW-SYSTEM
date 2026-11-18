@@ -33,6 +33,7 @@ mod balance_off;
 mod bot_content;
 mod channels;
 mod client_access;
+mod client_email;
 mod client_payments;
 mod config_warnings;
 mod connect_apps;

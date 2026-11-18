@@ -3,11 +3,13 @@ import { lang, t } from './i18n';
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly details: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -25,7 +27,7 @@ function errorFrom(status: number, data: unknown): ApiError {
     const err = (data as { error?: { code?: unknown; message?: unknown } }).error;
     const code = typeof err?.code === 'string' ? err.code : `http.${status}`;
     const message = typeof err?.message === 'string' ? err.message : t('Ошибка {status}', { status });
-    return new ApiError(status, code, message);
+    return new ApiError(status, code, message, err && typeof err === 'object' ? (err as Record<string, unknown>) : {});
   }
   if (typeof data === 'string' && data.trim()) {
     return new ApiError(status, `http.${status}`, data.trim());
