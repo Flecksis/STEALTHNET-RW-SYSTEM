@@ -2891,8 +2891,36 @@ fn лесенка_скидок_старой_панели_приводится_к
         5,
     );
     assert_eq!(ladder, vec![step(2, 10), step(4, 20)]);
-    assert_eq!(dropped.len(), 1, "{dropped:?}");
-    assert!(dropped[0].contains("от 3 доп. устройств"), "{dropped:?}");
+    assert_eq!(dropped.len(), 4, "{dropped:?}");
+    for expected in [
+        "без числа устройств",
+        "от 1 доп. устройств (0 %)",
+        "от 3 доп. устройств (5 %)",
+        "от 9 доп. устройств (30 %)",
+    ] {
+        assert!(
+            dropped.iter().any(|d| d.contains(expected)),
+            "{expected}: {dropped:?}"
+        );
+    }
+    let (same, dropped) = super::stealthnet::device_ladder(
+        Some(serde_json::json!([
+            {"minExtraDevices": 2, "discountPercent": 10},
+            {"minExtraDevices": 2, "discountPercent": 15}
+        ])),
+        5,
+    );
+    assert_eq!(same, vec![step(2, 15)]);
+    assert!(
+        dropped[0].contains("оставлена большая скидка"),
+        "{dropped:?}"
+    );
+    let many: Vec<serde_json::Value> = (1..=12)
+        .map(|n| serde_json::json!({"minExtraDevices": n, "discountPercent": n * 5}))
+        .collect();
+    let (ten, dropped) = super::stealthnet::device_ladder(Some(serde_json::Value::Array(many)), 20);
+    assert_eq!(ten.len(), 10);
+    assert_eq!(dropped.len(), 2, "{dropped:?}");
     let (text, _) = super::stealthnet::device_ladder(
         Some(serde_json::Value::String(
             r#"[{"minExtraDevices":1,"discountPercent":15}]"#.into(),
@@ -2978,6 +3006,22 @@ async fn лимит_подписок_категории_и_скидки_за_у�
         issues
             .iter()
             .any(|i| i.code == "tariff_note" && i.details.contains("от 3 доп. устройств")),
+        "{issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.code == "tariff_note" && i.details.contains("у тарифа нет доп. устройств")),
+        "{issues:?}"
+    );
+    let limits: Vec<_> = issues
+        .iter()
+        .filter(|i| i.code == "category_limit")
+        .map(|i| i.who.clone())
+        .collect();
+    assert_eq!(
+        limits,
+        vec![Some("Одна подписка".to_string())],
         "{issues:?}"
     );
 

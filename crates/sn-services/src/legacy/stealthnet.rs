@@ -340,12 +340,22 @@ fn tariffs(dump: &Dump, legacy: &mut Legacy) -> HashMap<String, u32> {
             .f64("price_per_extra_device")
             .and_then(minor_from_float)
             .filter(|v| *v > 0);
+        let tiers = row.json("device_discount_tiers");
         if extra_price.is_some() && extra_max > 0 {
-            let (steps, dropped) = device_ladder(row.json("device_discount_tiers"), extra_max);
+            let (steps, dropped) = device_ladder(tiers, extra_max);
             notes.extend(dropped);
             if !steps.is_empty() {
                 legacy.device_discounts.insert(old_id.clone(), steps);
             }
+        } else if tiers
+            .as_ref()
+            .and_then(|t| t.as_array())
+            .is_some_and(|t| !t.is_empty())
+        {
+            notes.push(
+                "скидки за доп. устройства не перенесены: у тарифа нет доп. устройств, в старой панели они не применялись"
+                    .to_string(),
+            );
         }
         legacy.tariffs.push(LTariff {
             category_old_id: category,
@@ -379,11 +389,13 @@ pub fn device_ladder(
     raw: Option<serde_json::Value>,
     max_extra: u32,
 ) -> (Vec<DeviceDiscount>, Vec<String>) {
-    let mut steps: Vec<(u32, u8)> = Vec::new();
     let mut raw = raw;
     if let Some(serde_json::Value::String(text)) = &raw {
         raw = serde_json::from_str(text).ok();
     }
+    let mut dropped = Vec::new();
+    let mut unreadable = 0usize;
+    let mut steps: Vec<(u32, u8)> = Vec::new();
     for item in raw
         .as_ref()
         .and_then(|v| v.as_array())
@@ -391,40 +403,64 @@ pub fn device_ladder(
         .flatten()
     {
         let number = |key: &str| item.get(key).and_then(serde_json::Value::as_f64);
-        let Some(from) = number("minExtraDevices").or_else(|| number("minDevices")) else {
+        let from = number("minExtraDevices").or_else(|| number("minDevices"));
+        let percent = number("discountPercent");
+        let (Some(from), Some(percent)) = (from, percent) else {
+            unreadable += 1;
             continue;
         };
-        let Some(percent) = number("discountPercent") else {
-            continue;
-        };
-        if !from.is_finite() || !percent.is_finite() || from < 1.0 || percent < 0.0 {
+        if !from.is_finite() || !percent.is_finite() || percent < 0.0 {
+            unreadable += 1;
             continue;
         }
-        let from = from.floor().min(f64::from(u32::MAX)) as u32;
-        let percent = percent.round().min(100.0) as u8;
+        let from = from.floor().clamp(0.0, f64::from(u32::MAX)) as u32;
+        let percent = percent.round().min(255.0) as u8;
         steps.push((from, percent));
     }
+    if unreadable > 0 {
+        dropped.push(format!(
+            "ступеней без числа устройств или процента не перенесено: {unreadable}"
+        ));
+    }
     steps.sort_by_key(|(from, percent)| (*from, std::cmp::Reverse(*percent)));
-    steps.dedup_by_key(|(from, _)| *from);
     let mut ladder: Vec<DeviceDiscount> = Vec::new();
-    let mut dropped = Vec::new();
+    let mut seen: Option<u32> = None;
     for (from, percent) in steps {
-        if from > max_extra {
-            continue;
-        }
-        let previous = ladder.last().map_or(0, |d| d.percent);
-        if percent == 0 && ladder.is_empty() {
-            continue;
-        }
-        if percent <= previous || percent > MAX_DEVICE_DISCOUNT_PERCENT {
+        let step = format!("ступень скидки от {from} доп. устройств ({percent} %) не перенесена");
+        if seen == Some(from) {
             dropped.push(format!(
-                "ступень скидки от {from} доп. устройств ({percent} %) не перенесена: в новой панели скидка растёт с числом устройств и не больше {MAX_DEVICE_DISCOUNT_PERCENT} %"
+                "{step}: от того же числа устройств оставлена большая скидка"
+            ));
+            continue;
+        }
+        seen = Some(from);
+        if from == 0 {
+            dropped.push(format!(
+                "{step}: скидка начинается хотя бы с одного доп. устройства"
+            ));
+            continue;
+        }
+        if from > max_extra {
+            dropped.push(format!(
+                "{step}: докупить можно не больше {max_extra} доп. устройств"
+            ));
+            continue;
+        }
+        if percent == 0 || percent > MAX_DEVICE_DISCOUNT_PERCENT {
+            dropped.push(format!(
+                "{step}: скидка — от 1 до {MAX_DEVICE_DISCOUNT_PERCENT} %"
+            ));
+            continue;
+        }
+        if ladder.last().is_some_and(|d| percent <= d.percent) {
+            dropped.push(format!(
+                "{step}: в новой панели скидка растёт с числом устройств"
             ));
             continue;
         }
         if ladder.len() == MAX_DEVICE_DISCOUNTS {
             dropped.push(format!(
-                "ступень скидки от {from} доп. устройств ({percent} %) не перенесена: ступеней может быть не больше {MAX_DEVICE_DISCOUNTS}"
+                "{step}: ступеней может быть не больше {MAX_DEVICE_DISCOUNTS}"
             ));
             continue;
         }
@@ -1164,5 +1200,33 @@ pub fn map(dump: &Dump) -> Legacy {
     admins(dump, &mut legacy);
     auto_rules(dump, &mut legacy);
     legacy.settings = settings.into_iter().collect();
+    category_limit_notes(&mut legacy);
     legacy
+}
+
+fn category_limit_notes(legacy: &mut Legacy) {
+    let multi = legacy
+        .settings
+        .get("multi_subscriptions_enabled")
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1"));
+    if multi {
+        return;
+    }
+    let notes: Vec<Problem> = legacy
+        .categories
+        .iter()
+        .filter(|c| legacy.category_limits.contains_key(&c.old_id))
+        .map(|c| Problem {
+            code: "category_limit",
+            entity: "category",
+            old_id: Some(c.old_id.clone()),
+            who: Some(c.name.clone()),
+            details: format!(
+                "Категория «{}»: в старой панели — одна подписка на клиента. Перенесено как лимит в одну подписку этой категории, \
+                 но он действует, только когда в «Тарифах» разрешено несколько подписок у клиента. В старой панели несколько подписок не разрешались",
+                c.name
+            ),
+        })
+        .collect();
+    legacy.problems.extend(notes);
 }
