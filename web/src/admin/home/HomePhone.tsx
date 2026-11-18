@@ -10,6 +10,7 @@ import { useSession } from '../session';
 import { useOverview } from './Home';
 import { PanelServer } from './PanelServer';
 import { agoLong, minutesSince, orderLine, personName, spanText, type PaymentItem, type TicketItem } from './model';
+import { setupTodos } from './setup';
 import { moneyTodos, refundTodo, type Todo, type Withdrawal } from './todo';
 import './phone.css';
 import { Avatar } from '../Avatar';
@@ -71,7 +72,7 @@ export function HomePhone() {
   const change =
     revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
 
-  const todos: Todo[] = [];
+  const todos: Todo[] = setupTodos(dashboard?.setup, can);
   for (const node of nodes) {
     if (node.state !== 'down' && !(node.state === 'connecting' && restarting.has(node.uuid))) {
       continue;

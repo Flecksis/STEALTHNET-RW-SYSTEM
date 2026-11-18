@@ -97,6 +97,14 @@ pub struct DashboardView {
     pub remna: Option<RemnaOverview>,
     pub remna_error: Option<String>,
     pub server: crate::server_load::ServerLoad,
+    pub setup: SetupState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SetupState {
+    pub remnawave: bool,
+    pub bot: bool,
+    pub tariffs: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -564,6 +572,11 @@ impl<'a> AdminOps<'a> {
         .fetch_one(conn.conn())
         .await?;
         let charges_review = conn.payments().charges_in_review().await?;
+        let tariffs_on_sale: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tariffs WHERE deleted_at IS NULL AND on_sale)",
+        )
+        .fetch_one(conn.conn())
+        .await?;
         let database_bytes: Option<i64> =
             sqlx::query_scalar("SELECT pg_database_size(current_database())")
                 .fetch_one(conn.conn())
@@ -596,6 +609,11 @@ impl<'a> AdminOps<'a> {
             remna,
             remna_error,
             server,
+            setup: SetupState {
+                remnawave: self.services.remna().is_ok(),
+                bot: self.services.bot_token().is_some(),
+                tariffs: tariffs_on_sale,
+            },
         })
     }
 

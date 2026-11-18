@@ -34,7 +34,10 @@ export type Dashboard = {
   remna: { online_now: number; users_total: number; nodes_total: number; nodes_online: number; nodes: NodeBrief[] } | null;
   remna_error: string | null;
   server?: ServerLoad;
+  setup?: Setup;
 };
+
+export type Setup = { remnawave: boolean; bot: boolean; tariffs: boolean };
 
 export type Usage = { used_bytes: number; total_bytes: number };
 

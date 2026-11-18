@@ -29,6 +29,7 @@ import {
   type PaymentItem,
   type TicketItem,
 } from './model';
+import { setupTodos } from './setup';
 import { desktopTodos, type Waiting, type Withdrawal } from './todo';
 import './home.css';
 import { Avatar } from '../Avatar';
@@ -129,9 +130,16 @@ function useTodoSources() {
   return { waiting, withdrawals: withdrawals ?? [], ready: (!support || waiting !== null) && withdrawals !== null };
 }
 
+function remnaGone(dashboard: Dashboard): string {
+  return dashboard.setup?.remnawave === false
+    ? 'Remnawave не подключена: укажите адрес и токен в «Настройки → Remnawave»'
+    : 'Remnawave не отвечает: проверьте подключение в настройках';
+}
+
 function TodoPane({ dashboard, variant }: { dashboard: Dashboard | null; variant: 'day' | 'main' }) {
+  const { can } = useSession();
   const { waiting, withdrawals, ready } = useTodoSources();
-  const rows = desktopTodos(dashboard?.decisions, dashboard?.webhooks, waiting, withdrawals);
+  const rows = [...setupTodos(dashboard?.setup, can), ...desktopTodos(dashboard?.decisions, dashboard?.webhooks, waiting, withdrawals)];
   const day = variant === 'day';
   return (
     <section aria-labelledby="todo-h" className={day ? 'hm-sec hm-pane' : 'hm-sec hm-nodes hm-todos'}>
@@ -339,6 +347,7 @@ function MainBoard() {
   const delta =
     revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
   const summary = nodesSummary(nodes);
+  const remnaOff = dashboard?.setup?.remnawave === false;
 
   return (
     <div className="hm">
@@ -396,7 +405,7 @@ function MainBoard() {
           <span className="hm-cap">Онлайн сейчас</span>
           <span className="hm-num num">{dashboard?.remna ? groupDigits(dashboard.remna.online_now) : '—'}</span>
           <span style={{ color: dashboard?.remna ? (summary.tone === 'bad' ? 'var(--bad)' : 'var(--muted)') : 'var(--muted)' }}>
-            {dashboard?.remna ? summary.text : 'Remnawave не отвечает'}
+            {dashboard?.remna ? summary.text : remnaOff ? 'Remnawave не подключена' : 'Remnawave не отвечает'}
           </span>
         </div>
         <div className="hm-stat">
@@ -418,7 +427,7 @@ function MainBoard() {
             </h2>
             <span className="hm-small muted">{dashboard?.remna ? nodesHeader(nodes) : ''}</span>
           </div>
-          {dashboard && !dashboard.remna ? <p className="hm-empty muted">Remnawave не отвечает: проверьте подключение в настройках</p> : null}
+          {dashboard && !dashboard.remna ? <p className="hm-empty muted">{remnaGone(dashboard)}</p> : null}
           {nodes.map((node) => {
             const state = nodeStateText(node, true);
             const alert = trafficAlert(node);
@@ -541,7 +550,7 @@ function Daylight() {
               )}
             </>
           ) : dashboard ? (
-            ' Remnawave сейчас не отвечает.'
+            dashboard.setup?.remnawave === false ? ' Remnawave пока не подключена.' : ' Remnawave сейчас не отвечает.'
           ) : null}
         </p>
         <p className="muted">
@@ -614,7 +623,7 @@ function Daylight() {
             </Link>
           ) : null}
         </div>
-        {dashboard && !dashboard.remna ? <p className="muted">Remnawave не отвечает: проверьте подключение в настройках</p> : null}
+        {dashboard && !dashboard.remna ? <p className="muted">{remnaGone(dashboard)}</p> : null}
         <div className="hm-flow-wrap">
           <div className="hm-flow">
             {nodes.map((node) => {

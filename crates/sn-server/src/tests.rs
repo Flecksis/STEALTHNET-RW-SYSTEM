@@ -1127,11 +1127,19 @@ async fn главная_лента_и_ноды_через_http() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(remna["ok"], true);
     assert_eq!(h.get("/api/admin/me", &owner).await.1["remnawave"], true);
+    let (_, dashboard) = h.get("/api/admin/dashboard", &owner).await;
+    assert_eq!(dashboard["setup"]["remnawave"], true);
+    assert_eq!(dashboard["setup"]["bot"], false);
+    assert_eq!(dashboard["setup"]["tariffs"], false);
+    h.tariff().await;
+    let (_, dashboard) = h.get("/api/admin/dashboard", &owner).await;
+    assert_eq!(dashboard["setup"]["tariffs"], true);
     h.services().set_remna(None);
     assert_eq!(h.get("/api/admin/me", &owner).await.1["remnawave"], false);
     let (status, dashboard) = h.get("/api/admin/dashboard", &owner).await;
     assert_eq!(status, StatusCode::OK);
     assert!(dashboard["remna_error"].is_string());
+    assert_eq!(dashboard["setup"]["remnawave"], false);
     assert_eq!(
         h.get("/api/admin/infra/nodes", &owner).await.0,
         StatusCode::SERVICE_UNAVAILABLE
