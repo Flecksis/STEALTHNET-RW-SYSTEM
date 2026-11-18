@@ -1,10 +1,11 @@
 use crate::BotError;
 use crate::handler::BotCtx;
 use crate::telegram::{Keyboard, WidgetMessage, WidgetQuery};
+use crate::text;
 use crate::ui::{self, Html, Text};
 use serde_json::{Value, json};
 use sn_domain::client::IdentityKind;
-use sn_domain::format;
+use sn_domain::lang;
 use sn_domain::payment::{Payment, PaymentStatus, providers};
 use sn_payments::providers::GramInvoice;
 use sn_services::Services;
@@ -60,7 +61,7 @@ fn chat_data(payment: &Payment, invoice: &GramInvoice, state: &str) -> String {
     let fiat = invoice
         .amount
         .as_money()
-        .map(|money| format!("≈ {}", format::money(money)))
+        .map(|money| format!("≈ {}", text::money(money)))
         .unwrap_or_default();
     json!({
         "id": payment.public_id.simple().to_string(),
@@ -77,7 +78,7 @@ pub fn compose(services: &Services, payment: &Payment, what: &str) -> Option<Wid
     }
     let invoice = invoice(payment)?;
     invoice.wallet_transaction(0)?;
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let grams = format!("{} GRAM", invoice.grams());
     let caption = ui::text(
         &content,
@@ -111,7 +112,7 @@ pub async fn compose_for(
             .map(|snapshot| snapshot.name);
         (payment, tariff)
     };
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let what = match tariff {
         Some(name) => ui::text(&content, "pay.what_tariff", &[("tariff", Text(&name))]),
         None => ui::text(&content, "pay.gram_what", &[]),
@@ -124,11 +125,21 @@ fn refusal(text: &str) -> Value {
 }
 
 pub async fn on_query(ctx: &BotCtx, query: WidgetQuery) -> Result<(), BotError> {
+    let locale = crate::handler::user_locale(&ctx.services, &query.from)
+        .await
+        .unwrap_or_default();
+    lang::scope(locale, answer_query(ctx, query)).await
+}
+
+async fn answer_query(ctx: &BotCtx, query: WidgetQuery) -> Result<(), BotError> {
     let answer = match respond(ctx, &query).await {
         Ok(answer) => answer,
         Err(err) => {
             tracing::warn!(error = %err, "запрос виджета оплаты не обработан");
-            refusal("Не получилось подготовить перевод. Попробуйте ещё раз.")
+            refusal(lang::pick(
+                "Не получилось подготовить перевод. Попробуйте ещё раз.",
+                "Couldn't prepare the transfer. Please try again.",
+            ))
         }
     };
     ctx.api
@@ -161,17 +172,22 @@ async fn respond(ctx: &BotCtx, query: &WidgetQuery) -> Result<Value, BotError> {
     let prefix = match query.kind.kind.as_str() {
         "data" => PAY,
         "sent_transaction" => SENT,
-        _ => return Ok(refusal("Этот запрос не поддерживается.")),
+        _ => {
+            return Ok(refusal(lang::pick(
+                "Этот запрос не поддерживается.",
+                "This request isn't supported.",
+            )));
+        }
     };
     let Some(payment) = query
         .data
         .strip_prefix(prefix)
         .and_then(|raw| Uuid::parse_str(raw).ok())
     else {
-        return Ok(refusal("Счёт не найден."));
+        return Ok(refusal(lang::pick("Счёт не найден.", "Invoice not found.")));
     };
     let Some(payment) = owned(&ctx.services, query.from.id, payment).await? else {
-        return Ok(refusal("Счёт не найден."));
+        return Ok(refusal(lang::pick("Счёт не найден.", "Invoice not found.")));
     };
     if prefix == PAY {
         Ok(prepare(&ctx.services, &payment))
@@ -182,17 +198,26 @@ async fn respond(ctx: &BotCtx, query: &WidgetQuery) -> Result<Value, BotError> {
 
 fn prepare(services: &Services, payment: &Payment) -> Value {
     if payment.status.is_paid_like() {
-        return json!({ "done": "Этот счёт уже оплачен." });
+        return json!({ "done": lang::pick("Этот счёт уже оплачен.", "This invoice is already paid.") });
     }
     let now = services.now();
     if payment.status != PaymentStatus::Pending || payment.expires_at.is_some_and(|at| at <= now) {
-        return refusal("Счёт устарел. Оформите оплату заново.");
+        return refusal(lang::pick(
+            "Счёт устарел. Оформите оплату заново.",
+            "The invoice has expired. Please start the payment again.",
+        ));
     }
     if recently_sent(payment.public_id) {
-        return refusal("Перевод по этому счёту уже отправлен. Бот напишет, когда он дойдёт.");
+        return refusal(lang::pick(
+            "Перевод по этому счёту уже отправлен. Бот напишет, когда он дойдёт.",
+            "The transfer for this invoice is already sent. The bot will message you when it arrives.",
+        ));
     }
     if !available(services) {
-        return refusal("Оплата кошельком Telegram сейчас недоступна.");
+        return refusal(lang::pick(
+            "Оплата кошельком Telegram сейчас недоступна.",
+            "Paying with Telegram Wallet isn't available right now.",
+        ));
     }
     let mut valid_until = now.timestamp() + VALID_SECONDS;
     if let Some(at) = payment.expires_at {
@@ -200,7 +225,12 @@ fn prepare(services: &Services, payment: &Payment) -> Value {
     }
     invoice(payment)
         .and_then(|invoice| invoice.wallet_transaction(valid_until))
-        .unwrap_or_else(|| refusal("Кошелёк для оплаты в настройках не подходит."))
+        .unwrap_or_else(|| {
+            refusal(lang::pick(
+                "Кошелёк для оплаты в настройках не подходит.",
+                "Telegram Wallet payments aren't set up correctly. Please contact support.",
+            ))
+        })
 }
 
 async fn mark(ctx: &BotCtx, query: &WidgetQuery, payment: &Payment, state: &str) {

@@ -39,6 +39,7 @@ fn cors(origins: &[String]) -> CorsLayer {
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             HeaderName::from_static(REQUEST_ID),
+            HeaderName::from_static(crate::lang::HEADER),
         ])
         .expose_headers([HeaderName::from_static(REQUEST_ID)])
         .allow_credentials(true)
@@ -85,6 +86,10 @@ pub fn router(state: AppState) -> Router {
         .nest_service("/api/client/m", client_modules)
         .nest_service("/api/public/m", public_modules)
         .fallback(crate::web::fallback)
+        .layer(from_fn_with_state(
+            state.clone(),
+            crate::lang::client_language,
+        ))
         .layer(DefaultBodyLimit::max(state.config.body_limit_bytes))
         .layer(cors(&state.config.cors_origins))
         .layer(SetResponseHeaderLayer::if_not_present(

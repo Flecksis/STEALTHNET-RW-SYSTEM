@@ -32,7 +32,20 @@ struct Decision {
 }
 
 fn refusal(code: &'static str, message: &str) -> GrantRefusal {
-    GrantRefusal::new(code, message)
+    let english = match code {
+        "grant.tariff_missing" => {
+            "The plan of this subscription no longer exists. Please contact support."
+        }
+        "grant.no_squads" => "This subscription has no servers. Please contact support.",
+        "grant.client_blocked" => "Your account is blocked. Please contact support.",
+        "grant.target_missing" => "This subscription wasn't found or has already ended.",
+        "grant.has_subscription" => {
+            "You already have an active subscription, and this gives a new one. You can use it once your subscription ends."
+        }
+        "grant.unavailable" => "Subscriptions can't be issued right now. Please try later.",
+        _ => message,
+    };
+    GrantRefusal::new(code, sn_domain::lang::pick(message, english))
 }
 
 fn active(subscription: &Subscription, now: DateTime<Utc>) -> bool {

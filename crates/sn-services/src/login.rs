@@ -15,6 +15,7 @@ use sn_domain::client::{
 };
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::ClientId;
+use sn_domain::lang;
 use sn_domain::settings::keys;
 use sn_store::{Db, NewClient, NewSession, SessionChannel, SessionScope, Tx};
 
@@ -141,7 +142,7 @@ fn code_invalid() -> ServiceError {
 
 pub fn describe_user_agent(user_agent: &str) -> Option<String> {
     let browser = if user_agent.contains("YaBrowser") {
-        Some("Яндекс Браузер")
+        Some(lang::pick("Яндекс Браузер", "Yandex Browser"))
     } else if user_agent.contains("Edg/") {
         Some("Edge")
     } else if user_agent.contains("OPR/") || user_agent.contains("Opera") {
@@ -471,12 +472,24 @@ impl<'a> Auth<'a> {
         let (code, start) = self.issue_email_code(&email, meta).await?;
         let brand = self.services.settings().brand_name.clone();
         let minutes = EMAIL_CODE_TTL_SECONDS / 60;
+        let (subject, text) = match lang::current() {
+            Locale::Ru => (
+                format!("Код для входа в {brand}: {code}"),
+                format!(
+                    "Код для входа в кабинет {brand}: {code}\n\nОн действует {minutes} минут. Если вход запрашивали не вы, просто не используйте код."
+                ),
+            ),
+            Locale::En => (
+                format!("Your {brand} sign-in code: {code}"),
+                format!(
+                    "Your code to sign in to {brand}: {code}\n\nIt works for {minutes} minutes. If you didn't ask to sign in, just ignore it."
+                ),
+            ),
+        };
         mail.send(&crate::mail::Letter {
             to: start.email.clone(),
-            subject: format!("Код для входа в {brand}: {code}"),
-            text: format!(
-                "Код для входа в кабинет {brand}: {code}\n\nОн действует {minutes} минут. Если вход запрашивали не вы, просто не используйте код."
-            ),
+            subject,
+            text,
         })
         .await?;
         Ok(start)
@@ -524,7 +537,7 @@ impl<'a> Auth<'a> {
         let client = tx
             .clients()
             .create(&NewClient {
-                locale: Locale::Ru,
+                locale: self.services.settings().languages.pick(lang::hint()),
                 registration_source: RegistrationSource::Web,
                 note: None,
             })
@@ -705,7 +718,7 @@ impl<'a> Auth<'a> {
                 let client = tx
                     .clients()
                     .create(&NewClient {
-                        locale: Locale::Ru,
+                        locale: self.services.settings().languages.pick(lang::hint()),
                         registration_source: RegistrationSource::Web,
                         note: None,
                     })
@@ -771,12 +784,24 @@ impl<'a> Auth<'a> {
         if known {
             let brand = self.services.settings().brand_name.clone();
             let minutes = EMAIL_CODE_TTL_SECONDS / 60;
+            let (subject, text) = match lang::current() {
+                Locale::Ru => (
+                    format!("Код для смены пароля в {brand}: {code}"),
+                    format!(
+                        "Код для смены пароля в кабинете {brand}: {code}\n\nОн действует {minutes} минут. Если пароль меняете не вы, не используйте код — старый пароль продолжит работать."
+                    ),
+                ),
+                Locale::En => (
+                    format!("Your {brand} password reset code: {code}"),
+                    format!(
+                        "Your code to reset the {brand} password: {code}\n\nIt works for {minutes} minutes. If you didn't ask for this, ignore the code and your old password keeps working."
+                    ),
+                ),
+            };
             mail.send(&crate::mail::Letter {
                 to: start.email.clone(),
-                subject: format!("Код для смены пароля в {brand}: {code}"),
-                text: format!(
-                    "Код для смены пароля в кабинете {brand}: {code}\n\nОн действует {minutes} минут. Если пароль меняете не вы, не используйте код — старый пароль продолжит работать."
-                ),
+                subject,
+                text,
             })
             .await?;
         }

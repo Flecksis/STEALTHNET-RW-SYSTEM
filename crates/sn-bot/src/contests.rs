@@ -6,6 +6,7 @@ use crate::ui::{self, Lines, Text};
 use chrono::FixedOffset;
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
+use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_modules::catalog::contests::{self, ClientContest, JoinOutcome, Status};
 use sn_modules::catalog::{antibot, referral};
@@ -115,7 +116,7 @@ fn lowercase_first(text: &str) -> String {
 
 fn card(turn: &Turn<'_>, contest: &ClientContest, many: bool) -> Screen {
     let services = turn.services();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let offset = services.settings().remna_offset();
     let mut keyboard = Keyboard::new();
@@ -153,7 +154,7 @@ fn card(turn: &Turn<'_>, contest: &ClientContest, many: bool) -> Screen {
 }
 
 fn list(turn: &Turn<'_>, all: &[ClientContest]) -> Screen {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let mut keyboard = Keyboard::new();
     for contest in all {
@@ -174,7 +175,7 @@ pub async fn entry(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotEr
     let all = contests::visible_for(&ctx, client.id).await?;
     Ok(match all.as_slice() {
         [] => {
-            let content = turn.services().bot_content();
+            let content = turn.content();
             Screen::new(ui::text(&content, "contest.none", &[]))
                 .with_menu()
                 .section(Section::Contests)
@@ -233,7 +234,7 @@ pub async fn confirmed(
 async fn human_check(turn: &Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
     let services = turn.services();
     let token = antibot::challenge(&services.module_context(), client.id).await?;
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     Ok(Screen::new(ui::text(c, "contest.confirm", &[]))
         .keyboard(
@@ -258,7 +259,7 @@ async fn joined(
     match outcome {
         JoinOutcome::Confirm => return human_check(turn, client, id).await,
         JoinOutcome::Denied => {
-            let content = turn.services().bot_content();
+            let content = turn.content();
             return Ok(Screen::notice(ui::text(&content, "contest.denied", &[]))
                 .section(Section::Contests));
         }
@@ -267,13 +268,13 @@ async fn joined(
     let ctx = turn.services().module_context();
     let all = contests::visible_for(&ctx, client.id).await?;
     let Some(found) = all.iter().find(|c| c.id == id) else {
-        let content = turn.services().bot_content();
+        let content = turn.content();
         return Ok(
             Screen::notice(ui::text(&content, "contest.closed", &[])).section(Section::Contests)
         );
     };
     let mut screen = card(turn, found, all.len() > 1);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let offset = turn.services().settings().remna_offset();
     match outcome {
         JoinOutcome::Joined => {

@@ -77,6 +77,18 @@
   max-width: 420px;
 }
 
+.bt-langs {
+  align-self: flex-start;
+}
+
+.bt-langs .bt-count {
+  margin-left: 6px;
+}
+
+.bt-lang-note {
+  margin: 0;
+}
+
 .bt-sections {
   display: flex;
   flex-wrap: wrap;

@@ -102,6 +102,10 @@ async fn site(State(state): State<AppState>) -> Response {
             "devices": access.self_devices,
             "reissue": access.self_reissue,
         },
+        "languages": {
+            "list": settings.languages.enabled(),
+            "default": settings.languages.fallback(),
+        },
     }))
     .into_response()
 }

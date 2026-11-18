@@ -7,8 +7,8 @@ use crate::ui::{self, Html, Lines, Text};
 use sn_domain::access::ClientChannel;
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
-use sn_domain::format;
 use sn_domain::ids::{PeriodId, SubscriptionId, TariffId};
+use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
@@ -44,7 +44,7 @@ pub async fn home(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotErr
     if !enabled(turn) {
         return main_menu(turn.ctx, client).await;
     }
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let has_gifts = !gifts::mine(&turn.services().module_context(), client.id)
         .await?
@@ -67,7 +67,7 @@ pub async fn tariffs(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         return main_menu(turn.ctx, client).await;
     }
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let offers = {
         let mut conn = services.store().conn().await?;
@@ -101,7 +101,7 @@ pub async fn periods(
         return main_menu(turn.ctx, client).await;
     }
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let offers = {
         let mut conn = services.store().conn().await?;
@@ -117,7 +117,7 @@ pub async fn periods(
             "gift.btn.period",
             &[
                 ("term", Text(&gifts::term(period.days))),
-                ("price", Text(&format::money(period.price))),
+                ("price", Text(&text::money(period.price))),
             ],
             format!("gp:{}:{}", tariff_id, period.period_id),
         ));
@@ -152,7 +152,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result
         return main_menu(turn.ctx, client).await;
     }
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let view = match services
         .checkout()
@@ -165,12 +165,12 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result
     let quote = &view.quote;
     let stars = quote
         .stars
-        .map(|s| ui::text(c, "gift.stars", &[("stars", Text(&format::stars(s.total)))]))
+        .map(|s| ui::text(c, "gift.stars", &[("stars", Text(&text::stars(s.total)))]))
         .unwrap_or_default();
     let label = quote
         .lines
         .first()
-        .map(|line| line.label.clone())
+        .map(|line| line.shown_label())
         .unwrap_or_default();
     let mut lines = Lines::new();
     lines.add(ui::text(
@@ -178,7 +178,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result
         "gift.quote",
         &[
             ("label", Text(&label)),
-            ("total", Text(&format::money(quote.total))),
+            ("total", Text(&text::money(quote.total))),
             ("stars", Html(&stars)),
         ],
     ));
@@ -206,8 +206,8 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result
                     c,
                     "buy.balance_short",
                     &[
-                        ("missing", Text(&format::money(*missing))),
-                        ("balance", Text(&format::money(*balance))),
+                        ("missing", Text(&text::money(*missing))),
+                        ("balance", Text(&text::money(*balance))),
                     ],
                 ));
             }
@@ -234,7 +234,7 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<Scr
         return summary(turn, client, rest).await;
     }
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let result = services
         .checkout()
@@ -277,7 +277,7 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<Scr
 }
 
 async fn what(services: &sn_services::Services, request: GiftRequest) -> String {
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let found = match services.store().conn().await {
         Ok(mut conn) => conn.tariffs().get(request.tariff_id).await.ok(),
         Err(_) => None,
@@ -307,7 +307,7 @@ pub async fn mine(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotErr
         return main_menu(turn.ctx, client).await;
     }
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let offset = services.settings().remna_offset();
     let list = gifts::mine(&services.module_context(), client.id).await?;
@@ -377,7 +377,7 @@ pub async fn mine(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotErr
 
 pub fn ask_code(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::GiftCode);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     Screen::new(ui::text(&content, "gift.ask_code", &[]))
         .keyboard(Keyboard::new().push(ui::cancel(&content, "m")))
         .section(Section::Gifts)
@@ -464,7 +464,7 @@ pub async fn open_code(
     if !enabled(turn) {
         return main_menu(turn.ctx, client).await;
     }
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let ctx = turn.services().module_context();
     match gifts::preview(&ctx, client.id, raw, GrantTarget::Auto).await {
@@ -504,7 +504,7 @@ pub async fn redeem(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<
             None => GrantTarget::Auto,
         },
     };
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let ctx = turn.services().module_context();
     match gifts::redeem(&ctx, client.id, &code, target).await {
@@ -552,14 +552,14 @@ pub async fn promo_link(
     if !turn.services().modules().is_enabled(ModuleId::Promolinks) {
         return main_menu(turn.ctx, client).await;
     }
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let ctx = turn.services().module_context();
     match promolinks::activate(&ctx, client.id, code).await {
         Ok(done) => Ok(Screen::new(ui::text(
             c,
             "pl.done",
-            &[("days", Text(&format::days(done.days)))],
+            &[("days", Text(&text::days(done.days)))],
         ))
         .keyboard(
             Keyboard::new()

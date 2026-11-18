@@ -18,6 +18,7 @@ use crate::subscriptions::SubscriptionOps;
 use crate::support::SupportOps;
 use crate::tariffs::TariffAdmin;
 use chrono::{DateTime, Utc};
+use sn_domain::client::Locale;
 use sn_domain::settings::CoreSettings;
 use sn_modules::{BotSender, ModuleContext, ModuleRegistry};
 use sn_payments::ProviderRegistry;
@@ -57,6 +58,7 @@ struct Runtime {
     bot_token: Option<String>,
     updates: Option<Arc<crate::updates::UpdateConfig>>,
     bot_content: Arc<crate::bot_content::BotContent>,
+    bot_content_en: Arc<crate::bot_content::BotContent>,
     bot_sender: Option<Arc<dyn BotSender>>,
     oauth_endpoints: Arc<crate::oauth::OauthEndpoints>,
 }
@@ -94,6 +96,9 @@ impl Services {
             bot_token: deps.env.bot_token.clone(),
             updates: None,
             bot_content: Arc::default(),
+            bot_content_en: Arc::new(
+                crate::bot_content::BotContent::default().in_locale(Locale::En),
+            ),
             bot_sender: None,
             oauth_endpoints: Arc::default(),
         };
@@ -275,6 +280,7 @@ impl Services {
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;
+            r.bot_content_en = Arc::new(bot_content.in_locale(Locale::En));
             r.bot_content = Arc::new(bot_content);
         });
         if token_changed {
@@ -389,6 +395,18 @@ impl Services {
 
     pub fn bot_content(&self) -> Arc<crate::bot_content::BotContent> {
         self.read(|r| r.bot_content.clone())
+    }
+
+    pub fn bot_content_in(&self, locale: Locale) -> Arc<crate::bot_content::BotContent> {
+        let locale = self.settings().languages.effective(locale);
+        self.read(|r| match locale {
+            Locale::Ru => r.bot_content.clone(),
+            Locale::En => r.bot_content_en.clone(),
+        })
+    }
+
+    pub fn locale_of(&self, locale: Locale) -> Locale {
+        self.settings().languages.effective(locale)
     }
 
     pub fn bot_content_ops(&self) -> crate::bot_content::BotContentOps<'_> {

@@ -109,6 +109,22 @@ impl Sector {
     pub fn title(&self) -> String {
         self.label.clone().unwrap_or_else(|| self.prize.label())
     }
+
+    fn stored_title(&self) -> String {
+        sn_domain::lang::sync_scope(sn_domain::client::Locale::Ru, || self.title())
+    }
+}
+
+fn shown_title(stored: String, prize: Prize) -> String {
+    if sn_domain::lang::current() == sn_domain::client::Locale::Ru {
+        return stored;
+    }
+    let standard = sn_domain::lang::sync_scope(sn_domain::client::Locale::Ru, || prize.label());
+    if stored == standard {
+        prize.label()
+    } else {
+        stored
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -573,11 +589,12 @@ pub async fn spins(ctx: &ModuleContext, page: PageRequest) -> Result<Page<SpinIt
 }
 
 fn history_item(row: store::SpinRow) -> HistoryItem {
+    let prize: Prize = serde_json::from_value(row.prize).unwrap_or(Prize::Empty);
     HistoryItem {
         id: row.id,
         sector: row.sector,
-        prize: serde_json::from_value(row.prize).unwrap_or(Prize::Empty),
-        title: row.label,
+        prize,
+        title: shown_title(row.label, prize),
         state: row.state,
         note: row.note,
         code: row.code,
@@ -852,7 +869,7 @@ pub async fn spin(
     };
     let sector = &config.sectors[index];
     let currency = installation_currency(&mut tx).await?;
-    let label = sector.title();
+    let label = sector.stored_title();
     let (balance_minor, days, promo, state) = match sector.prize {
         Prize::Empty => (0, 0, 0, "empty"),
         Prize::Balance { amount } => {

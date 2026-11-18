@@ -16,6 +16,7 @@ const SECTIONS: Array<{ label: string; to?: string; need?: Permission }> = [
   { label: 'Документы', to: '/admin/settings/documents' },
   { label: 'Лендинг', to: '/admin/settings/landing' },
   { label: 'Кабинет и мини-приложение', to: '/admin/settings/client' },
+  { label: 'Языки', to: '/admin/settings/languages' },
   { label: 'Почта и уведомления', to: '/admin/settings/mail' },
   { label: 'Уведомления в Telegram', to: '/admin/settings/alerts' },
   { label: 'Администраторы', to: '/admin/settings/admins', need: 'admins' },

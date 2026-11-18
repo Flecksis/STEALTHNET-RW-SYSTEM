@@ -10,14 +10,15 @@ use crate::module::{BotEntry, Module, ModuleConfig, ScheduledTask};
 use async_trait::async_trait;
 use axum::Router;
 use serde::{Deserialize, Serialize};
+use sn_domain::client::Locale;
 use sn_domain::events::DomainEvent;
-use sn_domain::format;
 use sn_domain::ids::{AdminId, ClientId, PaymentId};
 use sn_domain::ledger::{LedgerKind, Wallet};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency, parse_units};
 use sn_domain::payment::{PaymentStatus, ProviderId, providers};
 use sn_domain::settings::{SettingField, keys};
+use sn_domain::{format, lang};
 use sn_store::{Db, StoreError};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -476,6 +477,29 @@ impl ReferralRejection {
     }
 
     pub fn message(self) -> String {
+        let locale = lang::current();
+        if locale == Locale::En {
+            return match self {
+                ReferralRejection::WithdrawalsOff => "Withdrawals aren't accepted right now".into(),
+                ReferralRejection::MethodUnavailable => {
+                    "This withdrawal method isn't available right now, choose another one".into()
+                }
+                ReferralRejection::BadAmount => "The amount looks wrong".into(),
+                ReferralRejection::BelowMinimum { min } => format!(
+                    "The minimum withdrawal is {}",
+                    format::money_in(min, locale)
+                ),
+                ReferralRejection::NotEnough { balance } => format!(
+                    "Your referral balance is {}, that's not enough",
+                    format::money_in(balance, locale)
+                ),
+                ReferralRejection::BadDetails => "The payout details look wrong".into(),
+                ReferralRejection::AlreadyDecided => {
+                    "This request has already been processed".into()
+                }
+                ReferralRejection::NeedComment => "Give a reason for declining".into(),
+            };
+        }
         match self {
             ReferralRejection::WithdrawalsOff => "Вывод сейчас не принимается".into(),
             ReferralRejection::MethodUnavailable => {

@@ -71,6 +71,7 @@ async fn read(
         "autorenew" => json(&ops.autorenew())?,
         "multi_subscriptions" => json(&ops.multi_subscriptions())?,
         "client_access" => json(&ops.client_access())?,
+        "languages" => json(&ops.languages())?,
         "remnawave" => json(&ops.remnawave().await?)?,
         "subscription" => json(&ops.subscription_settings().await?)?,
         "bot" => json(&ops.bot().await?)?,
@@ -117,6 +118,10 @@ async fn write(
         )?,
         "client_access" => json(
             &ops.update_client_access(&decode::<ClientAccess>(body)?, by)
+                .await?,
+        )?,
+        "languages" => json(
+            &ops.update_languages(&decode::<sn_domain::client::Languages>(body)?, by)
                 .await?,
         )?,
         "remnawave" => json(

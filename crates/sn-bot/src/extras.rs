@@ -7,8 +7,8 @@ use crate::ui::{self, Html, Lines, Text};
 use sn_domain::access::ClientChannel;
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
-use sn_domain::format;
 use sn_domain::ids::SubscriptionId;
+use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_domain::payment::providers;
 use sn_domain::tariff::TrafficLeftover;
@@ -53,7 +53,7 @@ pub async fn entry(turn: &mut Turn<'_>, client: &Client, key: &str) -> Result<Sc
 
 fn promo_prompt(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::PromoCode);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     Screen::new(ui::text(&content, "promo.prompt", &[]))
         .keyboard(Keyboard::new().push(ui::cancel(&content, "m")))
         .section(Section::Promo)
@@ -65,7 +65,7 @@ pub async fn promo_entered(
     raw: &str,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let ctx = services.module_context();
     let checked = promo::check(
@@ -97,7 +97,7 @@ pub async fn promo_entered(
         Err(PromoError::Module(err)) => return Ok(Screen::notice(module_error(err))),
     };
     if code.is_discount() {
-        let label = code.label();
+        let label = code.shown_label();
         turn.session.promo = Some(code.code);
         return Ok(
             Screen::new(ui::text(c, "promo.saved", &[("code", Text(&label))]))
@@ -146,14 +146,14 @@ pub async fn activate_days(
     let Some(code) = turn.session.days_code.take() else {
         return Ok(promo_prompt(turn));
     };
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let ctx = turn.services().module_context();
     match promo::activate(&ctx, client.id, &code, SubscriptionId(subscription_id)).await {
         Ok(done) => Ok(Screen::new(ui::text(
             c,
             "promo.days_added",
-            &[("days", Text(&format::days(done.days)))],
+            &[("days", Text(&text::days(done.days)))],
         ))
         .keyboard(
             Keyboard::new()
@@ -174,7 +174,7 @@ pub async fn activate_days(
 }
 
 fn back_to_referral(turn: &Turn<'_>, key: &str) -> Keyboard {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     Keyboard::new().push(ui::button(
         &content,
         key,
@@ -184,7 +184,7 @@ fn back_to_referral(turn: &Turn<'_>, key: &str) -> Keyboard {
 }
 
 async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let ctx = turn.services().module_context();
     let overview = referral::overview(&ctx, client.id).await?;
@@ -212,12 +212,12 @@ async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen,
     lines.add(ui::text(
         c,
         "ref.earned",
-        &[("amount", Text(&format::money(overview.earned)))],
+        &[("amount", Text(&text::money(overview.earned)))],
     ));
     lines.add(ui::text(
         c,
         "ref.balance",
-        &[("amount", Text(&format::money(overview.balance)))],
+        &[("amount", Text(&text::money(overview.balance)))],
     ));
     let mut keyboard = Keyboard::new();
     let pending: Vec<_> = overview
@@ -234,13 +234,13 @@ async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen,
         lines.blank();
         for withdrawal in &pending {
             let id = withdrawal.id.to_string();
-            let status = withdrawal.status.title_ru().to_lowercase();
+            let status = withdrawal.status.title().to_lowercase();
             lines.add(ui::text(
                 c,
                 "ref.withdrawal",
                 &[
                     ("id", Text(&id)),
-                    ("amount", Text(&format::money(withdrawal.amount))),
+                    ("amount", Text(&text::money(withdrawal.amount))),
                     ("status", Text(&status)),
                 ],
             ));
@@ -278,7 +278,7 @@ pub async fn referral_action(
     if !turn.services().modules().is_enabled(ModuleId::Referral) {
         return main_menu(turn.ctx, client).await;
     }
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let (action, arg) = rest.split_once(':').unwrap_or((rest, ""));
     match action {
@@ -312,13 +312,13 @@ pub async fn referral_action(
             let overview = referral::overview(&ctx, client.id).await?;
             let minimum = method
                 .min
-                .map(|m| ui::text(c, "ref.minimum", &[("amount", Text(&format::money(m)))]))
+                .map(|m| ui::text(c, "ref.minimum", &[("amount", Text(&text::money(m)))]))
                 .unwrap_or_default();
             Ok(Screen::new(ui::text(
                 c,
                 "ref.amount",
                 &[
-                    ("amount", Text(&format::money(overview.balance))),
+                    ("amount", Text(&text::money(overview.balance))),
                     ("minimum", Html(&minimum)),
                 ],
             ))
@@ -336,7 +336,7 @@ pub async fn referral_action(
                     "ref.cancelled",
                     &[
                         ("id", Text(&withdrawal.id.to_string())),
-                        ("amount", Text(&format::money(withdrawal.amount))),
+                        ("amount", Text(&text::money(withdrawal.amount))),
                     ],
                 ))
                 .keyboard(back_to_referral(turn, "common.btn.back"))
@@ -411,7 +411,7 @@ pub async fn withdrawal_amount(
         amount: Some(amount),
     });
     turn.session.wait_for(Awaiting::WithdrawalDetails);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     Ok(Screen::new(ui::text(
         &content,
         "ref.details",
@@ -433,7 +433,7 @@ pub async fn withdrawal_details(
     else {
         return referral_screen(turn, client).await;
     };
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let ctx = turn.services().module_context();
     match referral::request_withdrawal(
@@ -452,7 +452,7 @@ pub async fn withdrawal_details(
             "ref.requested",
             &[
                 ("id", Text(&withdrawal.id.to_string())),
-                ("amount", Text(&format::money(withdrawal.amount))),
+                ("amount", Text(&text::money(withdrawal.amount))),
             ],
         ))
         .keyboard(back_to_referral(turn, "common.btn.back"))
@@ -463,7 +463,7 @@ pub async fn withdrawal_details(
 
 async fn options_start(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let subscriptions: Vec<_> = live(services.subscriptions().list_for_client(client.id).await?)
         .into_iter()
@@ -583,7 +583,7 @@ async fn options_menu(
         Ok(view) => view,
         Err(message) => return Ok(Screen::notice(message).section(Section::Options)),
     };
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     match (view.devices.offer, view.traffic.offer) {
         (Some(devices), None) => Ok(devices_screen(c, &devices, false)),
@@ -639,7 +639,7 @@ fn devices_screen(
     }
     let stars = offer
         .per_device_stars
-        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s)))]))
+        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&text::stars(s)))]))
         .unwrap_or_default();
     let message = ui::text(
         c,
@@ -648,8 +648,8 @@ fn devices_screen(
             ("included", Text(&offer.included.to_string())),
             ("extra", Text(&offer.extra_now.to_string())),
             ("can_add", Text(&offer.can_add.to_string())),
-            ("days", Text(&format::days(offer.days))),
-            ("price", Text(&format::money(offer.per_device))),
+            ("days", Text(&text::days(offer.days))),
+            ("price", Text(&text::money(offer.per_device))),
             ("stars", Html(&stars)),
         ],
     );
@@ -683,7 +683,7 @@ fn leftover_key(reset: TrafficReset, leftover: TrafficLeftover) -> &'static str 
 }
 
 fn traffic_screen(turn: &Turn<'_>, offer: &TrafficOffer, both: bool) -> Screen {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let sub = offer.subscription_id;
     let note = ui::text(c, leftover_key(offer.reset, offer.leftover), &[]);
@@ -691,13 +691,10 @@ fn traffic_screen(turn: &Turn<'_>, offer: &TrafficOffer, both: bool) -> Screen {
         c,
         "opt.traffic",
         &[
-            (
-                "used",
-                Text(&format::traffic(offer.used_bytes.unwrap_or(0))),
-            ),
+            ("used", Text(&text::traffic(offer.used_bytes.unwrap_or(0)))),
             (
                 "limit",
-                Text(&format::traffic(offer.limit_bytes.unwrap_or(0))),
+                Text(&text::traffic(offer.limit_bytes.unwrap_or(0))),
             ),
             ("note", Html(&note)),
         ],
@@ -709,7 +706,7 @@ fn traffic_screen(turn: &Turn<'_>, offer: &TrafficOffer, both: bool) -> Screen {
             "opt.btn.pack",
             &[
                 ("gb", Text(&pack.gb.to_string())),
-                ("price", Text(&format::money(pack.price))),
+                ("price", Text(&text::money(pack.price))),
             ],
             format!("opt:{sub}:t:{}", pack.gb),
         ));
@@ -731,7 +728,7 @@ async fn addon_summary(
     addon: Addon,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let view = match services
         .checkout()
@@ -748,12 +745,12 @@ async fn addon_summary(
     let quote = &view.quote;
     let stars = quote
         .stars
-        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&format::stars(s.total)))]))
+        .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&text::stars(s.total)))]))
         .unwrap_or_default();
     let label = quote
         .lines
         .first()
-        .map(|line| line.label.clone())
+        .map(|line| line.shown_label())
         .unwrap_or_default();
     let mut lines = Lines::new();
     lines.add(ui::text(
@@ -761,7 +758,7 @@ async fn addon_summary(
         "opt.quote",
         &[
             ("label", Text(&label)),
-            ("total", Text(&format::money(quote.total))),
+            ("total", Text(&text::money(quote.total))),
             ("stars", Html(&stars)),
         ],
     ));
@@ -788,8 +785,8 @@ async fn addon_summary(
                     c,
                     "buy.balance_short",
                     &[
-                        ("missing", Text(&format::money(*missing))),
-                        ("balance", Text(&format::money(*balance))),
+                        ("missing", Text(&text::money(*missing))),
+                        ("balance", Text(&text::money(*balance))),
                     ],
                 ));
             }
@@ -833,7 +830,7 @@ pub async fn options_action(
         Err(message) => return Ok(Screen::notice(message).section(Section::Options)),
     };
     let both = view.devices.offer.is_some() && view.traffic.offer.is_some();
-    let content = turn.services().bot_content();
+    let content = turn.content();
     match kind {
         "d" => Ok(match &view.devices.offer {
             Some(offer) => devices_screen(&content, offer, both),
@@ -870,7 +867,7 @@ pub async fn options_pay(
         return addon_summary(turn, client, sub, addon).await;
     }
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let result = services
         .checkout()
         .start_item(

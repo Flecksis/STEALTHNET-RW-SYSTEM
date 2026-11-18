@@ -12,8 +12,8 @@ use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sn_domain::client::Locale;
 use sn_domain::events::DomainEvent;
-use sn_domain::format;
 use sn_domain::ids::{AdminId, ClientId, OrderId, SubscriptionId, TariffId};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
@@ -21,6 +21,7 @@ use sn_domain::order::{Order, PurchaseIntent};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{Payment, PaymentStatus};
 use sn_domain::pricing::{AdjustmentKind, AdjustmentSource, PriceAdjustment, Quote, QuoteLineKind};
+use sn_domain::{format, lang};
 use sn_store::{Db, LockSpace, StoreError, Tx};
 use std::future::Future;
 use std::net::IpAddr;
@@ -64,6 +65,26 @@ pub struct PromoCode {
 }
 
 impl PromoCode {
+    pub fn shown_label(&self) -> String {
+        let locale = lang::current();
+        match (locale, self.kind) {
+            (Locale::Ru, _) => self.label(),
+            (_, PromoKind::Percent { percent }) => {
+                format!("Promo code {}, −{percent}%", self.code)
+            }
+            (_, PromoKind::Fixed { amount }) => format!(
+                "Promo code {}, −{}",
+                self.code,
+                format::money_in(amount, locale)
+            ),
+            (_, PromoKind::Days { days }) => format!(
+                "Promo code {}, +{}",
+                self.code,
+                format::days_in(days, locale)
+            ),
+        }
+    }
+
     pub fn label(&self) -> String {
         match self.kind {
             PromoKind::Percent { percent } => format!("Промокод {}, −{percent}%", self.code),
@@ -158,25 +179,36 @@ impl PromoRejection {
         }
     }
 
-    pub const fn message(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            PromoRejection::AlreadyUsed => "Вы уже использовали этот промокод",
-            PromoRejection::DaysCode => {
-                "Этот промокод добавляет дни к подписке: активируйте его в разделе «Промокод»"
-            }
-            PromoRejection::DiscountCode => "Это промокод на скидку: введите его при оплате",
-            PromoRejection::NoSubscription => {
-                "Промокод добавляет дни к подписке, а подходящей подписки нет"
-            }
-            PromoRejection::Reserved => {
-                "Промокод уже применён к неоплаченному счёту. Оплатите его или подождите, пока счёт истечёт"
-            }
-            PromoRejection::TooManyAttempts => {
-                "Слишком много неверных промокодов. Попробуйте снова через 15 минут"
-            }
-            PromoRejection::Protected => {
-                "Промокоды на дни недоступны для этого аккаунта. Если это ошибка, напишите в поддержку"
-            }
+            PromoRejection::AlreadyUsed => lang::pick(
+                "Вы уже использовали этот промокод",
+                "You've already used this promo code",
+            ),
+            PromoRejection::DaysCode => lang::pick(
+                "Этот промокод добавляет дни к подписке: активируйте его в разделе «Промокод»",
+                "This promo code adds days to a subscription. Activate it under “Promo code”",
+            ),
+            PromoRejection::DiscountCode => lang::pick(
+                "Это промокод на скидку: введите его при оплате",
+                "This is a discount code. Enter it at checkout",
+            ),
+            PromoRejection::NoSubscription => lang::pick(
+                "Промокод добавляет дни к подписке, а подходящей подписки нет",
+                "This promo code adds days to a subscription, but you don't have a suitable one",
+            ),
+            PromoRejection::Reserved => lang::pick(
+                "Промокод уже применён к неоплаченному счёту. Оплатите его или подождите, пока счёт истечёт",
+                "This promo code is already on an unpaid invoice. Pay it or wait until it expires",
+            ),
+            PromoRejection::TooManyAttempts => lang::pick(
+                "Слишком много неверных промокодов. Попробуйте снова через 15 минут",
+                "Too many wrong promo codes. Try again in 15 minutes",
+            ),
+            PromoRejection::Protected => lang::pick(
+                "Промокоды на дни недоступны для этого аккаунта. Если это ошибка, напишите в поддержку",
+                "Promo codes for days aren't available for this account. If this is a mistake, contact support",
+            ),
             PromoRejection::NotFound
             | PromoRejection::Disabled
             | PromoRejection::NotStarted
@@ -184,7 +216,10 @@ impl PromoRejection {
             | PromoRejection::Exhausted
             | PromoRejection::FirstPurchaseOnly
             | PromoRejection::WrongTariff
-            | PromoRejection::WrongCurrency => UNKNOWN_MESSAGE,
+            | PromoRejection::WrongCurrency => lang::pick(
+                UNKNOWN_MESSAGE,
+                "This promo code doesn't exist or doesn't apply here",
+            ),
         }
     }
 }

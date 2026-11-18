@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, Utc};
 use sn_domain::bot_content::Content;
 use sn_domain::bot_content::Value::{self, Html, Text};
-use sn_domain::client::IdentityKind;
-use sn_domain::format;
+use sn_domain::client::{IdentityKind, Locale};
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::{JobPayload, retry_delay};
+use sn_domain::lang;
 use sn_domain::money::Money;
 use sn_modules::MailSite;
 use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
@@ -60,9 +60,82 @@ fn param(params: &serde_json::Value, key: &str) -> Option<String> {
         serde_json::Value::Number(n) => Some(n.to_string()),
         value @ serde_json::Value::Object(_) => serde_json::from_value::<Money>(value.clone())
             .ok()
-            .map(|money| escape(&format::money(money))),
+            .map(|money| escape(&text::money(money))),
         _ => None,
     }
+}
+
+fn text_param(params: &serde_json::Value) -> Option<String> {
+    match lang::current() {
+        Locale::En => param(params, "text_en").or_else(|| param(params, "text")),
+        Locale::Ru => param(params, "text"),
+    }
+}
+
+fn term_param(params: &serde_json::Value) -> Option<String> {
+    match params.get("days").and_then(serde_json::Value::as_u64) {
+        Some(days) => Some(escape(&gifts::term(
+            u32::try_from(days).unwrap_or(u32::MAX),
+        ))),
+        None => param(params, "term"),
+    }
+}
+
+fn bytes_param(params: &serde_json::Value, bytes: &str, shown: &str) -> Option<String> {
+    match params.get(bytes).and_then(serde_json::Value::as_u64) {
+        Some(value) => Some(escape(&text::traffic(value))),
+        None => param(params, shown),
+    }
+}
+
+fn limits_period(params: &serde_json::Value) -> Option<(String, String)> {
+    let when = params.get("when")?.as_str()?.to_string();
+    let per = params.get("per")?.as_str()?.to_string();
+    if lang::current() == Locale::Ru {
+        return Some((when, per));
+    }
+    Some(
+        match params.get("period").and_then(serde_json::Value::as_str) {
+            Some("week") => ("This week".into(), "per week".into()),
+            _ => ("Today".into(), "per day".into()),
+        },
+    )
+}
+
+fn until_param(params: &serde_json::Value, offset: FixedOffset) -> Option<String> {
+    if lang::current() == Locale::En
+        && let Some(at) = params
+            .get("until_at")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+    {
+        let at = at.with_timezone(&Utc);
+        let local = at.with_timezone(&offset);
+        return Some(escape(&format!(
+            "{}, {}",
+            text::day_month(at, offset),
+            local.format("%H:%M")
+        )));
+    }
+    param(params, "until")
+}
+
+fn prize_param(params: &serde_json::Value) -> Option<String> {
+    params
+        .get("prize_data")
+        .and_then(|raw| {
+            serde_json::from_value::<sn_modules::catalog::prize::Prize>(raw.clone()).ok()
+        })
+        .map(|prize| escape(&prize.label()))
+        .or_else(|| param(params, "prize"))
+}
+
+fn note_param(params: &serde_json::Value) -> Option<String> {
+    params
+        .get("note")
+        .and_then(serde_json::Value::as_str)
+        .map(|note| escape(&contests::shown_note(note.trim())))
+        .filter(|note| !note.is_empty())
 }
 
 fn canonical<'a>(template: &'a str, params: &serde_json::Value) -> &'a str {
@@ -208,14 +281,14 @@ pub fn render(
             Some(("notify.btn.reply", reply.as_str())),
         ),
         templates::REPEAT_CREDITED | templates::PAYMENT_CREDITED => {
-            (param(params, "text")?, Some(("notify.btn.balance", "bal")))
+            (text_param(params)?, Some(("notify.btn.balance", "bal")))
         }
         templates::REPEAT_REVIEW | templates::PAYMENT_REVIEW => {
-            (param(params, "text")?, Some(("notify.btn.support", "sup")))
+            (text_param(params)?, Some(("notify.btn.support", "sup")))
         }
         gifts::TEMPLATE_READY => {
             let tariff = param(params, "tariff")?;
-            let term = param(params, "term")?;
+            let term = term_param(params)?;
             let code = param(params, "code")?;
             let mut lines = vec![t(
                 "notify.gift_ready",
@@ -249,7 +322,7 @@ pub fn render(
                 &[
                     ("code", Html(&param(params, "code")?)),
                     ("tariff", Html(&param(params, "tariff")?)),
-                    ("term", Html(&param(params, "term")?)),
+                    ("term", Html(&term_param(params)?)),
                 ],
             ),
             Some(("notify.btn.gifts", "gl")),
@@ -261,31 +334,37 @@ pub fn render(
             ),
             Some(("notify.btn.referral", "x:referral")),
         ),
-        limits::TEMPLATE_WARNING => (
-            t(
-                "notify.traffic_warning",
-                &[
-                    ("when", Text(params.get("when")?.as_str()?)),
-                    ("used", Html(&param(params, "used")?)),
-                    ("limit", Html(&param(params, "limit")?)),
-                    ("per", Text(params.get("per")?.as_str()?)),
-                ],
-            ),
-            Some(("notify.btn.subscription", "subs")),
-        ),
-        limits::TEMPLATE_RESTRICTED => (
-            t(
-                "notify.traffic_restricted",
-                &[
-                    ("when", Text(params.get("when")?.as_str()?)),
-                    ("used", Html(&param(params, "used")?)),
-                    ("limit", Html(&param(params, "limit")?)),
-                    ("per", Text(params.get("per")?.as_str()?)),
-                    ("until", Html(&param(params, "until")?)),
-                ],
-            ),
-            Some(("notify.btn.subscription", "subs")),
-        ),
+        limits::TEMPLATE_WARNING => {
+            let (when, per) = limits_period(params)?;
+            (
+                t(
+                    "notify.traffic_warning",
+                    &[
+                        ("when", Text(&when)),
+                        ("used", Html(&bytes_param(params, "used_bytes", "used")?)),
+                        ("limit", Html(&bytes_param(params, "limit_bytes", "limit")?)),
+                        ("per", Text(&per)),
+                    ],
+                ),
+                Some(("notify.btn.subscription", "subs")),
+            )
+        }
+        limits::TEMPLATE_RESTRICTED => {
+            let (when, per) = limits_period(params)?;
+            (
+                t(
+                    "notify.traffic_restricted",
+                    &[
+                        ("when", Text(&when)),
+                        ("used", Html(&bytes_param(params, "used_bytes", "used")?)),
+                        ("limit", Html(&bytes_param(params, "limit_bytes", "limit")?)),
+                        ("per", Text(&per)),
+                        ("until", Html(&until_param(params, offset)?)),
+                    ],
+                ),
+                Some(("notify.btn.subscription", "subs")),
+            )
+        }
         limits::TEMPLATE_LIFTED => (
             t("notify.traffic_lifted", &[]),
             Some(("notify.btn.subscription", "subs")),
@@ -305,8 +384,8 @@ pub fn render(
                 "notify.contest_won",
                 &[
                     ("title", Html(&param(params, "title")?)),
-                    ("prize", Html(&param(params, "prize")?)),
-                    ("result", Html(&param(params, "note").unwrap_or_default())),
+                    ("prize", Html(&prize_param(params)?)),
+                    ("result", Html(&note_param(params).unwrap_or_default())),
                 ],
             );
             if let Some(code) = param(params, "code") {
@@ -320,7 +399,7 @@ pub fn render(
                 "notify.contest_waiting",
                 &[
                     ("title", Html(&param(params, "title")?)),
-                    ("prize", Html(&param(params, "prize")?)),
+                    ("prize", Html(&prize_param(params)?)),
                 ],
             ),
             Some(("notify.btn.contests", "x:contests")),
@@ -415,13 +494,35 @@ impl NotifyHandler {
             Ok(identities) => identities,
             Err(err) => return retry(err.to_string()),
         };
+        drop(conn);
+        let locale = services.locale_of(client.locale);
+        lang::scope(
+            locale,
+            self.deliver_to(services, &client, &identities, template, params, attempt),
+        )
+        .await
+    }
+
+    async fn deliver_to(
+        &self,
+        services: &Services,
+        client: &sn_domain::client::Client,
+        identities: &[sn_domain::client::Identity],
+        template: &str,
+        params: &serde_json::Value,
+        attempt: u32,
+    ) -> JobResult {
+        let client_id = client.id;
+        let retry = |error: String| JobResult::Retry {
+            after: retry_delay(attempt),
+            error,
+        };
         let chat = identities
             .iter()
             .find(|i| i.kind == IdentityKind::Telegram)
             .and_then(|i| i.value.parse::<i64>().ok())
             .filter(|_| !client.bot_unreachable);
         let Some(chat_id) = chat else {
-            drop(conn);
             return match identities.iter().find(|i| i.kind == IdentityKind::Email) {
                 Some(email) => mail_notice(services, &email.value, template, params, attempt).await,
                 None => {
@@ -430,7 +531,6 @@ impl NotifyHandler {
                 }
             };
         };
-        drop(conn);
         let Some(token) = services.bot_token() else {
             return retry("токен бота не задан".into());
         };
@@ -452,7 +552,7 @@ impl NotifyHandler {
                 .await
                 .map(|_| ())
         } else {
-            let content = services.bot_content();
+            let content = services.bot_content_in(lang::current());
             let Some(rendered) = render(
                 &content.content,
                 template,
@@ -517,7 +617,7 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
         .get("ticket_id")
         .and_then(serde_json::Value::as_i64)
         .filter(|id| *id > 0);
-    let head = |kind, subject: &str, button, path: &str| LetterHead {
+    let head = |kind, subject: &str, button: &'static str, path: &str| LetterHead {
         kind,
         subject: subject.to_string(),
         button,
@@ -526,125 +626,138 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
     Some(match canonical(template, params) {
         templates::PAYMENT_PAID => head(
             LetterKind::Payments,
-            "Оплата получена",
-            "Открыть кабинет",
+            lang::pick("Оплата получена", "Payment received"),
+            lang::pick("Открыть кабинет", "Open your account"),
             "/cabinet",
         ),
         templates::TOPUP_DONE => head(
             LetterKind::Payments,
-            "Баланс пополнен",
-            "История оплат",
+            lang::pick("Баланс пополнен", "Balance topped up"),
+            lang::pick("История оплат", "Payment history"),
             "/cabinet/payments",
         ),
         templates::PAYMENT_CREDITED => head(
             LetterKind::Payments,
-            "Деньги зачислены на баланс",
-            "История оплат",
+            lang::pick("Деньги зачислены на баланс", "Money added to your balance"),
+            lang::pick("История оплат", "Payment history"),
             "/cabinet/payments",
         ),
         templates::PAYMENT_REVIEW => head(
             LetterKind::Payments,
-            "Оплату проверим вручную",
-            "История оплат",
+            lang::pick(
+                "Оплату проверим вручную",
+                "We'll check your payment by hand",
+            ),
+            lang::pick("История оплат", "Payment history"),
             "/cabinet/payments",
         ),
         templates::SUBSCRIPTION_READY => head(
             LetterKind::Payments,
-            "Подписка готова",
-            "Открыть кабинет",
+            lang::pick("Подписка готова", "Your subscription is ready"),
+            lang::pick("Открыть кабинет", "Open your account"),
             "/cabinet",
         ),
         templates::SUBSCRIPTION_RENEWED => head(
             LetterKind::Payments,
-            "Подписка продлена",
-            "Открыть кабинет",
+            lang::pick("Подписка продлена", "Subscription renewed"),
+            lang::pick("Открыть кабинет", "Open your account"),
             "/cabinet",
         ),
         templates::SUBSCRIPTION_EXPIRING => head(
             LetterKind::Expiring,
-            "Подписка скоро закончится",
-            "Продлить",
+            lang::pick("Подписка скоро закончится", "Your subscription ends soon"),
+            lang::pick("Продлить", "Renew"),
             "/cabinet/pay",
         ),
         templates::AUTORENEW_UPCOMING => head(
             LetterKind::Expiring,
-            "Скоро автопродление",
-            "Пополнить баланс",
+            lang::pick("Скоро автопродление", "Auto-renewal is coming up"),
+            lang::pick("Пополнить баланс", "Top up balance"),
             "/cabinet/topup",
         ),
         templates::AUTORENEW_FAILED => head(
             LetterKind::Expiring,
-            "Подписку не удалось продлить",
-            "Продлить",
+            lang::pick(
+                "Подписку не удалось продлить",
+                "Couldn't renew your subscription",
+            ),
+            lang::pick("Продлить", "Renew"),
             "/cabinet/pay",
         ),
         templates::AUTORENEW_DISABLED => head(
             LetterKind::Expiring,
-            "Автопродление выключено",
-            "Продлить",
+            lang::pick("Автопродление выключено", "Auto-renewal is off"),
+            lang::pick("Продлить", "Renew"),
             "/cabinet/pay",
         ),
         templates::AUTORENEW_AFTER_OFF => head(
             LetterKind::Payments,
-            "Списание прошло до выключения автопродления",
-            "Написать в поддержку",
+            lang::pick(
+                "Списание прошло до выключения автопродления",
+                "Charged before auto-renewal was turned off",
+            ),
+            lang::pick("Написать в поддержку", "Contact support"),
             "/cabinet/help",
         ),
         templates::REFUNDED_BLOCKED => head(
             LetterKind::Payments,
-            "Оплата возвращена",
-            "Открыть сайт",
+            lang::pick("Оплата возвращена", "Payment refunded"),
+            lang::pick("Открыть сайт", "Open the website"),
             "/",
         ),
         gifts::TEMPLATE_READY => head(
             LetterKind::Payments,
-            "Подарок оплачен",
-            "Мои подарки",
+            lang::pick("Подарок оплачен", "Gift paid"),
+            lang::pick("Мои подарки", "My gifts"),
             "/cabinet/gifts",
         ),
         gifts::TEMPLATE_REDEEMED => head(
             LetterKind::Payments,
-            "Ваш подарок активировали",
-            "Мои подарки",
+            lang::pick("Ваш подарок активировали", "Your gift was activated"),
+            lang::pick("Мои подарки", "My gifts"),
             "/cabinet/gifts",
         ),
         limits::TEMPLATE_WARNING => head(
             LetterKind::Service,
-            "Превышен лимит трафика",
-            "Открыть кабинет",
+            lang::pick("Превышен лимит трафика", "Traffic limit exceeded"),
+            lang::pick("Открыть кабинет", "Open your account"),
             "/cabinet",
         ),
         limits::TEMPLATE_RESTRICTED => head(
             LetterKind::Service,
-            "Доступ временно ограничен",
-            "Открыть кабинет",
+            lang::pick("Доступ временно ограничен", "Access temporarily restricted"),
+            lang::pick("Открыть кабинет", "Open your account"),
             "/cabinet",
         ),
         limits::TEMPLATE_LIFTED => head(
             LetterKind::Service,
-            "Ограничение по трафику снято",
-            "Открыть кабинет",
+            lang::pick("Ограничение по трафику снято", "Traffic restriction lifted"),
+            lang::pick("Открыть кабинет", "Open your account"),
             "/cabinet",
         ),
-        oauth::TEMPLATE_LINKED => head(
-            LetterKind::Service,
-            &format!(
-                "Привязан вход через {}",
-                params
-                    .get("provider")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Google или Apple")
-            ),
-            "Безопасность",
-            "/cabinet/security",
-        ),
+        oauth::TEMPLATE_LINKED => {
+            let provider = params
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| lang::pick("Google или Apple", "Google or Apple"));
+            head(
+                LetterKind::Service,
+                &match lang::current() {
+                    Locale::Ru => format!("Привязан вход через {provider}"),
+                    Locale::En => format!("Sign-in with {provider} linked"),
+                },
+                lang::pick("Безопасность", "Security"),
+                "/cabinet/security",
+            )
+        }
         templates::SUPPORT_REPLY => LetterHead {
             kind: LetterKind::Support,
-            subject: match ticket {
-                Some(id) => format!("Ответ поддержки по обращению №{id}"),
-                None => "Ответ поддержки".to_string(),
+            subject: match (ticket, lang::current()) {
+                (Some(id), Locale::Ru) => format!("Ответ поддержки по обращению №{id}"),
+                (Some(id), Locale::En) => format!("Support reply to request #{id}"),
+                (None, _) => lang::pick("Ответ поддержки", "Support reply").to_string(),
             },
-            button: "Открыть переписку",
+            button: lang::pick("Открыть переписку", "Open the conversation"),
             path: match ticket {
                 Some(id) => format!("/cabinet/help/{id}"),
                 None => "/cabinet/help".to_string(),
@@ -678,7 +791,7 @@ async fn mail_notice(
         return JobResult::Done;
     }
     let settings = services.settings();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let Some(rendered) = render(&content.content, template, params, settings.remna_offset()) else {
         return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
     };

@@ -9,6 +9,7 @@ use sn_domain::bot_content::{
     self as catalog, BUTTON_MAX, ButtonOverride, CAPTION_MAX, Content, ContentConfig, EntryKind,
     ImageMode, ImageSlot, ImagesConfig, Section, TEXT_MAX, Var,
 };
+use sn_domain::client::Locale;
 use sn_domain::ids::AdminId;
 use sn_domain::image::{self, ImageKind};
 use sn_store::{BOT_IMAGE_MAX_BYTES, BotImage, Db};
@@ -62,6 +63,17 @@ impl Default for BotContent {
 }
 
 impl BotContent {
+    pub fn in_locale(&self, locale: Locale) -> BotContent {
+        BotContent {
+            content: self.content.clone().in_locale(locale),
+            ..self.clone()
+        }
+    }
+
+    pub fn locale(&self) -> Locale {
+        self.content.locale()
+    }
+
     pub fn image_for(&self, section: Section) -> Option<(ImageSlot, String)> {
         let slot = self
             .images
@@ -123,17 +135,28 @@ pub struct EntryView {
     pub optional: bool,
     pub text: Option<String>,
     pub button: Option<ButtonOverride>,
+    pub default_en: &'static str,
+    pub text_en: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContentView {
     pub sections: Vec<SectionView>,
     pub entries: Vec<EntryView>,
+    pub english: bool,
     pub menu_columns: u8,
     pub emoji_rejected_at: Option<DateTime<Utc>>,
     pub text_max: usize,
     pub caption_max: usize,
     pub button_max: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct TranslationUpdate {
+    #[serde(default)]
+    pub texts: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub buttons: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -144,6 +167,8 @@ pub struct ContentUpdate {
     pub buttons: BTreeMap<String, Option<ButtonOverride>>,
     #[serde(default)]
     pub menu_columns: Option<u8>,
+    #[serde(default)]
+    pub en: Option<TranslationUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -268,6 +293,64 @@ fn clean_document(document: &Document) -> ServiceResult<Document> {
     Ok(Document { title, url })
 }
 
+fn apply_translation(
+    next: &mut ContentConfig,
+    locale: Locale,
+    update: &TranslationUpdate,
+) -> ServiceResult<()> {
+    let Some(own) = next.translation_mut(locale) else {
+        return Ok(());
+    };
+    for (key, value) in &update.texts {
+        if catalog::entry(key).is_none_or(|e| e.kind != EntryKind::Text) {
+            return Err(invalid("bot_content.invalid", format!("Текста {key} нет")));
+        }
+        let standard = catalog::default_text(key, locale).unwrap_or("");
+        match value {
+            None => {
+                own.texts.remove(key);
+            }
+            Some(raw) => {
+                let clean = catalog::clean_text(key, raw).map_err(|p| {
+                    invalid(
+                        "bot_content.invalid",
+                        format!("{}, английский: {}", label_of(key), p.message),
+                    )
+                })?;
+                if clean == standard {
+                    own.texts.remove(key);
+                } else {
+                    own.texts.insert(key.clone(), clean);
+                }
+            }
+        }
+    }
+    for (key, value) in &update.buttons {
+        if catalog::entry(key).is_none_or(|e| e.kind != EntryKind::Button) {
+            return Err(invalid("bot_content.invalid", format!("Кнопки {key} нет")));
+        }
+        let standard = catalog::default_text(key, locale).unwrap_or("");
+        let clean = match value {
+            None => None,
+            Some(raw) => catalog::clean_label(key, raw).map_err(|p| {
+                invalid(
+                    "bot_content.invalid",
+                    format!("{}, английский: {}", label_of(key), p.message),
+                )
+            })?,
+        };
+        match clean {
+            Some(text) if text != standard => {
+                own.buttons.insert(key.clone(), text);
+            }
+            _ => {
+                own.buttons.remove(key);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct BotContentOps<'a> {
     services: &'a Services,
 }
@@ -322,8 +405,14 @@ impl<'a> BotContentOps<'a> {
                         EntryKind::Button => config.buttons.get(entry.key).cloned(),
                         EntryKind::Text => None,
                     },
+                    default_en: catalog::default_text(entry.key, Locale::En).unwrap_or(""),
+                    text_en: match entry.kind {
+                        EntryKind::Text => config.en.texts.get(entry.key).cloned(),
+                        EntryKind::Button => config.en.buttons.get(entry.key).cloned(),
+                    },
                 })
                 .collect(),
+            english: self.services.settings().languages.english,
             menu_columns: u8::try_from(runtime.content.menu_columns()).unwrap_or(1),
             emoji_rejected_at,
             text_max: TEXT_MAX,
@@ -385,6 +474,9 @@ impl<'a> BotContentOps<'a> {
                 }
             }
         }
+        if let Some(en) = &update.en {
+            apply_translation(&mut next, Locale::En, en)?;
+        }
         if let Some(columns) = update.menu_columns {
             if !matches!(columns, 1 | 2) {
                 return Err(invalid(
@@ -407,6 +499,19 @@ impl<'a> BotContentOps<'a> {
             .keys()
             .filter(|k| next.buttons.get(*k) != current.buttons.get(*k))
             .collect();
+        let (en_texts, en_buttons): (Vec<&String>, Vec<&String>) = match &update.en {
+            Some(en) => (
+                en.texts
+                    .keys()
+                    .filter(|k| next.en.texts.get(*k) != current.en.texts.get(*k))
+                    .collect(),
+                en.buttons
+                    .keys()
+                    .filter(|k| next.en.buttons.get(*k) != current.en.buttons.get(*k))
+                    .collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         let mut tx = self.services.store().begin().await?;
         tx.settings()
             .set_as(CONTENT_KEY, &next, Some(admin))
@@ -419,6 +524,8 @@ impl<'a> BotContentOps<'a> {
                 json!({
                     "texts": changed_texts,
                     "buttons": changed_buttons,
+                    "en_texts": en_texts,
+                    "en_buttons": en_buttons,
                     "menu_columns": next.menu_columns.unwrap_or(1),
                 }),
             ))

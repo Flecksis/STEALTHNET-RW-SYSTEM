@@ -36,6 +36,7 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/totp", post(totp_login))
         .route("/auth/logout", post(logout))
         .route("/me", get(me))
+        .route("/locale", put(set_locale))
         .route("/security", get(security))
         .route("/security/password", post(change_password))
         .route("/security/totp/setup", post(totp_setup))
@@ -418,6 +419,7 @@ async fn me(
         .has_saved_card(client.0.client_id)
         .await?;
     Ok(Json(serde_json::json!({
+        "locale": state.services.locale_of(card.client.locale),
         "client": card.client,
         "balance": card.balance,
         "balance_enabled": state.services.payments().balance_enabled(),
@@ -432,6 +434,24 @@ async fn me(
         "email": email,
         "has_password": has_password,
     })))
+}
+
+#[derive(Deserialize)]
+struct LocaleBody {
+    locale: sn_domain::client::Locale,
+}
+
+async fn set_locale(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<LocaleBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let locale = state
+        .services
+        .clients()
+        .set_locale(client.0.client_id, body.locale)
+        .await?;
+    Ok(Json(serde_json::json!({ "locale": locale })))
 }
 
 async fn catalog(
@@ -456,13 +476,13 @@ async fn quote(
     ApiJson(cart): ApiJson<CartRequest>,
 ) -> ApiResult<Json<sn_services::checkout::QuoteView>> {
     let address = meta.ip.as_deref().and_then(|ip| ip.parse().ok());
-    Ok(Json(
-        state
-            .services
-            .checkout()
-            .quote_for(client.0.client_id, &cart, address, Some(client.channel()))
-            .await?,
-    ))
+    let mut view = state
+        .services
+        .checkout()
+        .quote_for(client.0.client_id, &cart, address, Some(client.channel()))
+        .await?;
+    view.quote = view.quote.shown();
+    Ok(Json(view))
 }
 
 #[derive(Deserialize)]
@@ -504,13 +524,13 @@ async fn item_quote(
     State(state): State<AppState>,
     ApiJson(item): ApiJson<ItemRequest>,
 ) -> ApiResult<Json<ItemQuoteView>> {
-    Ok(Json(
-        state
-            .services
-            .checkout()
-            .quote_item_in(client.0.client_id, &item, Some(client.channel()))
-            .await?,
-    ))
+    let mut view = state
+        .services
+        .checkout()
+        .quote_item_in(client.0.client_id, &item, Some(client.channel()))
+        .await?;
+    view.quote = view.quote.shown();
+    Ok(Json(view))
 }
 
 #[derive(Deserialize)]

@@ -80,6 +80,18 @@ impl TrafficReset {
         }
     }
 
+    pub fn short(self) -> &'static str {
+        let english = match self {
+            TrafficReset::Month => "resets on the 1st",
+            TrafficReset::MonthRolling => "resets monthly on your start day",
+            TrafficReset::Week => "resets on Mondays",
+            TrafficReset::Day => "resets daily",
+            TrafficReset::OnPayment => "resets on payment",
+            TrafficReset::NoReset => "no reset",
+        };
+        crate::lang::pick(self.short_ru(), english)
+    }
+
     pub const fn short_ru(self) -> &'static str {
         match self {
             TrafficReset::Month => "сброс 1-го числа",

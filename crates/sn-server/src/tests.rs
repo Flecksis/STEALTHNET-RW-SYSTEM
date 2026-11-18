@@ -37,6 +37,7 @@ mod gram;
 mod hosts;
 mod import;
 mod landing;
+mod languages;
 mod mail;
 mod multi_subscriptions;
 mod oauth;

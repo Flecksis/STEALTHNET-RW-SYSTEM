@@ -1,3 +1,4 @@
+use crate::client::Locale;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -693,6 +694,13 @@ pub static CATALOG: &[Entry] = &[
         "Документы",
     ),
     hideable("menu.btn.support", Menu, "Кнопка «Поддержка»", "Поддержка"),
+    hideable(
+        "menu.btn.language",
+        Menu,
+        "Кнопка выбора языка, если включён английский",
+        "Язык",
+    ),
+    text("lang.choose", Menu, "Выбор языка", "Выберите язык:", &[]),
     text(
         "status.active",
         Subscription,
@@ -2749,6 +2757,20 @@ impl ButtonOverride {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Translation {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub texts: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub buttons: BTreeMap<String, String>,
+}
+
+impl Translation {
+    pub fn is_empty(&self) -> bool {
+        self.texts.is_empty() && self.buttons.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentConfig {
     #[serde(default)]
     pub texts: BTreeMap<String, String>,
@@ -2756,6 +2778,24 @@ pub struct ContentConfig {
     pub buttons: BTreeMap<String, ButtonOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub menu_columns: Option<u8>,
+    #[serde(default, skip_serializing_if = "Translation::is_empty")]
+    pub en: Translation,
+}
+
+impl ContentConfig {
+    pub fn translation(&self, locale: Locale) -> Option<&Translation> {
+        match locale {
+            Locale::Ru => None,
+            Locale::En => Some(&self.en),
+        }
+    }
+
+    pub fn translation_mut(&mut self, locale: Locale) -> Option<&mut Translation> {
+        match locale {
+            Locale::Ru => None,
+            Locale::En => Some(&mut self.en),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2774,6 +2814,14 @@ pub struct ButtonText {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Content {
     config: ContentConfig,
+    locale: Locale,
+}
+
+pub fn default_text(key: &str, locale: Locale) -> Option<&'static str> {
+    match locale {
+        Locale::Ru => entry(key).map(|e| e.default),
+        Locale::En => crate::bot_content_en::default(key),
+    }
 }
 
 pub fn escape(text: &str) -> String {
@@ -2848,11 +2896,41 @@ pub fn placeholders(template: &str) -> Vec<String> {
 
 impl Content {
     pub fn new(config: ContentConfig) -> Self {
-        Content { config }
+        Content {
+            config,
+            locale: Locale::Ru,
+        }
+    }
+
+    pub fn in_locale(mut self, locale: Locale) -> Self {
+        self.locale = locale;
+        self
+    }
+
+    pub fn locale(&self) -> Locale {
+        self.locale
     }
 
     pub fn config(&self) -> &ContentConfig {
         &self.config
+    }
+
+    fn russian(&self, key: &str) -> Option<&str> {
+        self.config
+            .texts
+            .get(key)
+            .map(String::as_str)
+            .or_else(|| entry(key).map(|e| e.default))
+    }
+
+    fn russian_label<'a>(
+        &'a self,
+        key: &str,
+        custom: Option<&'a ButtonOverride>,
+    ) -> Option<&'a str> {
+        custom
+            .and_then(|c| c.text.as_deref())
+            .or_else(|| entry(key).map(|e| e.default))
     }
 
     pub fn menu_columns(&self) -> usize {
@@ -2863,12 +2941,16 @@ impl Content {
     }
 
     pub fn template(&self, key: &str) -> &str {
-        self.config
-            .texts
-            .get(key)
-            .map(String::as_str)
-            .or_else(|| entry(key).map(|e| e.default))
-            .unwrap_or("")
+        match self.config.translation(self.locale) {
+            None => self.russian(key),
+            Some(own) => own
+                .texts
+                .get(key)
+                .map(String::as_str)
+                .or_else(|| default_text(key, self.locale))
+                .or_else(|| self.russian(key)),
+        }
+        .unwrap_or("")
     }
 
     pub fn text(&self, key: &str, vars: &[(&str, Value<'_>)]) -> String {
@@ -2880,13 +2962,22 @@ impl Content {
         if custom.is_some_and(|c| c.hidden) && entry(key).is_some_and(|e| e.optional) {
             return None;
         }
-        let template = custom
-            .and_then(|c| c.text.as_deref())
-            .or_else(|| entry(key).map(|e| e.default))
-            .unwrap_or(key);
+        let template = match self.config.translation(self.locale) {
+            None => self.russian_label(key, custom),
+            Some(own) => own
+                .buttons
+                .get(key)
+                .map(String::as_str)
+                .or_else(|| default_text(key, self.locale))
+                .or_else(|| self.russian_label(key, custom)),
+        }
+        .unwrap_or(key);
         let text = fill(template, vars, false);
         let text = if text.trim().is_empty() {
-            fill(entry(key).map_or(key, |e| e.default), vars, false)
+            let standard = default_text(key, self.locale)
+                .or_else(|| entry(key).map(|e| e.default))
+                .unwrap_or(key);
+            fill(standard, vars, false)
         } else {
             text
         };
@@ -3237,10 +3328,171 @@ pub fn clean_button(key: &str, raw: &ButtonOverride) -> Result<ButtonOverride, E
     })
 }
 
+pub fn clean_label(key: &str, raw: &str) -> Result<Option<String>, EntryProblem> {
+    let entry = entry(key)
+        .filter(|e| e.kind == EntryKind::Button)
+        .ok_or_else(|| problem(key, "такой кнопки нет"))?;
+    let text = raw.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.chars().count() > BUTTON_MAX {
+        return Err(problem(
+            key,
+            format!("надпись на кнопке длиннее {BUTTON_MAX} символов"),
+        ));
+    }
+    if text.contains('\n') {
+        return Err(problem(key, "надпись на кнопке должна быть в одну строку"));
+    }
+    check_vars(entry, text)?;
+    Ok(Some(text.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    fn sorted(mut names: Vec<String>) -> Vec<String> {
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    #[test]
+    fn у_каждого_текста_бота_есть_английский_с_теми_же_подстановками() {
+        for entry in CATALOG {
+            let english = crate::bot_content_en::default(entry.key)
+                .unwrap_or_else(|| panic!("{}: нет английского текста", entry.key));
+            assert_eq!(
+                sorted(placeholders(english)),
+                sorted(placeholders(entry.default)),
+                "{}: подстановки в английском не те",
+                entry.key
+            );
+            assert_eq!(
+                english.is_empty(),
+                entry.default.is_empty(),
+                "{}: пустой только в одном языке",
+                entry.key
+            );
+            match entry.kind {
+                EntryKind::Text if !english.is_empty() => {
+                    assert_eq!(
+                        clean_text(entry.key, english).unwrap(),
+                        english,
+                        "{}",
+                        entry.key
+                    );
+                }
+                EntryKind::Text => {}
+                EntryKind::Button => {
+                    assert_eq!(
+                        clean_label(entry.key, english).unwrap().as_deref(),
+                        Some(english),
+                        "{}",
+                        entry.key
+                    );
+                }
+            }
+            assert!(
+                !english
+                    .chars()
+                    .any(|c| matches!(c, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё')),
+                "{}: в английском тексте кириллица",
+                entry.key
+            );
+        }
+    }
+
+    #[test]
+    fn английский_берёт_свой_текст_потом_стандартный_а_русский_не_меняется() {
+        let mut config = ContentConfig::default();
+        config
+            .texts
+            .insert("menu.no_subscription".into(), "Пока пусто.".into());
+        config
+            .texts
+            .insert("menu.greeting".into(), "Привет, {name}!".into());
+        config
+            .en
+            .texts
+            .insert("sub.none".into(), "Nothing here, {brand}".into());
+        config.buttons.insert(
+            "menu.btn.buy".into(),
+            ButtonOverride {
+                text: Some("🚀 Купить".into()),
+                emoji_id: Some("5368324170671202286".into()),
+                style: Some(ButtonStyle::Success),
+                hidden: false,
+            },
+        );
+        config.buttons.insert(
+            "menu.btn.balance".into(),
+            ButtonOverride {
+                hidden: true,
+                ..ButtonOverride::default()
+            },
+        );
+        config
+            .en
+            .buttons
+            .insert("menu.btn.extend".into(), "Renew".into());
+        let ru = Content::new(config.clone());
+        let en = Content::new(config).in_locale(Locale::En);
+        assert_eq!(ru.locale(), Locale::Ru);
+        assert_eq!(en.locale(), Locale::En);
+        assert_eq!(ru.text("menu.no_subscription", &[]), "Пока пусто.");
+        assert_eq!(en.text("menu.no_subscription", &[]), "No subscription yet.");
+        assert_eq!(
+            en.text("menu.greeting", &[("name", Value::Text("Ann"))]),
+            ""
+        );
+        assert_eq!(en.template("sub.none"), "Nothing here, {brand}");
+        assert_eq!(ru.text("sub.none", &[]), "Подписки пока нет.");
+        let buy = en.button("menu.btn.buy", &[]).unwrap();
+        assert_eq!(buy.text, "Buy a subscription");
+        assert_eq!(buy.emoji_id.as_deref(), Some("5368324170671202286"));
+        assert_eq!(buy.style, Some(ButtonStyle::Success));
+        assert_eq!(ru.label("menu.btn.buy", &[]), "🚀 Купить");
+        assert!(en.button("menu.btn.balance", &[]).is_none());
+        assert_eq!(en.label("menu.btn.extend", &[]), "Renew");
+        assert_eq!(
+            ru.label("menu.btn.extend", &[]),
+            "Продлить или сменить тариф"
+        );
+        assert_eq!(
+            en.label("dev.btn.disconnect", &[("title", Value::Text("iPhone"))]),
+            "Disconnect iPhone"
+        );
+    }
+
+    #[test]
+    fn без_английского_перевода_ключа_остаётся_русский() {
+        let mut config = ContentConfig::default();
+        config
+            .texts
+            .insert("menu.title".into(), "<b>Свой</b>".into());
+        let en = Content::new(config).in_locale(Locale::En);
+        assert_eq!(en.template("menu.title"), "<b>{brand}</b>");
+        assert_eq!(default_text("нет.такого", Locale::En), None, "чужой ключ");
+        assert_eq!(en.template("нет.такого"), "");
+        assert_eq!(en.label("нет.такого", &[]), "нет.такого");
+    }
+
+    #[test]
+    fn английские_надписи_кнопок_проверяются() {
+        assert_eq!(
+            clean_label("menu.btn.buy", "  Buy  ").unwrap().as_deref(),
+            Some("Buy")
+        );
+        assert_eq!(clean_label("menu.btn.buy", "  ").unwrap(), None);
+        assert!(clean_label("menu.btn.buy", &"x".repeat(BUTTON_MAX + 1)).is_err());
+        assert!(clean_label("menu.btn.buy", "a\nb").is_err());
+        assert!(clean_label("dev.btn.disconnect", "Drop {device}").is_err());
+        assert!(clean_label("menu.title", "x").is_err());
+    }
 
     #[test]
     fn в_каталоге_нет_повторов_и_умолчания_проходят_проверку() {

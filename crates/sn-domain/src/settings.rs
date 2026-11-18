@@ -1,3 +1,4 @@
+use crate::client::Languages;
 use crate::ids::SquadId;
 use crate::image::{FAVICON_RULES, ImageKind, ImageRules, LOGO_RULES};
 use crate::landing::LandingConfig;
@@ -392,6 +393,8 @@ pub struct CoreSettings {
     pub multi_subscriptions: bool,
     #[serde(default)]
     pub client_access: ClientAccess,
+    #[serde(default)]
+    pub languages: Languages,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -471,6 +474,7 @@ impl Default for CoreSettings {
             landing: LandingConfig::standard(),
             multi_subscriptions: false,
             client_access: ClientAccess::default(),
+            languages: Languages::default(),
         }
     }
 }
@@ -546,6 +550,7 @@ pub mod keys {
     pub const LOGO: &str = "core.logo";
     pub const FAVICON: &str = "core.favicon";
     pub const LANDING: &str = "core.landing";
+    pub const LANGUAGES: &str = "core.languages";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")

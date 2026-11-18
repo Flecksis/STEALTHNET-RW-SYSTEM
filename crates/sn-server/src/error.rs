@@ -113,10 +113,16 @@ impl From<ServiceError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let message = match sn_domain::lang::current() {
+            sn_domain::client::Locale::En => {
+                sn_domain::errors_en::message(self.code).unwrap_or(self.message)
+            }
+            sn_domain::client::Locale::Ru => self.message,
+        };
         (
             self.status,
             Json(serde_json::json!({
-                "error": { "code": self.code, "message": self.message }
+                "error": { "code": self.code, "message": message }
             })),
         )
             .into_response()

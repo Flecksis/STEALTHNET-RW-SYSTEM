@@ -1,14 +1,17 @@
 pub mod access;
 pub mod alerts;
 pub mod bot_content;
+pub mod bot_content_en;
 pub mod client;
 pub mod error;
+pub mod errors_en;
 pub mod events;
 pub mod format;
 pub mod ids;
 pub mod image;
 pub mod jobs;
 pub mod landing;
+pub mod lang;
 pub mod ledger;
 pub mod module;
 pub mod money;

@@ -9,7 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sn_domain::format;
+use sn_domain::client::Locale;
 use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money, Stars};
@@ -20,6 +20,7 @@ use sn_domain::pricing::{
 use sn_domain::subscription::{Subscription, SubscriptionStatus};
 use sn_domain::tariff::{Tariff, TrafficLeftover};
 use sn_domain::traffic::{GIB, TrafficReset};
+use sn_domain::{format, lang};
 use sn_store::{Db, StoreError, StoreResult};
 
 pub const BOT_ENTRY: &str = "options";
@@ -141,6 +142,34 @@ impl OptionsRejection {
     }
 
     pub fn message(self) -> String {
+        if lang::current() == Locale::En {
+            return match self {
+                OptionsRejection::NoSubscription => "Subscription not found".into(),
+                OptionsRejection::SubscriptionEnded => {
+                    "The subscription has ended. Renew it first".into()
+                }
+                OptionsRejection::SubscriptionBlocked => {
+                    "The subscription is blocked. Please contact support.".into()
+                }
+                OptionsRejection::NotSold => "Extra devices aren't sold for this plan".into(),
+                OptionsRejection::NoPrice => {
+                    "Extra devices have no price in the shop currency".into()
+                }
+                OptionsRejection::TooMany { can_add: 0 } => {
+                    "No more devices can be added to this subscription".into()
+                }
+                OptionsRejection::TooMany { can_add } => format!(
+                    "You can add up to {}",
+                    format::devices_in(can_add, Locale::En)
+                ),
+                OptionsRejection::ZeroCount => "Choose at least one device".into(),
+                OptionsRejection::TrafficNotSold => "Traffic can't be added to this plan".into(),
+                OptionsRejection::TrafficUnlimited => {
+                    "This plan already has unlimited traffic".into()
+                }
+                OptionsRejection::NoPack => "There's no such traffic pack, choose another".into(),
+            };
+        }
         match self {
             OptionsRejection::NoSubscription => "Подписка не найдена".into(),
             OptionsRejection::SubscriptionEnded => {

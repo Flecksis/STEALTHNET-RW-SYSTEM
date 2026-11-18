@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sn_domain::client::Locale;
 use sn_domain::events::DomainEvent;
-use sn_domain::format;
 use sn_domain::ids::{AdminId, CategoryId, ClientId, OrderId, PeriodId, TariffId};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money, Stars};
@@ -25,8 +25,9 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_domain::plan::PlanKind;
 use sn_domain::pricing::{Quote, QuoteLine, QuoteLineKind, StarsTotal};
 use sn_domain::settings::keys;
-use sn_domain::tariff::{DevicePolicy, PeriodOffer, Tariff, months_for_days, period_offers};
+use sn_domain::tariff::{DevicePolicy, PeriodOffer, Tariff, period_offers};
 use sn_domain::traffic::TrafficPolicy;
+use sn_domain::{format, lang};
 use sn_store::{Db, StoreError};
 use uuid::Uuid;
 
@@ -149,21 +150,16 @@ impl Gift {
     }
 
     pub fn label(&self) -> String {
-        format!("«{}» на {}", self.tariff_name, self.term())
+        format!("«{}» на {}", self.tariff_name, term_ru(self.days))
     }
 }
 
 pub fn term(days: u32) -> String {
-    if days >= 28 {
-        let months = months_for_days(days);
-        format!(
-            "{months}{}{}",
-            format::NBSP,
-            format::plural_ru(u64::from(months), "месяц", "месяца", "месяцев")
-        )
-    } else {
-        format::days(days)
-    }
+    format::term_in(days, lang::current())
+}
+
+pub fn term_ru(days: u32) -> String {
+    format::term_in(days, Locale::Ru)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -282,16 +278,44 @@ impl GiftRejection {
 
     pub fn message(&self) -> String {
         match self {
-            GiftRejection::NotGiftable => "Этот тариф сейчас нельзя подарить".into(),
-            GiftRejection::NoPeriod => "Такого срока у тарифа нет, выберите другой".into(),
-            GiftRejection::NotFound => "Подарка с таким кодом нет. Проверьте код.".into(),
-            GiftRejection::Redeemed => "Этот подарок уже активирован".into(),
-            GiftRejection::RedeemedByYou => "Вы уже активировали этот подарок".into(),
-            GiftRejection::Expired => "Срок действия кода закончился".into(),
-            GiftRejection::Canceled => "Подарок отменён: за него вернули деньги".into(),
-            GiftRejection::RefundPending => {
-                "Подарок пока нельзя активировать: по его оплате оформляется возврат".into()
+            GiftRejection::NotGiftable => lang::pick(
+                "Этот тариф сейчас нельзя подарить",
+                "This plan can't be gifted right now",
+            )
+            .into(),
+            GiftRejection::NoPeriod => lang::pick(
+                "Такого срока у тарифа нет, выберите другой",
+                "This plan has no such period, choose another one",
+            )
+            .into(),
+            GiftRejection::NotFound => lang::pick(
+                "Подарка с таким кодом нет. Проверьте код.",
+                "There's no gift with this code. Check the code.",
+            )
+            .into(),
+            GiftRejection::Redeemed => lang::pick(
+                "Этот подарок уже активирован",
+                "This gift has already been activated",
+            )
+            .into(),
+            GiftRejection::RedeemedByYou => lang::pick(
+                "Вы уже активировали этот подарок",
+                "You've already activated this gift",
+            )
+            .into(),
+            GiftRejection::Expired => {
+                lang::pick("Срок действия кода закончился", "This code has expired").into()
             }
+            GiftRejection::Canceled => lang::pick(
+                "Подарок отменён: за него вернули деньги",
+                "This gift was cancelled and refunded",
+            )
+            .into(),
+            GiftRejection::RefundPending => lang::pick(
+                "Подарок пока нельзя активировать: по его оплате оформляется возврат",
+                "This gift can't be activated yet: its payment is being refunded",
+            )
+            .into(),
             GiftRejection::Grant(refusal) => refusal.message.clone(),
         }
     }
@@ -384,7 +408,7 @@ pub fn gift_quote(
                 days: period.days,
                 months: period.months(),
             },
-            label: format!("Подарок: «{}» на {}", tariff.name, term(period.days)),
+            label: format!("Подарок: «{}» на {}", tariff.name, term_ru(period.days)),
             amount,
             stars,
         }],
@@ -509,6 +533,7 @@ pub async fn issue(ctx: &ModuleContext, order: &Order) -> Result<Gift, ModuleErr
                                 "code": gift.code,
                                 "tariff": gift.tariff_name,
                                 "term": gift.term(),
+                                "days": gift.days,
                                 "bot_link": links.bot,
                                 "cabinet_link": links.cabinet,
                                 "expire_at": gift.expires_at,
@@ -728,6 +753,7 @@ pub async fn redeem(
                         "code": gift.code,
                         "tariff": gift.tariff_name,
                         "term": gift.term(),
+                        "days": gift.days,
                     }),
                 },
             )

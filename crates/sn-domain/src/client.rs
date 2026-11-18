@@ -53,11 +53,92 @@ impl Locale {
         }
     }
 
-    pub fn from_telegram(language_code: Option<&str>) -> Self {
-        match language_code.map(|c| c.split(['-', '_']).next().unwrap_or(c)) {
-            Some("ru" | "uk" | "be" | "kk") | None => Locale::Ru,
-            Some(_) => Locale::En,
+    pub const ALL: [Locale; 2] = [Locale::Ru, Locale::En];
+
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        let base = tag
+            .trim()
+            .split(['-', '_'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if base.len() < 2 || base.len() > 3 || !base.bytes().all(|b| b.is_ascii_lowercase()) {
+            return None;
         }
+        Some(match base.as_str() {
+            "ru" | "uk" | "be" | "kk" => Locale::Ru,
+            _ => Locale::En,
+        })
+    }
+
+    pub const fn native_name(self) -> &'static str {
+        match self {
+            Locale::Ru => "Русский",
+            Locale::En => "English",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Languages {
+    #[serde(default)]
+    pub english: bool,
+    #[serde(default)]
+    pub default: Locale,
+}
+
+impl Default for Languages {
+    fn default() -> Self {
+        Languages {
+            english: false,
+            default: Locale::Ru,
+        }
+    }
+}
+
+impl Languages {
+    pub const fn allows(self, locale: Locale) -> bool {
+        match locale {
+            Locale::Ru => true,
+            Locale::En => self.english,
+        }
+    }
+
+    pub fn enabled(self) -> Vec<Locale> {
+        Locale::ALL
+            .into_iter()
+            .filter(|l| self.allows(*l))
+            .collect()
+    }
+
+    pub const fn several(self) -> bool {
+        self.english
+    }
+
+    pub const fn fallback(self) -> Locale {
+        if self.allows(self.default) {
+            self.default
+        } else {
+            Locale::Ru
+        }
+    }
+
+    pub const fn effective(self, locale: Locale) -> Locale {
+        if self.allows(locale) {
+            locale
+        } else {
+            self.fallback()
+        }
+    }
+
+    pub fn pick(self, wanted: Option<Locale>) -> Locale {
+        wanted
+            .filter(|l| self.allows(*l))
+            .unwrap_or_else(|| self.fallback())
+    }
+
+    pub fn detect(self, tag: Option<&str>) -> Locale {
+        self.pick(tag.and_then(Locale::from_tag))
     }
 }
 
@@ -306,9 +387,52 @@ mod tests {
     }
 
     #[test]
-    fn язык_по_telegram() {
-        assert_eq!(Locale::from_telegram(Some("ru")), Locale::Ru);
-        assert_eq!(Locale::from_telegram(Some("en-US")), Locale::En);
-        assert_eq!(Locale::from_telegram(None), Locale::Ru);
+    fn язык_по_коду_из_telegram_и_браузера() {
+        assert_eq!(Locale::from_tag("ru"), Some(Locale::Ru));
+        assert_eq!(Locale::from_tag("uk-UA"), Some(Locale::Ru));
+        assert_eq!(Locale::from_tag("en-US"), Some(Locale::En));
+        assert_eq!(Locale::from_tag("de"), Some(Locale::En));
+        assert_eq!(Locale::from_tag("pt_BR"), Some(Locale::En));
+        assert_eq!(Locale::from_tag(""), None);
+        assert_eq!(Locale::from_tag("x"), None);
+        assert_eq!(Locale::from_tag("12"), None);
+    }
+
+    #[test]
+    fn без_английского_все_новые_клиенты_на_русском() {
+        let only_ru = Languages::default();
+        assert_eq!(only_ru.enabled(), vec![Locale::Ru]);
+        assert_eq!(only_ru.detect(Some("en")), Locale::Ru);
+        assert_eq!(only_ru.detect(None), Locale::Ru);
+        assert_eq!(only_ru.pick(Some(Locale::En)), Locale::Ru);
+        assert_eq!(only_ru.effective(Locale::En), Locale::Ru);
+        let broken = Languages {
+            english: false,
+            default: Locale::En,
+        };
+        assert_eq!(broken.fallback(), Locale::Ru);
+        assert_eq!(broken.detect(None), Locale::Ru);
+    }
+
+    #[test]
+    fn с_английским_язык_берётся_из_telegram_а_без_кода_по_умолчанию() {
+        let ru_first = Languages {
+            english: true,
+            default: Locale::Ru,
+        };
+        assert_eq!(ru_first.enabled(), vec![Locale::Ru, Locale::En]);
+        assert_eq!(ru_first.detect(Some("en-GB")), Locale::En);
+        assert_eq!(ru_first.detect(Some("es")), Locale::En);
+        assert_eq!(ru_first.detect(Some("ru")), Locale::Ru);
+        assert_eq!(ru_first.detect(None), Locale::Ru);
+        assert_eq!(ru_first.detect(Some("")), Locale::Ru);
+        let en_first = Languages {
+            english: true,
+            default: Locale::En,
+        };
+        assert_eq!(en_first.detect(None), Locale::En);
+        assert_eq!(en_first.detect(Some("kk")), Locale::Ru);
+        assert_eq!(en_first.pick(None), Locale::En);
+        assert_eq!(en_first.effective(Locale::Ru), Locale::Ru);
     }
 }

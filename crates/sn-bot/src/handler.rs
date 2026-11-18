@@ -1,15 +1,15 @@
 use crate::session::{Awaiting, Session};
 use crate::stars::{self, Settled};
 use crate::telegram::{
-    BotUser, CallbackQuery, Keyboard, Message, PreCheckoutQuery, TelegramApi, Update,
+    BotUser, Button, CallbackQuery, Keyboard, Message, PreCheckoutQuery, TelegramApi, Update,
 };
 use crate::text::{self, escape};
 use crate::ui::{self, Html, Lines, Text};
 use crate::{BotError, account, buy, consent, contests, extras, gifts, gram_wallet, login, media};
 use sn_domain::bot_content::Section;
-use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
-use sn_domain::format;
+use sn_domain::client::{Client, IdentityKind, Locale, RegistrationSource, TelegramProfile};
 use sn_domain::ids::TariffId;
+use sn_domain::lang;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
 use sn_domain::settings::CoreSettings;
@@ -96,18 +96,40 @@ pub struct Turn<'a> {
     pub user: &'a BotUser,
     pub target: Target,
     pub session: Session,
+    pub locale: Locale,
 }
 
 impl Turn<'_> {
     pub fn services(&self) -> &Services {
         &self.ctx.services
     }
+
+    pub fn content(&self) -> Arc<BotContent> {
+        self.ctx.services.bot_content_in(self.locale)
+    }
+}
+
+pub async fn user_locale(services: &Services, user: &BotUser) -> Result<Locale, BotError> {
+    let languages = services.settings().languages;
+    if !languages.several() {
+        return Ok(Locale::Ru);
+    }
+    let mut conn = services.store().conn().await?;
+    let known = conn
+        .clients()
+        .find_by_identity(IdentityKind::Telegram, &user.id.to_string())
+        .await?;
+    Ok(match known {
+        Some(client) => languages.effective(client.locale),
+        None => languages.detect(user.language_code.as_deref()),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
     Start(Option<String>),
     Menu,
+    Language,
     PaySupport,
     Input(Awaiting, String),
     Text(String),
@@ -189,6 +211,7 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
         Some((command, args)) => match command.as_str() {
             "start" => Action::Start(Some(args).filter(|a| !a.is_empty())),
             "paysupport" => Action::PaySupport,
+            "language" | "lang" => Action::Language,
             _ => Action::Menu,
         },
         None => match session.awaiting {
@@ -236,13 +259,15 @@ async fn run(
     session: Session,
     action: Action,
 ) -> Result<(), BotError> {
+    let locale = user_locale(&ctx.services, user).await?;
     let mut turn = Turn {
         ctx,
         user,
         target,
         session,
+        locale,
     };
-    let screen = process(&mut turn, action).await?;
+    let screen = lang::scope(locale, process(&mut turn, action)).await?;
     ctx.show(target, &screen).await?;
     turn.session.save(&ctx.services, target.chat_id).await?;
     Ok(())
@@ -270,6 +295,10 @@ async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError
         Action::Menu | Action::PaySupport => {
             turn.session.awaiting = None;
             main_menu(turn.ctx, &client).await
+        }
+        Action::Language => {
+            turn.session.awaiting = None;
+            language_screen(turn, &client).await
         }
         Action::Input(awaiting, text) => input(turn, &client, awaiting, &text).await,
         Action::Text(text) => match account::support_followup(turn, &client, &text).await? {
@@ -317,7 +346,7 @@ pub fn emoji_codes(message: &Message) -> Screen {
 
 async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     {
         let documents = content.consent_documents();
         let mut conn = services.store().conn().await?;
@@ -397,7 +426,7 @@ pub fn documents_screen(content: &BotContent) -> Screen {
 }
 
 async fn accept_documents(turn: &mut Turn<'_>) -> Result<(), BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let documents = content.consent_documents();
     if let Some(version) = consent::version(documents) {
         let mut conn = turn.services().store().conn().await?;
@@ -469,7 +498,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "dx" => account::device_confirm(turn, rest).await?,
         "dxy" => account::device_disconnect(turn, client, rest).await?,
         "rei" => match id_arg(rest) {
-            Some(id) => account::reissue_confirm(&turn.services().bot_content(), id),
+            Some(id) => account::reissue_confirm(&turn.content(), id),
             None => main_menu(turn.ctx, client).await?,
         },
         "reiy" => match id_arg(rest) {
@@ -534,21 +563,62 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "ga" => gifts::ask_code(turn),
         "gr" => gifts::redeem(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
-        "docs" => documents_screen(&turn.services().bot_content()),
+        "docs" => documents_screen(&turn.content()),
+        "lang" if rest.is_empty() => language_screen(turn, client).await?,
+        "lang" => set_language(turn, client, rest).await?,
         _ => main_menu(turn.ctx, client).await?,
     };
     Ok(screen)
 }
 
+async fn language_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let languages = turn.services().settings().languages;
+    if !languages.several() {
+        return main_menu(turn.ctx, client).await;
+    }
+    let content = turn.content();
+    let buttons = languages
+        .enabled()
+        .into_iter()
+        .map(|locale| {
+            let name = locale.native_name();
+            let label = if locale == turn.locale {
+                format!("✓ {name}")
+            } else {
+                name.to_string()
+            };
+            Button::callback(label, format!("lang:{}", locale.as_str()))
+        })
+        .collect();
+    Ok(Screen::new(ui::text(&content, "lang.choose", &[]))
+        .keyboard(Keyboard::new().grid(buttons, 2).push(ui::menu(&content))))
+}
+
+async fn set_language(turn: &mut Turn<'_>, client: &Client, raw: &str) -> Result<Screen, BotError> {
+    let Ok(wanted) = Locale::parse(raw) else {
+        return main_menu(turn.ctx, client).await;
+    };
+    let services = turn.services().clone();
+    let locale = match services.clients().set_locale(client.id, wanted).await {
+        Ok(locale) => locale,
+        Err(_) => return language_screen(turn, client).await,
+    };
+    turn.locale = locale;
+    let mut updated = client.clone();
+    updated.locale = locale;
+    lang::scope(locale, main_menu(turn.ctx, &updated)).await
+}
+
 pub async fn tariff_name(services: &Services, tariff_id: Option<TariffId>) -> String {
+    let fallback = || lang::pick("Подписка", "Subscription").to_string();
     let Some(id) = tariff_id else {
-        return "Подписка".into();
+        return fallback();
     };
     let found = match services.store().conn().await {
         Ok(mut conn) => conn.tariffs().get(id).await.ok(),
         Err(_) => None,
     };
-    found.map_or_else(|| "Подписка".into(), |t| t.name)
+    found.map_or_else(fallback, |t| t.name)
 }
 
 pub fn live(views: Vec<SubscriptionView>) -> Vec<Subscription> {
@@ -683,9 +753,9 @@ fn single_lines(
                 &[
                     (
                         "used",
-                        Text(&format::traffic(mirror.traffic_used_bytes.unwrap_or(0))),
+                        Text(&text::traffic(mirror.traffic_used_bytes.unwrap_or(0))),
                     ),
-                    ("limit", Text(&format::traffic(limit))),
+                    ("limit", Text(&text::traffic(limit))),
                 ],
             ),
             None => ui::text(c, "menu.single_traffic_unlimited", &[]),
@@ -712,7 +782,7 @@ fn single_lines(
 
 pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError> {
     let services = &ctx.services;
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let settings = services.settings();
     let now = services.now();
@@ -745,7 +815,7 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
                 lines.add(ui::text(
                     c,
                     "menu.balance",
-                    &[("balance", Text(&format::money(balance)))],
+                    &[("balance", Text(&text::money(balance)))],
                 ));
             }
         }
@@ -832,6 +902,9 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
         }
         _ => buttons.extend(ui::button(c, "menu.btn.support", &[], "sup")),
     }
+    if settings.languages.several() {
+        buttons.extend(ui::button(c, "menu.btn.language", &[], "lang"));
+    }
     Ok(Screen::new(lines.text())
         .keyboard(Keyboard::new().grid(buttons, c.content.menu_columns()))
         .section(Section::Menu))
@@ -846,7 +919,7 @@ pub fn support_link(settings: &CoreSettings) -> Option<&str> {
 }
 
 fn paysupport(ctx: &BotCtx) -> Screen {
-    let content = ctx.services.bot_content();
+    let content = ctx.services.bot_content_in(lang::current());
     let settings = ctx.services.settings();
     let mut keyboard = Keyboard::new();
     let link = support_link(&settings);
@@ -869,7 +942,7 @@ async fn login_screen(
     let Some(token) = login::token_from_param(param) else {
         return main_menu(turn.ctx, client).await;
     };
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let request = match login::describe(turn.services(), token, &profile(turn.user)).await {
         Ok(request) => request,
@@ -910,7 +983,7 @@ async fn login_screen(
 }
 
 async fn login_decision(turn: &mut Turn<'_>, rest: &str) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let Some(token) = turn.session.login_token.take() else {
         return Ok(Screen::notice(ui::text(&content, "login.expired", &[])).section(Section::Login));
     };
@@ -947,7 +1020,7 @@ async fn pre_checkout(ctx: &BotCtx, query: &PreCheckoutQuery) -> Result<(), BotE
 }
 
 async fn stars_paid(ctx: &BotCtx, target: Target, event: &StarsPayment) -> Result<(), BotError> {
-    let content = ctx.services.bot_content();
+    let content = ctx.services.bot_content_in(lang::current());
     let c = &*content;
     let deferred = Screen::notice(ui::text(c, "pay.stars_deferred", &[])).section(Section::Payment);
     let screen = match stars::settle(&ctx.services, event).await {

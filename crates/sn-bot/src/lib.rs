@@ -22,6 +22,7 @@ pub mod ui;
 mod tests;
 
 use handler::BotCtx;
+use sn_domain::lang;
 use sn_domain::settings::keys;
 use sn_modules::ModuleError;
 use sn_services::{BotProblem, BotState, ServiceError, Services};
@@ -198,20 +199,77 @@ async fn stored_menu(services: &Services) -> Option<String> {
 }
 
 fn desired_menu(services: &Services) -> Option<(String, String)> {
-    let url = services.settings().miniapp_url()?;
+    let settings = services.settings();
+    let url = settings.miniapp_url()?;
+    let locale = settings.languages.fallback();
     let text = services
-        .bot_content()
+        .bot_content_in(locale)
         .content
         .button("menu.btn.app", &[])
         .map(|label| label.text)
         .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| "Приложение".to_string());
+        .unwrap_or_else(|| {
+            lang::sync_scope(locale, || lang::pick("Приложение", "App").to_string())
+        });
     Some((text, url))
+}
+
+fn menu_key(menu: &(String, String)) -> String {
+    let (text, url) = menu;
+    format!("{url}\n{text}")
+}
+
+const RUSSIAN_CODES: [&str; 4] = ["ru", "uk", "be", "kk"];
+
+async fn sync_commands(
+    api: &TelegramApi,
+    services: &Services,
+    applied: &mut Option<sn_domain::client::Languages>,
+) {
+    let languages = services.settings().languages;
+    if *applied == Some(languages) {
+        return;
+    }
+    let russian = [
+        ("start", "Главное меню"),
+        ("language", "Язык"),
+        ("paysupport", "Вопросы по оплате звёздами"),
+    ];
+    let english = [
+        ("start", "Main menu"),
+        ("language", "Language"),
+        ("paysupport", "Questions about paying with Stars"),
+    ];
+    let mut failed = None;
+    if languages.several() {
+        if let Err(err) = api.set_commands_for(&english, None).await {
+            failed = Some(err);
+        }
+        for code in RUSSIAN_CODES {
+            if let Err(err) = api.set_commands_for(&russian, Some(code)).await {
+                failed = Some(err);
+            }
+        }
+    } else {
+        let only = [russian[0], russian[2]];
+        if let Err(err) = api.set_commands_for(&only, None).await {
+            failed = Some(err);
+        }
+        for code in RUSSIAN_CODES {
+            if let Err(err) = api.delete_commands_for(code).await {
+                failed = Some(err);
+            }
+        }
+    }
+    match failed {
+        None => *applied = Some(languages),
+        Some(err) => tracing::debug!(error = %err, "команды бота не обновлены"),
+    }
 }
 
 async fn sync_menu(api: &TelegramApi, services: &Services, applied: &mut Option<String>) {
     let desired = desired_menu(services);
-    let url = desired.as_ref().map(|(_, url)| url.clone());
+    let url = desired.as_ref().map(menu_key);
     if url == *applied {
         return;
     }
@@ -324,15 +382,8 @@ impl Bot {
                 tracing::debug!(error = %err, "сведения о вебхуке бота не получены");
             }
         }
-        if let Err(err) = api
-            .set_commands(&[
-                ("start", "Главное меню"),
-                ("paysupport", "Вопросы по оплате звёздами"),
-            ])
-            .await
-        {
-            tracing::debug!(error = %err, "команды бота не обновлены");
-        }
+        let mut commands = None;
+        sync_commands(&api, &self.services, &mut commands).await;
         let mut offset = load_offset(&self.services, me.id).await?;
         tracing::info!(username = %me.username.clone().unwrap_or_default(), "бот подключён");
         let ctx = BotCtx {
@@ -379,6 +430,7 @@ impl Bot {
                 break Ok(Stop::TokenChanged);
             }
             sync_menu(&api, &self.services, &mut menu).await;
+            sync_commands(&api, &self.services, &mut commands).await;
             let polled = tokio::select! {
                 _ = cancel.cancelled() => break Ok(Stop::Cancelled),
                 _ = runtime.woken() => continue,

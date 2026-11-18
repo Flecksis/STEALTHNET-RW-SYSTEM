@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sn_domain::client::Languages;
 use sn_domain::ids::AdminId;
 use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
@@ -138,6 +139,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::LANDING => {
                 if let Some(v) = parse::<LandingConfig>(&key, value) {
                     settings.landing = v.arranged();
+                }
+            }
+            keys::LANGUAGES => {
+                if let Some(v) = parse::<Languages>(&key, value) {
+                    settings.languages = v;
                 }
             }
             _ => {}
@@ -1184,6 +1190,43 @@ impl<'a> SettingsOps<'a> {
         self.saved().await?;
         self.services.bot_runtime().wake();
         Ok(self.client_access())
+    }
+
+    pub fn languages(&self) -> Languages {
+        self.services.settings().languages
+    }
+
+    pub async fn update_languages(
+        &self,
+        value: &Languages,
+        admin: AdminId,
+    ) -> ServiceResult<Languages> {
+        if !value.allows(value.default) {
+            return Err(ServiceError::rejected(
+                "settings.languages",
+                "Языком по умолчанию можно сделать только включённый язык",
+            ));
+        }
+        let before = self.languages();
+        if before == *value {
+            return Ok(before);
+        }
+        let mut tx = self.services.store().begin().await?;
+        tx.settings()
+            .set_as(keys::LANGUAGES, value, Some(admin))
+            .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "settings.languages",
+                "settings",
+                None,
+                serde_json::json!(value),
+            ))
+            .await?;
+        tx.commit().await?;
+        self.saved().await?;
+        self.services.bot_runtime().wake();
+        Ok(self.languages())
     }
 
     pub fn multi_subscriptions(&self) -> MultiSubscriptions {

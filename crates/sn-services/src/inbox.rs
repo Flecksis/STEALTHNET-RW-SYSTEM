@@ -409,6 +409,15 @@ fn amount_text(amount: Amount) -> String {
     }
 }
 
+fn amount_en(amount: Amount) -> String {
+    let en = sn_domain::client::Locale::En;
+    match (amount.as_money(), amount.as_stars()) {
+        (Some(money), _) => format::money_in(money, en),
+        (None, Some(stars)) => format::stars_in(stars, en),
+        (None, None) => amount.to_string(),
+    }
+}
+
 async fn refunded_minor(tx: &mut Tx, payment: PaymentId) -> ServiceResult<i64> {
     Ok(tx
         .refunds()
@@ -1003,10 +1012,17 @@ impl<'a> PaymentInbox<'a> {
                 &mut tx,
                 payment.client_id,
                 PAYMENT_REVIEW_TEMPLATE,
-                format!(
-                    "Оплата {} получена, но платёжная система задержала её для проверки. \
-                     Заказ ждёт ручной проверки, мы свяжемся с вами.",
-                    amount_text(payment.amount)
+                (
+                    format!(
+                        "Оплата {} получена, но платёжная система задержала её для проверки. \
+                         Заказ ждёт ручной проверки, мы свяжемся с вами.",
+                        amount_text(payment.amount)
+                    ),
+                    format!(
+                        "Payment of {} received, but the payment system held it for a check. \
+                         Your order is waiting for a manual review, we'll get in touch.",
+                        amount_en(payment.amount)
+                    ),
                 ),
                 &payment,
                 &order,
@@ -1026,7 +1042,7 @@ impl<'a> PaymentInbox<'a> {
         tx: &mut Tx,
         client: ClientId,
         template: &str,
-        text: String,
+        (text, text_en): (String, String),
         payment: &Payment,
         order: &Order,
     ) -> ServiceResult<()> {
@@ -1037,6 +1053,7 @@ impl<'a> PaymentInbox<'a> {
                     template: template.into(),
                     params: serde_json::json!({
                         "text": text,
+                        "text_en": text_en,
                         "amount": payment.amount,
                         "payment_id": payment.id,
                         "order_id": order.id,
@@ -1129,6 +1146,8 @@ impl<'a> PaymentInbox<'a> {
         let currency = self.services.settings().currency;
         let shown = amount_text(amount);
         let expected = amount_text(payment.amount);
+        let shown_en = amount_en(amount);
+        let expected_en = amount_en(payment.amount);
         let key = format!("{}:payment:{}", why.key(), payment.id);
         let details = serde_json::json!({
             "order_id": order.id,
@@ -1184,13 +1203,22 @@ impl<'a> PaymentInbox<'a> {
                     })
                     .await?;
                 let text = match why {
-                    Received::Underpaid => format!(
-                        "Оплата пришла не полностью: получено {shown} из {expected}. \
-                         Заказ не оформлен, полученные {shown} зачислены на баланс."
+                    Received::Underpaid => (
+                        format!(
+                            "Оплата пришла не полностью: получено {shown} из {expected}. \
+                             Заказ не оформлен, полученные {shown} зачислены на баланс."
+                        ),
+                        format!(
+                            "The payment didn't arrive in full: {shown_en} of {expected_en}. \
+                             The order wasn't placed, the {shown_en} received is on your balance."
+                        ),
                     ),
-                    Received::Overpaid => {
-                        format!("Оплата пришла с излишком: лишние {shown} зачислены на баланс.")
-                    }
+                    Received::Overpaid => (
+                        format!("Оплата пришла с излишком: лишние {shown} зачислены на баланс."),
+                        format!(
+                            "You paid more than needed: the extra {shown_en} is on your balance."
+                        ),
+                    ),
                 };
                 self.notify(
                     tx,
@@ -1244,12 +1272,23 @@ impl<'a> PaymentInbox<'a> {
                     })
                     .await?;
                 let text = match why {
-                    Received::Underpaid => format!(
-                        "Оплата пришла не полностью: получено {shown} из {expected}. \
-                         Заказ не оформлен. Мы проверим платёж вручную и свяжемся с вами."
+                    Received::Underpaid => (
+                        format!(
+                            "Оплата пришла не полностью: получено {shown} из {expected}. \
+                             Заказ не оформлен. Мы проверим платёж вручную и свяжемся с вами."
+                        ),
+                        format!(
+                            "The payment didn't arrive in full: {shown_en} of {expected_en}. \
+                             The order wasn't placed. We'll check the payment by hand and get in touch."
+                        ),
                     ),
-                    Received::Overpaid => format!(
-                        "Оплата пришла с излишком {shown}. Мы проверим платёж вручную и свяжемся с вами."
+                    Received::Overpaid => (
+                        format!(
+                            "Оплата пришла с излишком {shown}. Мы проверим платёж вручную и свяжемся с вами."
+                        ),
+                        format!(
+                            "You paid {shown_en} more than needed. We'll check the payment by hand and get in touch."
+                        ),
                     ),
                 };
                 self.notify(
@@ -1584,6 +1623,7 @@ impl<'a> PaymentInbox<'a> {
             return Ok(());
         }
         let shown = amount_text(paid.amount);
+        let shown_en = amount_en(paid.amount);
         let (audit_action, template, text) = match credit {
             Some(amount) => {
                 let appended = tx
@@ -1616,8 +1656,13 @@ impl<'a> PaymentInbox<'a> {
                 (
                     "payment.repeat_credited",
                     REPEAT_CREDITED_TEMPLATE,
-                    format!(
-                        "Повторная оплата {shown} по уже оплаченному счёту зачислена на баланс."
+                    (
+                        format!(
+                            "Повторная оплата {shown} по уже оплаченному счёту зачислена на баланс."
+                        ),
+                        format!(
+                            "A repeat payment of {shown_en} for an already paid invoice is on your balance."
+                        ),
                     ),
                 )
             }
@@ -1626,8 +1671,13 @@ impl<'a> PaymentInbox<'a> {
                 (
                     "payment.repeat_review",
                     REPEAT_REVIEW_TEMPLATE,
-                    format!(
-                        "Повторная оплата {shown} по уже оплаченному счёту получена. Проверим её вручную и свяжемся с вами."
+                    (
+                        format!(
+                            "Повторная оплата {shown} по уже оплаченному счёту получена. Проверим её вручную и свяжемся с вами."
+                        ),
+                        format!(
+                            "A repeat payment of {shown_en} for an already paid invoice arrived. We'll check it by hand and get in touch."
+                        ),
                     ),
                 )
             }
@@ -1655,7 +1705,8 @@ impl<'a> PaymentInbox<'a> {
                     client_id: paid.client_id,
                     template: template.into(),
                     params: serde_json::json!({
-                        "text": text,
+                        "text": text.0,
+                        "text_en": text.1,
                         "amount": paid.amount,
                         "payment_id": paid.id,
                         "order_id": order.id,

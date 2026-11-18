@@ -1,3 +1,4 @@
+use crate::client::Locale;
 use crate::money::{Currency, Money, Stars};
 use crate::traffic::{GIB, TIB};
 
@@ -82,9 +83,152 @@ pub fn traffic(bytes: u64) -> String {
     }
 }
 
+pub fn group_digits_in(n: u64, locale: Locale) -> String {
+    match locale {
+        Locale::Ru => group_digits(n),
+        Locale::En => group_digits(n).replace(NBSP, ","),
+    }
+}
+
+pub fn plural_en<'a>(n: u64, one: &'a str, other: &'a str) -> &'a str {
+    if n == 1 { one } else { other }
+}
+
+pub fn count_in(n: u64, locale: Locale, ru: [&str; 3], en: [&str; 2]) -> String {
+    let word = match locale {
+        Locale::Ru => plural_ru(n, ru[0], ru[1], ru[2]),
+        Locale::En => plural_en(n, en[0], en[1]),
+    };
+    format!("{}{NBSP}{word}", group_digits_in(n, locale))
+}
+
+pub fn money_in(value: Money, locale: Locale) -> String {
+    if locale == Locale::Ru {
+        return money(value);
+    }
+    let sign = if value.minor < 0 { "-" } else { "" };
+    let abs = value.minor.unsigned_abs();
+    match value.currency {
+        Currency::Usd => format!(
+            "{sign}${}.{:02}",
+            group_digits_in(abs / 100, locale),
+            abs % 100
+        ),
+        Currency::Rub => format!("{sign}₽{}", group_digits_in((abs + 50) / 100, locale)),
+    }
+}
+
+pub fn money_compact_in(value: Money, locale: Locale) -> String {
+    match value.currency {
+        Currency::Usd if value.minor % 100 == 0 => {
+            let sign = if value.minor < 0 { "-" } else { "" };
+            format!(
+                "{sign}${}",
+                group_digits_in(value.minor.unsigned_abs() / 100, locale)
+            )
+        }
+        _ => money_in(value, locale),
+    }
+}
+
+pub fn stars_in(value: Stars, locale: Locale) -> String {
+    let sign = if value.0 < 0 { "-" } else { "" };
+    format!(
+        "{sign}{}",
+        count_in(
+            value.0.unsigned_abs(),
+            locale,
+            ["звезда", "звезды", "звёзд"],
+            ["star", "stars"],
+        )
+    )
+}
+
+pub fn days_in(n: u32, locale: Locale) -> String {
+    count_in(
+        u64::from(n),
+        locale,
+        ["день", "дня", "дней"],
+        ["day", "days"],
+    )
+}
+
+pub fn months_in(n: u32, locale: Locale) -> String {
+    count_in(
+        u64::from(n),
+        locale,
+        ["месяц", "месяца", "месяцев"],
+        ["month", "months"],
+    )
+}
+
+pub fn devices_in(n: u32, locale: Locale) -> String {
+    count_in(
+        u64::from(n),
+        locale,
+        ["устройство", "устройства", "устройств"],
+        ["device", "devices"],
+    )
+}
+
+pub fn term_in(days: u32, locale: Locale) -> String {
+    if days >= 28 {
+        months_in(crate::tariff::months_for_days(days), locale)
+    } else {
+        days_in(days, locale)
+    }
+}
+
+pub fn traffic_in(bytes: u64, locale: Locale) -> String {
+    match locale {
+        Locale::Ru => traffic(bytes),
+        Locale::En => traffic(bytes)
+            .replace("ТБ", "TB")
+            .replace("ГБ", "GB")
+            .replace(',', "."),
+    }
+}
+
+pub fn gigabytes_in(gb: u64, locale: Locale) -> String {
+    let unit = match locale {
+        Locale::Ru => "ГБ",
+        Locale::En => "GB",
+    };
+    format!("{}{NBSP}{unit}", group_digits_in(gb, locale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn по_английски_деньги_дни_и_трафик() {
+        let en = Locale::En;
+        assert_eq!(
+            money_in(Money::new(150_100, Currency::Usd), en),
+            "$1,501.00"
+        );
+        assert_eq!(
+            money_compact_in(Money::new(150_100, Currency::Usd), en),
+            "$1,501"
+        );
+        assert_eq!(money_in(Money::new(169_000, Currency::Rub), en), "₽1,690");
+        assert_eq!(money_in(Money::new(-420, Currency::Usd), en), "-$4.20");
+        assert_eq!(
+            money_in(Money::new(169_000, Currency::Rub), Locale::Ru),
+            "1\u{a0}690\u{a0}₽"
+        );
+        assert_eq!(days_in(1, en), "1\u{a0}day");
+        assert_eq!(days_in(30, en), "30\u{a0}days");
+        assert_eq!(days_in(3, Locale::Ru), "3\u{a0}дня");
+        assert_eq!(months_in(12, en), "12\u{a0}months");
+        assert_eq!(devices_in(1, en), "1\u{a0}device");
+        assert_eq!(stars_in(Stars(1200), en), "1,200\u{a0}stars");
+        assert_eq!(traffic_in(46 * GIB + GIB / 5, en), "46.2\u{a0}GB");
+        assert_eq!(traffic_in(1200 * GIB, en), "1.2\u{a0}TB");
+        assert_eq!(gigabytes_in(50, en), "50\u{a0}GB");
+        assert_eq!(gigabytes_in(50, Locale::Ru), "50\u{a0}ГБ");
+    }
 
     fn nb(s: &str) -> String {
         s.replace(' ', "\u{a0}")

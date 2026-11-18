@@ -6,8 +6,8 @@ use crate::text;
 use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
-use sn_domain::format;
 use sn_domain::ids::{SubscriptionId, TicketId};
+use sn_domain::lang;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
 use sn_domain::pricing::{topup_presets, topup_quote};
@@ -49,7 +49,7 @@ pub fn payment_screen(c: &BotContent, result: &CheckoutResult, what: &str) -> Sc
 
 pub async fn subscriptions(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let list = live(services.subscriptions().list_for_client(client.id).await?);
     match list.as_slice() {
@@ -105,7 +105,7 @@ pub async fn subscription(
     id: i64,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let actor = Actor::Client(client.id);
     let sid = SubscriptionId(id);
@@ -176,8 +176,8 @@ pub async fn subscription(
                 c,
                 "sub.traffic",
                 &[
-                    ("used", Text(&format::traffic(used))),
-                    ("limit", Text(&format::traffic(limit))),
+                    ("used", Text(&text::traffic(used))),
+                    ("limit", Text(&text::traffic(limit))),
                     ("reset", Html(&reset)),
                 ],
             ));
@@ -242,7 +242,7 @@ pub async fn subscription(
 
 pub async fn devices(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let list = match services
         .subscriptions()
@@ -327,7 +327,7 @@ fn picked(turn: &Turn<'_>, rest: &str) -> Option<(SubscriptionId, usize, String,
 }
 
 pub async fn device_confirm(turn: &mut Turn<'_>, rest: &str) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let Some((sub, index, _, title)) = picked(turn, rest) else {
         return Ok(Screen::notice(ui::text(c, "dev.stale", &[])).section(Section::Devices));
@@ -353,7 +353,7 @@ pub async fn device_disconnect(
     client: &Client,
     rest: &str,
 ) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let Some((sub, _, hwid, title)) = picked(turn, rest) else {
         return Ok(Screen::notice(ui::text(c, "dev.stale", &[])).section(Section::Devices));
@@ -396,7 +396,7 @@ pub fn reissue_confirm(c: &BotContent, id: i64) -> Screen {
 }
 
 pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     match turn
         .services()
@@ -421,7 +421,7 @@ pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
 
 pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let settings = services.settings();
     let currency = settings.currency;
@@ -440,13 +440,13 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     lines.add(ui::text(
         c,
         "bal.amount",
-        &[("amount", Text(&format::money(main)))],
+        &[("amount", Text(&text::money(main)))],
     ));
     if referral.minor > 0 {
         lines.add(ui::text(
             c,
             "bal.referral",
-            &[("amount", Text(&format::money(referral)))],
+            &[("amount", Text(&text::money(referral)))],
         ));
     }
     if !services.payments().balance_enabled() {
@@ -462,7 +462,7 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
             ui::button(
                 c,
                 "bal.btn.preset",
-                &[("amount", Text(&format::money(amount)))],
+                &[("amount", Text(&text::money(amount)))],
                 format!("top:{}", amount.minor),
             )
         })
@@ -479,7 +479,7 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
 
 pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let settings = services.settings();
     let amount = Money::new(minor, settings.currency);
@@ -536,7 +536,7 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
     Ok(Screen::new(ui::text(
         c,
         "bal.choose_method",
-        &[("amount", Text(&format::money(amount)))],
+        &[("amount", Text(&text::money(amount)))],
     ))
     .keyboard(keyboard.push(ui::back(c, "bal")))
     .section(Section::Balance))
@@ -544,10 +544,10 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
 
 pub fn topup_custom(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::TopUpAmount);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let example = match turn.services().settings().currency {
-        Currency::Usd => "например 10 или 12.50",
-        Currency::Rub => "например 500",
+        Currency::Usd => lang::pick("например 10 или 12.50", "for example 10 or 12.50"),
+        Currency::Rub => lang::pick("например 500", "for example 500"),
     };
     Screen::new(ui::text(
         &content,
@@ -572,7 +572,7 @@ pub async fn topup_entered(turn: &mut Turn<'_>, raw: &str) -> Result<Screen, Bot
         Some(minor) if minor > 0 => topup_amount(turn, minor).await,
         _ => {
             turn.session.wait_for(Awaiting::TopUpAmount);
-            let content = turn.services().bot_content();
+            let content = turn.content();
             Ok(Screen::new(ui::text(&content, "bal.not_understood", &[]))
                 .keyboard(Keyboard::new().push(ui::cancel(&content, "bal")))
                 .section(Section::Balance))
@@ -590,7 +590,7 @@ pub async fn topup_start(
         return balance(turn, client).await;
     };
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let amount = Money::new(minor, services.settings().currency);
     match services
         .checkout()
@@ -602,7 +602,7 @@ pub async fn topup_start(
             let what = ui::text(
                 &content,
                 "pay.what_topup",
-                &[("amount", Text(&format::money(amount)))],
+                &[("amount", Text(&text::money(amount)))],
             );
             Ok(payment_screen(&content, &result, &what))
         }
@@ -629,7 +629,7 @@ pub async fn support_reply_prompt(
     };
     turn.session.support_ticket = Some(open.0);
     turn.session.wait_for(Awaiting::SupportMessage);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     Ok(Screen::new(ui::text(
         c,
@@ -643,7 +643,7 @@ pub async fn support_reply_prompt(
 pub fn support_prompt(turn: &mut Turn<'_>) -> Screen {
     turn.session.support_ticket = None;
     turn.session.wait_for(Awaiting::SupportMessage);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let settings = turn.services().settings();
     let link = crate::handler::support_link(&settings);
@@ -709,7 +709,7 @@ async fn deliver(
     body: &str,
     preferred: Option<TicketId>,
 ) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let (key, id) = match turn
         .services()
         .support()
@@ -737,7 +737,7 @@ fn trial_started(c: &BotContent) -> Screen {
 }
 
 async fn trial_check(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     match turn.services().checkout().trial_challenge(client.id).await {
         Ok(token) => Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
@@ -757,7 +757,7 @@ async fn trial_check(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
 }
 
 pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     match turn.services().checkout().start_trial(client.id).await {
         Ok(_) => Ok(trial_started(&content)),
         Err(err) if err.code() == antibot::CONFIRM_CODE => trial_check(turn, client).await,
@@ -770,7 +770,7 @@ pub async fn trial_confirmed(
     client: &Client,
     token: &str,
 ) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     match turn
         .services()
         .checkout()

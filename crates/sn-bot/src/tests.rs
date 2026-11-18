@@ -28,6 +28,7 @@ mod content;
 mod contests;
 mod gifts;
 mod gram_wallet;
+mod languages;
 mod miniapp;
 mod photos;
 mod referral_login;
@@ -60,6 +61,7 @@ async fn telegram() -> MockServer {
         "answerPreCheckoutQuery",
         "deleteWebhook",
         "setMyCommands",
+        "deleteMyCommands",
     ] {
         Mock::given(method("POST"))
             .and(path_regex(format!("/{name}$")))

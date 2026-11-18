@@ -645,10 +645,13 @@ pub fn notice(exceed: &Exceed, template: &str, offset: FixedOffset) -> Notificat
     let mut params = serde_json::json!({
         "used": format::traffic(exceed.used_bytes),
         "limit": format::traffic(exceed.limit_bytes),
+        "used_bytes": exceed.used_bytes,
+        "limit_bytes": exceed.limit_bytes,
         "period": exceed.period.as_str(),
         "when": exceed.period.during_ru(),
         "per": exceed.period.per_ru(),
         "until": until_text(exceed.window_end, offset),
+        "until_at": exceed.window_end,
         "also_mail": true,
     });
     if template == TEMPLATE_LIFTED {

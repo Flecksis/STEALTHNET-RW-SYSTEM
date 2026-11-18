@@ -8,8 +8,8 @@ use crate::text;
 use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
-use sn_domain::format;
 use sn_domain::ids::{PeriodId, TariffId};
+use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
@@ -18,8 +18,6 @@ use sn_payments::Unavailable;
 use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult, TariffOffer};
 use sn_store::Db;
 use uuid::Uuid;
-
-const CURRENT_FALLBACK: &str = "без тарифа";
 
 fn back_target(cart: &Cart) -> String {
     match cart.subscription_id {
@@ -41,7 +39,7 @@ pub async fn start(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<S
             [] => None,
             [only] if !multi => Some(only.id),
             many => {
-                let content = services.bot_content();
+                let content = services.bot_content_in(lang::current());
                 let c = &*content;
                 let offset = services.settings().remna_offset();
                 let mut keyboard = Keyboard::new();
@@ -91,7 +89,7 @@ async fn offers(turn: &Turn<'_>) -> Result<Vec<TariffOffer>, BotError> {
 }
 
 async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let offers = offers(turn).await?;
     if offers.is_empty() {
@@ -121,7 +119,7 @@ async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {
                 "buy.tariff_line",
                 &[
                     ("tariff", Text(&offer.tariff.name)),
-                    ("per_month", Text(&format::money(per_month))),
+                    ("per_month", Text(&text::money(per_month))),
                 ],
             ),
             None => ui::text(
@@ -147,7 +145,7 @@ pub async fn tariff(
     client: &Client,
     tariff_id: TariffId,
 ) -> Result<Screen, BotError> {
-    let content = turn.services().bot_content();
+    let content = turn.content();
     let c = &*content;
     let offers = offers(turn).await?;
     let Some(offer) = offers.into_iter().find(|o| o.tariff.id == tariff_id) else {
@@ -182,8 +180,8 @@ pub async fn tariff(
             c,
             "buy.tariff_traffic",
             &[
-                ("limit", Text(&format::traffic(limit))),
-                ("reset", Text(tariff.traffic.reset.short_ru())),
+                ("limit", Text(&text::traffic(limit))),
+                ("reset", Text(tariff.traffic.reset.short())),
             ],
         )),
         _ => lines.add(ui::text(c, "buy.tariff_unlimited", &[])),
@@ -191,9 +189,9 @@ pub async fn tariff(
     lines.add(ui::text(c, "buy.choose_period", &[]));
     let mut keyboard = Keyboard::new();
     for period in &offer.periods {
-        let days = format::days(period.days);
-        let price = format::money(period.price);
-        let per_month = format::money(period.per_month);
+        let days = text::days(period.days);
+        let price = text::money(period.price);
+        let per_month = text::money(period.per_month);
         let data = format!("p:{}", period.period_id);
         keyboard = keyboard.push(match period.savings_percent {
             Some(savings) => ui::button(
@@ -239,7 +237,7 @@ pub async fn period(
         return start(turn, client, "").await;
     };
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let tariff = {
         let mut conn = services.store().conn().await?;
@@ -274,18 +272,13 @@ pub async fn period(
             )
         })
         .collect();
-    let included = tariff.devices.included;
-    let included_text = format!(
-        "{included}{}{}",
-        text::NB,
-        format::plural_ru(u64::from(included), "устройство", "устройства", "устройств")
-    );
+    let included_text = text::devices(tariff.devices.included);
     Ok(Screen::new(ui::text(
         c,
         "buy.extra_devices",
         &[
             ("included", Text(&included_text)),
-            ("price", Text(&format::money(monthly))),
+            ("price", Text(&text::money(monthly))),
         ],
     ))
     .keyboard(
@@ -322,7 +315,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         return catalog(turn).await;
     };
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let mut notes = Vec::new();
     let view = match services
@@ -361,7 +354,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         .current
         .as_ref()
         .and_then(|current| current.tariff.clone())
-        .unwrap_or_else(|| CURRENT_FALLBACK.to_string());
+        .unwrap_or_else(|| lang::pick("без тарифа", "no plan").to_string());
     let plan_text = ui::text(
         c,
         match (view.kind, view.current.as_ref().is_some_and(|s| s.trial)) {
@@ -388,19 +381,19 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
             c,
             "buy.summary_line",
             &[
-                ("label", Text(&line.label)),
-                ("amount", Text(&format::money(line.amount))),
+                ("label", Text(&line.shown_label())),
+                ("amount", Text(&text::money(line.amount))),
             ],
         ));
     }
-    let total = format::money(quote.total);
+    let total = text::money(quote.total);
     lines.add(match quote.stars {
         Some(stars) => ui::text(
             c,
             "buy.summary_total_stars",
             &[
                 ("total", Text(&total)),
-                ("stars", Text(&format::stars(stars.total))),
+                ("stars", Text(&text::stars(stars.total))),
             ],
         ),
         None => ui::text(c, "buy.summary_total", &[("total", Text(&total))]),
@@ -428,8 +421,8 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
                     c,
                     "buy.balance_short",
                     &[
-                        ("missing", Text(&format::money(*missing))),
-                        ("balance", Text(&format::money(*balance))),
+                        ("missing", Text(&text::money(*missing))),
+                        ("balance", Text(&text::money(*balance))),
                     ],
                 ));
             }
@@ -459,7 +452,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
 
 pub fn ask_promo(turn: &mut Turn<'_>) -> Screen {
     turn.session.wait_for(Awaiting::PromoForCart);
-    let content = turn.services().bot_content();
+    let content = turn.content();
     Screen::new(ui::text(&content, "buy.ask_promo", &[]))
         .keyboard(Keyboard::new().push(ui::cancel(&content, "sum")))
         .section(Section::Buy)
@@ -471,7 +464,7 @@ pub async fn promo_entered(
     raw: &str,
 ) -> Result<Screen, BotError> {
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let c = &*content;
     let ctx = services.module_context();
     let tariff = turn.session.cart.as_ref().and_then(|c| c.tariff_id);
@@ -554,7 +547,7 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<S
         return catalog(turn).await;
     };
     let services = turn.services().clone();
-    let content = services.bot_content();
+    let content = services.bot_content_in(lang::current());
     let title = tariff_name(&services, cart.tariff_id).await;
     let result = services
         .checkout()

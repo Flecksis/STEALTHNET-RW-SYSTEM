@@ -24,6 +24,19 @@ pub enum Prize {
 
 impl Prize {
     pub fn label(self) -> String {
+        let locale = sn_domain::lang::current();
+        if locale == sn_domain::client::Locale::En {
+            return match self {
+                Prize::Days { days } => {
+                    format!("+{} of subscription", format::days_in(days, locale))
+                }
+                Prize::Balance { amount } => {
+                    format!("{} to your balance", format::money_in(amount, locale))
+                }
+                Prize::Promo { percent, .. } => format!("A {percent}% discount code"),
+                Prize::Empty => "Nothing".into(),
+            };
+        }
         match self {
             Prize::Days { days } => format!("+{} к подписке", format::days(days)),
             Prize::Balance { amount } => format!("{} на баланс", format::money(amount)),

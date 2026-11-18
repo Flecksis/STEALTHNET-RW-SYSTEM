@@ -1,7 +1,8 @@
 use chrono::{DateTime, Datelike, FixedOffset, Utc};
-use sn_domain::format;
-use sn_domain::money::Amount;
+use sn_domain::client::Locale;
+use sn_domain::money::{Amount, Money, Stars};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
+use sn_domain::{errors_en, format, lang};
 use sn_modules::ModuleError;
 use sn_services::ServiceError;
 use sn_store::StoreError;
@@ -21,6 +22,21 @@ const MONTHS: [&str; 12] = [
     "декабря",
 ];
 
+const MONTHS_EN: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
 pub const NB: char = format::NBSP;
 
 pub fn escape(text: &str) -> String {
@@ -37,15 +53,27 @@ pub fn escape(text: &str) -> String {
     out
 }
 
+fn month(index: u32) -> &'static str {
+    let index = index as usize;
+    match lang::current() {
+        Locale::Ru => MONTHS[index],
+        Locale::En => MONTHS_EN[index],
+    }
+}
+
 pub fn date(at: DateTime<Utc>, offset: FixedOffset) -> String {
     let local = at.with_timezone(&offset);
-    let month = MONTHS[local.month0() as usize];
-    format!("{}{NB}{month}{NB}{}", local.day(), local.year())
+    format!(
+        "{}{NB}{}{NB}{}",
+        local.day(),
+        month(local.month0()),
+        local.year()
+    )
 }
 
 pub fn day_month(at: DateTime<Utc>, offset: FixedOffset) -> String {
     let local = at.with_timezone(&offset);
-    format!("{}{NB}{}", local.day(), MONTHS[local.month0() as usize])
+    format!("{}{NB}{}", local.day(), month(local.month0()))
 }
 
 pub fn days_left(expire_at: DateTime<Utc>, now: DateTime<Utc>) -> u32 {
@@ -57,22 +85,39 @@ pub fn days_left(expire_at: DateTime<Utc>, now: DateTime<Utc>) -> u32 {
     }
 }
 
-pub fn amount(value: Amount) -> String {
-    value.to_string()
+pub fn money(value: Money) -> String {
+    format::money_in(value, lang::current())
 }
 
-pub fn status_key(subscription: &Subscription, now: DateTime<Utc>) -> &'static str {
-    match status_title(subscription, now) {
-        "Пробный период" => "status.trial",
-        "Активна" => "status.active",
-        "Трафик закончился" => "status.limited",
-        "Истекла" => "status.expired",
-        "Заблокирована" => "status.disabled",
-        _ => "status.pending",
+pub fn money_compact(value: Money) -> String {
+    format::money_compact_in(value, lang::current())
+}
+
+pub fn stars(value: Stars) -> String {
+    format::stars_in(value, lang::current())
+}
+
+pub fn days(n: u32) -> String {
+    format::days_in(n, lang::current())
+}
+
+pub fn traffic(bytes: u64) -> String {
+    format::traffic_in(bytes, lang::current())
+}
+
+pub fn devices(n: u32) -> String {
+    format::devices_in(n, lang::current())
+}
+
+pub fn amount(value: Amount) -> String {
+    match (value.as_money(), value.as_stars()) {
+        (Some(value), _) => money(value),
+        (None, Some(value)) => stars(value),
+        (None, None) => value.to_string(),
     }
 }
 
-pub fn status_title(subscription: &Subscription, now: DateTime<Utc>) -> &'static str {
+pub fn status_key(subscription: &Subscription, now: DateTime<Utc>) -> &'static str {
     let status = subscription.mirror.status.or_else(|| {
         subscription.mirror.expire_at.map(|at| {
             if at <= now {
@@ -84,21 +129,21 @@ pub fn status_title(subscription: &Subscription, now: DateTime<Utc>) -> &'static
     });
     match status {
         Some(SubscriptionStatus::Active) if subscription.kind == SubscriptionKind::Trial => {
-            "Пробный период"
+            "status.trial"
         }
-        Some(SubscriptionStatus::Active) => "Активна",
-        Some(SubscriptionStatus::Limited) => "Трафик закончился",
-        Some(SubscriptionStatus::Expired) => "Истекла",
-        Some(SubscriptionStatus::Disabled) => "Заблокирована",
-        None => "Оформляется",
+        Some(SubscriptionStatus::Active) => "status.active",
+        Some(SubscriptionStatus::Limited) => "status.limited",
+        Some(SubscriptionStatus::Expired) => "status.expired",
+        Some(SubscriptionStatus::Disabled) => "status.disabled",
+        None => "status.pending",
     }
 }
 
 pub fn plural_days(n: u32) -> String {
-    format::days(n)
+    days(n)
 }
 
-pub fn user_error(err: &ServiceError) -> String {
+fn russian_error(err: &ServiceError) -> String {
     match err {
         ServiceError::Rejected { message, .. } => capitalize(message),
         ServiceError::Domain(e) => capitalize(&e.to_string()),
@@ -130,6 +175,30 @@ pub fn user_error(err: &ServiceError) -> String {
             tracing::error!(error = %other, "ошибка в боте");
             "Что-то пошло не так. Попробуйте ещё раз.".into()
         }
+    }
+}
+
+fn english_error(err: &ServiceError) -> Option<String> {
+    match err {
+        ServiceError::Rejected { code, .. } => errors_en::message(code),
+        ServiceError::Domain(e) => errors_en::message(e.code()),
+        ServiceError::Module(ModuleError::Invalid(message)) => Some(capitalize(message)),
+        ServiceError::Forbidden => Some("Your account is blocked. Please contact support.".into()),
+        ServiceError::NotFound(_) | ServiceError::Store(StoreError::NotFound(_)) => {
+            Some("Not found.".into())
+        }
+        ServiceError::Payment(sn_payments::PaymentError::NotImplemented(_)) => {
+            errors_en::message("not_implemented")
+        }
+        other => errors_en::message(other.code()),
+    }
+}
+
+pub fn user_error(err: &ServiceError) -> String {
+    let russian = russian_error(err);
+    match lang::current() {
+        Locale::Ru => russian,
+        Locale::En => english_error(err).unwrap_or(russian),
     }
 }
 
@@ -175,6 +244,33 @@ mod tests {
             escape("<b>A&B</b> \"x\""),
             "&lt;b&gt;A&amp;B&lt;/b&gt; &quot;x&quot;"
         );
+    }
+
+    #[test]
+    fn даты_и_ошибки_по_английски_внутри_хода() {
+        let at = Utc.with_ymd_and_hms(2027, 2, 14, 10, 0, 0).unwrap();
+        let utc = FixedOffset::east_opt(0).unwrap();
+        lang::sync_scope(Locale::En, || {
+            assert_eq!(date(at, utc), "14\u{a0}February\u{a0}2027");
+            assert_eq!(day_month(at, utc), "14\u{a0}February");
+            assert_eq!(days(2), "2\u{a0}days");
+            assert_eq!(
+                user_error(&ServiceError::rejected(
+                    "trial.used",
+                    "Пробный период уже был использован"
+                )),
+                "You've already used the free trial."
+            );
+            assert_eq!(
+                user_error(&ServiceError::rejected("никто.не.знает", "Счёт устарел")),
+                "Счёт устарел"
+            );
+            assert_eq!(
+                user_error(&ServiceError::Forbidden),
+                "Your account is blocked. Please contact support."
+            );
+        });
+        assert_eq!(date(at, utc), "14\u{a0}февраля\u{a0}2027");
     }
 
     #[test]

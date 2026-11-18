@@ -2,6 +2,7 @@ pub mod config;
 pub mod cookies;
 pub mod error;
 pub mod extract;
+pub mod lang;
 pub mod routes;
 pub mod state;
 pub mod web;

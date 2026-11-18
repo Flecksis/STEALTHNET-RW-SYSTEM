@@ -16,12 +16,13 @@ use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, Datelike, Duration, FixedOffset, Offset, Timelike, Utc};
 use serde::{Deserialize, Serialize};
-use sn_domain::format;
+use sn_domain::client::Locale;
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::ledger::LedgerKind;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::paging::{Page, PageRequest};
+use sn_domain::{format, lang};
 use sn_store::{ActorKind, AuditEntry, ClientPerson, Db, StoreError};
 use std::collections::{HashMap, HashSet};
 
@@ -520,21 +521,41 @@ pub fn offset_of(minutes: i64) -> FixedOffset {
     FixedOffset::east_opt(seconds).unwrap_or(Utc.fix())
 }
 
+const MONTHS_EN: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
 pub fn day(at: DateTime<Utc>, offset: FixedOffset) -> String {
     let local = at.with_timezone(&offset);
+    let months = match lang::current() {
+        Locale::Ru => MONTHS,
+        Locale::En => MONTHS_EN,
+    };
     format!(
         "{}{}{}",
         local.day(),
         format::NBSP,
-        MONTHS[local.month0() as usize]
+        months[local.month0() as usize]
     )
 }
 
 pub fn when(at: DateTime<Utc>, offset: FixedOffset) -> String {
     let local = at.with_timezone(&offset);
     format!(
-        "{} в {:02}:{:02}",
+        "{} {} {:02}:{:02}",
         day(at, offset),
+        lang::pick("в", "at"),
         local.hour(),
         local.minute()
     )
@@ -577,9 +598,13 @@ fn purchase_window(
 
 fn subscription_text(rule: SubscriptionRule) -> String {
     if rule.paid_only {
-        "Действующая оплаченная подписка, пробная не считается".into()
+        lang::pick(
+            "Действующая оплаченная подписка, пробная не считается",
+            "An active paid subscription, the free trial doesn't count",
+        )
+        .into()
     } else {
-        "Действующая подписка".into()
+        lang::pick("Действующая подписка", "An active subscription").into()
     }
 }
 
@@ -589,13 +614,30 @@ fn purchase_text(
     ends_at: DateTime<Utc>,
     offset: FixedOffset,
 ) -> String {
+    let locale = lang::current();
+    let english = locale == Locale::En;
     let base = if rule.from.is_none() && rule.until.is_none() {
-        "Оплата подписки или опций во время конкурса".to_string()
+        lang::pick(
+            "Оплата подписки или опций во время конкурса",
+            "A payment for a subscription or add-ons during the giveaway",
+        )
+        .to_string()
     } else {
         let (from, until) = purchase_window(rule, starts_at, ends_at);
         let last = until - Duration::seconds(1);
-        if day(from, offset) == day(last, offset) {
+        if day(from, offset) == day(last, offset) && english {
+            format!(
+                "A payment for a subscription or add-ons on {}",
+                day(from, offset)
+            )
+        } else if day(from, offset) == day(last, offset) {
             format!("Оплата подписки или опций {}", day(from, offset))
+        } else if english {
+            format!(
+                "A payment for a subscription or add-ons from {} to {}",
+                day(from, offset),
+                day(last, offset)
+            )
         } else {
             format!(
                 "Оплата подписки или опций с {} по {}",
@@ -605,12 +647,29 @@ fn purchase_text(
         }
     };
     match rule.min {
+        Some(min) if english => format!("{base}, at least {}", format::money_in(min, locale)),
         Some(min) => format!("{base} от {}", format::money(min)),
         None => base,
     }
 }
 
 fn friends_text(rule: FriendsRule, have: Option<i64>) -> String {
+    if lang::current() == Locale::En {
+        let friends = if rule.count == 1 { "friend" } else { "friends" };
+        let mut text = match have {
+            Some(have) => format!(
+                "Invite {} {friends} during the giveaway: {} of {}",
+                rule.count,
+                have.min(i64::from(rule.count)),
+                rule.count
+            ),
+            None => format!("Invite {} {friends} during the giveaway", rule.count),
+        };
+        if rule.paid {
+            text.push_str(", each friend has to pay for a subscription");
+        }
+        return text;
+    }
     let word = format::plural_ru(u64::from(rule.count), "друга", "друзей", "друзей");
     let mut text = match have {
         Some(have) => format!(
@@ -1444,6 +1503,53 @@ pub async fn retry_prize(
     Ok(updated)
 }
 
+fn english_months(text: &str) -> String {
+    let mut out = text.to_string();
+    for (ru, en) in MONTHS.iter().zip(MONTHS_EN) {
+        out = out.replace(ru, en);
+    }
+    out
+}
+
+pub fn shown_note(note: &str) -> String {
+    if lang::current() == Locale::Ru {
+        return note.to_string();
+    }
+    match note {
+        "Деньги уже на балансе." => {
+            "The money is already on your balance.".into()
+        }
+        "Дни уже добавлены к подписке." => {
+            "The days are already added to your subscription.".into()
+        }
+        "Дни добавятся, когда у клиента появится подписка" => {
+            "The days will be added as soon as you have a subscription.".into()
+        }
+        other => match other
+            .strip_prefix("Промокод действует до ")
+            .and_then(|rest| rest.strip_suffix('.'))
+        {
+            Some(date) => format!("The promo code is valid until {}.", english_months(date)),
+            None => other.to_string(),
+        },
+    }
+}
+
+fn shown_exclusion(reason: &str) -> String {
+    if lang::current() == Locale::Ru {
+        return reason.to_string();
+    }
+    if reason.starts_with("Не выполнено") {
+        return "Some requirements weren't met".into();
+    }
+    match reason {
+        UNAVAILABLE => "Taking part isn't available for this account".into(),
+        "Клиент заблокирован" => "The account is blocked".into(),
+        "Клиент удалён" => "The account was removed".into(),
+        other => other.to_string(),
+    }
+}
+
 fn client_contest(
     row: store::ContestRow,
     entries: i64,
@@ -1471,13 +1577,13 @@ fn client_contest(
             won: entry.place.is_some(),
             excluded: entry.excluded.as_deref().map(|reason| {
                 if reason == ANTIBOT_EXCLUDED {
-                    UNAVAILABLE.to_string()
+                    shown_exclusion(UNAVAILABLE)
                 } else {
-                    reason.to_string()
+                    shown_exclusion(reason)
                 }
             }),
             prize_state: entry.prize_state.clone(),
-            prize_note: entry.prize_note.clone(),
+            prize_note: entry.prize_note.as_deref().map(shown_note),
             prize_code: entry.prize_code.clone(),
         }),
         _ => None,
@@ -1901,8 +2007,7 @@ async fn issue_one(
     .await
     .map_err(StoreError::from)?
     .unwrap_or(true);
-    let base =
-        serde_json::json!({ "title": row.title, "prize": prize.label(), "contest_id": contest_id });
+    let base = serde_json::json!({ "title": row.title, "prize": prize.label(), "prize_data": prize, "contest_id": contest_id });
     if blocked {
         store::set_prize(
             &mut tx,

@@ -330,7 +330,11 @@ impl<'a> ClientOps<'a> {
         let client = tx
             .clients()
             .create(&NewClient {
-                locale: Locale::from_telegram(profile.language_code.as_deref()),
+                locale: self
+                    .services
+                    .settings()
+                    .languages
+                    .detect(profile.language_code.as_deref()),
                 registration_source: source,
                 note: None,
             })
@@ -786,6 +790,18 @@ impl<'a> ClientOps<'a> {
             .into_iter()
             .map(|t| (t.id, t.name))
             .collect())
+    }
+
+    pub async fn set_locale(&self, id: ClientId, locale: Locale) -> ServiceResult<Locale> {
+        if !self.services.settings().languages.allows(locale) {
+            return Err(ServiceError::rejected(
+                "client.locale",
+                "Этот язык сейчас выключен",
+            ));
+        }
+        let mut conn = self.services.store().conn().await?;
+        conn.clients().set_locale(id, locale).await?;
+        Ok(locale)
     }
 
     pub async fn block(

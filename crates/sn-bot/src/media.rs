@@ -3,6 +3,7 @@ use crate::handler::{BotCtx, Screen, Target};
 use crate::telegram::{Keyboard, Message, PhotoInput, TelegramError};
 use crate::ui;
 use sn_domain::bot_content::{CAPTION_MAX, ImageSlot, strip_custom_emoji, visible_len};
+use sn_domain::lang;
 use sn_services::bot_content::{BotContent, EMOJI_REJECTED_KEY};
 use sn_store::{BotImage, Db};
 
@@ -22,7 +23,7 @@ pub fn picture(content: &BotContent, screen: &Screen) -> Option<(ImageSlot, Stri
 }
 
 pub async fn show(ctx: &BotCtx, target: Target, screen: &Screen) -> Result<(), BotError> {
-    let content = ctx.services.bot_content();
+    let content = ctx.services.bot_content_in(lang::current());
     let mut keyboard = screen.keyboard.clone();
     if screen.menu {
         keyboard = keyboard.push(ui::menu(&content));

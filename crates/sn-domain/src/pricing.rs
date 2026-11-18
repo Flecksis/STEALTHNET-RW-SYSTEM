@@ -1,4 +1,5 @@
 use crate::DomainError;
+use crate::client::Locale;
 use crate::format;
 use crate::ids::{PeriodId, TariffId};
 use crate::module::ModuleId;
@@ -61,6 +62,68 @@ pub struct QuoteLine {
     pub label: String,
     pub amount: Money,
     pub stars: Option<Stars>,
+}
+
+impl QuoteLine {
+    pub fn shown_label(&self) -> String {
+        match crate::lang::current() {
+            Locale::Ru => self.label.clone(),
+            Locale::En => self.english_label(),
+        }
+    }
+
+    fn english_label(&self) -> String {
+        let en = Locale::En;
+        match &self.kind {
+            QuoteLineKind::Period { days, .. } => match self.label.strip_prefix("Подарок: «")
+            {
+                Some(rest) => {
+                    let name = rest.rsplit_once("» на ").map_or(rest, |(name, _)| name);
+                    format!("Gift: “{name}” for {}", format::term_in(*days, en))
+                }
+                None => {
+                    let name = self
+                        .label
+                        .rsplit_once(" · ")
+                        .map_or(self.label.as_str(), |(name, _)| name);
+                    format!("{name} · {}", format::days_in(*days, en))
+                }
+            },
+            QuoteLineKind::ExtraDevices { count, months } => {
+                format!(
+                    "Extra devices: {count} × {}",
+                    format::months_in(*months, en)
+                )
+            }
+            QuoteLineKind::DeviceAddon { count, days } => {
+                format!("Extra devices: +{count} for {}", format::days_in(*days, en))
+            }
+            QuoteLineKind::TrafficAddon { gb } => {
+                format!("Traffic: +{}", format::gigabytes_in(u64::from(*gb), en))
+            }
+            QuoteLineKind::TopUp => "Balance top-up".into(),
+            QuoteLineKind::Adjustment { source } => {
+                let cut = match self.label.rsplit_once(", ") {
+                    Some((_, tail)) if tail.ends_with('%') => tail.to_string(),
+                    _ => format::money_in(self.amount, en),
+                };
+                match source {
+                    AdjustmentSource::Promo { code, .. } => format!("Promo code {code}, {cut}"),
+                    AdjustmentSource::PersonalDiscount => format!("Personal discount, {cut}"),
+                    AdjustmentSource::Module { .. } => format!("Discount, {cut}"),
+                }
+            }
+        }
+    }
+}
+
+impl Quote {
+    pub fn shown(mut self) -> Self {
+        for line in &mut self.lines {
+            line.label = line.shown_label();
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +404,34 @@ mod tests {
             kind: AdjustmentKind::Percent { percent },
             label: "Промокод ZIMA".into(),
         }
+    }
+
+    #[test]
+    fn подписи_строк_по_английски_только_при_показе() {
+        let tariff = standard();
+        let q = quote(&QuoteRequest {
+            currency: Currency::Usd,
+            tariff: &tariff,
+            period_id: PeriodId(12),
+            extra_devices: 2,
+            sell_extra_devices: true,
+            adjustments: &[promo(10)],
+        })
+        .unwrap();
+        let russian: Vec<String> = q.lines.iter().map(|l| l.label.clone()).collect();
+        assert_eq!(
+            q.lines
+                .iter()
+                .map(QuoteLine::shown_label)
+                .collect::<Vec<_>>(),
+            russian
+        );
+        let english = crate::lang::sync_scope(Locale::En, || q.clone().shown());
+        let labels: Vec<&str> = english.lines.iter().map(|l| l.label.as_str()).collect();
+        assert!(labels[0].ends_with(" · 90\u{a0}days"), "{labels:?}");
+        assert_eq!(labels[1], "Extra devices: 2 × 3\u{a0}months");
+        assert!(labels[2].starts_with("Promo code ZIMA, "), "{labels:?}");
+        assert_eq!(q.lines[0].label, russian[0]);
     }
 
     #[test]

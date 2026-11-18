@@ -1,6 +1,8 @@
 use super::ButtonSpec;
 use crate::sender::MailSite;
 use sn_domain::bot_content::escape;
+use sn_domain::client::Locale;
+use sn_domain::lang;
 use uuid::Uuid;
 
 const INK: &str = "#151a22";
@@ -203,9 +205,19 @@ impl Letter {
     }
 
     pub fn html(&self, unsubscribe: &str) -> String {
+        let (reason, link) = match lang::current() {
+            Locale::Ru => (
+                "Это письмо пришло, потому что у вас есть аккаунт в",
+                "Отписаться от рассылок",
+            ),
+            Locale::En => (
+                "You're getting this email because you have an account at",
+                "Unsubscribe",
+            ),
+        };
         self.frame(&format!(
-            "Это письмо пришло, потому что у вас есть аккаунт в {}. \
-             <a href=\"{}\" style=\"color:{MUTED};text-decoration:underline;white-space:nowrap;\">Отписаться от рассылок</a>",
+            "{reason} {}. \
+             <a href=\"{}\" style=\"color:{MUTED};text-decoration:underline;white-space:nowrap;\">{link}</a>",
             escape(&self.brand),
             escape(unsubscribe)
         ))
@@ -213,7 +225,11 @@ impl Letter {
 
     pub fn notice_html(&self) -> String {
         self.frame(&format!(
-            "Это письмо о вашем аккаунте в {}.",
+            "{} {}.",
+            lang::pick(
+                "Это письмо о вашем аккаунте в",
+                "This email is about your account at"
+            ),
             escape(&self.brand)
         ))
     }
@@ -221,7 +237,7 @@ impl Letter {
     fn frame(&self, footer: &str) -> String {
         let mut out = String::with_capacity(self.html.len() + 2048);
         out.push_str(&format!(
-            "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">\
+            "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
              <title>{}</title></head>\
              <body style=\"margin:0;padding:0;background:#f2f4f7;\">\
@@ -229,6 +245,7 @@ impl Letter {
              <tr><td align=\"center\" style=\"padding:24px 12px;\">\
              <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" \
              style=\"max-width:560px;background:#ffffff;border-radius:14px;overflow:hidden;font-family:{FONT};color:{INK};\">",
+            lang::current().as_str(),
             escape(&self.subject)
         ));
         if let Some(image) = &self.image {
@@ -273,7 +290,11 @@ impl Letter {
     pub fn notice_text(&self) -> String {
         let mut out = self.body_text();
         out.push_str(&format!(
-            "\n\n—\nЭто письмо о вашем аккаунте в {}.\n",
+            "\n\n—\n{} {}.\n",
+            lang::pick(
+                "Это письмо о вашем аккаунте в",
+                "This email is about your account at"
+            ),
             self.brand
         ));
         out
@@ -292,8 +313,18 @@ impl Letter {
 
     pub fn text(&self, unsubscribe: &str) -> String {
         let mut out = self.body_text();
+        let (reason, link) = match lang::current() {
+            Locale::Ru => (
+                "Это письмо пришло, потому что у вас есть аккаунт в",
+                "Отписаться от рассылок",
+            ),
+            Locale::En => (
+                "You're getting this email because you have an account at",
+                "Unsubscribe",
+            ),
+        };
         out.push_str(&format!(
-            "\n\n—\nЭто письмо пришло, потому что у вас есть аккаунт в {}.\nОтписаться от рассылок: {unsubscribe}\n",
+            "\n\n—\n{reason} {}.\n{link}: {unsubscribe}\n",
             self.brand
         ));
         out

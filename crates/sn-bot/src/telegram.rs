@@ -726,14 +726,33 @@ impl TelegramApi {
     }
 
     pub async fn set_commands(&self, commands: &[(&str, &str)]) -> Result<bool, TelegramError> {
+        self.set_commands_for(commands, None).await
+    }
+
+    pub async fn set_commands_for(
+        &self,
+        commands: &[(&str, &str)],
+        language: Option<&str>,
+    ) -> Result<bool, TelegramError> {
         let list: Vec<serde_json::Value> = commands
             .iter()
             .map(|(command, description)| {
                 serde_json::json!({ "command": command, "description": description })
             })
             .collect();
-        self.call("setMyCommands", &serde_json::json!({ "commands": list }))
-            .await
+        let mut body = serde_json::json!({ "commands": list });
+        if let Some(language) = language {
+            body["language_code"] = serde_json::json!(language);
+        }
+        self.call("setMyCommands", &body).await
+    }
+
+    pub async fn delete_commands_for(&self, language: &str) -> Result<bool, TelegramError> {
+        self.call(
+            "deleteMyCommands",
+            &serde_json::json!({ "language_code": language }),
+        )
+        .await
     }
 
     pub async fn get_updates(

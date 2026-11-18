@@ -39,6 +39,16 @@ impl WithdrawalStatus {
         }
     }
 
+    pub fn title(self) -> &'static str {
+        let english = match self {
+            WithdrawalStatus::Holding | WithdrawalStatus::Pending => "Under review",
+            WithdrawalStatus::Paid => "Paid",
+            WithdrawalStatus::Rejected => "Declined",
+            WithdrawalStatus::Canceled => "Cancelled",
+        };
+        sn_domain::lang::pick(self.title_ru(), english)
+    }
+
     fn parse(value: &str) -> StoreResult<Self> {
         match value {
             "holding" => Ok(WithdrawalStatus::Holding),

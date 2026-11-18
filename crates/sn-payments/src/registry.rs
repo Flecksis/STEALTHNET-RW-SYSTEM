@@ -302,10 +302,10 @@ impl ProviderRegistry {
             let custom = state.map(|state| &state.label);
             let title = custom
                 .and_then(|l| l.title.clone())
-                .unwrap_or_else(|| label.title.to_string());
+                .unwrap_or_else(|| crate::english::shown(label.title));
             let hint = custom
                 .and_then(|l| l.hint.clone())
-                .unwrap_or_else(|| label.hint.to_string());
+                .unwrap_or_else(|| crate::english::shown(label.hint));
             let (amount, unavailable) = match provider.kind() {
                 ProviderKind::External => {
                     let choices = snapshot
@@ -325,8 +325,8 @@ impl ProviderRegistry {
                                 provider: provider.id(),
                                 method: Some(method.code.to_string()),
                                 kind: ProviderKind::External,
-                                title: title.unwrap_or_else(|| method.title.to_string()),
-                                hint: method.hint.to_string(),
+                                title: title.unwrap_or_else(|| crate::english::shown(method.title)),
+                                hint: crate::english::shown(method.hint),
                                 amount: Some(ctx.total.into()),
                                 unavailable: None,
                             });
