@@ -64,6 +64,8 @@ pub struct Session {
     pub gift_code: Option<String>,
     #[serde(default)]
     pub promo_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_group: Option<String>,
 }
 
 impl Session {

@@ -20,6 +20,7 @@ export type Site = {
   support_url: string | null;
   support_tickets?: boolean;
   support_ai?: { cabinet: boolean; miniapp: boolean };
+  support_files?: { max_bytes: number; max_files: number } | null;
   bot_username: string | null;
   appearance: Appearance;
   connect?: { mode: 'ours' | 'remnawave'; page_config: string | null };

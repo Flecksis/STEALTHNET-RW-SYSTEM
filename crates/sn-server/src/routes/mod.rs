@@ -4,6 +4,7 @@ mod client_email;
 mod client_oauth;
 mod client_photo;
 mod public_pay;
+pub mod support_files;
 pub mod system;
 pub mod webhooks;
 
@@ -113,13 +114,18 @@ pub fn router(state: AppState) -> Router {
         .merge(system::routes())
         .merge(public_pay::routes())
         .merge(webhooks::routes())
-        .nest("/api/admin", admin::routes())
+        .merge(support_files::public_routes())
+        .nest(
+            "/api/admin",
+            admin::routes().merge(support_files::admin_routes()),
+        )
         .nest(
             "/api/client",
             client::routes()
                 .merge(client_photo::routes())
                 .merge(client_oauth::routes())
-                .merge(client_email::routes()),
+                .merge(client_email::routes())
+                .merge(support_files::client_routes()),
         )
         .nest_service("/api/admin/m", admin_modules)
         .nest_service("/api/client/m", client_modules)

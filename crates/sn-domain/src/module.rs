@@ -22,6 +22,7 @@ pub enum ModuleId {
     Analytics,
     Landing,
     Oauth,
+    TicketFiles,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -108,7 +109,7 @@ const fn with_menu(
     module
 }
 
-pub static CATALOG: [ModuleInfo; 16] = [
+pub static CATALOG: [ModuleInfo; 17] = [
     with_menu(
         info(
             ModuleId::Promo,
@@ -270,10 +271,18 @@ pub static CATALOG: [ModuleInfo; 16] = [
         "Кабинет",
         false,
     ),
+    info(
+        ModuleId::TicketFiles,
+        ModuleGroup::Support,
+        "Файлы в обращениях",
+        "Клиенты и поддержка прикладывают к сообщениям фото, PDF и текстовые файлы",
+        "Поддержка · бот · кабинет · мини-приложение",
+        true,
+    ),
 ];
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 16] = [
+    pub const ALL: [ModuleId; 17] = [
         ModuleId::Promo,
         ModuleId::Gifts,
         ModuleId::Options,
@@ -290,6 +299,7 @@ impl ModuleId {
         ModuleId::Analytics,
         ModuleId::Landing,
         ModuleId::Oauth,
+        ModuleId::TicketFiles,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -310,6 +320,7 @@ impl ModuleId {
             ModuleId::Analytics => "analytics",
             ModuleId::Landing => "landing",
             ModuleId::Oauth => "oauth",
+            ModuleId::TicketFiles => "ticket_files",
         }
     }
 
@@ -403,7 +414,8 @@ mod tests {
                 "utm",
                 "mail",
                 "antibot",
-                "landing"
+                "landing",
+                "ticket_files"
             ]
         );
     }

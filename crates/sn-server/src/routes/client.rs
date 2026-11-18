@@ -9,7 +9,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::ClientChannel;
-use sn_domain::ids::{PeriodId, SubscriptionId, TicketId};
+use sn_domain::ids::{PeriodId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::money::{Money, parse_units};
 use sn_domain::support::{Ticket, TicketChannel};
 use sn_modules::catalog::antibot;
@@ -844,9 +844,12 @@ async fn tickets(
 struct OpenTicketBody {
     #[serde(default)]
     subject: Option<String>,
+    #[serde(default)]
     body: String,
     #[serde(default)]
     subscription_id: Option<SubscriptionId>,
+    #[serde(default)]
+    files: Vec<TicketFileId>,
 }
 
 async fn open_ticket(
@@ -870,7 +873,7 @@ async fn open_ticket(
     let id = state
         .services
         .support()
-        .open(
+        .open_with_files(
             client.0.client_id,
             &OpenTicket {
                 subscription_id: body.subscription_id,
@@ -878,6 +881,7 @@ async fn open_ticket(
                 subject: body.subject,
                 body: body.body,
             },
+            &body.files,
         )
         .await?;
     Ok(Json(serde_json::json!({ "ticket_id": id })))
@@ -899,7 +903,10 @@ async fn ticket(
 
 #[derive(Deserialize)]
 struct ReplyBody {
+    #[serde(default)]
     body: String,
+    #[serde(default)]
+    files: Vec<TicketFileId>,
 }
 
 async fn reply(
@@ -911,12 +918,13 @@ async fn reply(
     client.require_full()?;
     let support = state.services.support();
     support
-        .reply(
+        .reply_with_files(
             TicketId(id),
             &ReplyRequest {
                 body: body.body,
                 close: false,
             },
+            &body.files,
             client.actor(),
         )
         .await?;

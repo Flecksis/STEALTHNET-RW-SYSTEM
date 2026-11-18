@@ -59,6 +59,7 @@ mod remna_link;
 mod robokassa;
 mod robots;
 mod rollypay;
+mod support_files;
 mod support_mode;
 mod tribute;
 mod wata;

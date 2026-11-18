@@ -1122,7 +1122,9 @@ impl<'a> AlertsOps<'a> {
             .modules()
             .is_enabled(sn_domain::module::ModuleId::Ai);
         let rows: Vec<(i64, i64, String, Option<String>, i64, i64)> = sqlx::query_as(
-            "SELECT m.id, m.ticket_id, m.body, t.subject, t.client_id, \
+            "SELECT m.id, m.ticket_id, coalesce(nullif(m.body, ''), (SELECT 'Файл: ' || tf.name \
+                    FROM ticket_files tf WHERE tf.message_id = m.id ORDER BY tf.id LIMIT 1), ''), \
+                    t.subject, t.client_id, \
                     (SELECT min(f.id) FROM ticket_messages f WHERE f.ticket_id = m.ticket_id) \
              FROM ticket_messages m JOIN tickets t ON t.id = m.ticket_id \
              WHERE m.author = 'client' AND m.id > $1 AND m.id <= $2 \

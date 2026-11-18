@@ -11,6 +11,9 @@ import { minutesSince, spanText } from '../home/model';
 import './support.css';
 import { Avatar } from '../Avatar';
 import type { HandoffReason, TicketAi } from '../../lib/supportChat';
+import { AttachButton, DraftList, MessageFiles, useAttachments, type Attachment, type FileLimits } from '../../lib/ticketFiles';
+
+const FILES = '/api/admin/support/files';
 
 type Filter = 'waiting' | 'answered' | 'closed';
 
@@ -41,7 +44,7 @@ type ListItem = {
 
 type Counts = { waiting: number; answered: number; closed: number };
 
-type Message = { author: 'client' | 'support' | 'ai' | 'system'; admin_id: number | null; body: string; attachments: unknown[]; created_at: string };
+type Message = { author: 'client' | 'support' | 'ai' | 'system'; admin_id: number | null; body: string; attachments: Attachment[]; created_at: string };
 
 type Thread = { ticket: Ticket; messages: Message[]; admins: Array<{ id: number; email: string }>; ai: TicketAi | null };
 
@@ -142,6 +145,10 @@ export function Support() {
   const [closeAfter, setCloseAfter] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [fileLimits, setFileLimits] = useState<FileLimits | null>(null);
+  const [askDelete, setAskDelete] = useState(false);
+  const files = useAttachments(FILES, fileLimits);
+  const resetFiles = files.reset;
   const feedRef = useRef<HTMLDivElement | null>(null);
   const selected = ticketParam ? Number(ticketParam) : null;
 
@@ -156,9 +163,10 @@ export function Support() {
       if (query) {
         search.set('q', query);
       }
-      const data = await api<{ items: ListItem[]; counts: Counts }>(`/api/admin/support/tickets?${search.toString()}`);
+      const data = await api<{ items: ListItem[]; counts: Counts; files?: FileLimits | null }>(`/api/admin/support/tickets?${search.toString()}`);
       setItems(data.items);
       setCounts(data.counts);
+      setFileLimits(data.files ?? null);
       supportWaiting(data.counts.waiting);
       return data.items;
     } catch {
@@ -194,12 +202,14 @@ export function Support() {
     setReply('');
     setSendError(null);
     setCloseAfter(false);
+    setAskDelete(false);
+    resetFiles();
     if (selected) {
       void loadThread(selected).then(() => void loadList());
     } else {
       setThread(null);
     }
-  }, [selected, loadThread]);
+  }, [selected, loadThread, resetFiles]);
 
   useEffect(() => {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
@@ -218,8 +228,10 @@ export function Support() {
     setParams(next);
   };
 
+  const canSend = (reply.trim() !== '' || files.ids.length > 0) && files.ready;
+
   const send = async () => {
-    if (!thread || !reply.trim()) {
+    if (!thread || !canSend) {
       return;
     }
     setSending(true);
@@ -227,11 +239,12 @@ export function Support() {
     try {
       const data = await api<Thread>(`/api/admin/support/tickets/${thread.ticket.id}`, {
         method: 'POST',
-        body: { body: reply.trim(), close: closeAfter && thread.ticket.status === 'open' },
+        body: { body: reply.trim(), close: closeAfter && thread.ticket.status === 'open', files: files.ids },
       });
       setThread(data);
       setReply('');
       setCloseAfter(false);
+      files.reset();
       void loadList();
     } catch (err) {
       setSendError(failText(err, 'Ответ не отправился'));
@@ -251,6 +264,26 @@ export function Support() {
       void loadList();
     } catch (err) {
       setSendError(failText(err, 'Статус не изменился'));
+    }
+  };
+
+  const removeTicket = async () => {
+    if (!thread) {
+      return;
+    }
+    setSending(true);
+    try {
+      await api(`/api/admin/support/tickets/${thread.ticket.id}`, { method: 'DELETE' });
+      setAskDelete(false);
+      setThread(null);
+      const next = new URLSearchParams(params);
+      next.delete('ticket');
+      setParams(next);
+      void loadList();
+    } catch (err) {
+      setSendError(failText(err, 'Обращение не удалилось'));
+    } finally {
+      setSending(false);
     }
   };
 
@@ -344,7 +377,25 @@ export function Support() {
                 <button type="button" className="b38 hov" onClick={() => void toggleClosed()}>
                   {thread.ticket.status === 'closed' ? 'Открыть снова' : 'Закрыть'}
                 </button>
+                <button type="button" className="b38 hov" aria-expanded={askDelete} onClick={() => setAskDelete(!askDelete)}>
+                  Удалить
+                </button>
               </div>
+              {askDelete ? (
+                <div role="status" className="sp-confirm sp-delete">
+                  <span>
+                    <strong>Удалить обращение?</strong> Переписка и файлы удалятся без возможности вернуть.
+                  </span>
+                  <div className="sp-delete-btns">
+                    <button type="button" className="b34 on-surface" onClick={() => void removeTicket()} disabled={sending}>
+                      Удалить обращение
+                    </button>
+                    <button type="button" className="b34 on-surface" onClick={() => setAskDelete(false)} disabled={sending}>
+                      Отменить
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="sp-feed" ref={feedRef}>
                 {thread.messages.map((m, index) => {
                   const prev = thread.messages[index - 1];
@@ -376,13 +427,8 @@ export function Support() {
                         <span className="sp-day">{m.body}</span>
                       ) : (
                         <div className={m.author === 'ai' ? 'sp-msg mine ai' : mine ? 'sp-msg mine' : 'sp-msg'}>
-                          <div className="sp-bubble">{m.body}</div>
-                          {m.attachments.length ? (
-                            <div className="sp-attach">
-                              <Icon name="image" size={18} stroke={1.8} />
-                              Вложение, {m.attachments.length}
-                            </div>
-                          ) : null}
+                          {m.body ? <div className="sp-bubble">{m.body}</div> : null}
+                          <MessageFiles files={m.attachments} base={FILES} prefix="sp" />
                           <span className="sp-stamp">{stamp}</span>
                         </div>
                       )}
@@ -427,7 +473,14 @@ export function Support() {
                       void send();
                     }
                   }}
+                  onPaste={(e) => {
+                    if (files.enabled && e.clipboardData.files.length) {
+                      e.preventDefault();
+                      files.add(e.clipboardData.files);
+                    }
+                  }}
                 />
+                <DraftList files={files} prefix="sp" disabled={sending} />
                 {sendError ? (
                   <p className="err" role="alert">
                     {sendError}
@@ -442,9 +495,12 @@ export function Support() {
                   ) : (
                     <span />
                   )}
-                  <button type="button" className="btn-main btn" onClick={() => void send()} disabled={sending || !reply.trim()} style={{ height: 42 }}>
-                    {sending ? 'Отправляем…' : 'Отправить'}
-                  </button>
+                  <span className="sp-send-side">
+                    <AttachButton files={files} className="sp-clip hov" disabled={sending} />
+                    <button type="button" className="btn-main btn" onClick={() => void send()} disabled={sending || !canSend} style={{ height: 42 }}>
+                      {sending ? 'Отправляем…' : 'Отправить'}
+                    </button>
+                  </span>
                 </div>
               </div>
             </>

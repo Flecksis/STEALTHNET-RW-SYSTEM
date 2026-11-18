@@ -5,6 +5,7 @@ type WebApp = {
   expand?: () => void;
   openLink?: (url: string) => void;
   openTelegramLink?: (url: string) => void;
+  downloadFile?: (params: { url: string; file_name: string }) => void;
   onEvent?: (name: string, cb: () => void) => void;
   offEvent?: (name: string, cb: () => void) => void;
   BackButton?: {
@@ -67,6 +68,20 @@ export function openExternal(url: string): void {
     return;
   }
   window.location.href = url;
+}
+
+export function downloadExternal(url: string, name: string): void {
+  const app = webApp();
+  if (app?.downloadFile) {
+    try {
+      app.downloadFile({ url, file_name: name });
+      return;
+    } catch {
+      openExternal(url);
+      return;
+    }
+  }
+  openExternal(url);
 }
 
 export function telegramLanguage(): string | null {

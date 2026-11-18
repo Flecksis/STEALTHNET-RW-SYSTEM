@@ -14,6 +14,7 @@ pub mod promolinks;
 pub mod referral;
 pub mod roulette;
 pub mod start_param;
+pub mod ticket_files;
 pub mod utm;
 pub mod web;
 
@@ -45,6 +46,7 @@ pub fn all() -> Vec<Arc<dyn Module>> {
         Arc::new(analytics::AnalyticsModule),
         Arc::new(oauth::OauthModule),
         Arc::new(ai::AiModule),
+        Arc::new(ticket_files::TicketFilesModule),
     ]
 }
 
@@ -120,7 +122,8 @@ mod tests {
                 ModuleId::Roulette,
                 ModuleId::Analytics,
                 ModuleId::Oauth,
-                ModuleId::Ai
+                ModuleId::Ai,
+                ModuleId::TicketFiles
             ]
         );
         let registry = ModuleRegistry::new(modules).unwrap();

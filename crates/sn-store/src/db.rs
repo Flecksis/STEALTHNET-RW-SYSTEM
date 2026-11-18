@@ -249,6 +249,10 @@ pub trait Db: Send {
         TicketsRepo::new(self.conn())
     }
 
+    fn ticket_files(&mut self) -> TicketFilesRepo<'_> {
+        TicketFilesRepo::new(self.conn())
+    }
+
     fn saved_methods(&mut self) -> SavedMethodsRepo<'_> {
         SavedMethodsRepo::new(self.conn())
     }

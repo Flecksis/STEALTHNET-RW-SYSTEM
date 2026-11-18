@@ -159,6 +159,12 @@ pub struct Message {
     pub photo: Option<Vec<PhotoSize>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entities: Option<Vec<MessageEntity>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<Document>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_group_id: Option<String>,
 }
 
 impl Message {
@@ -202,6 +208,45 @@ pub struct PhotoSize {
     pub width: i64,
     #[serde(default)]
     pub height: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Document {
+    pub file_id: String,
+    #[serde(default)]
+    pub file_unique_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FileInfo {
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fetched {
+    Bytes(Vec<u8>),
+    TooBig,
+}
+
+fn safe_file_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() < 256
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'.' | b'-'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,6 +498,14 @@ impl Keyboard {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileUpload<'a> {
+    pub bytes: &'a [u8],
+    pub name: &'a str,
+    pub mime: &'a str,
+    pub photo: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum PhotoInput<'a> {
     FileId(&'a str),
@@ -491,6 +544,7 @@ pub struct WebhookInfo {
 pub struct TelegramApi {
     http: reqwest::Client,
     base: String,
+    files: String,
 }
 
 impl TelegramApi {
@@ -503,7 +557,83 @@ impl TelegramApi {
                 .build()
                 .unwrap_or_default(),
             base: format!("{}/bot{}", api_base.trim_end_matches('/'), token),
+            files: format!("{}/file/bot{}", api_base.trim_end_matches('/'), token),
         }
+    }
+
+    pub async fn get_file(&self, file_id: &str) -> Result<FileInfo, TelegramError> {
+        self.call("getFile", &serde_json::json!({ "file_id": file_id }))
+            .await
+    }
+
+    pub async fn download(&self, path: &str, max_bytes: usize) -> Result<Fetched, TelegramError> {
+        if !safe_file_path(path) {
+            return Err(TelegramError::Decode("путь к файлу не подходит".into()));
+        }
+        let mut response = self
+            .http
+            .get(format!("{}/{path}", self.files))
+            .send()
+            .await
+            .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(TelegramError::Api {
+                code: i64::from(status.as_u16()),
+                description: status.to_string(),
+                retry_after: None,
+                migrated: None,
+            });
+        }
+        if response
+            .content_length()
+            .is_some_and(|bytes| bytes > max_bytes as u64)
+        {
+            return Ok(Fetched::TooBig);
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?
+        {
+            if body.len() + chunk.len() > max_bytes {
+                return Ok(Fetched::TooBig);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Fetched::Bytes(body))
+    }
+
+    pub async fn send_document(
+        &self,
+        chat_id: i64,
+        upload: FileUpload<'_>,
+        caption: &str,
+        keyboard: Option<&Keyboard>,
+    ) -> Result<Message, TelegramError> {
+        let part = reqwest::multipart::Part::bytes(upload.bytes.to_vec())
+            .file_name(upload.name.to_string())
+            .mime_str(upload.mime)
+            .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+        let field = if upload.photo { "photo" } else { "document" };
+        let mut form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part(field, part);
+        if !caption.is_empty() {
+            form = form
+                .text("caption", caption.to_string())
+                .text("parse_mode", "HTML");
+        }
+        if let Some(markup) = keyboard.filter(|k| !k.is_empty()) {
+            form = form.text("reply_markup", serde_json::json!(markup).to_string());
+        }
+        let method = if upload.photo {
+            "sendPhoto"
+        } else {
+            "sendDocument"
+        };
+        self.call_form(method, form).await
     }
 
     pub async fn call<T: DeserializeOwned>(

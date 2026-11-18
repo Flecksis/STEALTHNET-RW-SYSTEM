@@ -190,6 +190,16 @@ pub fn default(key: &str) -> Option<&'static str> {
         "sup.sent" => "Request #{id} sent. We'll reply here in the bot.",
         "sup.added" => "Message added to request #{id}. We'll reply here in the bot.",
         "sup.reply_prompt" => "Write your reply in one message. It will go to request #{id}.",
+        "sup.file_big" => {
+            "The file is larger than {mb} MB, so we can't accept it. Please send a smaller file."
+        }
+        "sup.file_type" => {
+            "We can't accept this file. Photos in JPG, PNG, WebP or GIF and PDF, TXT or LOG files will do."
+        }
+        "sup.file_off" => {
+            "Files aren't accepted in requests right now. Please describe your question in text."
+        }
+        "sup.file_failed" => "Couldn't get the file. Please send it again.",
         "promo.prompt" => {
             "Enter a promo code. Discounts apply at checkout, free days are added to your subscription right away."
         }

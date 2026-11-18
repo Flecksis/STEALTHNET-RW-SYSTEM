@@ -332,13 +332,19 @@ pub fn render(
             t("sub.reissued", &[("url", Text(&raw(params, "url")?))]),
             Some(("notify.btn.subscription", "subs")),
         ),
-        templates::SUPPORT_REPLY => (
-            t(
-                "notify.support_reply",
-                &[("body", Html(&param(params, "body")?))],
-            ),
-            Some(("notify.btn.reply", reply.as_str())),
-        ),
+        templates::SUPPORT_REPLY => {
+            let body = match param(params, "body") {
+                Some(body) => body,
+                None if !crate::support_files::reply_files(params).is_empty() => String::new(),
+                None => return None,
+            };
+            (
+                t("notify.support_reply", &[("body", Html(&body))])
+                    .trim_end()
+                    .to_string(),
+                Some(("notify.btn.reply", reply.as_str())),
+            )
+        }
         templates::REPEAT_CREDITED | templates::PAYMENT_CREDITED => {
             (text_param(params)?, Some(("notify.btn.balance", "bal")))
         }
@@ -628,10 +634,27 @@ impl NotifyHandler {
             ) else {
                 return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
             };
-            self.api(&token)
-                .send_message(chat_id, &rendered.text, Some(&rendered.keyboard))
+            let files = if template == templates::SUPPORT_REPLY {
+                crate::support_files::reply_files(params)
+            } else {
+                Vec::new()
+            };
+            if files.is_empty() {
+                self.api(&token)
+                    .send_message(chat_id, &rendered.text, Some(&rendered.keyboard))
+                    .await
+                    .map(|_| ())
+            } else {
+                crate::support_files::send_reply(
+                    services,
+                    &self.api(&token),
+                    chat_id,
+                    &rendered.text,
+                    &rendered.keyboard,
+                    &files,
+                )
                 .await
-                .map(|_| ())
+            }
         };
         match sent {
             Ok(()) => {
@@ -662,6 +685,25 @@ impl NotifyHandler {
             },
         }
     }
+}
+
+fn reply_with_files(params: &serde_json::Value) -> Option<String> {
+    let names: Vec<String> = params
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.get("name").and_then(serde_json::Value::as_str))
+        .map(|name| match lang::current() {
+            Locale::Ru => format!("[файл: {name}]"),
+            _ => format!("[file: {name}]"),
+        })
+        .collect();
+    let body = raw(params, "body").filter(|b| !b.trim().is_empty());
+    if names.is_empty() {
+        return body;
+    }
+    Some(body.into_iter().chain(names).collect::<Vec<_>>().join("\n"))
 }
 
 pub fn letter_of(
@@ -767,7 +809,7 @@ pub fn letter_of(
                         .filter(|id| *id > 0)
                         .map(|id| id.to_string()),
                 )
-                .maybe("reply", raw(params, "body")),
+                .maybe("reply", reply_with_files(params)),
         ),
         oauth::TEMPLATE_UNLINKED => (LetterId::LoginsUnlinked, Values::new()),
         oauth::TEMPLATE_PASSWORD_ISSUED => (LetterId::PasswordIssued, Values::new()),

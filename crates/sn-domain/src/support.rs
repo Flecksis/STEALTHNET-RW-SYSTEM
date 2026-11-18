@@ -1,5 +1,5 @@
 use crate::DomainError;
-use crate::ids::{AdminId, ClientId, TicketId};
+use crate::ids::{AdminId, ClientId, TicketFileId, TicketId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -213,14 +213,54 @@ impl Ticket {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    Image,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketFile {
+    pub id: TicketFileId,
+    pub name: String,
+    pub mime: String,
+    pub size: i64,
+    pub kind: FileKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
+    #[serde(default)]
+    pub removed: bool,
+}
+
+impl TicketFile {
+    pub fn mention(&self) -> String {
+        format!("[вложение: {}]", self.name)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TicketMessage {
     pub ticket_id: TicketId,
     pub author: MessageAuthor,
     pub admin_id: Option<AdminId>,
     pub body: String,
-    pub attachments: Vec<String>,
+    pub attachments: Vec<TicketFile>,
     pub created_at: DateTime<Utc>,
+}
+
+impl TicketMessage {
+    pub fn text_with_files(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let body = self.body.trim();
+        if !body.is_empty() {
+            lines.push(body.to_string());
+        }
+        lines.extend(self.attachments.iter().map(TicketFile::mention));
+        lines.join("\n")
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +288,39 @@ mod tests {
         ticket.status = TicketStatus::Closed;
         assert_eq!(ticket.filter(), TicketFilter::Closed);
         assert_eq!(TicketChannel::Bot.reply_targets(), [ReplyTarget::Telegram]);
+    }
+
+    #[test]
+    fn вложения_видны_в_тексте_сообщения_строкой_с_именем() {
+        let at = Utc.with_ymd_and_hms(2026, 11, 18, 9, 0, 0).unwrap();
+        let file = |name: &str| TicketFile {
+            id: TicketFileId(7),
+            name: name.into(),
+            mime: "image/png".into(),
+            size: 10,
+            kind: FileKind::Image,
+            width: None,
+            height: None,
+            removed: false,
+        };
+        let mut message = TicketMessage {
+            ticket_id: TicketId(1),
+            author: MessageAuthor::Client,
+            admin_id: None,
+            body: "  не подключается  ".into(),
+            attachments: vec![file("экран.png"), file("лог.txt")],
+            created_at: at,
+        };
+        assert_eq!(
+            message.text_with_files(),
+            "не подключается\n[вложение: экран.png]\n[вложение: лог.txt]"
+        );
+        message.body = String::new();
+        message.attachments.truncate(1);
+        assert_eq!(message.text_with_files(), "[вложение: экран.png]");
+        let json = serde_json::to_value(&message.attachments[0]).unwrap();
+        assert_eq!(json["kind"], "image");
+        assert!(json.get("width").is_none());
     }
 
     #[test]

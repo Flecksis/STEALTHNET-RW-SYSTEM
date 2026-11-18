@@ -134,6 +134,7 @@ enum Action {
     Input(Awaiting, String),
     Text(String),
     Callback(String),
+    File(crate::support_files::IncomingFile),
 }
 
 enum Gate {
@@ -199,6 +200,10 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
                 Ok(())
             }
         };
+    }
+    if let Some(file) = crate::support_files::incoming(&message) {
+        let session = Session::load(&ctx.services, target.chat_id).await?;
+        return run(ctx, &user, target, session, Action::File(file)).await;
     }
     let Some(text) = message.text.as_deref() else {
         return Ok(());
@@ -268,7 +273,9 @@ async fn run(
         locale,
     };
     let screen = lang::scope(locale, process(&mut turn, action)).await?;
-    ctx.show(target, &screen).await?;
+    if !screen.text.is_empty() {
+        ctx.show(target, &screen).await?;
+    }
     turn.session.save(&ctx.services, target.chat_id).await?;
     Ok(())
 }
@@ -306,6 +313,10 @@ async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError
             None => main_menu(turn.ctx, &client).await,
         },
         Action::Callback(data) => callback(turn, &client, &data).await,
+        Action::File(file) => match crate::support_files::receive(turn, &client, file).await? {
+            Some(screen) => Ok(screen),
+            None => main_menu(turn.ctx, &client).await,
+        },
     }
 }
 

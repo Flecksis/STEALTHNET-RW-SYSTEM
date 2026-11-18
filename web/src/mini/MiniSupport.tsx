@@ -5,7 +5,20 @@ import { dateTime } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
-import { BackHead } from './MiniApp';
+import { AttachButton, DraftList, MessageFiles, useAttachments, type Attachment } from '../lib/ticketFiles';
+import { BackHead, useMini } from './MiniApp';
+import { downloadExternal } from './telegram';
+
+const FILES = '/api/client/support/files';
+
+async function openFile(file: Attachment, fail: (text: string) => void) {
+  try {
+    const link = await api<{ url: string; name: string }>(`${FILES}/${file.id}/link`, { method: 'POST', body: {} });
+    downloadExternal(`${window.location.origin}${link.url}`, link.name);
+  } catch (err) {
+    fail(failText(err, t('Файл не открылся')));
+  }
+}
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -23,10 +36,13 @@ function stateOf(ticket: TicketBrief): { text: string; tone: string } {
 
 export function MiniSupport() {
   const navigate = useNavigate();
+  const { site } = useMini();
   const [list, setList] = useState<TicketBrief[] | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const files = useAttachments(FILES, site.support_files ?? null);
+  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
 
   useEffect(() => {
     api<TicketBrief[]>('/api/client/support/tickets')
@@ -36,14 +52,15 @@ export function MiniSupport() {
 
   const send = async () => {
     const text = body.trim();
-    if (!text || busy) {
+    if (!canSend || busy) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ ticket_id: number }>('/api/client/support/tickets', { method: 'POST', body: { body: text } });
+      const res = await api<{ ticket_id: number }>('/api/client/support/tickets', { method: 'POST', body: { body: text, files: files.ids } });
       setBody('');
+      files.reset();
       navigate(`/app/support/${res.ticket_id}`);
     } catch (err) {
       setError(failText(err, t('Сообщение не отправилось')));
@@ -66,10 +83,14 @@ export function MiniSupport() {
           <span className="sr-only">{t('Сообщение')}</span>
           <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder={t('Например: не подключается iPhone')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
         </label>
+        <DraftList files={files} prefix="mn" disabled={busy} />
         {error ? <span className="mn-error">{error}</span> : null}
-        <button type="button" className="mn-main sm press" onClick={() => void send()} disabled={busy || !body.trim()}>
-          {busy ? t('Отправляем…') : t('Отправить')}
-        </button>
+        <div className="mn-send">
+          <AttachButton files={files} className="mn-btn2 mn-clip press" disabled={busy} />
+          <button type="button" className="mn-main sm press" onClick={() => void send()} disabled={busy || !canSend}>
+            {busy ? t('Отправляем…') : t('Отправить')}
+          </button>
+        </div>
       </div>
       {list && list.length > 0 ? (
         <div className="mn-list" aria-label={t('Обращения')}>
@@ -94,12 +115,15 @@ export function MiniSupport() {
 
 export function MiniTicket() {
   const { id = '' } = useParams();
+  const { site } = useMini();
   const ticketId = Number.parseInt(id, 10);
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [ask, setAsk] = useState(false);
+  const files = useAttachments(FILES, site.support_files ?? null);
+  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
   const bottom = useRef<HTMLDivElement>(null);
   const seen = useRef(0);
   const typing = aiTyping(thread);
@@ -157,11 +181,12 @@ export function MiniTicket() {
 
   const reply = async () => {
     const text = body.trim();
-    if (!text || busy) {
+    if (!canSend || busy) {
       return;
     }
-    if (await post(`/api/client/support/tickets/${ticketId}`, { body: text }, t('Сообщение не отправилось'))) {
+    if (await post(`/api/client/support/tickets/${ticketId}`, { body: text, files: files.ids }, t('Сообщение не отправилось'))) {
       setBody('');
+      files.reset();
     }
   };
 
@@ -200,7 +225,8 @@ export function MiniTicket() {
               handoff === i ? handoffNote : null,
               <li key={`${m.created_at}-${i}`} className={mine ? 'mn-msg mine' : 'mn-msg'}>
                 <span className="mn-msg-who">{authorName(m.author)}</span>
-                <span className="mn-msg-body">{m.body}</span>
+                {m.body ? <span className="mn-msg-body">{m.body}</span> : null}
+                <MessageFiles files={m.attachments} base={FILES} prefix="mn" box={[240, 220]} viaFetch onFile={(file) => void openFile(file, setError)} />
                 <span className="mn-msg-at">{dateTime(m.created_at)}</span>
               </li>,
             ];
@@ -229,9 +255,13 @@ export function MiniTicket() {
             <span className="sr-only">{t('Ответ')}</span>
             <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder={t('Напишите сообщение')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
           </label>
-          <button type="button" className="mn-main sm press" onClick={() => void reply()} disabled={busy || !body.trim()}>
-            {busy ? t('Отправляем…') : t('Отправить')}
-          </button>
+          <DraftList files={files} prefix="mn" disabled={busy} />
+          <div className="mn-send">
+            <AttachButton files={files} className="mn-btn2 mn-clip press" disabled={busy} />
+            <button type="button" className="mn-main sm press" onClick={() => void reply()} disabled={busy || !canSend}>
+              {busy ? t('Отправляем…') : t('Отправить')}
+            </button>
+          </div>
           {answering ? (
             <button type="button" className="mn-btn2 press" onClick={() => void post(`/api/client/support/tickets/${ticketId}/operator`, {}, t('Не получилось позвать оператора'))} disabled={busy}>
               {t('Позвать оператора')}

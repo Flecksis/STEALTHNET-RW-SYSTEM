@@ -1,14 +1,13 @@
 use super::clients::display_name;
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
-use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketId};
+use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::support::{
     AiState, HandoffReason, MessageAuthor, Ticket, TicketAi, TicketChannel, TicketFilter,
     TicketMessage, TicketStatus,
 };
 use sqlx::PgConnection;
-use sqlx::types::Json;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTicket {
@@ -26,7 +25,7 @@ pub struct NewReply {
     pub author: MessageAuthor,
     pub admin_id: Option<AdminId>,
     pub body: String,
-    pub attachments: Vec<String>,
+    pub attachments: Vec<TicketFileId>,
     pub close: bool,
 }
 
@@ -199,11 +198,11 @@ struct ViewRow {
 
 #[derive(sqlx::FromRow)]
 struct MessageRow {
+    id: i64,
     ticket_id: i64,
     author: String,
     admin_id: Option<i64>,
     body: String,
-    attachments: Json<Vec<String>>,
     created_at: DateTime<Utc>,
 }
 
@@ -216,7 +215,7 @@ impl TryFrom<MessageRow> for TicketMessage {
             author: parse_author(&row.author)?,
             admin_id: row.admin_id.map(AdminId),
             body: row.body,
-            attachments: row.attachments.0,
+            attachments: Vec::new(),
             created_at: row.created_at,
         })
     }
@@ -403,7 +402,8 @@ impl<'c> TicketsRepo<'c> {
              tg.meta ->> 'last_name' AS last_name, tg.meta ->> 'username' AS telegram_username, \
              em.value AS email, \
              CASE WHEN t.status = 'open' AND t.last_author = 'client' THEN wm.created_at END AS waiting_since, \
-             lm.created_at AS last_message_at, left(lm.body, {PREVIEW_CHARS}) AS preview, \
+             lm.created_at AS last_message_at, COALESCE(NULLIF(left(lm.body, {PREVIEW_CHARS}), ''), \
+                 (SELECT 'Файл: ' || pf.name FROM ticket_files pf WHERE pf.message_id = lm.id ORDER BY pf.id LIMIT 1)) AS preview, \
              lm.author AS preview_author, \
              EXISTS (SELECT 1 FROM ticket_messages um WHERE um.ticket_id = t.id AND um.author = 'client' \
                  AND um.read_at IS NULL) AS unread, \
@@ -418,6 +418,7 @@ impl<'c> TicketsRepo<'c> {
              WHERE {condition} AND ($1::bigint IS NULL OR {key} {compare} $1) \
              AND ($3::text IS NULL OR t.subject ILIKE $3 \
                  OR EXISTS (SELECT 1 FROM ticket_messages qm WHERE qm.ticket_id = t.id AND qm.body ILIKE $3) \
+                 OR EXISTS (SELECT 1 FROM ticket_files qf WHERE qf.ticket_id = t.id AND qf.name ILIKE $3) \
                  OR EXISTS (SELECT 1 FROM client_identities qi WHERE qi.client_id = t.client_id \
                      AND qi.search_text LIKE $4)) \
              ORDER BY {key} {direction}, t.id {direction} LIMIT $2"
@@ -496,7 +497,7 @@ impl<'c> TicketsRepo<'c> {
 
     pub async fn messages(&mut self, id: TicketId) -> StoreResult<Vec<TicketMessage>> {
         let rows: Vec<MessageRow> = sqlx::query_as(
-            "SELECT ticket_id, author, admin_id, body, attachments, created_at FROM ticket_messages \
+            "SELECT id, ticket_id, author, admin_id, body, created_at FROM ticket_messages \
              WHERE ticket_id = $1 ORDER BY id",
         )
         .bind(id.0)
@@ -505,7 +506,33 @@ impl<'c> TicketsRepo<'c> {
         if rows.is_empty() {
             self.get(id).await?;
         }
-        rows.into_iter().map(TryInto::try_into).collect()
+        let mut files = super::ticket_files::for_ticket(&mut *self.conn, id).await?;
+        rows.into_iter()
+            .map(|row| {
+                let message_id = row.id;
+                let mut message = TicketMessage::try_from(row)?;
+                message.attachments = files.remove(&message_id).unwrap_or_default();
+                Ok(message)
+            })
+            .collect()
+    }
+
+    pub async fn last_message_id(&mut self, id: TicketId) -> StoreResult<i64> {
+        let last: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT last_message_id FROM tickets WHERE id = $1")
+                .bind(id.0)
+                .fetch_optional(&mut *self.conn)
+                .await?;
+        last.flatten().ok_or(StoreError::NotFound("обращение"))
+    }
+
+    pub async fn delete(&mut self, id: TicketId) -> StoreResult<bool> {
+        Ok(sqlx::query("DELETE FROM tickets WHERE id = $1")
+            .bind(id.0)
+            .execute(&mut *self.conn)
+            .await?
+            .rows_affected()
+            > 0)
     }
 
     pub async fn reply(&mut self, reply: &NewReply) -> StoreResult<()> {
@@ -519,16 +546,16 @@ impl<'c> TicketsRepo<'c> {
             return Err(StoreError::NotFound("обращение"));
         }
         let message: i64 = sqlx::query_scalar(
-            "INSERT INTO ticket_messages (ticket_id, author, admin_id, body, attachments) \
-             VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            "INSERT INTO ticket_messages (ticket_id, author, admin_id, body) \
+             VALUES ($1, $2, $3, $4) RETURNING id",
         )
         .bind(reply.ticket_id.0)
         .bind(author_str(reply.author))
         .bind(reply.admin_id.map(|a| a.0))
         .bind(&reply.body)
-        .bind(Json(&reply.attachments))
         .fetch_one(&mut *tx)
         .await?;
+        super::ticket_files::attach(&mut tx, reply.ticket_id, message, &reply.attachments).await?;
         sqlx::query(
             "UPDATE tickets SET last_author = $2, last_message_id = $3, \
              waiting_message_id = CASE WHEN $2 <> 'client' THEN NULL \

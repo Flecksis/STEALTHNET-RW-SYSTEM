@@ -6,7 +6,10 @@ import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
 import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
+import { AttachButton, DraftList, MessageFiles, useAttachments, type FileLimits } from '../lib/ticketFiles';
 import { Card, useCabinet } from './CabinetApp';
+
+const FILES = '/api/client/support/files';
 
 export type { TicketBrief };
 
@@ -46,15 +49,17 @@ export function HelpPage() {
   }
   const link = supportLink(site);
   const tickets = supportTickets(site);
-  return <TicketsPage link={link} tickets={tickets} ai={tickets && site.support_ai?.cabinet === true} />;
+  return <TicketsPage link={link} tickets={tickets} ai={tickets && site.support_ai?.cabinet === true} limits={site.support_files ?? null} />;
 }
 
-function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: boolean; ai: boolean }) {
+function TicketsPage({ link, tickets, ai, limits }: { link: string | null; tickets: boolean; ai: boolean; limits: FileLimits | null }) {
   const navigate = useNavigate();
   const [list, setList] = useState<TicketBrief[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
+  const files = useAttachments(FILES, limits);
+  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
 
   const load = useCallback(async () => {
     try {
@@ -71,14 +76,15 @@ function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: bool
 
   const send = async () => {
     const text = body.trim();
-    if (!text || busy) {
+    if (!canSend || busy) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ ticket_id: number }>('/api/client/support/tickets', { method: 'POST', body: { body: text } });
+      const res = await api<{ ticket_id: number }>('/api/client/support/tickets', { method: 'POST', body: { body: text, files: files.ids } });
       setBody('');
+      files.reset();
       navigate(`/cabinet/help/${res.ticket_id}`);
     } catch (err) {
       setError(failText(err, t('Сообщение не отправилось')));
@@ -121,12 +127,27 @@ function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: bool
           ) : null}
           <label className="cb-field">
             <span className="cb-sr">{t('Сообщение')}</span>
-            <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder={t('Что случилось? Например: не подключается iPhone, после оплаты не продлилась подписка')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
+            <textarea
+              rows={4}
+              maxLength={MAX_BODY}
+              value={body}
+              placeholder={t('Что случилось? Например: не подключается iPhone, после оплаты не продлилась подписка')}
+              onChange={(e) => setBody(e.target.value)}
+              onPaste={(e) => {
+                if (files.enabled && e.clipboardData.files.length) {
+                  e.preventDefault();
+                  files.add(e.clipboardData.files);
+                }
+              }}
+              disabled={busy}
+            />
           </label>
+          <DraftList files={files} prefix="cb" disabled={busy} />
           <div className="cb-btns">
-            <button type="button" className="cb-main" onClick={() => void send()} disabled={busy || !body.trim()}>
+            <button type="button" className="cb-main" onClick={() => void send()} disabled={busy || !canSend}>
               {busy ? t('Отправляем…') : t('Отправить')}
             </button>
+            <AttachButton files={files} className="cb-text cb-clip" disabled={busy} label={t('Прикрепить файл')} />
           </div>
         </Card>
       ) : null}
@@ -168,6 +189,8 @@ function TicketPage({ id }: { id: number }) {
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [ask, setAsk] = useState(false);
+  const files = useAttachments(FILES, site.support_files ?? null);
+  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
   const bottom = useRef<HTMLDivElement>(null);
   const seen = useRef(0);
   const typing = aiTyping(thread);
@@ -207,14 +230,15 @@ function TicketPage({ id }: { id: number }) {
 
   const reply = async () => {
     const text = body.trim();
-    if (!text || busy) {
+    if (!canSend || busy) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`, { method: 'POST', body: { body: text } }));
+      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`, { method: 'POST', body: { body: text, files: files.ids } }));
       setBody('');
+      files.reset();
     } catch (err) {
       setError(failText(err, t('Сообщение не отправилось')));
     } finally {
@@ -289,7 +313,8 @@ function TicketPage({ id }: { id: number }) {
                 handoff === i ? handoffNote : null,
                 <li key={`${m.created_at}-${i}`} className={mine ? 'cb-msg mine' : 'cb-msg'}>
                   <span className="cb-msg-who cb-small">{authorName(m.author)}</span>
-                  <span className="cb-msg-body">{m.body}</span>
+                  {m.body ? <span className="cb-msg-body">{m.body}</span> : null}
+                  <MessageFiles files={m.attachments} base={FILES} prefix="cb" box={[280, 240]} />
                   <span className="cb-msg-at cb-small cb-muted">{dateTime(m.created_at)}</span>
                 </li>,
               ];
@@ -320,12 +345,27 @@ function TicketPage({ id }: { id: number }) {
             <div className="cb-reply">
               <label className="cb-field">
                 <span className="cb-sr">{t('Ответ')}</span>
-                <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder={t('Напишите сообщение')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
+                <textarea
+                  rows={3}
+                  maxLength={MAX_BODY}
+                  value={body}
+                  placeholder={t('Напишите сообщение')}
+                  onChange={(e) => setBody(e.target.value)}
+                  onPaste={(e) => {
+                    if (files.enabled && e.clipboardData.files.length) {
+                      e.preventDefault();
+                      files.add(e.clipboardData.files);
+                    }
+                  }}
+                  disabled={busy}
+                />
               </label>
+              <DraftList files={files} prefix="cb" disabled={busy} />
               <div className="cb-btns">
-                <button type="button" className="cb-main" onClick={() => void reply()} disabled={busy || !body.trim()}>
+                <button type="button" className="cb-main" onClick={() => void reply()} disabled={busy || !canSend}>
                   {busy ? t('Отправляем…') : t('Отправить')}
                 </button>
+                <AttachButton files={files} className="cb-text cb-clip" disabled={busy} label={t('Прикрепить файл')} />
                 {answering ? (
                   <button type="button" className="cb-text" onClick={() => void callOperator()} disabled={busy}>
                     {t('Позвать оператора')}

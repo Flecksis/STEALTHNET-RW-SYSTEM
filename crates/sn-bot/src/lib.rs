@@ -14,6 +14,7 @@ pub mod notify;
 pub mod photos;
 pub mod session;
 pub mod stars;
+pub mod support_files;
 pub mod telegram;
 pub mod text;
 pub mod ui;

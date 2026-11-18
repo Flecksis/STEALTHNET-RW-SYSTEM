@@ -7,14 +7,17 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
-use sn_domain::ids::TicketId;
+use sn_domain::ids::{TicketFileId, TicketId};
 use sn_domain::support::TicketFilter;
 use sn_services::support::{ReplyRequest, TicketThread};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/support/tickets", get(list))
-        .route("/support/tickets/{id}", get(thread).post(reply))
+        .route(
+            "/support/tickets/{id}",
+            get(thread).post(reply).delete(remove),
+        )
         .route("/support/tickets/{id}/close", post(close))
         .route("/support/tickets/{id}/reopen", post(reopen))
 }
@@ -63,6 +66,7 @@ async fn list(
         "items": page.items,
         "next": page.next,
         "counts": counts,
+        "files": state.services.support().file_limits(),
     })))
 }
 
@@ -81,16 +85,50 @@ async fn thread(
     ))
 }
 
+#[derive(Deserialize)]
+struct ReplyBody {
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    close: bool,
+    #[serde(default)]
+    files: Vec<TicketFileId>,
+}
+
 async fn reply(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    ApiJson(body): ApiJson<ReplyRequest>,
+    ApiJson(body): ApiJson<ReplyBody>,
 ) -> ApiResult<Json<TicketThread>> {
     admin.require(Permission::Support)?;
     let support = state.services.support();
-    support.reply(TicketId(id), &body, admin.actor()).await?;
+    support
+        .reply_with_files(
+            TicketId(id),
+            &ReplyRequest {
+                body: body.body,
+                close: body.close,
+            },
+            &body.files,
+            admin.actor(),
+        )
+        .await?;
     Ok(Json(support.thread(TicketId(id), admin.actor()).await?))
+}
+
+async fn remove(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Support)?;
+    state
+        .services
+        .support()
+        .delete(TicketId(id), admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn close(

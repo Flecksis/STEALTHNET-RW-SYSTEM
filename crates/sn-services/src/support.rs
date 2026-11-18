@@ -1,16 +1,20 @@
+mod files;
+
+pub use files::{FileDownload, FileLink};
+
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::events::DomainEvent;
-use sn_domain::ids::{ClientId, SubscriptionId, TicketId};
+use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::support::{
     HandoffReason, MAX_OPEN_TICKETS, MessageAuthor, ReplyTarget, Ticket, TicketAi, TicketChannel,
-    TicketFilter, TicketMessage, TicketStatus,
+    TicketFile, TicketFilter, TicketMessage, TicketStatus,
 };
 use sn_modules::catalog::ai;
 use sn_store::{Db, NewReply, NewTicket};
@@ -91,15 +95,31 @@ impl TryFrom<TicketRow> for Ticket {
     }
 }
 
-fn message_body(body: &str) -> ServiceResult<String> {
+fn message_body(body: &str, with_files: bool) -> ServiceResult<String> {
     let body = body.trim();
-    if body.is_empty() || body.chars().count() > MAX_MESSAGE_CHARS {
+    if (body.is_empty() && !with_files) || body.chars().count() > MAX_MESSAGE_CHARS {
         return Err(ServiceError::rejected(
             "support.body",
             format!("сообщение пустое или длиннее {MAX_MESSAGE_CHARS} символов"),
         ));
     }
     Ok(body.to_string())
+}
+
+fn files_json(files: &[TicketFile]) -> serde_json::Value {
+    serde_json::Value::Array(
+        files
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.id,
+                    "name": f.name,
+                    "mime": f.mime,
+                    "kind": f.kind,
+                })
+            })
+            .collect(),
+    )
 }
 
 pub struct SupportOps<'a> {
@@ -112,7 +132,16 @@ impl<'a> SupportOps<'a> {
     }
 
     pub async fn open(&self, client_id: ClientId, request: &OpenTicket) -> ServiceResult<TicketId> {
-        let body = message_body(&request.body)?;
+        self.open_with_files(client_id, request, &[]).await
+    }
+
+    pub async fn open_with_files(
+        &self,
+        client_id: ClientId,
+        request: &OpenTicket,
+        files: &[TicketFileId],
+    ) -> ServiceResult<TicketId> {
+        let body = message_body(&request.body, !files.is_empty())?;
         let subject = request
             .subject
             .as_deref()
@@ -125,6 +154,9 @@ impl<'a> SupportOps<'a> {
         {
             return Err(ServiceError::NotFound("подписка"));
         }
+        let files = self
+            .checked_files(&mut tx, Actor::Client(client_id), files)
+            .await?;
         if tx.tickets().count_open(client_id).await? >= MAX_OPEN_TICKETS as i64 {
             return Err(ServiceError::rejected(
                 "support.too_many",
@@ -143,6 +175,11 @@ impl<'a> SupportOps<'a> {
                 ai: answered_by_ai,
             })
             .await?;
+        if !files.is_empty() {
+            let message = tx.tickets().last_message_id(id).await?;
+            let ids: Vec<TicketFileId> = files.iter().map(|f| f.id).collect();
+            tx.ticket_files().attach(id, message, &ids).await?;
+        }
         if answered_by_ai {
             tx.jobs().enqueue(&ai::wake_job(id), None).await?;
         }
@@ -174,6 +211,17 @@ impl<'a> SupportOps<'a> {
         body: &str,
         preferred: Option<TicketId>,
     ) -> ServiceResult<Delivered> {
+        self.from_telegram_with_files(client_id, body, &[], preferred)
+            .await
+    }
+
+    pub async fn from_telegram_with_files(
+        &self,
+        client_id: ClientId,
+        body: &str,
+        files: &[TicketFileId],
+        preferred: Option<TicketId>,
+    ) -> ServiceResult<Delivered> {
         let current = {
             let mut conn = self.services.store().conn().await?;
             conn.tickets()
@@ -185,7 +233,10 @@ impl<'a> SupportOps<'a> {
                 body: body.to_string(),
                 close: false,
             };
-            match self.reply(id, &request, Actor::Client(client_id)).await {
+            match self
+                .reply_with_files(id, &request, files, Actor::Client(client_id))
+                .await
+            {
                 Ok(()) => return Ok(Delivered::Added(id)),
                 Err(ServiceError::Rejected {
                     code: "support.closed",
@@ -195,7 +246,7 @@ impl<'a> SupportOps<'a> {
             }
         }
         let id = self
-            .open(
+            .open_with_files(
                 client_id,
                 &OpenTicket {
                     subscription_id: None,
@@ -203,6 +254,7 @@ impl<'a> SupportOps<'a> {
                     subject: None,
                     body: body.to_string(),
                 },
+                files,
             )
             .await?;
         Ok(Delivered::Opened(id))
@@ -338,7 +390,17 @@ impl<'a> SupportOps<'a> {
         request: &ReplyRequest,
         actor: Actor,
     ) -> ServiceResult<()> {
-        let body = message_body(&request.body)?;
+        self.reply_with_files(id, request, &[], actor).await
+    }
+
+    pub async fn reply_with_files(
+        &self,
+        id: TicketId,
+        request: &ReplyRequest,
+        files: &[TicketFileId],
+        actor: Actor,
+    ) -> ServiceResult<()> {
+        let body = message_body(&request.body, !files.is_empty())?;
         let mut tx = self.services.store().begin().await?;
         let ticket = self.ticket_for(&mut tx, id, actor).await?;
         let answering = tx.tickets().ai(id).await?.is_some_and(|ai| ai.answering());
@@ -355,13 +417,14 @@ impl<'a> SupportOps<'a> {
             Actor::Admin(admin) => (MessageAuthor::Support, Some(admin), request.close),
             Actor::System => (MessageAuthor::System, None, request.close),
         };
+        let files = self.checked_files(&mut tx, actor, files).await?;
         tx.tickets()
             .reply(&NewReply {
                 ticket_id: id,
                 author,
                 admin_id,
                 body: body.clone(),
-                attachments: Vec::new(),
+                attachments: files.iter().map(|f| f.id).collect(),
                 close,
             })
             .await?;
@@ -389,6 +452,7 @@ impl<'a> SupportOps<'a> {
                                         "ticket_id": id,
                                         "body": body,
                                         "closed": close,
+                                        "files": files_json(&files),
                                     }),
                                 },
                                 None,
@@ -405,6 +469,27 @@ impl<'a> SupportOps<'a> {
                 })
                 .await?;
         }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: TicketId, admin: AdminId) -> ServiceResult<()> {
+        let mut tx = self.services.store().begin().await?;
+        let ticket = tx.tickets().get(id).await?;
+        let files = tx.ticket_files().for_ticket(id).await?;
+        tx.tickets().delete(id).await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "ticket.deleted",
+                "ticket",
+                Some(id.0),
+                serde_json::json!({
+                    "client_id": ticket.client_id,
+                    "subject": ticket.subject,
+                    "files": files.values().map(Vec::len).sum::<usize>(),
+                }),
+            ))
+            .await?;
         tx.commit().await?;
         Ok(())
     }

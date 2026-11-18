@@ -1,4 +1,5 @@
 import { msg, t } from './i18n';
+import type { Attachment } from './ticketFiles';
 
 export type Author = 'client' | 'support' | 'ai' | 'system';
 
@@ -16,7 +17,7 @@ export type TicketBrief = {
   closed_at: string | null;
 };
 
-export type ChatMessage = { author: Author; body: string; created_at: string };
+export type ChatMessage = { author: Author; body: string; created_at: string; attachments?: Attachment[] };
 
 export type ChatThread = { ticket: TicketBrief; messages: ChatMessage[]; ai?: TicketAi | null };
 

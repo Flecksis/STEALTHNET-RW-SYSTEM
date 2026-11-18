@@ -58,6 +58,7 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("promo_link_activations_order_key", None),
     ("payment_notices_event_key", None),
     ("refunds_request_key", None),
+    ("ticket_files_link_key", None),
     ("provider_refunds_request_key", None),
     ("antibot_events_dedupe_key", None),
     ("traffic_exceeds_window_key", None),

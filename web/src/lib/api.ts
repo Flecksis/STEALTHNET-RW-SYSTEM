@@ -87,12 +87,22 @@ async function read<T>(response: Response): Promise<T> {
   return data as T;
 }
 
+function clientHeaders(path: string, headers: Record<string, string>): Record<string, string> {
+  if (bearer && path.startsWith('/api/client')) {
+    headers.authorization = `Bearer ${bearer}`;
+  }
+  if (path.startsWith('/api/client')) {
+    headers['x-sn-lang'] = lang();
+  }
+  return headers;
+}
+
 export async function upload<T>(path: string, file: Blob): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
       method: 'POST',
-      headers: { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' },
+      headers: clientHeaders(path, { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' }),
       body: file,
       credentials: 'same-origin',
     });
@@ -100,4 +110,17 @@ export async function upload<T>(path: string, file: Blob): Promise<T> {
     throw new ApiError(0, 'network', t('Нет связи с сервером. Проверьте интернет и попробуйте ещё раз'));
   }
   return read<T>(response);
+}
+
+export async function fetchBlob(path: string): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(path, { headers: clientHeaders(path, {}), credentials: 'same-origin' });
+  } catch {
+    throw new ApiError(0, 'network', t('Нет связи с сервером. Проверьте интернет и попробуйте ещё раз'));
+  }
+  if (!response.ok) {
+    await read<unknown>(response);
+  }
+  return response.blob();
 }

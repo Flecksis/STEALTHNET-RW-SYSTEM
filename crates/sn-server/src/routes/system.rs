@@ -91,6 +91,11 @@ async fn site(State(state): State<AppState>) -> Response {
         } else {
             sn_modules::catalog::ai::Channels::default()
         },
+        "support_files": if settings.support_tickets() {
+            state.services.support().file_limits()
+        } else {
+            None
+        },
         "bot_username": bot_username,
         "appearance": settings.appearance,
         "connect": settings.connect,

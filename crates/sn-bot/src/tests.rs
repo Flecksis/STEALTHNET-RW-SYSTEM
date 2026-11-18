@@ -38,6 +38,7 @@ mod runtime;
 mod single_subscription;
 mod stars;
 mod stars_review;
+mod support_files;
 mod support_followup;
 mod support_mode;
 

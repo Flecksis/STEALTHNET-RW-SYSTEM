@@ -44,6 +44,7 @@ numeric_id!(
     JobId,
     EventId,
     TicketId,
+    TicketFileId,
     RemnaUserId,
 );
 
