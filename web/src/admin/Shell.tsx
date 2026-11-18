@@ -292,7 +292,7 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
           <div className="psheet" role="dialog" aria-modal="true" aria-label="Ещё" onClick={(event) => event.stopPropagation()}>
             <div className="psheet-list">
               {more.map((item) => (
-                <Link key={item.key} to={item.to} className="psheet-row press" aria-current={isCurrent(item, path) ? 'page' : undefined}>
+                <Link key={item.key} to={item.to} className="psheet-row press" aria-current={isCurrent(item, path) ? 'page' : undefined} onClick={() => setOpen(false)}>
                   <Icon name={item.icon} size={21} />
                   <span className="psheet-name">
                     {item.label}
@@ -301,12 +301,12 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
                   <Icon name="chevron-right" size={16} />
                 </Link>
               ))}
-              <Link to="/admin/security" className="psheet-row press" aria-current={path === '/admin/security' ? 'page' : undefined}>
+              <Link to="/admin/security" className="psheet-row press" aria-current={path === '/admin/security' ? 'page' : undefined} onClick={() => setOpen(false)}>
                 <Icon name="user" size={21} />
                 <span className="psheet-name">Безопасность</span>
                 <Icon name="chevron-right" size={16} />
               </Link>
-              <Link to={REPORT_PATH} state={{ from: path }} className="psheet-row press" aria-current={path === REPORT_PATH ? 'page' : undefined}>
+              <Link to={REPORT_PATH} state={{ from: path }} className="psheet-row press" aria-current={path === REPORT_PATH ? 'page' : undefined} onClick={() => setOpen(false)}>
                 <Icon name="flag" size={21} />
                 <span className="psheet-name">Сообщить об ошибке</span>
                 <Icon name="chevron-right" size={16} />
