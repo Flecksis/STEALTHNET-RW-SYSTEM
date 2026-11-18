@@ -239,7 +239,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(polling, [providers::YOOKASSA]);
+        assert_eq!(polling, [providers::YOOKASSA, providers::PLATEGA]);
     }
 
     #[test]
