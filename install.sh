@@ -510,6 +510,7 @@ prepare_https() {
     set_env SN_SITE "$host"
     prepare_www "$host"
     if [ "$(env_value SN_HTTPS)" = "caddy" ]; then
+        prepare_firewall
         return 0
     fi
     step "HTTPS"
@@ -528,7 +529,106 @@ prepare_https() {
     else
         set_env SN_HTTPS caddy
         done_line "сертификат выпустится сам при запуске"
+        prepare_firewall
     fi
+}
+
+ufw_allows() {
+    printf '%s\n' "$2" | awk -v port="$1" '
+        /^Default:/ && /allow \(incoming\)/ { found = 1 }
+        / ALLOW / {
+            if ($0 ~ / Full /) { found = 1 }
+            split($1, spec, "/")
+            n = split(spec[1], ports, ",")
+            for (i = 1; i <= n; i++) {
+                if (ports[i] == port) { found = 1 }
+                if (split(ports[i], range, ":") == 2 && port + 0 >= range[1] + 0 && port + 0 <= range[2] + 0) { found = 1 }
+            }
+        }
+        END { exit found ? 0 : 1 }'
+}
+
+firewalld_allows() {
+    case "$1" in
+        80) service=http ;;
+        *) service=https ;;
+    esac
+    case " $(firewall-cmd --list-services 2>/dev/null) " in
+        *" $service "*) return 0 ;;
+    esac
+    case " $(firewall-cmd --list-ports 2>/dev/null) " in
+        *" $1/tcp "*) return 0 ;;
+    esac
+    return 1
+}
+
+check_firewall() {
+    FIREWALL=""
+    CLOSED_PORTS=""
+    ufw_out=""
+    if command -v ufw >/dev/null 2>&1; then
+        ufw_out=$(ufw status verbose 2>/dev/null || true)
+    fi
+    if printf '%s\n' "$ufw_out" | grep -q '^Status: active'; then
+        for port in 80 443; do
+            ufw_allows "$port" "$ufw_out" || CLOSED_PORTS="$CLOSED_PORTS $port"
+        done
+        CLOSED_PORTS=${CLOSED_PORTS# }
+        if [ -n "$CLOSED_PORTS" ]; then
+            FIREWALL=ufw
+        fi
+    elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null)" = "running" ]; then
+        for port in 80 443; do
+            firewalld_allows "$port" || CLOSED_PORTS="$CLOSED_PORTS $port"
+        done
+        CLOSED_PORTS=${CLOSED_PORTS# }
+        if [ -n "$CLOSED_PORTS" ]; then
+            FIREWALL=firewalld
+        fi
+    fi
+}
+
+open_ports_command() {
+    case "$FIREWALL" in
+        ufw) printf 'ufw allow 80/tcp && ufw allow 443/tcp' ;;
+        firewalld) printf 'firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload' ;;
+    esac
+}
+
+open_ports() {
+    case "$FIREWALL" in
+        ufw) ufw allow 80/tcp >/dev/null 2>&1 && ufw allow 443/tcp >/dev/null 2>&1 ;;
+        firewalld) firewall-cmd --permanent --add-service=http --add-service=https >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+prepare_firewall() {
+    check_firewall
+    if [ -z "$FIREWALL" ]; then
+        return 0
+    fi
+    step "Файрвол"
+    case "$CLOSED_PORTS" in
+        "80 443") hint "$FIREWALL закрывает порты 80 и 443: без них сертификат не выпустится и панель не откроется по HTTPS." ;;
+        80) hint "$FIREWALL закрывает порт 80: без него сертификат HTTPS не выпустится." ;;
+        *) hint "$FIREWALL закрывает порт 443: без него панель не откроется по HTTPS." ;;
+    esac
+    wanted=""
+    if [ "${SN_OPEN_PORTS:-}" = "1" ]; then
+        wanted=1
+    elif [ "${SN_OPEN_PORTS:-}" != "0" ] && can_ask; then
+        ask "Открыть порты 80 и 443 в $FIREWALL? [Д/н]"
+        case "$ANSWER" in
+            н*|Н*|n*|N*) ;;
+            *) wanted=1 ;;
+        esac
+    fi
+    if [ -n "$wanted" ] && open_ports; then
+        done_line "порты 80 и 443 открыты в $FIREWALL"
+        return 0
+    fi
+    hint "Откройте их командой: $(open_ports_command)"
 }
 
 write_compose_files() {
@@ -567,6 +667,8 @@ check_site() {
             SITE_READY=0
             hint "Сертификат пока не выпущен. Обычно причина одна из двух:"
             hint "домен ещё не указывает на этот сервер или порты 80 и 443 закрыты снаружи."
+            cert_errors
+            hint "Порты закрывает и файрвол в панели хостинга, если он там включён: его установщик не видит."
             hint "Когда это исправится, сертификат выпустится сам. Чтобы не ждать: $(command_for cert)"
             return 0
         fi
@@ -654,6 +756,7 @@ reissue_cert() {
     if [ -n "$www_site" ]; then
         show_dns "$www_site"
     fi
+    prepare_firewall
     step "Сертификат"
     if [ -n "$force" ]; then
         hint "Let's Encrypt выдаёт не больше 5 одинаковых сертификатов в неделю, без нужды --force не повторяйте."
@@ -672,7 +775,6 @@ reissue_cert() {
     done_line "веб-сервер перезапущен, выпуск начат заново"
     check_site
     if [ "$SITE_READY" = "0" ]; then
-        cert_errors
         exit 1
     fi
     if [ -n "$www_site" ] && ! has_cert "$www_site"; then

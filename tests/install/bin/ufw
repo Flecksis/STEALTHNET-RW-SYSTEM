@@ -1,0 +1,13 @@
+#!/bin/sh
+STATE=${FAKE_STATE:?}
+printf 'ufw %s\n' "$*" >> "$STATE/calls.log"
+case "$*" in
+    "status verbose")
+        if [ -n "${FAKE_UFW:-}" ]; then printf '%b\n' "$FAKE_UFW"; else echo "Status: inactive"; fi
+        exit 0 ;;
+    "allow 80/tcp"|"allow 443/tcp")
+        printf '%s\n' "$2" >> "$STATE/ufw_allowed"
+        echo "Rule added"
+        exit "${FAKE_UFW_EXIT:-0}" ;;
+esac
+exit 1

@@ -1,0 +1,14 @@
+#!/bin/sh
+STATE=${FAKE_STATE:?}
+printf 'firewall-cmd %s\n' "$*" >> "$STATE/calls.log"
+case "$*" in
+    "--state")
+        if [ -n "${FAKE_FIREWALLD:-}" ]; then echo running; exit 0; fi
+        echo "not running"
+        exit 252 ;;
+    "--list-services") echo "${FAKE_FIREWALLD_SERVICES:-ssh dhcpv6-client}"; exit 0 ;;
+    "--list-ports") echo "${FAKE_FIREWALLD_PORTS:-}"; exit 0 ;;
+    "--permanent --add-service=http --add-service=https") : > "$STATE/firewalld_opened"; echo success; exit 0 ;;
+    "--reload") echo success; exit 0 ;;
+esac
+exit 1

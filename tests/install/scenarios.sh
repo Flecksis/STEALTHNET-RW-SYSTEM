@@ -481,6 +481,28 @@ run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN= "$SHELL_BIN" "$R/install.sh" > "
 run "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out2.txt" 2>&1 </dev/null
 [ $? -eq 1 ] && grep -q 'домен не задан' "$WORK/out2.txt" && check ok "без домена сказано, что делать" || check no "без домена: $(tail -2 "$WORK/out2.txt")"
 
+echo "=== AG6. файрвол закрывает порты"
+fresh
+run FAKE_UFW='Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere' SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'ufw закрывает порты 80 и 443' "$WORK/out.txt" && check ok "закрытые в ufw порты найдены" || check no "ufw не проверен: $(grep -A3 'Файрвол' "$WORK/out.txt")"
+grep -q 'ufw allow 80/tcp && ufw allow 443/tcp' "$WORK/out.txt" && check ok "показана команда, как открыть порты" || check no "нет команды"
+[ -f "$S/ufw_allowed" ] && check no "порты открыты без согласия" || check ok "без согласия порты не открываются"
+fresh
+run SN_OPEN_PORTS=1 FAKE_UFW='Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n443/tcp                    ALLOW IN    Anywhere' SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'ufw закрывает порт 80:' "$WORK/out.txt" && check ok "найден закрытый порт 80" || check no "порт 80: $(grep -A3 'Файрвол' "$WORK/out.txt")"
+grep -qx '80/tcp' "$S/ufw_allowed" && grep -q 'порты 80 и 443 открыты в ufw' "$WORK/out.txt" && check ok "SN_OPEN_PORTS=1 открывает порты" || check no "порты не открыты"
+for rules in 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n80,443/tcp                 ALLOW IN    Anywhere' 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n80/tcp                     ALLOW IN    Anywhere\n443                        ALLOW IN    Anywhere' 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\nNginx Full                 ALLOW IN    Anywhere' 'Status: active\nDefault: allow (incoming), allow (outgoing), disabled (routed)' 'Status: inactive'; do
+    fresh
+    run FAKE_UFW="$rules" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+    grep -q 'закрывает порт' "$WORK/out.txt" && check no "ложная тревога для правил: $rules" || check ok "открытые порты не вызывают предупреждения"
+done
+fresh
+run FAKE_FIREWALLD=1 FAKE_FIREWALLD_SERVICES='ssh https' SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'firewalld закрывает порт 80:' "$WORK/out.txt" && grep -q 'firewall-cmd --permanent --add-service=http --add-service=https && firewall-cmd --reload' "$WORK/out.txt" && check ok "закрытый в firewalld порт найден и показана команда" || check no "firewalld: $(grep -A3 'Файрвол' "$WORK/out.txt")"
+fresh
+run FAKE_CERT=0 SN_SITE_TIMEOUT=3 FAKE_CADDY_LOG='{"level":"error","msg":"could not get certificate from issuer","error":"HTTP 400 urn:ietf:params:acme:error:connection - 203.0.113.10: Timeout during connect (likely firewall problem)"}' SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'не достучался до порта 80' "$WORK/out.txt" && grep -q 'файрвол в панели хостинга' "$WORK/out.txt" && check ok "при невыпущенном сертификате установка называет причину" || check no "нет причины: $(grep -A6 'Сертификат пока' "$WORK/out.txt")"
+
 NEW=fedcba9876543210fedcba9876543210fedcba98
 NEWDIGEST=ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:2222
 ME=$(id -u)
