@@ -17,16 +17,16 @@ use sn_store::testing::{TestDb, test_store};
 use std::io::Write;
 use std::sync::Arc;
 
-const S1: &str = "11111111-1111-4111-8111-111111111111";
-const S2: &str = "22222222-2222-4222-8222-222222222222";
+pub(super) const S1: &str = "11111111-1111-4111-8111-111111111111";
+pub(super) const S2: &str = "22222222-2222-4222-8222-222222222222";
 
-struct Env {
+pub(super) struct Env {
     _db: TestDb,
-    services: Services,
-    remna: Arc<FakeRemnawave>,
+    pub(super) services: Services,
+    pub(super) remna: Arc<FakeRemnawave>,
 }
 
-async fn env() -> Option<Env> {
+pub(super) async fn env() -> Option<Env> {
     let db = test_store().await?;
     let clock = Arc::new(FixedClock::new(
         Utc.with_ymd_and_hms(2026, 11, 17, 10, 0, 0).unwrap(),
@@ -50,7 +50,7 @@ async fn env() -> Option<Env> {
     })
 }
 
-fn squad(uuid: &str, name: &str) -> InternalSquad {
+pub(super) fn squad(uuid: &str, name: &str) -> InternalSquad {
     InternalSquad {
         uuid: uuid.parse().unwrap(),
         name: name.into(),
@@ -60,7 +60,7 @@ fn squad(uuid: &str, name: &str) -> InternalSquad {
     }
 }
 
-fn user(
+pub(super) fn user(
     id: i64,
     short: &str,
     name: &str,
@@ -746,7 +746,7 @@ fn seed_stealthnet_remna(remna: &FakeRemnawave) {
     remna.insert_user(user(504, "cccc504", "stranger", Some(9999), None));
 }
 
-async fn scalar(services: &Services, sql: &str) -> i64 {
+pub(super) async fn scalar(services: &Services, sql: &str) -> i64 {
     let mut conn = services.store().conn().await.unwrap();
     sqlx::query_scalar(&format!("SELECT ({sql})::bigint"))
         .fetch_one(sn_store::Db::conn(&mut conn))
@@ -754,7 +754,7 @@ async fn scalar(services: &Services, sql: &str) -> i64 {
         .unwrap()
 }
 
-async fn import(env: &Env, bytes: &[u8], admin: Option<AdminId>) -> (Preview, Outcome) {
+pub(super) async fn import(env: &Env, bytes: &[u8], admin: Option<AdminId>) -> (Preview, Outcome) {
     let dump = archive::open_bytes(bytes, &wanted).unwrap();
     let legacy = map_dump(&dump).unwrap();
     let remna = check::fetch_remna(&env.services).await;
@@ -781,7 +781,7 @@ async fn import(env: &Env, bytes: &[u8], admin: Option<AdminId>) -> (Preview, Ou
     (checked.preview, outcome)
 }
 
-async fn owner(services: &Services) -> AdminId {
+pub(super) async fn owner(services: &Services) -> AdminId {
     services
         .auth()
         .upsert_owner("owner@example.com", "очень-надёжный-пароль")
@@ -1290,7 +1290,7 @@ async fn без_remnawave_проверка_просит_подключить_п�
     );
 }
 
-async fn wait(services: &Services, id: uuid::Uuid, want: &[RunState]) -> runs::RunView {
+pub(super) async fn wait(services: &Services, id: uuid::Uuid, want: &[RunState]) -> runs::RunView {
     for _ in 0..200 {
         let run = services.legacy().run(id).await.unwrap();
         if want.contains(&run.state) {

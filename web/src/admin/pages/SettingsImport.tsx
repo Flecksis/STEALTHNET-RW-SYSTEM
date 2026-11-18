@@ -5,7 +5,7 @@ import { count, dateTime, groupDigits, money, NBSP } from '../../lib/format';
 import { usePhone } from '../../lib/media';
 import '../form.css';
 import './import.css';
-import { ACCEPT, ACTIVE, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type Outcome, type Run, type Source } from './importModel';
+import { ACCEPT, ACTIVE, FILES, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type Outcome, type Run, type Source } from './importModel';
 import { SettingsLayout } from './SettingsLayout';
 
 function size(bytes: number): string {
@@ -59,6 +59,37 @@ function HowTo({ source }: { source: Source }) {
           В карточке «Создать бэкап» нажмите <b>«Создать и скачать»</b>. Скачается файл <span className="mono">stealthnet-backup-….sql</span>.
         </li>
         <li>Перетащите этот файл сюда. Подойдёт и автоматическая копия из списка «Сохранённые на сервере» — файл .sql.gz.</li>
+      </ol>
+    );
+  }
+  if (source === 'telegram_shop') {
+    return (
+      <ol className="imp-how">
+        <li>
+          Своей кнопки копии у этого бота нет. На его сервере, в папке с <span className="mono">docker-compose.yaml</span>, выполните:
+          <pre className="code mono">docker exec remnawave-telegram-shop-db pg_dump -U postgres postgres | gzip &gt; shop.sql.gz</pre>
+          Если в <span className="mono">.env</span> меняли POSTGRES_USER или POSTGRES_DB, подставьте их вместо обоих <span className="mono">postgres</span>.
+        </li>
+        <li>Скачайте файл <span className="mono">shop.sql.gz</span> с сервера и перетащите сюда.</li>
+        <li>
+          Цены и сроки бот хранит в <span className="mono">.env</span> (PRICE_1 … PRICE_12), а не в базе. Тарифы после переноса заведите вручную в
+          «Тарифах».
+        </li>
+      </ol>
+    );
+  }
+  if (source === 'chill') {
+    return (
+      <ol className="imp-how">
+        <li>
+          В старом боте откройте <b>«Система» → «Бэкап базы»</b> и сделайте бэкап. Бот пришлёт файл{' '}
+          <span className="mono">chill-remna-bot-backup-….bak</span>.
+        </li>
+        <li>Скачайте файл из Telegram и перетащите сюда. Спросим пароль бэкапа — он задан в том же разделе.</li>
+        <li>
+          Подойдёт и ручная копия: файл <span className="mono">bot.db</span> из тома <span className="mono">bot-data</span> (сначала остановите
+          бота) или <span className="mono">pg_dump</span>, если бот работает на PostgreSQL.
+        </li>
       </ol>
     );
   }
@@ -144,7 +175,9 @@ function DropZone({ ctx }: { ctx: Ctx }) {
       }}
     >
       <span className="strong">Перетащите файл выгрузки сюда</span>
-      <span className="cap">{source === 'stealthnet' ? 'Файл .sql или .sql.gz' : 'Файл .tar.gz, .tar или .zip'} до 2{NBSP}ГБ</span>
+      <span className="cap">
+        {FILES[source]} до 2{NBSP}ГБ
+      </span>
       <button type="button" className="btn-line hov" onClick={() => input.current?.click()}>
         Выбрать файл
       </button>
@@ -177,6 +210,7 @@ function FileLine({ run }: { run: Run }) {
 function PasswordForm({ ctx }: { ctx: Ctx }) {
   const [value, setValue] = useState('');
   const wrong = ctx.run?.error;
+  const chill = ctx.run?.source === 'chill' || Boolean(ctx.run?.file.name.toLowerCase().endsWith('.bak'));
   return (
     <form
       className="imp-password"
@@ -188,9 +222,11 @@ function PasswordForm({ ctx }: { ctx: Ctx }) {
       }}
     >
       <label className="imp-field">
-        <span className="strong">Архив защищён паролем</span>
+        <span className="strong">{chill ? 'Бэкап защищён паролем' : 'Архив защищён паролем'}</span>
         <span className="cap">
-          Пароль задан в старом боте: «Конфигурация бота» → «Резервные копии», Backup Archive Password.
+          {chill
+            ? 'Это пароль бэкапа из старого бота: «Система» → «Бэкап базы».'
+            : 'Пароль задан в старом боте: «Конфигурация бота» → «Резервные копии», Backup Archive Password.'}
         </span>
         <input
           className="field"
@@ -209,7 +245,7 @@ function PasswordForm({ ctx }: { ctx: Ctx }) {
       ) : null}
       <div className="imp-actions-inline">
         <button type="submit" className="btn-main btn" disabled={ctx.busy || !value.trim()}>
-          Открыть архив
+          {chill ? 'Открыть бэкап' : 'Открыть архив'}
         </button>
         <button type="button" className="btn-line hov" onClick={() => void ctx.discard()} disabled={ctx.busy}>
           Другой файл
@@ -228,7 +264,7 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
   return (
     <div className="imp-check">
       {p.detected !== ctx.source && ctx.source ? (
-        <p className="imp-note">Файл — выгрузка {p.detected === 'bedolaga' ? 'бота Бедолаги' : 'STEALTHNET'}. Переносим из неё.</p>
+        <p className="imp-note">Файл — выгрузка {SOURCES.find((s) => s.id === p.detected)?.of ?? 'другого бота'}. Переносим из неё.</p>
       ) : null}
       {!p.remna.connected ? (
         <div className="imp-block" role="alert">

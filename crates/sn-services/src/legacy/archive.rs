@@ -1,5 +1,5 @@
 use super::table::Dump;
-use super::{json_dump, pgdump};
+use super::{chill_file, json_dump, pgdump, sqlite};
 use flate2::read::MultiGzDecoder;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
@@ -103,8 +103,26 @@ impl Reader<'_> {
                 "Внутри архива ещё один zip. Распакуйте его и загрузите файл из него",
             ));
         }
-        if head.starts_with(b"SQLite format 3") {
+        if head.starts_with(sqlite::MAGIC) {
             self.sqlite = true;
+            return self.spool_sqlite(Box::new(chained));
+        }
+        if chill_file::is_sealed(&head) {
+            return Err(unsupported(
+                "Внутри архива зашифрованный бэкап Chill Remna bot. Загрузите сам файл .bak, без архива",
+            ));
+        }
+        if head.starts_with(b"PGDMP") {
+            return Err(unsupported(
+                "Копия сделана pg_dump в сжатом формате -Fc, его перенос не читает. Сделайте копию обычным SQL: pg_dump без ключа -Fc, файл .sql",
+            ));
+        }
+        if is_json(&head) && chill_file::is_lines(&head) {
+            chill_file::read_lines(
+                BufReader::with_capacity(READ_BUFFER, chained),
+                self.wanted,
+                &mut self.dump,
+            )?;
             return Ok(());
         }
         if is_json(&head) {
@@ -137,6 +155,16 @@ impl Reader<'_> {
         ))
     }
 
+    fn spool_sqlite(&mut self, mut reader: Box<dyn Read + '_>) -> Result<(), OpenError> {
+        let dir = super::import_dir();
+        std::fs::create_dir_all(&dir)?;
+        let spool = Spool(dir.join(format!("sqlite-{}.part", uuid::Uuid::new_v4().simple())));
+        let mut file = File::create(&spool.0)?;
+        std::io::copy(&mut reader, &mut file)?;
+        drop(file);
+        sqlite::read(&spool.0, self.wanted, &mut self.dump)
+    }
+
     fn tar(&mut self, reader: Box<dyn Read + '_>, depth: u8) -> Result<(), OpenError> {
         let mut archive = tar::Archive::new(reader);
         for entry in archive.entries()? {
@@ -152,6 +180,8 @@ impl Reader<'_> {
                 .unwrap_or(&name)
                 .to_ascii_lowercase();
             let top = !name.contains('/');
+            let database =
+                inner.ends_with(".db") || inner.ends_with(".sqlite") || inner.ends_with(".sqlite3");
             if inner == "metadata.json" && top {
                 json_dump::read_metadata(entry, &mut self.dump);
             } else if top
@@ -160,6 +190,7 @@ impl Reader<'_> {
                     || inner.ends_with(".sql.gz")
                     || inner.ends_with(".tar.gz")
                     || inner.ends_with(".tgz"))
+                || database
             {
                 self.stream(Box::new(entry), depth + 1)?;
             }
@@ -171,7 +202,7 @@ impl Reader<'_> {
         if self.dump.tables.is_empty() {
             if self.sqlite {
                 return Err(unsupported(
-                    "Копия сделана из базы SQLite. Перенос читает копии из PostgreSQL",
+                    "В файле базы SQLite нет таблиц ни одного из ботов, из которых умеет переносить панель",
                 ));
             }
             return Err(unsupported(
@@ -180,6 +211,22 @@ impl Reader<'_> {
         }
         Ok(self.dump)
     }
+}
+
+struct Spool(std::path::PathBuf);
+
+impl Drop for Spool {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn zip_name_wanted(name: &str) -> bool {
+    [
+        ".tar.gz", ".tgz", ".tar", ".json", ".sql", ".gz", ".bak", ".db", ".sqlite", ".sqlite3",
+    ]
+    .iter()
+    .any(|ext| name.ends_with(ext))
 }
 
 fn zip_error(err: zip::result::ZipError) -> OpenError {
@@ -205,12 +252,7 @@ fn open_zip(path: &Path, password: Option<&str>, reader: &mut Reader<'_>) -> Res
                 raw.name().to_ascii_lowercase(),
             )
         };
-        let wanted = name.ends_with(".tar.gz")
-            || name.ends_with(".tgz")
-            || name.ends_with(".tar")
-            || name.ends_with(".json")
-            || name.ends_with(".sql")
-            || name.ends_with(".gz");
+        let wanted = zip_name_wanted(&name);
         if dir || !wanted {
             continue;
         }
@@ -246,7 +288,12 @@ pub fn open(
         dump: Dump::default(),
         sqlite: false,
     };
-    if head.starts_with(b"PK\x03\x04") {
+    if head.starts_with(sqlite::MAGIC) {
+        reader.sqlite = true;
+        sqlite::read(path, wanted, &mut reader.dump)?;
+    } else if chill_file::is_sealed(&head) {
+        return Err(OpenError::NeedsPassword);
+    } else if head.starts_with(b"PK\x03\x04") {
         open_zip(path, password, &mut reader)?;
     } else {
         let file = File::open(path)?;
@@ -274,12 +321,7 @@ pub fn extract_zip(
                 raw.name().to_ascii_lowercase(),
             )
         };
-        let wanted = name.ends_with(".tar.gz")
-            || name.ends_with(".tgz")
-            || name.ends_with(".tar")
-            || name.ends_with(".json")
-            || name.ends_with(".sql")
-            || name.ends_with(".gz");
+        let wanted = zip_name_wanted(&name);
         if dir || !wanted {
             continue;
         }

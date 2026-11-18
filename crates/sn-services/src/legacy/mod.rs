@@ -2,15 +2,21 @@ pub mod apply;
 pub mod archive;
 pub mod bedolaga;
 pub mod check;
+pub mod chill;
+pub mod chill_file;
 pub mod extras;
 pub mod json_dump;
 pub mod matcher;
 pub mod model;
 pub mod pgdump;
 pub mod runs;
+pub mod sqlite;
 pub mod stealthnet;
 pub mod table;
+pub mod telegram_shop;
 
+#[cfg(test)]
+mod go_tests;
 #[cfg(test)]
 mod tests;
 
@@ -34,7 +40,10 @@ pub const MAX_UPLOAD: u64 = 2 * 1024 * 1024 * 1024;
 pub const IMPORT_DIR_ENV: &str = "SN_IMPORT_DIR";
 
 pub fn wanted(table: &str) -> bool {
-    stealthnet::TABLES.contains(&table) || bedolaga::TABLES.contains(&table)
+    stealthnet::TABLES.contains(&table)
+        || bedolaga::TABLES.contains(&table)
+        || telegram_shop::TABLES.contains(&table)
+        || chill::TABLES.contains(&table)
 }
 
 pub fn import_dir() -> PathBuf {
@@ -51,9 +60,13 @@ pub fn map_dump(dump: &Dump) -> Result<Legacy, OpenError> {
         Ok(stealthnet::map(dump))
     } else if bedolaga::looks_like(dump) {
         Ok(bedolaga::map(dump))
+    } else if telegram_shop::looks_like(dump) {
+        Ok(telegram_shop::map(dump))
+    } else if chill::looks_like(dump) {
+        Ok(chill::map(dump))
     } else {
         Err(OpenError::Unsupported(
-            "В файле нет ни клиентов STEALTHNET, ни пользователей бота Бедолаги. Нужна резервная копия базы старого бота".into(),
+            "В файле нет клиентов ни одного из ботов, из которых умеет переносить панель. Нужна резервная копия базы старого бота".into(),
         ))
     }
 }
@@ -62,7 +75,11 @@ pub fn read_file(
     path: &Path,
     password: Option<&str>,
 ) -> Result<(Legacy, Option<PathBuf>), OpenError> {
-    let extracted = archive::extract_zip(path, password)?;
+    let mut extracted = archive::extract_zip(path, password)?;
+    let inner = path.with_extension("inner");
+    if chill_file::unseal(extracted.as_deref().unwrap_or(path), password, &inner)? {
+        extracted = Some(inner);
+    }
     let target = extracted.as_deref().unwrap_or(path);
     let dump = archive::open(target, None, &wanted)?;
     Ok((map_dump(&dump)?, extracted))

@@ -11,6 +11,8 @@ use uuid::Uuid;
 pub enum Source {
     Stealthnet,
     Bedolaga,
+    TelegramShop,
+    Chill,
 }
 
 impl Source {
@@ -18,6 +20,8 @@ impl Source {
         match self {
             Source::Stealthnet => "stealthnet",
             Source::Bedolaga => "bedolaga",
+            Source::TelegramShop => "telegram_shop",
+            Source::Chill => "chill",
         }
     }
 
@@ -25,6 +29,8 @@ impl Source {
         match value.trim().to_ascii_lowercase().as_str() {
             "stealthnet" | "sn" => Some(Source::Stealthnet),
             "bedolaga" | "bdl" => Some(Source::Bedolaga),
+            "telegram_shop" | "remnawave-telegram-shop" => Some(Source::TelegramShop),
+            "chill" | "chill-remna-bot" => Some(Source::Chill),
             _ => None,
         }
     }
@@ -33,6 +39,8 @@ impl Source {
         match self {
             Source::Stealthnet => "STEALTHNET",
             Source::Bedolaga => "Бот Бедолаги",
+            Source::TelegramShop => "remnawave-telegram-shop",
+            Source::Chill => "chill-remna-bot",
         }
     }
 

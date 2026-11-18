@@ -135,6 +135,8 @@ fn with_suffix(source: Source, base: &str, ordinal: u32) -> Vec<String> {
         (Source::Stealthnet, n) => vec![cut(format!("{base}_{n}"))],
         (Source::Bedolaga, 0) => vec![base.to_string(), format!("{base}_1")],
         (Source::Bedolaga, n) => vec![format!("{base}_{}", n + 1)],
+        (_, 0) => vec![base.to_string()],
+        (_, n) => vec![format!("{base}_{n}")],
     }
 }
 
@@ -148,10 +150,10 @@ fn names_for(source: Source, client: &LClient, sub: &LSubscription) -> Names {
     if sub.gifted {
         return Names::default();
     }
-    let exact = if source == Source::Stealthnet {
-        with_suffix(source, &panel_base(client), sub.ordinal)
-    } else {
-        Vec::new()
+    let exact = match source {
+        Source::Stealthnet => with_suffix(source, &panel_base(client), sub.ordinal),
+        Source::TelegramShop | Source::Chill => vec![sub.old_id.clone()],
+        _ => Vec::new(),
     };
     let mut bases = Vec::new();
     if let Some(name) = &client.username {

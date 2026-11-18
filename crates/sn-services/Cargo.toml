@@ -36,6 +36,8 @@ lettre.workspace = true
 flate2.workspace = true
 tar.workspace = true
 zip.workspace = true
+aes-gcm.workspace = true
+scrypt.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true

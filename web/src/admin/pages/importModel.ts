@@ -1,6 +1,6 @@
 import type { Currency } from '../../lib/types';
 
-export type Source = 'stealthnet' | 'bedolaga';
+export type Source = 'stealthnet' | 'bedolaga' | 'telegram_shop' | 'chill';
 
 export type RunState =
   | 'uploaded'
@@ -92,9 +92,11 @@ export type ImportView = {
   history: Run[];
 };
 
-export const SOURCES: Array<{ id: Source; name: string; what: string }> = [
-  { id: 'stealthnet', name: 'STEALTHNET', what: 'Панель и бот STEALTHNET версии 7' },
-  { id: 'bedolaga', name: 'Бот Бедолаги', what: 'remnawave-bedolaga-telegram-bot' },
+export const SOURCES: Array<{ id: Source; name: string; what: string; of: string }> = [
+  { id: 'stealthnet', name: 'STEALTHNET', what: 'Панель и бот STEALTHNET версии 7', of: 'STEALTHNET' },
+  { id: 'bedolaga', name: 'Бот Бедолаги', what: 'remnawave-bedolaga-telegram-bot', of: 'бота Бедолаги' },
+  { id: 'telegram_shop', name: 'Remnawave Telegram Shop', what: 'remnawave-telegram-shop', of: 'Remnawave Telegram Shop' },
+  { id: 'chill', name: 'Chill Remna bot', what: 'chill-remna-bot', of: 'Chill Remna bot' },
 ];
 
 export const STAGES: Array<{ key: Stage; label: string }> = [
@@ -133,6 +135,15 @@ export const MAX_UPLOAD = 2 * 1024 * 1024 * 1024;
 export const ACCEPT: Record<Source, string> = {
   stealthnet: '.sql,.gz',
   bedolaga: '.gz,.tgz,.tar,.zip,.json',
+  telegram_shop: '.sql,.gz,.tgz,.tar,.zip',
+  chill: '.bak,.db,.sqlite,.sql,.gz,.tgz,.tar,.zip',
+};
+
+export const FILES: Record<Source, string> = {
+  stealthnet: 'Файл .sql или .sql.gz',
+  bedolaga: 'Файл .tar.gz, .tar или .zip',
+  telegram_shop: 'Файл .sql или .sql.gz',
+  chill: 'Файл .bak, файл базы .db или .sql',
 };
 
 export const ACTIVE: RunState[] = ['checking', 'running'];
