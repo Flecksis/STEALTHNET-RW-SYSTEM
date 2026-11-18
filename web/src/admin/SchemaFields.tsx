@@ -1,7 +1,10 @@
+import { Fragment, type ReactNode } from 'react';
 import { Switch } from './ui';
 import './form.css';
 
 export type FieldKind = { type: 'text' | 'secret' | 'number' | 'flag' | 'url' | 'list' } | { type: 'select'; options: string[] };
+
+export type FieldCase = { when: string; hint?: string; placeholder?: string };
 
 export type SettingField = {
   key: string;
@@ -11,6 +14,8 @@ export type SettingField = {
   required: boolean;
   default: string | null;
   large?: boolean;
+  labels?: string[];
+  depends?: { on: string; cases: FieldCase[]; reset: boolean };
 };
 
 export type FieldValues = Record<string, string | boolean>;
@@ -61,6 +66,16 @@ export function changedConfig(schema: SettingField[], config: Record<string, unk
   return out;
 }
 
+function moved(schema: SettingField[], config: Record<string, unknown>, values: FieldValues, field: SettingField): boolean {
+  const on = field.depends?.reset ? schema.find((f) => f.key === field.depends?.on) : undefined;
+  return on !== undefined && values[on.key] !== fieldInitial(on, config);
+}
+
+function fieldCase(field: SettingField, values: FieldValues): FieldCase | undefined {
+  const depends = field.depends;
+  return depends ? depends.cases.find((c) => c.when === String(values[depends.on] ?? '')) : undefined;
+}
+
 export function missingRequired(schema: SettingField[], config: Record<string, unknown>, values: FieldValues, secrets: SecretState): SettingField[] {
   return schema.filter((field) => {
     if (!field.required || field.kind.type === 'list') {
@@ -68,7 +83,7 @@ export function missingRequired(schema: SettingField[], config: Record<string, u
     }
     const value = values[field.key];
     if (field.kind.type === 'secret') {
-      const kept = secretFilled(config, field.key) && !secrets.clear.includes(field.key);
+      const kept = secretFilled(config, field.key) && !secrets.clear.includes(field.key) && !moved(schema, config, values, field);
       return !kept && !(typeof value === 'string' && value.trim());
     }
     if (field.kind.type === 'flag') {
@@ -87,113 +102,145 @@ type Props = {
   onSecrets: (secrets: SecretState) => void;
   busy: boolean;
   idPrefix: string;
+  after?: Partial<Record<string, ReactNode>>;
 };
 
-export function SchemaFields({ schema, config, values, onChange, secrets, onSecrets, busy, idPrefix }: Props) {
-  const set = (key: string, value: string | boolean) => onChange({ ...values, [key]: value });
+export function SchemaFields({ schema, config, values, onChange, secrets, onSecrets, busy, idPrefix, after }: Props) {
+  const set = (key: string, value: string | boolean) => {
+    const next: FieldValues = { ...values, [key]: value };
+    const changer = schema.find((f) => f.key === key);
+    const back = changer !== undefined && value === fieldInitial(changer, config);
+    const reopen: string[] = [];
+    for (const field of schema) {
+      if (!field.depends?.reset || field.depends.on !== key || field.kind.type === 'list') {
+        continue;
+      }
+      if (field.kind.type === 'secret') {
+        if (!back && !secrets.replacing.includes(field.key)) {
+          reopen.push(field.key);
+        }
+        continue;
+      }
+      next[field.key] = back ? fieldInitial(field, config) : '';
+    }
+    onChange(next);
+    if (reopen.length) {
+      onSecrets({ ...secrets, replacing: [...secrets.replacing, ...reopen] });
+    }
+  };
+  const render = (field: SettingField): ReactNode => {
+    const value = values[field.key];
+    const id = `${idPrefix}-${field.key}`;
+    const variant = fieldCase(field, values);
+    const hintText = variant?.hint ?? field.hint;
+    const placeholder = variant?.placeholder;
+    const hintId = hintText ? `${id}-hint` : undefined;
+    const hint = hintText ? (
+      <span id={hintId} className="cap">
+        {hintText}
+      </span>
+    ) : null;
+    if (field.kind.type === 'flag') {
+      return (
+        <div key={field.key} className="sf-flag">
+          <span className="sf-text">
+            <span className="sf-label">{field.label}</span>
+            {hint}
+          </span>
+          <Switch on={value === true} onToggle={() => set(field.key, value !== true)} label={field.label} describedBy={hintId} disabled={busy} />
+        </div>
+      );
+    }
+    if (field.kind.type === 'secret') {
+      const filled = secretFilled(config, field.key) && !secrets.clear.includes(field.key);
+      const editing = !filled || secrets.replacing.includes(field.key);
+      return (
+        <div key={field.key} className="sf-field">
+          <label htmlFor={id} className="sf-label">
+            {field.label}
+          </label>
+          {editing ? (
+            <input
+              id={id}
+              className="field mono"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={typeof value === 'string' ? value : ''}
+              onChange={(e) => set(field.key, e.target.value)}
+              aria-describedby={hintId}
+              placeholder={filled && !moved(schema, config, values, field) ? 'Новое значение' : 'Вставьте значение'}
+              disabled={busy}
+            />
+          ) : (
+            <span className="sf-secret">
+              <span className="muted">Сохранено</span>
+              <button type="button" className="b34 hov" onClick={() => onSecrets({ ...secrets, replacing: [...secrets.replacing, field.key] })} disabled={busy}>
+                Заменить
+              </button>
+              {!field.required ? (
+                <button type="button" className="b34 hov" onClick={() => onSecrets({ ...secrets, clear: [...secrets.clear, field.key] })} disabled={busy}>
+                  Удалить
+                </button>
+              ) : null}
+            </span>
+          )}
+          {hint}
+        </div>
+      );
+    }
+    return (
+      <div key={field.key} className="sf-field">
+        <label htmlFor={id} className="sf-label">
+          {field.label}
+        </label>
+        {field.kind.type === 'text' && field.large ? (
+          <textarea
+            id={id}
+            className="field"
+            rows={8}
+            value={String(value ?? '')}
+            onChange={(e) => set(field.key, e.target.value)}
+            aria-describedby={hintId}
+            disabled={busy}
+          />
+        ) : field.kind.type === 'select' ? (
+          <select id={id} className="field" value={String(value ?? '')} onChange={(e) => set(field.key, e.target.value)} aria-describedby={hintId} disabled={busy}>
+            {field.required ? null : <option value="">Не выбрано</option>}
+            {field.kind.options.map((option, index) => (
+              <option key={option} value={option}>
+                {field.labels?.[index] ?? option}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            id={id}
+            className="field"
+            type={field.kind.type === 'url' ? 'url' : 'text'}
+            inputMode={field.kind.type === 'number' ? 'decimal' : undefined}
+            value={String(value ?? '')}
+            onChange={(e) => set(field.key, e.target.value)}
+            aria-describedby={hintId}
+            placeholder={placeholder}
+            spellCheck={placeholder ? false : undefined}
+            disabled={busy}
+          />
+        )}
+        {hint}
+      </div>
+    );
+  };
   return (
     <>
-      {schema.map((field) => {
-        if (field.kind.type === 'list') {
-          return null;
-        }
-        const value = values[field.key];
-        const id = `${idPrefix}-${field.key}`;
-        const hintId = field.hint ? `${id}-hint` : undefined;
-        const hint = field.hint ? (
-          <span id={hintId} className="cap">
-            {field.hint}
-          </span>
-        ) : null;
-        if (field.kind.type === 'flag') {
-          return (
-            <div key={field.key} className="sf-flag">
-              <span className="sf-text">
-                <span className="sf-label">{field.label}</span>
-                {hint}
-              </span>
-              <Switch on={value === true} onToggle={() => set(field.key, value !== true)} label={field.label} describedBy={hintId} disabled={busy} />
-            </div>
-          );
-        }
-        if (field.kind.type === 'secret') {
-          const filled = secretFilled(config, field.key) && !secrets.clear.includes(field.key);
-          const editing = !filled || secrets.replacing.includes(field.key);
-          return (
-            <div key={field.key} className="sf-field">
-              <label htmlFor={id} className="sf-label">
-                {field.label}
-              </label>
-              {editing ? (
-                <input
-                  id={id}
-                  className="field mono"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={typeof value === 'string' ? value : ''}
-                  onChange={(e) => set(field.key, e.target.value)}
-                  aria-describedby={hintId}
-                  placeholder={filled ? 'Новое значение' : 'Вставьте значение'}
-                  disabled={busy}
-                />
-              ) : (
-                <span className="sf-secret">
-                  <span className="muted">Сохранено</span>
-                  <button type="button" className="b34 hov" onClick={() => onSecrets({ ...secrets, replacing: [...secrets.replacing, field.key] })} disabled={busy}>
-                    Заменить
-                  </button>
-                  {!field.required ? (
-                    <button type="button" className="b34 hov" onClick={() => onSecrets({ ...secrets, clear: [...secrets.clear, field.key] })} disabled={busy}>
-                      Удалить
-                    </button>
-                  ) : null}
-                </span>
-              )}
-              {hint}
-            </div>
-          );
-        }
-        return (
-          <div key={field.key} className="sf-field">
-            <label htmlFor={id} className="sf-label">
-              {field.label}
-            </label>
-            {field.kind.type === 'text' && field.large ? (
-              <textarea
-                id={id}
-                className="field"
-                rows={8}
-                value={String(value ?? '')}
-                onChange={(e) => set(field.key, e.target.value)}
-                aria-describedby={hintId}
-                disabled={busy}
-              />
-            ) : field.kind.type === 'select' ? (
-              <select id={id} className="field" value={String(value ?? '')} onChange={(e) => set(field.key, e.target.value)} aria-describedby={hintId} disabled={busy}>
-                {field.required ? null : <option value="">Не выбрано</option>}
-                {field.kind.options.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                id={id}
-                className="field"
-                type={field.kind.type === 'url' ? 'url' : 'text'}
-                inputMode={field.kind.type === 'number' ? 'decimal' : undefined}
-                value={String(value ?? '')}
-                onChange={(e) => set(field.key, e.target.value)}
-                aria-describedby={hintId}
-                disabled={busy}
-              />
-            )}
-            {hint}
-          </div>
-        );
-      })}
+      {schema.map((field) =>
+        field.kind.type === 'list' ? null : (
+          <Fragment key={field.key}>
+            {render(field)}
+            {after?.[field.key] ?? null}
+          </Fragment>
+        ),
+      )}
     </>
   );
 }

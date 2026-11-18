@@ -1,4 +1,4 @@
-use super::groq::ChatMessage;
+use super::llm::ChatMessage;
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
 use sn_domain::access::ClientChannel;

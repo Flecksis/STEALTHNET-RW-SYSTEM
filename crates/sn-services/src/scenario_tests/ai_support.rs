@@ -356,3 +356,80 @@ async fn ответ_из_бота_на_уведомление_оператора
     assert_ne!(fresh, miniapp);
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn смена_провайдера_требует_ключ_заново_и_адрес_только_https() {
+    let Some((env, admin)) = ai_env().await else {
+        return;
+    };
+    let ops = env.services.settings_ops();
+    let update = |config: serde_json::Value| ModuleConfigUpdate {
+        config: serde_json::from_value(config).unwrap(),
+        clear: Vec::new(),
+    };
+    let err = ops
+        .update_module_config(
+            ModuleId::Ai,
+            &update(serde_json::json!({ "provider": "gemini" })),
+            admin,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("вставьте ключ заново"), "{err}");
+    let err = ops
+        .update_module_config(
+            ModuleId::Ai,
+            &update(serde_json::json!({ "api_url": "https://proxy.example.com/v1" })),
+            admin,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("вставьте ключ заново"), "{err}");
+    let err = ops
+        .update_module_config(
+            ModuleId::Ai,
+            &update(serde_json::json!({
+                "provider": "custom",
+                "api_key": "sk-custom-scenario",
+                "api_url": "http://llm.example.com/v1",
+                "model": "llama-4",
+            })),
+            admin,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("https://"), "{err}");
+    ops.update_module_config(
+        ModuleId::Ai,
+        &update(serde_json::json!({
+            "provider": "gemini",
+            "api_key": "gemini-scenario-key",
+            "model": "models/gemini-3.8-flash",
+        })),
+        admin,
+    )
+    .await
+    .unwrap();
+    let settings = ai::Settings::from_config(&env.services.modules().config(ModuleId::Ai));
+    assert_eq!(settings.provider, ai::provider::Provider::Gemini);
+    assert_eq!(settings.api_key, "gemini-scenario-key");
+    assert_eq!(settings.model, "gemini-3.8-flash");
+    assert_eq!(
+        settings.api_url,
+        "https://generativelanguage.googleapis.com/v1beta/openai"
+    );
+    ops.update_module_config(
+        ModuleId::Ai,
+        &update(serde_json::json!({ "model": "gemini-3.6-flash" })),
+        admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        ai::Settings::from_config(&env.services.modules().config(ModuleId::Ai)).api_key,
+        "gemini-scenario-key"
+    );
+}

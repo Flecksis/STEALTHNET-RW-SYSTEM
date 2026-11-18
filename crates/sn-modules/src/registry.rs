@@ -336,33 +336,44 @@ impl ModuleRegistry {
         Ok(adjustments)
     }
 
-    fn mount(self: &Arc<Self>, routes: impl Fn(&dyn Module) -> Option<Router>) -> Router {
+    fn mount(
+        self: &Arc<Self>,
+        routes: impl Fn(&dyn Module) -> Option<Router>,
+        open: impl Fn(&dyn Module) -> Option<Router>,
+    ) -> Router {
         let mut router = Router::new();
         for module in &self.modules {
-            if let Some(module_router) = routes(module.as_ref()) {
+            let gated = routes(module.as_ref()).map(|module_router| {
                 let gate_state = GateState {
                     registry: self.clone(),
                     module: module.id(),
                 };
-                router = router.nest(
-                    &format!("/{}", module.id().as_str()),
-                    module_router.layer(from_fn_with_state(gate_state, gate)),
-                );
+                module_router.layer(from_fn_with_state(gate_state, gate))
+            });
+            let combined = match (open(module.as_ref()), gated) {
+                (Some(open), Some(gated)) => Some(open.merge(gated)),
+                (open, gated) => open.or(gated),
+            };
+            if let Some(module_router) = combined {
+                router = router.nest(&format!("/{}", module.id().as_str()), module_router);
             }
         }
         router
     }
 
     pub fn admin_router(self: &Arc<Self>, ctx: ModuleContext) -> Router {
-        self.mount(|m| m.admin_routes(ctx.clone()))
+        self.mount(
+            |m| m.admin_routes(ctx.clone()),
+            |m| m.setup_routes(ctx.clone()),
+        )
     }
 
     pub fn client_router(self: &Arc<Self>, ctx: ModuleContext) -> Router {
-        self.mount(|m| m.client_routes(ctx.clone()))
+        self.mount(|m| m.client_routes(ctx.clone()), |_| None)
     }
 
     pub fn public_router(self: &Arc<Self>, ctx: ModuleContext) -> Router {
-        self.mount(|m| m.public_routes(ctx.clone()))
+        self.mount(|m| m.public_routes(ctx.clone()), |_| None)
     }
 }
 
@@ -389,6 +400,10 @@ mod tests {
 
         fn admin_routes(&self, _ctx: ModuleContext) -> Option<Router> {
             Some(Router::new().route("/ping", get(|| async { "pong" })))
+        }
+
+        fn setup_routes(&self, _ctx: ModuleContext) -> Option<Router> {
+            Some(Router::new().route("/setup", get(|| async { "ready" })))
         }
     }
 
@@ -491,6 +506,12 @@ mod tests {
         let request = || Request::get("/gifts/ping").body(Body::empty()).unwrap();
         let response = router.clone().oneshot(request()).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let setup = router
+            .clone()
+            .oneshot(Request::get("/gifts/setup").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(setup.status(), StatusCode::OK);
         registry.apply_rows(&[ModuleStateRow {
             module: "gifts".into(),
             enabled: true,

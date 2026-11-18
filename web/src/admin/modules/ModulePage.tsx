@@ -5,6 +5,7 @@ import { useSession } from '../session';
 import { PAYOUT_KEY, PayoutMethods, payoutItems, payoutProblem, payoutRows, type PayoutRow } from '../referral/PayoutMethods';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import { Switch } from '../ui';
+import { AiModels } from './AiModels';
 import { AiUsage } from './AiUsage';
 import type { ModuleConfig, ModulesData, ModuleView } from './model';
 import { OauthSetup } from './OauthSetup';
@@ -187,7 +188,17 @@ export function ModulePage() {
           <h2 id="md-form-h" className="section-title">
             Настройки
           </h2>
-          <SchemaFields schema={cfg.schema} config={cfg.config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`mod-${id}`} />
+          <SchemaFields
+            schema={cfg.schema}
+            config={cfg.config}
+            values={values}
+            onChange={setValues}
+            secrets={secrets}
+            onSecrets={setSecrets}
+            busy={busy}
+            idPrefix={`mod-${id}`}
+            after={view.info.id === 'ai' ? { model: <AiModels values={values} onPick={(model) => setValues((v) => ({ ...v, model }))} busy={busy} /> } : undefined}
+          />
           {payoutField && payouts ? (
             <PayoutMethods
               field={payoutField}

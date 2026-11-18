@@ -108,7 +108,20 @@ pub trait Module: Send + Sync + 'static {
         None
     }
 
+    fn validate_change(
+        &self,
+        _before: &ModuleConfig,
+        _after: &ModuleConfig,
+        _new_secrets: &[&str],
+    ) -> Result<(), ModuleError> {
+        Ok(())
+    }
+
     fn admin_routes(&self, _ctx: ModuleContext) -> Option<Router> {
+        None
+    }
+
+    fn setup_routes(&self, _ctx: ModuleContext) -> Option<Router> {
         None
     }
 

@@ -13,14 +13,14 @@ pub struct Claimed {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Spent {
-    pub model: &'static str,
+pub struct Spent<'a> {
+    pub model: &'a str,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
 }
 
-impl Spent {
-    pub const NONE: Spent = Spent {
+impl Spent<'static> {
+    pub const NONE: Spent<'static> = Spent {
         model: "",
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -51,7 +51,7 @@ fn store_err(err: sqlx::Error) -> StoreError {
     StoreError::from(err)
 }
 
-fn model(spent: &Spent) -> Option<&'static str> {
+fn model<'a>(spent: &Spent<'a>) -> Option<&'a str> {
     (!spent.model.is_empty()).then_some(spent.model)
 }
 
@@ -98,7 +98,7 @@ struct Entry<'a> {
     error: Option<&'a str>,
 }
 
-async fn log(db: &mut impl Db, entry: &Entry<'_>, spent: &Spent) -> StoreResult<()> {
+async fn log(db: &mut impl Db, entry: &Entry<'_>, spent: &Spent<'_>) -> StoreResult<()> {
     sqlx::query(
         "INSERT INTO ai_support_log (ticket_id, client_id, message_id, outcome, reason, model, \
          prompt_tokens, completion_tokens, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
@@ -122,7 +122,7 @@ pub async fn hand_off(
     db: &mut impl Db,
     ticket: TicketId,
     reason: HandoffReason,
-    spent: &Spent,
+    spent: &Spent<'_>,
     error: Option<&str>,
 ) -> StoreResult<bool> {
     let client: Option<i64> = sqlx::query_scalar(
@@ -175,7 +175,7 @@ pub async fn answer(
     db: &mut impl Db,
     claimed: &Claimed,
     body: &str,
-    spent: &Spent,
+    spent: &Spent<'_>,
 ) -> StoreResult<Saved> {
     let current: Option<(String, Option<String>, Option<i64>)> = sqlx::query_as(
         "SELECT status, ai_state, last_message_id FROM tickets WHERE id = $1 FOR UPDATE",

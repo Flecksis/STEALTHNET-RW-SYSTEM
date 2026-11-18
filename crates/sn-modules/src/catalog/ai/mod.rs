@@ -1,5 +1,7 @@
-pub mod groq;
+pub mod anthropic;
+pub mod llm;
 pub mod prompt;
+pub mod provider;
 mod routes;
 pub mod store;
 #[cfg(test)]
@@ -13,13 +15,14 @@ use crate::registry::ModuleRegistry;
 use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
-use groq::{ChatMessage, ChatOptions, Completion, Groq, GroqError, MODELS};
+use llm::{AiError, ChatMessage, ChatOptions, Completion, Fault, Llm, Param};
 use prompt::Verdict;
+use provider::Provider;
 use sn_domain::access::ClientChannel;
 use sn_domain::ids::TicketId;
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
-use sn_domain::settings::SettingField;
+use sn_domain::settings::{FieldCase, SettingField};
 use sn_domain::support::{HandoffReason, TicketChannel};
 use sn_store::Db;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,15 +37,74 @@ pub const INSTRUCTIONS_MAX: usize = 8_000;
 pub const DEFAULT_MAX_TOKENS: i64 = 1_000;
 pub const DEFAULT_CLIENT_DAILY: i64 = 30;
 pub const DEFAULT_DAILY_TOKENS: i64 = 1_000_000;
+const MODEL_MAX: usize = 200;
 const MAX_TOKENS_RANGE: (i64, i64) = (200, 8_000);
 const CLIENT_DAILY_RANGE: (i64, i64) = (1, 1_000);
 const DAILY_TOKENS_RANGE: (i64, i64) = (1_000, 1_000_000_000);
+
+const MODEL_HINT: &str = "Если оставить пустым, работает модель, подсказанная в поле. Кнопка «Проверить ключ» покажет модели провайдера.";
+
+const KEY_CASES: [FieldCase; 7] = [
+    FieldCase::new("groq")
+        .hint("Создайте ключ на console.groq.com/keys. Ключ хранится зашифрованным."),
+    FieldCase::new("gemini")
+        .hint("Создайте ключ на aistudio.google.com/apikey. Ключ хранится зашифрованным."),
+    FieldCase::new("deepseek")
+        .hint("Создайте ключ на platform.deepseek.com/api_keys. Ключ хранится зашифрованным."),
+    FieldCase::new("openrouter")
+        .hint("Создайте ключ на openrouter.ai/settings/keys. Ключ хранится зашифрованным."),
+    FieldCase::new("openai")
+        .hint("Создайте ключ на platform.openai.com/api-keys. Ключ хранится зашифрованным."),
+    FieldCase::new("anthropic")
+        .hint("Создайте ключ на platform.claude.com/settings/keys. Ключ хранится зашифрованным."),
+    FieldCase::new("custom")
+        .hint("Ключ, который выдал владелец адреса API. Ключ хранится зашифрованным."),
+];
+
+const MODEL_CASES: [FieldCase; 7] = [
+    FieldCase::new("groq").placeholder("openai/gpt-oss-120b"),
+    FieldCase::new("gemini")
+        .placeholder("gemini-3.5-flash-lite")
+        .hint("Если оставить пустым, работает модель, подсказанная в поле. Кнопка «Проверить ключ» покажет модели провайдера. На бесплатном уровне Gemini API Google может использовать переписку для улучшения своих сервисов, и её могут читать проверяющие; на платном уровне — нет."),
+    FieldCase::new("deepseek").placeholder("deepseek-flash"),
+    FieldCase::new("openrouter")
+        .placeholder("openai/gpt-oss-120b")
+        .hint("Если оставить пустым, работает модель, подсказанная в поле. Кнопка «Проверить ключ» покажет модели провайдера, бесплатные с :free — первыми. У бесплатных моделей мало запросов в сутки, а их провайдеры могут сохранять переписку и обучать на ней модели."),
+    FieldCase::new("openai").placeholder("gpt-6-luna"),
+    FieldCase::new("anthropic").placeholder("claude-haiku-5-5"),
+    FieldCase::new("custom").hint("Обязательно: имя модели так, как его ждёт ваш сервер. Кнопка «Проверить ключ» покажет модели, если сервер отдаёт их список."),
+];
+
+const URL_CASES: [FieldCase; 7] = [
+    FieldCase::new("groq")
+        .placeholder("https://api.groq.com/openai/v1")
+        .hint("Пусто — официальный адрес. Если Groq недоступен из страны сервера панели, укажите адрес своего прокси или выберите DeepSeek или OpenRouter. Только https."),
+    FieldCase::new("gemini")
+        .placeholder("https://generativelanguage.googleapis.com/v1beta/openai")
+        .hint("Пусто — официальный адрес. Если Gemini недоступен из страны сервера панели, укажите адрес своего прокси или выберите DeepSeek или OpenRouter. Только https."),
+    FieldCase::new("deepseek")
+        .placeholder("https://api.deepseek.com")
+        .hint("Пусто — официальный адрес. Свой адрес нужен, только если запросы идут через ваш прокси. Только https."),
+    FieldCase::new("openrouter")
+        .placeholder("https://openrouter.ai/api/v1")
+        .hint("Пусто — официальный адрес. Свой адрес нужен, только если запросы идут через ваш прокси. Только https."),
+    FieldCase::new("openai")
+        .placeholder("https://api.openai.com/v1")
+        .hint("Пусто — официальный адрес. Если OpenAI недоступен из страны сервера панели, укажите адрес своего прокси или выберите DeepSeek или OpenRouter. Только https."),
+    FieldCase::new("anthropic")
+        .placeholder("https://api.anthropic.com/v1")
+        .hint("Пусто — официальный адрес. Если Anthropic недоступен из страны сервера панели, укажите адрес своего прокси или выберите DeepSeek или OpenRouter. Только https."),
+    FieldCase::new("custom")
+        .placeholder("https://llm.example.com/v1")
+        .hint("Обязательно: адрес API, совместимого с OpenAI. Ответы запрашиваются по адресу …/chat/completions, список моделей — …/models. Только https."),
+];
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static AGAIN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
+    pub provider: Provider,
     pub api_key: String,
     pub model: String,
     pub max_tokens: u32,
@@ -62,9 +124,18 @@ fn bounded(config: &ModuleConfig, key: &str, default: i64, range: (i64, i64)) ->
 
 impl Settings {
     pub fn from_config(config: &ModuleConfig) -> Self {
+        let provider = config
+            .text("provider")
+            .and_then(Provider::parse)
+            .unwrap_or(Provider::Groq);
         Settings {
+            provider,
             api_key: config.text("api_key").unwrap_or_default().to_string(),
-            model: config.text("model").unwrap_or(MODELS[0]).to_string(),
+            model: config
+                .text("model")
+                .map(|model| provider.model_id(model))
+                .or_else(|| provider.default_model().map(str::to_string))
+                .unwrap_or_default(),
             max_tokens: u32::try_from(bounded(
                 config,
                 "max_tokens",
@@ -89,13 +160,19 @@ impl Settings {
             miniapp: config_flag(config, "miniapp").unwrap_or(true),
             api_url: config
                 .text("api_url")
-                .unwrap_or(groq::DEFAULT_URL)
+                .or(provider.base_url())
+                .unwrap_or_default()
+                .trim_end_matches('/')
                 .to_string(),
         }
     }
 
     pub fn ready(&self) -> bool {
-        !self.api_key.trim().is_empty()
+        !self.api_key.trim().is_empty() && !self.model.is_empty() && !self.api_url.is_empty()
+    }
+
+    pub fn same_address(&self, other: &Settings) -> bool {
+        self.provider == other.provider && self.api_url == other.api_url
     }
 
     pub const fn takes(&self, channel: TicketChannel) -> bool {
@@ -173,58 +250,69 @@ pub enum Outcome {
 }
 
 pub async fn ask(
-    groq: &Groq,
+    llm: &Llm,
     settings: &Settings,
     chat: &[ChatMessage],
-) -> Result<Completion, GroqError> {
-    let mut options = ChatOptions {
-        max_tokens: settings.max_tokens,
-        json: true,
-        reasoning: true,
-    };
+) -> Result<Completion, AiError> {
+    let mut options = ChatOptions::full(settings.max_tokens, settings.provider, &settings.model);
     let mut retried = false;
-    let mut last = GroqError::Malformed("Groq так и не ответил".into());
-    for _ in 0..4 {
-        match groq.chat(&settings.model, chat, options).await {
-            Ok(completion) => return Ok(completion),
-            Err(GroqError::Unsupported(message)) if options.reasoning => {
-                options.reasoning = false;
-                last = GroqError::Unsupported(message);
+    let mut wasted = (0u32, 0u32);
+    let mut last = None;
+    for _ in 0..6 {
+        match llm.chat(&settings.model, chat, options).await {
+            Ok(mut completion) => {
+                let blank = completion.content.trim().is_empty()
+                    && completion.finish_reason.as_deref() != Some("length");
+                if blank && options.json {
+                    wasted.0 = wasted.0.saturating_add(completion.prompt_tokens);
+                    wasted.1 = wasted.1.saturating_add(completion.completion_tokens);
+                    options = options.without(Param::Json);
+                    last = Some(llm.error(Fault::JsonFailed));
+                    continue;
+                }
+                completion.prompt_tokens = completion.prompt_tokens.saturating_add(wasted.0);
+                completion.completion_tokens =
+                    completion.completion_tokens.saturating_add(wasted.1);
+                return Ok(completion);
             }
-            Err(GroqError::JsonFailed) if options.json => {
-                options.json = false;
-                last = GroqError::JsonFailed;
+            Err(err) => {
+                if let Some(next) = options.degrade(&err.fault) {
+                    options = next;
+                    last = Some(err);
+                    continue;
+                }
+                if err.fault.retryable() && !retried {
+                    retried = true;
+                    let wait = match err.fault {
+                        Fault::RateLimited {
+                            retry_after: Some(seconds),
+                        } => seconds.min(5),
+                        _ => 1,
+                    };
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                    last = Some(err);
+                    continue;
+                }
+                return Err(err);
             }
-            Err(err) if err.retryable() && !retried => {
-                retried = true;
-                let wait = match &err {
-                    GroqError::RateLimited {
-                        retry_after: Some(seconds),
-                    } => (*seconds).min(5),
-                    _ => 1,
-                };
-                tokio::time::sleep(Duration::from_secs(wait)).await;
-                last = err;
-            }
-            Err(err) => return Err(err),
         }
     }
-    Err(last)
+    Err(last.unwrap_or_else(|| llm.error(Fault::Malformed("ответа так и не было".into()))))
 }
 
-fn model_name(settings: &Settings) -> &'static str {
-    MODELS
-        .iter()
-        .find(|m| **m == settings.model)
-        .copied()
-        .unwrap_or("другая модель")
+fn model_name(settings: &Settings) -> &str {
+    let model = settings.model.as_str();
+    match model.char_indices().nth(MODEL_MAX) {
+        Some((end, _)) => &model[..end],
+        None => model,
+    }
 }
 
 async fn hand_off(
     ctx: &ModuleContext,
     claimed: &Claimed,
     reason: HandoffReason,
-    spent: &Spent,
+    spent: &Spent<'_>,
     error: Option<&str>,
 ) -> Result<Outcome, ModuleError> {
     let mut conn = ctx.store.conn().await?;
@@ -245,7 +333,7 @@ pub async fn process(
     ctx: &ModuleContext,
     settings: &Settings,
     claimed: &Claimed,
-    groq_down: &mut Option<String>,
+    down: &mut Option<String>,
 ) -> Result<Outcome, ModuleError> {
     let core = ctx.core.core_settings();
     let now = ctx.core.now();
@@ -283,11 +371,11 @@ pub async fn process(
     if usage.tokens >= settings.daily_tokens {
         return hand_off(ctx, claimed, HandoffReason::Budget, &Spent::NONE, None).await;
     }
-    if let Some(error) = groq_down.clone() {
+    if let Some(error) = down.clone() {
         return hand_off(
             ctx,
             claimed,
-            HandoffReason::Groq,
+            HandoffReason::NoAnswer,
             &Spent::NONE,
             Some(&error),
         )
@@ -308,14 +396,24 @@ pub async fn process(
         settings.instructions.as_deref(),
     ))];
     chat.extend(prompt::dialogue(&messages));
-    let groq = Groq::new(&settings.api_url, &settings.api_key);
-    let completion = match ask(&groq, settings, &chat).await {
+    let answer = match Llm::new(settings.provider, &settings.api_url, &settings.api_key) {
+        Ok(llm) => ask(&llm, settings, &chat).await,
+        Err(err) => Err(err),
+    };
+    let completion = match answer {
         Ok(completion) => completion,
         Err(err) => {
             let text = err.to_string();
-            tracing::warn!(ticket = claimed.ticket_id.0, error = %text, "Groq не ответил, обращение уходит оператору");
-            *groq_down = Some(text.clone());
-            return hand_off(ctx, claimed, HandoffReason::Groq, &Spent::NONE, Some(&text)).await;
+            tracing::warn!(ticket = claimed.ticket_id.0, provider = settings.provider.code(), error = %text, "ИИ не ответил, обращение уходит оператору");
+            *down = Some(text.clone());
+            return hand_off(
+                ctx,
+                claimed,
+                HandoffReason::NoAnswer,
+                &Spent::NONE,
+                Some(&text),
+            )
+            .await;
         }
     };
     let spent = Spent {
@@ -352,7 +450,7 @@ pub async fn process(
 
 pub async fn answer_pending(ctx: &ModuleContext) -> Result<Report, ModuleError> {
     let mut report = Report::default();
-    let mut groq_down = None;
+    let mut down = None;
     while report.total() < PER_RUN {
         if !ctx.core.module_enabled(ModuleId::Ai) {
             break;
@@ -368,7 +466,7 @@ pub async fn answer_pending(ctx: &ModuleContext) -> Result<Report, ModuleError> 
         let Some(claimed) = claimed else {
             break;
         };
-        match process(ctx, &settings, &claimed, &mut groq_down).await? {
+        match process(ctx, &settings, &claimed, &mut down).await? {
             Outcome::Answered => report.answered += 1,
             Outcome::HandedOff(_) => report.handed_off += 1,
             Outcome::Stale => report.stale += 1,
@@ -445,18 +543,19 @@ impl Module for AiModule {
 
     fn settings_schema(&self) -> Vec<SettingField> {
         vec![
-            SettingField::secret(
-                "api_key",
-                "API-ключ Groq",
-                "console.groq.com → API Keys. Ключ хранится зашифрованным.",
-            ),
             SettingField::select(
-                "model",
-                "Модель",
-                "gpt-oss-120b отвечает точнее, gpt-oss-20b — быстрее и дешевле, qwen3.8-27b — предварительная модель Groq.",
-                &MODELS,
+                "provider",
+                "Провайдер",
+                "Чья нейросеть отвечает клиентам. У каждого провайдера свой ключ и свои модели.",
+                &provider::CODES,
             )
-            .with_default(MODELS[0]),
+            .labels(&provider::LABELS)
+            .with_default("groq"),
+            SettingField::secret("api_key", "API-ключ", "Ключ хранится зашифрованным.")
+                .depends("provider", &KEY_CASES, true),
+            SettingField::text("model", "Модель", MODEL_HINT)
+                .optional()
+                .depends("provider", &MODEL_CASES, true),
             SettingField::text(
                 "instructions",
                 "Инструкция и частые вопросы",
@@ -497,9 +596,10 @@ impl Module for AiModule {
             SettingField::url(
                 "api_url",
                 "Адрес API",
-                "Оставьте пустым. Нужен, только если Groq недоступен с сервера панели и запросы идут через ваш прокси.",
+                "Оставьте пустым, чтобы запросы шли на официальный адрес провайдера. Только https.",
             )
-            .optional(),
+            .optional()
+            .depends("provider", &URL_CASES, true),
         ]
     }
 
@@ -515,6 +615,40 @@ impl Module for AiModule {
                 format!("не заполнено поле «{label}»")
             })
             .collect();
+        let provider = config
+            .text("provider")
+            .map_or(Some(Provider::Groq), Provider::parse);
+        if provider.is_none() {
+            problems.push("выберите провайдера из списка".into());
+        }
+        if provider == Some(Provider::Custom) {
+            let empty: Vec<&str> = [("api_url", "«Адрес API»"), ("model", "«Модель»")]
+                .into_iter()
+                .filter(|(key, _)| config.text(key).is_none())
+                .map(|(_, label)| label)
+                .collect();
+            match empty.as_slice() {
+                [] => {}
+                [one] => problems.push(format!("для своего адреса заполните поле {one}")),
+                many => problems.push(format!(
+                    "для своего адреса заполните поля {}",
+                    many.join(" и ")
+                )),
+            }
+        }
+        if let Some(problem) = config
+            .text("api_url")
+            .and_then(|url| llm::check_address(url, true).err())
+        {
+            problems.push(format!("«Адрес API»: {problem}"));
+        }
+        if let Some(model) = config.text("model") {
+            if model.chars().count() > MODEL_MAX {
+                problems.push(format!("«Модель» длиннее {MODEL_MAX} знаков"));
+            } else if model.chars().any(char::is_whitespace) {
+                problems.push("«Модель» — имя без пробелов, как его пишет провайдер".into());
+            }
+        }
         for (key, label, range) in [
             ("max_tokens", "Токенов на ответ", MAX_TOKENS_RANGE),
             (
@@ -543,8 +677,28 @@ impl Module for AiModule {
         }
     }
 
+    fn validate_change(
+        &self,
+        before: &ModuleConfig,
+        after: &ModuleConfig,
+        new_secrets: &[&str],
+    ) -> Result<(), ModuleError> {
+        let old = Settings::from_config(before);
+        let new = Settings::from_config(after);
+        if new.api_key.is_empty() || new_secrets.contains(&"api_key") || old.same_address(&new) {
+            return Ok(());
+        }
+        Err(ModuleError::Invalid(
+            "при смене провайдера или адреса API вставьте ключ заново: сохранённый ключ не отправляется на новый адрес".into(),
+        ))
+    }
+
     fn admin_routes(&self, ctx: ModuleContext) -> Option<Router> {
         Some(routes::admin(ctx))
+    }
+
+    fn setup_routes(&self, ctx: ModuleContext) -> Option<Router> {
+        Some(routes::setup(ctx))
     }
 
     fn tasks(&self) -> Vec<ScheduledTask> {

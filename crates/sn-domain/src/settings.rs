@@ -22,6 +22,48 @@ pub enum FieldKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FieldCase {
+    pub when: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<&'static str>,
+}
+
+impl FieldCase {
+    pub const fn new(when: &'static str) -> Self {
+        FieldCase {
+            when,
+            hint: None,
+            placeholder: None,
+        }
+    }
+
+    pub const fn hint(mut self, hint: &'static str) -> Self {
+        self.hint = Some(hint);
+        self
+    }
+
+    pub const fn placeholder(mut self, placeholder: &'static str) -> Self {
+        self.placeholder = Some(placeholder);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FieldDepends {
+    pub on: &'static str,
+    pub cases: &'static [FieldCase],
+    pub reset: bool,
+}
+
+impl FieldDepends {
+    pub fn case(&self, value: &str) -> Option<&'static FieldCase> {
+        self.cases.iter().find(|c| c.when == value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SettingField {
     pub key: &'static str,
     pub label: &'static str,
@@ -30,6 +72,10 @@ pub struct SettingField {
     pub required: bool,
     pub default: Option<&'static str>,
     pub large: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<&'static [&'static str]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depends: Option<FieldDepends>,
 }
 
 impl SettingField {
@@ -48,6 +94,8 @@ impl SettingField {
             required,
             default: None,
             large: false,
+            labels: None,
+            depends: None,
         }
     }
 
@@ -96,6 +144,21 @@ impl SettingField {
 
     pub const fn large(mut self) -> Self {
         self.large = true;
+        self
+    }
+
+    pub const fn labels(mut self, labels: &'static [&'static str]) -> Self {
+        self.labels = Some(labels);
+        self
+    }
+
+    pub const fn depends(
+        mut self,
+        on: &'static str,
+        cases: &'static [FieldCase],
+        reset: bool,
+    ) -> Self {
+        self.depends = Some(FieldDepends { on, cases, reset });
         self
     }
 

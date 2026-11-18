@@ -2,6 +2,7 @@ use super::store::{self, Claimed, Saved, Spent};
 use super::*;
 use crate::context::{BalanceChange, CoreApi, Notification};
 use chrono::{Duration as ChronoDuration, TimeZone};
+use provider::Provider;
 use sn_domain::client::{IdentityKind, Locale, NewIdentity, RegistrationSource};
 use sn_domain::ids::{CategoryId, ClientId, SquadId, SubscriptionId};
 use sn_domain::money::{Currency, Money};
@@ -14,7 +15,7 @@ use sn_store::testing::TestDb;
 use sn_store::{NewCategory, NewClient, NewPeriod, NewSubscription, NewTariff, NewTicket, Store};
 use std::sync::Arc;
 use uuid::Uuid;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 struct AiCore {
@@ -505,13 +506,12 @@ async fn сбой_groq_передаёт_обращения_оператору_с
     for id in [a, b] {
         let ai = state(&db.store, id).await.0.unwrap();
         assert_eq!(ai.state, AiState::HandedOff);
-        assert_eq!(ai.reason, Some(HandoffReason::Groq));
+        assert_eq!(ai.reason, Some(HandoffReason::NoAnswer));
     }
     let rows = log_rows(&db.store).await;
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(
-        |r| r.1.as_deref() == Some("groq") && r.4.as_deref().is_some_and(|e| e.contains("503"))
-    ));
+    assert!(rows.iter().all(|r| r.1.as_deref() == Some("no_answer")
+        && r.4.as_deref().is_some_and(|e| e.contains("503"))));
     let mut conn = db.store.conn().await.unwrap();
     assert!(
         store::last_error(&mut conn)
@@ -543,14 +543,14 @@ async fn недоступная_модель_и_неверный_ключ_тож
     answer_pending(&ctx).await.unwrap();
     assert_eq!(
         state(&db.store, id).await.0.and_then(|a| a.reason),
-        Some(HandoffReason::Groq)
+        Some(HandoffReason::NoAnswer)
     );
     assert!(
         log_rows(&db.store).await[0]
             .4
             .as_deref()
             .unwrap()
-            .contains("ключ Groq не подходит")
+            .contains("Groq не принял ключ: проверьте его на console.groq.com/keys")
     );
     db.cleanup().await;
 }
@@ -738,7 +738,7 @@ fn настройки_модуля_проверяются() {
     assert!(module.validate_config(&ok).is_ok());
     let no_key = ModuleConfig::from_value(&serde_json::json!({}));
     let err = module.validate_config(&no_key).unwrap_err().to_string();
-    assert!(err.contains("API-ключ Groq"), "{err}");
+    assert!(err.contains("«API-ключ»"), "{err}");
     for (key, value) in [
         ("max_tokens", "50"),
         ("max_tokens", "1.5"),
@@ -820,4 +820,448 @@ fn реестр_показывает_ии_чат_только_с_ключом_и
         job,
         JobPayload::ModuleTask { module: ModuleId::Ai, ref task, .. } if task == ANSWER_TASK
     ));
+}
+
+#[test]
+fn старые_настройки_без_провайдера_работают_как_раньше() {
+    let old = ModuleConfig::from_value(&serde_json::json!({
+        "api_key": "gsk_old_key",
+        "model": "openai/gpt-oss-20b",
+        "api_url": "https://proxy.example.com/openai/v1/",
+        "max_tokens": "800",
+    }));
+    assert!(AiModule.validate_config(&old).is_ok());
+    let settings = Settings::from_config(&old);
+    assert_eq!(settings.provider, Provider::Groq);
+    assert_eq!(settings.model, "openai/gpt-oss-20b");
+    assert_eq!(settings.api_url, "https://proxy.example.com/openai/v1");
+    assert_eq!(settings.max_tokens, 800);
+    assert!(settings.ready());
+    let bare = Settings::from_config(&ModuleConfig::from_value(
+        &serde_json::json!({ "api_key": "gsk_old_key" }),
+    ));
+    assert_eq!(
+        (bare.provider, bare.model.as_str(), bare.api_url.as_str()),
+        (
+            Provider::Groq,
+            "openai/gpt-oss-120b",
+            "https://api.groq.com/openai/v1"
+        )
+    );
+    let gemini = Settings::from_config(&ModuleConfig::from_value(&serde_json::json!({
+        "api_key": "k",
+        "provider": "gemini",
+        "model": "models/gemini-3.8-flash",
+    })));
+    assert_eq!(
+        (gemini.model.as_str(), gemini.api_url.as_str()),
+        (
+            "gemini-3.8-flash",
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+    );
+    for provider in Provider::ALL.into_iter().filter(|p| *p != Provider::Custom) {
+        let settings = Settings::from_config(&ModuleConfig::from_value(
+            &serde_json::json!({ "api_key": "k", "provider": provider.code() }),
+        ));
+        assert_eq!(Some(settings.model.as_str()), provider.default_model());
+        assert_eq!(Some(settings.api_url.as_str()), provider.base_url());
+        assert!(settings.ready());
+    }
+    let schema = AiModule.settings_schema();
+    let field = |key: &str| schema.iter().find(|f| f.key == key).unwrap();
+    assert_eq!(field("provider").default, Some("groq"));
+    assert_eq!(field("provider").labels.map(<[&str]>::len), Some(7));
+    let model = field("model").depends.unwrap();
+    assert_eq!(
+        model.case("anthropic").and_then(|c| c.placeholder),
+        Some("claude-haiku-5-5")
+    );
+    assert!(
+        model
+            .case("openrouter")
+            .and_then(|c| c.hint)
+            .is_some_and(|h| h.contains(":free") && h.contains("обучать"))
+    );
+    assert!(
+        model
+            .case("gemini")
+            .and_then(|c| c.hint)
+            .is_some_and(|h| h.contains("бесплатном уровне"))
+    );
+    for provider in Provider::ALL {
+        if let Some(default) = provider.default_model() {
+            assert_eq!(
+                model.case(provider.code()).and_then(|c| c.placeholder),
+                Some(default)
+            );
+        }
+        let url = field("api_url").depends.unwrap();
+        assert_eq!(
+            url.case(provider.code()).and_then(|c| c.placeholder),
+            provider.base_url().or(Some("https://llm.example.com/v1"))
+        );
+        let key = field("api_key").depends.unwrap();
+        if let Some(page) = provider.keys_page() {
+            assert!(
+                key.case(provider.code())
+                    .and_then(|c| c.hint)
+                    .is_some_and(|h| h.contains(page))
+            );
+        }
+    }
+    let texts: String = schema
+        .iter()
+        .map(|f| format!("{} {}", f.label, f.hint))
+        .collect();
+    assert!(!texts.contains("Groq"), "{texts}");
+}
+
+#[test]
+fn свой_адрес_только_https_и_ключ_не_переезжает_на_новый_адрес() {
+    let module = AiModule;
+    let custom = |extra: serde_json::Value| {
+        let mut base = serde_json::json!({ "api_key": "k", "provider": "custom" });
+        if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+            base.extend(extra.clone());
+        }
+        ModuleConfig::from_value(&base)
+    };
+    let err = module
+        .validate_config(&custom(serde_json::json!({})))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("«Адрес API»") && err.contains("«Модель»"),
+        "{err}"
+    );
+    assert!(!Settings::from_config(&custom(serde_json::json!({}))).ready());
+    let good = custom(serde_json::json!({
+        "api_url": "https://llm.example.com/v1",
+        "model": "llama-4",
+    }));
+    assert!(module.validate_config(&good).is_ok());
+    assert!(Settings::from_config(&good).ready());
+    let http = module
+        .validate_config(&custom(serde_json::json!({
+            "api_url": "http://llm.example.com/v1",
+            "model": "llama-4",
+        })))
+        .unwrap_err()
+        .to_string();
+    assert!(http.contains("https://"), "{http}");
+    assert!(
+        module
+            .validate_config(&custom(serde_json::json!({
+                "api_url": "https://llm.example.com/v1",
+                "model": "llama 4",
+            })))
+            .is_err()
+    );
+    assert!(
+        module
+            .validate_config(&ModuleConfig::from_value(
+                &serde_json::json!({ "api_key": "k", "provider": "mistral" })
+            ))
+            .is_err()
+    );
+
+    let groq = ModuleConfig::from_value(&serde_json::json!({}));
+    let moved = ModuleConfig::from_value(
+        &serde_json::json!({ "api_key": "gsk_old_key", "provider": "gemini" }),
+    );
+    let err = module
+        .validate_change(&groq, &moved, &[])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("вставьте ключ заново"), "{err}");
+    assert!(module.validate_change(&groq, &moved, &["api_key"]).is_ok());
+    let proxied = ModuleConfig::from_value(&serde_json::json!({
+        "api_key": "gsk_old_key",
+        "api_url": "https://proxy.example.com/v1",
+    }));
+    assert!(module.validate_change(&groq, &proxied, &[]).is_err());
+    let same = ModuleConfig::from_value(&serde_json::json!({
+        "api_key": "gsk_old_key",
+        "model": "openai/gpt-oss-20b",
+        "api_url": "https://api.groq.com/openai/v1/",
+    }));
+    assert!(module.validate_change(&groq, &same, &[]).is_ok());
+
+    let saved_config = ModuleConfig::from_value(&serde_json::json!({ "api_key": "gsk_saved_key" }));
+    let saved = Settings::from_config(&saved_config);
+    let request = |provider: Option<&str>, url: Option<&str>| routes::CheckRequest {
+        provider: provider.map(str::to_string),
+        api_url: url.map(str::to_string),
+        api_key: None,
+        model: None,
+    };
+    let same_form = routes::form_settings(&saved_config, &request(Some("groq"), Some("")));
+    assert_eq!(
+        routes::check_key(&saved, &same_form, None).unwrap(),
+        "gsk_saved_key"
+    );
+    let other = routes::form_settings(&saved_config, &request(Some("openai"), None));
+    assert_eq!(other.provider, Provider::OpenAi);
+    assert_eq!(other.model, "gpt-6-luna");
+    assert_eq!(
+        routes::check_key(&saved, &other, None).unwrap_err().0,
+        "ai.key_needed"
+    );
+    assert_eq!(
+        routes::check_key(&saved, &other, Some("sk-new-key")).unwrap(),
+        "sk-new-key"
+    );
+    let proxy = routes::form_settings(
+        &saved_config,
+        &request(None, Some("https://proxy.example.com/v1")),
+    );
+    assert_eq!(
+        routes::check_key(&saved, &proxy, None).unwrap_err().0,
+        "ai.key_needed"
+    );
+    let empty = Settings::from_config(&ModuleConfig::default());
+    assert_eq!(
+        routes::check_key(&empty, &empty, None).unwrap_err().0,
+        "ai.no_key"
+    );
+}
+
+#[tokio::test]
+async fn claude_отвечает_через_messages_api() {
+    let Some(db) = setup().await else { return };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .and(header("x-api-key", "sk-ant-test-key"))
+        .and(header("anthropic-version", "2026-10-21"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-haiku-5-5",
+            "content": [
+                { "type": "thinking", "thinking": "", "signature": "sig" },
+                { "type": "text", "text": reply("Откройте приложение и нажмите «Подключить».").to_string() }
+            ],
+            "stop_reason": "end_turn",
+            "usage": { "input_tokens": 900, "output_tokens": 40 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    tariff(&db.store).await;
+    let client = client_with_email(&db.store, "claude@example.com").await;
+    let id = ticket(&db.store, client, "Как подключиться с телефона?").await;
+    let ctx = context(
+        &db.store,
+        config(
+            &server.uri(),
+            serde_json::json!({ "provider": "anthropic", "api_key": "sk-ant-test-key" }),
+        ),
+    );
+    assert_eq!(answer_pending(&ctx).await.unwrap().answered, 1);
+    let requests = server.received_requests().await.unwrap();
+    let body = body_of(&requests[0]);
+    assert_eq!(body["model"], "claude-haiku-5-5");
+    assert!(
+        body["system"]
+            .as_str()
+            .is_some_and(|s| s.contains("Данные сервиса"))
+    );
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(
+        body["messages"][0]["content"],
+        "Как подключиться с телефона?"
+    );
+    assert_eq!(body["output_config"]["effort"], "low");
+    assert_eq!(body["max_tokens"], 1000);
+    assert!(body.get("temperature").is_none());
+    assert!(requests[0].headers.get("authorization").is_none());
+    let (ai, messages) = state(&db.store, id).await;
+    assert_eq!(
+        messages.last().map(|m| m.1.as_str()),
+        Some("Откройте приложение и нажмите «Подключить».")
+    );
+    assert!(ai.is_some_and(|a| a.answering()));
+    let rows = log_rows(&db.store).await;
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].2, rows[0].3),
+        ("answered", 900, 40)
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn openai_повторяет_запрос_без_рассуждения_по_своей_ошибке() {
+    let Some(db) = setup().await else { return };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "message": "Unsupported parameter: 'reasoning_effort' is not supported with this model.",
+                "type": "invalid_request_error",
+                "param": "reasoning_effort",
+                "code": "unsupported_parameter"
+            }
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(completion(reply("Смените сервер в приложении."), 400, 30))
+        .mount(&server)
+        .await;
+    let client = client_with_email(&db.store, "openai@example.com").await;
+    let id = ticket(&db.store, client, "Медленно работает").await;
+    let ctx = context(
+        &db.store,
+        config(
+            &server.uri(),
+            serde_json::json!({ "provider": "openai", "model": "gpt-4.1" }),
+        ),
+    );
+    assert_eq!(answer_pending(&ctx).await.unwrap().answered, 1);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let first = body_of(&requests[0]);
+    assert_eq!(first["model"], "gpt-4.1");
+    assert_eq!(first["reasoning_effort"], "low");
+    assert_eq!(first["max_completion_tokens"], 1000);
+    assert!(first.get("temperature").is_none());
+    assert_eq!(first["response_format"]["type"], "json_schema");
+    let second = body_of(&requests[1]);
+    assert!(second.get("reasoning_effort").is_none());
+    assert_eq!(second["response_format"]["type"], "json_schema");
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok()),
+        Some("Bearer gsk_test_key")
+    );
+    assert_eq!(
+        state(&db.store, id).await.1.last().map(|m| m.1.clone()),
+        Some("Смените сервер в приложении.".to_string())
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn deepseek_с_пустым_ответом_в_режиме_json_спрашивают_без_него() {
+    let Some(db) = setup().await else { return };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "   " },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 500, "completion_tokens": 10, "total_tokens": 510 }
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(completion(
+            reply("Обновите подписку в приложении."),
+            500,
+            25,
+        ))
+        .mount(&server)
+        .await;
+    let client = client_with_email(&db.store, "deepseek@example.com").await;
+    ticket(&db.store, client, "Не обновляется список серверов").await;
+    let ctx = context(
+        &db.store,
+        config(&server.uri(), serde_json::json!({ "provider": "deepseek" })),
+    );
+    assert_eq!(answer_pending(&ctx).await.unwrap().answered, 1);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let first = body_of(&requests[0]);
+    assert_eq!(first["model"], "deepseek-flash");
+    assert_eq!(first["thinking"], serde_json::json!({ "type": "disabled" }));
+    assert_eq!(first["response_format"]["type"], "json_object");
+    assert_eq!(first["max_tokens"], 1000);
+    assert!(body_of(&requests[1]).get("response_format").is_none());
+    let rows = log_rows(&db.store).await;
+    assert_eq!((rows[0].2, rows[0].3), (1_000, 35));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn ключ_не_попадает_в_ошибки_и_не_уходит_по_перенаправлению() {
+    let Some(db) = setup().await else { return };
+    let elsewhere = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(completion(reply("лишний ответ"), 1, 1))
+        .expect(0)
+        .mount(&elsewhere)
+        .await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("{}/chat/completions", elsewhere.uri())),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let first = client_with_email(&db.store, "redirect@example.com").await;
+    ticket(&db.store, first, "Не работает").await;
+    let ctx = context(&db.store, config(&server.uri(), serde_json::json!({})));
+    assert_eq!(answer_pending(&ctx).await.unwrap().handed_off, 1);
+    let rows = log_rows(&db.store).await;
+    assert!(
+        rows[0]
+            .4
+            .as_deref()
+            .is_some_and(|e| e.contains("перенаправляет")),
+        "{rows:?}"
+    );
+    assert!(elsewhere.received_requests().await.unwrap().is_empty());
+
+    let echo = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": { "message": "Bad key gsk_test_key in request" }
+        })))
+        .mount(&echo)
+        .await;
+    let second = client_with_email(&db.store, "echo@example.com").await;
+    ticket(&db.store, second, "Тоже не работает").await;
+    let ctx = context(&db.store, config(&echo.uri(), serde_json::json!({})));
+    assert_eq!(answer_pending(&ctx).await.unwrap().handed_off, 1);
+    let rows = log_rows(&db.store).await;
+    assert!(
+        rows.iter()
+            .all(|r| r.4.as_deref().is_none_or(|e| !e.contains("gsk_test_key"))),
+        "{rows:?}"
+    );
+    assert!(
+        rows[1]
+            .4
+            .as_deref()
+            .is_some_and(|e| e.contains("Bad key *** in request")),
+        "{rows:?}"
+    );
+    let mut conn = db.store.conn().await.unwrap();
+    assert!(
+        !store::last_error(&mut conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .text
+            .contains("gsk_test_key")
+    );
+    drop(conn);
+    db.cleanup().await;
 }

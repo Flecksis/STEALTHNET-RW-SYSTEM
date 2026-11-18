@@ -2,7 +2,7 @@ import { msg, t } from './i18n';
 
 export type Author = 'client' | 'support' | 'ai' | 'system';
 
-export type HandoffReason = 'human' | 'money' | 'unsure' | 'groq' | 'client_limit' | 'budget' | 'operator' | 'disabled';
+export type HandoffReason = 'human' | 'money' | 'unsure' | 'no_answer' | 'groq' | 'client_limit' | 'budget' | 'operator' | 'disabled';
 
 export type TicketAi = { state: 'active' | 'handed_off'; reason?: HandoffReason; handoff_at: string | null };
 

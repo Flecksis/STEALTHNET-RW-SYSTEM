@@ -99,7 +99,8 @@ pub enum HandoffReason {
     Human,
     Money,
     Unsure,
-    Groq,
+    #[serde(alias = "groq")]
+    NoAnswer,
     ClientLimit,
     Budget,
     Operator,
@@ -111,7 +112,7 @@ impl HandoffReason {
         HandoffReason::Human,
         HandoffReason::Money,
         HandoffReason::Unsure,
-        HandoffReason::Groq,
+        HandoffReason::NoAnswer,
         HandoffReason::ClientLimit,
         HandoffReason::Budget,
         HandoffReason::Operator,
@@ -123,7 +124,7 @@ impl HandoffReason {
             HandoffReason::Human => "human",
             HandoffReason::Money => "money",
             HandoffReason::Unsure => "unsure",
-            HandoffReason::Groq => "groq",
+            HandoffReason::NoAnswer => "no_answer",
             HandoffReason::ClientLimit => "client_limit",
             HandoffReason::Budget => "budget",
             HandoffReason::Operator => "operator",
@@ -132,6 +133,9 @@ impl HandoffReason {
     }
 
     pub fn parse(value: &str) -> Result<Self, DomainError> {
+        if value == "groq" {
+            return Ok(HandoffReason::NoAnswer);
+        }
         HandoffReason::ALL
             .into_iter()
             .find(|r| r.as_str() == value)
@@ -143,7 +147,7 @@ impl HandoffReason {
             HandoffReason::Human => "клиент попросил оператора",
             HandoffReason::Money => "вопрос про оплату, деньги или возврат",
             HandoffReason::Unsure => "ИИ не уверен в ответе",
-            HandoffReason::Groq => "Groq не ответил",
+            HandoffReason::NoAnswer => "ИИ не ответил",
             HandoffReason::ClientLimit => "клиент исчерпал ответы ИИ на сегодня",
             HandoffReason::Budget => "дневной бюджет ИИ закончился",
             HandoffReason::Operator => "оператор ответил сам",
@@ -253,6 +257,15 @@ mod tests {
             assert!(!reason.title_ru().is_empty());
         }
         assert!(HandoffReason::parse("other").is_err());
+        assert_eq!(
+            HandoffReason::parse("groq").unwrap(),
+            HandoffReason::NoAnswer
+        );
+        assert_eq!(
+            serde_json::from_value::<HandoffReason>(serde_json::json!("groq")).unwrap(),
+            HandoffReason::NoAnswer
+        );
+        assert_eq!(HandoffReason::NoAnswer.title_ru(), "ИИ не ответил");
         assert_eq!(AiState::parse("handed_off").unwrap(), AiState::HandedOff);
         let at = Utc.with_ymd_and_hms(2026, 11, 18, 9, 0, 0).unwrap();
         let ai = TicketAi {

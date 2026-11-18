@@ -2049,6 +2049,7 @@ impl<'a> SettingsOps<'a> {
             .find(|row| row.module == id.as_str())
             .and_then(|row| row.config.as_object().cloned())
             .unwrap_or_default();
+        let before = ModuleConfig(stored.clone());
         let changes = apply_fields(&schema, &update.config, &update.clear, &mut stored)?;
         for field in schema.iter().filter(|f| f.is_secret()) {
             stored.remove(field.key);
@@ -2075,8 +2076,19 @@ impl<'a> SettingsOps<'a> {
                 }
             }
         }
+        let merged = ModuleConfig(merged);
         module
-            .validate_config(&ModuleConfig(merged))
+            .validate_config(&merged)
+            .map_err(|e| ServiceError::rejected("modules.config", e.to_string()))?;
+        let new_secrets: Vec<&str> = changes
+            .iter()
+            .filter_map(|change| match change {
+                SecretChange::Set(key, _) => Some(key.as_str()),
+                SecretChange::Delete(_) => None,
+            })
+            .collect();
+        module
+            .validate_change(&before, &merged, &new_secrets)
             .map_err(|e| ServiceError::rejected("modules.config", e.to_string()))?;
         for change in &changes {
             match change {
