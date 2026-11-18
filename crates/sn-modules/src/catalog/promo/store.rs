@@ -36,7 +36,7 @@ fn state(now: &str) -> String {
         "CASE \
            WHEN r.status = 'used' THEN 'used' \
            WHEN r.status <> 'reserved' THEN NULL \
-           WHEN r.order_id IS NULL THEN CASE WHEN r.reserved_until > {now} THEN 'held' END \
+           WHEN r.order_id IS NULL THEN CASE WHEN r.reserved_until > {now} THEN 'held' ELSE 'used' END \
            WHEN o.status IN ('paid', 'fulfilled', 'review') THEN 'used' \
            WHEN o.status <> 'pending' THEN NULL \
            WHEN r.reserved_until IS NULL OR r.reserved_until > {now} THEN 'held' \

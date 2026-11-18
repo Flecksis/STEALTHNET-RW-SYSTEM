@@ -49,7 +49,32 @@ pub struct ClientPayments {
     pub next: Option<Uuid>,
 }
 
+fn chosen_title(
+    registry: &ProviderRegistry,
+    currency: Currency,
+    payment: &Payment,
+) -> Option<String> {
+    let provider = payment.provider.as_str();
+    let code = payment.pay_method.as_deref()?;
+    let custom = registry.snapshot().states.get(provider).and_then(|state| {
+        state
+            .methods
+            .iter()
+            .find(|m| m.code == code)
+            .and_then(|m| m.title.clone())
+    });
+    custom.or_else(|| {
+        registry
+            .get(provider)?
+            .method(currency, code)
+            .map(|m| m.title.to_string())
+    })
+}
+
 fn method_title(registry: &ProviderRegistry, currency: Currency, payment: &Payment) -> String {
+    if let Some(title) = chosen_title(registry, currency, payment) {
+        return title;
+    }
     let provider = payment.provider.as_str();
     let base = match registry.get(provider) {
         Some(found) => found.client_label(currency).title.to_string(),

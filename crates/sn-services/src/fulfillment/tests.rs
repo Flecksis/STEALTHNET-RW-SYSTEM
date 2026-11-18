@@ -1557,7 +1557,7 @@ async fn пересчитать_и_выдать_считает_план_от_т�
         stuck.expire + Days::days(7)
     );
     let queued = fulfillment
-        .recalculate(stuck.order.id, false, ADMIN)
+        .recalculate(stuck.order.id, ADMIN)
         .await
         .unwrap();
     assert_eq!(queued.plan, PlanStage::Stale);
@@ -1598,7 +1598,7 @@ async fn пересчитать_и_выдать_считает_план_от_т�
             .unwrap();
     assert_eq!(previous, stuck.expire + Days::days(30));
     let closed = fulfillment
-        .recalculate(stuck.order.id, false, ADMIN)
+        .recalculate(stuck.order.id, ADMIN)
         .await
         .unwrap_err();
     assert_eq!(closed.code(), "order.review_status");
@@ -1667,7 +1667,7 @@ async fn отметить_выданным_завершает_заказ_без_
             .await
             .unwrap_err(),
         fulfillment
-            .recalculate(stuck.order.id, false, ADMIN)
+            .recalculate(stuck.order.id, ADMIN)
             .await
             .unwrap_err(),
     ] {
@@ -1750,10 +1750,7 @@ async fn устаревший_план_не_применяется_когда_с
         expire_at(&kit, &subscription).await,
         expire + Days::days(30)
     );
-    fulfillment
-        .recalculate(held.id, false, ADMIN)
-        .await
-        .unwrap();
+    fulfillment.recalculate(held.id, ADMIN).await.unwrap();
     let recalculated = fulfillment.run(held.id).await.unwrap();
     assert!(
         matches!(recalculated, FulfillmentOutcome::Done { .. }),
@@ -1814,10 +1811,7 @@ async fn пересчёт_отклоняется_пока_выдача_зака�
         "{retry:?}"
     );
     assert_eq!(plan_stage(&kit, order.id).await, PlanStage::Saved);
-    let busy = fulfillment
-        .recalculate(order.id, false, ADMIN)
-        .await
-        .unwrap_err();
+    let busy = fulfillment.recalculate(order.id, ADMIN).await.unwrap_err();
     assert_eq!(busy.code(), "order.delivery_running");
     let waiting = buy_with_balance(
         &kit.services,
@@ -1967,7 +1961,7 @@ async fn список_заказов_на_проверке_показывает_
     assert_eq!(listed[0].actions, vec![ReviewAction::MarkFulfilled]);
     for err in [
         fulfillment
-            .recalculate(stuck.order.id, false, ADMIN)
+            .recalculate(stuck.order.id, ADMIN)
             .await
             .unwrap_err(),
         fulfillment
@@ -2161,7 +2155,7 @@ async fn блокировка_после_применения_плана_отк�
 }
 
 #[tokio::test]
-async fn пересчёт_применённого_плана_требует_подтверждения() {
+async fn пересчёт_применённого_плана_восстанавливает_удалённого_пользователя() {
     let Some(kit) = kit().await else { return };
     let client_id = client(&kit.services, 305).await;
     let standard = standard(&kit.services).await;
@@ -2195,16 +2189,8 @@ async fn пересчёт_применённого_плана_требует_п�
         "{lost:?}"
     );
     job_given_up(&kit, change.id).await;
-    let refused = fulfillment
-        .recalculate(change.id, false, ADMIN)
-        .await
-        .unwrap_err();
-    assert_eq!(refused.code(), "order.plan_applied");
     assert_eq!(plan_stage(&kit, change.id).await, PlanStage::Applied);
-    let queued = fulfillment
-        .recalculate(change.id, true, ADMIN)
-        .await
-        .unwrap();
+    let queued = fulfillment.recalculate(change.id, ADMIN).await.unwrap();
     assert_eq!(queued.plan, PlanStage::Applied);
     assert_eq!(plan_stage(&kit, change.id).await, PlanStage::None);
     let done = fulfillment.run(change.id).await.unwrap();
@@ -2223,7 +2209,7 @@ async fn пересчёт_применённого_плана_требует_п�
         .find(|a| a.action == "order.recalculate")
         .unwrap();
     assert_eq!(record.details["plan"], "applied");
-    assert_eq!(record.details["reapply"], true);
+    assert_eq!(record.details["panel_user_missing"], true);
     kit.db.cleanup().await;
 }
 

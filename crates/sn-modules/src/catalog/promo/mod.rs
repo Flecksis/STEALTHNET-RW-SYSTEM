@@ -538,8 +538,11 @@ async fn confirm(tx: &mut Tx, order: &Order, payment: &Payment) -> Result<(), Mo
             return Ok(());
         }
     }
-    let usage = store::usage(tx, promo.id, order.client_id, now, Some(order.id)).await?;
-    limits(&promo, &usage).map_err(rejected)?;
+    tracing::info!(
+        order = %order.id,
+        code = %promo.code,
+        "оплата пришла после брони промокода: заказ выдаётся по цене счёта"
+    );
     match existing {
         Some(held) => store::set_status(tx, held.id, store::RedemptionStatus::Used).await?,
         None => {

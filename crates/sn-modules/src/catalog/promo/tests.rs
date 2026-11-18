@@ -1172,7 +1172,7 @@ async fn резерв_создаётся_в_транзакции_заказа_и
 }
 
 #[tokio::test]
-async fn поздняя_оплата_истёкшего_счёта_перепроверяет_лимит() {
+async fn поздняя_оплата_истёкшего_счёта_выдаётся_по_цене_счёта() {
     let Some(db) = test_store().await else {
         return;
     };
@@ -1184,7 +1184,7 @@ async fn поздняя_оплата_истёкшего_счёта_перепр�
     let double = create(&ctx, &percent("LATE2", 10, Some(2)), None)
         .await
         .unwrap();
-    for (promo, room) in [(single, false), (double, true)] {
+    for promo in [single, double] {
         let q = priced(&[promo.adjustment().unwrap()]);
         let slow = client(&db.store).await;
         let quick = client(&db.store).await;
@@ -1205,8 +1205,52 @@ async fn поздняя_оплата_истёкшего_счёта_перепр�
             .unwrap();
         pay(&ctx, &db.store, &fresh, &fresh_payment).await.unwrap();
         let late = pay(&ctx, &db.store, &stale, &stale_payment).await;
-        assert_eq!(late.is_ok(), room, "{}: {late:?}", promo.code);
+        assert!(late.is_ok(), "{}: {late:?}", promo.code);
+        let mut conn = db.store.conn().await.unwrap();
+        let used: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM promo_redemptions WHERE promo_id = $1 AND status = 'used'",
+        )
+        .bind(promo.id)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        assert_eq!(
+            used, 2,
+            "{}: оба счёта оплачены по цене со скидкой",
+            promo.code
+        );
     }
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn брошенная_активация_кода_на_дни_считается_использованной() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let mut week = percent("CRASH7", 1, None);
+    week.value = NewPromoValue::Days { days: 7 };
+    create(&ctx, &week, None).await.unwrap();
+    let owner = client(&db.store).await;
+    let sub = subscription(&db, owner).await;
+    hold_days(&ctx, owner, "CRASH7", sub).await.unwrap();
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query("UPDATE promo_redemptions SET reserved_until = now() - interval '1 minute'")
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        activate(&ctx, owner, "CRASH7", sub).await,
+        Err(PromoError::Rejected(PromoRejection::AlreadyUsed))
+    ));
+    assert!(
+        core.days().is_empty(),
+        "дни по брошенной брони не добавляются повторно"
+    );
     db.cleanup().await;
 }
 

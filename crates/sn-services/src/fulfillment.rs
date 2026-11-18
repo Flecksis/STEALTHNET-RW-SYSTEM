@@ -438,7 +438,6 @@ impl<'a> Fulfillment<'a> {
     pub async fn recalculate(
         &self,
         order_id: OrderId,
-        reapply: bool,
         actor: Actor,
     ) -> ServiceResult<Recalculation> {
         let order = {
@@ -447,19 +446,49 @@ impl<'a> Fulfillment<'a> {
         };
         match order.subscription_id {
             Some(id) => {
-                with_subscription_lock(self.services, id, self.reset_plan(order_id, reapply, actor))
-                    .await
+                with_subscription_lock(self.services, id, self.reset_plan(order_id, actor)).await
             }
-            None => self.reset_plan(order_id, reapply, actor).await,
+            None => self.reset_plan(order_id, actor).await,
         }
     }
 
-    async fn reset_plan(
-        &self,
-        order_id: OrderId,
-        reapply: bool,
-        actor: Actor,
-    ) -> ServiceResult<Recalculation> {
+    async fn panel_user_missing(&self, order_id: OrderId) -> ServiceResult<bool> {
+        let order = {
+            let mut conn = self.services.store().conn().await?;
+            if !conn.orders().plan_state(order_id).await?.applied() {
+                return Ok(false);
+            }
+            conn.orders().get(order_id).await?
+        };
+        let Some(plan) = order.plan.clone() else {
+            return Ok(false);
+        };
+        let unavailable = || {
+            ServiceError::rejected(
+                "order.panel_unavailable",
+                "Не удалось проверить пользователя в Remnawave: попробуйте ещё раз позже",
+            )
+        };
+        let remna = self.services.remna()?;
+        match &plan.action {
+            PlanAction::Update { user_id } => match remna.get_user(*user_id).await {
+                Ok(_) => Ok(false),
+                Err(err) if err.is_not_found() => Ok(true),
+                Err(_) => Err(unavailable()),
+            },
+            PlanAction::Create { .. } => {
+                let context = self.context(order).await.map_err(|_| unavailable())?;
+                match self.current_user(remna.as_ref(), &context).await {
+                    Ok(Some(_)) => Ok(false),
+                    Ok(None) => Ok(true),
+                    Err(_) => Err(unavailable()),
+                }
+            }
+        }
+    }
+
+    async fn reset_plan(&self, order_id: OrderId, actor: Actor) -> ServiceResult<Recalculation> {
+        let missing = self.panel_user_missing(order_id).await?;
         let mut tx = self.services.store().begin().await?;
         let order = tx.orders().lock(order_id).await?;
         if order.status != OrderStatus::Review {
@@ -482,12 +511,11 @@ impl<'a> Fulfillment<'a> {
                 "Выдача этого заказа уже идёт: дождитесь результата",
             ));
         }
-        if state.applied() && !reapply {
+        if state.applied() && !missing {
             return Err(ServiceError::rejected(
                 "order.plan_applied",
-                "План этого заказа уже применён в Remnawave: пересчёт применит заказ ещё раз, \
-                 продление прибавит дни повторно. Если так и нужно, подтвердите действие, \
-                 иначе выберите «Повторить выдачу» или «Отметить выданным»",
+                "План этого заказа уже применён в Remnawave, и пользователь там есть: пересчёт \
+                 прибавил бы дни второй раз. Выберите «Повторить выдачу» или «Отметить выданным»",
             ));
         }
         let reset = tx.orders().reset_plan(order.id).await?;
@@ -511,7 +539,7 @@ impl<'a> Fulfillment<'a> {
                     "job_id": queued.id(),
                     "state": queued.state(),
                     "plan": reset.state.stage(),
-                    "reapply": reapply,
+                    "panel_user_missing": missing,
                     "previous_plan": previous,
                 }),
             ))

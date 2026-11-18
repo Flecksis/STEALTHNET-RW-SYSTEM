@@ -124,6 +124,14 @@ async fn способы_платёжки_становятся_отдельным
         assert_eq!(payment.pay_method.as_deref(), Some("sbp"));
         assert_eq!(payment.method, None);
     }
+    let history = kit
+        .services
+        .clients()
+        .payments(client_id, None, None)
+        .await
+        .unwrap();
+    let paid_with: Vec<&str> = history.items.iter().map(|p| p.method.as_str()).collect();
+    assert_eq!(paid_with, vec!["СБП"]);
 
     checkout
         .start(client_id, &subscription_request(&cart, None))

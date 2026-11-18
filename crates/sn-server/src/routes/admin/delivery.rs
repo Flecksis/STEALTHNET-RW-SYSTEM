@@ -112,12 +112,6 @@ struct Recalculation {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct RecalculateRequest {
-    #[serde(default)]
-    reapply: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
 struct MarkFulfilledRequest {
     #[serde(default)]
     note: Option<String>,
@@ -166,14 +160,12 @@ async fn recalculate(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
-    body: Option<ApiJson<RecalculateRequest>>,
 ) -> ApiResult<Json<Recalculation>> {
     admin.require(Permission::Money)?;
-    let reapply = body.is_some_and(|b| b.0.reapply);
     let queued = state
         .services
         .fulfillment()
-        .recalculate(OrderId(id), reapply, admin.actor())
+        .recalculate(OrderId(id), admin.actor())
         .await?;
     Ok(Json(Recalculation {
         ok: true,
@@ -774,23 +766,27 @@ mod tests {
                 .unwrap();
         }
         let again = format!("/api/admin/orders/{}/recalculate", applied.0);
-        for body in [None, Some(json!({})), Some(json!({ "reapply": false }))] {
+        let panel = Arc::new(sn_remnawave::fake::FakeRemnawave::new());
+        panel.insert_user(sn_remnawave::fake::sample_user(77, "client_706"));
+        h.services().set_remna(Some(panel));
+        for body in [
+            None,
+            Some(json!({})),
+            Some(json!({ "reapply": false })),
+            Some(json!({ "reapply": true })),
+        ] {
             let (status, body) = h.send(Method::POST, &again, Some(&owner), body).await;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
             assert_eq!(body["error"]["code"], "order.plan_applied");
         }
         assert_eq!(h.plan_stage(applied).await, PlanStage::Applied);
-        let (status, body) = h
-            .send(
-                Method::POST,
-                &again,
-                Some(&owner),
-                Some(json!({ "reapply": true })),
-            )
-            .await;
+        h.services()
+            .set_remna(Some(Arc::new(sn_remnawave::fake::FakeRemnawave::new())));
+        let (status, body) = h.send(Method::POST, &again, Some(&owner), None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["plan"], "applied");
         assert_eq!(h.plan_stage(applied).await, PlanStage::None);
+        h.services().set_remna(None);
         let topup = h.paid_order(client_id).await;
         {
             let mut conn = h.services().store().conn().await.unwrap();

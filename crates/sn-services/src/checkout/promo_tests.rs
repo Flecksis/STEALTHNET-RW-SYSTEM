@@ -245,7 +245,7 @@ async fn неоплаченный_счёт_держит_промокод_до_о
 }
 
 #[tokio::test]
-async fn поздняя_оплата_сверх_лимита_промокода_уходит_на_проверку_без_выдачи() {
+async fn поздняя_оплата_сверх_лимита_промокода_выдаётся_по_цене_счёта() {
     let Some(kit) = promo_kit().await else { return };
     create_promo(&kit, percent("LATE", 10, Some(1))).await;
     let tariff = standard(&kit.services).await;
@@ -292,31 +292,21 @@ async fn поздняя_оплата_сверх_лимита_промокода_
         "деньги приняты"
     );
     let held = order(&kit.services, stale.order_id).await;
-    assert_eq!(held.status, OrderStatus::Review);
+    assert_ne!(held.status, OrderStatus::Review);
     assert!(
-        !jobs(&kit.services)
+        jobs(&kit.services)
             .await
             .contains(&JobPayload::FulfillOrder {
                 order_id: stale.order_id
             }),
-        "заказ сверх лимита промокода не выдаётся без проверки"
+        "счёт оплачен по цене со скидкой и выдаётся без ручной проверки"
     );
-    let mut conn = kit.services.store().conn().await.unwrap();
-    let audit = conn
-        .audit()
-        .for_entity("order", stale.order_id.0, 10)
-        .await
-        .unwrap();
-    assert!(
-        audit.iter().any(|a| a.action == "order.review"),
-        "{audit:?}"
-    );
-    drop(conn);
+    assert_eq!(counts(&kit).await, (2, 0));
     kit.db.cleanup().await;
 }
 
 #[tokio::test]
-async fn оплата_после_отказа_кассы_перепроверяет_лимит_промокода() {
+async fn оплата_после_отказа_кассы_выдаётся_по_цене_счёта() {
     let Some(kit) = promo_kit().await else { return };
     create_promo(&kit, percent("EDGE", 10, Some(1))).await;
     let tariff = standard(&kit.services).await;
@@ -347,18 +337,19 @@ async fn оплата_после_отказа_кассы_перепроверя�
         CheckoutResult::Completed { .. }
     ));
     report(&kit, &first, ProviderStatus::Paid).await;
-    assert_eq!(
+    assert_ne!(
         order(&kit.services, first.order_id).await.status,
         OrderStatus::Review,
-        "резерв отменённого заказа снят, поздняя оплата перепроверила лимит"
+        "поздняя оплата выдаётся по цене счёта"
     );
     assert!(
-        !jobs(&kit.services)
+        jobs(&kit.services)
             .await
             .contains(&JobPayload::FulfillOrder {
                 order_id: first.order_id
             })
     );
+    assert_eq!(counts(&kit).await, (2, 0));
     kit.db.cleanup().await;
 }
 
