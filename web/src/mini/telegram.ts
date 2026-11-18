@@ -7,6 +7,12 @@ type WebApp = {
   openTelegramLink?: (url: string) => void;
   onEvent?: (name: string, cb: () => void) => void;
   offEvent?: (name: string, cb: () => void) => void;
+  BackButton?: {
+    show: () => void;
+    hide: () => void;
+    onClick: (cb: () => void) => void;
+    offClick: (cb: () => void) => void;
+  };
 };
 
 declare global {

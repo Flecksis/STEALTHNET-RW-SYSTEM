@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, Route, Routes, useLocation } from 'react-router';
+import { Link, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { api, ApiError, setBearer } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { applyLang, guessLang, msg, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
@@ -9,7 +9,8 @@ import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from 
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
-import { initData, loadTelegram, telegramLanguage } from './telegram';
+import { initData, loadTelegram, telegramLanguage, webApp } from './telegram';
+import { backTarget } from './back';
 import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
 import { MiniPayments } from './MiniPayments';
@@ -293,9 +294,39 @@ export function MiniApp() {
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />
+        <TelegramBack />
       </div>
     </Ctx.Provider>
   );
+}
+
+function TelegramBack() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    const back = webApp()?.BackButton;
+    if (!back) {
+      return;
+    }
+    const target = backTarget(pathname);
+    if (!target) {
+      back.hide();
+      return;
+    }
+    const go = () => {
+      const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+      if (idx > 0) {
+        navigate(-1);
+      } else {
+        navigate(target, { replace: true });
+      }
+    };
+    back.onClick(go);
+    back.show();
+    return () => back.offClick(go);
+  }, [pathname, navigate]);
+  useEffect(() => () => webApp()?.BackButton?.hide(), []);
+  return null;
 }
 
 const TABS: Array<{ to: string; label: string; icon: IconName }> = [
