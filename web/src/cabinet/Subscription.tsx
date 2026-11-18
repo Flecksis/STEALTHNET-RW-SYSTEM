@@ -346,7 +346,7 @@ export function SubscriptionPage() {
           </p>
           <div className={phone ? 'cb-linkrow col' : 'cb-linkrow'}>
             <span className="cb-link mono">{url ?? (detail.ready ? t('ссылка появится, когда подписка заработает') : t('загружаем ссылку…'))}</span>
-            {phone && url ? (
+            {phone && url && (blocked || expired) ? (
               <a className="cb-main" href={url} target="_blank" rel="noreferrer">
                 {t('Открыть страницу подключения')}
                 <Icon name="external" size={18} />

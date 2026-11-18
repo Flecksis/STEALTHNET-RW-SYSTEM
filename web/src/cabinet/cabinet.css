@@ -601,7 +601,14 @@
 
 .cb-linkrow.col {
   flex-direction: column;
+  flex-wrap: nowrap;
   align-items: stretch;
+}
+
+.cb-linkrow.col .cb-link {
+  flex: 0 0 auto;
+  display: block;
+  line-height: 44px;
 }
 
 .cb-link {
