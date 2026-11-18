@@ -776,8 +776,9 @@
   left: 16px;
   right: 16px;
   bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-  max-height: calc(100vh - 140px);
+  max-height: calc(100% - 112px - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
   overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 20px;
   background: var(--surface);
   box-shadow: var(--shadow);
