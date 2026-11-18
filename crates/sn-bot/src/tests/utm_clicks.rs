@@ -4,7 +4,8 @@ use sn_domain::module::ModuleId;
 async fn clicks(services: &Services) -> Vec<(String, String, String, i32)> {
     let mut conn = services.store().conn().await.unwrap();
     sqlx::query_as(
-        "SELECT channel, source, campaign, clicks FROM utm_clicks ORDER BY channel, source, campaign",
+        "SELECT channel, source, campaign, sum(clicks)::int FROM utm_clicks \
+         GROUP BY channel, source, campaign ORDER BY channel, source, campaign",
     )
     .fetch_all(conn.conn())
     .await
