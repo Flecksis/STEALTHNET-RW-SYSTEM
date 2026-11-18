@@ -441,6 +441,46 @@ printf 'example.com 203.0.113.10\nwww.example.com 203.0.113.10\n' > "$S/hosts"
 run SN_TEST_BUSY_PORTS="443" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 grep -q 'redir https://example.com{uri} permanent' "$R/deploy/proxy-snippet.txt" && grep -q 'return 301 https://example.com\$request_uri;' "$R/deploy/proxy-snippet.txt" && check ok "в подсказке для чужого веб-сервера есть переадресация с www" || check no "в подсказке нет www"
 
+echo "=== AG5. сертификат заново"
+fresh
+printf 'shop.example.org 203.0.113.10\n' > "$S/hosts"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+grep -q "stealthnet cert" "$WORK/out1.txt" && check ok "команда сертификата есть в итоге установки" || check no "в итоге нет команды сертификата"
+: > "$S/calls.log"
+run SN_TEST_SERVER_IPS="203.0.113.10" "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out2.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && grep -q 'уже выпущен, https://shop.example.org открывается' "$WORK/out2.txt" && check ok "выпущенный сертификат не трогается" || check no "код $code: $(tail -2 "$WORK/out2.txt")"
+grep -q 'shop.example.org → 203.0.113.10' "$WORK/out2.txt" && check ok "показано, куда указывает домен" || check no "нет адреса домена"
+grep -q 'Адреса этого сервера' "$WORK/out2.txt" && check no "лишнее предупреждение про адрес" || check ok "адрес совпал, предупреждения нет"
+grep -q '^compose restart caddy$' "$S/calls.log" && check no "веб-сервер перезапущен без нужды" || check ok "без нужды веб-сервер не перезапускается"
+: > "$S/calls.log"
+run FAKE_CERT=0 FAKE_CERT_AFTER_RESTART=1 SN_TEST_SERVER_IPS="198.51.100.7" "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out3.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && grep -q 'сертификат выпущен, https://shop.example.org открывается' "$WORK/out3.txt" && check ok "после перезапуска сертификат выпущен" || check no "код $code: $(tail -3 "$WORK/out3.txt")"
+grep -q '^compose restart caddy$' "$S/calls.log" && check ok "веб-сервер перезапущен для новой попытки" || check no "веб-сервер не перезапускался"
+grep -q 'Адреса этого сервера: 198.51.100.7' "$WORK/out3.txt" && check ok "предупреждено, что домен указывает не сюда" || check no "нет предупреждения про чужой адрес"
+: > "$S/calls.log"
+rm -f "$S/cert"
+run FAKE_CERT=0 SN_SITE_TIMEOUT=3 FAKE_CADDY_LOG='{"level":"error","logger":"tls.obtain","msg":"could not get certificate from issuer","identifier":"shop.example.org","error":"HTTP 400 urn:ietf:params:acme:error:connection - 203.0.113.10: Timeout during connect (likely firewall problem)"}' "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out4.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 1 ] && check ok "невыпущенный сертификат даёт код 1" || check no "код $code"
+grep -q 'не достучался до порта 80' "$WORK/out4.txt" && grep -q 'Ошибка Caddy: HTTP 400' "$WORK/out4.txt" && check ok "причина из журнала Caddy показана" || check no "нет причины: $(tail -4 "$WORK/out4.txt")"
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" cert --force > "$WORK/out5.txt" 2>&1 </dev/null
+code=$?
+[ "$code" -eq 0 ] && grep -q 'прежний сертификат удалён' "$WORK/out5.txt" && grep -q 'сертификат выпущен, https://shop.example.org открывается' "$WORK/out5.txt" && check ok "--force выпускает заново" || check no "код $code: $(tail -3 "$WORK/out5.txt")"
+grep -q 'find /data/caddy/certificates -name shop.example.org.\* -delete' "$S/calls.log" && grep -q '^compose restart caddy$' "$S/calls.log" && check ok "--force удаляет сертификат и перезапускает веб-сервер" || check no "--force не удалил сертификат"
+run "$SHELL_BIN" "$R/install.sh" cert --again > "$WORK/out6.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'не понял «--again»' "$WORK/out6.txt" && check ok "неизвестный ключ объяснён" || check no "неизвестный ключ"
+fresh
+run SN_TEST_BUSY_PORTS="443" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+run "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out2.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'выпускает ваш веб-сервер' "$WORK/out2.txt" && check ok "при чужом веб-сервере объяснено, где сертификат" || check no "чужой веб-сервер: $(tail -2 "$WORK/out2.txt")"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN= "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+run "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out2.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'домен не задан' "$WORK/out2.txt" && check ok "без домена сказано, что делать" || check no "без домена: $(tail -2 "$WORK/out2.txt")"
+
 NEW=fedcba9876543210fedcba9876543210fedcba98
 NEWDIGEST=ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:2222
 ME=$(id -u)

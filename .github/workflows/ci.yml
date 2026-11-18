@@ -160,6 +160,16 @@ jobs:
             sleep 2
           done
           test "$got" = '301 https://panel.localhost/cabinet?a=1'
+      - name: the certificate can be issued again
+        run: |
+          set -x
+          cd /
+          sudo stealthnet cert | tee "$RUNNER_TEMP/cert.log"
+          grep -q 'уже выпущен, https://panel.localhost открывается' "$RUNNER_TEMP/cert.log"
+          sudo stealthnet cert --force | tee "$RUNNER_TEMP/cert-force.log"
+          grep -q 'сертификат выпущен, https://panel.localhost открывается' "$RUNNER_TEMP/cert-force.log"
+          site="--resolve panel.localhost:443:127.0.0.1"
+          test "$(curl -sk $site https://panel.localhost/api/health)" = '{"status":"ok"}'
       - name: the domain can be changed
         run: |
           set -x

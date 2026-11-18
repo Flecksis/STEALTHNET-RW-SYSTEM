@@ -54,6 +54,7 @@ SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com STEALTHNET-RW-SYSTEM/inst
 |---|---|
 | `stealthnet` | Установить или продолжить установку |
 | `stealthnet domain` | Указать или сменить домен панели |
+| `stealthnet cert`, `stealthnet cert --force` | Выпустить сертификат HTTPS заново, если он не выпустился: показывает, куда указывает домен, сразу повторяет выпуск и называет причину, если не вышло; с `--force` заменяет уже выпущенный |
 | `stealthnet owner-email` | Сменить почту владельца, пароль остаётся прежним |
 | `stealthnet reset-password` | Выдать владельцу новый пароль, все его сессии закрываются |
 | `stealthnet unlock-login`, `stealthnet unlock-login --ip <адрес>` | Снять блокировку входа владельца, если его почту подбирают. С `--ip` вход с этого адреса не закроется 30 дней, даже пока подбор идёт |

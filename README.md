@@ -83,7 +83,7 @@ git clone https://github.com/STEALTHNET-APP/STEALTHNET-RW-SYSTEM.git && STEALTHN
 - Готовая сборка выпускается для x86_64. На ARM установщик соберёт систему из исходников, это 10–20 минут.
 - Повторный запуск продолжает установку и ничего не перезаписывает.
 
-После установки появляется команда `stealthnet`: `stealthnet update`, `stealthnet status`, `stealthnet domain`, `stealthnet reset-password` и другие, полный список — `stealthnet help` и [в руководстве](docs/guide/install.md#команда-stealthnet).
+После установки появляется команда `stealthnet`: `stealthnet update`, `stealthnet status`, `stealthnet domain`, `stealthnet cert`, `stealthnet reset-password` и другие, полный список — `stealthnet help` и [в руководстве](docs/guide/install.md#команда-stealthnet).
 
 Секреты лежат в `deploy/.env`. Сохраните копию этого файла: без `SN_SECRET_KEY` из него не расшифровать ключи платёжных систем и токены, введённые в админке.
 

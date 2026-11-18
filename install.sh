@@ -108,6 +108,7 @@ usage() {
     printf 'STEALTHNET RW SYSTEM\n\n'
     printf '  %s\n      установить или продолжить установку\n' "$(command_for install)"
     printf '  %s\n      указать или сменить домен панели\n' "$(command_for domain)"
+    printf '  %s\n      выпустить сертификат HTTPS заново, если он не выпустился;\n      с --force — заменить уже выпущенный\n' "$(command_for cert)"
     printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
     printf '  %s\n      снять блокировку входа владельца, если его почту подбирают;\n      с --ip вход с этого адреса не закроется, даже пока подбор идёт\n' "$(command_for 'unlock-login [--ip адрес]')"
@@ -566,12 +567,118 @@ check_site() {
             SITE_READY=0
             hint "Сертификат пока не выпущен. Обычно причина одна из двух:"
             hint "домен ещё не указывает на этот сервер или порты 80 и 443 закрыты снаружи."
-            hint "Когда это исправится, сертификат выпустится сам, запускать ничего не нужно."
+            hint "Когда это исправится, сертификат выпустится сам. Чтобы не ждать: $(command_for cert)"
             return 0
         fi
         sleep 5
         waited=$((waited + 5))
     done
+}
+
+server_addresses() {
+    if [ "${SN_TEST_SERVER_IPS+set}" = "set" ]; then
+        printf '%s' "$SN_TEST_SERVER_IPS"
+        return 0
+    fi
+    hostname -I 2>/dev/null | tr -s ' \n' '  ' | sed 's/^ //; s/ $//'
+}
+
+show_dns() {
+    dns=$(host_addresses "$1" | tr '\n' ' ' | sed 's/ $//')
+    if [ -z "$dns" ]; then
+        hint "$1 не находится в DNS: добавьте A-запись с адресом этого сервера."
+        return 0
+    fi
+    done_line "$1 → $dns"
+    own=$(server_addresses)
+    [ -n "$own" ] || return 0
+    for dns_ip in $dns; do
+        case "$dns_ip" in
+            127.*|::1) return 0 ;;
+        esac
+        case " $own " in
+            *" $dns_ip "*) return 0 ;;
+        esac
+    done
+    hint "Адреса этого сервера: $own. Если перед ним нет Cloudflare или NAT, исправьте A-запись."
+}
+
+has_cert() {
+    [ -n "$(compose exec -T caddy find /data/caddy/certificates -name "$1.crt" 2>/dev/null)" ]
+}
+
+cert_reason() {
+    case "$1" in
+        *NXDOMAIN*|*"no valid A records"*|*"no valid AAAA records"*)
+            printf 'домен не находится в DNS' ;;
+        *"Timeout during connect"*|*"onnection refused"*)
+            printf 'Let'"'"'s Encrypt не достучался до порта 80: его закрывает файрвол сервера или хостинга' ;;
+        *rateLimited*|*"too many"*)
+            printf 'Let'"'"'s Encrypt временно ограничил выпуск для этого домена, повторите позже' ;;
+        *unauthorized*|*"Invalid response"*)
+            printf 'проверку получил не этот сервер: домен указывает на другой адрес или перед сервером другой прокси' ;;
+    esac
+}
+
+cert_errors() {
+    last=$(compose logs --no-color --since 30m caddy 2>/dev/null | grep '"error"' | grep -iE 'certificate|challenge|acme|obtain' | sed -n 's/.*"error":"\([^"]*\)".*/\1/p' | tail -n 1 | cut -c1-240)
+    [ -n "$last" ] || return 0
+    reason=$(cert_reason "$last")
+    if [ -n "$reason" ]; then
+        hint "Причина по журналу Caddy: $reason."
+    fi
+    hint "Ошибка Caddy: $last"
+}
+
+reissue_cert() {
+    printf '%sSTEALTHNET RW SYSTEM — сертификат HTTPS%s\n\n' "$BOLD" "$RESET"
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите $(command_for install)"
+    fi
+    force=""
+    case "${1:-}" in
+        "") ;;
+        --force) force=1 ;;
+        *) die "не понял «$1»" "Команда: $(command_for cert) или $(command_for cert) --force" ;;
+    esac
+    host=$(site_host)
+    if [ -z "$host" ]; then
+        die "домен не задан" "Сначала укажите его: $(command_for domain)"
+    fi
+    if [ "$(env_value SN_HTTPS)" != "caddy" ]; then
+        die "сертификат для $host выпускает ваш веб-сервер" "Порты 80 и 443 держит другая программа, блок для неё — в $SNIPPET_FILE"
+    fi
+    www_site=$(env_value SN_SITE_WWW)
+    step "Домен"
+    show_dns "$host"
+    if [ -n "$www_site" ]; then
+        show_dns "$www_site"
+    fi
+    step "Сертификат"
+    if [ -n "$force" ]; then
+        hint "Let's Encrypt выдаёт не больше 5 одинаковых сертификатов в неделю, без нужды --force не повторяйте."
+        for name in "$host" $www_site; do
+            compose exec -T caddy find /data/caddy/certificates -name "$name.*" -delete >/dev/null 2>&1 || true
+        done
+        done_line "прежний сертификат удалён"
+    elif has_cert "$host" && { [ -z "$www_site" ] || has_cert "$www_site"; }; then
+        done_line "уже выпущен, https://$host открывается"
+        hint "Если браузер всё же ругается на сертификат, выпустите его заново: $(command_for cert) --force"
+        return 0
+    fi
+    if ! compose restart caddy >/dev/null 2>&1; then
+        die "веб-сервер не перезапустился" "Журнал: cd $DEPLOY && docker compose logs caddy"
+    fi
+    done_line "веб-сервер перезапущен, выпуск начат заново"
+    check_site
+    if [ "$SITE_READY" = "0" ]; then
+        cert_errors
+        exit 1
+    fi
+    if [ -n "$www_site" ] && ! has_cert "$www_site"; then
+        hint "Для $www_site сертификат пока не выпущен, переадресация с www заработает, когда он выпустится."
+        cert_errors
+    fi
 }
 
 host_arch() {
@@ -769,6 +876,7 @@ set_owner_password() {
 commands_list() {
     printf '\n%s\n' "$1"
     printf '  %s\n      указать или сменить домен\n' "$(command_for domain)"
+    printf '  %s\n      выпустить сертификат HTTPS заново\n' "$(command_for cert)"
     printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
     printf '  %s\n      обновить систему\n' "$(command_for update)"
@@ -2275,6 +2383,7 @@ detect_short
 case "${1:-}" in
     ""|install) install ;;
     domain|--domain) change_domain ;;
+    cert|--cert) shift; reissue_cert "$@" ;;
     owner-email|--owner-email) change_owner_email ;;
     reset-password|--reset-password) reset_password ;;
     unlock-login|--unlock-login) shift; unlock_login "$@" ;;
