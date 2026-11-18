@@ -1,6 +1,7 @@
 import type { IconName } from '../lib/icons';
 import { isIconName } from '../lib/icons';
 import type { Me, Permission } from '../lib/types';
+import { menuAllowed } from './menuAccess';
 
 export type NavItem = {
   key: string;
@@ -39,6 +40,9 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
     badgeLabel: BADGE_LABEL[item.key],
   }));
   for (const entry of [...me.menu].sort((a, b) => a.order - b.order)) {
+    if (!menuAllowed(entry.module, can)) {
+      continue;
+    }
     items.push({
       key: `m-${entry.module}`,
       label: entry.label,
