@@ -229,6 +229,27 @@ async fn record(
     Ok(())
 }
 
+async fn announce(
+    tx: &mut Tx,
+    track: &mut Track,
+    node: &Node,
+    now: DateTime<Utc>,
+) -> ServiceResult<usize> {
+    let event = match track.state {
+        Health::Online => return Ok(0),
+        Health::Down => events::NODE_CONNECTION_LOST,
+        Health::Disabled => events::NODE_DISABLED,
+    };
+    track.event = Some(event.to_string());
+    if track.state == Health::Down {
+        track.down_at.get_or_insert(track.since);
+    }
+    let data = serde_json::to_value(node).unwrap_or_default();
+    record(tx, track.uuid, event, now, data).await?;
+    tracing::info!(node = %node.name, event, "нода недоступна с первого опроса");
+    Ok(1)
+}
+
 pub(crate) async fn accept_webhook(
     tx: &mut Tx,
     parsed: &ParsedWebhook,
@@ -342,7 +363,7 @@ impl<'a> NodeWatch<'a> {
             return Ok(0);
         };
         let Some(mut track) = current else {
-            let first = Track {
+            let mut first = Track {
                 uuid: node.uuid,
                 name: node.name.clone(),
                 state: health,
@@ -356,14 +377,22 @@ impl<'a> NodeWatch<'a> {
                 down_at: None,
                 alerted_at: None,
             };
-            write(&mut tx, INSERT, &first).await?;
+            let announced = announce(&mut tx, &mut first, node, now).await?;
+            if !write(&mut tx, INSERT, &first).await? {
+                tx.rollback().await?;
+                return Ok(0);
+            }
             tx.commit().await?;
-            return Ok(0);
+            return Ok(announced);
         };
         let steps = transition(track.state, health);
+        let mut written = steps.len();
         if steps.is_empty() {
             if node.state() != NodeState::Connecting {
                 track.seen_at = now;
+            }
+            if track.event.is_none() {
+                written += announce(&mut tx, &mut track, node, now).await?;
             }
         } else {
             let at = node
@@ -382,7 +411,7 @@ impl<'a> NodeWatch<'a> {
         track.message = status_message(node);
         write(&mut tx, UPDATE, &track).await?;
         tx.commit().await?;
-        Ok(steps.len())
+        Ok(written)
     }
 
     pub async fn notices(&self, send: bool) -> ServiceResult<Vec<NodeNotice>> {

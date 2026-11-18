@@ -122,48 +122,86 @@ async fn feed_titles(env: &Env) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn первый_опрос_только_запоминает_ноды() {
+async fn первый_опрос_сразу_показывает_лежащие_и_выключенные_ноды() {
     let Some(env) = env().await else { return };
-    let report = poll_at(
-        &env,
-        at(0),
+    let nodes = || {
         vec![
             germany(),
             down(node(0xf1, "Finland"), start() - Duration::hours(3)),
             disabled(node(0x11, "Netherlands")),
-        ],
-    )
-    .await;
+        ]
+    };
+    let report = poll_at(&env, at(0), nodes()).await;
     assert_eq!(report.nodes, 3);
-    assert_eq!(report.events, 0);
+    assert_eq!(report.events, 2);
     assert_eq!(report.skipped, None);
-    assert!(node_events(&env).await.is_empty());
-    assert!(node_alerts(&env, at(5)).await.is_empty());
-    let again = poll_at(
-        &env,
-        at(60),
-        vec![
-            germany(),
-            down(node(0xf1, "Finland"), start() - Duration::hours(3)),
-            disabled(node(0x11, "Netherlands")),
-        ],
-    )
-    .await;
-    assert_eq!(again.events, 0);
-    assert!(node_events(&env).await.is_empty());
-    assert!(node_alerts(&env, at(600)).await.is_empty());
-    assert_eq!(feed_titles(&env).await, Vec::<String>::new());
-
-    let finland = down(node(0xf1, "Finland"), at(700));
-    assert!(matches!(
-        hook(&env, events::NODE_CONNECTION_LOST, &finland, at(700)).await,
-        RemnaWebhookResult::Accepted { .. }
-    ));
+    let list = node_events(&env).await;
     assert_eq!(
-        hook(&env, events::NODE_CONNECTION_LOST, &finland, at(705)).await,
+        kinds(&list),
+        vec![events::NODE_CONNECTION_LOST, events::NODE_DISABLED]
+    );
+    assert_eq!(list[0].1, "Finland");
+    assert_eq!(list[0].2, at(0));
+    assert_eq!(list[1].1, "Netherlands");
+    assert_eq!(list[1].2, at(0));
+    let alerts = node_alerts(&env, at(5)).await;
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert!(alerts[0].html.contains("Нода Finland не отвечает"));
+
+    let again = poll_at(&env, at(60), nodes()).await;
+    assert_eq!(again.events, 0);
+    assert_eq!(node_events(&env).await.len(), 2);
+    assert!(node_alerts(&env, at(600)).await.is_empty());
+    assert_eq!(
+        feed_titles(&env).await,
+        vec!["Нода Netherlands выключена", "Нода Finland не отвечает"]
+    );
+
+    let finland = down(node(0xf1, "Finland"), start() - Duration::hours(3));
+    assert_eq!(
+        hook(&env, events::NODE_CONNECTION_LOST, &finland, at(700)).await,
         RemnaWebhookResult::Duplicate
     );
-    assert_eq!(feed_titles(&env).await, vec!["Нода Finland не отвечает"]);
+    assert_eq!(node_events(&env).await.len(), 2);
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn нода_запомненная_молча_прежней_версией_показывается_один_раз() {
+    let Some(env) = env().await else { return };
+    let finland = down(node(0xf1, "Finland"), start() - Duration::hours(2));
+    {
+        let mut conn = env.services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO remna_node_states \
+             (node_uuid, name, state, since, event, message, seen_at, down_at, alerted_at) \
+             VALUES ($1, 'Finland', 'down', $2, NULL, NULL, $3, NULL, NULL)",
+        )
+        .bind(finland.uuid)
+        .bind(start() - Duration::hours(2))
+        .bind(at(-60))
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let first = poll_at(&env, at(0), vec![finland.clone()]).await;
+    assert_eq!(first.events, 1);
+    let list = node_events(&env).await;
+    assert_eq!(kinds(&list), vec![events::NODE_CONNECTION_LOST]);
+    assert_eq!(list[0].2, at(0));
+    let alerts = node_alerts(&env, at(5)).await;
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+
+    let second = poll_at(&env, at(60), vec![finland]).await;
+    assert_eq!(second.events, 0);
+    assert_eq!(node_events(&env).await.len(), 1);
+    assert!(node_alerts(&env, at(120)).await.is_empty());
+
+    poll_at(&env, at(300), vec![online(node(0xf1, "Finland"), at(280))]).await;
+    assert_eq!(
+        feed_titles(&env).await,
+        vec!["Нода Finland снова в сети", "Нода Finland не отвечает"]
+    );
     env.db.cleanup().await;
 }
 
