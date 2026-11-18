@@ -450,10 +450,45 @@ async fn если_telegram_уже_вернул_звёзды_событие_за�
     assert!(audit_of(&db, REFUND_FAILED_ACTION).await.is_empty());
     assert!(review.refund(id, None, admin).await.unwrap().repeated);
     assert_eq!(refund_calls(&server).await.len(), 1);
-    assert!(
-        stars_notices(&db).await.is_empty(),
-        "звёзды вернули раньше и не из админки: сообщение придёт по уведомлению Telegram"
+    assert_eq!(
+        stars_notices(&db).await.len(),
+        1,
+        "уведомления Telegram о возврате ещё не было: сообщение ставит админка"
     );
+    handle_update(
+        &ctx,
+        serde_json::from_value(refund_echo(763, 762, &payment, "stx-762", 349)).unwrap(),
+    )
+    .await;
+    assert_eq!(stars_notices(&db).await.len(), 1);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn после_уведомления_telegram_о_возврате_админка_не_пишет_второй_раз() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let admin = owner(&services).await;
+    let (payment, _update, id) = under_review(&db, &services, &ctx, 764, "stx-764").await;
+    handle_update(
+        &ctx,
+        serde_json::from_value(refund_echo(765, 764, &payment, "stx-764", 349)).unwrap(),
+    )
+    .await;
+    assert_eq!(stars_notices(&db).await.len(), 1);
+    Mock::given(method("POST"))
+        .and(path(refund_path()))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "ok": false, "error_code": 400, "description": "Bad Request: CHARGE_ALREADY_REFUNDED"
+        })))
+        .mount(&server)
+        .await;
+    let telegram = TelegramStars::with_api_base(server.uri());
+    let review = StarsReview::with_telegram(&services, &telegram);
+    let done = review.refund(id, None, admin).await.unwrap();
+    assert!(done.already_refunded);
+    assert_eq!(stars_notices(&db).await.len(), 1);
     db.cleanup().await;
 }
 

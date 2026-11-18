@@ -17,6 +17,8 @@ pub const REFUNDED_TEMPLATE: &str = "payment.stars_refunded";
 pub const REPEAT_NOTE: &str = "повторная оплата уже оплаченного счёта ждёт ручной проверки";
 pub const UNCREDITED_NOTE: &str =
     "возврат по списанию, которое не проводилось как оплата: платежи не изменены";
+pub const RETURNED_NOTE: &str =
+    "Telegram уже вернул звёзды по этому списанию: оплата не проводится, закройте событие";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -56,6 +58,17 @@ pub async fn ours(db: &mut impl Db, payload: &str) -> StoreResult<Option<Payment
     }
 }
 
+pub async fn returned(db: &mut impl Db, charge: &str, settled_only: bool) -> StoreResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM bot_star_events WHERE charge_id = $1 AND event = 'refunded_payment' \
+         AND (NOT $2 OR status <> 'pending'))",
+    )
+    .bind(charge)
+    .bind(settled_only)
+    .fetch_one(db.conn())
+    .await?)
+}
+
 async fn credited(services: &Services, charge: &str) -> StoreResult<bool> {
     let mut conn = services.store().conn().await?;
     Ok(conn
@@ -79,6 +92,25 @@ pub async fn process(services: &Services, event: &StarsPayment, retries: u32) ->
                     note: Some(UNCREDITED_NOTE.into()),
                 };
             }
+            Err(err) => return Verdict::Retry(err.to_string()),
+        }
+    }
+    if event.event == StarsPaymentEvent::SuccessfulPayment {
+        let charge = &event.telegram_payment_charge_id;
+        let back = async {
+            let mut conn = services.store().conn().await?;
+            let gone = returned(&mut conn, charge, true).await?;
+            Ok::<_, StoreError>(gone && !credited(services, charge).await?)
+        }
+        .await;
+        match back {
+            Ok(true) => {
+                return Verdict::Review {
+                    payment: None,
+                    error: RETURNED_NOTE.into(),
+                };
+            }
+            Ok(false) => {}
             Err(err) => return Verdict::Retry(err.to_string()),
         }
     }

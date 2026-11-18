@@ -327,7 +327,8 @@ impl TryFrom<ItemRow> for StarsReviewItem {
             }),
             _ => None,
         };
-        let retryable = retryable(event, &row.payload, invoice, row.credited);
+        let retryable =
+            retryable(event, &row.payload, invoice, row.credited) && !row.telegram_refunded;
         Ok(StarsReviewItem {
             id: row.id,
             charge_id: row.charge_id,
@@ -347,7 +348,8 @@ impl TryFrom<ItemRow> for StarsReviewItem {
             attempts: row.attempts,
             refundable: event == StarsPaymentEvent::SuccessfulPayment
                 && payload.payer.is_some()
-                && !row.credited,
+                && !row.credited
+                && !row.telegram_refunded,
             retryable,
             telegram_refunded: row.telegram_refunded,
             created_at: row.created_at,
@@ -455,6 +457,16 @@ async fn audit(
     Ok(())
 }
 
+async fn telegram_told(tx: &mut Tx, charge: &str) -> ServiceResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM bot_star_events \
+         WHERE charge_id = $1 AND event = 'refunded_payment' AND status = 'done')",
+    )
+    .bind(charge)
+    .fetch_one(tx.conn())
+    .await?)
+}
+
 async fn settle(
     mut tx: Tx,
     event: EventRow,
@@ -482,8 +494,9 @@ async fn settle(
         }),
         StarsResolutionKind::Closed => serde_json::json!({ "comment": decision.comment }),
     };
+    let told = decision.already_refunded && telegram_told(&mut tx, &event.charge_id).await?;
     if decision.status == StarsResolutionKind::Refunded
-        && !decision.already_refunded
+        && !told
         && let Some(stars) = payload.stars
     {
         stars_ledger::refund_notice(
@@ -752,6 +765,15 @@ impl<'a> StarsReview<'a> {
             .by_provider_txid(providers::STARS, &event.charge_id)
             .await?
             .is_some();
+        if kind == StarsPaymentEvent::SuccessfulPayment
+            && !credited
+            && stars_ledger::returned(&mut tx, &event.charge_id, false).await?
+        {
+            return Err(ServiceError::rejected(
+                "stars.review_returned",
+                "Telegram уже вернул звёзды по этому списанию: проводить оплату нельзя, закройте событие",
+            ));
+        }
         let paid = serde_json::from_value::<StarsPayment>(event.payload.clone())
             .ok()
             .filter(|_| retryable(kind, &event.payload, invoice.as_ref().map(Invoice::from), credited))

@@ -791,11 +791,11 @@ async fn провести_снова_можно_только_оплату_пос
     let refund_notice = seed(
         &services,
         Seed {
-            charge: "stx-862",
+            charge: "stx-866",
             event: REFUNDED_PAYMENT,
             payload: payload(
                 REFUNDED_PAYMENT,
-                "stx-862",
+                "stx-866",
                 862,
                 350,
                 &broke.public_id.to_string(),
@@ -874,5 +874,70 @@ async fn провести_снова_можно_только_оплату_пос
     assert_eq!(retried[0].actor_id, Some(admin.0));
     assert_eq!(retried[0].entity_id, Some(broke.id.0));
     assert_eq!(retried[0].details["reason"], "модуль не ответил");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оплату_звёздами_после_их_возврата_не_провести() {
+    let Some((db, services, admin)) = setup().await else {
+        return;
+    };
+    let review = StarsReview::new(&services);
+    let invoice = stars_invoice(&services, 870, 350).await;
+    let stuck = failed(&services, &invoice, "stx-870", 870).await;
+    seed(
+        &services,
+        Seed {
+            charge: "stx-870",
+            event: REFUNDED_PAYMENT,
+            payload: payload(
+                REFUNDED_PAYMENT,
+                "stx-870",
+                870,
+                350,
+                &invoice.public_id.to_string(),
+            ),
+            status: "done",
+            reason: Some(stars_ledger::UNCREDITED_NOTE),
+            payment: None,
+        },
+    )
+    .await;
+    let page = review.list(PageRequest::default()).await.unwrap();
+    let item = page.items.iter().find(|item| item.id == stuck).unwrap();
+    assert!(item.telegram_refunded);
+    assert!(!item.retryable);
+    assert!(!item.refundable);
+    match review.retry(stuck, admin).await {
+        Err(ServiceError::Rejected { code, .. }) => assert_eq!(code, "stars.review_returned"),
+        other => panic!("ожидали отказ: {other:?}"),
+    }
+    let paid: StarsPayment = serde_json::from_value(payload(
+        SUCCESSFUL_PAYMENT,
+        "stx-870",
+        870,
+        350,
+        &invoice.public_id.to_string(),
+    ))
+    .unwrap();
+    let verdict = stars_ledger::process(&services, &paid, 0).await;
+    assert_eq!(
+        verdict,
+        stars_ledger::Verdict::Review {
+            payment: None,
+            error: stars_ledger::RETURNED_NOTE.into()
+        }
+    );
+    let mut conn = services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(invoice.id).await.unwrap().status,
+        PaymentStatus::Pending
+    );
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'fulfill_order'")
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+    assert_eq!(queued, 0);
+    drop(conn);
     db.cleanup().await;
 }
