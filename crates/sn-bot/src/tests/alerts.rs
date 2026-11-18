@@ -230,3 +230,76 @@ async fn нода_которая_лежит_уходит_в_группу_без_
     assert_eq!(again, 1);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn ошибка_отправки_не_теряет_остаток_пачки() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    forum_api(&server).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set_as(keys::BOT_USERNAME, &"stealth_test_bot", None)
+            .await
+            .unwrap();
+    }
+    let link = services.alerts().link().await.unwrap();
+    let start = link.link.split("startgroup=").nth(1).unwrap().to_string();
+    handle_update(
+        &ctx,
+        group_update(1, -100_500, &format!("/start@stealth_test_bot {start}")),
+    )
+    .await;
+    let keeper = Keeper::new(
+        services.clone(),
+        ctx.api.clone(),
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    );
+    keeper.step(true).await.unwrap();
+    open(&services, 7_411, "Не подключается iPhone").await;
+    open(&services, 7_412, "Медленно работает ночью").await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/sendMessage$"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+            "ok": false, "error_code": 429, "description": "Too Many Requests: retry after 1",
+            "parameters": {"retry_after": 1}
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    assert!(keeper.step(true).await.is_err());
+    keeper.step(true).await.unwrap();
+    keeper.step(true).await.unwrap();
+    let texts = || async {
+        sent(&server)
+            .await
+            .into_iter()
+            .filter_map(|b| b["text"].as_str().map(str::to_string))
+            .collect::<Vec<String>>()
+    };
+    let count = |all: &[String], needle: &str| all.iter().filter(|t| t.contains(needle)).count();
+    let all = texts().await;
+    assert_eq!(count(&all, "Не подключается iPhone"), 2);
+    assert_eq!(count(&all, "Медленно работает ночью"), 1);
+    assert!(services.alerts().pending().await.unwrap().is_empty());
+    open(&services, 7_413, "Сломанное <b> сообщение").await;
+    open(&services, 7_414, "Не открывается ссылка").await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/sendMessage$"))
+        .and(body_partial_json(serde_json::json!({"chat_id": -100_500})))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "ok": false, "error_code": 400, "description": "Bad Request: can't parse entities"
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    keeper.step(true).await.unwrap();
+    let all = texts().await;
+    assert_eq!(count(&all, "Не открывается ссылка"), 1);
+    assert!(services.alerts().pending().await.unwrap().is_empty());
+    db.cleanup().await;
+}

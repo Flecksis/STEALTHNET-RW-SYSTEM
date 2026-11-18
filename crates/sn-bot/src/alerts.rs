@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const NODES_EVERY: Duration = Duration::from_secs(15);
+const OUTBOX_MAX: usize = 200;
 
 pub struct Keeper {
     services: Services,
@@ -72,9 +73,8 @@ impl Keeper {
             self.test(&config, chat_id).await?;
         }
         if sweep {
-            for alert in alerts.collect().await? {
-                self.deliver(&config, chat_id, &alert).await?;
-            }
+            let fresh = alerts.collect().await?;
+            self.deliver_all(&config, chat_id, fresh).await?;
         }
         Ok(())
     }
@@ -85,8 +85,44 @@ impl Keeper {
         let Some(chat_id) = config.chat_id else {
             return Ok(());
         };
-        for alert in alerts.collect_nodes().await? {
-            self.deliver(&config, chat_id, &alert).await?;
+        let fresh = alerts.collect_nodes().await?;
+        self.deliver_all(&config, chat_id, fresh).await
+    }
+
+    async fn deliver_all(
+        &self,
+        config: &AlertsConfig,
+        chat_id: i64,
+        fresh: Vec<Alert>,
+    ) -> Result<(), BotError> {
+        let alerts = self.services.alerts();
+        let mut queue = alerts.pending().await?;
+        let added = !fresh.is_empty();
+        queue.extend(fresh);
+        if queue.is_empty() {
+            return Ok(());
+        }
+        if queue.len() > OUTBOX_MAX {
+            let dropped = queue.len() - OUTBOX_MAX;
+            queue.drain(..dropped);
+            tracing::warn!(
+                dropped,
+                "Telegram долго не принимает уведомления администраторам, самые старые убраны из очереди"
+            );
+        }
+        if added {
+            alerts.keep_pending(&queue).await?;
+        }
+        while let Some(alert) = queue.first() {
+            match self.deliver(config, chat_id, alert).await {
+                Ok(()) => {}
+                Err(err) if later(&err) => return Err(err),
+                Err(err) => {
+                    tracing::warn!(error = %err, kind = alert.kind.as_str(), "уведомление администраторам отклонено Telegram и пропущено");
+                }
+            }
+            queue.remove(0);
+            alerts.keep_pending(&queue).await?;
         }
         Ok(())
     }
@@ -268,6 +304,10 @@ pub async fn bind_from_group(
         report(&err);
     }
     Ok(())
+}
+
+fn later(err: &BotError) -> bool {
+    !matches!(err, BotError::Telegram(TelegramError::Api { code, .. }) if *code != 429 && *code < 500)
 }
 
 fn report(err: &TelegramError) {

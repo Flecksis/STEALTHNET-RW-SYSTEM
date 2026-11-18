@@ -26,6 +26,7 @@ pub const PER_KIND: usize = 3;
 const LINK_KEY: &str = "alerts.link";
 const TEST_KEY: &str = "alerts.test";
 const TOPICS_KEY: &str = "alerts.topics";
+const OUTBOX_KEY: &str = "alerts.outbox";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
 const AI_HANDOFF_CURSOR: &str = "alerts.cursor.ai_handoffs";
 const AUTO_REFUND_CURSOR: &str = "alerts.cursor.auto_refunds";
@@ -48,7 +49,7 @@ fn seen_key(kind: AlertKind) -> String {
     format!("alerts.seen.{}", kind.as_str())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Alert {
     pub kind: AlertKind,
     pub html: String,
@@ -733,6 +734,23 @@ impl<'a> AlertsOps<'a> {
         out.extend(self.new_clients(&config).await?);
         out.extend(self.new_sales(&config).await?);
         Ok(out)
+    }
+
+    pub async fn pending(&self) -> ServiceResult<Vec<Alert>> {
+        Ok(self
+            .state(OUTBOX_KEY)
+            .await?
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default())
+    }
+
+    pub async fn keep_pending(&self, alerts: &[Alert]) -> ServiceResult<()> {
+        let value = if alerts.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::to_value(alerts).map_err(|e| ServiceError::Internal(e.to_string()))?
+        };
+        self.put_state(OUTBOX_KEY, &value).await
     }
 
     pub async fn collect_nodes(&self) -> ServiceResult<Vec<Alert>> {
