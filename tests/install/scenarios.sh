@@ -392,6 +392,55 @@ fresh
 run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org:8443 "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
 grep -q '^SN_HTTPS=manual$' "$R/deploy/.env" && check ok "для адреса с портом свой веб-сервер не ставится" || check no "SN_HTTPS: $(grep '^SN_HTTPS' "$R/deploy/.env")"
 
+echo "=== AG1. www ведёт на тот же сервер"
+fresh
+printf 'example.com 203.0.113.10\nwww.example.com 203.0.113.10\n' > "$S/hosts"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=www.example.com$' "$R/deploy/.env" && check ok "www передан веб-серверу" || check no "SN_SITE_WWW: $(grep '^SN_SITE_WWW' "$R/deploy/.env")"
+grep -q 'Переадресация:     https://www.example.com → https://example.com$' "$WORK/out.txt" && check ok "в итоге сказано про переадресацию с www" || check no "нет строки про переадресацию"
+grep -q 'Админка:           https://example.com/admin$' "$WORK/out.txt" && grep -q 'Кабинет клиентов:  https://example.com/cabinet$' "$WORK/out.txt" && check ok "в итоге адреса админки и кабинета" || check no "нет адресов админки и кабинета"
+grep -q 'Чтобы открывался и www' "$WORK/out.txt" && check no "лишняя подсказка про www" || check ok "подсказки про www нет"
+
+echo "=== AG2. записи www нет, потом появилась"
+fresh
+printf 'example.com 203.0.113.10\n' > "$S/hosts"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=$' "$R/deploy/.env" && check ok "без записи www переадресация не включена" || check no "SN_SITE_WWW: $(grep '^SN_SITE_WWW' "$R/deploy/.env")"
+grep -q 'Чтобы открывался и www.example.com' "$WORK/out1.txt" && check ok "подсказано, как включить www" || check no "нет подсказки про www"
+printf 'www.example.com 203.0.113.10\n' >> "$S/hosts"
+run SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" domain > "$WORK/out2.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=www.example.com$' "$R/deploy/.env" && check ok "после записи www команда домена включила переадресацию" || check no "SN_SITE_WWW: $(grep '^SN_SITE_WWW' "$R/deploy/.env")"
+grep -q 'Переадресация:     https://www.example.com → https://example.com$' "$WORK/out2.txt" && check ok "после смены домена сказано про переадресацию" || check no "нет строки про переадресацию"
+
+echo "=== AG3. www на другом сервере, поддомен или www выключен"
+fresh
+printf 'example.com 203.0.113.10\nwww.example.com 198.51.100.7\n' > "$S/hosts"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=$' "$R/deploy/.env" && check ok "чужой www не перехватывается" || check no "SN_SITE_WWW: $(grep '^SN_SITE_WWW' "$R/deploy/.env")"
+fresh
+printf 'panel.example.com 203.0.113.10\n' > "$S/hosts"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'Чтобы открывался и www' "$WORK/out.txt" && check no "для поддомена предложен www" || check ok "для поддомена www не предлагается"
+fresh
+printf 'example.com 203.0.113.10\nwww.example.com 203.0.113.10\n' > "$S/hosts"
+run SN_WWW=0 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=$' "$R/deploy/.env" && grep -q '^SN_WWW=0$' "$R/deploy/.env" && check ok "SN_WWW=0 выключает www и запоминается" || check no "SN_WWW=0 не сработал"
+grep -q 'Чтобы открывался и www' "$WORK/out1.txt" && check no "подсказка при выключенном www" || check ok "при выключенном www подсказки нет"
+run SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" domain > "$WORK/out2.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=$' "$R/deploy/.env" && check ok "смена домена помнит, что www выключен" || check no "www включился сам"
+
+echo "=== AG4. www по просьбе, домен на www и чужой веб-сервер"
+fresh
+run SN_WWW=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=www.panel.localhost$' "$R/deploy/.env" && check ok "SN_WWW=1 включает www без проверки записи" || check no "SN_SITE_WWW: $(grep '^SN_SITE_WWW' "$R/deploy/.env")"
+fresh
+run SN_WWW=1 SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=www.example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q '^SN_SITE_WWW=$' "$R/deploy/.env" && check ok "для домена на www второй www не добавляется" || check no "SN_SITE_WWW: $(grep '^SN_SITE_WWW' "$R/deploy/.env")"
+fresh
+printf 'example.com 203.0.113.10\nwww.example.com 203.0.113.10\n' > "$S/hosts"
+run SN_TEST_BUSY_PORTS="443" SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+grep -q 'redir https://example.com{uri} permanent' "$R/deploy/proxy-snippet.txt" && grep -q 'return 301 https://example.com\$request_uri;' "$R/deploy/proxy-snippet.txt" && check ok "в подсказке для чужого веб-сервера есть переадресация с www" || check no "в подсказке нет www"
+
 NEW=fedcba9876543210fedcba9876543210fedcba98
 NEWDIGEST=ghcr.io/stealthnet-app/stealthnet-rw-system@sha256:2222
 ME=$(id -u)

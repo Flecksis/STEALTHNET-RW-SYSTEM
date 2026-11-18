@@ -124,7 +124,7 @@ jobs:
         with:
           persist-credentials: false
       - name: install as root
-        run: sudo SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost ./install.sh | tee "$RUNNER_TEMP/install.log"
+        run: sudo SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.localhost SN_WWW=1 ./install.sh | tee "$RUNNER_TEMP/install.log"
       - name: the stealthnet command works from any folder
         run: |
           grep -q 'готовая сборка скачана' "$RUNNER_TEMP/install.log"
@@ -148,12 +148,25 @@ jobs:
           curl -fsSk $site -o /dev/null -H 'content-type: application/json' \
             -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" https://panel.localhost/api/admin/auth/login
           if (cd deploy && sudo docker compose logs app) | grep -Eq 'нет в SN_TRUSTED_PROXIES|он не в SN_TRUSTED_PROXIES'; then exit 1; fi
+      - name: www leads to the main domain
+        run: |
+          set -x
+          grep -q 'Переадресация:     https://www.panel.localhost → https://panel.localhost$' "$RUNNER_TEMP/install.log"
+          www="--resolve www.panel.localhost:443:127.0.0.1"
+          got=""
+          for i in $(seq 1 30); do
+            got=$(curl -sk $www -o /dev/null -w '%{http_code} %{redirect_url}' 'https://www.panel.localhost/cabinet?a=1' || true)
+            if [ "$got" = '301 https://panel.localhost/cabinet?a=1' ]; then break; fi
+            sleep 2
+          done
+          test "$got" = '301 https://panel.localhost/cabinet?a=1'
       - name: the domain can be changed
         run: |
           set -x
           cd /
           sudo SN_DOMAIN=short.localhost stealthnet domain | tee "$RUNNER_TEMP/domain.log"
           sudo grep -q '^SN_PUBLIC_URL=https://short.localhost$' "$GITHUB_WORKSPACE/deploy/.env"
+          sudo grep -q '^SN_SITE_WWW=www.short.localhost$' "$GITHUB_WORKSPACE/deploy/.env"
           grep -q 'сертификат выпущен, https://short.localhost открывается' "$RUNNER_TEMP/domain.log"
           site="--resolve short.localhost:443:127.0.0.1"
           test "$(curl -sk $site https://short.localhost/api/health)" = '{"status":"ok"}'

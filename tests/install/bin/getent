@@ -1,0 +1,8 @@
+#!/bin/sh
+[ "$1" = "ahosts" ] || exit 2
+[ -n "${FAKE_STATE:-}" ] && [ -f "$FAKE_STATE/hosts" ] || exit 2
+found=$(awk -v name="$2" '$1 == name { print $2 }' "$FAKE_STATE/hosts")
+[ -n "$found" ] || exit 2
+for ip in $found; do
+    printf '%s       STREAM %s\n' "$ip" "$2"
+done

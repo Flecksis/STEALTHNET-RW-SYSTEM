@@ -8,6 +8,7 @@ IMAGE_REPO=${SN_IMAGE_REPO:-ghcr.io/stealthnet-app/stealthnet-rw-system}
 HEALTH_TIMEOUT=${SN_HEALTH_TIMEOUT:-300}
 SITE_TIMEOUT=${SN_SITE_TIMEOUT:-90}
 SNIPPET_FILE="$DEPLOY/proxy-snippet.txt"
+WWW_HINT=""
 SITE_READY=""
 BIN_DIR=${SN_BIN_DIR:-/usr/local/bin}
 WRAPPER="$BIN_DIR/stealthnet"
@@ -372,12 +373,93 @@ site_host() {
     printf '%s' "${url#https://}"
 }
 
+www_host() {
+    case "$1" in
+        [Ww][Ww][Ww].*|*:*) return 1 ;;
+        *.*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!0-9.]*) printf 'www.%s' "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+host_addresses() {
+    getent ahosts "$1" 2>/dev/null | awk '{ print $1 }' | sort -u
+}
+
+same_server() {
+    command -v getent >/dev/null 2>&1 || return 1
+    site_addrs=$(host_addresses "$1")
+    www_addrs=$(host_addresses "$2")
+    [ -n "$site_addrs" ] && [ -n "$www_addrs" ] || return 1
+    for www_ip in $www_addrs; do
+        for site_ip in $site_addrs; do
+            [ "$www_ip" = "$site_ip" ] && return 0
+        done
+    done
+    return 1
+}
+
+prepare_www() {
+    WWW_HINT=""
+    if [ "${SN_WWW+set}" = "set" ]; then
+        set_env SN_WWW "$SN_WWW"
+    fi
+    www_name=$(www_host "$1") || www_name=""
+    www_choice=$(env_value SN_WWW)
+    if [ -z "$www_name" ] || [ "$www_choice" = "0" ]; then
+        set_env SN_SITE_WWW ""
+        return 0
+    fi
+    if [ "$www_choice" = "1" ]; then
+        set_env SN_SITE_WWW "$www_name"
+        return 0
+    fi
+    case "$1" in
+        *.localhost)
+            set_env SN_SITE_WWW ""
+            return 0
+            ;;
+    esac
+    if same_server "$1" "$www_name"; then
+        set_env SN_SITE_WWW "$www_name"
+    else
+        set_env SN_SITE_WWW ""
+        case "$1" in
+            *.*.*) ;;
+            *) WWW_HINT=$www_name ;;
+        esac
+    fi
+}
+
+site_lines() {
+    printf '  Админка:           %s/admin\n' "$1"
+    printf '  Кабинет клиентов:  %s/cabinet\n' "$1"
+    www_site=$(env_value SN_SITE_WWW)
+    if [ -n "$www_site" ]; then
+        printf '  Переадресация:     https://%s → %s\n' "$www_site" "$1"
+    fi
+}
+
+www_hint() {
+    if [ -n "$WWW_HINT" ]; then
+        printf '\nЧтобы открывался и %s, направьте его на этот сервер: такая же A-запись,\n' "$WWW_HINT"
+        printf 'как у основного домена, или CNAME на него. Потом выполните %s ещё раз.\n' "$(command_for domain)"
+    fi
+}
+
 write_snippet() {
     host=$1
     port=$(env_value SN_HTTP_PORT)
+    www_site=$(env_value SN_SITE_WWW)
     dollar='$'
     {
         printf 'Caddy:\n\n%s {\n    reverse_proxy 127.0.0.1:%s\n}\n\n' "$host" "${port:-8080}"
+        if [ -n "$www_site" ]; then
+            printf '%s {\n    redir https://%s{uri} permanent\n}\n\n' "$www_site" "$host"
+        fi
         printf 'nginx, внутри блока server с сертификатом для %s:\n\n' "$host"
         printf 'location / {\n'
         printf '    proxy_pass http://127.0.0.1:%s;\n' "${port:-8080}"
@@ -386,6 +468,10 @@ write_snippet() {
         printf '    proxy_set_header X-Forwarded-For %sproxy_add_x_forwarded_for;\n' "$dollar"
         printf '    proxy_set_header X-Forwarded-Proto %sscheme;\n' "$dollar"
         printf '}\n'
+        if [ -n "$www_site" ]; then
+            printf '\nnginx, отдельный блок server с сертификатом для %s:\n\n' "$www_site"
+            printf 'return 301 https://%s%srequest_uri;\n' "$host" "$dollar"
+        fi
     } > "$SNIPPET_FILE"
 }
 
@@ -394,9 +480,11 @@ prepare_https() {
     if [ -z "$host" ]; then
         set_env SN_HTTPS ""
         set_env SN_SITE ""
+        set_env SN_SITE_WWW ""
         return 0
     fi
     set_env SN_SITE "$host"
+    prepare_www "$host"
     if [ "$(env_value SN_HTTPS)" = "caddy" ]; then
         return 0
     fi
@@ -679,8 +767,7 @@ summary() {
         printf '  Адрес панели:      %s\n' "$url"
     fi
     if [ -n "$url" ]; then
-        printf '  Админка:           %s/admin\n' "$url"
-        printf '  Кабинет клиентов:  %s/cabinet\n' "$url"
+        site_lines "$url"
     fi
     printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
     built=$(env_value SN_IMAGE)
@@ -701,6 +788,7 @@ summary() {
         printf '\nЧтобы адрес заработал, добавьте в программу, которая держит порты 80 и 443,\n'
         printf 'блок из файла %s\n' "$SNIPPET_FILE"
     fi
+    www_hint
     printf '\nСекреты лежат в %s. Сохраните копию этого файла:\n' "$ENV_FILE"
     printf 'без него не расшифровать ключи платёжных систем и токены из админки.\n'
 }
@@ -845,12 +933,12 @@ change_domain() {
     else
         printf '\n  Адрес панели:      https://%s\n' "$domain"
     fi
-    printf '  Админка:           https://%s/admin\n' "$domain"
-    printf '  Кабинет клиентов:  https://%s/cabinet\n' "$domain"
+    site_lines "https://$domain"
     if [ "$mode" = "manual" ]; then
         printf '\nЧтобы адрес заработал, добавьте в программу, которая держит порты 80 и 443,\n'
         printf 'блок из файла %s\n' "$SNIPPET_FILE"
     fi
+    www_hint
 }
 
 change_owner_email() {
