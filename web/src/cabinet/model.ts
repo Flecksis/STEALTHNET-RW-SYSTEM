@@ -28,6 +28,7 @@ export type ClientMe = {
   client: { id: number; status: 'active' | 'blocked'; created_at: string; locale: string };
   locale?: 'ru' | 'en';
   balance: Money;
+  balance_held?: Money;
   balance_enabled?: boolean;
   multi_subscriptions?: boolean;
   autorenew_card?: boolean;
@@ -42,6 +43,10 @@ export type ClientMe = {
 };
 
 export type TwoFactor = { enabled: boolean; enabled_at: string | null };
+
+export function heldBalance(me: ClientMe): Money | null {
+  return me.balance_held && me.balance_held.minor > 0 ? me.balance_held : null;
+}
 
 export type Device = { hwid: string; title: string | null; platform: string | null; os_version: string | null; app: string | null; added_at: string | null };
 

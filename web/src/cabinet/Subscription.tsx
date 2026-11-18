@@ -11,7 +11,7 @@ import { supportLink, supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { DevicesCard } from './DevicesCard';
 import { SubSwitch, useSubDetail, useSubs } from './SubSwitch';
-import { APPS, explanation, guessPlatform, periodTitle, statusWord, trafficLine, type Catalog, type Platform, type Referral } from './model';
+import { APPS, explanation, guessPlatform, heldBalance, periodTitle, statusWord, trafficLine, type Catalog, type Platform, type Referral } from './model';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -157,7 +157,8 @@ export function SubscriptionPage() {
   const chargeDate = expire ? new Date(Date.parse(expire) - (site.autorenew_days_before ?? 1) * 86_400_000).toISOString() : null;
   const autoOn = view?.subscription.autorenew.enabled ?? false;
   const balanceOff = me.balance_enabled === false;
-  const showBalance = !balanceOff || me.balance.minor > 0;
+  const held = heldBalance(me);
+  const showBalance = !balanceOff || me.balance.minor > 0 || held !== null;
   const canCharge = !balanceOff || me.autorenew_card === true || (renewPrice !== null && me.balance.minor >= renewPrice.minor);
   const autoText = !view
     ? ''
@@ -486,6 +487,7 @@ export function SubscriptionPage() {
                   </Link>
                 </span>
                 <span className="cb-sum">{money(me.balance)}</span>
+                {held ? <span className="cb-small cb-muted">{t('Удержано до ответа платёжной системы: {amount}', { amount: money(held) })}</span> : null}
                 {balanceOff ? (
                   <span className="cb-small cb-muted">{t('Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму')}</span>
                 ) : (

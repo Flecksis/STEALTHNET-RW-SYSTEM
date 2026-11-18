@@ -59,7 +59,7 @@ impl Respond for Ledger {
 
 pub(super) fn incoming(charge: &str, from: i64, payload: &str, stars: i64) -> serde_json::Value {
     serde_json::json!({
-        "id": charge, "amount": stars, "date": 1_763_300_000,
+        "id": charge, "amount": stars, "date": chrono::Utc::now().timestamp(),
         "source": {
             "type": "user", "transaction_type": "invoice_payment",
             "user": {"id": from, "is_bot": false, "first_name": "Алексей"},
@@ -70,7 +70,7 @@ pub(super) fn incoming(charge: &str, from: i64, payload: &str, stars: i64) -> se
 
 pub(super) fn refund(charge: &str, to: i64, stars: i64) -> serde_json::Value {
     serde_json::json!({
-        "id": charge, "amount": stars, "date": 1_763_400_000,
+        "id": charge, "amount": stars, "date": chrono::Utc::now().timestamp(),
         "receiver": {
             "type": "user", "transaction_type": "invoice_payment",
             "user": {"id": to, "is_bot": false, "first_name": "Алексей"}
@@ -698,5 +698,145 @@ async fn сверка_транзакций_звёзд_находит_пропу�
             PaymentStatus::Pending
         );
     }
+    db.cleanup().await;
+}
+
+fn dated(mut transaction: serde_json::Value, date: i64) -> serde_json::Value {
+    transaction["date"] = serde_json::json!(date);
+    transaction
+}
+
+async fn star_reads(server: &MockServer) -> Vec<(u64, u64)> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().ends_with("/getStarTransactions"))
+        .map(|r| {
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            (
+                body["offset"].as_u64().unwrap(),
+                body["limit"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn первая_сверка_звёзд_читает_историю_с_момента_установки_панели() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    let installed = chrono::Utc::now() - chrono::Duration::days(10);
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET installed_on = $1")
+            .bind(installed)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let early = stars_invoice(&db, &services, 737).await;
+    let fresh = stars_invoice(&db, &services, 738).await;
+    let history = Ledger::default();
+    let before = installed.timestamp() - 86_400;
+    for i in 0..230 {
+        history.push(dated(
+            incoming(&format!("old-{i}"), 900, "счёт старой панели", 10),
+            before + i,
+        ));
+    }
+    history.push(dated(
+        incoming("old-737", 737, &early.public_id.to_string(), 350),
+        installed.timestamp() - 1,
+    ));
+    history.push(dated(
+        incoming("charge-738", 738, &fresh.public_id.to_string(), 350),
+        installed.timestamp() + 60,
+    ));
+    serve_ledger(&server, &history).await;
+    let stars = sn_payments::providers::TelegramStars::with_api_base(server.uri());
+    let mut config = sn_payments::ProviderConfig::default();
+    config.set(
+        sn_payments::providers::STARS_TOKEN_FIELD,
+        serde_json::json!(TOKEN),
+    );
+    let report = ledger::reconcile(&services, &stars, &config, 1)
+        .await
+        .unwrap();
+    assert_eq!(report.read, 1, "{report:?}");
+    assert_eq!(report.recorded, 1);
+    let reads = star_reads(&server).await;
+    assert!(
+        reads.len() <= 25,
+        "первая сверка прочитала слишком много: {reads:?}"
+    );
+    assert!(
+        reads
+            .iter()
+            .filter(|(_, limit)| *limit > 1)
+            .all(|(offset, _)| *offset >= 231),
+        "сверка читала историю до установки панели: {reads:?}"
+    );
+    let mut conn = db.store.conn().await.unwrap();
+    assert_eq!(
+        conn.bot_state()
+            .get("telegram.stars_offset.1")
+            .await
+            .unwrap(),
+        Some(serde_json::json!(232))
+    );
+    drop(conn);
+    ledger::retry_due(&services, Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert_eq!(payment_of(&db, fresh.id).await.status, PaymentStatus::Paid);
+    assert_eq!(
+        payment_of(&db, early.id).await.status,
+        PaymentStatus::Pending,
+        "оплата до установки панели не должна проводиться сверкой"
+    );
+    let seen = star_reads(&server).await.len();
+    let again = ledger::reconcile(&services, &stars, &config, 1)
+        .await
+        .unwrap();
+    assert_eq!(again.read, 0);
+    assert_eq!(
+        star_reads(&server).await[seen..],
+        [(232, 100)],
+        "после первой сверки поиск момента установки не повторяется"
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn сверка_с_пустой_историей_запоминает_начало_и_не_ищет_его_снова() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    let history = Ledger::default();
+    serve_ledger(&server, &history).await;
+    let stars = sn_payments::providers::TelegramStars::with_api_base(server.uri());
+    let mut config = sn_payments::ProviderConfig::default();
+    config.set(
+        sn_payments::providers::STARS_TOKEN_FIELD,
+        serde_json::json!(TOKEN),
+    );
+    for _ in 0..2 {
+        ledger::reconcile(&services, &stars, &config, 1)
+            .await
+            .unwrap();
+    }
+    assert_eq!(star_reads(&server).await, [(0, 1), (0, 100), (0, 100)]);
+    let mut conn = db.store.conn().await.unwrap();
+    assert_eq!(
+        conn.bot_state()
+            .get("telegram.stars_offset.1")
+            .await
+            .unwrap(),
+        Some(serde_json::json!(0))
+    );
+    drop(conn);
     db.cleanup().await;
 }

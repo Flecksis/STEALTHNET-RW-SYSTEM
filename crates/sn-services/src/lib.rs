@@ -28,6 +28,7 @@ pub mod remna_sync;
 pub mod server_load;
 pub mod services;
 pub mod settings;
+pub mod stars_ledger;
 pub mod stars_review;
 pub mod subscriptions;
 pub mod support;

@@ -1,5 +1,6 @@
 use crate::error::{StoreError, StoreResult};
 use crate::repo::*;
+use chrono::{DateTime, Utc};
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
@@ -104,6 +105,14 @@ impl Store {
             Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("42P01") => Ok(total),
             Err(err) => Err(err.into()),
         }
+    }
+
+    pub async fn installed_at(&self) -> StoreResult<Option<DateTime<Utc>>> {
+        Ok(
+            sqlx::query_scalar("SELECT min(installed_on) FROM _sqlx_migrations WHERE success")
+                .fetch_one(&self.pool)
+                .await?,
+        )
     }
 
     pub async fn ping(&self) -> StoreResult<()> {

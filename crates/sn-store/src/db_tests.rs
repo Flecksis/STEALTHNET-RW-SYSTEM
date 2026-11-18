@@ -82,8 +82,29 @@ fn sample_tariff(category: sn_domain::ids::CategoryId) -> NewTariff {
 async fn миграции_применяются_и_повторно_не_нужны() {
     let Some(db) = test_store().await else { return };
     assert_eq!(db.store.pending_migrations().await.unwrap(), 0);
+    let installed = db.store.installed_at().await.unwrap().unwrap();
     db.store.migrate().await.unwrap();
     db.store.ping().await.unwrap();
+    assert_eq!(db.store.installed_at().await.unwrap(), Some(installed));
+    assert!(installed <= chrono::Utc::now());
+    let earlier = chrono::DateTime::parse_from_rfc3339("2025-03-01T08:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query(
+        "UPDATE _sqlx_migrations SET installed_on = $1 \
+         WHERE version = (SELECT max(version) FROM _sqlx_migrations)",
+    )
+    .bind(earlier)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    assert_eq!(
+        db.store.installed_at().await.unwrap(),
+        Some(earlier),
+        "момент установки — самая ранняя миграция"
+    );
     db.cleanup().await;
 }
 

@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { money } from '../lib/format';
 import { NATIVE, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
-import type { Referral } from '../cabinet/model';
+import { heldBalance, type Referral } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 import { siteInviteLink } from '../lib/referral';
@@ -12,6 +12,7 @@ import { supportLink, supportTickets } from '../lib/support';
 
 export function MiniProfile() {
   const { me, site, lang, nextLang, switchLang } = useMini();
+  const held = heldBalance(me);
   const [referral, setReferral] = useState<Referral | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -42,14 +43,16 @@ export function MiniProfile() {
         <div className="mn-card mn-pad">
           <span className="mn-muted">{t('Баланс')}</span>
           <strong className="mn-big">{money(me.balance)}</strong>
+          {held ? <span className="mn-muted small">{t('Удержано до ответа платёжной системы: {amount}', { amount: money(held) })}</span> : null}
           <Link to="/app/topup" className="mn-btn2 press mn-btn-link">
             {t('Пополнить')}
           </Link>
         </div>
-      ) : me.balance.minor > 0 ? (
+      ) : me.balance.minor > 0 || held ? (
         <div className="mn-card mn-pad">
           <span className="mn-muted">{t('Остаток на балансе')}</span>
           <strong className="mn-big">{money(me.balance)}</strong>
+          {held ? <span className="mn-muted small">{t('Удержано до ответа платёжной системы: {amount}', { amount: money(held) })}</span> : null}
           <span className="mn-muted small">{t('Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму')}</span>
         </div>
       ) : null}

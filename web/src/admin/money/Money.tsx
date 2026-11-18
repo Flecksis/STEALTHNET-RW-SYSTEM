@@ -7,6 +7,7 @@ import { amountText, lowerFirst, methodText } from '../client/history';
 import { RefundDialog } from '../client/RefundDialog';
 import { agoLong, orderLine, personName, type PaymentItem } from '../home/model';
 import { useSession } from '../session';
+import { StarsReview } from './StarsReview';
 import './money.css';
 
 type Filter = 'pending' | 'canceled' | 'paid' | 'all';
@@ -109,6 +110,7 @@ export function Money() {
   return (
     <>
       <h1 className="page-title">Деньги</h1>
+      <StarsReview onChanged={() => void load()} />
       <section className="card mn-money" aria-labelledby="mo-h">
         <div className="mo-head">
           <h2 id="mo-h" className="section-title">

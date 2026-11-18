@@ -48,6 +48,12 @@
   flex: 0 0 40px;
   width: 40px;
   height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .mo-text {
@@ -81,6 +87,23 @@
   white-space: nowrap;
 }
 
+.mo-lead {
+  margin: -8px 20px 14px;
+  max-width: 640px;
+}
+
+.mo-acts {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mo-reason {
+  flex: 1 1 100%;
+  padding-left: 52px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 720px) {
   .mo-sum {
     flex: 1 1 auto;
@@ -90,5 +113,14 @@
 
   .mo-act {
     flex: 0 0 auto;
+  }
+
+  .mo-acts {
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .mo-reason {
+    padding-left: 0;
   }
 }

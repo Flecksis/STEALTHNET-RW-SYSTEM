@@ -13,8 +13,10 @@ use sn_payments::providers::{STARS_TOKEN_FIELD, StarsPaymentEvent, TelegramStars
 use sn_payments::{PaymentError, ProviderConfig};
 use sn_services::ServiceError;
 use sn_services::admin::MarkPaidRequest;
+use sn_services::stars_ledger::REFUNDED_TEMPLATE;
 use sn_services::stars_review::{
-    REFUND_FAILED_ACTION, REFUNDED_ACTION, StarsResolutionKind, StarsReview,
+    REFUND_FAILED_ACTION, REFUNDED_ACTION, RETRIED_ACTION, StarsResolutionKind, StarsRetryOutcome,
+    StarsReview,
 };
 use wiremock::matchers::{body_json, path};
 
@@ -80,6 +82,51 @@ async fn audit_of(db: &TestDb, action: &str) -> Vec<sn_store::AuditRecord> {
     )
     .bind(action)
     .fetch_all(conn.conn())
+    .await
+    .unwrap()
+}
+
+async fn stars_notices(db: &TestDb) -> Vec<(ClientId, serde_json::Value)> {
+    let mut conn = db.store.conn().await.unwrap();
+    let rows: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT payload FROM jobs WHERE kind = 'notify' ORDER BY id")
+            .fetch_all(conn.conn())
+            .await
+            .unwrap();
+    rows.into_iter()
+        .filter_map(|payload| serde_json::from_value::<JobPayload>(payload).ok())
+        .filter_map(|job| match job {
+            JobPayload::Notify {
+                client_id,
+                template,
+                params,
+            } if template == REFUNDED_TEMPLATE => Some((client_id, params)),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn fulfil_jobs(db: &TestDb) -> i64 {
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'fulfill_order'")
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
+async fn seed_failed(db: &TestDb, payment: &Payment, update: &serde_json::Value) -> i64 {
+    let event = stars_event(update.clone());
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO bot_star_events \
+         (charge_id, event, payload, source, status, attempts, next_attempt_at, last_error, payment_id) \
+         VALUES ($1, 'successful_payment', $2, 'update', 'review', 1, now(), $3, $4) RETURNING id",
+    )
+    .bind(&event.telegram_payment_charge_id)
+    .bind(serde_json::to_value(&event).unwrap())
+    .bind("модуль не ответил")
+    .bind(payment.id.0)
+    .fetch_one(conn.conn())
     .await
     .unwrap()
 }
@@ -291,6 +338,13 @@ async fn возврат_звёзд_по_событию_на_проверке_и�
     assert_eq!(audit[0].details["telegram_user_id"], 760);
     assert_eq!(audit[0].details["comment"], "недоплата");
     assert_eq!(audit[0].details["already_refunded"], false);
+    let notices = stars_notices(&db).await;
+    assert_eq!(notices.len(), 1, "клиенту не написали о возврате звёзд");
+    assert_eq!(notices[0].0, payment.client_id);
+    assert_eq!(notices[0].1["stars"], 349);
+    assert_eq!(notices[0].1["charge_id"], "stx-760");
+    assert_eq!(notices[0].1["label"], "Стандарт 760 · 90\u{a0}дней");
+    assert_eq!(notices[0].1["label_en"], "Стандарт 760 · 90\u{a0}days");
     let again = review.refund(id, Some("ещё раз"), admin).await.unwrap();
     assert!(again.repeated);
     assert_eq!(again.status, StarsResolutionKind::Refunded);
@@ -315,6 +369,11 @@ async fn возврат_звёзд_по_событию_на_проверке_и�
     assert_eq!(
         ledger::status(&services, &stars_event(echo)).await.unwrap(),
         Some(ledger::Status::Done)
+    );
+    assert_eq!(
+        stars_notices(&db).await.len(),
+        1,
+        "сообщение Telegram о том же возврате не должно дублировать письмо клиенту"
     );
     handle_update(&ctx, serde_json::from_value(update.clone()).unwrap()).await;
     assert_eq!(
@@ -391,6 +450,10 @@ async fn если_telegram_уже_вернул_звёзды_событие_за�
     assert!(audit_of(&db, REFUND_FAILED_ACTION).await.is_empty());
     assert!(review.refund(id, None, admin).await.unwrap().repeated);
     assert_eq!(refund_calls(&server).await.len(), 1);
+    assert!(
+        stars_notices(&db).await.is_empty(),
+        "звёзды вернули раньше и не из админки: сообщение придёт по уведомлению Telegram"
+    );
     db.cleanup().await;
 }
 
@@ -552,5 +615,226 @@ async fn закрытое_вручную_событие_бот_не_провод
             .unwrap(),
         ledger::Retried::default()
     );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn после_возврата_звёзд_от_telegram_клиент_получает_сообщение_один_раз() {
+    let Some((db, services, _server, ctx)) = setup().await else {
+        return;
+    };
+    let payment = stars_invoice(&db, &services, 766).await;
+    handle_update(
+        &ctx,
+        serde_json::from_value(paid_update(130, 766, &payment, "stx-766")).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        payment_of(&db, payment.id).await.status,
+        PaymentStatus::Paid
+    );
+    assert!(stars_notices(&db).await.is_empty());
+    let echo = refund_echo(131, 766, &payment, "stx-766", 350);
+    handle_update(&ctx, serde_json::from_value(echo.clone()).unwrap()).await;
+    assert_eq!(
+        payment_of(&db, payment.id).await.status,
+        PaymentStatus::Refunded
+    );
+    let notices = stars_notices(&db).await;
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].0, payment.client_id);
+    assert_eq!(notices[0].1["stars"], 350);
+    assert_eq!(notices[0].1["label"], "Стандарт 766 · 90\u{a0}дней");
+    assert_eq!(notices[0].1["payment_id"], payment.id.0);
+    handle_update(&ctx, serde_json::from_value(echo.clone()).unwrap()).await;
+    assert_eq!(
+        stars_notices(&db).await.len(),
+        1,
+        "повтор того же апдейта написал клиенту второй раз"
+    );
+    let blocked = stars_invoice(&db, &services, 767).await;
+    handle_update(
+        &ctx,
+        serde_json::from_value(paid_update(132, 767, &blocked, "stx-767")).unwrap(),
+    )
+    .await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO refunds (payment_id, amount_minor, currency, method, subscription_action, reason) \
+             VALUES ($1, 350, 'XTR', 'provider', 'keep', $2)",
+        )
+        .bind(blocked.id.0)
+        .bind(sn_services::inbox::BLOCKED_REFUND_REASON)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        conn.payments()
+            .transition(blocked.id, PaymentStatus::Refunded, None, None)
+            .await
+            .unwrap();
+    }
+    let blocked_echo = refund_echo(133, 767, &blocked, "stx-767", 350);
+    handle_update(&ctx, serde_json::from_value(blocked_echo.clone()).unwrap()).await;
+    assert_eq!(
+        ledger::status(&services, &stars_event(blocked_echo))
+            .await
+            .unwrap(),
+        Some(ledger::Status::Done)
+    );
+    assert_eq!(
+        stars_notices(&db).await.len(),
+        1,
+        "заблокированному клиенту уже написали о возврате оплаты"
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оплату_звёздами_после_сбоя_можно_провести_снова_без_двойной_выдачи() {
+    let Some((db, services, _server, ctx)) = setup().await else {
+        return;
+    };
+    let admin = owner(&services).await;
+    let payment = stars_invoice(&db, &services, 770).await;
+    let update = paid_update(140, 770, &payment, "stx-770");
+    let id = seed_failed(&db, &payment, &update).await;
+    let (_mismatch, _, mismatch_id) = under_review(&db, &services, &ctx, 771, "stx-771").await;
+    let review = StarsReview::new(&services);
+    let page = review.list(PageRequest::default()).await.unwrap();
+    let failed = page.items.iter().find(|item| item.id == id).unwrap();
+    assert!(failed.retryable, "после сбоя оплату можно провести снова");
+    assert!(failed.refundable);
+    let mismatch = page
+        .items
+        .iter()
+        .find(|item| item.id == mismatch_id)
+        .unwrap();
+    assert!(
+        !mismatch.retryable,
+        "при расхождении суммы провести снова нельзя"
+    );
+    assert_eq!(
+        review.retry(mismatch_id, admin).await.unwrap_err().code(),
+        "stars.review_not_retryable"
+    );
+    assert_eq!(
+        ledger::status(&services, &stars_event(update.clone()))
+            .await
+            .unwrap(),
+        Some(ledger::Status::Review)
+    );
+    let done = review.retry(id, admin).await.unwrap();
+    assert_eq!(done.outcome, StarsRetryOutcome::Done);
+    assert_eq!(done.id, id);
+    assert_eq!(done.charge_id, "stx-770");
+    assert_eq!(done.payment_id, Some(payment.id));
+    let paid = payment_of(&db, payment.id).await;
+    assert_eq!(paid.status, PaymentStatus::Paid);
+    assert_eq!(paid.provider_txid.as_deref(), Some("stx-770"));
+    assert_eq!(order_status(&db, &paid).await, OrderStatus::Paid);
+    assert_eq!(
+        ledger::status(&services, &stars_event(update.clone()))
+            .await
+            .unwrap(),
+        Some(ledger::Status::Done)
+    );
+    assert_eq!(fulfil_jobs(&db).await, 1);
+    assert_eq!(
+        review.retry(id, admin).await.unwrap_err().code(),
+        "stars.review_status"
+    );
+    handle_update(&ctx, serde_json::from_value(update.clone()).unwrap()).await;
+    assert_eq!(
+        fulfil_jobs(&db).await,
+        1,
+        "повтор апдейта выдал заказ второй раз"
+    );
+    assert_eq!(
+        payment_of(&db, payment.id).await.provider_txid.as_deref(),
+        Some("stx-770")
+    );
+    let audit = audit_of(&db, RETRIED_ACTION).await;
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].actor_kind, "admin");
+    assert_eq!(audit[0].actor_id, Some(admin.0));
+    assert_eq!(audit[0].entity_id, Some(payment.id.0));
+    assert_eq!(audit[0].details["charge_id"], "stx-770");
+    assert_eq!(audit[0].details["reason"], "модуль не ответил");
+    assert!(
+        review
+            .list(PageRequest::default())
+            .await
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.id != id)
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn повторное_проведение_при_новом_сбое_оставляет_оплату_в_очереди() {
+    let Some((db, services, _server, _ctx)) = setup().await else {
+        return;
+    };
+    let admin = owner(&services).await;
+    let payment = stars_invoice(&db, &services, 772).await;
+    let update = paid_update(150, 772, &payment, "stx-772");
+    let id = seed_failed(&db, &payment, &update).await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        for sql in [
+            "CREATE FUNCTION test_refuse_payment() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN RAISE EXCEPTION 'база недоступна' USING ERRCODE = '40001'; END $$",
+            "CREATE TRIGGER payments_refuse BEFORE UPDATE ON payments \
+             FOR EACH ROW EXECUTE FUNCTION test_refuse_payment()",
+        ] {
+            sqlx::query(sql).execute(conn.conn()).await.unwrap();
+        }
+    }
+    let review = StarsReview::new(&services);
+    let waiting = review.retry(id, admin).await.unwrap();
+    assert_eq!(waiting.outcome, StarsRetryOutcome::Pending);
+    assert!(waiting.reason.is_some());
+    assert_eq!(
+        ledger::status(&services, &stars_event(update.clone()))
+            .await
+            .unwrap(),
+        Some(ledger::Status::Pending)
+    );
+    assert!(
+        review
+            .list(PageRequest::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        payment_of(&db, payment.id).await.status,
+        PaymentStatus::Pending
+    );
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query("DROP TRIGGER payments_refuse ON payments")
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE bot_star_events SET next_attempt_at = now() - interval '1 second' WHERE id = $1")
+            .bind(id)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let retried = ledger::retry_due(&services, Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert_eq!(retried.applied, 1);
+    assert_eq!(
+        payment_of(&db, payment.id).await.status,
+        PaymentStatus::Paid
+    );
+    assert_eq!(fulfil_jobs(&db).await, 1);
     db.cleanup().await;
 }

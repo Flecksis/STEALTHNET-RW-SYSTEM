@@ -1,5 +1,6 @@
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
+use crate::stars_ledger::{self, RefundNotice};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,10 +9,12 @@ use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId};
 use sn_domain::money::{Amount, PayCurrency, Stars};
 use sn_domain::order::OrderStatus;
 use sn_domain::paging::{Page, PageRequest};
-use sn_domain::payment::{PaymentStatus, providers};
-use sn_payments::providers::{STARS_TOKEN_FIELD, StarsPaymentEvent, TelegramStars};
+use sn_domain::payment::{Payment, PaymentStatus, providers};
+use sn_payments::providers::{STARS_TOKEN_FIELD, StarsPayment, StarsPaymentEvent, TelegramStars};
 use sn_payments::{PaymentError, ProviderConfig};
 use sn_store::{ActorKind, AuditEntry, Db, StoreError, Tx, audit_entity};
+use std::time::Duration;
+use uuid::Uuid;
 
 #[cfg(test)]
 mod tests;
@@ -23,18 +26,25 @@ pub const STATUS_CLOSED: &str = "closed";
 pub const REFUNDED_ACTION: &str = "payment.stars_review_refunded";
 pub const REFUND_FAILED_ACTION: &str = "payment.stars_review_refund_failed";
 pub const CLOSED_ACTION: &str = "payment.stars_review_closed";
+pub const RETRIED_ACTION: &str = "payment.stars_review_retried";
 
 const SUCCESSFUL_PAYMENT: &str = "successful_payment";
 const REFUNDED_PAYMENT: &str = "refunded_payment";
 const ALREADY_REFUNDED: &str = "CHARGE_ALREADY_REFUNDED";
 const ERROR_MAX: usize = 300;
+const RETRY_ATTEMPTS: u32 = 2;
+const RETRY_LEASE: Duration = Duration::from_secs(300);
+const RETRY_PAUSE: Duration = Duration::from_secs(60);
 
 const LIST_SQL: &str = "SELECT e.id, e.charge_id, e.event, e.payload, e.source, e.attempts, e.last_error, \
      e.created_at, e.updated_at, \
      p.id AS payment_id, p.client_id AS payment_client_id, p.status AS payment_status, \
      p.amount_minor AS payment_minor, p.currency AS payment_currency, p.provider_txid, \
+     p.provider AS payment_provider, p.public_id AS payment_public_id, \
      o.id AS order_id, o.status AS order_status, \
      c.id AS payer_client_id, \
+     CASE WHEN c.id IS NOT NULL THEN i.meta ->> 'first_name' END AS payer_first_name, \
+     CASE WHEN c.id IS NOT NULL THEN i.meta ->> 'last_name' END AS payer_last_name, \
      EXISTS (SELECT 1 FROM bot_star_events r \
          WHERE r.charge_id = e.charge_id AND r.event = 'refunded_payment') AS telegram_refunded, \
      EXISTS (SELECT 1 FROM payments x \
@@ -92,6 +102,7 @@ pub struct StarsReviewItem {
     pub stars: Option<Stars>,
     pub telegram_user_id: Option<i64>,
     pub payer_client_id: Option<ClientId>,
+    pub payer_name: Option<String>,
     pub invoice_payload: Option<String>,
     pub payment: Option<StarsReviewPayment>,
     pub order: Option<StarsReviewOrder>,
@@ -99,6 +110,7 @@ pub struct StarsReviewItem {
     pub source: String,
     pub attempts: i32,
     pub refundable: bool,
+    pub retryable: bool,
     pub telegram_refunded: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -124,6 +136,23 @@ pub struct StarsResolution {
     pub resolved_at: DateTime<Utc>,
     pub resolved_by: Option<AdminId>,
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StarsRetryOutcome {
+    Done,
+    Review,
+    Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StarsRetry {
+    pub id: i64,
+    pub charge_id: String,
+    pub outcome: StarsRetryOutcome,
+    pub reason: Option<String>,
+    pub payment_id: Option<PaymentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,9 +197,13 @@ struct ItemRow {
     payment_minor: Option<i64>,
     payment_currency: Option<String>,
     provider_txid: Option<String>,
+    payment_provider: Option<String>,
+    payment_public_id: Option<Uuid>,
     order_id: Option<i64>,
     order_status: Option<String>,
     payer_client_id: Option<i64>,
+    payer_first_name: Option<String>,
+    payer_last_name: Option<String>,
     telegram_refunded: bool,
     credited: bool,
 }
@@ -187,6 +220,59 @@ struct EventRow {
     resolved_at: Option<DateTime<Utc>>,
     resolved_by: Option<i64>,
     resolution_note: Option<String>,
+}
+
+struct Invoice<'a> {
+    provider: &'a str,
+    public_id: Uuid,
+    status: PaymentStatus,
+    amount: Amount,
+}
+
+impl<'a> From<&'a Payment> for Invoice<'a> {
+    fn from(payment: &'a Payment) -> Self {
+        Invoice {
+            provider: payment.provider.as_str(),
+            public_id: payment.public_id,
+            status: payment.status,
+            amount: payment.amount,
+        }
+    }
+}
+
+fn retryable(
+    event: StarsPaymentEvent,
+    payload: &Value,
+    invoice: Option<Invoice<'_>>,
+    credited: bool,
+) -> bool {
+    let Ok(paid) = serde_json::from_value::<StarsPayment>(payload.clone()) else {
+        return false;
+    };
+    event == StarsPaymentEvent::SuccessfulPayment
+        && paid.event == StarsPaymentEvent::SuccessfulPayment
+        && paid.telegram_user_id > 0
+        && !credited
+        && invoice.is_some_and(|invoice| {
+            invoice.provider == providers::STARS
+                && invoice.amount == Amount::new(paid.total_amount, PayCurrency::Xtr)
+                && Uuid::parse_str(paid.invoice_payload.trim()).ok() == Some(invoice.public_id)
+                && matches!(
+                    invoice.status,
+                    PaymentStatus::Pending | PaymentStatus::Failed | PaymentStatus::Canceled
+                )
+        })
+}
+
+fn full_name(first: Option<&str>, last: Option<&str>) -> Option<String> {
+    let name = [first, last]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!name.is_empty()).then_some(name)
 }
 
 fn event_kind(value: &str) -> ServiceResult<StarsPaymentEvent> {
@@ -228,6 +314,20 @@ impl TryFrom<ItemRow> for StarsReviewItem {
             }),
             _ => None,
         };
+        let invoice = match (
+            &payment,
+            row.payment_provider.as_deref(),
+            row.payment_public_id,
+        ) {
+            (Some(payment), Some(provider), Some(public_id)) => Some(Invoice {
+                provider,
+                public_id,
+                status: payment.status,
+                amount: payment.amount,
+            }),
+            _ => None,
+        };
+        let retryable = retryable(event, &row.payload, invoice, row.credited);
         Ok(StarsReviewItem {
             id: row.id,
             charge_id: row.charge_id,
@@ -235,6 +335,10 @@ impl TryFrom<ItemRow> for StarsReviewItem {
             stars: payload.stars,
             telegram_user_id: payload.payer,
             payer_client_id: row.payer_client_id.map(ClientId),
+            payer_name: full_name(
+                row.payer_first_name.as_deref(),
+                row.payer_last_name.as_deref(),
+            ),
             invoice_payload: payload.invoice,
             payment,
             order,
@@ -244,6 +348,7 @@ impl TryFrom<ItemRow> for StarsReviewItem {
             refundable: event == StarsPaymentEvent::SuccessfulPayment
                 && payload.payer.is_some()
                 && !row.credited,
+            retryable,
             telegram_refunded: row.telegram_refunded,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -377,6 +482,22 @@ async fn settle(
         }),
         StarsResolutionKind::Closed => serde_json::json!({ "comment": decision.comment }),
     };
+    if decision.status == StarsResolutionKind::Refunded
+        && !decision.already_refunded
+        && let Some(stars) = payload.stars
+    {
+        stars_ledger::refund_notice(
+            &mut tx,
+            &RefundNotice {
+                charge: &event.charge_id,
+                stars: stars.0,
+                payer: payload.payer,
+                invoice: payload.invoice.as_deref(),
+                payment: event.payment_id.map(PaymentId),
+            },
+        )
+        .await?;
+    }
     audit(
         &mut tx,
         decision.admin,
@@ -598,6 +719,93 @@ impl<'a> StarsReview<'a> {
         };
         settle(tx, event, payload, decision).await.inspect_err(|err| {
             tracing::error!(event = event_id, charge = %charge, error = %err, "звёзды возвращены, но событие не закрыто: повторите возврат");
+        })
+    }
+
+    pub async fn retry(&self, id: i64, admin: AdminId) -> ServiceResult<StarsRetry> {
+        let mut tx = self.services.store().begin().await?;
+        let event = lock(&mut tx, id).await?;
+        let payload = Payload::read(&event.payload);
+        match event.status.as_str() {
+            STATUS_REVIEW => {}
+            STATUS_REFUNDED => {
+                return Err(ServiceError::rejected(
+                    "stars.review_refunded",
+                    "Звёзды по этому событию уже возвращены",
+                ));
+            }
+            STATUS_CLOSED => {
+                return Err(ServiceError::rejected(
+                    "stars.review_closed",
+                    "Событие уже закрыто без возврата звёзд",
+                ));
+            }
+            _ => return Err(not_waiting()),
+        }
+        let kind = event_kind(&event.event)?;
+        let invoice = match event.payment_id {
+            Some(payment) => Some(tx.payments().get(PaymentId(payment)).await?),
+            None => None,
+        };
+        let credited = tx
+            .payments()
+            .by_provider_txid(providers::STARS, &event.charge_id)
+            .await?
+            .is_some();
+        let paid = serde_json::from_value::<StarsPayment>(event.payload.clone())
+            .ok()
+            .filter(|_| retryable(kind, &event.payload, invoice.as_ref().map(Invoice::from), credited))
+            .ok_or_else(|| {
+                ServiceError::rejected(
+                    "stars.review_not_retryable",
+                    "Эту оплату нельзя провести снова: она на проверке из-за расхождения, а не из-за сбоя. Верните звёзды или закройте событие с пояснением",
+                )
+            })?;
+        sqlx::query(
+            "UPDATE bot_star_events SET status = 'pending', next_attempt_at = $2 \
+             WHERE id = $1 AND status = 'review'",
+        )
+        .bind(event.id)
+        .bind(stars_ledger::later(self.services, RETRY_LEASE))
+        .execute(tx.conn())
+        .await?;
+        audit(
+            &mut tx,
+            admin,
+            RETRIED_ACTION,
+            &event,
+            &payload,
+            serde_json::json!({}),
+        )
+        .await?;
+        tx.commit().await?;
+        let verdict = stars_ledger::process(self.services, &paid, RETRY_ATTEMPTS).await;
+        stars_ledger::finish(self.services, &paid, &verdict, RETRY_PAUSE).await?;
+        let mut conn = self.services.store().conn().await?;
+        let (status, reason, payment): (String, Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT status, last_error, payment_id FROM bot_star_events WHERE id = $1",
+        )
+        .bind(event.id)
+        .fetch_one(conn.conn())
+        .await?;
+        let outcome = match status.as_str() {
+            "done" => StarsRetryOutcome::Done,
+            STATUS_REVIEW => StarsRetryOutcome::Review,
+            _ => StarsRetryOutcome::Pending,
+        };
+        tracing::info!(
+            event = event.id,
+            charge = %event.charge_id,
+            admin = %admin,
+            outcome = ?outcome,
+            "оплату звёздами провели снова по просьбе администратора"
+        );
+        Ok(StarsRetry {
+            id: event.id,
+            charge_id: event.charge_id,
+            outcome,
+            reason,
+            payment_id: payment.map(PaymentId),
         })
     }
 }

@@ -146,9 +146,9 @@ fn later(services: &Services, pause: Duration) -> chrono::DateTime<chrono::Utc> 
     services.now() + chrono::Duration::from_std(pause).unwrap_or_else(|_| chrono::Duration::zero())
 }
 
-fn offset_for(value: &serde_json::Value, bot: i64) -> Option<i64> {
+fn offset_for(value: &serde_json::Value, bot: i64, same_bot: bool) -> Option<i64> {
     match value {
-        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::Number(n) if same_bot => n.as_i64(),
         serde_json::Value::Object(map) if map.get("bot").and_then(|b| b.as_i64()) == Some(bot) => {
             map.get("offset").and_then(|o| o.as_i64())
         }
@@ -156,13 +156,26 @@ fn offset_for(value: &serde_json::Value, bot: i64) -> Option<i64> {
     }
 }
 
-async fn load_offset(services: &Services, bot: i64) -> Result<Option<i64>, StoreError> {
+async fn load_offset(
+    services: &Services,
+    bot: i64,
+    same_bot: bool,
+) -> Result<Option<i64>, StoreError> {
     let mut conn = services.store().conn().await?;
     Ok(conn
         .bot_state()
         .get(OFFSET_KEY)
         .await?
-        .and_then(|v| offset_for(&v, bot)))
+        .and_then(|v| offset_for(&v, bot, same_bot)))
+}
+
+async fn remembered_username(services: &Services) -> Result<Option<String>, StoreError> {
+    let mut conn = services.store().conn().await?;
+    Ok(conn
+        .settings()
+        .get(keys::BOT_USERNAME)
+        .await?
+        .and_then(|v| v.as_str().map(str::to_string)))
 }
 
 async fn save_offset(services: &Services, bot: i64, offset: i64) -> Result<(), StoreError> {
@@ -364,6 +377,8 @@ impl Bot {
         let takeover = runtime.take_takeover();
         let api = Arc::new(TelegramApi::new(&self.config.api_base, token));
         let me = api.get_me().await?;
+        let previous = remembered_username(&self.services).await?;
+        let same_bot = previous.is_some() && previous == me.username;
         if let Some(username) = me.username.as_deref()
             && let Err(err) = remember_username(&self.services, username).await
         {
@@ -384,7 +399,7 @@ impl Bot {
         }
         let mut commands = None;
         sync_commands(&api, &self.services, &mut commands).await;
-        let mut offset = load_offset(&self.services, me.id).await?;
+        let mut offset = load_offset(&self.services, me.id, same_bot).await?;
         tracing::info!(username = %me.username.clone().unwrap_or_default(), "бот подключён");
         let ctx = BotCtx {
             services: self.services.clone(),

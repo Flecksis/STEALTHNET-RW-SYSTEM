@@ -232,6 +232,7 @@ pub struct ClientCard {
     pub client: Client,
     pub identities: Vec<Identity>,
     pub balance: Money,
+    pub balance_held: Money,
     pub referral_balance: Money,
     pub subscriptions: Vec<Subscription>,
     pub tariffs: Vec<TariffBrief>,
@@ -358,6 +359,12 @@ impl<'a> ClientOps<'a> {
         let client = conn.clients().get(id).await?;
         let identities = conn.clients().identities(id).await?;
         let balance = conn.ledger().balance(id, Wallet::Main, currency).await?;
+        let balance_held = Money::new(
+            conn.payments()
+                .held_refunds_minor(id, currency.into())
+                .await?,
+            currency,
+        );
         let referral_balance = conn
             .ledger()
             .balance(id, Wallet::Referral, currency)
@@ -384,6 +391,7 @@ impl<'a> ClientOps<'a> {
             client,
             identities,
             balance,
+            balance_held,
             referral_balance,
             subscriptions,
             tariffs,

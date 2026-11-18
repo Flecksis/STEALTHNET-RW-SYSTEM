@@ -509,12 +509,24 @@ async fn ручной_разбор_заказов_и_звёзд_требует_�
     }
     for (index, (status, reply)) in replies.iter().enumerate() {
         if index == 5 {
-            assert_eq!(*status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
-            assert_eq!(reply["error"]["code"], "stars.bot_token_missing");
+            assert_eq!(*status, StatusCode::FORBIDDEN, "{reply}");
+            assert_eq!(reply["error"]["code"], "auth.forbidden");
         } else {
             assert_eq!(*status, StatusCode::OK, "{}: {reply}", calls[index].1);
         }
     }
+    let (refunder, _) = h
+        .staff(
+            "money-refunds@example.com",
+            AdminRole::ReadOnly,
+            &[Permission::Money, Permission::Refunds],
+        )
+        .await;
+    let (status, reply) = h
+        .send(Method::POST, &calls[5].1, Some(&refunder), None)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
+    assert_eq!(reply["error"]["code"], "stars.bot_token_missing");
     assert_eq!(replies[0].1.as_array().unwrap().len(), 3);
     assert_eq!(replies[4].1["total"], 2);
     assert_eq!(h.plan_stage(recalculated).await, PlanStage::None);

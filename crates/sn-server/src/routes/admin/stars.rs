@@ -7,12 +7,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
-use sn_services::stars_review::{StarsResolution, StarsReviewPage};
+use sn_services::stars_review::{StarsResolution, StarsRetry, StarsReviewPage};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/stars/review", get(list))
         .route("/stars/review/{id}/refund", post(refund))
+        .route("/stars/review/{id}/retry", post(retry))
         .route("/stars/review/{id}/close", post(close))
 }
 
@@ -40,12 +41,28 @@ async fn refund(
     body: Option<ApiJson<ResolveRequest>>,
 ) -> ApiResult<Json<StarsResolution>> {
     admin.require(Permission::Money)?;
+    admin.require(Permission::Refunds)?;
     let body = body.map(|b| b.0).unwrap_or_default();
     Ok(Json(
         state
             .services
             .stars_review()
             .refund(id, body.comment.as_deref(), admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn retry(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<StarsRetry>> {
+    admin.require(Permission::Money)?;
+    Ok(Json(
+        state
+            .services
+            .stars_review()
+            .retry(id, admin.0.admin_id)
             .await?,
     ))
 }
@@ -77,7 +94,7 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request, StatusCode, header};
     use serde_json::{Value, json};
-    use sn_domain::access::AdminRole;
+    use sn_domain::access::{AdminRole, Permission};
     use sn_domain::client::{RegistrationSource, TelegramProfile};
     use sn_domain::ids::ClientId;
     use sn_domain::money::{Amount, Currency, Money, PayCurrency};
@@ -86,7 +103,7 @@ mod tests {
     use sn_domain::pricing::Quote;
     use sn_modules::ModuleRegistry;
     use sn_payments::ProviderRegistry;
-    use sn_services::stars_review::{CLOSED_ACTION, REFUNDED_ACTION};
+    use sn_services::stars_review::{CLOSED_ACTION, REFUNDED_ACTION, RETRIED_ACTION};
     use sn_services::{EnvFallbacks, ServiceDeps, Services, SystemClock};
     use sn_store::testing::{TestDb, test_store};
     use sn_store::{Db, NewAdmin, SecretBox, audit_entity};
@@ -188,6 +205,28 @@ mod tests {
             self.login(email).await
         }
 
+        async fn staff_with(&self, email: &str, extra: &[Permission]) -> String {
+            let hash = sn_services::auth::hash_password(PASSWORD).unwrap();
+            {
+                let mut conn = self.services().store().conn().await.unwrap();
+                let created = conn
+                    .admins()
+                    .create(&NewAdmin {
+                        email: email.into(),
+                        password_hash: hash,
+                        role: AdminRole::ReadOnly,
+                        must_change_password: false,
+                    })
+                    .await
+                    .unwrap();
+                conn.admins()
+                    .set_role(created.id, AdminRole::ReadOnly, extra)
+                    .await
+                    .unwrap();
+            }
+            self.login(email).await
+        }
+
         async fn client(&self, telegram_id: i64) -> ClientId {
             self.services()
                 .clients()
@@ -254,10 +293,22 @@ mod tests {
         }
 
         async fn seed_review(&self, charge: &str, event: &str, payer: i64, payment: &Payment) {
+            self.seed_review_of(charge, event, payer, payment, payment.amount.minor - 1)
+                .await;
+        }
+
+        async fn seed_review_of(
+            &self,
+            charge: &str,
+            event: &str,
+            payer: i64,
+            payment: &Payment,
+            stars: i64,
+        ) {
             let payload = json!({
                 "event": event,
                 "invoice_payload": payment.public_id.to_string(),
-                "total_amount": payment.amount.minor - 1,
+                "total_amount": stars,
                 "currency": "XTR",
                 "telegram_payment_charge_id": charge,
                 "telegram_user_id": payer,
@@ -528,6 +579,143 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(page["items"].as_array().unwrap().len(), 2);
         assert!(h.audit(&payment, REFUNDED_ACTION).await.is_empty());
+        h.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn вернуть_звёзды_можно_только_с_правами_деньги_и_возвраты() {
+        let Some(h) = harness().await else { return };
+        let cashier = h
+            .staff_with("cashier@example.com", &[Permission::Money])
+            .await;
+        let refunder = h
+            .staff_with("refunds@example.com", &[Permission::Refunds])
+            .await;
+        let both = h
+            .staff_with(
+                "both@example.com",
+                &[Permission::Money, Permission::Refunds],
+            )
+            .await;
+        let client = h.client(905).await;
+        let payment = h.stars_invoice(client).await;
+        h.seed_review("stx-905", "successful_payment", 905, &payment)
+            .await;
+        let (status, page) = h
+            .send(Method::GET, "/api/admin/stars/review", Some(&cashier), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let id = page["items"][0]["id"].as_i64().unwrap();
+        let refund = format!("/api/admin/stars/review/{id}/refund");
+        for token in [&cashier, &refunder] {
+            let (status, body) = h
+                .send(
+                    Method::POST,
+                    &refund,
+                    Some(token),
+                    Some(json!({ "comment": "вернуть" })),
+                )
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+            assert_eq!(body["error"]["code"], "auth.forbidden");
+        }
+        let (status, _) = h
+            .send(
+                Method::GET,
+                "/api/admin/stars/review",
+                Some(&refunder),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, body) = h
+            .send(
+                Method::POST,
+                &refund,
+                Some(&both),
+                Some(json!({ "comment": "вернуть" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "stars.bot_token_missing");
+        assert!(h.audit(&payment, REFUNDED_ACTION).await.is_empty());
+        h.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn провести_снова_доступно_только_после_сбоя() {
+        let Some(h) = harness().await else { return };
+        let owner = h.owner().await;
+        let support = h.staff("support@example.com", AdminRole::Support).await;
+        let client = h.client(906).await;
+        let mismatch = h.stars_invoice(client).await;
+        h.seed_review("stx-906", "successful_payment", 906, &mismatch)
+            .await;
+        let failed = h.stars_invoice(client).await;
+        h.seed_review_of(
+            "stx-907",
+            "successful_payment",
+            906,
+            &failed,
+            failed.amount.minor,
+        )
+        .await;
+        let (status, page) = h
+            .send(Method::GET, "/api/admin/stars/review", Some(&owner), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let item = |charge: &str| {
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["charge_id"] == charge)
+                .cloned()
+                .unwrap()
+        };
+        let (mismatch_item, failed_item) = (item("stx-906"), item("stx-907"));
+        assert_eq!(mismatch_item["retryable"], false);
+        assert_eq!(failed_item["retryable"], true);
+        let retry_mismatch = format!(
+            "/api/admin/stars/review/{}/retry",
+            mismatch_item["id"].as_i64().unwrap()
+        );
+        let retry_failed = format!(
+            "/api/admin/stars/review/{}/retry",
+            failed_item["id"].as_i64().unwrap()
+        );
+        let (status, _) = h.send(Method::POST, &retry_failed, None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = h
+            .send(Method::POST, &retry_failed, Some(&support), None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, body) = h
+            .send(Method::POST, &retry_mismatch, Some(&owner), None)
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "stars.review_not_retryable");
+        assert!(h.audit(&mismatch, RETRIED_ACTION).await.is_empty());
+        let (status, body) = h
+            .send(Method::POST, &retry_failed, Some(&owner), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["charge_id"], "stx-907");
+        assert_eq!(body["payment_id"], failed.id.0);
+        assert!(
+            ["done", "review", "pending"].contains(&body["outcome"].as_str().unwrap()),
+            "{body}"
+        );
+        assert_eq!(h.audit(&failed, RETRIED_ACTION).await.len(), 1);
+        let (status, body) = h
+            .send(
+                Method::POST,
+                "/api/admin/stars/review/999999/retry",
+                Some(&owner),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         h.db.cleanup().await;
     }
 }

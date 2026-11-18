@@ -736,6 +736,24 @@ impl<'c> PaymentsRepo<'c> {
         Ok(minor)
     }
 
+    pub async fn held_refunds_minor(
+        &mut self,
+        client_id: ClientId,
+        currency: PayCurrency,
+    ) -> StoreResult<i64> {
+        let minor: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(sum(r.amount_minor), 0)::bigint FROM provider_refunds r \
+             JOIN payments p ON p.id = r.payment_id \
+             WHERE p.client_id = $1 AND r.currency = $2 AND r.status = 'pending' \
+               AND r.hold_entry_id IS NOT NULL",
+        )
+        .bind(client_id.0)
+        .bind(currency.code())
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok(minor)
+    }
+
     pub async fn provider_refunds(
         &mut self,
         payment_id: PaymentId,

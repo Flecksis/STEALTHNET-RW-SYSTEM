@@ -538,6 +538,14 @@ const RESULT: Var = Var {
     name: "result",
     hint: "как выдан приз",
 };
+const REFUNDED_STARS: Var = Var {
+    name: "stars",
+    hint: "сколько звёзд вернули",
+};
+const PURCHASE: Var = Var {
+    name: "label",
+    hint: "за что платили",
+};
 
 use Section::*;
 
@@ -1237,6 +1245,12 @@ pub static CATALOG: &[Entry] = &[
         "Промокод не подошёл",
         "{error} Промокод убран.",
         &[ERROR],
+    ),
+    hideable(
+        "buy.btn.change_devices",
+        Buy,
+        "Кнопка «Изменить доп. устройства» перед оплатой",
+        "Изменить доп. устройства",
     ),
     hideable(
         "buy.btn.promo",
@@ -2538,6 +2552,20 @@ pub static CATALOG: &[Entry] = &[
         "Оплата возвращена, без суммы",
         "Оплата возвращена: аккаунт заблокирован, заказ не выдан.",
         &[],
+    ),
+    text(
+        "notify.stars_refunded",
+        Notify,
+        "Звёзды за покупку возвращены",
+        "Звёзды за покупку «{label}» возвращены: {stars}.",
+        &[PURCHASE, REFUNDED_STARS],
+    ),
+    text(
+        "notify.stars_refunded_plain",
+        Notify,
+        "Звёзды возвращены, покупка неизвестна",
+        "Звёзды возвращены: {stars}.",
+        &[REFUNDED_STARS],
     ),
     text(
         "notify.support_reply",

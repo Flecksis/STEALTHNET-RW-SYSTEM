@@ -273,6 +273,7 @@ async fn список_показывает_события_на_ручной_пр
     assert_eq!(item.stars, Some(Stars(349)));
     assert_eq!(item.telegram_user_id, Some(801));
     assert_eq!(item.payer_client_id, Some(payment.client_id));
+    assert_eq!(item.payer_name.as_deref(), Some("Алексей"));
     assert_eq!(
         item.invoice_payload.as_deref(),
         Some(payment.public_id.to_string().as_str())
@@ -321,6 +322,7 @@ async fn список_показывает_события_на_ручной_пр
     assert_eq!(refund.event, StarsPaymentEvent::RefundedPayment);
     assert_eq!(refund.stars, Some(Stars(150)));
     assert_eq!(refund.payer_client_id, None);
+    assert_eq!(refund.payer_name, None);
     assert!(!refund.refundable);
     assert!(refund.telegram_refunded);
     seed(
@@ -741,4 +743,136 @@ fn плательщик_и_сумма_читаются_из_события_да�
             "{broken}"
         );
     }
+}
+
+async fn failed(services: &Services, payment: &Payment, charge: &str, payer: i64) -> i64 {
+    seed(
+        services,
+        Seed {
+            charge,
+            event: SUCCESSFUL_PAYMENT,
+            payload: payload(
+                SUCCESSFUL_PAYMENT,
+                charge,
+                payer,
+                payment.amount.minor,
+                &payment.public_id.to_string(),
+            ),
+            status: STATUS_REVIEW,
+            reason: Some("модуль не ответил"),
+            payment: Some(payment.id),
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn провести_снова_можно_только_оплату_после_сбоя() {
+    let Some((db, services, admin)) = setup().await else {
+        return;
+    };
+    let review = StarsReview::new(&services);
+    let short = stars_invoice(&services, 861, 350).await;
+    let mismatch = underpaid(&services, &short, "stx-861", 861).await;
+    let broke = stars_invoice(&services, 862, 350).await;
+    let retryable = failed(&services, &broke, "stx-862", 862).await;
+    let foreign = seed(
+        &services,
+        Seed {
+            charge: "stx-863",
+            event: SUCCESSFUL_PAYMENT,
+            payload: payload(SUCCESSFUL_PAYMENT, "stx-863", 863, 350, "не uuid"),
+            status: STATUS_REVIEW,
+            reason: Some("платёж выставлен другой платёжной системой"),
+            payment: None,
+        },
+    )
+    .await;
+    let refund_notice = seed(
+        &services,
+        Seed {
+            charge: "stx-862",
+            event: REFUNDED_PAYMENT,
+            payload: payload(
+                REFUNDED_PAYMENT,
+                "stx-862",
+                862,
+                350,
+                &broke.public_id.to_string(),
+            ),
+            status: STATUS_REVIEW,
+            reason: Some("сбой"),
+            payment: Some(broke.id),
+        },
+    )
+    .await;
+    let other = stars_invoice(&services, 864, 350).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.payments()
+            .transition(other.id, PaymentStatus::Paid, Some("stx-864-a"), None)
+            .await
+            .unwrap();
+    }
+    let paid_elsewhere = failed(&services, &other, "stx-864-b", 864).await;
+    let page = review.list(PageRequest::default()).await.unwrap();
+    let flag = |id: i64| {
+        page.items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.retryable)
+            .unwrap()
+    };
+    assert!(flag(retryable));
+    for id in [mismatch, foreign, refund_notice, paid_elsewhere] {
+        assert!(!flag(id), "событие {id}");
+    }
+    let json = serde_json::to_value(&page.items[0]).unwrap();
+    assert!(json["retryable"].is_boolean());
+    for id in [mismatch, foreign, refund_notice, paid_elsewhere] {
+        let err = review.retry(id, admin).await.unwrap_err();
+        assert_eq!(err.code(), "stars.review_not_retryable", "событие {id}");
+        assert_eq!(stored(&services, id).await.status, STATUS_REVIEW);
+    }
+    assert!(audit_of(&services, RETRIED_ACTION).await.is_empty());
+    review.close(mismatch, "разобрали", admin).await.unwrap();
+    assert_eq!(
+        review.retry(mismatch, admin).await.unwrap_err().code(),
+        "stars.review_closed"
+    );
+    assert!(matches!(
+        review.retry(999_999, admin).await,
+        Err(ServiceError::NotFound(_))
+    ));
+    let done = seed(
+        &services,
+        Seed {
+            charge: "stx-865",
+            event: SUCCESSFUL_PAYMENT,
+            payload: payload(SUCCESSFUL_PAYMENT, "stx-865", 865, 350, "не uuid"),
+            status: "done",
+            reason: None,
+            payment: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        review.retry(done, admin).await.unwrap_err().code(),
+        "stars.review_status"
+    );
+    let outcome = review.retry(retryable, admin).await.unwrap();
+    assert_eq!(outcome.id, retryable);
+    assert_eq!(outcome.charge_id, "stx-862");
+    let expected = match outcome.outcome {
+        StarsRetryOutcome::Done => "done",
+        StarsRetryOutcome::Review => STATUS_REVIEW,
+        StarsRetryOutcome::Pending => "pending",
+    };
+    assert_eq!(stored(&services, retryable).await.status, expected);
+    let retried = audit_of(&services, RETRIED_ACTION).await;
+    assert_eq!(retried.len(), 1);
+    assert_eq!(retried[0].actor_id, Some(admin.0));
+    assert_eq!(retried[0].entity_id, Some(broke.id.0));
+    assert_eq!(retried[0].details["reason"], "модуль не ответил");
+    db.cleanup().await;
 }

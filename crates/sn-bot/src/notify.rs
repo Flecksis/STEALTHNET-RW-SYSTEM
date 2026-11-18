@@ -10,7 +10,7 @@ use sn_domain::client::{IdentityKind, Locale};
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::lang;
-use sn_domain::money::Money;
+use sn_domain::money::{Money, Stars};
 use sn_modules::MailSite;
 use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
 use sn_modules::catalog::{contests, gifts, limits, oauth, referral};
@@ -43,6 +43,7 @@ pub mod templates {
     pub const REPEAT_CREDITED: &str = sn_services::inbox::REPEAT_CREDITED_TEMPLATE;
     pub const REPEAT_REVIEW: &str = sn_services::inbox::REPEAT_REVIEW_TEMPLATE;
     pub const REFUNDED_BLOCKED: &str = sn_services::inbox::BLOCKED_REFUND_TEMPLATE;
+    pub const STARS_REFUNDED: &str = sn_services::stars_ledger::REFUNDED_TEMPLATE;
     pub const AUTORENEW_AFTER_OFF: &str = sn_services::autorenew::CHARGED_AFTER_OFF_TEMPLATE;
     pub const PAYMENT_CREDITED: &str = sn_services::inbox::PAYMENT_CREDITED_TEMPLATE;
     pub const PAYMENT_REVIEW: &str = sn_services::inbox::PAYMENT_REVIEW_TEMPLATE;
@@ -70,6 +71,21 @@ fn text_param(params: &serde_json::Value) -> Option<String> {
         Locale::En => param(params, "text_en").or_else(|| param(params, "text")),
         Locale::Ru => param(params, "text"),
     }
+}
+
+fn label_param(params: &serde_json::Value) -> Option<String> {
+    match lang::current() {
+        Locale::En => param(params, "label_en").or_else(|| param(params, "label")),
+        Locale::Ru => param(params, "label"),
+    }
+}
+
+fn stars_param(params: &serde_json::Value) -> Option<String> {
+    let stars = params
+        .get("stars")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|stars| *stars > 0)?;
+    Some(escape(&text::stars(Stars(stars))))
 }
 
 fn term_param(params: &serde_json::Value) -> Option<String> {
@@ -273,6 +289,19 @@ pub fn render(
             },
             None,
         ),
+        templates::STARS_REFUNDED => {
+            let stars = stars_param(params)?;
+            (
+                match label_param(params) {
+                    Some(label) => t(
+                        "notify.stars_refunded",
+                        &[("label", Html(&label)), ("stars", Html(&stars))],
+                    ),
+                    None => t("notify.stars_refunded_plain", &[("stars", Html(&stars))]),
+                },
+                None,
+            )
+        }
         templates::SUPPORT_REPLY => (
             t(
                 "notify.support_reply",
@@ -704,6 +733,12 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
             lang::pick("Оплата возвращена", "Payment refunded"),
             lang::pick("Открыть сайт", "Open the website"),
             "/",
+        ),
+        templates::STARS_REFUNDED => head(
+            LetterKind::Payments,
+            lang::pick("Звёзды возвращены", "Stars refunded"),
+            lang::pick("История оплат", "Payment history"),
+            "/cabinet/payments",
         ),
         gifts::TEMPLATE_READY => head(
             LetterKind::Payments,

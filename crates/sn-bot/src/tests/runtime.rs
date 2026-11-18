@@ -212,11 +212,26 @@ async fn другой_опросчик_и_вебхук_при_опросе_ви�
     }
 }
 
-async fn first_offset(stored: Option<serde_json::Value>) -> Option<serde_json::Value> {
+async fn first_offset(
+    stored: Option<serde_json::Value>,
+    remembered: Option<&str>,
+) -> Option<serde_json::Value> {
     let (db, services, server, _ctx) = setup().await?;
-    if let Some(value) = stored {
+    {
         let mut conn = db.store.conn().await.unwrap();
-        conn.bot_state().set(OFFSET_KEY, &value).await.unwrap();
+        if let Some(value) = stored {
+            conn.bot_state().set(OFFSET_KEY, &value).await.unwrap();
+        }
+        if let Some(username) = remembered {
+            conn.settings()
+                .set(
+                    sn_domain::settings::keys::BOT_USERNAME,
+                    &serde_json::json!(username),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
     }
     idle_updates(&server).await;
     let cancel = CancellationToken::new();
@@ -242,16 +257,47 @@ async fn смещение_апдейтов_не_переносится_на_др
     };
     probe.cleanup().await;
     assert_eq!(
-        first_offset(Some(serde_json::json!({"bot": 999, "offset": 500}))).await,
+        first_offset(Some(serde_json::json!({"bot": 999, "offset": 500})), None).await,
         Some(serde_json::Value::Null)
     );
     assert_eq!(
-        first_offset(Some(serde_json::json!({"bot": 1, "offset": 88}))).await,
+        first_offset(
+            Some(serde_json::json!({"bot": 999, "offset": 500})),
+            Some("stealth_test_bot")
+        )
+        .await,
+        Some(serde_json::Value::Null),
+        "смещение другого бота не берётся, даже если имя совпало"
+    );
+    assert_eq!(
+        first_offset(Some(serde_json::json!({"bot": 1, "offset": 88})), None).await,
         Some(serde_json::json!(88))
     );
     assert_eq!(
-        first_offset(Some(serde_json::json!(77))).await,
-        Some(serde_json::json!(77))
+        first_offset(None, None).await,
+        Some(serde_json::Value::Null)
     );
-    assert_eq!(first_offset(None).await, Some(serde_json::Value::Null));
+}
+
+#[tokio::test]
+async fn старое_смещение_без_бота_берётся_только_для_того_же_бота() {
+    let Some(probe) = test_store().await else {
+        return;
+    };
+    probe.cleanup().await;
+    assert_eq!(
+        first_offset(Some(serde_json::json!(77)), Some("stealth_test_bot")).await,
+        Some(serde_json::json!(77)),
+        "тот же бот продолжает со своего смещения"
+    );
+    assert_eq!(
+        first_offset(Some(serde_json::json!(77)), Some("old_vpn_bot")).await,
+        Some(serde_json::Value::Null),
+        "после замены бота счёт начинается заново"
+    );
+    assert_eq!(
+        first_offset(Some(serde_json::json!(77)), None).await,
+        Some(serde_json::Value::Null),
+        "неизвестно, чей это счётчик: начинаем заново"
+    );
 }

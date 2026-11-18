@@ -121,6 +121,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.balance_short" => "Balance: {missing} short (you have {balance})",
         "buy.no_methods" => "No payment methods are available right now.",
         "buy.promo_removed" => "{error} Promo code removed.",
+        "buy.btn.change_devices" => "Change extra devices",
         "buy.btn.promo" => "Enter a promo code",
         "buy.btn.promo_remove" => "Remove promo code",
         "buy.ask_promo" => "Enter your promo code:",
@@ -405,6 +406,8 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.payment_refunded_blocked_plain" => {
             "Payment refunded: the account is blocked and the order wasn't delivered."
         }
+        "notify.stars_refunded" => "Stars for “{label}” refunded: {stars}.",
+        "notify.stars_refunded_plain" => "Stars refunded: {stars}.",
         "notify.support_reply" => "<b>Support reply</b>\n\n{body}",
         "notify.gift_ready" => "Gift paid: “{tariff}” for {term}.\nCode: <code>{code}</code>",
         "notify.gift_ready_link" => {

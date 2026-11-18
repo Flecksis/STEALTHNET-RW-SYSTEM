@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { money } from '../lib/format';
 import { t } from '../lib/i18n';
+import { heldBalance } from '../cabinet/model';
 import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from '../cabinet/payments';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
@@ -14,6 +15,7 @@ function failText(err: unknown, fallback: string): string {
 
 export function MiniTopUp() {
   const { me, reload } = useMini();
+  const held = heldBalance(me);
   const [options, setOptions] = useState<TopUpOptions | null>(null);
   const [loadError, setLoadError] = useState<{ code: string; message: string } | null>(null);
   const [preset, setPreset] = useState<number | null>(null);
@@ -169,6 +171,7 @@ export function MiniTopUp() {
       <p className="mn-notes">
         {t('Сейчас на балансе {amount}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.', { amount: money(me.balance) })}
       </p>
+      {held ? <p className="mn-notes">{t('Удержано до ответа платёжной системы: {amount}', { amount: money(held) })}</p> : null}
       {!options ? <p className="mn-muted">{loadError?.message ?? t('Загружаем…')}</p> : null}
       {options && options.presets.length > 0 ? (
         <div role="radiogroup" aria-label={t('Сумма пополнения')} className="mn-amounts">

@@ -534,6 +534,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             Ok(count) => buy::devices(turn, client, count).await?,
             Err(_) => buy::summary(turn, client).await?,
         },
+        "dv" => buy::change_devices(turn, client).await?,
         "sum" => buy::summary(turn, client).await?,
         "promo" => buy::ask_promo(turn),
         "nopromo" => {

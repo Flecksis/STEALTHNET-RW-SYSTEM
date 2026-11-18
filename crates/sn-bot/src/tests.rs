@@ -33,6 +33,7 @@ mod miniapp;
 mod photos;
 mod referral_login;
 mod referral_payouts;
+mod renewal_devices;
 mod runtime;
 mod single_subscription;
 mod stars;
@@ -845,6 +846,66 @@ fn уведомления_о_возврате_заблокированному_�
         notify::letter_head(notify::templates::REFUNDED_BLOCKED, &serde_json::json!({})).unwrap();
     assert_eq!(letter.kind, notify::LetterKind::Payments);
     assert_eq!(letter.subject, "Оплата возвращена");
+}
+
+#[test]
+fn уведомление_о_возврате_звёзд_называет_покупку_и_сумму() {
+    let utc = chrono::FixedOffset::east_opt(0).unwrap();
+    let content = sn_domain::bot_content::Content::default();
+    let params = serde_json::json!({
+        "stars": 350,
+        "label": "Стандарт <VPN> · 90 дней",
+        "label_en": "Standard <VPN> · 90 days",
+        "charge_id": "stx-1",
+    });
+    let refunded =
+        notify::render(&content, notify::templates::STARS_REFUNDED, &params, utc).unwrap();
+    assert_eq!(
+        refunded.text,
+        "Звёзды за покупку «Стандарт &lt;VPN&gt; · 90 дней» возвращены: 350\u{a0}звёзд."
+    );
+    assert_eq!(refunded.keyboard, crate::telegram::Keyboard::new());
+    let english_content =
+        sn_domain::bot_content::Content::default().in_locale(sn_domain::client::Locale::En);
+    let english = sn_domain::lang::sync_scope(sn_domain::client::Locale::En, || {
+        notify::render(
+            &english_content,
+            notify::templates::STARS_REFUNDED,
+            &params,
+            utc,
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        english.text,
+        "Stars for “Standard &lt;VPN&gt; · 90 days” refunded: 350\u{a0}stars."
+    );
+    assert_eq!(
+        notify::render(
+            &content,
+            notify::templates::STARS_REFUNDED,
+            &serde_json::json!({"stars": 1, "label": null}),
+            utc
+        )
+        .unwrap()
+        .text,
+        "Звёзды возвращены: 1\u{a0}звезда."
+    );
+    for broken in [
+        serde_json::json!({}),
+        serde_json::json!({"stars": 0, "label": "Стандарт"}),
+        serde_json::json!({"stars": "350"}),
+    ] {
+        assert!(
+            notify::render(&content, notify::templates::STARS_REFUNDED, &broken, utc).is_none(),
+            "{broken}"
+        );
+    }
+    let letter =
+        notify::letter_head(notify::templates::STARS_REFUNDED, &serde_json::json!({})).unwrap();
+    assert_eq!(letter.kind, notify::LetterKind::Payments);
+    assert_eq!(letter.subject, "Звёзды возвращены");
+    assert_eq!(letter.path, "/cabinet/payments");
 }
 
 #[test]

@@ -5,6 +5,7 @@ import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { Card, useCabinet } from './CabinetApp';
+import { heldBalance } from './model';
 import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from './payments';
 import { methodKey } from '../lib/methods';
 
@@ -32,6 +33,7 @@ function forgetKey(): void {
 
 export function TopUpPage() {
   const { me, reload } = useCabinet();
+  const held = heldBalance(me);
   const [params, setParams] = useSearchParams();
   const [asked] = useState(() => params.get('amount') ?? '');
   const [options, setOptions] = useState<TopUpOptions | null>(null);
@@ -238,6 +240,7 @@ export function TopUpPage() {
       <header className="cb-pay-head">
         <h1 className="cb-title">{t('Пополнение баланса')}</h1>
         <p className="cb-lead muted">{t('Сейчас на балансе {amount}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.', { amount: money(options.balance) })}</p>
+        {held ? <p className="cb-lead muted">{t('Удержано до ответа платёжной системы: {amount}', { amount: money(held) })}</p> : null}
       </header>
       <div className="cb-cols">
         <div className="cb-col left">

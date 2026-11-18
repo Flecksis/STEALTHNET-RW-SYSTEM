@@ -514,3 +514,54 @@ async fn админ_подтверждает_зависшую_заявку_бе�
     );
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn клиент_видит_сумму_удержанную_до_ответа_платёжной_системы() {
+    let kassa = Arc::new(Kassa::default());
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 7510).await;
+    let first = paid_topup(&kit, client_id, 1_000).await;
+    let second = paid_topup(&kit, client_id, 500).await;
+    let held = |card: &crate::clients::ClientCard| (card.balance.minor, card.balance_held.minor);
+    let clients = kit.services.clients();
+    assert_eq!(held(&clients.card(client_id).await.unwrap()), (1_500, 0));
+    let inbox = kit.services.inbox();
+    let keep = |minor: Option<i64>| refund_command(minor, RefundSubscriptionAction::Keep, None);
+    assert!(
+        inbox
+            .refund(first.id, &keep(Some(600)), admin)
+            .await
+            .unwrap()
+            .pending
+    );
+    assert!(
+        inbox
+            .refund(second.id, &keep(None), admin)
+            .await
+            .unwrap()
+            .pending
+    );
+    let card = clients.card(client_id).await.unwrap();
+    assert_eq!(held(&card), (400, 1_100));
+    assert_eq!(card.balance_held.currency, card.balance.currency);
+    let declined = WebhookOutcome {
+        event_key: "refund:kr-1".into(),
+        amount: Some(Amount::new(600, PayCurrency::Usd)),
+        ..outcome(&first, ProviderStatus::RefundDeclined)
+    };
+    inbox.apply_outcome(KASSA, &declined).await.unwrap();
+    assert_eq!(held(&clients.card(client_id).await.unwrap()), (1_000, 500));
+    inbox
+        .apply_outcome(KASSA, &confirmed(&second, "kr-2"))
+        .await
+        .unwrap();
+    assert_eq!(
+        held(&clients.card(client_id).await.unwrap()),
+        (1_000, 0),
+        "после ответа платёжной системы удержания нет"
+    );
+    kit.db.cleanup().await;
+}

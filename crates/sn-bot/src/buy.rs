@@ -11,12 +11,16 @@ use sn_domain::client::Client;
 use sn_domain::ids::{PeriodId, TariffId};
 use sn_domain::lang;
 use sn_domain::module::ModuleId;
+use sn_domain::money::Money;
 use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
+use sn_domain::tariff::{ExtraDevices, Tariff};
 use sn_modules::catalog::promo::{self, PromoError, Purpose};
 use sn_payments::Unavailable;
+use sn_services::Services;
+use sn_services::bot_content::BotContent;
 use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult, TariffOffer};
-use sn_store::Db;
+use sn_store::{Db, StoreError};
 use uuid::Uuid;
 
 fn back_target(cart: &Cart) -> String {
@@ -228,6 +232,75 @@ pub async fn tariff(
         .section(Section::Buy))
 }
 
+fn sellable(services: &Services, tariff: &Tariff) -> Option<(ExtraDevices, Money)> {
+    let extra = tariff
+        .devices
+        .extra
+        .clone()
+        .filter(|e| e.max > 0 && services.modules().is_enabled(ModuleId::Options))?;
+    let monthly = extra.monthly.get(services.settings().currency)?;
+    Some((extra, monthly))
+}
+
+async fn kept_devices(
+    services: &Services,
+    client: &Client,
+    cart: &Cart,
+    tariff: &Tariff,
+    extra: &ExtraDevices,
+) -> Result<u32, BotError> {
+    let Some(subscription_id) = cart.subscription_id else {
+        return Ok(0);
+    };
+    let subscription = {
+        let mut conn = services.store().conn().await?;
+        match conn.subscriptions().get(subscription_id).await {
+            Ok(subscription) => subscription,
+            Err(StoreError::NotFound(_)) => return Ok(0),
+            Err(err) => return Err(err.into()),
+        }
+    };
+    if subscription.client_id != client.id || subscription.tariff_id != Some(tariff.id) {
+        return Ok(0);
+    }
+    Ok(subscription.extra_devices.min(extra.max))
+}
+
+fn devices_screen(
+    c: &BotContent,
+    tariff: &Tariff,
+    extra: &ExtraDevices,
+    monthly: Money,
+    back: String,
+) -> Screen {
+    let buttons: Vec<_> = (1..=extra.max)
+        .filter_map(|n| {
+            ui::button(
+                c,
+                "buy.btn.extra",
+                &[("count", Text(&n.to_string()))],
+                format!("d:{n}"),
+            )
+        })
+        .collect();
+    let included_text = text::devices(tariff.devices.included);
+    Screen::new(ui::text(
+        c,
+        "buy.extra_devices",
+        &[
+            ("included", Text(&included_text)),
+            ("price", Text(&text::money(monthly))),
+        ],
+    ))
+    .keyboard(
+        Keyboard::new()
+            .push(ui::button(c, "buy.btn.no_extra", &[], "d:0"))
+            .grid(buttons, 4)
+            .push(ui::back(c, back)),
+    )
+    .section(Section::Buy)
+}
+
 pub async fn period(
     turn: &mut Turn<'_>,
     client: &Client,
@@ -250,44 +323,48 @@ pub async fn period(
         cart.period_id = Some(PeriodId(period_id));
         cart.extra_devices = 0;
     }
-    let currency = services.settings().currency;
-    let extra = tariff
-        .devices
-        .extra
-        .as_ref()
-        .filter(|e| e.max > 0 && services.modules().is_enabled(ModuleId::Options));
-    let Some(extra) = extra else {
+    let Some((extra, monthly)) = sellable(&services, &tariff) else {
         return summary(turn, client).await;
     };
-    let Some(monthly) = extra.monthly.get(currency) else {
-        return summary(turn, client).await;
+    let kept = match turn.session.cart.as_ref() {
+        Some(cart) => kept_devices(&services, client, cart, &tariff, &extra).await?,
+        None => 0,
     };
-    let buttons: Vec<_> = (1..=extra.max)
-        .filter_map(|n| {
-            ui::button(
-                c,
-                "buy.btn.extra",
-                &[("count", Text(&n.to_string()))],
-                format!("d:{n}"),
-            )
-        })
-        .collect();
-    let included_text = text::devices(tariff.devices.included);
-    Ok(Screen::new(ui::text(
+    if kept > 0 {
+        if let Some(cart) = turn.session.cart.as_mut() {
+            cart.extra_devices = kept;
+        }
+        return summary(turn, client).await;
+    }
+    Ok(devices_screen(
         c,
-        "buy.extra_devices",
-        &[
-            ("included", Text(&included_text)),
-            ("price", Text(&text::money(monthly))),
-        ],
+        &tariff,
+        &extra,
+        monthly,
+        format!("t:{tariff_id}"),
     ))
-    .keyboard(
-        Keyboard::new()
-            .push(ui::button(c, "buy.btn.no_extra", &[], "d:0"))
-            .grid(buttons, 4)
-            .push(ui::back(c, format!("t:{tariff_id}"))),
-    )
-    .section(Section::Buy))
+}
+
+pub async fn change_devices(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let Some(tariff_id) = turn.session.cart.as_ref().and_then(|c| c.tariff_id) else {
+        return start(turn, client, "").await;
+    };
+    let services = turn.services().clone();
+    let content = services.bot_content_in(lang::current());
+    let tariff = {
+        let mut conn = services.store().conn().await?;
+        conn.tariffs().get(tariff_id).await?
+    };
+    match sellable(&services, &tariff) {
+        Some((extra, monthly)) => Ok(devices_screen(
+            &content,
+            &tariff,
+            &extra,
+            monthly,
+            "sum".into(),
+        )),
+        None => summary(turn, client).await,
+    }
 }
 
 pub async fn devices(turn: &mut Turn<'_>, client: &Client, count: u32) -> Result<Screen, BotError> {
@@ -435,6 +512,9 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     for note in notes {
         lines.add(note);
     }
+    if sellable_for(&services, cart.tariff_id).await {
+        keyboard = keyboard.push(ui::button(c, "buy.btn.change_devices", &[], "dv"));
+    }
     if services.modules().is_enabled(ModuleId::Promo) {
         keyboard = keyboard.push(match turn.session.promo {
             Some(_) => ui::button(c, "buy.btn.promo_remove", &[], "nopromo"),
@@ -448,6 +528,17 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     Ok(Screen::new(lines.text())
         .keyboard(keyboard.pair(ui::back(c, back), ui::menu(c)))
         .section(Section::Buy))
+}
+
+async fn sellable_for(services: &Services, tariff_id: Option<TariffId>) -> bool {
+    let Some(tariff_id) = tariff_id else {
+        return false;
+    };
+    let tariff = match services.store().conn().await {
+        Ok(mut conn) => conn.tariffs().get(tariff_id).await.ok(),
+        Err(_) => None,
+    };
+    tariff.is_some_and(|tariff| sellable(services, &tariff).is_some())
 }
 
 pub fn ask_promo(turn: &mut Turn<'_>) -> Screen {

@@ -82,6 +82,7 @@ export const COMMON: Record<string, string> = {
   'Заявки на вывод': 'Withdrawal requests',
   'Назад': 'Back',
   'Остаток на балансе': 'Balance left',
+  'Удержано до ответа платёжной системы: {amount}': 'Held until the payment system responds: {amount}',
   'Откройте мини-приложение из бота в Telegram.': 'Open the mini app from the bot in Telegram.',
   'Открыть бота': 'Open the bot',
   'Поддержка': 'Support',

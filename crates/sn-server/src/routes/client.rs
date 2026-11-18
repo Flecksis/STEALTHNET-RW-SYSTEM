@@ -422,6 +422,7 @@ async fn me(
         "locale": state.services.locale_of(card.client.locale),
         "client": card.client,
         "balance": card.balance,
+        "balance_held": card.balance_held,
         "balance_enabled": state.services.payments().balance_enabled(),
         "multi_subscriptions": state.services.settings().multi_subscriptions,
         "autorenew_card": autorenew_card,

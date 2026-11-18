@@ -307,6 +307,43 @@ impl TelegramStars {
         Ok(absent)
     }
 
+    async fn older_at(
+        &self,
+        config: &ProviderConfig,
+        offset: u32,
+        since: i64,
+    ) -> PaymentResult<bool> {
+        Ok(self
+            .star_transactions(config, offset, 1)
+            .await?
+            .first()
+            .is_some_and(|transaction| transaction.date < since))
+    }
+
+    pub async fn first_since(&self, config: &ProviderConfig, since: i64) -> PaymentResult<u32> {
+        if !self.older_at(config, 0, since).await? {
+            return Ok(0);
+        }
+        let mut older = 0u32;
+        let mut newer = 1u32;
+        while self.older_at(config, newer, since).await? {
+            older = newer;
+            newer = match newer.checked_mul(2) {
+                Some(next) => next,
+                None => return Ok(u32::MAX),
+            };
+        }
+        while newer - older > 1 {
+            let middle = older + (newer - older) / 2;
+            if self.older_at(config, middle, since).await? {
+                older = middle;
+            } else {
+                newer = middle;
+            }
+        }
+        Ok(newer)
+    }
+
     pub async fn find_incoming(
         &self,
         config: &ProviderConfig,
@@ -776,6 +813,44 @@ mod tests {
         assert_eq!(
             TelegramStars::with_api_base(empty.uri())
                 .transaction_count(&settings())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn первая_транзакция_после_момента_ищется_без_чтения_всей_истории() {
+        let server = telegram(Ledger::new(250, Some(3))).await;
+        let stars = TelegramStars::with_api_base(server.uri());
+        let start = 1_763_300_000;
+        for (since, expected) in [
+            (0, 0),
+            (start, 0),
+            (start + 1, 1),
+            (start + 137, 137),
+            (start + 249, 249),
+            (start + 250, 250),
+            (1_763_400_000, 250),
+            (1_763_400_001, 251),
+            (i64::MAX, 251),
+        ] {
+            let before = server.received_requests().await.unwrap().len();
+            assert_eq!(
+                stars.first_since(&settings(), since).await.unwrap(),
+                expected,
+                "{since}"
+            );
+            let asked = server.received_requests().await.unwrap()[before..].to_vec();
+            assert!(asked.len() <= 20, "{since}: {} запросов", asked.len());
+            assert!(asked.iter().all(|request| {
+                serde_json::from_slice::<serde_json::Value>(&request.body).unwrap()["limit"] == 1
+            }));
+        }
+        let empty = telegram(Ledger::new(0, None)).await;
+        assert_eq!(
+            TelegramStars::with_api_base(empty.uri())
+                .first_since(&settings(), start)
                 .await
                 .unwrap(),
             0

@@ -40,6 +40,7 @@ async fn выключенный_баланс_через_http() {
     assert_eq!(me["balance_enabled"], false);
     assert_eq!(me["autorenew_card"], false);
     assert_eq!(me["balance"]["minor"], 300);
+    assert_eq!(me["balance_held"], json!({ "minor": 0, "currency": "USD" }));
     for amount in ["10", "0.01"] {
         let (status, refused) = h
             .write(
