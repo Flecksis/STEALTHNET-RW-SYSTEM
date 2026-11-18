@@ -13,8 +13,8 @@ pub fn hint() -> Option<Locale> {
     LOCALE.try_with(|l| *l).ok()
 }
 
-pub async fn scope<F: Future>(locale: Locale, f: F) -> F::Output {
-    LOCALE.scope(locale, f).await
+pub fn scope<F: Future>(locale: Locale, f: F) -> impl Future<Output = F::Output> {
+    LOCALE.scope(locale, f)
 }
 
 pub fn sync_scope<R>(locale: Locale, f: impl FnOnce() -> R) -> R {

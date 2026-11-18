@@ -154,7 +154,7 @@ pub fn parse_command(text: &str) -> Option<(String, String)> {
 
 pub async fn handle_update(ctx: &BotCtx, update: Update) {
     let id = update.update_id;
-    if let Err(err) = dispatch(ctx, update).await {
+    if let Err(err) = Box::pin(dispatch(ctx, update)).await {
         tracing::warn!(update_id = id, error = %err, "апдейт бота не обработан");
     }
 }
