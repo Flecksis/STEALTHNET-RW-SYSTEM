@@ -15,6 +15,8 @@ type Tg = { poll_token: string; link: string; expires_at: string };
 type Status = { status: 'pending' | 'confirmed' | 'rejected' | 'expired' | 'totp_required'; challenge?: string };
 type Verified = { status?: 'totp_required'; challenge?: string };
 
+const RESEND_SECONDS = 60;
+
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
@@ -29,7 +31,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
   const [mode, setMode] = useState<'telegram' | 'email'>('telegram');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<{ email: string; again: boolean } | null>(null);
+  const [wait, setWait] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<string | null>(null);
@@ -98,6 +101,14 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     [],
   );
 
+  useEffect(() => {
+    if (wait <= 0) {
+      return;
+    }
+    const tick = window.setTimeout(() => setWait((left) => Math.max(0, left - 1)), 1000);
+    return () => window.clearTimeout(tick);
+  }, [wait]);
+
   const poll = (token: string, expires: number) => {
     timer.current = window.setTimeout(async () => {
       if (Date.now() > expires + 5000) {
@@ -148,18 +159,32 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     }
   };
 
-  const sendCode = async (event: FormEvent) => {
-    event.preventDefault();
+  const requestCode = async (again: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      await api('/api/client/auth/email', { method: 'POST', body: { email: email.trim() } });
-      setSent(true);
+      const res = await api<{ email?: string }>('/api/client/auth/email', { method: 'POST', body: { email: email.trim() } });
+      setSent({ email: res.email ?? email.trim(), again });
+      setWait(RESEND_SECONDS);
+      if (again) {
+        setCode('');
+      }
     } catch (err) {
       setError(err instanceof ApiError && err.status === 501 ? t('Вход по почте пока недоступен. Войдите через Telegram.') : failText(err, t('Код не отправился')));
     } finally {
       setBusy(false);
     }
+  };
+
+  const sendCode = (event: FormEvent) => {
+    event.preventDefault();
+    void requestCode(false);
+  };
+
+  const changeEmail = () => {
+    setSent(null);
+    setCode('');
+    setError(null);
   };
 
   const verify = async (event: FormEvent) => {
@@ -250,7 +275,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setTotp('');
     setTg(null);
     setTgState('idle');
-    setSent(false);
+    setSent(null);
     setCode('');
     setError(null);
   };
@@ -461,12 +486,28 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
           </form>
         ) : sent ? (
           <form className="cb-login-form" onSubmit={verify}>
+            <p className="cb-login-note" role="status">
+              {sent.again ? t('Новый код отправлен на {email}. Он действует 15 минут.', { email: sent.email }) : t('Код отправлен на {email}. Он действует 15 минут.', { email: sent.email })}
+            </p>
             <label className="cb-field">
               <span>{t('Код из письма')}</span>
-              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder={t('6 цифр')}
+                autoFocus
+              />
             </label>
             <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
               {t('Войти')}
+            </button>
+            <button type="button" className="cb-text" onClick={() => void requestCode(true)} disabled={busy || wait > 0}>
+              {wait > 0 ? t('Отправить ещё раз через {seconds} с', { seconds: String(wait) }) : t('Отправить ещё раз')}
+            </button>
+            <button type="button" className="cb-text" onClick={changeEmail} disabled={busy}>
+              {t('Изменить почту')}
             </button>
           </form>
         ) : (
