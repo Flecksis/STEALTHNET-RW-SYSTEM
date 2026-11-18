@@ -87,7 +87,12 @@ const ACCEPTS: Record<string, string> = {
   overpay: 'Карты и СБП',
 };
 
-const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'refund'] };
+const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'] };
+
+const HOOK_HINTS: Record<string, string> = {
+  cloudpayments:
+    'В кабинете CloudPayments в настройках сайта включите уведомления Check, Pay, Fail и Refund, каждое на свой адрес из списка выше. Метод GET или POST, кодировка UTF-8, формат CloudPayments.',
+};
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -683,6 +688,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
             </span>
           ))}
           <span className="cap">Укажите в кабинете {provider.title}, чтобы оплаты засчитывались сразу</span>
+          {HOOK_HINTS[provider.id] ? <span className="cap">{HOOK_HINTS[provider.id]}</span> : null}
         </div>
       ) : null}
       {error ? (

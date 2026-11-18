@@ -11,7 +11,7 @@ mod yookassa;
 mod yoomoney;
 
 pub use balance::Balance;
-pub use cloudpayments::CloudPayments;
+pub use cloudpayments::{CloudPayments, signature as cloudpayments_signature};
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
 pub use gram::{Gram, GramInvoice, comment_payload, format_grams, friendly_address};
 pub use heleket::{Heleket, signature as heleket_signature};
@@ -239,7 +239,14 @@ mod tests {
                 );
             }
         }
-        assert_eq!(polling, [providers::YOOKASSA, providers::PLATEGA]);
+        assert_eq!(
+            polling,
+            [
+                providers::YOOKASSA,
+                providers::PLATEGA,
+                providers::CLOUDPAYMENTS
+            ]
+        );
     }
 
     #[test]

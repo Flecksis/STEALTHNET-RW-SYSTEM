@@ -5,7 +5,7 @@ use crate::provider::{
 };
 use bytes::Bytes;
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use sn_domain::money::{Amount, PayCurrency, parse_units};
 use sn_domain::settings::{SettingField, missing_required};
 use std::collections::HashSet;
@@ -32,10 +32,6 @@ pub(crate) fn public_ref(value: Option<&str>) -> Option<PaymentRef> {
     value
         .and_then(|v| Uuid::parse_str(v.trim()).ok())
         .map(PaymentRef::PublicId)
-}
-
-pub(crate) fn idempotency_key(parts: &[&str]) -> String {
-    hex::encode(Sha256::digest(parts.join("|").as_bytes()))
 }
 
 pub(crate) fn client_email(request: &InvoiceRequest) -> Option<&str> {
