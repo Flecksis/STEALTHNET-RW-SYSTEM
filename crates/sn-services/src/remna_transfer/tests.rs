@@ -721,6 +721,22 @@ async fn забор_находит_клиентов_по_telegram_почте_и�
 }
 
 #[tokio::test]
+async fn забор_советует_вписать_контакт_в_remnawave_тем_у_кого_его_нет() {
+    let Some(env) = env().await else { return };
+    env.fake.insert_user(sample_user(7, "no_contact"));
+    let checked = env.ops().check_now(Direction::Pull, None).await.unwrap();
+    let plan = checked.plan.unwrap();
+    let warning = plan
+        .warnings
+        .iter()
+        .find(|w| w.contains("нет ни Telegram ID, ни почты"))
+        .unwrap();
+    assert!(warning.contains("в Remnawave"), "{warning}");
+    assert!(!warning.contains("в карточке"), "{warning}");
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn забор_подбирает_тариф_по_сквадам_и_лимитам() {
     let Some(env) = env().await else { return };
     let main = uuid(1);

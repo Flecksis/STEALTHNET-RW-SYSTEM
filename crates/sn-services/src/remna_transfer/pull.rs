@@ -469,7 +469,7 @@ pub(crate) async fn plan(services: &Services, pace: &Pace) -> ServiceResult<(Pla
     }
     if plan.no_contact > 0 {
         plan.warnings.push(format!(
-            "У {} нет ни Telegram ID, ни почты. Такие клиенты появятся в панели, но сами войти в бот или кабинет не смогут: привяжите им вход вручную в карточке клиента.",
+            "У {} нет ни Telegram ID, ни почты. Такие клиенты появятся в панели, но сами войти в бот или кабинет не смогут. Чтобы они могли войти, до запуска впишите им Telegram ID или почту в Remnawave и проверьте снова.",
             text::count(plan.no_contact, "пользователя", "пользователей", "пользователей")
         ));
     }
