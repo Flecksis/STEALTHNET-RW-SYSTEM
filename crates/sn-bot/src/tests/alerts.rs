@@ -156,16 +156,19 @@ async fn уведомления_уходят_в_группу_по_темам() {
 
     services.alerts().request_test().await.unwrap();
     keeper.step(false).await.unwrap();
-    let checks = sent(&server)
+    let checks: Vec<String> = sent(&server)
         .await
         .into_iter()
-        .filter(|b| {
-            b["text"]
-                .as_str()
-                .is_some_and(|t| t.contains("Проверка уведомлений"))
-        })
-        .count();
-    assert_eq!(checks, 12);
+        .filter_map(|b| b["text"].as_str().map(str::to_string))
+        .filter(|t| t.contains("Проверка уведомлений"))
+        .collect();
+    assert_eq!(checks.len(), 12);
+    assert!(
+        checks
+            .iter()
+            .any(|t| t.contains("Сюда будут приходить: перенос в Remnawave и обратно."))
+    );
+    assert!(checks.iter().all(|t| !t.contains("remnawave")));
     db.cleanup().await;
 }
 

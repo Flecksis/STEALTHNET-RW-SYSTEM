@@ -1,7 +1,7 @@
 use crate::BotError;
 use crate::handler::{Screen, Turn, id_arg, main_menu};
 use crate::telegram::Keyboard;
-use crate::text::escape;
+use crate::text::{escape, lowercase_first};
 use crate::ui::{self, Lines, Text};
 use chrono::FixedOffset;
 use sn_domain::bot_content::Section;
@@ -104,14 +104,6 @@ fn card_text(c: &BotContent, contest: &ClientContest, offset: FixedOffset) -> St
         ));
     }
     lines.text()
-}
-
-fn lowercase_first(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_lowercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 fn card(turn: &Turn<'_>, contest: &ClientContest, many: bool) -> Screen {

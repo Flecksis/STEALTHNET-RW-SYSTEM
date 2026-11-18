@@ -231,6 +231,14 @@ pub fn capitalize(text: &str) -> String {
     }
 }
 
+pub fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +253,16 @@ mod tests {
         let late = Utc.with_ymd_and_hms(2027, 2, 14, 22, 0, 0).unwrap();
         let msk = FixedOffset::east_opt(3 * 3600).unwrap();
         assert_eq!(day_month(late, msk), "15\u{a0}февраля");
+    }
+
+    #[test]
+    fn строчной_становится_только_первая_буква() {
+        assert_eq!(
+            lowercase_first("Перенос в Remnawave и обратно"),
+            "перенос в Remnawave и обратно"
+        );
+        assert_eq!(lowercase_first("Ноды"), "ноды");
+        assert_eq!(lowercase_first(""), "");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::BotError;
 use crate::telegram::{Keyboard, Message, TelegramApi, TelegramError};
-use crate::text::escape;
+use crate::text::{escape, lowercase_first};
 use sn_domain::alerts::{AlertsConfig, START_PREFIX};
 use sn_services::Services;
 use sn_services::alerts::Alert;
@@ -204,9 +204,10 @@ impl Keeper {
                 .await;
         }
         for (topic, titles) in places {
+            let listed: Vec<String> = titles.into_iter().map(lowercase_first).collect();
             let text = format!(
                 "<b>Проверка уведомлений</b>\nСюда будут приходить: {}.",
-                escape(&titles.join(", ").to_lowercase())
+                escape(&listed.join(", "))
             );
             self.send(chat_id, topic.as_deref(), &text, None).await?;
         }
