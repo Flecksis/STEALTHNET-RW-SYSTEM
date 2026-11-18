@@ -148,6 +148,8 @@ pub struct Subscription {
     pub mirror: RemnaMirror,
     pub created_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub device_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -340,6 +342,7 @@ mod tests {
             },
             created_at: now,
             ended_at: None,
+            device_limit: None,
         }
     }
 

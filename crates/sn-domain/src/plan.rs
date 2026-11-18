@@ -92,6 +92,7 @@ pub struct PlanInput<'a> {
     pub keep_squads: &'a [SquadId],
     pub profile: &'a NewUserProfile,
     pub tag: Option<&'a str>,
+    pub manual_devices: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,9 +196,11 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
     let traffic = snapshot.traffic;
     let tariff_limit = traffic.remna_limit_bytes();
     let strategy = traffic.reset.strategy();
-    let paid_devices = snapshot
-        .devices_included
-        .saturating_add(input.extra_devices);
+    let paid_devices = input.manual_devices.unwrap_or_else(|| {
+        snapshot
+            .devices_included
+            .saturating_add(input.extra_devices)
+    });
     let hwid_device_limit = (paid_devices > 0).then_some(paid_devices);
     let tag = input.tag.map(str::to_string);
 
@@ -432,6 +435,7 @@ mod tests {
             keep_squads: &[SquadId(Uuid::from_u128(9))],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert_eq!(
@@ -461,6 +465,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert_eq!(p.target.expire_at, paid_at() + Duration::days(30));
@@ -484,6 +489,7 @@ mod tests {
             keep_squads: &[SquadId(Uuid::from_u128(9))],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert_eq!(p.target.expire_at, paid_at() + Duration::days(90));
@@ -509,6 +515,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert!(matches!(p.action, PlanAction::Create { .. }));
@@ -528,6 +535,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap()
     }
@@ -649,6 +657,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap()
     }
@@ -715,6 +724,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert_eq!(change.target.hwid_device_limit, Some(3));
@@ -731,6 +741,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert_eq!(fresh.device_hold, None);
@@ -804,6 +815,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap();
         assert_eq!(fresh.target.expire_at, target);
@@ -825,6 +837,7 @@ mod tests {
                 keep_squads: &[],
                 profile: &profile(),
                 tag: None,
+                manual_devices: None,
             })
             .unwrap();
             assert_eq!(p.target.expire_at, target);
@@ -851,6 +864,7 @@ mod tests {
                 keep_squads: &[],
                 profile: &profile(),
                 tag: None,
+                manual_devices: None,
             })
             .is_err()
         );
@@ -882,6 +896,7 @@ mod tests {
             keep_squads: &[],
             profile: &profile(),
             tag: None,
+            manual_devices: None,
         })
         .unwrap()
     }
@@ -938,5 +953,46 @@ mod tests {
         assert_eq!(p.target.traffic_limit_bytes, 300 * GIB);
         assert_eq!(p.extra_traffic_bytes, 0);
         assert!(!p.keep_traffic_window);
+    }
+
+    #[test]
+    fn ручной_лимит_устройств_заменяет_тариф_при_продлении() {
+        let tariff = standard();
+        let snapshot = tariff.snapshot(tariff.period(PeriodId(11)).unwrap());
+        let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
+        let state = current(SubscriptionStatus::Active, expire);
+        let owner = profile();
+        let input = |manual_devices: Option<u32>, held_devices: Option<HeldDevices>| PlanInput {
+            extra_traffic: 0,
+            kind: PlanKind::Renewal,
+            snapshot: &snapshot,
+            extra_devices: 1,
+            held_devices,
+            paid_at: paid_at(),
+            current: Some(&state),
+            keep_squads: &[],
+            profile: &owner,
+            tag: None,
+            manual_devices,
+        };
+        assert_eq!(
+            plan(&input(None, None)).unwrap().target.hwid_device_limit,
+            Some(4)
+        );
+        let raised = plan(&input(Some(7), None)).unwrap();
+        assert_eq!(raised.target.hwid_device_limit, Some(7));
+        assert_eq!(raised.device_hold, None);
+        let lowered = plan(&input(Some(1), None)).unwrap();
+        assert_eq!(lowered.target.hwid_device_limit, Some(1));
+        let held = plan(&input(
+            Some(7),
+            Some(HeldDevices {
+                limit: 9,
+                until: expire,
+            }),
+        ))
+        .unwrap();
+        assert_eq!(held.target.hwid_device_limit, Some(9));
+        assert_eq!(held.device_hold.map(|h| h.limit_after), Some(7));
     }
 }

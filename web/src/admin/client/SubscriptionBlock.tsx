@@ -365,10 +365,9 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
       {qr && url ? <QrDialog url={url} onClose={() => setQr(false)} /> : null}
       {limits ? (
         <LimitsDialog
-          subscriptionId={sub.id}
+          subscription={sub}
           tariff={tariff}
           trafficLimit={limitBytes}
-          extraDevices={sub.extra_devices}
           onClose={() => setLimits(false)}
           onDone={(view) => {
             setLimits(false);

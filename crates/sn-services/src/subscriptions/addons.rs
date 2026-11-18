@@ -147,7 +147,10 @@ impl SubscriptionOps<'_> {
             let now = self.services.now();
             let subscription = self.owned(id, Actor::System).await?;
             let extra = subscription.extra_devices.max(devices_after);
-            let paid = included.saturating_add(extra);
+            let paid = match subscription.device_limit {
+                Some(manual) => manual.saturating_add(extra - subscription.extra_devices),
+                None => included.saturating_add(extra),
+            };
             let hold = self.active_hold(id, now).await?;
             let target = hold.map_or(paid, |h| h.held_limit.max(paid));
             let before = self.fetch_user(&*remna, &subscription, user_id).await?;
@@ -168,6 +171,9 @@ impl SubscriptionOps<'_> {
             };
             let mut tx = self.services.store().begin().await?;
             tx.subscriptions().set_extra_devices(id, extra).await?;
+            if subscription.device_limit.is_some() {
+                tx.subscriptions().set_device_limit(id, Some(paid)).await?;
+            }
             if let Some(hold) = hold
                 && paid > hold.limit_after
             {
@@ -188,6 +194,8 @@ impl SubscriptionOps<'_> {
                     "order_id": order_id,
                     "extra_devices_before": subscription.extra_devices,
                     "extra_devices": extra,
+                    "device_limit_before": subscription.device_limit,
+                    "device_limit": subscription.device_limit.map(|_| paid),
                     "hwid_limit_before": before.hwid_device_limit,
                     "hwid_limit": after.hwid_device_limit,
                 }),

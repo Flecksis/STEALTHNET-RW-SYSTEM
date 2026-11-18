@@ -1243,6 +1243,7 @@ async fn ручная_правка_доп_устройств_отменяет_о
             &crate::subscriptions::LimitsChange {
                 traffic_limit_bytes: None,
                 extra_devices: Some(1),
+                devices: None,
             },
             ADMIN,
         )
@@ -2324,4 +2325,170 @@ fn действия_над_заказом_на_проверке_зависят_�
     refund.refund_pending = true;
     assert_eq!(review_actions(&refund), vec![MarkFulfilled]);
     assert!(abandoned_reason(12, "Remnawave недоступна").contains("за 12 попыток"));
+}
+
+#[tokio::test]
+async fn ручной_лимит_устройств_переживает_продление_и_правку_тарифа_а_смена_тарифа_снимает() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 240).await;
+    let standard = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &standard, 30).await;
+    let ops = kit.services.subscriptions();
+    let limits = |devices| crate::subscriptions::LimitsChange {
+        devices: Some(devices),
+        ..Default::default()
+    };
+    let view = ops
+        .change_limits(subscription.id, &limits(4), ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(view.subscription.extra_devices, 1);
+    assert_eq!(view.subscription.device_limit, None);
+    let view = ops
+        .change_limits(subscription.id, &limits(3), ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(view.subscription.extra_devices, 0);
+    let view = ops
+        .change_limits(subscription.id, &limits(9), ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(view.subscription.device_limit, Some(9));
+    assert_eq!(view.subscription.extra_devices, 0);
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(9)
+    );
+    let audit = audit_actions(&kit, "subscription", subscription.id.0).await;
+    assert_eq!(audit[0].details["hwid_limit_before"], 3);
+    assert_eq!(audit[0].details["hwid_limit"], 9);
+    assert_eq!(
+        audit[0].details["device_limit_before"],
+        serde_json::Value::Null
+    );
+    assert_eq!(audit[0].details["device_limit"], 9);
+
+    let renewal = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&standard, 30, Some(&subscription)),
+    )
+    .await;
+    let done = kit.services.fulfillment().run(renewal.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(9)
+    );
+    assert_eq!(
+        subscription_by_id(&kit, subscription.id).await.device_limit,
+        Some(9)
+    );
+    assert_eq!(device_hold(&kit, &subscription).await, None);
+
+    let fewer = update_tariff(&kit, &standard, standard.squads.clone(), 2).await;
+    let report = kit
+        .services
+        .tariffs()
+        .apply_to_subscribers(&standard, &fewer)
+        .await
+        .unwrap();
+    assert!(report.devices);
+    assert_eq!(report.users, 1);
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(9)
+    );
+
+    let other_category = category(&kit.services, "Другие").await;
+    let other = tariff(
+        &kit.services,
+        other_category,
+        "Другой",
+        TrafficPolicy::UNLIMITED,
+        vec![squad(1), squad(2)],
+    )
+    .await;
+    let change = buy_with_balance(
+        &kit.services,
+        client_id,
+        cart(&other, 90, Some(&subscription)),
+    )
+    .await;
+    let done = kit.services.fulfillment().run(change.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    assert_eq!(
+        subscription_by_id(&kit, subscription.id).await.device_limit,
+        None
+    );
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(3)
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn лимит_устройств_без_тарифа_и_вне_пределов_становится_ручным() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 241).await;
+    let standard = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &standard, 30).await;
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query("UPDATE subscriptions SET tariff_id = NULL WHERE id = $1")
+            .bind(subscription.id.0)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let user_id = subscription.remna.as_ref().unwrap().user_id;
+    for index in 0..4 {
+        kit.remna.add_device(sample_device(
+            user_id,
+            &format!("hw-{index}"),
+            Utc::now() - Days::days(10 - index),
+        ));
+    }
+    let ops = kit.services.subscriptions();
+    let limits = |devices| crate::subscriptions::LimitsChange {
+        devices: Some(devices),
+        ..Default::default()
+    };
+    let view = ops
+        .change_limits(subscription.id, &limits(2), ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(view.subscription.device_limit, Some(2));
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(2)
+    );
+    assert_eq!(kit.remna.devices(user_id).len(), 2);
+    for wrong in [0, 101] {
+        let err = ops
+            .change_limits(subscription.id, &limits(wrong), ADMIN)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "subscription.devices_range");
+    }
+    let err = ops
+        .change_limits(
+            subscription.id,
+            &crate::subscriptions::LimitsChange {
+                devices: Some(5),
+                extra_devices: Some(1),
+                ..Default::default()
+            },
+            ADMIN,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "subscription.devices_twice");
+    let err = ops
+        .change_limits(subscription.id, &limits(5), Actor::Client(client_id))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "auth.forbidden");
+    kit.db.cleanup().await;
 }

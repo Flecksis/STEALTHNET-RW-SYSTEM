@@ -898,10 +898,9 @@ export function ClientPhone() {
       ) : null}
       {dialog === 'limits' && sub ? (
         <LimitsDialog
-          subscriptionId={sub.id}
+          subscription={sub}
           tariff={tariff}
           trafficLimit={limitBytes}
-          extraDevices={sub.extra_devices}
           onClose={() => setDialog('')}
           onDone={(view) => {
             setDialog('');

@@ -165,13 +165,17 @@ pub struct DeviceView {
     pub added_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LimitsChange {
     #[serde(default, deserialize_with = "present_or_null")]
     pub traffic_limit_bytes: Option<Option<u64>>,
     #[serde(default)]
     pub extra_devices: Option<u32>,
+    #[serde(default)]
+    pub devices: Option<u32>,
 }
+
+pub const MAX_DEVICES: u32 = 100;
 
 fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
@@ -1519,8 +1523,25 @@ impl<'a> SubscriptionOps<'a> {
         let subscription = self.owned(id, actor).await?;
         staff_only(actor)?;
         ensure_live(&subscription)?;
-        if change.traffic_limit_bytes.is_none() && change.extra_devices.is_none() {
+        if change.traffic_limit_bytes.is_none()
+            && change.extra_devices.is_none()
+            && change.devices.is_none()
+        {
             return self.view_of(id, None, Vec::new()).await;
+        }
+        if change.devices.is_some() && change.extra_devices.is_some() {
+            return Err(ServiceError::rejected(
+                "subscription.devices_twice",
+                "укажите либо число устройств всего, либо доп. устройства",
+            ));
+        }
+        if let Some(total) = change.devices
+            && !(1..=MAX_DEVICES).contains(&total)
+        {
+            return Err(ServiceError::rejected(
+                "subscription.devices_range",
+                format!("устройств может быть от 1 до {MAX_DEVICES}"),
+            ));
         }
         let traffic_limit = match change.traffic_limit_bytes {
             Some(Some(0)) => {
@@ -1535,7 +1556,34 @@ impl<'a> SubscriptionOps<'a> {
             Some(None) => Some(0),
             None => None,
         };
-        let (purchase, bare_extra) = match change.extra_devices {
+        let policy = match subscription.tariff_id {
+            Some(tariff_id) => {
+                let mut conn = self.services.store().conn().await?;
+                match conn.tariffs().get(tariff_id).await {
+                    Ok(tariff) => Some(tariff.devices),
+                    Err(err) if err.is_not_found() => None,
+                    Err(err) => return Err(err.into()),
+                }
+            }
+            None => None,
+        };
+        let included = policy.as_ref().map(|p| p.included);
+        let (extra_target, manual_target) = match change.devices {
+            Some(total) => match &policy {
+                Some(p)
+                    if total >= p.included
+                        && total <= p.included + p.extra.as_ref().map_or(0, |e| e.max) =>
+                {
+                    (Some(total - p.included), Some(None))
+                }
+                _ => (None, Some(Some(total))),
+            },
+            None => (
+                change.extra_devices,
+                change.extra_devices.map(|_| None::<u32>),
+            ),
+        };
+        let (purchase, bare_extra) = match extra_target {
             Some(extra) if extra != subscription.extra_devices => {
                 match (subscription.period_started_at, subscription.period_days) {
                     (Some(period_started_at), Some(period_days)) => (
@@ -1554,29 +1602,22 @@ impl<'a> SubscriptionOps<'a> {
             _ => (None, None),
         };
         let user_id = linked_user(&subscription)?;
-        let included = match subscription.tariff_id {
-            Some(tariff_id) => {
-                let mut conn = self.services.store().conn().await?;
-                match conn.tariffs().get(tariff_id).await {
-                    Ok(tariff) => Some(tariff.devices.included),
-                    Err(err) if err.is_not_found() => None,
-                    Err(err) => return Err(err.into()),
-                }
-            }
-            None => None,
-        };
         let remna = self.services.remna()?;
         let (after, errors) = with_subscription_lock(self.services, id, async {
             let before = self.fetch_user(&*remna, &subscription, user_id).await?;
             let target_limit = traffic_limit.unwrap_or(before.traffic_limit_bytes);
-            let target_hwid: Option<Option<i64>> = change.extra_devices.map(|extra| {
-                let base = included.map(i64::from).unwrap_or_else(|| {
-                    (before.hwid_device_limit.unwrap_or(0) - i64::from(subscription.extra_devices))
+            let target_hwid: Option<Option<i64>> = match manual_target {
+                Some(Some(total)) => Some(Some(i64::from(total))),
+                _ => extra_target.map(|extra| {
+                    let base = included.map(i64::from).unwrap_or_else(|| {
+                        (before.hwid_device_limit.unwrap_or(0)
+                            - i64::from(subscription.extra_devices))
                         .max(0)
-                });
-                let total = base + i64::from(extra);
-                (total > 0).then_some(total)
-            });
+                    });
+                    let total = base + i64::from(extra);
+                    (total > 0).then_some(total)
+                }),
+            };
             let mut request = UpdateUserRequest::new(user_id);
             request.traffic_limit_bytes = traffic_limit;
             request.hwid_device_limit = target_hwid;
@@ -1603,7 +1644,7 @@ impl<'a> SubscriptionOps<'a> {
                     errors: Vec::new(),
                 },
             };
-            if change.extra_devices.is_some() {
+            if let Some(manual) = manual_target {
                 let mut conn = self.services.store().conn().await?;
                 sqlx::query("DELETE FROM subscription_device_holds WHERE subscription_id = $1")
                     .bind(id.0)
@@ -1612,6 +1653,7 @@ impl<'a> SubscriptionOps<'a> {
                 if let Some(extra) = bare_extra {
                     conn.subscriptions().set_extra_devices(id, extra).await?;
                 }
+                conn.subscriptions().set_device_limit(id, manual).await?;
             }
             if traffic_limit.is_some() {
                 let mut conn = self.services.store().conn().await?;
@@ -1627,7 +1669,9 @@ impl<'a> SubscriptionOps<'a> {
                     "hwid_limit_before": before.hwid_device_limit,
                     "hwid_limit": after.hwid_device_limit,
                     "extra_devices_before": subscription.extra_devices,
-                    "extra_devices": change.extra_devices.unwrap_or(subscription.extra_devices),
+                    "extra_devices": extra_target.unwrap_or(subscription.extra_devices),
+                    "device_limit_before": subscription.device_limit,
+                    "device_limit": manual_target.unwrap_or(subscription.device_limit),
                     "removed_devices": trimmed.removed,
                     "previous_status": status_of(&before),
                     "status": status_of(&after),
@@ -2162,6 +2206,7 @@ pub(crate) mod tests {
         let limits = LimitsChange {
             traffic_limit_bytes: Some(None),
             extra_devices: None,
+            devices: None,
         };
         assert_eq!(
             code(&ops.change_limits(id, &limits, other).await.unwrap_err()),
@@ -2443,6 +2488,7 @@ pub(crate) mod tests {
                 &LimitsChange {
                     traffic_limit_bytes: Some(Some(200 * GIB)),
                     extra_devices: Some(0),
+                    devices: None,
                 },
                 ADMIN,
             )
@@ -2488,6 +2534,7 @@ pub(crate) mod tests {
                 &LimitsChange {
                     traffic_limit_bytes: None,
                     extra_devices: Some(2),
+                    devices: None,
                 },
                 ADMIN,
             )
@@ -2503,6 +2550,7 @@ pub(crate) mod tests {
                 &LimitsChange {
                     traffic_limit_bytes: None,
                     extra_devices: Some(0),
+                    devices: None,
                 },
                 ADMIN,
             )
@@ -2515,6 +2563,7 @@ pub(crate) mod tests {
                 &LimitsChange {
                     traffic_limit_bytes: Some(Some(GIB)),
                     extra_devices: None,
+                    devices: None,
                 },
                 ADMIN,
             )
@@ -2527,6 +2576,7 @@ pub(crate) mod tests {
                 &LimitsChange {
                     traffic_limit_bytes: Some(Some(0)),
                     extra_devices: None,
+                    devices: None,
                 },
                 ADMIN,
             )

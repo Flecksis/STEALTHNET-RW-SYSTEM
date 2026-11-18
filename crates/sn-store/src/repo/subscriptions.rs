@@ -147,12 +147,13 @@ struct SubscriptionRow {
     synced_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     ended_at: Option<DateTime<Utc>>,
+    device_limit: Option<i32>,
 }
 
 const COLUMNS: &str = "id, public_id, client_id, tariff_id, kind, remna_user_id, remna_username, short_uuid, extra_devices, \
                        period_started_at, period_days, autorenew_enabled, autorenew_period_id, status, expire_at, \
                        traffic_used_bytes, traffic_limit_bytes, traffic_strategy, hwid_limit, devices_count, online_at, \
-                       first_connected_at, last_node_uuid, remna_updated_at, synced_at, created_at, ended_at";
+                       first_connected_at, last_node_uuid, remna_updated_at, synced_at, created_at, ended_at, device_limit";
 
 impl TryFrom<SubscriptionRow> for Subscription {
     type Error = StoreError;
@@ -219,6 +220,10 @@ impl TryFrom<SubscriptionRow> for Subscription {
             },
             created_at: row.created_at,
             ended_at: row.ended_at,
+            device_limit: row
+                .device_limit
+                .map(|v| non_negative_u32(v, "device_limit"))
+                .transpose()?,
         })
     }
 }
@@ -328,9 +333,9 @@ impl<'c> SubscriptionsRepo<'c> {
     pub async fn linked_for_tariff(
         &mut self,
         tariff_id: TariffId,
-    ) -> StoreResult<Vec<(RemnaUserId, u32)>> {
-        let rows: Vec<(i64, i32)> = sqlx::query_as(
-            "SELECT remna_user_id, extra_devices FROM subscriptions WHERE tariff_id = $1 \
+    ) -> StoreResult<Vec<(RemnaUserId, u32, Option<u32>)>> {
+        let rows: Vec<(i64, i32, Option<i32>)> = sqlx::query_as(
+            "SELECT remna_user_id, extra_devices, device_limit FROM subscriptions WHERE tariff_id = $1 \
              AND ended_at IS NULL AND remna_user_id IS NOT NULL AND remna_missing_at IS NULL \
              AND kind <> 'trial' ORDER BY id",
         )
@@ -339,7 +344,13 @@ impl<'c> SubscriptionsRepo<'c> {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(user, extra)| (RemnaUserId(user), u32::try_from(extra).unwrap_or(0)))
+            .map(|(user, extra, manual)| {
+                (
+                    RemnaUserId(user),
+                    u32::try_from(extra).unwrap_or(0),
+                    manual.and_then(|v| u32::try_from(v).ok()),
+                )
+            })
             .collect())
     }
 
@@ -503,6 +514,19 @@ impl<'c> SubscriptionsRepo<'c> {
         .bind(to_i32(purchase.period_days, "period_days")?)
         .execute(&mut *self.conn)
         .await?;
+        Ok(())
+    }
+
+    pub async fn set_device_limit(
+        &mut self,
+        id: SubscriptionId,
+        limit: Option<u32>,
+    ) -> StoreResult<()> {
+        sqlx::query("UPDATE subscriptions SET device_limit = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(limit.map(|v| to_i32(v, "device_limit")).transpose()?)
+            .execute(&mut *self.conn)
+            .await?;
         Ok(())
     }
 

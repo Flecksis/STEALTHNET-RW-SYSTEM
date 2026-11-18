@@ -1989,6 +1989,14 @@ impl<'a> Fulfillment<'a> {
             PurchaseIntent::Subscription { extra_devices, .. } => *extra_devices,
             _ => 0,
         };
+        let manual_devices = match (kind, context.subscription.device_limit) {
+            (PlanKind::Renewal, Some(manual)) => {
+                let bought =
+                    i64::from(extra_devices) - i64::from(context.subscription.extra_devices);
+                Some(u32::try_from((i64::from(manual) + bought).max(1)).unwrap_or(manual))
+            }
+            _ => None,
+        };
         let state = current.as_ref().map(RemnaUser::state);
         let tag = matches!(context.order.intent, PurchaseIntent::Trial).then_some(TRIAL_TAG);
         let extra_traffic = {
@@ -2009,6 +2017,7 @@ impl<'a> Fulfillment<'a> {
             keep_squads: &keep_squads,
             profile: &profile,
             tag,
+            manual_devices,
         })
         .map_err(|e| Halt::Review(format!("план выдачи не построен: {e}")))?;
         let squads = remna
@@ -2239,6 +2248,16 @@ impl<'a> Fulfillment<'a> {
                     period_days: plan.period_days.max(1),
                 },
             )
+            .await?;
+        let manual = match (plan.kind, subscription.device_limit) {
+            (PlanKind::Renewal, Some(_)) => plan
+                .device_hold
+                .map(|hold| hold.limit_after)
+                .or(plan.target.hwid_device_limit),
+            _ => None,
+        };
+        tx.subscriptions()
+            .set_device_limit(subscription.id, manual)
             .await?;
         match plan.device_hold {
             Some(hold) => {

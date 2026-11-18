@@ -1311,6 +1311,7 @@ fn удалённый_срок_заменяется_ближайшим_по_дн
         mirror: Default::default(),
         created_at: chrono::Utc::now(),
         ended_at: None,
+        device_limit: None,
     };
     assert_eq!(
         renewal_period(&tariff, &subscription, Currency::Usd).map(|p| p.days),

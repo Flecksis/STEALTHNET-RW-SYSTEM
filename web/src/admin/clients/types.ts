@@ -29,6 +29,7 @@ export type Subscription = {
   mirror: Mirror;
   created_at: string;
   ended_at: string | null;
+  device_limit?: number | null;
 };
 
 export type Client = {

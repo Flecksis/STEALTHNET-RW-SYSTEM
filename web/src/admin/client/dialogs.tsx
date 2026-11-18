@@ -1,8 +1,9 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { encode } from 'uqr';
 import { api, ApiError } from '../../lib/api';
-import { count, days, groupDigits, money, NBSP, periodLabel, type Money } from '../../lib/format';
+import { count, days, groupDigits, money, periodLabel, type Money } from '../../lib/format';
 import type { Currency } from '../../lib/types';
+import type { Subscription } from '../clients/types';
 import type { TariffBrief } from './types';
 import '../form.css';
 
@@ -202,37 +203,71 @@ export function BalanceDialog({ clientId, currency, balance, initial, onClose, o
 }
 
 type LimitsProps = {
-  subscriptionId: number;
+  subscription: Subscription;
   tariff: TariffBrief | null;
   trafficLimit: number | null;
-  extraDevices: number;
   onClose: () => void;
   onDone: (view: unknown) => void;
 };
 
 const GIB = 1024 ** 3;
+const MAX_DEVICES = 100;
 
-export function LimitsDialog({ subscriptionId, tariff, trafficLimit, extraDevices, onClose, onDone }: LimitsProps) {
+function devicesNow(subscription: Subscription, tariff: TariffBrief | null): number | null {
+  const mirrored = subscription.mirror.hwid_limit;
+  if (mirrored !== null && mirrored !== undefined && mirrored > 0) {
+    return mirrored;
+  }
+  if (subscription.device_limit) {
+    return subscription.device_limit;
+  }
+  return tariff ? tariff.devices.included + subscription.extra_devices : null;
+}
+
+function devicesRule(tariff: TariffBrief | null): string {
+  if (!tariff) {
+    return 'У подписки нет тарифа.';
+  }
+  const max = tariff.devices.extra?.max ?? 0;
+  return max > 0 ? `В тариф входит ${tariff.devices.included}, доп. устройств — до ${max}.` : `В тариф входит ${tariff.devices.included}.`;
+}
+
+export function LimitsDialog({ subscription, tariff, trafficLimit, onClose, onDone }: LimitsProps) {
+  const now = devicesNow(subscription, tariff);
   const [unlimited, setUnlimited] = useState(!trafficLimit);
   const [gb, setGb] = useState(trafficLimit ? String(Math.round(trafficLimit / GIB)) : '');
-  const [extra, setExtra] = useState(String(extraDevices));
+  const [devices, setDevices] = useState(now !== null ? String(now) : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const gbId = useId();
-  const extraId = useId();
-  const maxExtra = tariff?.devices.extra?.max ?? 0;
+  const devicesId = useId();
+  const devicesHint = useId();
   const gbValue = Number(gb);
   const gbValid = unlimited || (Number.isInteger(gbValue) && gbValue > 0 && gbValue <= 1_000_000);
-  const extraValue = Number(extra);
-  const extraValid = maxExtra === 0 || (Number.isInteger(extraValue) && extraValue >= 0 && extraValue <= maxExtra);
+  const devicesValue = Number(devices);
+  const devicesEmpty = devices.trim() === '';
+  const devicesValid = devicesEmpty || (Number.isInteger(devicesValue) && devicesValue >= 1 && devicesValue <= MAX_DEVICES);
+  const devicesChanged = !devicesEmpty && devicesValid && devicesValue !== now;
+  const included = tariff?.devices.included ?? null;
+  const inTariff = included !== null && devicesValue >= included && devicesValue <= included + (tariff?.devices.extra?.max ?? 0);
+  const connected = subscription.mirror.devices_count ?? 0;
+  const outcome = !devicesValid
+    ? `Устройств может быть от 1 до ${MAX_DEVICES}.`
+    : devicesChanged
+      ? inTariff && included !== null
+        ? `Доп. устройств станет ${devicesValue - included}.`
+        : 'Это ручной лимит: продление и правка тарифа его не изменят, смена тарифа вернёт лимит тарифа.'
+      : subscription.device_limit
+        ? 'Сейчас лимит задан вручную.'
+        : '';
   const save = async () => {
     const limits: Record<string, number | null> = {};
     const nextLimit = unlimited ? null : gbValue * GIB;
     if ((nextLimit ?? 0) !== (trafficLimit ?? 0)) {
       limits.traffic_limit_bytes = nextLimit;
     }
-    if (maxExtra > 0 && extraValue !== extraDevices) {
-      limits.extra_devices = extraValue;
+    if (devicesChanged) {
+      limits.devices = devicesValue;
     }
     if (Object.keys(limits).length === 0) {
       onClose();
@@ -241,7 +276,7 @@ export function LimitsDialog({ subscriptionId, tariff, trafficLimit, extraDevice
     setBusy(true);
     setError(null);
     try {
-      const view = await api<unknown>(`/api/admin/subscriptions/${subscriptionId}/actions/limits`, { method: 'POST', body: { limits } });
+      const view = await api<unknown>(`/api/admin/subscriptions/${subscription.id}/actions/limits`, { method: 'POST', body: { limits } });
       onDone(view);
     } catch (err) {
       setError(failText(err, 'Лимиты не изменились'));
@@ -272,32 +307,38 @@ export function LimitsDialog({ subscriptionId, tariff, trafficLimit, extraDevice
           </>
         )}
       </div>
-      {maxExtra > 0 ? (
-        <div className="field-row">
-          <label htmlFor={extraId}>Дополнительные устройства</label>
-          <span className="unit-field">
-            <input
-              id={extraId}
-              className="field num"
-              inputMode="numeric"
-              value={extra}
-              onChange={(event) => setExtra(event.target.value)}
-              disabled={busy}
-            />
-            <span className="muted">из{NBSP}{maxExtra}</span>
+      <div className="field-row">
+        <label htmlFor={devicesId}>Устройств всего</label>
+        <input
+          id={devicesId}
+          className="field num"
+          inputMode="numeric"
+          value={devices}
+          onChange={(event) => setDevices(event.target.value)}
+          aria-invalid={!devicesValid}
+          aria-describedby={devicesHint}
+          placeholder={now === null ? 'не задано' : undefined}
+          disabled={busy}
+          style={{ maxWidth: 120 }}
+        />
+        <span id={devicesHint} className="cap">
+          {now !== null ? `Сейчас ${now}. ` : ''}
+          {devicesRule(tariff)}
+          {outcome ? ` ${outcome}` : ''}
+        </span>
+        {devicesChanged && devicesValue < connected ? (
+          <span className="warn-line" role="note">
+            Подключено устройств: {connected}. Лишние отключатся, сначала те, что дольше не подключались.
           </span>
-          <span className="cap">
-            В тариф входит {tariff?.devices.included ?? 0}, всего станет {(tariff?.devices.included ?? 0) + (extraValid ? extraValue : 0)}
-          </span>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
       {error ? (
         <p className="err" role="alert">
           {error}
         </p>
       ) : null}
       <div className="dialog-actions">
-        <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy || !gbValid || !extraValid}>
+        <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy || !gbValid || !devicesValid}>
           {busy ? 'Сохраняем…' : 'Сохранить'}
         </button>
         <button type="button" className="btn-line hov" onClick={onClose} disabled={busy}>

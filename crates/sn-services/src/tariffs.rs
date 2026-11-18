@@ -471,7 +471,7 @@ impl<'a> TariffAdmin<'a> {
         if squads {
             let target: Vec<uuid::Uuid> = after.squads.iter().map(|s| s.0).collect();
             for chunk in users.chunks(APPLY_BATCH) {
-                let ids: Vec<RemnaUserId> = chunk.iter().map(|(id, _)| *id).collect();
+                let ids: Vec<RemnaUserId> = chunk.iter().map(|(id, _, _)| *id).collect();
                 let request = BulkSquadsRequest {
                     user_ids: ids.clone(),
                     active_internal_squads: target.clone(),
@@ -484,12 +484,12 @@ impl<'a> TariffAdmin<'a> {
         }
         if traffic || devices {
             let mut groups: BTreeMap<u32, Vec<RemnaUserId>> = BTreeMap::new();
-            for (user, extra) in &users {
-                groups.entry(*extra).or_default().push(*user);
+            for (user, extra, manual) in &users {
+                let total = manual.unwrap_or_else(|| after.devices.included.saturating_add(*extra));
+                groups.entry(total).or_default().push(*user);
             }
-            for (extra, ids) in groups {
+            for (total, ids) in groups {
                 for chunk in ids.chunks(APPLY_BATCH) {
-                    let total = after.devices.included.saturating_add(extra);
                     let fields = BulkUserFields {
                         status: None,
                         traffic_limit_bytes: traffic.then(|| {

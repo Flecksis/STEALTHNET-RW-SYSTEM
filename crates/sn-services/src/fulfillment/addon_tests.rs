@@ -366,11 +366,56 @@ async fn ручной_лимит_админа_снимает_докупленн�
             &crate::subscriptions::LimitsChange {
                 traffic_limit_bytes: Some(Some(200 * GIB)),
                 extra_devices: None,
+                devices: None,
             },
             crate::Actor::Admin(sn_domain::ids::AdminId(1)),
         )
         .await
         .unwrap();
     assert!(bought(&kit, &subscription).await.is_none());
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn докупка_прибавляет_устройства_к_ручному_лимиту() {
+    let Some(kit) = options_kit().await else {
+        return;
+    };
+    let client_id = client(&kit.services, 805).await;
+    let tariff = standard(&kit.services).await;
+    let subscription = provision(&kit, client_id, &tariff, 30).await;
+    let subscription = expire_in(
+        &kit,
+        &subscription,
+        Utc::now() + Days::days(14) + Days::hours(12),
+        SubscriptionStatus::Active,
+    )
+    .await;
+    kit.services
+        .subscriptions()
+        .change_limits(
+            subscription.id,
+            &crate::subscriptions::LimitsChange {
+                devices: Some(10),
+                ..Default::default()
+            },
+            crate::Actor::Admin(sn_domain::ids::AdminId(1)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(10)
+    );
+    buy_item(&kit, client_id, devices_item(&subscription, 1)).await;
+    assert_eq!(
+        remna_user(&kit, &subscription).await.hwid_device_limit,
+        Some(11)
+    );
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let stored = conn.subscriptions().get(subscription.id).await.unwrap();
+    assert_eq!(stored.extra_devices, 1);
+    assert_eq!(stored.device_limit, Some(11));
+    drop(conn);
     kit.db.cleanup().await;
 }
