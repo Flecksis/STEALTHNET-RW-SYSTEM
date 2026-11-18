@@ -541,7 +541,7 @@ fn mask_text(text: &str) -> (MaskedBody, bool) {
     (MaskedBody::Text(clip(text)), false)
 }
 
-const EVENT_KEYS: [&str; 10] = [
+const EVENT_KEYS: [&str; 11] = [
     "event",
     "eventType",
     "event_type",
@@ -549,6 +549,7 @@ const EVENT_KEYS: [&str; 10] = [
     "notification_type",
     "type",
     "OperationType",
+    "transactionStatus",
     "status",
     "Status",
     "payment_status",
@@ -733,6 +734,12 @@ mod tests {
         assert!(stored.starts_with("notification_type=p2p-incoming&amount=485.03&"));
         assert!(!stored.contains("ac13833bd6ba"));
         assert!(!stored.contains("ivan%40example.com"));
+    }
+
+    #[test]
+    fn событие_wata_берётся_из_статуса_транзакции() {
+        let body = br#"{"transactionType":"SBP","kind":"Payment","transactionStatus":"Paid","amount":1188.00}"#;
+        assert_eq!(prepare(body, None).event.as_deref(), Some("Paid"));
     }
 
     #[test]

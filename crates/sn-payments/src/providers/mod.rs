@@ -3,6 +3,7 @@ mod balance;
 mod cloudpayments;
 mod cryptomus;
 mod cryptopay;
+mod freekassa;
 mod gram;
 mod heleket;
 mod kassaai;
@@ -12,9 +13,11 @@ mod mulenpay;
 mod overpay;
 mod paypalych;
 mod platega;
+mod robokassa;
 mod rollypay;
 mod stars;
 mod tribute;
+mod wata;
 mod yookassa;
 mod yoomoney;
 
@@ -23,6 +26,10 @@ pub use balance::Balance;
 pub use cloudpayments::{CloudPayments, signature as cloudpayments_signature};
 pub use cryptomus::{Cryptomus, signature as cryptomus_signature};
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
+pub use freekassa::{
+    Freekassa, api_signature as freekassa_api_signature,
+    notice_signature as freekassa_notice_signature,
+};
 pub use gram::{Gram, GramInvoice, comment_payload, format_grams, friendly_address};
 pub use heleket::{Heleket, signature as heleket_signature};
 pub use kassaai::{KassaAi, notice_signature as kassaai_notice_signature};
@@ -31,6 +38,9 @@ pub use mulenpay::MulenPay;
 pub use overpay::{Overpay, hook_token as overpay_hook_token};
 pub use paypalych::{PayPalych, signature as paypalych_signature};
 pub use platega::Platega;
+pub use robokassa::{
+    Robokassa, invoice_number as robokassa_invoice_number, signature as robokassa_signature,
+};
 pub use rollypay::{RollyPay, signature as rollypay_signature};
 pub use stars::{
     STARS_TOKEN_FIELD, StarDirection, StarTransaction, StarsPayment, StarsPaymentEvent,
@@ -39,6 +49,7 @@ pub use stars::{
 pub use tribute::{
     PLANS as TRIBUTE_PLANS, PRODUCTS as TRIBUTE_PRODUCTS, Tribute, signature as tribute_signature,
 };
+pub use wata::{Wata, verify_signature as wata_verify_signature};
 pub use yookassa::YooKassa;
 pub use yoomoney::YooMoney;
 
@@ -63,6 +74,9 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(KassaAi::new()),
         Arc::new(AuraPay::new()),
         Arc::new(Tribute::new()),
+        Arc::new(Wata::new()),
+        Arc::new(Freekassa::new()),
+        Arc::new(Robokassa::new()),
         Arc::new(TelegramStars::new()),
         Arc::new(Balance),
     ]
@@ -136,6 +150,17 @@ mod tests {
                 ("api_key", json!("k")),
                 ("secret_key", json!("s")),
             ]),
+            providers::WATA => config(&[("api_token", json!("wata-token"))]),
+            providers::FREEKASSA => config(&[
+                ("shop_id", json!("777")),
+                ("api_key", json!("k")),
+                ("secret_word_2", json!("s")),
+            ]),
+            providers::ROBOKASSA => config(&[
+                ("merchant_login", json!("shop")),
+                ("password1", json!("p1")),
+                ("password2", json!("p2")),
+            ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
             providers::TRIBUTE => config(&[
                 ("api_key", json!("k")),
@@ -180,6 +205,7 @@ mod tests {
                     providers::STARS,
                     providers::CRYPTOMUS,
                     providers::TRIBUTE,
+                    providers::WATA,
                     providers::BALANCE,
                 ],
             ),
@@ -201,6 +227,9 @@ mod tests {
                     providers::KASSA_AI,
                     providers::AURAPAY,
                     providers::TRIBUTE,
+                    providers::WATA,
+                    providers::FREEKASSA,
+                    providers::ROBOKASSA,
                     providers::BALANCE,
                 ],
             ),
@@ -238,6 +267,12 @@ mod tests {
                 assert!(registry.accepts_webhooks(id), "{id}");
             }
             assert!(registry.accepts_webhooks(providers::TRIBUTE));
+            for id in [providers::WATA, providers::FREEKASSA, providers::ROBOKASSA] {
+                assert!(registry.accepts_webhooks(id), "{id}");
+            }
+            assert!(registry.is_available(providers::WATA, Currency::Usd));
+            assert!(!registry.is_available(providers::FREEKASSA, Currency::Usd));
+            assert!(!registry.is_available(providers::ROBOKASSA, Currency::Usd));
         }
     }
 
@@ -265,6 +300,9 @@ mod tests {
             providers::KASSA_AI,
             providers::AURAPAY,
             providers::TRIBUTE,
+            providers::WATA,
+            providers::FREEKASSA,
+            providers::ROBOKASSA,
             providers::STARS,
             providers::BALANCE,
         ] {
@@ -319,6 +357,9 @@ mod tests {
                 providers::MULENPAY,
                 providers::PAL24,
                 providers::KASSA_AI,
+                providers::WATA,
+                providers::FREEKASSA,
+                providers::ROBOKASSA,
                 providers::STARS
             ]
         );
@@ -348,7 +389,10 @@ mod tests {
                 providers::PLATEGA,
                 providers::CLOUDPAYMENTS,
                 providers::OVERPAY,
-                providers::PAL24
+                providers::PAL24,
+                providers::WATA,
+                providers::FREEKASSA,
+                providers::ROBOKASSA
             ]
         );
     }

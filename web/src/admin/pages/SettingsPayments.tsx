@@ -201,6 +201,9 @@ const ACCEPTS: Record<string, string> = {
   kassa_ai: 'СБП, карты, SberPay',
   aurapay: 'Карты и СБП',
   tribute: 'Товары и подписки Tribute: оплата в Telegram',
+  wata: 'Карты и СБП',
+  freekassa: 'СБП, карты, SberPay и другие способы',
+  robokassa: 'Карты, СБП, SberPay, T-Pay',
 };
 
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'], pal24: ['', 'refund', 'chargeback'] };
@@ -225,6 +228,12 @@ const HOOK_HINTS: Record<string, string> = {
     'Панель передаёт этот адрес с каждым счётом. Если в настройках кассы AuraPay стоит адрес старого бота, замените его этим. Возвратов через API у AuraPay нет: деньги возвращает поддержка AuraPay, а в панели возврат отмечается вручную.',
   tribute:
     'В Tribute это поле Webhook URL: кабинет автора → ⋯ → «Настройки» → «API-ключи». Оплату панель находит по Telegram ID покупателя, поэтому Tribute видят только клиенты с привязанным Telegram.',
+  wata:
+    'У WATA адрес указывается в кабинете в настройках терминала, у каждого терминала свой. Оплату панель дополнительно сверяет запросом к WATA. Если ссылки не создаются, передайте менеджеру WATA IP-адрес сервера панели.',
+  freekassa:
+    'У Freekassa это «URL оповещения» в настройках магазина, метод POST. Там же укажите адрес возврата клиента после оплаты, например кабинет. Тестовый режим тоже включается в настройках магазина.',
+  robokassa:
+    'У Robokassa это Result URL в технических настройках магазина, метод POST. В Success URL и Fail URL укажите, куда вернуть клиента после оплаты, например кабинет.',
 };
 
 function failText(err: unknown, fallback: string): string {

@@ -29,6 +29,9 @@ pub mod providers {
     pub const KASSA_AI: &str = "kassa_ai";
     pub const AURAPAY: &str = "aurapay";
     pub const TRIBUTE: &str = "tribute";
+    pub const WATA: &str = "wata";
+    pub const FREEKASSA: &str = "freekassa";
+    pub const ROBOKASSA: &str = "robokassa";
 }
 
 const fn shown() -> bool {

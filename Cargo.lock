@@ -2324,6 +2324,7 @@ dependencies = [
  "chrono",
  "hex",
  "hmac 0.12.1",
+ "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",
@@ -2364,6 +2365,7 @@ name = "sn-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "futures-util",
  "jsonwebtoken",
