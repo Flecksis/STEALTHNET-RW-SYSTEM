@@ -1616,12 +1616,19 @@ async fn пересчитать_и_выдать_считает_план_от_т�
 }
 
 #[tokio::test]
-async fn отметить_выданным_завершает_заказ_без_обращения_к_remnawave() {
+async fn отметить_выданным_завершает_заказ_без_записи_в_remnawave() {
     let Some(kit) = kit().await else { return };
     let stuck = stuck_renewal(&kit, 296).await;
     job_given_up(&kit, stuck.order.id).await;
     let fulfillment = kit.services.fulfillment();
-    let calls = kit.remna.calls().len();
+    let writes = |kit: &Kit| {
+        kit.remna
+            .calls()
+            .iter()
+            .filter(|call| !call.starts_with("get_"))
+            .count()
+    };
+    let calls = writes(&kit);
     for note in ["", "   ", &"я".repeat(MAX_FULFILL_NOTE + 1)] {
         let err = fulfillment
             .mark_fulfilled(stuck.order.id, note, ADMIN)
@@ -1643,7 +1650,7 @@ async fn отметить_выданным_завершает_заказ_без_
         .unwrap();
     assert_eq!(closed.status, OrderStatus::Fulfilled);
     assert!(closed.fulfilled_at.is_some());
-    assert_eq!(kit.remna.calls().len(), calls);
+    assert_eq!(writes(&kit), calls);
     assert_eq!(
         expire_at(&kit, &stuck.subscription).await,
         stuck.expire + Days::days(7)
@@ -1719,22 +1726,14 @@ async fn устаревший_план_не_применяется_когда_с
         matches!(first, FulfillmentOutcome::Retry { .. }),
         "{first:?}"
     );
-    kit.services
-        .clients()
-        .block(client_id, Some("проверка"), ADMIN)
-        .await
-        .unwrap();
-    let blocked = fulfillment.run(held.id).await.unwrap();
-    assert!(
-        matches!(&blocked, FulfillmentOutcome::Review { reason } if reason.contains("заблокирован")),
-        "{blocked:?}"
-    );
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.orders()
+            .mark_review(held.id, "выдача не завершилась")
+            .await
+            .unwrap();
+    }
     assert_eq!(plan_stage(&kit, held.id).await, PlanStage::Stale);
-    kit.services
-        .clients()
-        .unblock(client_id, ADMIN)
-        .await
-        .unwrap();
     let next = buy_with_balance(
         &kit.services,
         client_id,

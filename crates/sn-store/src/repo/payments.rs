@@ -3,10 +3,11 @@ use chrono::{DateTime, Utc};
 use sn_domain::ids::{
     AdminId, ClientId, LedgerEntryId, OrderId, PaymentId, RefundId, SubscriptionId,
 };
+use sn_domain::jobs::JobPayload;
 use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{
-    NewPayment, Payment, PaymentStatus, ProviderId, RefundSubscriptionAction,
+    AUTORENEW_METHOD, NewPayment, Payment, PaymentStatus, ProviderId, RefundSubscriptionAction,
 };
 use sqlx::PgConnection;
 use std::collections::HashMap;
@@ -311,6 +312,25 @@ const COLUMNS: &str = "id, public_id, order_id, client_id, provider, method, amo
 
 pub(crate) const TRANSITION_ATTEMPTS: usize = 4;
 
+fn poll_key_prefix() -> String {
+    let probe = JobPayload::PollPayment {
+        payment_id: PaymentId(0),
+    }
+    .dedupe_key()
+    .unwrap_or_default();
+    probe.strip_suffix('0').unwrap_or(&probe).to_string()
+}
+
+pub fn charge_review_filter(alias: &str) -> String {
+    format!(
+        "{alias}.method = '{AUTORENEW_METHOD}' AND {alias}.status = 'pending' \
+         AND ({alias}.expires_at IS NULL OR {alias}.expires_at > now()) \
+         AND (SELECT j.status FROM jobs j WHERE j.dedupe_key = '{}' || {alias}.id::text \
+             ORDER BY j.id DESC LIMIT 1) = 'review'",
+        poll_key_prefix()
+    )
+}
+
 const CHAIN_WATCHED: &str = "provider_txid IS NOT NULL AND (status = 'pending' \
      OR (status = 'canceled' AND failure_reason = 'expired' AND expires_at > $2))";
 
@@ -481,6 +501,39 @@ impl<'c> PaymentsRepo<'c> {
             constraint: None,
             message: "статус платежа меняется параллельно, повторите".into(),
         })
+    }
+
+    pub async fn charges_in_review(&mut self) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM payments p WHERE {}",
+            charge_review_filter("p")
+        ))
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn charge_reviews(
+        &mut self,
+        ids: &[PaymentId],
+    ) -> StoreResult<HashMap<PaymentId, String>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let rows: Vec<(i64, Option<String>)> = sqlx::query_as(&format!(
+            "SELECT p.id, (SELECT j.last_error FROM jobs j WHERE j.dedupe_key = '{}' || p.id::text \
+                 ORDER BY j.id DESC LIMIT 1) \
+             FROM payments p WHERE p.id = ANY($1) AND {}",
+            poll_key_prefix(),
+            charge_review_filter("p")
+        ))
+        .bind(&ids)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, reason)| (PaymentId(id), reason.unwrap_or_default()))
+            .collect())
     }
 
     pub async fn by_ids(&mut self, ids: &[PaymentId]) -> StoreResult<Vec<Payment>> {

@@ -88,8 +88,41 @@ async fn orders_of(kit: &Kit, client_id: ClientId) -> Vec<Order> {
         .items
 }
 
+async fn invoice_with(kit: &Kit, client_id: ClientId, cart: &CartRequest) -> Payment {
+    let started = kit
+        .services
+        .checkout()
+        .start(client_id, &request(cart.clone(), TEST_PAY))
+        .await
+        .unwrap();
+    let CheckoutResult::Redirect { payment_id, .. } = started else {
+        panic!("ожидалась ссылка на оплату: {started:?}");
+    };
+    payment(kit, payment_id).await
+}
+
+async fn replaced_audit(kit: &Kit, order_id: OrderId) -> Vec<sn_store::AuditRecord> {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.audit()
+        .for_entity("order", order_id.0, 20)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.action == ORDER_REPLACED)
+        .collect()
+}
+
+async fn failure_reason(kit: &Kit, payment: &Payment) -> Option<String> {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_scalar("SELECT failure_reason FROM payments WHERE id = $1")
+        .bind(payment.id.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
-async fn один_клиент_не_выставит_несколько_счетов_по_одноразовому_промокоду() {
+async fn второй_счёт_по_промокоду_отменяет_неоплаченный_и_забирает_промокод() {
     let Some(kit) = promo_kit().await else { return };
     let mut once = percent("ONCE50", 50, Some(1));
     once.first_purchase_only = true;
@@ -98,33 +131,143 @@ async fn один_клиент_не_выставит_несколько_счет
     let tariff = standard(&kit.services).await;
     let cart = with_code(cart(&tariff, 30, None), "once50");
     let checkout = kit.services.checkout();
-    let first = checkout
-        .start(client_id, &request(cart.clone(), TEST_PAY))
-        .await
-        .unwrap();
-    let CheckoutResult::Redirect { payment_id, .. } = first else {
-        panic!("ожидалась ссылка на оплату: {first:?}");
-    };
+    let first = invoice_with(&kit, client_id, &cart).await;
     assert_eq!(counts(&kit).await, (0, 1));
-    for _ in 0..2 {
-        let err = checkout
-            .start(client_id, &request(cart.clone(), TEST_PAY))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("неоплаченному счёту"), "{err}");
-    }
-    assert_eq!(kit.pay.invoices.lock().unwrap().len(), 1);
-    assert_eq!(orders_of(&kit, client_id).await.len(), 1);
-    let paid = payment(&kit, payment_id).await;
-    assert_eq!(paid.amount, Amount::new(149, PayCurrency::Usd));
-    report(&kit, &paid, ProviderStatus::Paid).await;
+    let view = checkout.quote(client_id, &cart).await.unwrap();
+    assert_eq!(view.quote.total.minor, 149, "расчёт видит скидку");
+    assert_eq!(
+        payment(&kit, first.public_id).await.status,
+        PaymentStatus::Pending,
+        "расчёт цены счёт не отменяет"
+    );
+    let second = invoice_with(&kit, client_id, &cart).await;
+    assert_eq!(second.amount, Amount::new(149, PayCurrency::Usd));
+    let replaced = payment(&kit, first.public_id).await;
+    assert_eq!(replaced.status, PaymentStatus::Canceled);
+    assert_eq!(
+        failure_reason(&kit, &replaced).await.as_deref(),
+        Some(REPLACED_REASON)
+    );
+    assert_eq!(
+        order(&kit.services, first.order_id).await.status,
+        OrderStatus::Canceled
+    );
+    assert_eq!(counts(&kit).await, (0, 1));
+    let audit = replaced_audit(&kit, first.order_id).await;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0].actor_kind, "client");
+    assert_eq!(
+        audit[0].details["replaced_by"],
+        serde_json::json!(second.order_id)
+    );
+    assert_eq!(audit[0].details["promo"], "ONCE50");
+    assert_eq!(
+        audit[0].details["canceled_payments"],
+        serde_json::json!([first.id])
+    );
+    let third = invoice_with(&kit, client_id, &cart).await;
+    assert_eq!(
+        payment(&kit, second.public_id).await.status,
+        PaymentStatus::Canceled
+    );
+    assert_eq!(counts(&kit).await, (0, 1));
+    assert_eq!(kit.pay.invoices.lock().unwrap().len(), 3);
+    report(&kit, &third, ProviderStatus::Paid).await;
     assert_eq!(counts(&kit).await, (1, 0));
     let again = checkout
         .start(client_id, &request(cart, TEST_PAY))
         .await
         .unwrap_err();
     assert!(again.to_string().contains("уже использовали"), "{again}");
-    assert_eq!(orders_of(&kit, client_id).await.len(), 1);
+    assert_eq!(orders_of(&kit, client_id).await.len(), 3);
+    jobs(&kit.services).await;
+    report(&kit, &replaced, ProviderStatus::Paid).await;
+    assert_eq!(
+        payment(&kit, first.public_id).await.status,
+        PaymentStatus::Paid,
+        "деньги за отменённый счёт приняты"
+    );
+    assert_ne!(
+        order(&kit.services, first.order_id).await.status,
+        OrderStatus::Review
+    );
+    assert!(
+        jobs(&kit.services)
+            .await
+            .contains(&JobPayload::FulfillOrder {
+                order_id: first.order_id
+            }),
+        "поздняя оплата заменённого счёта выдаётся по цене счёта"
+    );
+    assert_eq!(counts(&kit).await, (2, 0));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn промокод_на_два_использования_не_отменяет_второй_счёт_раньше_времени() {
+    let Some(kit) = promo_kit().await else { return };
+    let mut twice = percent("TWICE", 10, None);
+    twice.per_client = 2;
+    create_promo(&kit, twice).await;
+    let client_id = client(&kit.services, 624).await;
+    let tariff = standard(&kit.services).await;
+    let cart = with_code(cart(&tariff, 30, None), "TWICE");
+    let first = invoice_with(&kit, client_id, &cart).await;
+    let second = invoice_with(&kit, client_id, &cart).await;
+    assert_eq!(
+        payment(&kit, first.public_id).await.status,
+        PaymentStatus::Pending,
+        "лимит на клиента позволяет два счёта"
+    );
+    assert_eq!(counts(&kit).await, (0, 2));
+    let third = invoice_with(&kit, client_id, &cart).await;
+    assert_eq!(
+        payment(&kit, first.public_id).await.status,
+        PaymentStatus::Canceled,
+        "отменяется самый старый счёт"
+    );
+    for kept in [&second, &third] {
+        assert_eq!(
+            payment(&kit, kept.public_id).await.status,
+            PaymentStatus::Pending
+        );
+    }
+    assert_eq!(counts(&kit).await, (0, 2));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оплата_с_баланса_по_промокоду_отменяет_неоплаченный_счёт() {
+    let Some(kit) = promo_kit().await else { return };
+    create_promo(&kit, percent("SWITCH", 50, Some(1))).await;
+    let client_id = client(&kit.services, 625).await;
+    let other = client(&kit.services, 626).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let tariff = standard(&kit.services).await;
+    let cart = with_code(cart(&tariff, 30, None), "SWITCH");
+    let unpaid = invoice_with(&kit, client_id, &cart).await;
+    let busy = kit
+        .services
+        .checkout()
+        .quote(other, &cart)
+        .await
+        .unwrap_err();
+    assert!(
+        busy.to_string().contains("не подходит"),
+        "чужой неоплаченный счёт держит промокод: {busy}"
+    );
+    let paid = buy_with_balance(&kit.services, client_id, cart).await;
+    assert_eq!(paid.quote.total.minor, 149);
+    assert_eq!(
+        payment(&kit, unpaid.public_id).await.status,
+        PaymentStatus::Canceled
+    );
+    assert_eq!(
+        order(&kit.services, unpaid.order_id).await.status,
+        OrderStatus::Canceled
+    );
+    assert_eq!(balance(&kit.services, client_id).await, 851);
+    assert_eq!(counts(&kit).await, (1, 0));
     kit.db.cleanup().await;
 }
 

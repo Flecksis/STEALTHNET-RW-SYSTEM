@@ -189,12 +189,13 @@ pub async fn usage(
     promo_id: i64,
     client_id: ClientId,
     now: DateTime<Utc>,
-    exclude_order: Option<OrderId>,
+    exclude: &[OrderId],
 ) -> StoreResult<Usage> {
+    let exclude: Vec<i64> = exclude.iter().map(|o| o.0).collect();
     let (total, mine, held): (i64, i64, i64) = sqlx::query_as(&format!(
         "WITH s AS (SELECT r.client_id, {} AS state FROM promo_redemptions r \
            LEFT JOIN orders o ON o.id = r.order_id \
-           WHERE r.promo_id = $1 AND ($4::bigint IS NULL OR r.order_id IS DISTINCT FROM $4)) \
+           WHERE r.promo_id = $1 AND (r.order_id IS NULL OR NOT (r.order_id = ANY($4)))) \
          SELECT count(*) FILTER (WHERE state IS NOT NULL), \
            count(*) FILTER (WHERE state IS NOT NULL AND client_id = $2), \
            count(*) FILTER (WHERE state = 'held' AND client_id = $2) \
@@ -204,23 +205,23 @@ pub async fn usage(
     .bind(promo_id)
     .bind(client_id.0)
     .bind(now)
-    .bind(exclude_order.map(|o| o.0))
+    .bind(&exclude)
     .fetch_one(db.conn())
     .await?;
     let purchases: bool = sqlx::query_scalar(&format!(
         "SELECT EXISTS (SELECT 1 FROM orders WHERE client_id = $1 \
            AND kind IN ('new', 'renewal', 'change') \
            AND status IN ('paid', 'fulfilled', 'review', 'refunded') \
-           AND ($2::bigint IS NULL OR id <> $2)) \
+           AND NOT (id = ANY($2))) \
          OR EXISTS (SELECT 1 FROM promo_redemptions r \
            JOIN promo_codes c ON c.id = r.promo_id \
            JOIN orders o ON o.id = r.order_id \
            WHERE r.client_id = $1 AND c.first_purchase_only \
-           AND ($2::bigint IS NULL OR r.order_id <> $2) AND {} = 'held')",
+           AND NOT (r.order_id = ANY($2)) AND {} = 'held')",
         state("$3")
     ))
     .bind(client_id.0)
-    .bind(exclude_order.map(|o| o.0))
+    .bind(&exclude)
     .bind(now)
     .fetch_one(db.conn())
     .await?;
@@ -248,6 +249,39 @@ pub async fn insert_redemption(
     .bind(redemption.status.as_str())
     .bind(redemption.reserved_until)
     .fetch_optional(db.conn())
+    .await?)
+}
+
+pub async fn unpaid_holds(
+    db: &mut impl Db,
+    promo_id: i64,
+    client_id: ClientId,
+    now: DateTime<Utc>,
+    except: Option<OrderId>,
+) -> StoreResult<Vec<OrderId>> {
+    let ids: Vec<i64> = sqlx::query_scalar(&format!(
+        "SELECT r.order_id FROM promo_redemptions r JOIN orders o ON o.id = r.order_id \
+         WHERE r.promo_id = $1 AND r.client_id = $2 AND o.status = 'pending' \
+         AND ($4::bigint IS NULL OR r.order_id <> $4) AND {} = 'held' ORDER BY r.order_id",
+        state("$3")
+    ))
+    .bind(promo_id)
+    .bind(client_id.0)
+    .bind(now)
+    .bind(except.map(|o| o.0))
+    .fetch_all(db.conn())
+    .await?;
+    Ok(ids.into_iter().map(OrderId).collect())
+}
+
+pub async fn paid_before(db: &mut impl Db, client_id: ClientId) -> StoreResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM payments WHERE client_id = $1 \
+         AND status IN ('paid', 'partially_refunded', 'refunded') \
+         AND provider NOT IN ('balance', 'manual') AND amount_minor > 0)",
+    )
+    .bind(client_id.0)
+    .fetch_one(db.conn())
     .await?)
 }
 

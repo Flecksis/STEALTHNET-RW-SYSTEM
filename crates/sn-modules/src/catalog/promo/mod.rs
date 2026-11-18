@@ -364,9 +364,13 @@ async fn admit(
     address: Option<IpAddr>,
     now: DateTime<Utc>,
 ) -> Result<Attempt, PromoError> {
+    let network = match ClientAddr(address).limit_network() {
+        Some(network) if !store::paid_before(db, client_id).await? => Some(network),
+        _ => None,
+    };
     let attempt = Attempt {
         client_id,
-        network: ClientAddr(address).limit_network(),
+        network,
         window: attempt_window(now),
     };
     let forget_before = now - Duration::days(1);
@@ -445,6 +449,10 @@ fn order_tariff(order: &Order) -> Option<TariffId> {
     }
 }
 
+const fn moves_to_new_invoice(purpose: Purpose) -> bool {
+    matches!(purpose, Purpose::Checkout { .. } | Purpose::Check { .. })
+}
+
 async fn lookup(
     db: &mut impl Db,
     client_id: ClientId,
@@ -455,9 +463,49 @@ async fn lookup(
     let promo = store::by_code(db, code, false)
         .await?
         .ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
-    let usage = store::usage(db, promo.id, client_id, now, None).await?;
+    let usage = store::usage(db, promo.id, client_id, now, &[]).await?;
+    let Err(rejection) = evaluate(&promo, &usage, now, purpose) else {
+        return Ok(promo);
+    };
+    let unpaid = if moves_to_new_invoice(purpose) {
+        store::unpaid_holds(db, promo.id, client_id, now, None).await?
+    } else {
+        Vec::new()
+    };
+    if unpaid.is_empty() {
+        return Err(PromoError::Rejected(rejection));
+    }
+    let usage = store::usage(db, promo.id, client_id, now, &unpaid).await?;
     evaluate(&promo, &usage, now, purpose).map_err(PromoError::Rejected)?;
     Ok(promo)
+}
+
+pub async fn superseded(tx: &mut Tx, order: &Order) -> Result<Vec<OrderId>, ModuleError> {
+    let Some((promo_id, _)) = promo_in_quote(&order.quote) else {
+        return Ok(Vec::new());
+    };
+    tx.lock(LockSpace::Client, order.client_id.0).await?;
+    let Some(promo) = store::lock(tx, promo_id).await? else {
+        return Ok(Vec::new());
+    };
+    if store::redemption_for_order(tx, order.id).await?.is_some() {
+        return Ok(Vec::new());
+    }
+    let now = db_now(tx).await?;
+    let purpose = order_purpose(order);
+    let mut skipped = vec![order.id];
+    let usage = store::usage(tx, promo.id, order.client_id, now, &skipped).await?;
+    if evaluate(&promo, &usage, now, purpose).is_ok() {
+        return Ok(Vec::new());
+    }
+    for unpaid in store::unpaid_holds(tx, promo.id, order.client_id, now, Some(order.id)).await? {
+        skipped.push(unpaid);
+        let usage = store::usage(tx, promo.id, order.client_id, now, &skipped).await?;
+        if evaluate(&promo, &usage, now, purpose).is_ok() {
+            return Ok(skipped.split_off(1));
+        }
+    }
+    Ok(Vec::new())
 }
 
 pub async fn check(
@@ -540,7 +588,7 @@ async fn hold(
         return Ok(Some(existing));
     }
     let now = db_now(tx).await?;
-    let usage = store::usage(tx, promo.id, order.client_id, now, Some(order.id)).await?;
+    let usage = store::usage(tx, promo.id, order.client_id, now, &[order.id]).await?;
     evaluate(&promo, &usage, now, order_purpose(order)).map_err(rejected)?;
     Ok(store::insert_redemption(
         tx,
@@ -650,7 +698,7 @@ async fn hold_days(
         .await?
         .ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
     let now = db_now(&mut tx).await?;
-    let usage = store::usage(&mut tx, promo.id, client_id, now, None).await?;
+    let usage = store::usage(&mut tx, promo.id, client_id, now, &[]).await?;
     evaluate(&promo, &usage, now, Purpose::Activate).map_err(PromoError::Rejected)?;
     let PromoKind::Days { days } = promo.kind else {
         return Err(PromoError::Rejected(PromoRejection::DiscountCode));

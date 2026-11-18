@@ -30,7 +30,7 @@ use std::sync::Arc;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub const AUTORENEW_METHOD: &str = "autorenew";
+pub const AUTORENEW_METHOD: &str = sn_domain::payment::AUTORENEW_METHOD;
 pub const CHARGE_UNCLEAR_AUDIT: &str = "payment.autorenew_unclear";
 pub const CHARGE_BLOCKED_AUDIT: &str = "payment.autorenew_blocked";
 pub const CHARGED_AFTER_OFF_TEMPLATE: &str = "autorenew.charged_after_off";

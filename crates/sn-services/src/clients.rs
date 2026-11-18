@@ -80,6 +80,8 @@ pub enum HistoryRecord {
     Payment {
         payment: PaymentBrief,
         order: Option<OrderBrief>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        review: Option<String>,
     },
     Order {
         order: OrderBrief,
@@ -890,7 +892,12 @@ impl<'a> ClientOps<'a> {
             .await?;
         tx.commit().await?;
         self.services.subscriptions().restore_access(id).await?;
-        self.resume_charge_polls(id).await
+        self.resume_charge_polls(id).await?;
+        let resumed = self.services.fulfillment().resume_blocked(id).await?;
+        if !resumed.queued.is_empty() || !resumed.kept.is_empty() {
+            tracing::info!(client = %id, queued = ?resumed.queued, kept = ?resumed.kept, "заказы, ждавшие разблокировки, поставлены на выдачу");
+        }
+        Ok(())
     }
 
     async fn resume_charge_polls(&self, id: ClientId) -> ServiceResult<()> {
@@ -948,6 +955,19 @@ impl<'a> ClientOps<'a> {
             .into_iter()
             .map(|order| (order.id, order))
             .collect();
+        let pending: Vec<PaymentId> = feed
+            .items
+            .iter()
+            .filter_map(|item| match &item.entry {
+                ClientHistoryEntry::Payment(payment)
+                    if payment.status == PaymentStatus::Pending =>
+                {
+                    Some(payment.id)
+                }
+                _ => None,
+            })
+            .collect();
+        let mut reviews = conn.payments().charge_reviews(&pending).await?;
         let admins: HashMap<i64, String> = if feed.items.iter().any(|item| {
             matches!(&item.entry, ClientHistoryEntry::Audit(record) if record.actor_kind == "admin")
         }) {
@@ -993,6 +1013,7 @@ impl<'a> ClientOps<'a> {
                         order: orders
                             .get(&payment.order_id)
                             .map(|order| order_brief(order, &tariffs)),
+                        review: reviews.remove(&payment.id),
                         payment: PaymentBrief {
                             id: payment.public_id,
                             number: payment.id,

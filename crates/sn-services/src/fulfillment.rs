@@ -43,6 +43,8 @@ mod addon_tests;
 #[cfg(test)]
 pub(crate) mod naming_tests;
 #[cfg(test)]
+mod review_tests;
+#[cfg(test)]
 mod tests;
 
 const MIN_RETRY: Duration = Duration::from_secs(15);
@@ -80,7 +82,18 @@ pub struct Redelivery {
     pub order_id: OrderId,
     pub job_id: JobId,
     pub state: &'static str,
+    pub recalculated: bool,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Resumed {
+    pub queued: Vec<OrderId>,
+    pub kept: Vec<OrderId>,
+}
+
+pub const BLOCKED_HOLD: &str = "клиент заблокирован: заказ";
+pub const UNBLOCKED_CAUSE: &str = "клиента разблокировали";
+const FULFILLED_TEMPLATE: &str = "order.fulfilled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Recalculation {
@@ -162,6 +175,76 @@ fn refund_pending() -> ServiceError {
         "По платежу этого заказа ждём решения платёжной системы о возврате. \
          Выдать заказ можно после отказа в возврате",
     )
+}
+
+fn panel_unavailable() -> ServiceError {
+    ServiceError::rejected(
+        "order.panel_unavailable",
+        "Не удалось проверить подписку в Remnawave: попробуйте ещё раз позже",
+    )
+}
+
+fn term_changed() -> ServiceError {
+    ServiceError::rejected(
+        "order.plan_stale",
+        "План выдачи этого заказа рассчитан раньше и не применён, а срок подписки в Remnawave \
+         с тех пор изменился. Выберите «Пересчитать и выдать» или «Отметить выданным»",
+    )
+}
+
+fn plan_brief(plan: &FulfillmentPlan) -> serde_json::Value {
+    serde_json::json!({
+        "kind": plan.kind,
+        "base_expire_at": plan.base_expire_at,
+        "target_expire_at": plan.target.expire_at,
+    })
+}
+
+fn delivered_kind(order: &Order, subscription: &Subscription) -> SubscriptionKind {
+    if matches!(order.intent, PurchaseIntent::Trial) {
+        SubscriptionKind::Trial
+    } else if let Some(granted) = order.intent.granted_kind() {
+        if order.intent.custom_grant() || subscription.kind == SubscriptionKind::Trial {
+            granted
+        } else {
+            subscription.kind
+        }
+    } else if matches!(order.intent, PurchaseIntent::AdminGrant { .. }) {
+        if subscription.kind == SubscriptionKind::Trial {
+            SubscriptionKind::Manual
+        } else {
+            subscription.kind
+        }
+    } else {
+        SubscriptionKind::Paid
+    }
+}
+
+fn days_until(from: DateTime<Utc>, to: DateTime<Utc>) -> u32 {
+    let days = ((to - from).num_seconds().max(0) + 86_399) / 86_400;
+    u32::try_from(days).unwrap_or(u32::MAX).max(1)
+}
+
+enum Panel {
+    Skipped,
+    Missing,
+    Found {
+        subscription: Box<Subscription>,
+        user: Box<RemnaUser>,
+    },
+}
+
+impl Panel {
+    fn audit(&self) -> serde_json::Value {
+        match self {
+            Panel::Skipped => serde_json::json!("skipped"),
+            Panel::Missing => serde_json::json!("missing"),
+            Panel::Found { user, .. } => serde_json::json!({
+                "user_id": user.id,
+                "expire_at": user.expire_at,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -261,7 +344,7 @@ fn stale_reason(saved: Option<String>) -> String {
 
 fn blocked_halt(order: &Order) -> Halt {
     Halt::Blocked(format!(
-        "клиент заблокирован: заказ {} не выдаётся, после разблокировки выдайте его повторно",
+        "{BLOCKED_HOLD} {} не выдаётся, после разблокировки он выдастся сам",
         order.public_id
     ))
 }
@@ -458,17 +541,53 @@ impl<'a> Fulfillment<'a> {
                 .await
             }
             BlockedRefund::Unblocked => {
-                self.hold(
-                    order,
-                    format!(
-                        "клиента разблокировали до автоматического возврата: заказ {} не выдан, \
-                         выдайте его повторно или верните оплату",
-                        order.public_id
-                    ),
-                )
-                .await
+                tracing::info!(order = %order.id, "клиента разблокировали до автоматического возврата: заказ выдаётся");
+                Ok(FulfillmentOutcome::retry(
+                    MIN_RETRY,
+                    "клиента разблокировали до автоматического возврата: заказ выдаётся",
+                ))
             }
         }
+    }
+
+    pub async fn resume_blocked(&self, client_id: ClientId) -> ServiceResult<Resumed> {
+        let waiting: Vec<i64> = {
+            let mut conn = self.services.store().conn().await?;
+            sqlx::query_scalar(
+                "SELECT o.id FROM orders o WHERE o.client_id = $1 AND o.status = 'review' \
+                 AND starts_with(o.review_reason, $2) \
+                 AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND ( \
+                     p.refunded_minor > 0 OR p.status IN ('refunded', 'partially_refunded') \
+                     OR EXISTS (SELECT 1 FROM refunds f WHERE f.payment_id = p.id) \
+                     OR EXISTS (SELECT 1 FROM provider_refunds r WHERE r.payment_id = p.id \
+                         AND r.status = 'pending'))) \
+                 ORDER BY o.id",
+            )
+            .bind(client_id.0)
+            .bind(BLOCKED_HOLD)
+            .fetch_all(conn.conn())
+            .await?
+        };
+        let mut resumed = Resumed::default();
+        for order_id in waiting.into_iter().map(OrderId) {
+            match self
+                .redeliver_for(order_id, Actor::System, Some(UNBLOCKED_CAUSE))
+                .await
+            {
+                Ok(_) => resumed.queued.push(order_id),
+                Err(err) => {
+                    tracing::warn!(order = %order_id, client = %client_id, error = %err, "заказ после разблокировки не поставлен на выдачу");
+                    let mut conn = self.services.store().conn().await?;
+                    let reason = format!("{UNBLOCKED_CAUSE}, но заказ не выдался сам. {err}");
+                    match conn.orders().mark_review(order_id, &reason).await {
+                        Ok(()) | Err(StoreError::Invalid(_)) => {}
+                        Err(err) => return Err(err.into()),
+                    }
+                    resumed.kept.push(order_id);
+                }
+            }
+        }
+        Ok(resumed)
     }
 
     pub async fn review_orders(&self, limit: i64) -> ServiceResult<Vec<ReviewItem>> {
@@ -487,6 +606,72 @@ impl<'a> Fulfillment<'a> {
     }
 
     pub async fn redeliver(&self, order_id: OrderId, actor: Actor) -> ServiceResult<Redelivery> {
+        self.redeliver_for(order_id, actor, None).await
+    }
+
+    async fn redeliver_for(
+        &self,
+        order_id: OrderId,
+        actor: Actor,
+        cause: Option<&str>,
+    ) -> ServiceResult<Redelivery> {
+        let order = {
+            let mut conn = self.services.store().conn().await?;
+            conn.orders().get(order_id).await?
+        };
+        match order.subscription_id {
+            Some(id) => {
+                with_subscription_lock(self.services, id, self.requeue(order_id, actor, cause))
+                    .await
+            }
+            None => self.requeue(order_id, actor, cause).await,
+        }
+    }
+
+    async fn stale_term_kept(&self, order_id: OrderId) -> ServiceResult<bool> {
+        let order = {
+            let mut conn = self.services.store().conn().await?;
+            let order = conn.orders().get(order_id).await?;
+            if order.status != OrderStatus::Review
+                || !conn.orders().plan_state(order_id).await?.stale()
+            {
+                return Ok(false);
+            }
+            order
+        };
+        let Some(plan) = order.plan.clone() else {
+            return Ok(false);
+        };
+        let remna = self.services.remna().map_err(|_| panel_unavailable())?;
+        match &plan.action {
+            PlanAction::Update { user_id } => {
+                let Some(base) = plan.base_expire_at else {
+                    return Ok(false);
+                };
+                match remna.get_user(*user_id).await {
+                    Ok(user) => Ok(same_moment(user.expire_at, base)),
+                    Err(err) if err.is_not_found() => Ok(false),
+                    Err(_) => Err(panel_unavailable()),
+                }
+            }
+            PlanAction::Create { .. } => {
+                let context = self.context(order).await.map_err(|_| panel_unavailable())?;
+                match self.find_user(remna.as_ref(), &context).await {
+                    Ok(Found::User(_)) => Ok(false),
+                    Ok(Found::Missing | Found::Foreign) => Ok(true),
+                    Err(_) => Err(panel_unavailable()),
+                }
+            }
+        }
+    }
+
+    async fn requeue(
+        &self,
+        order_id: OrderId,
+        actor: Actor,
+        cause: Option<&str>,
+    ) -> ServiceResult<Redelivery> {
+        let kept = self.stale_term_kept(order_id).await?;
         let mut tx = self.services.store().begin().await?;
         let order = tx.orders().lock(order_id).await?;
         if !matches!(order.status, OrderStatus::Paid | OrderStatus::Review) {
@@ -498,13 +683,21 @@ impl<'a> Fulfillment<'a> {
         if tx.orders().refund_pending(order.id).await? {
             return Err(refund_pending());
         }
-        if order.status == OrderStatus::Review && tx.orders().plan_state(order.id).await?.stale() {
-            return Err(ServiceError::rejected(
-                "order.plan_stale",
-                "План выдачи этого заказа рассчитан раньше и не применён. \
-                 Выберите «Пересчитать и выдать» или «Отметить выданным»",
-            ));
+        let stale =
+            order.status == OrderStatus::Review && tx.orders().plan_state(order.id).await?.stale();
+        if stale && !kept {
+            return Err(term_changed());
         }
+        let previous = if stale {
+            tx.orders()
+                .reset_plan(order.id)
+                .await?
+                .plan
+                .as_ref()
+                .map(plan_brief)
+        } else {
+            None
+        };
         let queued = tx
             .jobs()
             .ensure_queued(&JobPayload::FulfillOrder { order_id: order.id })
@@ -518,14 +711,21 @@ impl<'a> Fulfillment<'a> {
                     "order_status": order.status,
                     "job_id": queued.id(),
                     "state": queued.state(),
+                    "recalculated": stale,
+                    "previous_plan": previous,
+                    "reason": cause,
                 }),
             ))
             .await?;
         tx.commit().await?;
+        if stale {
+            tracing::info!(order = %order.id, "срок подписки не менялся после расчёта: план пересчитан, заказ снова выдаётся");
+        }
         Ok(Redelivery {
             order_id: order.id,
             job_id: queued.id(),
             state: queued.state(),
+            recalculated: stale,
         })
     }
 
@@ -557,25 +757,19 @@ impl<'a> Fulfillment<'a> {
         let Some(plan) = order.plan.clone() else {
             return Ok(false);
         };
-        let unavailable = || {
-            ServiceError::rejected(
-                "order.panel_unavailable",
-                "Не удалось проверить пользователя в Remnawave: попробуйте ещё раз позже",
-            )
-        };
         let remna = self.services.remna()?;
         match &plan.action {
             PlanAction::Update { user_id } => match remna.get_user(*user_id).await {
                 Ok(_) => Ok(false),
                 Err(err) if err.is_not_found() => Ok(true),
-                Err(_) => Err(unavailable()),
+                Err(_) => Err(panel_unavailable()),
             },
             PlanAction::Create { .. } => {
-                let context = self.context(order).await.map_err(|_| unavailable())?;
+                let context = self.context(order).await.map_err(|_| panel_unavailable())?;
                 match self.current_user(remna.as_ref(), &context).await {
                     Ok(Some(_)) => Ok(false),
                     Ok(None) => Ok(true),
-                    Err(_) => Err(unavailable()),
+                    Err(_) => Err(panel_unavailable()),
                 }
             }
         }
@@ -620,13 +814,7 @@ impl<'a> Fulfillment<'a> {
             .jobs()
             .ensure_queued(&JobPayload::FulfillOrder { order_id: order.id })
             .await?;
-        let previous = reset.plan.as_ref().map(|plan| {
-            serde_json::json!({
-                "kind": plan.kind,
-                "base_expire_at": plan.base_expire_at,
-                "target_expire_at": plan.target.expire_at,
-            })
-        });
+        let previous = reset.plan.as_ref().map(plan_brief);
         tx.audit()
             .record(&actor.audit(
                 "order.recalculate",
@@ -678,12 +866,174 @@ impl<'a> Fulfillment<'a> {
         }
     }
 
+    async fn panel_user(
+        &self,
+        remna: &dyn RemnawaveApi,
+        order: &Order,
+        subscription: &Subscription,
+    ) -> ServiceResult<Option<RemnaUser>> {
+        let (user_id, owned) = match (&subscription.remna, order.plan.as_ref().map(|p| &p.action)) {
+            (Some(link), _) => (Some(link.user_id), None),
+            (None, Some(PlanAction::Update { user_id })) => (Some(*user_id), None),
+            (
+                None,
+                Some(PlanAction::Create {
+                    username,
+                    description,
+                    ..
+                }),
+            ) => (None, Some((username, description))),
+            (None, None) => (None, None),
+        };
+        if let Some(user_id) = user_id {
+            return match remna.get_user(user_id).await {
+                Ok(user) => Ok(Some(user)),
+                Err(err) if err.is_not_found() => Ok(None),
+                Err(_) => Err(panel_unavailable()),
+            };
+        }
+        let Some((username, description)) = owned else {
+            return Ok(None);
+        };
+        match remna.get_user_by_username(username).await {
+            Ok(user) if user.description.as_deref() == Some(description.as_str()) => Ok(Some(user)),
+            Ok(_) => Ok(None),
+            Err(err) if err.is_not_found() => Ok(None),
+            Err(_) => Err(panel_unavailable()),
+        }
+    }
+
+    async fn panel_state(&self, order_id: OrderId) -> ServiceResult<Panel> {
+        let (order, subscription) = {
+            let mut conn = self.services.store().conn().await?;
+            let order = conn.orders().get(order_id).await?;
+            let subscription = match order.subscription_id {
+                Some(id) if order.status == OrderStatus::Review && order.kind.needs_remnawave() => {
+                    conn.subscriptions().get(id).await?
+                }
+                _ => return Ok(Panel::Skipped),
+            };
+            (order, subscription)
+        };
+        let remna = self.services.remna().map_err(|_| panel_unavailable())?;
+        Ok(
+            match self
+                .panel_user(remna.as_ref(), &order, &subscription)
+                .await?
+            {
+                Some(user) => Panel::Found {
+                    subscription: Box::new(subscription),
+                    user: Box::new(user),
+                },
+                None => Panel::Missing,
+            },
+        )
+    }
+
+    async fn sync_from_panel(
+        &self,
+        tx: &mut Tx,
+        order: &Order,
+        subscription: &Subscription,
+        user: &RemnaUser,
+    ) -> ServiceResult<()> {
+        if subscription.remna.as_ref().map(|link| link.user_id) != Some(user.id) {
+            let linked = tx
+                .subscriptions()
+                .link_remna(
+                    subscription.id,
+                    &RemnaLink {
+                        user_id: user.id,
+                        username: user.username.clone(),
+                        short_uuid: Some(user.short_uuid.clone()),
+                    },
+                )
+                .await;
+            match linked {
+                Ok(()) => {}
+                Err(StoreError::Conflict { .. }) => {
+                    return Err(ServiceError::rejected(
+                        "order.panel_user_taken",
+                        format!(
+                            "Пользователь Remnawave {} уже привязан к другой подписке: проверьте вручную",
+                            user.id
+                        ),
+                    ));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+        let mirror = user.mirror(subscription.mirror.devices_count, self.services.now());
+        tx.subscriptions()
+            .apply_mirror(subscription.id, &mirror)
+            .await?;
+        let later: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS (SELECT 1 FROM orders WHERE subscription_id = $1 AND id > $2 \
+             AND status = 'fulfilled' AND {SUBSCRIPTION_KINDS})"
+        ))
+        .bind(subscription.id.0)
+        .bind(order.id.0)
+        .fetch_one(tx.conn())
+        .await?;
+        let Some(snapshot) = order.snapshot.as_ref().filter(|_| !later) else {
+            return Ok(());
+        };
+        let trial = matches!(order.intent, PurchaseIntent::Trial);
+        let custom = order.intent.custom_grant();
+        let (period_started_at, period_days) = match &order.plan {
+            Some(plan) => (plan.period_started_at, plan.period_days.max(1)),
+            None => {
+                let started = order.paid_at.unwrap_or_else(|| self.services.now());
+                (started, days_until(started, user.expire_at))
+            }
+        };
+        let extra_devices = match &order.intent {
+            PurchaseIntent::Subscription { extra_devices, .. } => *extra_devices,
+            _ => 0,
+        };
+        tx.subscriptions()
+            .apply_purchase(
+                subscription.id,
+                &PurchaseApplied {
+                    tariff_id: (!trial && !custom).then_some(snapshot.tariff_id),
+                    kind: delivered_kind(order, subscription),
+                    extra_devices,
+                    period_started_at,
+                    period_days,
+                },
+            )
+            .await?;
+        if let PurchaseIntent::Subscription { period_id, .. } = &order.intent {
+            let current = tx.subscriptions().lock(subscription.id).await?;
+            let enabled = if subscription.kind == SubscriptionKind::Trial {
+                self.services.settings().autorenew.enable_for_new
+            } else {
+                current.autorenew.enabled
+            };
+            tx.subscriptions()
+                .set_autorenew(
+                    subscription.id,
+                    AutoRenewState {
+                        enabled,
+                        period_id: Some(*period_id),
+                    },
+                )
+                .await?;
+        } else if custom && subscription.autorenew.enabled {
+            tx.subscriptions()
+                .set_autorenew(subscription.id, AutoRenewState::default())
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn close_order(
         &self,
         order_id: OrderId,
         note: &str,
         actor: Actor,
     ) -> ServiceResult<Order> {
+        let panel = self.panel_state(order_id).await?;
         let mut tx = self.services.store().begin().await?;
         let order = tx.orders().lock(order_id).await?;
         if order.status != OrderStatus::Review {
@@ -708,6 +1058,30 @@ impl<'a> Fulfillment<'a> {
                 })
                 .await?;
         }
+        let mut notified = false;
+        if let Panel::Found { subscription, user } = &panel {
+            self.sync_from_panel(&mut tx, &order, subscription, user)
+                .await?;
+            if changed && !tx.clients().get(order.client_id).await?.is_blocked() {
+                tx.jobs()
+                    .enqueue(
+                        &JobPayload::Notify {
+                            client_id: order.client_id,
+                            template: FULFILLED_TEMPLATE.into(),
+                            params: serde_json::json!({
+                                "order_id": fulfilled.public_id,
+                                "order_kind": fulfilled.kind,
+                                "subscription_id": subscription.id,
+                                "tariff": order.snapshot.as_ref().map(|s| s.name.clone()),
+                                "expire_at": user.expire_at,
+                            }),
+                        },
+                        None,
+                    )
+                    .await?;
+                notified = true;
+            }
+        }
         tx.audit()
             .record(&actor.audit(
                 "order.mark_fulfilled",
@@ -717,6 +1091,8 @@ impl<'a> Fulfillment<'a> {
                     "note": note,
                     "review_reason": reason,
                     "plan": state.stage(),
+                    "panel": panel.audit(),
+                    "notified": notified,
                 }),
             ))
             .await?;
@@ -1654,23 +2030,7 @@ impl<'a> Fulfillment<'a> {
             .apply_mirror(subscription.id, &mirror)
             .await?;
         let custom = order.intent.custom_grant();
-        let kind = if trial {
-            SubscriptionKind::Trial
-        } else if let Some(granted) = order.intent.granted_kind() {
-            if custom || subscription.kind == SubscriptionKind::Trial {
-                granted
-            } else {
-                subscription.kind
-            }
-        } else if matches!(order.intent, PurchaseIntent::AdminGrant { .. }) {
-            if subscription.kind == SubscriptionKind::Trial {
-                SubscriptionKind::Manual
-            } else {
-                subscription.kind
-            }
-        } else {
-            SubscriptionKind::Paid
-        };
+        let kind = delivered_kind(order, subscription);
         let extra_devices = match &order.intent {
             PurchaseIntent::Subscription { extra_devices, .. } => *extra_devices,
             _ => 0,
@@ -1819,7 +2179,7 @@ impl<'a> Fulfillment<'a> {
                     .enqueue(
                         &JobPayload::Notify {
                             client_id: order.client_id,
-                            template: "order.fulfilled".into(),
+                            template: FULFILLED_TEMPLATE.into(),
                             params: serde_json::json!({
                                 "order_id": fulfilled.public_id,
                                 "order_kind": fulfilled.kind,

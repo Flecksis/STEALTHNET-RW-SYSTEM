@@ -44,6 +44,9 @@ export function methodText(provider: string, method: string | null): string {
   if (provider === 'balance') {
     return 'С баланса';
   }
+  if (m === 'autorenew') {
+    return 'Автопродление с карты';
+  }
   if (provider === 'stars') {
     return 'Звёзды Telegram';
   }
@@ -155,6 +158,7 @@ const AUDIT_TEXT: Record<string, string> = {
   'order.mark_fulfilled': 'Заказ отмечен выданным',
   'order.recalculate': 'Заказ пересчитан',
   'order.review': 'Заказ отправлен на проверку',
+  'order.replaced': 'Счёт отменён: промокод перешёл в новый счёт',
   'order.attached': 'Оплата зачтена в текущую подписку: у клиента может быть только одна',
 };
 
@@ -182,6 +186,10 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
       const what = bought(order);
       const via = methodText(payment.provider, payment.method);
       const sum = amountText(payment.amount);
+      if (item.review !== undefined && item.review !== null) {
+        const why = str(item.review);
+        return { ...base, what: 'Списание с карты ждёт ручной проверки', note: why ? `${via}: ${cut(why, 200)}` : via, sum };
+      }
       if (payment.status === 'failed') {
         return { ...base, what: 'Оплата не прошла', note: `${what}, ${via}`, sum: '' };
       }
@@ -264,6 +272,17 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         case 'client.block': {
           const reason = str(details.reason);
           return { ...base, what: 'Блокировка', note: reason ? `${actor}: ${cut(reason, 70)}` : actor, sum: '' };
+        }
+        case 'payment.autorenew_unclear':
+        case 'payment.autorenew_blocked': {
+          const reason = str(details.reason);
+          const what = item.action === 'payment.autorenew_unclear' ? 'Исход списания с карты неизвестен' : 'Списание с карты у заблокированного клиента';
+          return { ...base, what, note: reason ? cut(reason, 160) : actor, sum: '' };
+        }
+        case 'order.redeliver': {
+          const what = details.recalculated === true ? 'Заказ пересчитан и выдан повторно' : 'Заказ выдан повторно';
+          const reason = str(details.reason);
+          return { ...base, what, note: reason ? `${actor}: ${cut(reason, 70)}` : actor, sum: '' };
         }
         case 'client.message': {
           const text = str(details.text);

@@ -2,7 +2,7 @@ use super::audit::{AuditRecord, AuditRepo, audit_entity};
 use super::clients::{ClientsRepo, display_name};
 use super::events::{EventsRepo, StoredEvent};
 use super::orders::OrdersRepo;
-use super::payments::PaymentsRepo;
+use super::payments::{PaymentsRepo, charge_review_filter};
 use super::subscriptions::PAID_LIKE;
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
@@ -55,7 +55,8 @@ fn feed_sql(money: bool) -> String {
     let payments = if money {
         format!(
             "UNION ALL SELECT {SOURCE_PAYMENT}, p.id, COALESCE(p.paid_at, p.created_at) FROM payments p WHERE p.client_id = $1 \
-             AND p.status IN ('paid', 'partially_refunded', 'refunded', 'failed')"
+             AND (p.status IN ('paid', 'partially_refunded', 'refunded', 'failed') OR ({}))",
+            charge_review_filter("p")
         )
     } else {
         String::new()

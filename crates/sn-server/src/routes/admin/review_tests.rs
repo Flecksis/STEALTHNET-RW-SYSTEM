@@ -452,6 +452,8 @@ async fn ручной_разбор_заказов_и_звёзд_требует_�
         .map(|item| item["id"].as_i64().unwrap())
         .collect();
     assert_eq!(star_ids.len(), 2);
+    h.services()
+        .set_remna(Some(Arc::new(sn_remnawave::fake::FakeRemnawave::new())));
     let note = json!({ "note": "Срок в панели уже учитывает оплату" });
     let comment = json!({ "comment": "Разобрали с клиентом в поддержке" });
     let calls: Vec<(Method, String, Option<Value>)> = vec![

@@ -100,6 +100,7 @@ struct Redelivery {
     order_id: OrderId,
     job_id: JobId,
     state: &'static str,
+    recalculated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +154,7 @@ async fn redeliver(
         order_id: queued.order_id,
         job_id: queued.job_id,
         state: queued.state,
+        recalculated: queued.recalculated,
     }))
 }
 
@@ -706,6 +708,10 @@ mod tests {
         let readonly = h.staff("readonly@example.com", AdminRole::ReadOnly).await;
         let client_id = h.client(706).await;
         let order_id = h.stale_renewal(client_id).await;
+        let moved = sn_remnawave::fake::sample_user(77, "client_706");
+        let panel = Arc::new(sn_remnawave::fake::FakeRemnawave::new());
+        panel.insert_user(moved);
+        h.services().set_remna(Some(panel));
         let redeliver = format!("/api/admin/orders/{}/redeliver", order_id.0);
         let (status, body) = h.send(Method::POST, &redeliver, Some(&owner), None).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -829,12 +835,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn повторить_выдачу_пересчитывает_устаревший_план_если_срок_в_панели_прежний() {
+        let Some(h) = harness().await else { return };
+        let owner = h.owner().await;
+        let client_id = h.client(708).await;
+        let order_id = h.stale_renewal(client_id).await;
+        let redeliver = format!("/api/admin/orders/{}/redeliver", order_id.0);
+        let (status, body) = h.send(Method::POST, &redeliver, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], "order.panel_unavailable");
+        assert_eq!(h.plan_stage(order_id).await, PlanStage::Stale);
+        let mut kept = sn_remnawave::fake::sample_user(77, "client_708");
+        kept.expire_at = "2027-02-14T00:00:00Z".parse().unwrap();
+        let panel = Arc::new(sn_remnawave::fake::FakeRemnawave::new());
+        panel.insert_user(kept);
+        h.services().set_remna(Some(panel));
+        let (status, body) = h.send(Method::POST, &redeliver, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["recalculated"], true);
+        assert_eq!(body["state"], "created");
+        assert_eq!(h.plan_stage(order_id).await, PlanStage::None);
+        assert_eq!(h.job_counts().await, vec![("queued".to_string(), 1)]);
+        let audit = h.order_audit(order_id).await;
+        let record = audit
+            .iter()
+            .find(|a| a.action == "order.redeliver")
+            .unwrap();
+        assert_eq!(record.actor_kind, "admin");
+        assert_eq!(record.details["recalculated"], true);
+        assert_eq!(
+            record.details["previous_plan"]["base_expire_at"],
+            "2027-02-14T00:00:00Z"
+        );
+        let (status, body) = h.send(Method::POST, &redeliver, Some(&owner), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recalculated"], false);
+        assert_eq!(body["state"], "already_queued");
+        h.db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn отметить_выданным_требует_пояснение_и_завершает_заказ_на_проверке() {
         let Some(h) = harness().await else { return };
         let owner = h.owner().await;
         let support = h.staff("support@example.com", AdminRole::Support).await;
         let client_id = h.client(707).await;
         let order_id = h.stale_renewal(client_id).await;
+        h.services()
+            .set_remna(Some(Arc::new(sn_remnawave::fake::FakeRemnawave::new())));
         let path = format!("/api/admin/orders/{}/mark-fulfilled", order_id.0);
         let note = json!({ "note": "Срок в панели уже учитывает эту оплату" });
         let (status, _) = h
@@ -865,6 +914,8 @@ mod tests {
             "Срок в панели уже учитывает эту оплату"
         );
         assert_eq!(audit[0].details["plan"], "stale");
+        assert_eq!(audit[0].details["panel"], "missing");
+        assert_eq!(audit[0].details["notified"], false);
         let (status, body) = h
             .send(Method::POST, &path, Some(&owner), Some(note.clone()))
             .await;

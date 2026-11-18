@@ -91,6 +91,7 @@ pub struct DashboardView {
     pub orders_review: i64,
     pub stars_review: i64,
     pub refund_actions_failed: i64,
+    pub charges_review: i64,
     pub remna: Option<RemnaOverview>,
     pub remna_error: Option<String>,
     pub server: crate::server_load::ServerLoad,
@@ -558,6 +559,7 @@ impl<'a> AdminOps<'a> {
         )
         .fetch_one(conn.conn())
         .await?;
+        let charges_review = conn.payments().charges_in_review().await?;
         let database_bytes: Option<i64> =
             sqlx::query_scalar("SELECT pg_database_size(current_database())")
                 .fetch_one(conn.conn())
@@ -580,6 +582,7 @@ impl<'a> AdminOps<'a> {
             orders_review,
             stars_review,
             refund_actions_failed,
+            charges_review,
             remna,
             remna_error,
             server,

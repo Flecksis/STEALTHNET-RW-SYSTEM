@@ -107,6 +107,7 @@ export type HistoryItem = { at: string } & (
         method: string | null;
       };
       order: OrderBrief | null;
+      review?: string | null;
     }
   | { type: 'order'; order: OrderBrief }
   | {

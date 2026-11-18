@@ -1,3 +1,4 @@
+use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
@@ -21,13 +22,13 @@ use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
 use sn_domain::settings::{TrialSettings, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
-use sn_modules::catalog::antibot;
+use sn_modules::catalog::{antibot, promo};
 use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook, QuoteOrigin};
 use sn_payments::{
     CheckoutMethod, ClientRef, InvoiceRequest, MethodsContext, PaymentProvider, ProviderKind,
     Unavailable,
 };
-use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx};
+use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx, audit_entity};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -308,6 +309,67 @@ fn describe_for(brand: &str, quote: &Quote, provider: &str) -> String {
     }
 }
 
+pub const REPLACED_REASON: &str = "счёт заменён новым счётом с тем же промокодом";
+pub const ORDER_REPLACED: &str = "order.replaced";
+
+async fn replace_unpaid(
+    modules: &ModuleRegistry,
+    ctx: &ModuleContext,
+    tx: &mut Tx,
+    created: &Order,
+) -> ServiceResult<()> {
+    if !modules.is_enabled(ModuleId::Promo) {
+        return Ok(());
+    }
+    let code = promo::promo_in_quote(&created.quote).map(|(_, code)| code);
+    for order_id in promo::superseded(tx, created).await? {
+        let mut payments = Vec::new();
+        for payment in tx.payments().for_order(order_id).await? {
+            if payment.status != PaymentStatus::Pending {
+                continue;
+            }
+            match tx
+                .payments()
+                .transition(
+                    payment.id,
+                    PaymentStatus::Canceled,
+                    None,
+                    Some(REPLACED_REASON),
+                )
+                .await
+            {
+                Ok(change) if change.applied() => payments.push(payment.id),
+                Ok(_) | Err(StoreError::Invalid(_)) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        let canceled = match tx
+            .orders()
+            .transition(order_id, OrderStatus::Canceled)
+            .await
+        {
+            Ok((canceled, true)) => canceled,
+            Ok(_) | Err(StoreError::Invalid(_)) => continue,
+            Err(err) => return Err(err.into()),
+        };
+        modules.order_canceled(ctx, tx, &canceled).await?;
+        tx.audit()
+            .record(&Actor::Client(created.client_id).audit(
+                ORDER_REPLACED,
+                audit_entity::ORDER,
+                Some(order_id.0),
+                serde_json::json!({
+                    "replaced_by": created.id,
+                    "promo": code,
+                    "canceled_payments": payments,
+                }),
+            ))
+            .await?;
+        tracing::info!(order = %order_id, by = %created.id, "неоплаченный счёт отменён, промокод перенесён в новый счёт");
+    }
+    Ok(())
+}
+
 pub(crate) async fn record_paid_order(
     tx: &mut Tx,
     order: &NewOrder,
@@ -347,6 +409,7 @@ async fn record_paid(
         })
         .await?;
     if let Some(hooks) = hooks {
+        replace_unpaid(hooks.modules, hooks.ctx, tx, &created).await?;
         hooks
             .modules
             .order_created(hooks.ctx, tx, &created, &payment)
@@ -1386,6 +1449,7 @@ impl<'a> Checkout<'a> {
         if let Some(code) = method.as_deref() {
             tx.payments().set_pay_method(payment.id, code).await?;
         }
+        replace_unpaid(modules, &ctx, &mut tx, &created).await?;
         modules
             .order_created(&ctx, &mut tx, &created, &payment)
             .await?;

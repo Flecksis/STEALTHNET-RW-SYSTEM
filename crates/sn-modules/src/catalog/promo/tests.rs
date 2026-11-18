@@ -726,13 +726,18 @@ async fn брошенный_счёт_не_мешает_оплатить_с_те�
     let until = Utc::now() + Duration::minutes(60);
     reserve(&ctx, &abandoned, until).await.unwrap();
     assert!(
-        matches!(
-            check(&ctx, buyer, "again", checkout()).await,
-            Err(PromoError::Rejected(PromoRejection::Reserved))
-        ),
-        "пока первый счёт можно оплатить, второй по тому же промокоду не выставляется"
+        check(&ctx, buyer, "again", checkout()).await.is_ok(),
+        "промокод с неоплаченного счёта переносится в новый счёт"
     );
     let retry = order(&db.store, buyer, OrderKind::New, intent(), q.clone()).await;
+    {
+        let mut tx = db.store.begin().await.unwrap();
+        assert_eq!(
+            superseded(&mut tx, &retry).await.unwrap(),
+            vec![abandoned.id]
+        );
+        tx.rollback().await.unwrap();
+    }
     assert!(matches!(
         reserve(&ctx, &retry, until).await,
         Err(ModuleError::Invalid(_))
@@ -1673,6 +1678,111 @@ async fn перебор_с_одного_адреса_останавливает�
     assert!(
         check(&ctx, fresh, "REAL20", any_check()).await.is_ok(),
         "бот проверяет код без адреса: действует только лимит клиента"
+    );
+    db.cleanup().await;
+}
+
+async fn address_failures(store: &sn_store::Store) -> i64 {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar("SELECT COALESCE(sum(failures), 0)::bigint FROM promo_address_attempts")
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
+async fn payer(store: &sn_store::Store, provider: &str) -> ClientId {
+    let who = client(store).await;
+    let bought = order(store, who, OrderKind::New, intent(), priced(&[])).await;
+    paid_payment(
+        store,
+        bought.id,
+        who,
+        provider,
+        Amount::from(bought.quote.total),
+    )
+    .await;
+    who
+}
+
+#[tokio::test]
+async fn лимит_по_адресу_не_действует_на_клиентов_с_оплатой() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    create(&ctx, &percent("REAL20", 20, None), None)
+        .await
+        .unwrap();
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx.clone());
+    let office = Some("203.0.113.9");
+    for account in 0..ADDRESS_FAILURE_LIMIT / FAILURE_LIMIT {
+        let who = client(&db.store).await;
+        for n in 0..FAILURE_LIMIT {
+            let (status, _) = post_from(
+                &router,
+                who,
+                office,
+                "/promo/check",
+                serde_json::json!({ "code": format!("GUESS{account}X{n}") }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+    let fresh = client(&db.store).await;
+    let from_balance = payer(&db.store, "balance").await;
+    for blocked in [fresh, from_balance] {
+        let (status, body) = post_from(
+            &router,
+            blocked,
+            office,
+            "/promo/check",
+            serde_json::json!({"code": "REAL20"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    }
+    let paying = payer(&db.store, "cryptopay").await;
+    let (status, body) = post_from(
+        &router,
+        paying,
+        office,
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let before = address_failures(&db.store).await;
+    for n in 0..FAILURE_LIMIT {
+        let (status, _) = post_from(
+            &router,
+            paying,
+            office,
+            "/promo/check",
+            serde_json::json!({ "code": format!("PAYER{n}") }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "попытка {n}");
+    }
+    assert_eq!(
+        address_failures(&db.store).await,
+        before,
+        "ошибки клиента с оплатой не идут в счётчик адреса"
+    );
+    let (status, body) = post_from(
+        &router,
+        paying,
+        office,
+        "/promo/check",
+        serde_json::json!({"code": "REAL20"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "лимит на клиента остаётся: {body}"
     );
     db.cleanup().await;
 }
