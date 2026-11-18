@@ -243,6 +243,7 @@ pub struct ClientCard {
     pub stats: CardStats,
     pub bot_available: bool,
     pub two_factor: crate::two_factor::TwoFactor,
+    pub multi_subscriptions: bool,
 }
 
 const BLOCKED_REASON: &str = "клиент заблокирован";
@@ -410,6 +411,7 @@ impl<'a> ClientOps<'a> {
             },
             bot_available: self.services.bot_token().is_some(),
             two_factor,
+            multi_subscriptions: self.services.settings().multi_subscriptions,
         })
     }
 

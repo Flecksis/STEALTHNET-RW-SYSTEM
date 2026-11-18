@@ -55,6 +55,7 @@ mod payment_journal;
 mod photos;
 mod promo_days;
 mod provider_check;
+mod remna_link;
 mod robokassa;
 mod robots;
 mod rollypay;

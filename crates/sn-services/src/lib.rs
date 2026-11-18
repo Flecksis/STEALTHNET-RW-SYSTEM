@@ -31,6 +31,7 @@ pub mod mail_letters;
 pub mod node_watch;
 pub mod oauth;
 pub mod pause;
+pub mod remna_link;
 pub mod remna_sync;
 pub mod remna_transfer;
 pub mod server_load;

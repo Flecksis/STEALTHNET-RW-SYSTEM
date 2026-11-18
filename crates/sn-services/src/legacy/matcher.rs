@@ -18,7 +18,7 @@ pub enum Method {
 pub enum Matched {
     Found(usize, Method),
     Missing,
-    Ambiguous(usize),
+    Ambiguous(Vec<usize>),
     Shared(usize, usize),
 }
 
@@ -272,7 +272,7 @@ fn evidence(index: &RemnaIndex, at: usize, ask: &Ask<'_>) -> u32 {
     score * 2 + u32::from(!ask.sub.from_client_card())
 }
 
-fn pick(free: Vec<usize>, index: &RemnaIndex, ask: &Ask<'_>) -> Option<Result<usize, usize>> {
+fn pick(free: Vec<usize>, index: &RemnaIndex, ask: &Ask<'_>) -> Option<Result<usize, Vec<usize>>> {
     let Ask {
         method,
         source,
@@ -318,7 +318,7 @@ fn pick(free: Vec<usize>, index: &RemnaIndex, ask: &Ask<'_>) -> Option<Result<us
     }) {
         return Some(Ok(i));
     }
-    Some(Err(set.len()))
+    Some(Err(set))
 }
 
 fn open(m: &Matched) -> bool {
@@ -468,6 +468,7 @@ pub fn match_all(legacy: &Legacy, index: &RemnaIndex, blocked: &HashSet<i64>) ->
                     sub,
                     names: &names,
                 };
+                let pool = free.clone();
                 match pick(free, index, &ask) {
                     Some(Ok(i)) => {
                         let rivals: Vec<usize> = wants
@@ -506,10 +507,10 @@ pub fn match_all(legacy: &Legacy, index: &RemnaIndex, blocked: &HashSet<i64>) ->
                             result[at] = Matched::Found(i, method);
                             progress = true;
                         } else {
-                            result[at] = Matched::Ambiguous(count);
+                            result[at] = Matched::Ambiguous(pool);
                         }
                     }
-                    Some(Err(n)) => result[at] = Matched::Ambiguous(n),
+                    Some(Err(set)) => result[at] = Matched::Ambiguous(set),
                     None => {}
                 }
             }
@@ -667,9 +668,29 @@ mod tests {
         assert_eq!(matched[3], Matched::Found(3, Method::Telegram));
         assert_eq!(matched[4], Matched::Found(4, Method::Telegram));
         assert_eq!(matched[5], Matched::Found(5, Method::Username));
-        assert_eq!(matched[6], Matched::Ambiguous(2));
+        assert!(matches!(&matched[6], Matched::Ambiguous(found) if found.len() == 2));
         assert_eq!(matched[7], Matched::Shared(0, 0));
         assert_eq!(matched[8], Matched::Missing);
+        let issues = crate::legacy::check::SubIssues::new(&legacy, &index);
+        let ambiguous = issues.issue(6, &matched[6]).unwrap();
+        assert_eq!(ambiguous.code, "subscription_ambiguous");
+        assert!(
+            ambiguous.details.contains("x1, x2"),
+            "{}",
+            ambiguous.details
+        );
+        assert!(
+            ambiguous
+                .details
+                .contains("«Добавить подписку из Remnawave»")
+        );
+        let missing = issues.issue(8, &matched[8]).unwrap();
+        assert_eq!(missing.code, "subscription_missing");
+        assert!(
+            missing.details.contains("«Забрать из Remnawave»"),
+            "{}",
+            missing.details
+        );
     }
 
     fn found(matched: &[Matched], index: &RemnaIndex) -> Vec<String> {

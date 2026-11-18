@@ -18,6 +18,7 @@ use sn_store::Db;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+pub(crate) use pull::{TariffMatch, match_tariff, tariffs};
 pub use remna::Pace;
 pub use runs::{Direction, Mode, NoteRow, TransferState, TransferView};
 

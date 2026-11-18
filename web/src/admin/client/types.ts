@@ -48,6 +48,7 @@ export type ClientCard = {
   stats: CardStats;
   bot_available: boolean;
   two_factor: { enabled: boolean; enabled_at: string | null };
+  multi_subscriptions?: boolean;
 };
 
 export type SubscriptionDetails = {
@@ -60,6 +61,7 @@ export type SubscriptionDetails = {
   last_node: string | null;
   traffic_30d_bytes: number | null;
   remna_reachable: boolean;
+  remna_missing_at: string | null;
 };
 
 export type Device = {

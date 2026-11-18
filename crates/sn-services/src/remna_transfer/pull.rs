@@ -196,7 +196,7 @@ impl By {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum TariffMatch {
+pub(crate) enum TariffMatch {
     One { id: i64, name: String, extra: u32 },
     Many(Vec<String>),
     None,
@@ -207,7 +207,7 @@ fn tariff_hwid(tariff: &Tariff, extra: u32) -> Option<i64> {
     (devices > 0).then_some(i64::from(devices))
 }
 
-fn match_tariff(user: &RemnaUser, tariffs: &[Tariff]) -> TariffMatch {
+pub(crate) fn match_tariff(user: &RemnaUser, tariffs: &[Tariff]) -> TariffMatch {
     let squads: BTreeSet<Uuid> = user.active_internal_squads.iter().map(|s| s.uuid).collect();
     let mut found: Vec<(&Tariff, u32)> = Vec::new();
     for tariff in tariffs {
@@ -392,7 +392,7 @@ fn note(user: &RemnaUser, code: &str, details: impl Into<String>) -> NoteRow {
     }
 }
 
-async fn tariffs(services: &Services) -> ServiceResult<Vec<Tariff>> {
+pub(crate) async fn tariffs(services: &Services) -> ServiceResult<Vec<Tariff>> {
     let mut conn = services.store().conn().await?;
     Ok(conn.tariffs().list(true).await?)
 }

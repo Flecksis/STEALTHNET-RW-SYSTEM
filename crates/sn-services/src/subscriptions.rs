@@ -1,6 +1,6 @@
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
-use crate::remna_sync::store_user;
+use crate::remna_sync::{same_user, store_user};
 use crate::services::Services;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,7 @@ pub struct AdminSubscriptionView {
     pub last_node: Option<String>,
     pub traffic_30d_bytes: Option<u64>,
     pub remna_reachable: bool,
+    pub remna_missing_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -432,6 +433,11 @@ impl<'a> SubscriptionOps<'a> {
         Ok(())
     }
 
+    async fn missing_since(&self, id: SubscriptionId) -> ServiceResult<Option<DateTime<Utc>>> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn.subscriptions().missing_since(id).await?)
+    }
+
     async fn fetch_user(
         &self,
         remna: &dyn RemnawaveApi,
@@ -608,12 +614,14 @@ impl<'a> SubscriptionOps<'a> {
         let subscription = self.owned(id, actor).await?;
         staff_only(actor)?;
         let stored = |reachable: bool| async move {
+            let view = self.view_of(id, None, Vec::new()).await?;
             Ok::<AdminSubscriptionView, ServiceError>(AdminSubscriptionView {
-                view: self.view_of(id, None, Vec::new()).await?,
+                view,
                 squads: Vec::new(),
                 last_node: None,
                 traffic_30d_bytes: None,
                 remna_reachable: reachable,
+                remna_missing_at: self.missing_since(id).await?,
             })
         };
         let Some(link) = &subscription.remna else {
@@ -621,7 +629,11 @@ impl<'a> SubscriptionOps<'a> {
         };
         let remna = self.services.remna()?;
         let user = match remna.get_user(link.user_id).await {
-            Ok(user) => user,
+            Ok(user) if same_user(link, &user) => user,
+            Ok(_) => {
+                self.mark_missing(id).await?;
+                return stored(true).await;
+            }
             Err(err) if err.is_not_found() => {
                 self.mark_missing(id).await?;
                 return stored(true).await;
@@ -633,6 +645,7 @@ impl<'a> SubscriptionOps<'a> {
         };
         {
             let mut tx = self.services.store().begin().await?;
+            tx.subscriptions().mark_missing(id, false).await?;
             store_user(&mut tx, id, &user, None, self.services.now()).await?;
             tx.commit().await?;
         }
@@ -696,6 +709,7 @@ impl<'a> SubscriptionOps<'a> {
             last_node,
             traffic_30d_bytes,
             remna_reachable: true,
+            remna_missing_at: None,
         })
     }
 

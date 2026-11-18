@@ -464,6 +464,19 @@ impl<'c> SubscriptionsRepo<'c> {
         Ok(())
     }
 
+    pub async fn missing_since(
+        &mut self,
+        id: SubscriptionId,
+    ) -> StoreResult<Option<DateTime<Utc>>> {
+        sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            "SELECT remna_missing_at FROM subscriptions WHERE id = $1",
+        )
+        .bind(id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?
+        .ok_or(StoreError::NotFound("подписка"))
+    }
+
     pub async fn set_devices_count(&mut self, id: SubscriptionId, count: u32) -> StoreResult<()> {
         sqlx::query("UPDATE subscriptions SET devices_count = $2 WHERE id = $1")
             .bind(id.0)

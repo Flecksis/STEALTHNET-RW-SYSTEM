@@ -184,6 +184,9 @@ pub fn problem_issues(legacy: &Legacy) -> Vec<IssueRow> {
     issues
 }
 
+const NAMES_SHOWN: usize = 5;
+const PULL_HINT: &str = "Если пользователь есть в Remnawave под другими данными, после переноса заберите его: «Настройки → Remnawave → Синхронизация» → «Забрать из Remnawave»";
+
 pub struct SubIssues<'a> {
     legacy: &'a Legacy,
     index: &'a RemnaIndex,
@@ -207,6 +210,20 @@ impl<'a> SubIssues<'a> {
         self.clients.get(old_id).map(|c| c.who())
     }
 
+    fn names(&self, found: &[usize]) -> String {
+        let mut names: Vec<&str> = found
+            .iter()
+            .take(NAMES_SHOWN)
+            .map(|i| self.index.users[*i].username.as_str())
+            .collect();
+        names.sort_unstable();
+        let mut text = names.join(", ");
+        if found.len() > NAMES_SHOWN {
+            text.push_str(&format!(" и ещё {}", found.len() - NAMES_SHOWN));
+        }
+        text
+    }
+
     pub fn issue(&self, at: usize, matched: &Matched) -> Option<IssueRow> {
         let sub = &self.legacy.subscriptions[at];
         let (code, details) = match matched {
@@ -226,7 +243,7 @@ impl<'a> SubIssues<'a> {
                     .expire_at
                     .map(|at| format!(", срок до {}", at.format("%d.%m.%Y")))
                     .unwrap_or_default();
-                let details = if hints.is_empty() {
+                let found = if hints.is_empty() {
                     format!("Пользователь Remnawave не найден{expired}")
                 } else {
                     format!(
@@ -234,16 +251,20 @@ impl<'a> SubIssues<'a> {
                         hints.join(", ")
                     )
                 };
-                ("subscription_missing", details)
+                ("subscription_missing", format!("{found}. {PULL_HINT}"))
             }
-            Matched::Ambiguous(1) => (
-                "subscription_ambiguous",
-                "Подходящий пользователь Remnawave подходит и другой подписке, поэтому подписка не перенесена".to_string(),
-            ),
-            Matched::Ambiguous(n) => (
+            Matched::Ambiguous(found) if found.len() == 1 => (
                 "subscription_ambiguous",
                 format!(
-                    "Подходят сразу несколько пользователей Remnawave ({n}), поэтому подписка не перенесена"
+                    "Пользователь Remnawave {} подходит и другой подписке, поэтому подписка не перенесена. Если он относится к этому клиенту, добавьте подписку в карточке клиента: «Добавить подписку из Remnawave»",
+                    self.names(found)
+                ),
+            ),
+            Matched::Ambiguous(found) => (
+                "subscription_ambiguous",
+                format!(
+                    "Подходят сразу несколько пользователей Remnawave: {}, поэтому подписка не перенесена. Выберите нужного в карточке клиента: «Добавить подписку из Remnawave»",
+                    self.names(found)
                 ),
             ),
             Matched::Shared(i, other) => {
@@ -391,7 +412,7 @@ pub async fn preview(
                     code: "subscription_missing".into(),
                     count: plan.missing,
                     text: format!(
-                        "подписок нет в Remnawave: пользователя удалили из панели или это другая панель. Клиенты перенесутся без этих подписок.{tail}"
+                        "подписок нет в Remnawave: пользователя удалили из панели или это другая панель. Клиенты перенесутся без этих подписок.{tail} Если пользователи есть в Remnawave под другими данными, после переноса заберите их: «Настройки → Remnawave → Синхронизация» → «Забрать из Remnawave». Сначала нажмите «Проверить»: проверка ничего не меняет и покажет, кому что добавится."
                     ),
                 });
             }
@@ -399,7 +420,7 @@ pub async fn preview(
                 skipped.push(super::model::Skip {
                     code: "subscription_ambiguous".into(),
                     count: plan.ambiguous,
-                    text: "подписок нельзя однозначно сопоставить с пользователями Remnawave. Их не привязываем: клиенты переносятся без этих подписок, список в отчёте.".into(),
+                    text: "подписок нельзя однозначно сопоставить с пользователями Remnawave. Их не привязываем: клиенты переносятся без этих подписок. Подходящие пользователи — в отчёте, добавить подписку можно в карточке клиента: «Добавить подписку из Remnawave».".into(),
                 });
             }
             if plan.shared > 0 {

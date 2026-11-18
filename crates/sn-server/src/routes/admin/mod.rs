@@ -18,6 +18,7 @@ mod mail;
 mod money;
 mod overview;
 pub(crate) mod photos;
+mod remna_link;
 mod remna_sync;
 #[cfg(test)]
 mod review_tests;
@@ -58,6 +59,7 @@ pub fn routes() -> Router<AppState> {
         .merge(bot_content::routes())
         .merge(import::routes())
         .merge(remna_sync::routes())
+        .merge(remna_link::routes())
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

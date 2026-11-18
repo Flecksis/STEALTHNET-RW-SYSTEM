@@ -11,6 +11,7 @@ import { historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
 import { devicesWord, emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, tariffOf, telegramOf } from './model';
+import { RemnaAddDialog, RemnaLinkNote } from './RemnaLink';
 import { planTitle } from './SubscriptionBlock';
 import { ClientProtect } from '../protect/ClientProtect';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
@@ -21,7 +22,7 @@ import { ExtendDialog } from './ExtendDialog';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
-type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'extend' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password';
+type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'extend' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password' | 'remna-add';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 type SheetItem = { key: Dialogs; icon: IconName; label: string };
@@ -339,6 +340,9 @@ export function ClientPhone() {
   if (writable && linked) {
     sheetItems.push({ key: 'reissue', icon: 'refresh', label: 'Выпустить новую ссылку' });
   }
+  if (writable && !blocked && (!sub || card.multi_subscriptions)) {
+    sheetItems.push({ key: 'remna-add', icon: 'plus', label: 'Добавить подписку из Remnawave' });
+  }
 
   const undoExtend = async () => {
     if (!sub || steps.current === 0) {
@@ -559,6 +563,20 @@ export function ClientPhone() {
               <span className="pc-plan">{planTitle(sub, tariff)}</span>
               <span className={`pc-status ${status.tone}`}>{status.text}</span>
             </span>
+            {details ? (
+              <RemnaLinkNote
+                phone
+                sub={sub}
+                missingSince={details.remna_missing_at}
+                writable={writable}
+                onLinked={(text) => {
+                  show({ kind: 'info', head: text });
+                  void loadCard();
+                  setDetailsKey((k) => k + 1);
+                  void loadHistory();
+                }}
+              />
+            ) : null}
             <span className="pc-days">{days(leftDays)}</span>
             {until ? <span className="pc-small pc-muted">{until}</span> : null}
             <span
@@ -906,6 +924,20 @@ export function ClientPhone() {
             setFullLink(false);
             setDetailsKey((k) => k + 1);
             show({ kind: 'info', head: 'Новая ссылка выпущена,', tail: ' клиент получит её в боте и в кабинете' });
+            void loadHistory();
+          }}
+        />
+      ) : null}
+      {dialog === 'remna-add' ? (
+        <RemnaAddDialog
+          clientId={clientId}
+          phone
+          onClose={() => setDialog('')}
+          onDone={(text) => {
+            setDialog('');
+            show({ kind: 'info', head: text });
+            void loadCard();
+            setDetailsKey((k) => k + 1);
             void loadHistory();
           }}
         />

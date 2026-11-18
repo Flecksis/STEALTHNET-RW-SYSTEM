@@ -290,6 +290,14 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
           const what = email ? (previous ? `Почта изменена на ${email}` : `Добавлена почта ${email}`) : 'Почта изменена';
           return { ...base, what, note: previous ? `${actor}, прежняя ${previous}` : actor, sum: '' };
         }
+        case 'subscription.remna_linked': {
+          const name = str(details.remna_username);
+          return { ...base, what: name ? `Подписка привязана к пользователю Remnawave ${name}` : 'Подписка привязана к пользователю Remnawave', note: actor, sum: '' };
+        }
+        case 'subscription.remna_added': {
+          const name = str(details.remna_username);
+          return { ...base, what: name ? `Добавлена подписка из Remnawave ${name}` : 'Добавлена подписка из Remnawave', note: actor, sum: '' };
+        }
         case 'client.message': {
           const text = str(details.text);
           return { ...base, what: 'Отправлено сообщение в бот', note: text ? `${actor}: «${cut(text, 70)}»` : actor, sum: '' };

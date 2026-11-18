@@ -365,6 +365,10 @@ impl Services {
         RemnaSync::new(self)
     }
 
+    pub fn remna_links(&self) -> crate::remna_link::RemnaLinks<'_> {
+        crate::remna_link::RemnaLinks::new(self)
+    }
+
     pub fn node_watch(&self) -> crate::node_watch::NodeWatch<'_> {
         crate::node_watch::NodeWatch::new(self)
     }

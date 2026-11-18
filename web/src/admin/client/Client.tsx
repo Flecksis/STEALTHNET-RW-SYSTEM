@@ -12,6 +12,7 @@ import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog }
 import { eventsCount, historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
+import { RemnaAddButton } from './RemnaLink';
 import { emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
 import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
@@ -303,6 +304,12 @@ function ClientDesktop() {
 
   const balance: Money | undefined = card.balance;
   const referralBalance = card.referral_balance;
+  const onRemnaAdded = (text: string, added: number) => {
+    setNotice(text);
+    setSubId(added);
+    void loadCard();
+    refreshHistory();
+  };
   const lines = (history?.items ?? []).map((item, index) => historyLine(item, index, card.stats.referrer));
   const stats = card.stats;
   const locale = card.client.locale === 'en' ? 'English' : 'Русский';
@@ -379,6 +386,12 @@ function ClientDesktop() {
               onHistory={refreshHistory}
               onExtendHeader={onExtendHeader}
               onChangeTariff={() => setDialog('change')}
+              onLinked={(text) => {
+                setNotice(text);
+                void loadCard();
+                setDetailsKey((k) => k + 1);
+                refreshHistory();
+              }}
             />
           ) : (
             <section className="cc-sec cc-subsec" aria-labelledby="sub-h">
@@ -396,6 +409,7 @@ function ClientDesktop() {
                   <button type="button" className="b38 hov" onClick={() => setDialog('grant')}>
                     Выдать подписку
                   </button>
+                  <RemnaAddButton clientId={clientId} onAdded={onRemnaAdded} />
                 </div>
               ) : null}
             </section>
@@ -405,6 +419,7 @@ function ClientDesktop() {
               Remnawave сейчас не отвечает: показаны сохранённые данные, действия с подпиской могут не пройти.
             </p>
           ) : null}
+          {writable && !blocked && sub && card.multi_subscriptions ? <RemnaAddButton more clientId={clientId} onAdded={onRemnaAdded} /> : null}
 
           <section aria-labelledby="his-h" className="cc-sec cc-list">
             <h2 id="his-h" className="cc-h2" style={{ marginBottom: 8 }}>

@@ -6,6 +6,7 @@ import type { Subscription } from '../clients/types';
 import { LimitsDialog, QrDialog } from './dialogs';
 import { historyWhen } from './history';
 import { devicesWord, nextReset, platformName, responseText } from './model';
+import { RemnaLinkNote } from './RemnaLink';
 import type { Connections, Device, SubRequest, SubscriptionDetails, TariffBrief } from './types';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
@@ -21,6 +22,7 @@ type Props = {
   onHistory: () => void;
   onExtendHeader: (run: (days: number) => Promise<void>) => void;
   onChangeTariff: () => void;
+  onLinked: (text: string) => void;
 };
 
 type Ask = '' | 'reset' | 'link' | 'devices';
@@ -38,7 +40,7 @@ export function planTitle(sub: Subscription, tariff: TariffBrief | null): string
   return span ? `${name}${NBSP}· ${span}` : name;
 }
 
-export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writable, notifies, onView, onHistory, onExtendHeader, onChangeTariff }: Props) {
+export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writable, notifies, onView, onHistory, onExtendHeader, onChangeTariff, onLinked }: Props) {
   const [added, setAdded] = useState(0);
   const [steps, setSteps] = useState(0);
   const [ask, setAsk] = useState<Ask>('');
@@ -210,6 +212,17 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
             </button>
           ) : null}
         </div>
+        {details ? (
+          <RemnaLinkNote
+            sub={sub}
+            missingSince={details.remna_missing_at}
+            writable={writable}
+            onLinked={(text) => {
+              setDevicesKey((k) => k + 1);
+              onLinked(text);
+            }}
+          />
+        ) : null}
         <div className="cc-col" style={{ gap: 12 }}>
           <div className="cc-days">
             <span className="cc-days-n">{days(expired ? 0 : left)}</span>
