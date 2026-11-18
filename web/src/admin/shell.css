@@ -45,7 +45,8 @@
 }
 
 .rail:hover,
-.rail:focus-within {
+.rail:has(:focus-visible),
+.rail-hold:not(.pinned):has(.rail-pop) .rail {
   width: 236px;
   box-shadow: var(--shadow);
 }
@@ -62,7 +63,8 @@
 }
 
 .rail:hover .lbl,
-.rail:focus-within .lbl,
+.rail:has(:focus-visible) .lbl,
+.rail-hold:has(.rail-pop) .rail .lbl,
 .rail.pinned .lbl {
   opacity: 1;
 }
