@@ -1,14 +1,16 @@
 use crate::error::ServiceError;
 use crate::services::Services;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::Money;
 use sn_modules::{
-    BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, MailSender,
-    ModuleError, Notification, SubscriptionGrant,
+    BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, Lifted,
+    MailSender, ModuleError, Notification, Restricted, SubscriptionGrant, TrafficReading,
+    TrafficRestriction,
 };
 use sn_store::{Db, StoreError, Tx};
 use std::sync::Arc;
@@ -148,6 +150,47 @@ impl CoreApi for Services {
         Ok(())
     }
 
+    fn now(&self) -> DateTime<Utc> {
+        Services::now(self)
+    }
+
+    async fn traffic_readings(&self) -> Result<Vec<TrafficReading>, ModuleError> {
+        self.subscriptions()
+            .traffic_readings()
+            .await
+            .map_err(traffic_error)
+    }
+
+    async fn restrict_traffic(
+        &self,
+        subscription_id: SubscriptionId,
+        restriction: &TrafficRestriction,
+    ) -> Result<Restricted, ModuleError> {
+        self.subscriptions()
+            .restrict_traffic(subscription_id, restriction)
+            .await
+            .map_err(traffic_error)
+    }
+
+    async fn lift_traffic(
+        &self,
+        subscription_id: SubscriptionId,
+        restriction: &TrafficRestriction,
+    ) -> Result<Lifted, ModuleError> {
+        self.subscriptions()
+            .lift_traffic(subscription_id, restriction)
+            .await
+            .map_err(traffic_error)
+    }
+
+    async fn client_devices(&self, client_id: ClientId) -> Result<Vec<String>, ModuleError> {
+        match self.subscriptions().client_hwids(client_id).await {
+            Ok(devices) => Ok(devices),
+            Err(ServiceError::RemnaNotConfigured(_)) => Ok(Vec::new()),
+            Err(err) => Err(traffic_error(err)),
+        }
+    }
+
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
         Services::bot_sender(self)
     }
@@ -163,6 +206,14 @@ fn grant_error(err: ServiceError) -> ModuleError {
         ServiceError::Store(err) => ModuleError::Store(err),
         ServiceError::NotFound(what) => ModuleError::NotFound(what),
         ServiceError::Rejected { message, .. } => ModuleError::Invalid(message),
+        other => ModuleError::Core(other.to_string()),
+    }
+}
+
+fn traffic_error(err: ServiceError) -> ModuleError {
+    match err {
+        ServiceError::NotFound(what) => ModuleError::NotFound(what),
+        ServiceError::Store(err) => ModuleError::Store(err),
         other => ModuleError::Core(other.to_string()),
     }
 }

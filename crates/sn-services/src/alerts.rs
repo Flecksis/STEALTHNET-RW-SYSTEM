@@ -24,6 +24,8 @@ const TOPICS_KEY: &str = "alerts.topics";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
 const AUTO_REFUND_CURSOR: &str = "alerts.cursor.auto_refunds";
 const PAYMENTS_CURSOR: &str = "alerts.cursor.payments";
+const TRAFFIC_CURSOR: &str = "alerts.cursor.traffic";
+const TRAFFIC_SETTLE_SECONDS: i64 = 60;
 const BODY_MAX: usize = 300;
 const NOTICE_MAX: usize = 600;
 const SCAN_LIMIT: i64 = 500;
@@ -97,6 +99,19 @@ struct OrderRow {
     currency: String,
     stars_total: Option<i64>,
     review_reason: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct TrafficRow {
+    client_id: i64,
+    period: String,
+    used_bytes: i64,
+    limit_bytes: i64,
+    restriction: String,
+    restricted_at: Option<DateTime<Utc>>,
+    window_end: DateTime<Utc>,
+    restrict_note: Option<String>,
+    warned_at: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -211,6 +226,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
             ),
             "/admin/money",
         ),
+        AlertKind::Traffic => (
+            format!(
+                "Ещё {rest} {} трафика",
+                format::plural_ru(n, "превышение", "превышения", "превышений")
+            ),
+            "/admin/clients/limits",
+        ),
     };
     Alert {
         kind,
@@ -293,9 +315,21 @@ impl<'a> AlertsOps<'a> {
             .filter(|name| !name.is_empty()))
     }
 
+    pub fn kinds(&self) -> Vec<AlertKind> {
+        let limits = self
+            .services
+            .modules()
+            .is_enabled(sn_domain::module::ModuleId::Limits);
+        AlertKind::ALL
+            .into_iter()
+            .filter(|kind| limits || *kind != AlertKind::Traffic)
+            .collect()
+    }
+
     pub async fn view(&self) -> ServiceResult<AlertsView> {
         let config = self.config().await?;
-        let kinds = AlertKind::ALL
+        let kinds = self
+            .kinds()
             .iter()
             .map(|kind| {
                 let route = config.route(*kind);
@@ -499,6 +533,7 @@ impl<'a> AlertsOps<'a> {
             out.extend(self.watched(kind, &config).await?);
         }
         out.extend(self.auto_refunds(&config).await?);
+        out.extend(self.traffic(&config).await?);
         Ok(out)
     }
 
@@ -582,6 +617,85 @@ impl<'a> AlertsOps<'a> {
         }
         drop(conn);
         self.put_state(AUTO_REFUND_CURSOR, &serde_json::json!(newest))
+            .await?;
+        Ok(out)
+    }
+
+    async fn traffic(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let cursor = self.state(TRAFFIC_CURSOR).await?.and_then(|v| v.as_i64());
+        let settled = self.services.now() - Duration::seconds(TRAFFIC_SETTLE_SECONDS);
+        let mut conn = self.services.store().conn().await?;
+        let newest: i64 = sqlx::query_scalar(
+            "SELECT coalesce(max(id), 0) FROM traffic_exceeds WHERE exceeded_at <= $1",
+        )
+        .bind(settled)
+        .fetch_one(conn.conn())
+        .await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(TRAFFIC_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<TrafficRow> = sqlx::query_as(
+            "SELECT client_id, period, used_bytes, limit_bytes, restriction, restricted_at, \
+                    window_end, restrict_note, warned_at \
+             FROM traffic_exceeds WHERE alert AND id > $1 AND id <= $2 ORDER BY id",
+        )
+        .bind(cursor)
+        .bind(newest)
+        .fetch_all(conn.conn())
+        .await?;
+        let mut out = Vec::new();
+        if config.route(AlertKind::Traffic).on {
+            let offset = self.services.settings().remna_offset();
+            for row in rows.iter().take(PER_KIND) {
+                let used = format::traffic(u64::try_from(row.used_bytes).unwrap_or(0));
+                let limit = format::traffic(u64::try_from(row.limit_bytes).unwrap_or(0));
+                let when = if row.period == "week" {
+                    "За неделю"
+                } else {
+                    "За сутки"
+                };
+                let mut lines = vec![
+                    "<b>Превышение трафика</b>".to_string(),
+                    format!(
+                        "Клиент: {}",
+                        escape(&client_label(&mut conn, row.client_id).await)
+                    ),
+                    format!("{when}: {used} при пороге {limit}"),
+                ];
+                match (row.restriction.as_str(), row.restricted_at) {
+                    ("none", _) => {}
+                    (_, Some(_)) => lines.push(format!(
+                        "Доступ ограничен до {}",
+                        sn_modules::catalog::limits::until_text(row.window_end, offset)
+                    )),
+                    (_, None) => lines.push(match row.restrict_note.as_deref() {
+                        Some(note) if !note.trim().is_empty() => {
+                            format!("Не ограничен: {}", escape(&cut(note, BODY_MAX)))
+                        }
+                        _ => "Ограничение ещё не применено".to_string(),
+                    }),
+                }
+                if row.warned_at.is_some() {
+                    lines.push("Клиент предупреждён".to_string());
+                }
+                out.push(Alert {
+                    kind: AlertKind::Traffic,
+                    html: lines.join("\n"),
+                    path: "/admin/clients/limits".to_string(),
+                });
+            }
+            if rows.len() > PER_KIND {
+                out.push(summary(AlertKind::Traffic, rows.len() - PER_KIND));
+            }
+        }
+        drop(conn);
+        self.put_state(TRAFFIC_CURSOR, &serde_json::json!(newest))
             .await?;
         Ok(out)
     }
@@ -857,7 +971,7 @@ impl<'a> AlertsOps<'a> {
                     });
                 }
             }
-            AlertKind::Support | AlertKind::Payments => {}
+            AlertKind::Support | AlertKind::Payments | AlertKind::Traffic => {}
         }
         Ok(items)
     }

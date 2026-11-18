@@ -12,6 +12,7 @@ use sn_domain::access::ClientChannel;
 use sn_domain::ids::{PeriodId, SubscriptionId, TicketId};
 use sn_domain::money::{Money, parse_units};
 use sn_domain::support::{Ticket, TicketChannel};
+use sn_modules::catalog::antibot;
 use sn_services::checkout::{
     CartRequest, Channel, CheckoutRequest, CheckoutResult, ItemCheckoutRequest, ItemQuoteView,
     ItemRequest,
@@ -621,17 +622,38 @@ async fn gram_in_telegram(
     Ok(Json(serde_json::json!({ "chat_url": chat_url })))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct TrialBody {
+    #[serde(default)]
+    confirm: Option<String>,
+}
+
 async fn trial(
     client: CurrentClient,
     State(state): State<AppState>,
+    body: Option<ApiJson<TrialBody>>,
 ) -> ApiResult<Json<serde_json::Value>> {
     client.require_full()?;
-    let order_id = state
-        .services
-        .checkout()
-        .start_trial(client.0.client_id)
-        .await?;
-    Ok(Json(serde_json::json!({ "order_id": order_id })))
+    let checkout = state.services.checkout();
+    let id = client.0.client_id;
+    let token = body.and_then(|ApiJson(b)| b.confirm);
+    let result = match token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(token) => checkout.confirm_trial(id, token).await,
+        None => checkout.start_trial(id).await,
+    };
+    match result {
+        Ok(order_id) => Ok(Json(serde_json::json!({ "order_id": order_id }))),
+        Err(err) if err.code() == antibot::CONFIRM_CODE || err.code() == "antibot.too_fast" => {
+            let token = checkout.trial_challenge(id).await?;
+            Ok(Json(serde_json::json!({
+                "confirm": {
+                    "token": token,
+                    "text": "Чтобы получить пробный период, подтвердите, что вы не робот."
+                }
+            })))
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

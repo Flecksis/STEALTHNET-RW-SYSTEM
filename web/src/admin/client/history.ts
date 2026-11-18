@@ -136,6 +136,8 @@ const AUDIT_TEXT: Record<string, string> = {
   'subscription.restore_access': 'Доступ к подписке открыт',
   'subscription.release_devices': 'Освобождены места для устройств',
   'subscription.blocked_delivery': 'Выдача остановлена: клиент заблокирован',
+  'subscription.traffic_restricted': 'Подписка ограничена за превышение трафика',
+  'subscription.traffic_lifted': 'Ограничение по трафику снято',
   'payment.mark_paid': 'Платёж отмечен оплаченным вручную',
   'payment.refund': 'Оформлен возврат',
   'payment.refund_requested': 'Запрошен возврат',

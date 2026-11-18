@@ -3,7 +3,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::catalog::{config_flag, installation_currency, module_config, start_param};
+use crate::catalog::{antibot, config_flag, installation_currency, module_config, start_param};
 use crate::context::{BalanceChange, ModuleContext, Notification};
 use crate::error::ModuleError;
 use crate::module::{BotEntry, Module, ModuleConfig, ScheduledTask};
@@ -387,12 +387,14 @@ pub async fn accrue(
     let Some(base) = amount.as_money().filter(|m| m.minor > 0) else {
         return Ok(0);
     };
+    let gate = antibot::referral_gate(ctx, payer).await?;
     let mut tx = ctx.store.begin().await?;
     if !store::mark_processed(&mut tx, payment_id).await? {
         tx.commit().await?;
         settle_payment(ctx, payment_id).await?;
         return Ok(0);
     }
+    let mut skipped: Vec<i32> = Vec::new();
     let settings = settings(&mut tx, base.currency).await?;
     let ancestors = store::ancestors(&mut tx, payer, LEVELS as i32).await?;
     let mut seen = vec![payer];
@@ -411,6 +413,15 @@ pub async fn accrue(
             _ => settings.levels[index],
         };
         if percent == 0 || ancestor.blocked {
+            continue;
+        }
+        let withheld = match gate {
+            antibot::ReferralGate::Allow => false,
+            antibot::ReferralGate::NoDirect(_) => ancestor.level == 1,
+            antibot::ReferralGate::NoBonus => true,
+        };
+        if withheld {
+            skipped.push(ancestor.level);
             continue;
         }
         let credit = base
@@ -437,6 +448,9 @@ pub async fn accrue(
         }
     }
     tx.commit().await?;
+    if !skipped.is_empty() {
+        antibot::record_no_bonus(ctx, payer, payment_id, &gate, &skipped).await?;
+    }
     settle_payment(ctx, payment_id).await?;
     Ok(created)
 }

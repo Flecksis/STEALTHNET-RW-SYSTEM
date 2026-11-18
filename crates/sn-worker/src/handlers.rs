@@ -69,10 +69,15 @@ impl JobHandler for CoreHandlers {
             }
             JobPayload::ModuleTask { module, task, .. } => {
                 let ctx = services.module_context();
-                if !services.modules().is_enabled(*module) {
+                let implementation = services.modules().get(*module);
+                let cleanup = implementation
+                    .cleanup_tasks()
+                    .iter()
+                    .any(|t| t.name == task.as_str());
+                if !cleanup && !services.modules().is_enabled(*module) {
                     return JobResult::Done;
                 }
-                match services.modules().get(*module).run_task(&ctx, task).await {
+                match implementation.run_task(&ctx, task).await {
                     Ok(()) => JobResult::Done,
                     Err(err) => JobResult::Retry {
                         after: retry_delay(attempt),

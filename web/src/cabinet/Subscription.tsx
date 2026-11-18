@@ -38,6 +38,7 @@ export function SubscriptionPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [qr, setQr] = useState(false);
   const [trialBusy, setTrialBusy] = useState(false);
+  const [trialCheck, setTrialCheck] = useState<{ token: string; text: string } | null>(null);
   const error = pageError ?? subs.error;
 
   useEffect(() => {
@@ -110,11 +111,16 @@ export function SubscriptionPage() {
     }
   };
 
-  const startTrial = async () => {
+  const startTrial = async (confirm?: string) => {
     setTrialBusy(true);
     setError(null);
     try {
-      await api('/api/client/trial', { method: 'POST', body: {} });
+      const started = await api<{ confirm?: { token: string; text: string } }>('/api/client/trial', { method: 'POST', body: confirm ? { confirm } : {} });
+      if (started.confirm) {
+        setTrialCheck(started.confirm);
+        return;
+      }
+      setTrialCheck(null);
       for (let i = 0; i < 10; i += 1) {
         await new Promise((r) => window.setTimeout(r, 1500));
         if ((await subs.reload()).length > 0) {
@@ -229,12 +235,20 @@ export function SubscriptionPage() {
         <Link to="/cabinet/pay" className="cb-main">
           Выбрать тариф
         </Link>
-        {site.trial?.enabled ? (
+        {site.trial?.enabled && !trialCheck ? (
           <button type="button" className="cb-second" onClick={() => void startTrial()} disabled={trialBusy}>
             {trialBusy ? 'Включаем…' : `Попробовать бесплатно ${days(site.trial.days)}`}
           </button>
         ) : null}
       </div>
+      {trialCheck ? (
+        <div className="cb-human" role="group" aria-label="Проверка перед пробным периодом">
+          <p className="cb-ink2">{trialCheck.text}</p>
+          <button type="button" className="cb-second" onClick={() => void startTrial(trialCheck.token)} disabled={trialBusy}>
+            {trialBusy ? 'Проверяем…' : 'Я не робот'}
+          </button>
+        </div>
+      ) : null}
     </Card>
   ) : (
     <Card className="cb-sub" label="Подписка">

@@ -491,6 +491,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             None => account::support_prompt(turn),
         },
         "trial" => account::trial(turn, client).await?,
+        "ab" => account::trial_confirmed(turn, client, rest).await?,
         "buy" => buy::start(turn, client, rest).await?,
         "t" => match id_arg(rest) {
             Some(id) => buy::tariff(turn, client, TariffId(id)).await?,

@@ -1,7 +1,7 @@
 use crate::BotError;
 use crate::telegram::{Keyboard, Message, TelegramApi, TelegramError};
 use crate::text::escape;
-use sn_domain::alerts::{AlertKind, AlertsConfig, START_PREFIX};
+use sn_domain::alerts::{AlertsConfig, START_PREFIX};
 use sn_services::Services;
 use sn_services::alerts::Alert;
 use std::collections::BTreeMap;
@@ -122,7 +122,7 @@ impl Keeper {
 
     async fn test(&self, config: &AlertsConfig, chat_id: i64) -> Result<(), BotError> {
         let mut places: BTreeMap<Option<String>, Vec<&'static str>> = BTreeMap::new();
-        for kind in AlertKind::ALL {
+        for kind in self.services.alerts().kinds() {
             if config.route(kind).on {
                 places
                     .entry(config.topic_for(kind))

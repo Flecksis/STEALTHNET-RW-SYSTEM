@@ -13,7 +13,7 @@ use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::money::Money;
 use sn_modules::MailSite;
 use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
-use sn_modules::catalog::{gifts, referral};
+use sn_modules::catalog::{gifts, limits, referral};
 use sn_services::Services;
 use sn_services::mail::{RichLetter, Undelivered};
 use sn_store::{Db, StoreError};
@@ -261,6 +261,35 @@ pub fn render(
             ),
             Some(("notify.btn.referral", "x:referral")),
         ),
+        limits::TEMPLATE_WARNING => (
+            t(
+                "notify.traffic_warning",
+                &[
+                    ("when", Text(params.get("when")?.as_str()?)),
+                    ("used", Html(&param(params, "used")?)),
+                    ("limit", Html(&param(params, "limit")?)),
+                    ("per", Text(params.get("per")?.as_str()?)),
+                ],
+            ),
+            Some(("notify.btn.subscription", "subs")),
+        ),
+        limits::TEMPLATE_RESTRICTED => (
+            t(
+                "notify.traffic_restricted",
+                &[
+                    ("when", Text(params.get("when")?.as_str()?)),
+                    ("used", Html(&param(params, "used")?)),
+                    ("limit", Html(&param(params, "limit")?)),
+                    ("per", Text(params.get("per")?.as_str()?)),
+                    ("until", Html(&param(params, "until")?)),
+                ],
+            ),
+            Some(("notify.btn.subscription", "subs")),
+        ),
+        limits::TEMPLATE_LIFTED => (
+            t("notify.traffic_lifted", &[]),
+            Some(("notify.btn.subscription", "subs")),
+        ),
         referral::TEMPLATE_WITHDRAWAL_PAID => (
             t(
                 "notify.withdrawal_paid",
@@ -403,7 +432,10 @@ impl NotifyHandler {
                 .map(|_| ())
         };
         match sent {
-            Ok(()) => JobResult::Done,
+            Ok(()) => {
+                also_mail(services, client_id, template, params, attempt).await;
+                JobResult::Done
+            }
             Err(err) if err.is_forbidden() || chat_missing(&err) => {
                 match services.store().conn().await {
                     Ok(mut conn) => {
@@ -435,6 +467,7 @@ pub enum LetterKind {
     Expiring,
     Payments,
     Support,
+    Service,
 }
 
 pub struct LetterHead {
@@ -540,6 +573,24 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
             "Мои подарки",
             "/cabinet/gifts",
         ),
+        limits::TEMPLATE_WARNING => head(
+            LetterKind::Service,
+            "Превышен лимит трафика",
+            "Открыть кабинет",
+            "/cabinet",
+        ),
+        limits::TEMPLATE_RESTRICTED => head(
+            LetterKind::Service,
+            "Доступ временно ограничен",
+            "Открыть кабинет",
+            "/cabinet",
+        ),
+        limits::TEMPLATE_LIFTED => head(
+            LetterKind::Service,
+            "Ограничение по трафику снято",
+            "Открыть кабинет",
+            "/cabinet",
+        ),
         templates::SUPPORT_REPLY => LetterHead {
             kind: LetterKind::Support,
             subject: match ticket {
@@ -574,6 +625,7 @@ async fn mail_notice(
         LetterKind::Expiring => letters.expiring,
         LetterKind::Payments => letters.payments,
         LetterKind::Support => letters.support,
+        LetterKind::Service => true,
     };
     if !wanted {
         return JobResult::Done;
@@ -624,6 +676,42 @@ async fn mail_notice(
             after: retry_delay(attempt),
             error,
         },
+    }
+}
+
+async fn also_mail(
+    services: &Services,
+    client_id: ClientId,
+    template: &str,
+    params: &serde_json::Value,
+    attempt: u32,
+) {
+    if params.get("also_mail").and_then(serde_json::Value::as_bool) != Some(true) {
+        return;
+    }
+    let email = match services.store().conn().await {
+        Ok(mut conn) => match conn.clients().identities(client_id).await {
+            Ok(identities) => identities
+                .into_iter()
+                .find(|i| i.kind == IdentityKind::Email)
+                .map(|i| i.value),
+            Err(err) => {
+                tracing::warn!(client = %client_id, error = %err, "почта клиента для копии уведомления не прочитана");
+                None
+            }
+        },
+        Err(err) => {
+            tracing::warn!(client = %client_id, error = %err, "почта клиента для копии уведомления не прочитана");
+            None
+        }
+    };
+    let Some(email) = email else {
+        return;
+    };
+    if let JobResult::Retry { error, .. } | JobResult::Fail(error) =
+        mail_notice(services, &email, template, params, attempt).await
+    {
+        tracing::warn!(client = %client_id, template, error = %error, "копия уведомления на почту не отправлена");
     }
 }
 

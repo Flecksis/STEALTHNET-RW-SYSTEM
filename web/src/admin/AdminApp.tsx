@@ -19,6 +19,8 @@ import { ModulePage } from './modules/ModulePage';
 import { ModuleScreen } from './modules/ModuleScreen';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
+import { Antibot } from './protect/Antibot';
+import { Limits } from './protect/Limits';
 import { Money } from './money/Money';
 import { SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
@@ -217,6 +219,8 @@ export function AdminApp() {
         <Routes>
           <Route index element={<Home />} />
           <Route path="clients" element={<Clients />} />
+          <Route path="clients/antibot" element={<Antibot />} />
+          <Route path="clients/limits" element={<Limits />} />
           <Route path="clients/:id" element={<ClientPage />} />
           <Route path="support" element={<Support />} />
           <Route path="money/*" element={<Money />} />

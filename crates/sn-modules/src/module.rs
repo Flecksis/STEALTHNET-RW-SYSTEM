@@ -120,6 +120,10 @@ pub trait Module: Send + Sync + 'static {
         Vec::new()
     }
 
+    fn cleanup_tasks(&self) -> Vec<ScheduledTask> {
+        Vec::new()
+    }
+
     fn bot_entries(&self) -> Vec<BotEntry> {
         Vec::new()
     }

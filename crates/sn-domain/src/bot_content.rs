@@ -489,6 +489,18 @@ const COMMENT: Var = Var {
     name: "comment",
     hint: "причина",
 };
+const WHEN: Var = Var {
+    name: "when",
+    hint: "«Сегодня» или «На этой неделе»",
+};
+const PER: Var = Var {
+    name: "per",
+    hint: "«в сутки» или «в неделю»",
+};
+const UNTIL: Var = Var {
+    name: "until",
+    hint: "когда снимется ограничение",
+};
 
 use Section::*;
 
@@ -871,6 +883,20 @@ pub static CATALOG: &[Entry] = &[
         Subscription,
         "Пробный период оформляется",
         "Пробный период оформляется. Через минуту подписка появится в разделе «Подписка».",
+        &[],
+    ),
+    text(
+        "sub.trial_confirm",
+        Subscription,
+        "Проверка перед пробным периодом",
+        "Чтобы получить пробный период, подтвердите, что вы не робот: нажмите кнопку ниже.",
+        &[],
+    ),
+    button(
+        "sub.btn.trial_confirm",
+        Subscription,
+        "Кнопка «Я не робот»",
+        "Я не робот",
         &[],
     ),
     text(
@@ -2336,6 +2362,27 @@ pub static CATALOG: &[Entry] = &[
         "Вывод отклонён",
         "Заявка на вывод {amount} отклонена. Деньги вернулись на реферальный баланс.",
         &[AMOUNT],
+    ),
+    text(
+        "notify.traffic_warning",
+        Notify,
+        "Превышен порог трафика",
+        "{when} через VPN прошло {used} — больше лимита {limit} {per}. Пожалуйста, снизьте нагрузку, иначе доступ могут временно ограничить.",
+        &[WHEN, USED, LIMIT, PER],
+    ),
+    text(
+        "notify.traffic_restricted",
+        Notify,
+        "Доступ ограничен из-за трафика",
+        "{when} через VPN прошло {used} при лимите {limit} {per}. Доступ временно ограничен до {until}, потом включится сам.",
+        &[WHEN, USED, LIMIT, PER, UNTIL],
+    ),
+    text(
+        "notify.traffic_lifted",
+        Notify,
+        "Ограничение по трафику снято",
+        "Ограничение по трафику снято, VPN снова работает.",
+        &[],
     ),
     hideable(
         "notify.btn.subscription",

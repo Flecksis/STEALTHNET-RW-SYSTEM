@@ -1,5 +1,7 @@
+pub mod antibot;
 pub mod broadcast;
 pub mod gifts;
+pub mod limits;
 pub mod mail;
 pub mod options;
 pub mod promo;
@@ -30,6 +32,8 @@ pub fn all() -> Vec<Arc<dyn Module>> {
         Arc::new(broadcast::BroadcastModule),
         Arc::new(gifts::GiftsModule),
         Arc::new(promolinks::PromolinksModule),
+        Arc::new(antibot::AntibotModule),
+        Arc::new(limits::LimitsModule),
     ]
 }
 
@@ -98,7 +102,9 @@ mod tests {
                 ModuleId::Mail,
                 ModuleId::Broadcast,
                 ModuleId::Gifts,
-                ModuleId::Promolinks
+                ModuleId::Promolinks,
+                ModuleId::Antibot,
+                ModuleId::Limits
             ]
         );
         let registry = ModuleRegistry::new(modules).unwrap();

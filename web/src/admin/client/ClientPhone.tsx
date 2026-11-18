@@ -12,6 +12,7 @@ import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
 import { devicesWord, emailOf, liveSubscriptions, nextReset, personName, seenText, tariffOf, telegramOf } from './model';
 import { planTitle } from './SubscriptionBlock';
+import { ClientProtect } from '../protect/ClientProtect';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
 import '../home/phone.css';
 import './phone.css';
@@ -717,6 +718,8 @@ export function ClientPhone() {
           </div>
         </section>
       ) : null}
+
+      <ClientProtect phone clientId={clientId} />
 
       <section className="pc-group">
         <label htmlFor="pc-note" className="hp-h2">

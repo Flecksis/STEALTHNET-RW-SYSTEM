@@ -120,6 +120,7 @@ pub enum PromoRejection {
     NoSubscription,
     Reserved,
     TooManyAttempts,
+    Protected,
 }
 
 impl PromoRejection {
@@ -145,6 +146,7 @@ impl PromoRejection {
             PromoRejection::NoSubscription => "promo.no_subscription",
             PromoRejection::Reserved => "promo.reserved",
             PromoRejection::TooManyAttempts => "promo.rate_limited",
+            PromoRejection::Protected => "promo.protected",
             PromoRejection::NotFound
             | PromoRejection::Disabled
             | PromoRejection::NotStarted
@@ -171,6 +173,9 @@ impl PromoRejection {
             }
             PromoRejection::TooManyAttempts => {
                 "Слишком много неверных промокодов. Попробуйте снова через 15 минут"
+            }
+            PromoRejection::Protected => {
+                "Промокоды на дни недоступны для этого аккаунта. Если это ошибка, напишите в поддержку"
             }
             PromoRejection::NotFound
             | PromoRejection::Disabled
@@ -661,6 +666,9 @@ async fn activate_now(
     code: &str,
     subscription_id: SubscriptionId,
 ) -> Result<Activation, PromoError> {
+    if !crate::catalog::antibot::promo_allowed(ctx, client_id).await? {
+        return Err(PromoError::Rejected(PromoRejection::Protected));
+    }
     let attempt = {
         let mut conn = ctx.store.conn().await?;
         let now = db_now(&mut conn).await?;

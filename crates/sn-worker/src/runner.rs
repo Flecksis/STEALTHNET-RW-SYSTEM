@@ -556,8 +556,14 @@ impl Worker {
         let now = self.services.now();
         let mut scheduled = 0usize;
         let mut tx = self.services.store().begin().await?;
-        for module in self.services.modules().enabled() {
-            for task in module.tasks() {
+        let registry = self.services.modules();
+        for id in sn_domain::module::ModuleId::ALL {
+            let module = registry.get(id);
+            let mut tasks = module.cleanup_tasks();
+            if registry.is_enabled(id) {
+                tasks.extend(module.tasks());
+            }
+            for task in tasks {
                 let every = i64::try_from(task.every.as_secs())
                     .unwrap_or(i64::MAX)
                     .max(1);

@@ -9,7 +9,7 @@ use sn_domain::ledger::{LedgerKind, Wallet};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::plan::PlanKind;
-use sn_domain::subscription::SubscriptionKind;
+use sn_domain::subscription::{SubscriptionKind, SubscriptionStatus};
 use sn_domain::traffic::TrafficPolicy;
 use sn_store::{Store, Tx};
 use std::sync::Arc;
@@ -118,6 +118,34 @@ pub struct GrantedOrder {
     pub subscription_id: Option<SubscriptionId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficReading {
+    pub subscription_id: SubscriptionId,
+    pub lifetime_bytes: u64,
+    pub status: SubscriptionStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TrafficRestriction {
+    Disable,
+    Squad { squad: Uuid, previous: Vec<Uuid> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restricted {
+    Applied { previous_squads: Vec<Uuid> },
+    Skipped(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lifted {
+    Restored,
+    Changed(String),
+    Blocked,
+    Ended,
+}
+
 #[async_trait]
 pub trait CoreApi: Send + Sync {
     async fn change_balance(&self, change: BalanceChange) -> Result<Money, ModuleError>;
@@ -182,6 +210,40 @@ pub trait CoreApi: Send + Sync {
         notification: Notification,
     ) -> Result<(), ModuleError> {
         self.notify(client_id, notification).await
+    }
+
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+
+    async fn traffic_readings(&self) -> Result<Vec<TrafficReading>, ModuleError> {
+        Err(ModuleError::NotImplemented(
+            "ядро не умеет читать трафик из Remnawave",
+        ))
+    }
+
+    async fn restrict_traffic(
+        &self,
+        _subscription_id: SubscriptionId,
+        _restriction: &TrafficRestriction,
+    ) -> Result<Restricted, ModuleError> {
+        Err(ModuleError::NotImplemented(
+            "ядро не умеет ограничивать подписку",
+        ))
+    }
+
+    async fn lift_traffic(
+        &self,
+        _subscription_id: SubscriptionId,
+        _restriction: &TrafficRestriction,
+    ) -> Result<Lifted, ModuleError> {
+        Err(ModuleError::NotImplemented(
+            "ядро не умеет снимать ограничение подписки",
+        ))
+    }
+
+    async fn client_devices(&self, _client_id: ClientId) -> Result<Vec<String>, ModuleError> {
+        Ok(Vec::new())
     }
 
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {

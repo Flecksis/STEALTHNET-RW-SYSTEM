@@ -5,6 +5,7 @@ import { dateNumeric, dayMonthNumeric, days, daysLeft, groupDigits, money, NBSP,
 import { Icon } from '../../lib/icons';
 import { BalanceDialog, BlockDialog, Dialog, GrantDialog, MessageDialog } from '../client/dialogs';
 import { useSession } from '../session';
+import { ClientsTabs } from '../protect/ClientsTabs';
 import { RowMenu, type RowAction, type RowItem } from './RowMenu';
 import { displayName, STATUS_WORD, type ClientRow, type Segment, type SegmentCounts } from './types';
 import './clients.css';
@@ -414,6 +415,8 @@ export function Clients() {
           </button>
         ) : null}
       </header>
+
+      <ClientsTabs />
 
       <div role="group" aria-label="Кого показать" className="chips">
         {SEGMENTS.map(([key, label, countKey]) => (

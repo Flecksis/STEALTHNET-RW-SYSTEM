@@ -393,6 +393,12 @@ pub async fn activate(
     if !valid_code(code) {
         return rejected(LinkRejection::NotFound);
     }
+    if !crate::catalog::antibot::free_allowed(ctx, client_id, "promo_link").await? {
+        return rejected(LinkRejection::Grant(GrantRefusal::new(
+            crate::catalog::antibot::DENIED_CODE,
+            "Промо-ссылки недоступны для этого аккаунта. Если это ошибка, напишите в поддержку.",
+        )));
+    }
     let mut tx = ctx.store.begin().await?;
     let now = db_now(&mut tx).await?;
     let Some(link) = store::lock_by_code(&mut tx, code).await? else {

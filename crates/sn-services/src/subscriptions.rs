@@ -21,6 +21,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 
 mod addons;
+pub mod traffic;
 
 pub const MAX_ADD_DAYS: u32 = 3650;
 pub const MAX_UNDO_STEPS: u32 = 50;

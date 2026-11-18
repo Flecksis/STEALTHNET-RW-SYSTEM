@@ -21,6 +21,7 @@ use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
 use sn_domain::settings::{TrialSettings, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
+use sn_modules::catalog::antibot;
 use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook, QuoteOrigin};
 use sn_payments::{
     CheckoutMethod, ClientRef, InvoiceRequest, MethodsContext, PaymentProvider, ProviderKind,
@@ -1028,6 +1029,7 @@ impl<'a> Checkout<'a> {
                 "Пробный период не настроен: укажите срок и сквады",
             ));
         }
+        self.trial_guard(client_id).await?;
         let mut tx = self.services.store().begin().await?;
         tx.lock(LockSpace::Client, client_id.0).await?;
         let client = tx.clients().get(client_id).await?;
@@ -1087,6 +1089,57 @@ impl<'a> Checkout<'a> {
             .await?;
         tx.commit().await?;
         Ok(order.id)
+    }
+
+    async fn trial_guard(&self, client_id: ClientId) -> ServiceResult<()> {
+        {
+            let mut conn = self.services.store().conn().await?;
+            let live = conn
+                .subscriptions()
+                .by_client(client_id)
+                .await?
+                .iter()
+                .any(|s| s.ended_at.is_none());
+            let identities: Vec<(IdentityKind, String)> = conn
+                .clients()
+                .identities(client_id)
+                .await?
+                .into_iter()
+                .map(|i| (i.kind, i.value))
+                .collect();
+            if live || identities.is_empty() || conn.trials().was_claimed(&identities).await? {
+                return Ok(());
+            }
+        }
+        match antibot::trial_gate(&self.services.module_context(), client_id).await? {
+            antibot::Gate::Allow => Ok(()),
+            antibot::Gate::Confirm => Err(ServiceError::rejected(
+                antibot::CONFIRM_CODE,
+                "Подтвердите, что вы не робот, и пробный период включится",
+            )),
+            antibot::Gate::Deny => Err(ServiceError::rejected(
+                antibot::DENIED_CODE,
+                "Пробный период для этого аккаунта недоступен. Если это ошибка, напишите в поддержку",
+            )),
+        }
+    }
+
+    pub async fn trial_challenge(&self, client_id: ClientId) -> ServiceResult<String> {
+        Ok(antibot::challenge(&self.services.module_context(), client_id).await?)
+    }
+
+    pub async fn confirm_trial(&self, client_id: ClientId, token: &str) -> ServiceResult<OrderId> {
+        match antibot::confirm(&self.services.module_context(), client_id, token).await? {
+            antibot::Confirmation::Confirmed => self.start_trial(client_id).await,
+            antibot::Confirmation::TooFast => Err(ServiceError::rejected(
+                "antibot.too_fast",
+                "Нажмите кнопку ещё раз",
+            )),
+            antibot::Confirmation::Expired => Err(ServiceError::rejected(
+                "antibot.expired",
+                "Кнопка устарела. Запросите пробный период заново",
+            )),
+        }
     }
 
     async fn prepare_item(

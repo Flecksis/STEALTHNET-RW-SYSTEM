@@ -5,6 +5,7 @@ import { count, dateLong, days, daysLeft, money, type Money } from '../../lib/fo
 import { Icon } from '../../lib/icons';
 import { usePhone } from '../../lib/media';
 import { useSession } from '../session';
+import { ClientProtect } from '../protect/ClientProtect';
 import type { Subscription } from '../clients/types';
 import { ClientPhone } from './ClientPhone';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog } from './dialogs';
@@ -513,6 +514,8 @@ function ClientDesktop() {
               </div>
             ) : null}
           </section>
+
+          <ClientProtect clientId={clientId} onChanged={() => setDetailsKey((k) => k + 1)} />
 
           <section aria-labelledby="note-h" className="cc-sec cc-box" style={{ gap: 8 }}>
             <label id="note-h" htmlFor="client-note" className="cc-h2">

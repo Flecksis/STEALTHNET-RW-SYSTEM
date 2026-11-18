@@ -12,6 +12,7 @@ use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
 use sn_domain::pricing::{topup_presets, topup_quote};
 use sn_domain::traffic::{NextReset, next_reset};
+use sn_modules::catalog::antibot;
 use sn_payments::{MethodsContext, ProviderKind};
 use sn_services::bot_content::BotContent;
 use sn_services::checkout::{Channel, CheckoutResult};
@@ -725,17 +726,59 @@ async fn deliver(
     )
 }
 
-pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+fn trial_started(c: &BotContent) -> Screen {
+    Screen::new(ui::text(c, "sub.trial_started", &[]))
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(c, "common.btn.subscription", &[], "subs"))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Subscription)
+}
+
+async fn trial_check(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let content = turn.services().bot_content();
     let c = &*content;
-    match turn.services().checkout().start_trial(client.id).await {
-        Ok(_) => Ok(Screen::new(ui::text(c, "sub.trial_started", &[]))
+    match turn.services().checkout().trial_challenge(client.id).await {
+        Ok(token) => Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
             .keyboard(
                 Keyboard::new()
-                    .push(ui::button(c, "common.btn.subscription", &[], "subs"))
+                    .push(ui::button(
+                        c,
+                        "sub.btn.trial_confirm",
+                        &[],
+                        format!("ab:{token}"),
+                    ))
                     .push(ui::menu(c)),
             )
             .section(Section::Subscription)),
+        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+    }
+}
+
+pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    match turn.services().checkout().start_trial(client.id).await {
+        Ok(_) => Ok(trial_started(&content)),
+        Err(err) if err.code() == antibot::CONFIRM_CODE => trial_check(turn, client).await,
+        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+    }
+}
+
+pub async fn trial_confirmed(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    token: &str,
+) -> Result<Screen, BotError> {
+    let content = turn.services().bot_content();
+    match turn
+        .services()
+        .checkout()
+        .confirm_trial(client.id, token)
+        .await
+    {
+        Ok(_) => Ok(trial_started(&content)),
+        Err(err) if err.code() == "antibot.too_fast" => trial_check(turn, client).await,
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }
