@@ -4,6 +4,7 @@ import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { avatarColor, money } from '../lib/format';
 import { Icon } from '../lib/icons';
+import { applyLang, guessLang, msg, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportLink, supportTickets } from '../lib/support';
@@ -35,6 +36,9 @@ export type CabinetCtx = {
   theme: Theme;
   flipTheme: () => void;
   phone: boolean;
+  lang: Lang;
+  nextLang: Lang | null;
+  switchLang: (next: Lang) => void;
 };
 
 const Ctx = createContext<CabinetCtx | null>(null);
@@ -53,11 +57,23 @@ function storedTheme(): Theme | null {
 }
 
 export function CabinetApp() {
-  const site = useSite() ?? DEFAULT_SITE;
+  const loadedSite = useSite();
+  const site = loadedSite ?? DEFAULT_SITE;
   const system = useSystemTheme();
   const phone = usePhone();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [personal, setPersonal] = useState<Theme | null>(storedTheme);
+  const [picked, setPicked] = useState<Lang | null>(null);
+  const langs = siteLangs(loadedSite);
+  const account = state.kind === 'in' && langs.includes(state.me.locale as Lang) ? (state.me.locale as Lang) : null;
+  const wanted: Lang | null = loadedSite ? (picked && langs.includes(picked) ? picked : (account ?? guessLang(loadedSite))) : null;
+  const ready = useApplied(wanted);
+  const lang = useLang();
+  useEffect(() => {
+    if (ready) {
+      document.title = t('Личный кабинет — {brand}', { brand: site.brand_name });
+    }
+  }, [ready, lang, site.brand_name]);
 
   const load = useCallback(async () => {
     try {
@@ -69,7 +85,7 @@ export function CabinetApp() {
       } else if (err instanceof ApiError && err.status === 403) {
         setState({ kind: 'blocked' });
       } else {
-        setState({ kind: 'error', message: err instanceof ApiError ? err.message : 'Сервер не ответил' });
+        setState({ kind: 'error', message: err instanceof ApiError ? err.message : t('Сервер не ответил') });
       }
     }
   }, []);
@@ -89,6 +105,23 @@ export function CabinetApp() {
     setPersonal(next);
   }, [theme]);
 
+  const signedIn = state.kind === 'in';
+  const accountLocale = state.kind === 'in' ? state.me.locale : null;
+  useEffect(() => {
+    if (!signedIn || !picked || picked === accountLocale) {
+      return;
+    }
+    api('/api/client/locale', { method: 'PUT', body: { locale: picked } })
+      .then(() => load())
+      .catch(() => undefined);
+  }, [signedIn, picked, accountLocale, load]);
+
+  const switchLang = useCallback((next: Lang) => {
+    rememberLang(next);
+    setPicked(next);
+    void applyLang(next);
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api('/api/client/auth/logout', { method: 'POST', body: {} });
@@ -97,26 +130,30 @@ export function CabinetApp() {
     }
   }, []);
 
+  const nextLang = otherLang(lang, langs);
   const ctx = useMemo<CabinetCtx | null>(
-    () => (state.kind === 'in' ? { me: state.me, site, reload: load, logout, theme, flipTheme: fixed ? () => undefined : flipTheme, phone } : null),
-    [state, site, load, logout, theme, flipTheme, fixed, phone],
+    () =>
+      state.kind === 'in'
+        ? { me: state.me, site, reload: load, logout, theme, flipTheme: fixed ? () => undefined : flipTheme, phone, lang, nextLang, switchLang }
+        : null,
+    [state, site, load, logout, theme, flipTheme, fixed, phone, lang, nextLang, switchLang],
   );
 
-  if (state.kind === 'loading') {
+  if (state.kind === 'loading' || !ready) {
     return <div className="cb-blank" aria-busy="true" />;
   }
   if (state.kind === 'guest') {
-    return <Login site={site} onDone={() => void load()} />;
+    return <Login key={lang} site={site} onDone={() => void load()} langSwitch={nextLang ? { lang: nextLang, onPick: () => switchLang(nextLang) } : null} />;
   }
   if (state.kind === 'blocked') {
     return (
       <div className="cb-solo">
         <div className="cb-solo-box">
-          <h1>Доступ закрыт</h1>
-          <p>Аккаунт заблокирован. Если это ошибка, напишите в поддержку.</p>
+          <h1>{t('Доступ закрыт')}</h1>
+          <p>{t('Аккаунт заблокирован. Если это ошибка, напишите в поддержку.')}</p>
           {site.support_url ? (
             <a className="cb-main" href={site.support_url}>
-              Написать в поддержку
+              {t('Написать в поддержку')}
             </a>
           ) : null}
         </div>
@@ -127,10 +164,10 @@ export function CabinetApp() {
     return (
       <div className="cb-solo">
         <div className="cb-solo-box" role="alert">
-          <h1>Кабинет не открылся</h1>
-          <p>{state.kind === 'error' ? state.message : 'Сервер не ответил'}</p>
+          <h1>{t('Кабинет не открылся')}</h1>
+          <p>{state.kind === 'error' ? state.message : t('Сервер не ответил')}</p>
           <button type="button" className="cb-main" onClick={() => void load()}>
-            Повторить
+            {t('Повторить')}
           </button>
         </div>
       </div>
@@ -139,7 +176,7 @@ export function CabinetApp() {
 
   return (
     <Ctx.Provider value={ctx}>
-      <div className={phone ? 'cb cb-phone' : 'cb'}>
+      <div key={lang} className={phone ? 'cb cb-phone' : 'cb'}>
         {phone ? <PhoneHeader /> : <Header />}
         <main className="cb-main-area">
           <Routes>
@@ -164,12 +201,12 @@ export function CabinetApp() {
 }
 
 const TABS: Array<{ key: string; label: string; to: string }> = [
-  { key: 'sub', label: 'Подписка', to: '/cabinet' },
-  { key: 'pay', label: 'Тарифы', to: '/cabinet/pay' },
-  { key: 'devices', label: 'Устройства', to: '/cabinet/devices' },
-  { key: 'friends', label: 'Друзья', to: '/cabinet/friends' },
-  { key: 'gifts', label: 'Подарки', to: '/cabinet/gifts' },
-  { key: 'help', label: 'Помощь', to: '/cabinet/help' },
+  { key: 'sub', label: msg('Подписка'), to: '/cabinet' },
+  { key: 'pay', label: msg('Тарифы'), to: '/cabinet/pay' },
+  { key: 'devices', label: msg('Устройства'), to: '/cabinet/devices' },
+  { key: 'friends', label: msg('Друзья'), to: '/cabinet/friends' },
+  { key: 'gifts', label: msg('Подарки'), to: '/cabinet/gifts' },
+  { key: 'help', label: msg('Помощь'), to: '/cabinet/help' },
 ];
 
 let referralKnown: boolean | null = null;
@@ -256,12 +293,12 @@ function useAnswered(): number {
 
 function TabLabel({ tab, answered }: { tab: { key: string; label: string }; answered: number }) {
   if (tab.key !== 'help' || answered === 0) {
-    return <>{tab.label}</>;
+    return <>{t(tab.label)}</>;
   }
   return (
     <>
-      {tab.label}
-      <span className="cb-tabdot" aria-label={answered === 1 ? ', есть ответ поддержки' : `, ответов поддержки: ${answered}`} />
+      {t(tab.label)}
+      <span className="cb-tabdot" aria-label={answered === 1 ? t(', есть ответ поддержки') : t(', ответов поддержки: {n}', { n: answered })} />
     </>
   );
 }
@@ -297,7 +334,7 @@ function ThemeButton({ className }: { className: string }) {
   if (choice === 'dark' || choice === 'light') {
     return null;
   }
-  const label = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  const label = theme === 'dark' ? t('Светлая тема') : t('Тёмная тема');
   return (
     <button type="button" className={className} aria-label={label} title={label} onClick={flipTheme}>
       <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
@@ -308,7 +345,7 @@ function ThemeButton({ className }: { className: string }) {
 function Brand({ small }: { small?: boolean }) {
   const { site } = useCabinet();
   return (
-    <Link to="/" className={small ? 'cb-brand small' : 'cb-brand'} aria-label={`${site.brand_name}, на главную`}>
+    <Link to="/" className={small ? 'cb-brand small' : 'cb-brand'} aria-label={t('{brand}, на главную', { brand: site.brand_name })}>
       <BrandMark name={site.brand_name} logo={site.logo_url} className="cb-mark" />
       <span className="cb-brand-name">{site.brand_name.toUpperCase()}</span>
     </Link>
@@ -316,7 +353,7 @@ function Brand({ small }: { small?: boolean }) {
 }
 
 function Header() {
-  const { me, logout } = useCabinet();
+  const { me, logout, nextLang, switchLang } = useCabinet();
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [photo, setPhoto] = useState(true);
@@ -340,7 +377,7 @@ function Header() {
     <header className="cb-head">
       <div className="cb-head-in">
         <Brand />
-        <nav aria-label="Кабинет" className="cb-tabs">
+        <nav aria-label={t('Кабинет')} className="cb-tabs">
           {tabs.map((t) => (
             <Link key={t.key} to={t.to} className="cb-tab hov" aria-current={tab === t.key ? 'page' : undefined}>
               <TabLabel tab={t} answered={answered} />
@@ -349,18 +386,18 @@ function Header() {
         </nav>
         <div className="cb-head-end">
           {me.balance_enabled !== false ? (
-            <Link to="/cabinet/topup" className="cb-balance hov" aria-label={`Баланс ${money(me.balance)}, пополнить`}>
+            <Link to="/cabinet/topup" className="cb-balance hov" aria-label={t('Баланс {amount}, пополнить', { amount: money(me.balance) })}>
               <span>{money(me.balance)}</span>
-              <span className="cb-accent">Пополнить</span>
+              <span className="cb-accent">{t('Пополнить')}</span>
             </Link>
           ) : me.balance.minor > 0 ? (
-            <Link to="/cabinet/pay" className="cb-balance hov" aria-label={`Остаток на балансе ${money(me.balance)}`}>
+            <Link to="/cabinet/pay" className="cb-balance hov" aria-label={t('Остаток на балансе {amount}', { amount: money(me.balance) })}>
               <span>{money(me.balance)}</span>
             </Link>
           ) : null}
           <ThemeButton className="cb-icon hov" />
           <div className="cb-prof" ref={ref}>
-            <button type="button" className="cb-ava" aria-label="Профиль" aria-expanded={open} onClick={() => setOpen((v) => !v)} style={{ background: avatarColor(me.client.id) }}>
+            <button type="button" className="cb-ava" aria-label={t('Профиль')} aria-expanded={open} onClick={() => setOpen((v) => !v)} style={{ background: avatarColor(me.client.id) }}>
               <Icon name="user" size={20} />
               {photo ? <img className="cb-ava-img" src="/api/client/photo" alt="" decoding="async" onError={() => setPhoto(false)} /> : null}
             </button>
@@ -368,15 +405,21 @@ function Header() {
               <div className="cb-pop" role="menu">
                 <Link to="/cabinet/payments" role="menuitem" className="cb-pop-item plain hov" onClick={() => setOpen(false)}>
                   <Icon name="receipt" size={18} />
-                  История оплат
+                  {t('История оплат')}
                 </Link>
                 <Link to="/cabinet/security" role="menuitem" className="cb-pop-item plain hov" onClick={() => setOpen(false)}>
                   <Icon name="sliders" size={18} />
-                  Безопасность
+                  {t('Безопасность')}
                 </Link>
+                {nextLang ? (
+                  <button type="button" role="menuitem" className="cb-pop-item plain hov" lang={nextLang} onClick={() => switchLang(nextLang)}>
+                    <Icon name="globe" size={18} />
+                    {NATIVE[nextLang]}
+                  </button>
+                ) : null}
                 <button type="button" role="menuitem" className="cb-pop-item hov" onClick={() => void logout()}>
                   <Icon name="logout" size={18} />
-                  Выйти
+                  {t('Выйти')}
                 </button>
               </div>
             ) : null}
@@ -388,7 +431,7 @@ function Header() {
 }
 
 function PhoneHeader() {
-  const { me, logout } = useCabinet();
+  const { me, logout, nextLang, switchLang } = useCabinet();
   const location = useLocation();
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -402,17 +445,21 @@ function PhoneHeader() {
       <Brand small />
       <span className="cb-grow" />
       {me.balance_enabled !== false || me.balance.minor > 0 ? (
-        <Link to={me.balance_enabled !== false ? '/cabinet/topup' : '/cabinet/pay'} className="cb-chip" aria-label={me.balance_enabled !== false ? `Баланс ${money(me.balance)}, пополнить` : `Остаток на балансе ${money(me.balance)}`}>
+        <Link
+          to={me.balance_enabled !== false ? '/cabinet/topup' : '/cabinet/pay'}
+          className="cb-chip"
+          aria-label={me.balance_enabled !== false ? t('Баланс {amount}, пополнить', { amount: money(me.balance) }) : t('Остаток на балансе {amount}', { amount: money(me.balance) })}
+        >
           <span>{money(me.balance)}</span>
         </Link>
       ) : null}
       <ThemeButton className="cb-circ" />
-      <button type="button" className="cb-circ cb-menu-btn" aria-label={answered > 0 ? 'Меню, есть ответ поддержки' : 'Меню'} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="cb-circ cb-menu-btn" aria-label={answered > 0 ? t('Меню, есть ответ поддержки') : t('Меню')} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <Icon name={open ? 'close' : 'menu'} size={20} />
         {answered > 0 && !open ? <span className="cb-tabdot on-btn" aria-hidden="true" /> : null}
       </button>
       {open ? (
-        <nav aria-label="Разделы кабинета" className="cb-menu">
+        <nav aria-label={t('Разделы кабинета')} className="cb-menu">
           {tabs.map((t) => (
             <Link
               key={t.key}
@@ -425,13 +472,18 @@ function PhoneHeader() {
             </Link>
           ))}
           <Link to="/cabinet/payments" className="cb-menu-item" aria-current={location.pathname.startsWith('/cabinet/payments') ? 'page' : undefined}>
-            История оплат
+            {t('История оплат')}
           </Link>
           <Link to="/cabinet/security" className="cb-menu-item" aria-current={location.pathname.startsWith('/cabinet/security') ? 'page' : undefined}>
-            Безопасность
+            {t('Безопасность')}
           </Link>
+          {nextLang ? (
+            <button type="button" className="cb-menu-item" lang={nextLang} onClick={() => switchLang(nextLang)}>
+              {NATIVE[nextLang]}
+            </button>
+          ) : null}
           <button type="button" className="cb-menu-item" onClick={() => void logout()}>
-            Выйти
+            {t('Выйти')}
           </button>
         </nav>
       ) : null}
@@ -445,14 +497,14 @@ function Footer() {
   return (
     <footer className="cb-foot">
       {supportTickets(site) ? (
-        <Link to="/cabinet/help">Помощь</Link>
+        <Link to="/cabinet/help">{t('Помощь')}</Link>
       ) : link ? (
         <a href={link} target="_blank" rel="noreferrer">
-          Помощь
+          {t('Помощь')}
         </a>
       ) : site.bot_username ? (
         <a href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
-          Помощь
+          {t('Помощь')}
         </a>
       ) : null}
       {(site.documents ?? []).map((doc) => (

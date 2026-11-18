@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong } from '../lib/format';
+import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { Card, useCabinet } from './CabinetApp';
 import { appName, deviceIcon, type Device, type SubscriptionView } from './model';
@@ -34,12 +35,12 @@ export function DevicesCard({
 
   if (!view) {
     return (
-      <Card id="devices" className="cb-devices" label="Устройства">
-        <h2 className="cb-h2">Устройства</h2>
-        <p className="cb-ink2">Подключить телефон или компьютер можно сразу после покупки подписки.</p>
+      <Card id="devices" className="cb-devices" label={t('Устройства')}>
+        <h2 className="cb-h2">{t('Устройства')}</h2>
+        <p className="cb-ink2">{t('Подключить телефон или компьютер можно сразу после покупки подписки.')}</p>
         <div className="cb-btns">
           <Link to="/cabinet/pay" className="cb-second">
-            Выбрать тариф
+            {t('Выбрать тариф')}
           </Link>
         </div>
       </Card>
@@ -47,6 +48,7 @@ export function DevicesCard({
   }
 
   const limit = deviceLimit(view);
+  const shown = devices ? devices.length : (view.subscription.mirror.devices_count ?? 0);
 
   const disconnect = async (device: Device) => {
     setBusy(true);
@@ -55,30 +57,27 @@ export function DevicesCard({
       onDevices((devices ?? []).filter((d) => d.hwid !== device.hwid));
       setAsk('');
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : 'Устройство не отключилось');
+      onError(err instanceof ApiError ? err.message : t('Устройство не отключилось'));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Card id="devices" className="cb-devices" label="Устройства">
+    <Card id="devices" className="cb-devices" label={t('Устройства')}>
       <div className="cb-row">
         <h2 className="cb-h2">
-          Устройства{' '}
-          <span className="cb-count">
-            {devices ? devices.length : (view.subscription.mirror.devices_count ?? 0)}
-            {limit ? ` из ${limit}` : ''}
-          </span>
+          {t('Устройства')}{' '}
+          <span className="cb-count">{limit ? t('{n} из {limit}', { n: shown, limit }) : shown}</span>
         </h2>
         {addLink && !phone ? (
           <Link to={link(view.status === 'expired' ? '/cabinet/pay' : '/cabinet/addons?kind=devices')} className="cb-accent-link">
-            Добавить ещё
+            {t('Добавить ещё')}
           </Link>
         ) : null}
       </div>
-      {devices && devices.length === 0 ? <p className="cb-muted">Устройств нет: появятся, когда вы добавите подписку в приложение.</p> : null}
-      {devices === null ? <p className="cb-muted">{loading ? 'Загружаем устройства…' : 'Список устройств сейчас недоступен'}</p> : null}
+      {devices && devices.length === 0 ? <p className="cb-muted">{t('Устройств нет: появятся, когда вы добавите подписку в приложение.')}</p> : null}
+      {devices === null ? <p className="cb-muted">{loading ? t('Загружаем устройства…') : t('Список устройств сейчас недоступен')}</p> : null}
       {devices?.map((d) => (
         <Fragment key={d.hwid}>
           <div className="cb-device">
@@ -86,44 +85,44 @@ export function DevicesCard({
             <span className="cb-device-text">
               {phone ? (
                 <span>
-                  <strong>{d.title ?? d.platform ?? 'Устройство'}</strong>
+                  <strong>{d.title ?? d.platform ?? t('Устройство')}</strong>
                   {appName(d) ? <span className="cb-ink2"> · {appName(d)}</span> : null}
                 </span>
               ) : (
-                <strong>{d.title ?? d.platform ?? 'Устройство'}</strong>
+                <strong>{d.title ?? d.platform ?? t('Устройство')}</strong>
               )}
               <span className="cb-small cb-muted">
                 {phone
                   ? d.added_at
-                    ? `Добавлено ${dateLong(d.added_at, false)}`
+                    ? t('Добавлено {date}', { date: dateLong(d.added_at, false) })
                     : ''
-                  : [appName(d), d.added_at ? `добавлено ${dateLong(d.added_at, false)}` : null].filter(Boolean).join(' · ')}
+                  : [appName(d), d.added_at ? t('добавлено {date}', { date: dateLong(d.added_at, false) }) : null].filter(Boolean).join(' · ')}
               </span>
             </span>
             {mayDisconnect ? (
               <button
                 type="button"
                 className={phone ? 'cb-text' : 'cb-second sm'}
-                aria-label={`Отключить ${d.title ?? 'устройство'}`}
+                aria-label={t('Отключить {device}', { device: d.title ?? t('устройство') })}
                 aria-expanded={ask === d.hwid}
                 onClick={() => setAsk(ask === d.hwid ? '' : d.hwid)}
                 disabled={busy}
               >
-                Отключить
+                {t('Отключить')}
               </button>
             ) : null}
           </div>
           {ask === d.hwid ? (
             <div className="cb-ask">
               <p>
-                <strong>Отключить {d.title ?? 'устройство'}?</strong> Место освободится, но если подписка на нём осталась, при обновлении он займёт его снова. Чтобы закрыть доступ, выпустите новую ссылку.
+                <strong>{t('Отключить {device}?', { device: d.title ?? t('устройство') })}</strong> {t('Место освободится, но если подписка на нём осталась, при обновлении он займёт его снова. Чтобы закрыть доступ, выпустите новую ссылку.')}
               </p>
               <span className="cb-ask-btns">
                 <button type="button" className="cb-main sm" onClick={() => void disconnect(d)} disabled={busy}>
-                  Отключить
+                  {t('Отключить')}
                 </button>
                 <button type="button" className="cb-cancel" onClick={() => setAsk('')} disabled={busy}>
-                  Отменить
+                  {t('Отменить')}
                 </button>
               </span>
             </div>

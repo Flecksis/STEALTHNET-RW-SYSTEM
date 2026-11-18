@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
+import { NATIVE, t, type Lang } from '../lib/i18n';
 import { QrCode } from '../lib/qr';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import type { Site } from '../lib/types';
@@ -16,7 +17,7 @@ function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
+export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => void; langSwitch?: { lang: Lang; onPick: () => void } | null }) {
   const system = useSystemTheme();
   const choice = site.appearance.client_theme;
   const theme = choice === 'dark' || choice === 'light' ? choice : system;
@@ -62,7 +63,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           return;
         }
       } catch (err) {
-        setError(failText(err, 'Вход не завершён. Нажмите кнопку входа ещё раз.'));
+        setError(failText(err, t('Вход не завершён. Нажмите кнопку входа ещё раз.')));
       }
       setFinishing(false);
       navigate('/cabinet', { replace: true });
@@ -76,7 +77,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       const referral = storedReferral();
       await leaveFor(`/api/client/auth/oauth/${provider}`, referral ? { ref: referral } : {});
     } catch (err) {
-      setError(failText(err, 'Вход не начался'));
+      setError(failText(err, t('Вход не начался')));
       setLeaving(null);
     }
   };
@@ -118,7 +119,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           poll(token, expires);
           return;
         }
-        setError(failText(err, 'Вход не подтвердился'));
+        setError(failText(err, t('Вход не подтвердился')));
         setTgState('idle');
       }
     }, 2500);
@@ -134,7 +135,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       setTgState('waiting');
       poll(res.poll_token, Date.parse(res.expires_at));
     } catch (err) {
-      setError(err instanceof ApiError && err.code === 'bot.not_configured' ? 'Вход через Telegram пока не настроен. Попробуйте позже или войдите по почте.' : failText(err, 'Вход не начался'));
+      setError(err instanceof ApiError && err.code === 'bot.not_configured' ? t('Вход через Telegram пока не настроен. Попробуйте позже или войдите по почте.') : failText(err, t('Вход не начался')));
     } finally {
       setBusy(false);
     }
@@ -148,7 +149,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       await api('/api/client/auth/email', { method: 'POST', body: { email: email.trim() } });
       setSent(true);
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 501 ? 'Вход по почте пока недоступен. Войдите через Telegram.' : failText(err, 'Код не отправился'));
+      setError(err instanceof ApiError && err.status === 501 ? t('Вход по почте пока недоступен. Войдите через Telegram.') : failText(err, t('Код не отправился')));
     } finally {
       setBusy(false);
     }
@@ -167,7 +168,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       }
       onDone();
     } catch (err) {
-      setError(failText(err, 'Код не подошёл'));
+      setError(failText(err, t('Код не подошёл')));
     } finally {
       setBusy(false);
     }
@@ -192,7 +193,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       if (err instanceof ApiError && err.code === 'auth.email_taken') {
         setJoining(false);
       }
-      setError(failText(err, joining ? 'Аккаунт не создался' : 'Войти не получилось'));
+      setError(failText(err, joining ? t('Аккаунт не создался') : t('Войти не получилось')));
     } finally {
       setBusy(false);
     }
@@ -208,7 +209,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       setFresh('');
       setReset('code');
     } catch (err) {
-      setError(failText(err, 'Код не отправился'));
+      setError(failText(err, t('Код не отправился')));
     } finally {
       setBusy(false);
     }
@@ -231,7 +232,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
       }
       onDone();
     } catch (err) {
-      setError(failText(err, 'Пароль не сменился'));
+      setError(failText(err, t('Пароль не сменился')));
     } finally {
       setBusy(false);
     }
@@ -262,23 +263,26 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
         restart();
       }
       setTotp('');
-      setError(failText(err, 'Код не подошёл'));
+      setError(failText(err, t('Код не подошёл')));
     } finally {
       setBusy(false);
     }
   };
 
+  const [noAppBefore, noAppAfter] = t('Нет доступа к приложению — {link}, вход по коду сбросят.').split('{link}');
+  const [forgotBefore, forgotAfter] = t('Забыли пароль — {link}.').split('{link}');
+
   const help = (
     <span className="cb-login-help cb-muted">
-      Нет доступа к приложению —{' '}
+      {noAppBefore}
       {site.support_url ? (
         <a className="cb-accent-link" href={site.support_url}>
-          напишите в поддержку
+          {t('напишите в поддержку')}
         </a>
       ) : (
-        'напишите в поддержку'
+        t('напишите в поддержку')
       )}
-      , вход по коду сбросят.
+      {noAppAfter}
     </span>
   );
 
@@ -289,33 +293,33 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           <BrandMark name={site.brand_name} logo={site.logo_url} className="cb-mark" />
           <span className="cb-brand-name">{site.brand_name.toUpperCase()}</span>
         </div>
-        <h1>Вход в кабинет</h1>
+        <h1>{t('Вход в кабинет')}</h1>
         {!siteOpen ? (
           <div className="cb-login-wait">
-            <p>Вход на сайт сейчас выключен. Подписка, оплата и поддержка доступны в Telegram-боте.</p>
+            <p>{t('Вход на сайт сейчас выключен. Подписка, оплата и поддержка доступны в Telegram-боте.')}</p>
             {site.bot_username ? (
               <a className="cb-main" href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
-                Открыть бота
+                {t('Открыть бота')}
               </a>
             ) : null}
           </div>
         ) : null}
         {siteOpen && finishing && back ? (
           <div className="cb-login-wait" aria-busy="true">
-            <p>Завершаем вход через {PROVIDER_TITLE[back]}…</p>
+            <p>{t('Завершаем вход через {provider}…', { provider: PROVIDER_TITLE[back] })}</p>
           </div>
         ) : null}
         {siteOpen && challenge ? (
           <form className="cb-login-form" onSubmit={sendTotp}>
-            <p>Вход защищён кодом. Откройте приложение-аутентификатор и введите код {site.brand_name}.</p>
+            <p>{t('Вход защищён кодом. Откройте приложение-аутентификатор и введите код {brand}.', { brand: site.brand_name })}</p>
             <label className="cb-field">
-              <span>Код из приложения</span>
+              <span>{t('Код из приложения')}</span>
               <input
                 value={totp}
                 onChange={(e) => setTotp(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 inputMode="numeric"
                 autoComplete="one-time-code"
-                placeholder="6 цифр"
+                placeholder={t('6 цифр')}
                 autoFocus
               />
             </label>
@@ -325,102 +329,102 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
               </p>
             ) : null}
             <button type="submit" className="cb-main" disabled={busy || totp.length !== 6}>
-              {busy ? 'Проверяем…' : 'Войти'}
+              {busy ? t('Проверяем…') : t('Войти')}
             </button>
             <button type="button" className="cb-text" onClick={restart} disabled={busy}>
-              Начать вход заново
+              {t('Начать вход заново')}
             </button>
             {help}
           </form>
         ) : null}
         {!siteOpen || challenge || finishing || emailAuth === null ? null : (
-        <div role="group" aria-label="Способ входа" className="cb-seg">
+        <div role="group" aria-label={t('Способ входа')} className="cb-seg">
           <button type="button" aria-pressed={mode === 'telegram'} onClick={() => setMode('telegram')}>
             Telegram
           </button>
           <button type="button" aria-pressed={mode === 'email'} onClick={() => setMode('email')}>
-            Почта
+            {t('Почта')}
           </button>
         </div>
         )}
         {!siteOpen || challenge || finishing ? null : mode === 'telegram' ? (
           tg && tgState === 'waiting' ? (
             <div className="cb-login-wait">
-              <p>Откройте бота и подтвердите вход. Страница обновится сама.</p>
+              <p>{t('Откройте бота и подтвердите вход. Страница обновится сама.')}</p>
               <a className="cb-main" href={tg.link} target="_blank" rel="noreferrer">
-                Открыть Telegram
+                {t('Открыть Telegram')}
               </a>
-              <QrCode text={tg.link} size={180} label="QR-код для входа через Telegram" />
-              <span className="cb-muted">На компьютере отсканируйте код телефоном</span>
+              <QrCode text={tg.link} size={180} label={t('QR-код для входа через Telegram')} />
+              <span className="cb-muted">{t('На компьютере отсканируйте код телефоном')}</span>
             </div>
           ) : (
             <div className="cb-login-wait">
-              {tgState === 'rejected' ? <p className="cb-warn">Вход отклонён в боте.</p> : null}
-              {tgState === 'expired' ? <p className="cb-muted">Время на подтверждение вышло, начните заново.</p> : null}
-              <p>Бот пришлёт запрос на вход — подтвердите его, и кабинет откроется.</p>
+              {tgState === 'rejected' ? <p className="cb-warn">{t('Вход отклонён в боте.')}</p> : null}
+              {tgState === 'expired' ? <p className="cb-muted">{t('Время на подтверждение вышло, начните заново.')}</p> : null}
+              <p>{t('Бот пришлёт запрос на вход — подтвердите его, и кабинет откроется.')}</p>
               <button type="button" className="cb-main" onClick={() => void startTelegram()} disabled={busy}>
-                {busy ? 'Готовим вход…' : 'Войти через Telegram'}
+                {busy ? t('Готовим вход…') : t('Войти через Telegram')}
               </button>
             </div>
           )
         ) : emailAuth === 'password' && reset === 'email' ? (
           <form className="cb-login-form" onSubmit={resetStart}>
-            <p className="cb-login-note">Пришлём на почту код — с ним зададите новый пароль.</p>
+            <p className="cb-login-note">{t('Пришлём на почту код — с ним зададите новый пароль.')}</p>
             <label className="cb-field">
-              <span>Почта</span>
+              <span>{t('Почта')}</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
             </label>
             <button type="submit" className="cb-main" disabled={busy || !email.includes('@')}>
-              {busy ? 'Отправляем…' : 'Прислать код'}
+              {busy ? t('Отправляем…') : t('Прислать код')}
             </button>
             <button type="button" className="cb-text" onClick={() => setReset('off')} disabled={busy}>
-              Вернуться ко входу
+              {t('Вернуться ко входу')}
             </button>
           </form>
         ) : emailAuth === 'password' && reset === 'code' ? (
           <form className="cb-login-form" onSubmit={resetConfirm}>
-            <p className="cb-login-note">Если почта зарегистрирована, на {email.trim()} пришёл код. Он действует 15 минут.</p>
+            <p className="cb-login-note">{t('Если почта зарегистрирована, на {email} пришёл код. Он действует 15 минут.', { email: email.trim() })}</p>
             <label className="cb-field">
-              <span>Код из письма</span>
-              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="6 цифр" />
+              <span>{t('Код из письма')}</span>
+              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
             </label>
             <label className="cb-field">
-              <span>Новый пароль</span>
-              <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder="Не короче 10 символов" />
+              <span>{t('Новый пароль')}</span>
+              <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder={t('Не короче 10 символов')} />
             </label>
             <button type="submit" className="cb-main" disabled={busy || code.length !== 6 || fresh.length < 10}>
-              {busy ? 'Меняем…' : 'Сменить пароль и войти'}
+              {busy ? t('Меняем…') : t('Сменить пароль и войти')}
             </button>
             <button type="button" className="cb-text" onClick={() => setReset('email')} disabled={busy}>
-              Прислать код ещё раз
+              {t('Прислать код ещё раз')}
             </button>
           </form>
         ) : emailAuth === 'password' ? (
           <form className="cb-login-form" onSubmit={byPassword}>
-            <div role="group" aria-label="Есть ли аккаунт" className="cb-seg">
+            <div role="group" aria-label={t('Есть ли аккаунт')} className="cb-seg">
               <button type="button" aria-pressed={!joining} onClick={() => setJoining(false)}>
-                Вход
+                {t('Вход')}
               </button>
               <button type="button" aria-pressed={joining} onClick={() => setJoining(true)}>
-                Регистрация
+                {t('Регистрация')}
               </button>
             </div>
             <label className="cb-field">
-              <span>Почта</span>
+              <span>{t('Почта')}</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
             </label>
             <label className="cb-field">
-              <span>Пароль</span>
+              <span>{t('Пароль')}</span>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete={joining ? 'new-password' : 'current-password'}
-                placeholder={joining ? 'Не короче 10 символов' : ''}
+                placeholder={joining ? t('Не короче 10 символов') : ''}
               />
             </label>
             <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1)}>
-              {busy ? (joining ? 'Создаём…' : 'Входим…') : joining ? 'Создать аккаунт' : 'Войти'}
+              {busy ? (joining ? t('Создаём…') : t('Входим…')) : joining ? t('Создать аккаунт') : t('Войти')}
             </button>
             {joining ? null : site.email_reset ? (
               <button
@@ -432,50 +436,50 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
                 }}
                 disabled={busy}
               >
-                Забыли пароль?
+                {t('Забыли пароль?')}
               </button>
             ) : (
               <span className="cb-login-help cb-muted">
-                Забыли пароль —{' '}
+                {forgotBefore}
                 {site.support_url ? (
                   <a className="cb-accent-link" href={site.support_url}>
-                    напишите в поддержку
+                    {t('напишите в поддержку')}
                   </a>
                 ) : (
-                  'напишите в поддержку'
+                  t('напишите в поддержку')
                 )}
-                .
+                {forgotAfter}
               </span>
             )}
           </form>
         ) : sent ? (
           <form className="cb-login-form" onSubmit={verify}>
             <label className="cb-field">
-              <span>Код из письма</span>
-              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="6 цифр" />
+              <span>{t('Код из письма')}</span>
+              <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
             </label>
             <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
-              Войти
+              {t('Войти')}
             </button>
           </form>
         ) : (
           <form className="cb-login-form" onSubmit={sendCode}>
             <label className="cb-field">
-              <span>Почта</span>
+              <span>{t('Почта')}</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
             </label>
             <button type="submit" className="cb-main" disabled={busy || !email.includes('@')}>
-              Прислать код
+              {t('Прислать код')}
             </button>
           </form>
         )}
         {!siteOpen || challenge || finishing || providers.length === 0 ? null : (
-          <div className="cb-oauth" role="group" aria-label="Другие способы входа">
-            <span className="cb-oauth-or">или</span>
+          <div className="cb-oauth" role="group" aria-label={t('Другие способы входа')}>
+            <span className="cb-oauth-or">{t('или')}</span>
             {providers.map((p) => (
               <button key={p} type="button" className="cb-second cb-oauth-btn" onClick={() => void startOauth(p)} disabled={busy || leaving !== null}>
                 <ProviderMark provider={p} />
-                {leaving === p ? 'Переходим…' : `Войти через ${PROVIDER_TITLE[p]}`}
+                {leaving === p ? t('Переходим…') : t('Войти через {provider}', { provider: PROVIDER_TITLE[p] })}
               </button>
             ))}
           </div>
@@ -484,6 +488,11 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           <p className="cb-error" role="alert">
             {error}
           </p>
+        ) : null}
+        {langSwitch ? (
+          <button type="button" className="cb-text cb-lang" lang={langSwitch.lang} onClick={langSwitch.onPick}>
+            {NATIVE[langSwitch.lang]}
+          </button>
         ) : null}
       </div>
     </div>

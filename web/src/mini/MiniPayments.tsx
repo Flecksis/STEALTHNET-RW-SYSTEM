@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
+import { t } from '../lib/i18n';
 import { absoluteUrl, amountText, expired, PAGE, paymentNote, paymentState, paymentWhen, payUntil, purchaseText, type ClientPayment, type PaymentsPage } from '../cabinet/payments';
 import { BackHead } from './MiniApp';
 import { openExternal } from './telegram';
@@ -24,7 +25,7 @@ export function MiniPayments() {
       setItems((prev) => (before && prev ? [...prev, ...page.items] : page.items));
       setNext(page.next);
     } catch (err) {
-      setError(failText(err, 'История не загрузилась'));
+      setError(failText(err, t('История не загрузилась')));
     } finally {
       setBusy(false);
     }
@@ -36,18 +37,18 @@ export function MiniPayments() {
 
   return (
     <main className="mn-page">
-      <BackHead title="История оплат" />
-      {items === null && !error ? <p className="mn-muted">Загружаем…</p> : null}
+      <BackHead title={t('История оплат')} />
+      {items === null && !error ? <p className="mn-muted">{t('Загружаем…')}</p> : null}
       {items && items.length === 0 ? (
         <div className="mn-card mn-pad">
-          <span className="mn-ink2">Оплат пока нет.</span>
+          <span className="mn-ink2">{t('Оплат пока нет.')}</span>
           <Link to="/app/plans" className="mn-main sm press">
-            Выбрать тариф
+            {t('Выбрать тариф')}
           </Link>
         </div>
       ) : null}
       {items && items.length > 0 ? (
-        <ul className="mn-list mn-payrows" aria-label="Оплаты">
+        <ul className="mn-list mn-payrows" aria-label={t('Оплаты')}>
           {items.map((p) => {
             const state = paymentState(p);
             const dim = p.status === 'canceled' || p.status === 'failed' || expired(p);
@@ -77,13 +78,13 @@ export function MiniPayments() {
         <div className="mn-card mn-pad">
           <span className="mn-error">{error}</span>
           <button type="button" className="mn-btn2 press" onClick={() => void load(items && items.length > 0 ? next : null)} disabled={busy}>
-            Повторить
+            {t('Повторить')}
           </button>
         </div>
       ) : null}
       {next && !error ? (
         <button type="button" className="mn-btn2 press" onClick={() => void load(next)} disabled={busy}>
-          {busy ? 'Загружаем…' : 'Показать ещё'}
+          {busy ? t('Загружаем…') : t('Показать ещё')}
         </button>
       ) : null}
     </main>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { siteInviteLink } from '../lib/referral';
 import { Card, useCabinet } from './CabinetApp';
 import type { Referral, Withdrawal } from './model';
@@ -11,7 +12,7 @@ function failText(err: unknown, fallback: string): string {
 }
 
 function shareUrl(link: string, brand: string): string {
-  const text = `Пользуюсь ${brand} — подключайся по моей ссылке`;
+  const text = t('Пользуюсь {brand} — подключайся по моей ссылке', { brand });
   return `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`;
 }
 
@@ -34,7 +35,7 @@ export function FriendsPage() {
       if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
         setData(null);
       } else {
-        setError(failText(err, 'Программа приглашений не загрузилась'));
+        setError(failText(err, t('Программа приглашений не загрузилась')));
         setData((d) => (d === undefined ? null : d));
       }
     }
@@ -50,27 +51,27 @@ export function FriendsPage() {
       setCopied(key);
       window.setTimeout(() => setCopied(null), 2000);
     } catch {
-      setError('Браузер не дал скопировать: выделите ссылку вручную');
+      setError(t('Браузер не дал скопировать: выделите ссылку вручную'));
     }
   };
 
   if (data === undefined) {
-    return <p className="cb-muted cb-pad">Загружаем…</p>;
+    return <p className="cb-muted cb-pad">{t('Загружаем…')}</p>;
   }
 
   if (data === null) {
     return (
       <div className="cb-history">
         <header className="cb-pay-head">
-          <h1 className="cb-title">Друзья</h1>
+          <h1 className="cb-title">{t('Друзья')}</h1>
         </header>
         {error ? (
           <p className="cb-error" role="alert">
             {error}
           </p>
         ) : (
-          <Card label="Друзья">
-            <p className="cb-ink2">Программа приглашений сейчас не работает.</p>
+          <Card label={t('Друзья')}>
+            <p className="cb-ink2">{t('Программа приглашений сейчас не работает.')}</p>
           </Card>
         )}
       </div>
@@ -91,11 +92,11 @@ export function FriendsPage() {
       return;
     }
     if (!chosen) {
-      setStatus({ text: 'Выберите, куда вывести', bad: true });
+      setStatus({ text: t('Выберите, куда вывести'), bad: true });
       return;
     }
     if (!amount.trim() || !details.trim()) {
-      setStatus({ text: 'Укажите сумму и реквизиты', bad: true });
+      setStatus({ text: t('Укажите сумму и реквизиты'), bad: true });
       return;
     }
     setBusy(true);
@@ -104,10 +105,10 @@ export function FriendsPage() {
       await api('/api/client/m/referral/withdrawals', { method: 'POST', body: { amount: amount.trim().replace(',', '.'), method: chosen.id, details: details.trim() } });
       setAmount('');
       setDetails('');
-      setStatus({ text: 'Заявка отправлена. Деньги придут после проверки, статус виден ниже.', bad: false });
+      setStatus({ text: t('Заявка отправлена. Деньги придут после проверки, статус виден ниже.'), bad: false });
       await load();
     } catch (err) {
-      setStatus({ text: failText(err, 'Заявка не отправилась'), bad: true });
+      setStatus({ text: failText(err, t('Заявка не отправилась')), bad: true });
     } finally {
       setBusy(false);
     }
@@ -119,7 +120,7 @@ export function FriendsPage() {
       await api(`/api/client/m/referral/withdrawals/${item.id}/cancel`, { method: 'POST', body: {} });
       await load();
     } catch (err) {
-      setError(failText(err, 'Заявка не отменилась'));
+      setError(failText(err, t('Заявка не отменилась')));
     } finally {
       setBusy(false);
     }
@@ -128,10 +129,10 @@ export function FriendsPage() {
   return (
     <div className="cb-history">
       <header className="cb-pay-head">
-        <h1 className="cb-title">Друзья</h1>
+        <h1 className="cb-title">{t('Друзья')}</h1>
         <p className="cb-lead muted">
-          {first > 0 ? `Пригласите друга и получайте ${first}% от его оплат.` : 'Пригласите друга по своей ссылке.'}
-          {second > 0 ? ` Ещё ${second}% — от оплат тех, кого пригласят ваши друзья.` : ''}
+          {first > 0 ? t('Пригласите друга и получайте {percent}% от его оплат.', { percent: first }) : t('Пригласите друга по своей ссылке.')}
+          {second > 0 ? ` ${t('Ещё {percent}% — от оплат тех, кого пригласят ваши друзья.', { percent: second })}` : ''}
         </p>
       </header>
       {error ? (
@@ -140,66 +141,66 @@ export function FriendsPage() {
         </p>
       ) : null}
 
-      <Card className="cb-friends" label="Ссылки для приглашения">
-        <h2 className="cb-h2">Ваша ссылка</h2>
-        <span className="cb-small cb-muted">На сайт</span>
+      <Card className="cb-friends" label={t('Ссылки для приглашения')}>
+        <h2 className="cb-h2">{t('Ваша ссылка')}</h2>
+        <span className="cb-small cb-muted">{t('На сайт')}</span>
         <div className="cb-linkrow">
           <span className="cb-link mono">{siteLink.replace(/^https?:\/\//, '')}</span>
           <button type="button" className="cb-second" onClick={() => void copy(siteLink, 'site')}>
-            {copied === 'site' ? 'Скопировано' : 'Скопировать'}
+            {copied === 'site' ? t('Скопировано') : t('Скопировать')}
           </button>
         </div>
         {data.bot_link ? (
           <>
-            <span className="cb-small cb-muted">В Telegram-бота</span>
+            <span className="cb-small cb-muted">{t('В Telegram-бота')}</span>
             <div className="cb-linkrow">
               <span className="cb-link mono">{data.bot_link.replace(/^https:\/\//, '')}</span>
               <button type="button" className="cb-second" onClick={() => void copy(data.bot_link ?? '', 'bot')}>
-                {copied === 'bot' ? 'Скопировано' : 'Скопировать'}
+                {copied === 'bot' ? t('Скопировано') : t('Скопировать')}
               </button>
             </div>
           </>
         ) : null}
         <div className="cb-btns">
           <a className="cb-second" href={shareUrl(data.bot_link ?? siteLink, site.brand_name)} target="_blank" rel="noreferrer">
-            Отправить в Telegram
+            {t('Отправить в Telegram')}
           </a>
         </div>
       </Card>
 
-      <Card className="cb-refstats" label="Итоги">
+      <Card className="cb-refstats" label={t('Итоги')}>
         <dl className="cb-facts">
           <div>
-            <dt>Пришли по ссылке</dt>
+            <dt>{t('Пришли по ссылке')}</dt>
             <dd className="num">{data.invited}</dd>
           </div>
           <div>
-            <dt>Заработано</dt>
+            <dt>{t('Заработано')}</dt>
             <dd className="num">{money(data.earned)}</dd>
           </div>
           <div>
-            <dt>Можно вывести</dt>
+            <dt>{t('Можно вывести')}</dt>
             <dd className="num">{money(balance)}</dd>
           </div>
         </dl>
       </Card>
 
       {canWithdraw && balance.minor > 0 ? (
-        <Card className="cb-withdraw" label="Вывод">
-          <h2 className="cb-h2">Вывести заработанное</h2>
-          {chosen?.min ? <p className="cb-small cb-muted">От {money(chosen.min)}. Заявку проверяют вручную, обычно за день-два.</p> : null}
+        <Card className="cb-withdraw" label={t('Вывод')}>
+          <h2 className="cb-h2">{t('Вывести заработанное')}</h2>
+          {chosen?.min ? <p className="cb-small cb-muted">{t('От {amount}. Заявку проверяют вручную, обычно за день-два.', { amount: money(chosen.min) })}</p> : null}
           <label className="cb-field">
-            Сумма
+            {t('Сумма')}
             <span className="cb-wamount">
               <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" disabled={busy} />
               <button type="button" className="cb-text" onClick={() => setAmount(String(balance.minor / 100))} disabled={busy || balance.minor <= 0}>
-                Всё
+                {t('Всё')}
               </button>
             </span>
           </label>
           <span className="cb-field">
-            Куда
-            <span role="group" aria-label="Способ вывода" className="cb-seg cb-seg-wrap">
+            {t('Куда')}
+            <span role="group" aria-label={t('Способ вывода')} className="cb-seg cb-seg-wrap">
               {methods.map((m) => (
                 <button key={m.id} type="button" aria-pressed={chosen?.id === m.id} onClick={() => setMethod(m.id)} disabled={busy}>
                   {m.title}
@@ -208,7 +209,7 @@ export function FriendsPage() {
             </span>
           </span>
           <label className="cb-field">
-            Реквизиты
+            {t('Реквизиты')}
             <input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={chosen?.hint ?? ''} maxLength={200} disabled={busy} />
           </label>
           {status ? (
@@ -218,16 +219,16 @@ export function FriendsPage() {
           ) : null}
           <div className="cb-btns">
             <button type="button" className="cb-main" onClick={() => void submit()} disabled={busy}>
-              {busy ? 'Отправляем…' : 'Отправить заявку'}
+              {busy ? t('Отправляем…') : t('Отправить заявку')}
             </button>
           </div>
         </Card>
       ) : balance.minor > 0 ? (
-        <p className="cb-small cb-muted">Вывод заработанного сейчас не принимается.</p>
+        <p className="cb-small cb-muted">{t('Вывод заработанного сейчас не принимается.')}</p>
       ) : null}
 
       {withdrawals.length > 0 ? (
-        <Card className="cb-paylist" label="Заявки на вывод">
+        <Card className="cb-paylist" label={t('Заявки на вывод')}>
           <ul className="cb-payrows">
             {withdrawals.map((w) => {
               const st = STATUS[w.status];
@@ -245,10 +246,10 @@ export function FriendsPage() {
                   </span>
                   <span className="cb-payrow-side">
                     <strong className="num">{money(w.amount)}</strong>
-                    <span className={`cb-small cb-status ${st.tone}`}>{st.text}</span>
+                    <span className={`cb-small cb-status ${st.tone}`}>{t(st.text)}</span>
                     {open ? (
                       <button type="button" className="cb-text" onClick={() => void cancel(w)} disabled={busy}>
-                        Отменить
+                        {t('Отменить')}
                       </button>
                     ) : null}
                   </span>

@@ -1,12 +1,13 @@
+import { msg } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 import type { PayoutOption, Withdrawal, WithdrawalStatus } from './model';
 
 export const WITHDRAWAL_STATUS: Record<WithdrawalStatus, { text: string; tone: string }> = {
-  holding: { text: 'На рассмотрении', tone: 'muted' },
-  pending: { text: 'На рассмотрении', tone: 'muted' },
-  paid: { text: 'Выплачено', tone: 'ok' },
-  rejected: { text: 'Отклонено', tone: 'bad' },
-  canceled: { text: 'Отменено', tone: 'muted' },
+  holding: { text: msg('На рассмотрении'), tone: 'muted' },
+  pending: { text: msg('На рассмотрении'), tone: 'muted' },
+  paid: { text: msg('Выплачено'), tone: 'ok' },
+  rejected: { text: msg('Отклонено'), tone: 'bad' },
+  canceled: { text: msg('Отменено'), tone: 'muted' },
 };
 
 export function payoutDetails(details: string): string {

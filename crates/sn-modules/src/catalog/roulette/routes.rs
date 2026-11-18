@@ -137,7 +137,10 @@ async fn spin(
             Ok(Json(SpinReply::Confirm {
                 confirm: Prompt {
                     token,
-                    text: super::CONFIRM_TEXT,
+                    text: sn_domain::lang::pick(
+                        super::CONFIRM_TEXT,
+                        "Before a free spin, confirm you're not a robot.",
+                    ),
                 },
             }))
         }

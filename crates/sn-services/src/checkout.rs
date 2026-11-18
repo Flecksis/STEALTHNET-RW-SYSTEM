@@ -301,6 +301,13 @@ pub(crate) fn describe(brand: &str, quote: &Quote) -> String {
     }
 }
 
+fn describe_for(brand: &str, quote: &Quote, provider: &str) -> String {
+    match quote.lines.first() {
+        Some(line) if provider == providers::STARS => format!("{brand}: {}", line.shown_label()),
+        _ => describe(brand, quote),
+    }
+}
+
 pub(crate) async fn record_paid_order(
     tx: &mut Tx,
     order: &NewOrder,
@@ -846,7 +853,11 @@ impl<'a> Checkout<'a> {
             quote: prepared.quote.clone(),
             snapshot: Some(prepared.tariff.snapshot(period)),
         };
-        let description = describe(&self.services.settings().brand_name, &prepared.quote);
+        let description = describe_for(
+            &self.services.settings().brand_name,
+            &prepared.quote,
+            &request.provider,
+        );
         self.settle(
             &prepared.client,
             Sale {
@@ -1243,7 +1254,11 @@ impl<'a> Checkout<'a> {
             quote: quote.clone(),
             snapshot: None,
         };
-        let description = describe(&self.services.settings().brand_name, &quote);
+        let description = describe_for(
+            &self.services.settings().brand_name,
+            &quote,
+            &request.provider,
+        );
         self.settle(
             &client,
             Sale {

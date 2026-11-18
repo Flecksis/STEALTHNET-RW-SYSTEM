@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, days, money, type Money } from '../lib/format';
 import { countryName } from '../lib/geo';
+import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { siteInviteLink } from '../lib/referral';
@@ -71,7 +72,7 @@ export function SubscriptionPage() {
       setCopied(key);
       window.setTimeout(() => setCopied(null), 2000);
     } catch {
-      setError('Браузер не дал скопировать: выделите ссылку вручную');
+      setError(t('Браузер не дал скопировать: выделите ссылку вручную'));
     }
   };
 
@@ -87,7 +88,7 @@ export function SubscriptionPage() {
       setReissued(true);
       setAsk('');
     } catch (err) {
-      setError(failText(err, 'Новая ссылка не выпущена'));
+      setError(failText(err, t('Новая ссылка не выпущена')));
     } finally {
       setBusy(false);
     }
@@ -107,7 +108,7 @@ export function SubscriptionPage() {
       });
     } catch (err) {
       detail.setView(prev);
-      setError(failText(err, 'Автопродление не переключилось'));
+      setError(failText(err, t('Автопродление не переключилось')));
     }
   };
 
@@ -128,14 +129,14 @@ export function SubscriptionPage() {
         }
       }
     } catch (err) {
-      setError(failText(err, 'Пробный период не включился'));
+      setError(failText(err, t('Пробный период не включился')));
     } finally {
       setTrialBusy(false);
     }
   };
 
   if (view === undefined) {
-    return <p className="cb-muted cb-pad">Загружаем подписку…</p>;
+    return <p className="cb-muted cb-pad">{t('Загружаем подписку…')}</p>;
   }
 
   const blocked = me.client.status === 'blocked';
@@ -162,39 +163,39 @@ export function SubscriptionPage() {
     ? ''
     : blocked
       ? autoOn
-        ? 'На время блокировки не списываем'
-        : 'Выключено'
+        ? t('На время блокировки не списываем')
+        : t('Выключено')
       : !autoOn
         ? expired
-          ? 'Выключено'
-          : 'Выключено, напомним за 3 дня'
+          ? t('Выключено')
+          : t('Выключено, напомним за 3 дня')
         : !canCharge
           ? expired
-            ? 'Продлите подписку вручную'
+            ? t('Продлите подписку вручную')
             : chargeDate
-              ? `Напомним продлить ${dateLong(chargeDate, false)}`
-              : 'Напомним продлить перед окончанием'
+              ? t('Напомним продлить {date}', { date: dateLong(chargeDate, false) })
+              : t('Напомним продлить перед окончанием')
           : expired
             ? balanceOff
               ? renewPrice
-                ? `Спишем ${money(renewPrice)} при следующей попытке`
-                : 'Спишем при следующей попытке'
+                ? t('Спишем {amount} при следующей попытке', { amount: money(renewPrice) })
+                : t('Спишем при следующей попытке')
               : renewPrice
-                ? `Спишем ${money(renewPrice)}, когда хватит баланса`
-                : 'Спишем, когда хватит баланса'
+                ? t('Спишем {amount}, когда хватит баланса', { amount: money(renewPrice) })
+                : t('Спишем, когда хватит баланса')
             : renewPrice && chargeDate
               ? phone
-                ? `Спишем ${money(renewPrice)} ${dateLong(chargeDate, false)}`
-                : `${dateLong(chargeDate, false)} спишем ${money(renewPrice)}`
+                ? t('Спишем {amount} {date}', { amount: money(renewPrice), date: dateLong(chargeDate, false) })
+                : t('{date} спишем {amount}', { date: dateLong(chargeDate, false), amount: money(renewPrice) })
               : balanceOff
-                ? 'Спишем перед окончанием'
-                : 'Спишем с баланса перед окончанием';
+                ? t('Спишем перед окончанием')
+                : t('Спишем с баланса перед окончанием');
 
   const platforms: Array<[Platform, string]> = phone
     ? [
         ['ios', 'iPhone'],
         ['android', 'Android'],
-        ['pc', 'Компьютер'],
+        ['pc', t('Компьютер')],
       ]
     : [
         ['ios', 'iPhone'],
@@ -207,60 +208,60 @@ export function SubscriptionPage() {
   const mayReissue = site.client_access?.reissue !== false;
   const reissueBlock = !mayReissue ? null : reissued ? (
     <p role="status" className="cb-result">
-      <strong>Новая ссылка выпущена.</strong> Подключите нужные устройства заново.
+      <strong>{t('Новая ссылка выпущена.')}</strong> {t('Подключите нужные устройства заново.')}
     </p>
   ) : ask === 'link' ? (
     <div className="cb-ask">
-      <p>Старая ссылка перестанет работать, а с ней все устройства. Нужные устройства подключите заново по новой ссылке.</p>
+      <p>{t('Старая ссылка перестанет работать, а с ней все устройства. Нужные устройства подключите заново по новой ссылке.')}</p>
       <span className={phone ? 'cb-ask-btns col' : 'cb-ask-btns'}>
         <button type="button" className="cb-main sm" onClick={() => void reissue()} disabled={busy}>
-          Выпустить новую ссылку
+          {t('Выпустить новую ссылку')}
         </button>
         <button type="button" className="cb-cancel" onClick={() => setAsk('')} disabled={busy}>
-          Отменить
+          {t('Отменить')}
         </button>
       </span>
     </div>
   ) : (
     <button type="button" className="cb-text" onClick={() => setAsk('link')} disabled={!view || busy}>
-      Выпустить новую ссылку
+      {t('Выпустить новую ссылку')}
     </button>
   );
 
   const subCard = !view ? (
-    <Card className="cb-sub" label="Подписка">
-      <h1 className="cb-h1">Подписки пока нет</h1>
-      <p className="cb-ink2">Выберите тариф — подписка начнёт работать сразу после оплаты.</p>
+    <Card className="cb-sub" label={t('Подписка')}>
+      <h1 className="cb-h1">{t('Подписки пока нет')}</h1>
+      <p className="cb-ink2">{t('Выберите тариф — подписка начнёт работать сразу после оплаты.')}</p>
       <div className={phone ? 'cb-btns col' : 'cb-btns'}>
         <Link to="/cabinet/pay" className="cb-main">
-          Выбрать тариф
+          {t('Выбрать тариф')}
         </Link>
         {site.trial?.enabled && !trialCheck ? (
           <button type="button" className="cb-second" onClick={() => void startTrial()} disabled={trialBusy}>
-            {trialBusy ? 'Включаем…' : `Попробовать бесплатно ${days(site.trial.days)}`}
+            {trialBusy ? t('Включаем…') : t('Попробовать бесплатно {days}', { days: days(site.trial.days) })}
           </button>
         ) : null}
       </div>
       {trialCheck ? (
-        <div className="cb-human" role="group" aria-label="Проверка перед пробным периодом">
+        <div className="cb-human" role="group" aria-label={t('Проверка перед пробным периодом')}>
           <p className="cb-ink2">{trialCheck.text}</p>
           <button type="button" className="cb-second" onClick={() => void startTrial(trialCheck.token)} disabled={trialBusy}>
-            {trialBusy ? 'Проверяем…' : 'Я не робот'}
+            {trialBusy ? t('Проверяем…') : t('Я не робот')}
           </button>
         </div>
       ) : null}
     </Card>
   ) : (
-    <Card className="cb-sub" label="Подписка">
+    <Card className="cb-sub" label={t('Подписка')}>
       <div className="cb-row">
         <h1 className="cb-h1">{periodTitle(view)}</h1>
         <span className={`cb-status ${status.tone}`}>{status.text}</span>
       </div>
       <div className="cb-term">
         <span className="cb-days">{expired ? days(0) : days(left)}</span>
-        <span className="cb-muted">{expire ? (expired ? `закончилась ${dateLong(expire, false)}` : `до ${dateLong(expire, true)}`) : ''}</span>
+        <span className="cb-muted">{expire ? (expired ? t('закончилась {date}', { date: dateLong(expire, false) }) : t('до {date}', { date: dateLong(expire, true) })) : ''}</span>
       </div>
-      <div className="cb-bar" role="img" aria-label={expired && expire ? `Подписка закончилась ${dateLong(expire, false)}` : `Осталось ${days(left)} из ${total}`}>
+      <div className="cb-bar" role="img" aria-label={expired && expire ? t('Подписка закончилась {date}', { date: dateLong(expire, false) }) : t('Осталось {left} из {total}', { left: days(left), total })}>
         <span style={{ width: `${Math.round(share * 100)}%` }} />
       </div>
       {phone ? (
@@ -268,7 +269,7 @@ export function SubscriptionPage() {
           <div className="cb-meta">
             {traffic ? (
               <span>
-                Трафик: <span className={traffic.exhausted ? 'cb-warn' : undefined}>{traffic.used}</span>
+                {t('Трафик:')} <span className={traffic.exhausted ? 'cb-warn' : undefined}>{traffic.used}</span>
                 {traffic.tail}
               </span>
             ) : null}
@@ -279,19 +280,19 @@ export function SubscriptionPage() {
         <>
           <div className="cb-facts">
             <span>
-              Трафик:{' '}
+              {t('Трафик:')}{' '}
               {traffic ? (
                 <>
                   <strong className={traffic.exhausted ? 'cb-warn' : undefined}>{traffic.used}</strong>
                   {traffic.tail}
                 </>
               ) : (
-                <strong>без лимита</strong>
+                <strong>{t('без лимита')}</strong>
               )}
             </span>
             {view.countries.length ? (
               <span>
-                Серверы: <strong>{view.countries.map(countryName).filter(Boolean).join(', ')}</strong>
+                {t('Серверы:')} <strong>{view.countries.map(countryName).filter(Boolean).join(', ')}</strong>
               </span>
             ) : null}
           </div>
@@ -302,30 +303,30 @@ export function SubscriptionPage() {
         {blocked ? (
           site.support_url ? (
             <a className="cb-main" href={site.support_url}>
-              Написать в поддержку
+              {t('Написать в поддержку')}
             </a>
           ) : null
         ) : expired ? (
           <Link to={subs.link('/cabinet/pay')} className="cb-main">
-            Продлить
+            {t('Продлить')}
           </Link>
         ) : (
           <>
             {mode === 'remnawave' && url ? (
               <a className="cb-main" href={url} target="_blank" rel="noreferrer">
-                Открыть страницу подключения
+                {t('Открыть страницу подключения')}
                 <Icon name="external" size={18} />
               </a>
             ) : (
               <button type="button" className="cb-main" onClick={() => document.getElementById('connect')?.scrollIntoView({ behavior: 'smooth' })}>
-                Подключить устройство
+                {t('Подключить устройство')}
               </button>
             )}
             <Link to={subs.link('/cabinet/pay')} className="cb-second">
-              Продлить
+              {t('Продлить')}
             </Link>
             <Link to={subs.link('/cabinet/addons')} className="cb-second">
-              Докупить
+              {t('Докупить')}
             </Link>
           </>
         )}
@@ -334,36 +335,37 @@ export function SubscriptionPage() {
   );
 
   const connectCard = view ? (
-    <Card id="connect" className="cb-connect" label="Подключение">
-      <h2 className="cb-h2">Подключение</h2>
+    <Card id="connect" className="cb-connect" label={t('Подключение')}>
+      <h2 className="cb-h2">{t('Подключение')}</h2>
       {mode === 'remnawave' ? (
         <>
           <p className="cb-ink2">
-            На странице подключения есть приложения для вашего устройства и кнопки, которые сами добавят подписку.{phone ? '' : ' Чтобы подключить телефон, отсканируйте QR-код.'}
+            {t('На странице подключения есть приложения для вашего устройства и кнопки, которые сами добавят подписку.')}
+            {phone ? '' : ` ${t('Чтобы подключить телефон, отсканируйте QR-код.')}`}
           </p>
           <div className={phone ? 'cb-linkrow col' : 'cb-linkrow'}>
-            <span className="cb-link mono">{url ?? (detail.ready ? 'ссылка появится, когда подписка заработает' : 'загружаем ссылку…')}</span>
+            <span className="cb-link mono">{url ?? (detail.ready ? t('ссылка появится, когда подписка заработает') : t('загружаем ссылку…'))}</span>
             {phone && url ? (
               <a className="cb-main" href={url} target="_blank" rel="noreferrer">
-                Открыть страницу подключения
+                {t('Открыть страницу подключения')}
                 <Icon name="external" size={18} />
               </a>
             ) : null}
             <button type="button" className="cb-second" onClick={() => url && void copy(url, 'url')} disabled={!url}>
-              {copied === 'url' ? 'Скопировано' : 'Скопировать'}
+              {copied === 'url' ? t('Скопировано') : t('Скопировать')}
             </button>
             {!phone ? (
               <button type="button" className="cb-second" aria-expanded={qr} onClick={() => setQr(!qr)} disabled={!url}>
-                QR-код
+                {t('QR-код')}
               </button>
             ) : null}
           </div>
-          {qr && url ? <QrCode text={url} size={200} label="QR-код ссылки подписки" /> : null}
+          {qr && url ? <QrCode text={url} size={200} label={t('QR-код ссылки подписки')} /> : null}
           {reissueBlock}
         </>
       ) : (
         <>
-          <div role="group" aria-label="Устройство" className={phone ? 'cb-plats seg' : 'cb-plats'}>
+          <div role="group" aria-label={t('Устройство')} className={phone ? 'cb-plats seg' : 'cb-plats'}>
             {platforms.map(([key, label]) => (
               <button key={key} type="button" aria-pressed={plat === key} onClick={() => setPlat(key)}>
                 {label}
@@ -376,11 +378,11 @@ export function SubscriptionPage() {
               <span className="cb-step">
                 <span className="cb-step-row">
                   <span className="cb-step-text">
-                    <strong>Установите {app.app}</strong>
-                    <span className="cb-muted">{phone ? (plat === 'pc' ? app.store : 'Бесплатно') : app.store}</span>
+                    <strong>{t('Установите {app}', { app: app.app })}</strong>
+                    <span className="cb-muted">{phone ? (plat === 'pc' ? t(app.store) : t('Бесплатно')) : t(app.store)}</span>
                   </span>
                   <a className="cb-second sm" href={app.download} target="_blank" rel="noreferrer">
-                    {phone ? app.storeShort : 'Скачать'}
+                    {phone ? t(app.storeShort) : t('Скачать')}
                   </a>
                 </span>
               </span>
@@ -389,37 +391,37 @@ export function SubscriptionPage() {
               <span className="cb-num">2</span>
               <span className="cb-step">
                 <span className="cb-step-text">
-                  <strong>Добавьте подписку</strong>
-                  {phone ? null : <span className="cb-muted">Одна кнопка, ссылка откроется в приложении</span>}
+                  <strong>{t('Добавьте подписку')}</strong>
+                  {phone ? null : <span className="cb-muted">{t('Одна кнопка, ссылка откроется в приложении')}</span>}
                 </span>
                 <span className={phone ? 'cb-btns col' : 'cb-btns'}>
                   <a className={url ? 'cb-main sm' : 'cb-main sm off'} href={url ? app.add(url) : undefined} aria-disabled={url ? undefined : true}>
-                    Добавить в {app.app}
+                    {t('Добавить в {app}', { app: app.app })}
                   </a>
                   <button type="button" className="cb-second sm" onClick={() => url && void copy(url, 'url')} disabled={!url}>
-                    {copied === 'url' ? 'Скопировано' : 'Скопировать'}
+                    {copied === 'url' ? t('Скопировано') : t('Скопировать')}
                   </button>
                   {!phone ? (
                     <button type="button" className="cb-second sm" aria-expanded={qr} onClick={() => setQr(!qr)} disabled={!url}>
-                      QR-код
+                      {t('QR-код')}
                     </button>
                   ) : null}
                 </span>
-                {qr && url ? <QrCode text={url} size={200} label="QR-код ссылки подписки" /> : null}
+                {qr && url ? <QrCode text={url} size={200} label={t('QR-код ссылки подписки')} /> : null}
                 {phone ? reissueBlock : null}
               </span>
             </li>
             <li>
               <span className="cb-num">3</span>
               <span className="cb-step-text">
-                <strong>Включите VPN</strong>
-                <span className="cb-muted">{phone ? 'Сервер выберется сам' : `Нажмите кнопку подключения в ${app.app}, сервер выберется сам`}</span>
+                <strong>{t('Включите VPN')}</strong>
+                <span className="cb-muted">{phone ? t('Сервер выберется сам') : t('Нажмите кнопку подключения в {app}, сервер выберется сам', { app: app.app })}</span>
               </span>
             </li>
           </ol>
           {!phone ? (
             <>
-              <p className="cb-muted">Другие приложения: {app.others}</p>
+              <p className="cb-muted">{t('Другие приложения: {apps}', { apps: app.others })}</p>
               {reissueBlock}
             </>
           ) : null}
@@ -431,7 +433,7 @@ export function SubscriptionPage() {
   const devicesCard = <DevicesCard view={view} devices={devices} loading={!detail.ready} onDevices={detail.setDevices} onError={setError} link={subs.link} addLink />;
 
   const autoSwitch = view ? (
-    <button type="button" role="switch" className={phone ? 'cb-switch big' : 'cb-switch'} aria-checked={autoOn} aria-label="Автопродление" onClick={() => void toggleAuto()} disabled={blocked}>
+    <button type="button" role="switch" className={phone ? 'cb-switch big' : 'cb-switch'} aria-checked={autoOn} aria-label={t('Автопродление')} onClick={() => void toggleAuto()} disabled={blocked}>
       <span />
     </button>
   ) : null;
@@ -451,9 +453,9 @@ export function SubscriptionPage() {
         {connectCard}
         {devicesCard}
         {view ? (
-          <Card className="cb-auto" label="Автопродление">
+          <Card className="cb-auto" label={t('Автопродление')}>
             <span className="cb-auto-text">
-              <strong>Автопродление</strong>
+              <strong>{t('Автопродление')}</strong>
               <span className="cb-small cb-muted">{autoText}</span>
             </span>
             {autoSwitch}
@@ -474,21 +476,21 @@ export function SubscriptionPage() {
       </div>
       <div className="cb-col right">
         {showBalance || view ? (
-          <Card className="cb-balance-card" label={showBalance ? 'Баланс' : 'Автопродление'}>
+          <Card className="cb-balance-card" label={showBalance ? t('Баланс') : t('Автопродление')}>
             {showBalance ? (
               <>
                 <span className="cb-row">
-                  <span className="cb-label">{balanceOff ? 'Остаток на балансе' : 'Баланс'}</span>
+                  <span className="cb-label">{balanceOff ? t('Остаток на балансе') : t('Баланс')}</span>
                   <Link to="/cabinet/payments" className="cb-accent-link cb-small">
-                    История оплат
+                    {t('История оплат')}
                   </Link>
                 </span>
                 <span className="cb-sum">{money(me.balance)}</span>
                 {balanceOff ? (
-                  <span className="cb-small cb-muted">Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму</span>
+                  <span className="cb-small cb-muted">{t('Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму')}</span>
                 ) : (
                   <button type="button" className="cb-main wide" onClick={() => navigate('/cabinet/topup')}>
-                    Пополнить
+                    {t('Пополнить')}
                   </button>
                 )}
               </>
@@ -496,7 +498,7 @@ export function SubscriptionPage() {
             {view ? (
               <div className={showBalance ? 'cb-auto-row' : 'cb-auto-row solo'}>
                 <span className="cb-auto-text">
-                  <strong>Автопродление</strong>
+                  <strong>{t('Автопродление')}</strong>
                   <span className="cb-small cb-muted">{autoText}</span>
                 </span>
                 {autoSwitch}
@@ -505,58 +507,56 @@ export function SubscriptionPage() {
           </Card>
         ) : null}
         {referral ? (
-          <Card id="friends" className="cb-friends" label="Друзья">
+          <Card id="friends" className="cb-friends" label={t('Друзья')}>
             <div className="cb-row">
-              <h2 className="cb-h2">Друзья</h2>
+              <h2 className="cb-h2">{t('Друзья')}</h2>
               <Link to="/cabinet/friends" className="cb-accent-link cb-small">
-                Подробнее
+                {t('Подробнее')}
               </Link>
             </div>
-            <p className="cb-ink2">Пригласите друга и получайте {referral.levels[0] ?? 0}% от его оплат на баланс.</p>
-            <span className="cb-small cb-muted">Ссылка на сайт</span>
+            <p className="cb-ink2">{t('Пригласите друга и получайте {percent}% от его оплат на баланс.', { percent: referral.levels[0] ?? 0 })}</p>
+            <span className="cb-small cb-muted">{t('Ссылка на сайт')}</span>
             <div className="cb-linkrow">
               <span className="cb-link mono">{siteInviteLink(referral.code).replace(/^https?:\/\//, '')}</span>
               <button type="button" className="cb-second" onClick={() => void copy(siteInviteLink(referral.code), 'ref-site')}>
-                {copied === 'ref-site' ? 'Скопировано' : 'Скопировать'}
+                {copied === 'ref-site' ? t('Скопировано') : t('Скопировать')}
               </button>
             </div>
             {referral.bot_link ? (
               <>
-                <span className="cb-small cb-muted">Ссылка на Telegram-бота</span>
+                <span className="cb-small cb-muted">{t('Ссылка на Telegram-бота')}</span>
                 <div className="cb-linkrow">
                   <span className="cb-link mono">{referral.bot_link.replace(/^https:\/\//, '')}</span>
                   <button type="button" className="cb-second" onClick={() => void copy(referral.bot_link ?? '', 'ref')}>
-                    {copied === 'ref' ? 'Скопировано' : 'Скопировать'}
+                    {copied === 'ref' ? t('Скопировано') : t('Скопировать')}
                   </button>
                 </div>
               </>
             ) : null}
-            <span className="cb-small cb-muted">
-              Пришли по ссылке: {referral.invited} · заработано {money(referral.earned)}
-            </span>
+            <span className="cb-small cb-muted">{t('Пришли по ссылке: {count} · заработано {amount}', { count: referral.invited, amount: money(referral.earned) })}</span>
           </Card>
         ) : null}
         {supportTickets(site) ? (
           <Link id="help" className="cb-card cb-help hov" to="/cabinet/help">
             <span>
-              <strong>Нужна помощь?</strong>
-              <span className="cb-small cb-muted">Напишите нам — ответ появится здесь, в кабинете</span>
+              <strong>{t('Нужна помощь?')}</strong>
+              <span className="cb-small cb-muted">{t('Напишите нам — ответ появится здесь, в кабинете')}</span>
             </span>
             <Icon name="chevron-right" size={20} />
           </Link>
         ) : supportLink(site) ? (
           <a id="help" className="cb-card cb-help hov" href={supportLink(site) ?? undefined} target="_blank" rel="noreferrer">
             <span>
-              <strong>Нужна помощь?</strong>
-              <span className="cb-small cb-muted">Откроется чат поддержки</span>
+              <strong>{t('Нужна помощь?')}</strong>
+              <span className="cb-small cb-muted">{t('Откроется чат поддержки')}</span>
             </span>
             <Icon name="chevron-right" size={20} />
           </a>
         ) : site.bot_username ? (
           <a id="help" className="cb-card cb-help hov" href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
             <span>
-              <strong>Нужна помощь?</strong>
-              <span className="cb-small cb-muted">Напишите в Telegram-бота: раздел «Поддержка»</span>
+              <strong>{t('Нужна помощь?')}</strong>
+              <span className="cb-small cb-muted">{t('Напишите в Telegram-бота: раздел «Поддержка»')}</span>
             </span>
             <Icon name="chevron-right" size={20} />
           </a>

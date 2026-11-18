@@ -5,6 +5,7 @@ use crate::inbox::REPEAT_METHOD;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sn_domain::ids::{ClientId, OrderId, PaymentId, TariffId};
+use sn_domain::lang;
 use sn_domain::money::{Amount, Currency};
 use sn_domain::order::{Order, OrderKind, OrderStatus};
 use sn_domain::paging::PageRequest;
@@ -67,7 +68,7 @@ fn chosen_title(
         registry
             .get(provider)?
             .method(currency, code)
-            .map(|m| m.title.to_string())
+            .map(|m| sn_payments::english::shown(m.title))
     })
 }
 
@@ -83,14 +84,17 @@ fn method_title(registry: &ProviderRegistry, currency: Currency, payment: &Payme
             .get(provider)
             .and_then(|state| state.label.title.clone())
             .unwrap_or_else(|| {
-                found
-                    .client_label(currency, &registry.config(provider))
-                    .title
-                    .to_string()
+                sn_payments::english::shown(
+                    found
+                        .client_label(currency, &registry.config(provider))
+                        .title,
+                )
             }),
-        None if provider == providers::MANUAL && payment.amount.minor == 0 => "Бесплатно".into(),
-        None if provider == providers::MANUAL => "Вручную".into(),
-        None => "Другой способ".into(),
+        None if provider == providers::MANUAL && payment.amount.minor == 0 => {
+            lang::pick("Бесплатно", "Free").into()
+        }
+        None if provider == providers::MANUAL => lang::pick("Вручную", "Manual").into(),
+        None => lang::pick("Другой способ", "Other method").into(),
     };
     let Some(detail) = payment
         .method
@@ -102,9 +106,9 @@ fn method_title(registry: &ProviderRegistry, currency: Currency, payment: &Payme
     };
     match detail.to_ascii_lowercase().as_str() {
         AUTORENEW_METHOD | REPEAT_METHOD | "free" => base,
-        "sbp" => "СБП".into(),
-        "bank_card" | "card" => "Банковская карта".into(),
-        "yoo_money" => "ЮMoney".into(),
+        "sbp" => lang::pick("СБП", "SBP").into(),
+        "bank_card" | "card" => lang::pick("Банковская карта", "Bank card").into(),
+        "yoo_money" => lang::pick("ЮMoney", "YooMoney").into(),
         "sberbank" | "sber_pay" => "SberPay".into(),
         _ if matches!(provider, providers::CRYPTOPAY | providers::HELEKET)
             && detail.len() <= 12

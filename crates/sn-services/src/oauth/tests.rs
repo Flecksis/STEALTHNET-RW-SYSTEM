@@ -3,7 +3,7 @@ use crate::settings::ModuleConfigUpdate;
 use crate::{EnvFallbacks, FixedClock, ServiceDeps};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use sn_domain::access::ClientChannel;
-use sn_domain::client::TelegramProfile;
+use sn_domain::client::{Locale, TelegramProfile};
 use sn_domain::ids::AdminId;
 use sn_domain::settings::keys;
 use sn_modules::ModuleRegistry;

@@ -17,7 +17,7 @@ use rand::RngCore;
 use serde::Serialize;
 use sn_domain::access::ClientPrincipal;
 use sn_domain::client::{
-    Identity, IdentityKind, Locale, NewIdentity, RegistrationSource, normalize_identity,
+    Identity, IdentityKind, NewIdentity, RegistrationSource, normalize_identity,
 };
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::ClientId;
@@ -801,7 +801,11 @@ impl<'a> OauthOps<'a> {
         let client = tx
             .clients()
             .create(&NewClient {
-                locale: Locale::Ru,
+                locale: self
+                    .services
+                    .settings()
+                    .languages
+                    .pick(sn_domain::lang::hint()),
                 registration_source: RegistrationSource::Web,
                 note: None,
             })

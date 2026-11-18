@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { count, money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { Card, useCabinet } from './CabinetApp';
 import { DevicesCard, deviceLimit } from './DevicesCard';
 import { stars } from './model';
@@ -21,7 +22,7 @@ export function DevicesPage() {
   }, [chosenId]);
 
   if (view === undefined) {
-    return <p className="cb-muted cb-pad">Загружаем устройства…</p>;
+    return <p className="cb-muted cb-pad">{t('Загружаем устройства…')}</p>;
   }
 
   const limit = deviceLimit(view);
@@ -35,8 +36,8 @@ export function DevicesPage() {
   return (
     <div className="cb-history">
       <header className="cb-pay-head">
-        <h1 className="cb-title">Устройства</h1>
-        {view && limit && used >= limit ? <p className="cb-lead muted">Все места заняты: чтобы подключить новое устройство, отключите одно из старых.</p> : null}
+        <h1 className="cb-title">{t('Устройства')}</h1>
+        {view && limit && used >= limit ? <p className="cb-lead muted">{t('Все места заняты: чтобы подключить новое устройство, отключите одно из старых.')}</p> : null}
       </header>
       <SubSwitch subs={subs} />
       {error ? (
@@ -46,23 +47,23 @@ export function DevicesPage() {
       ) : null}
       <DevicesCard view={view} devices={devices} loading={!detail.ready} onDevices={detail.setDevices} onError={setError} link={subs.link} />
       {view ? (
-        <Card className="cb-devhelp" label="Новое устройство">
-          <h2 className="cb-h2">Новое устройство</h2>
-          <p className="cb-ink2">Установите приложение и добавьте в него подписку: ссылка, QR-код и шаги — на главной странице кабинета. Устройство появится в списке после первого подключения.</p>
+        <Card className="cb-devhelp" label={t('Новое устройство')}>
+          <h2 className="cb-h2">{t('Новое устройство')}</h2>
+          <p className="cb-ink2">{t('Установите приложение и добавьте в него подписку: ссылка, QR-код и шаги — на главной странице кабинета. Устройство появится в списке после первого подключения.')}</p>
           <div className="cb-btns">
             <Link to={subs.link('/cabinet#connect')} className="cb-second">
-              Как подключить
+              {t('Как подключить')}
             </Link>
             {extra && !ended ? (
               <Link to={subs.link('/cabinet/addons?kind=devices')} className="cb-second">
-                Добавить устройства
+                {t('Добавить устройства')}
               </Link>
             ) : null}
           </div>
           {included !== null ? (
             <p className="cb-small cb-muted">
-              {`В тариф входит ${count(included, 'устройство', 'устройства', 'устройств')}.`}
-              {extra && extra.max > 0 ? ` Можно добавить ещё до ${extra.max}${price ? `, ${price} в месяц за каждое` : ''}.` : ''}
+              {t('В тариф входит {devices}.', { devices: count(included, 'устройство', 'устройства', 'устройств') })}
+              {extra && extra.max > 0 ? ` ${price ? t('Можно добавить ещё до {max}, {price} в месяц за каждое.', { max: extra.max, price }) : t('Можно добавить ещё до {max}.', { max: extra.max })}` : ''}
             </p>
           ) : null}
         </Card>

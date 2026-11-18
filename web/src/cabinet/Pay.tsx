@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { count, dateLong, money, MINUS, type Money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
-import { gb, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type TariffOffer } from './model';
+import { gbText, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type TariffOffer } from './model';
 import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
 import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 import { methodKey } from '../lib/methods';
@@ -57,7 +58,7 @@ export function Pay() {
   useEffect(() => {
     api<Catalog>('/api/client/catalog')
       .then(setCatalog)
-      .catch((err) => setError(failText(err, 'Тарифы не загрузились')));
+      .catch((err) => setError(failText(err, t('Тарифы не загрузились'))));
   }, []);
 
   const list = subs.list ?? [];
@@ -164,7 +165,7 @@ export function Pay() {
           setPromo(null);
           return;
         }
-        setQuoteError(failText(err, 'Сумма не посчиталась'));
+        setQuoteError(failText(err, t('Сумма не посчиталась')));
       }
     }, 150);
     return () => window.clearTimeout(timer);
@@ -225,10 +226,10 @@ export function Pay() {
     );
   }
   if (!catalog || live === undefined) {
-    return <p className="cb-muted cb-pad">Загружаем тарифы…</p>;
+    return <p className="cb-muted cb-pad">{t('Загружаем тарифы…')}</p>;
   }
   if (offers.length === 0) {
-    return <p className="cb-muted cb-pad">Тарифов пока нет: оператор ещё не открыл продажи.</p>;
+    return <p className="cb-muted cb-pad">{t('Тарифов пока нет: оператор ещё не открыл продажи.')}</p>;
   }
 
   const blocked = me.client.status === 'blocked' || live?.status === 'blocked';
@@ -239,33 +240,38 @@ export function Pay() {
   const expired = live?.status === 'expired';
   const expire = live?.subscription.mirror.expire_at ?? null;
   const another = !live && list.length > 0;
-  const title = !live ? (another ? 'Новая подписка' : 'Покупка подписки') : fromTrial ? 'Оплата подписки' : transition ? 'Переход на другой тариф' : 'Продление подписки';
+  const title = !live ? (another ? t('Новая подписка') : t('Покупка подписки')) : fromTrial ? t('Оплата подписки') : transition ? t('Переход на другой тариф') : t('Продление подписки');
   const currentName = live && list.length > 1 ? subName(live, list) : (current?.tariff.name ?? live?.tariff?.name ?? null);
-  const nextName = offer?.tariff.name ?? 'новый тариф';
+  const nextName = offer?.tariff.name ?? t('новый тариф');
   const lead: { text: ReactNode; tone: string } = blocked
-    ? { text: 'Подписка заблокирована, оплата недоступна. Напишите в поддержку.', tone: 'bad' }
+    ? { text: t('Подписка заблокирована, оплата недоступна. Напишите в поддержку.'), tone: 'bad' }
     : !live
       ? {
-          text: another ? 'Подписка начнёт работать сразу после оплаты, у неё будет своя ссылка. Текущие подписки останутся как есть.' : 'Подписка начнёт работать сразу после оплаты.',
+          text: another ? t('Подписка начнёт работать сразу после оплаты, у неё будет своя ссылка. Текущие подписки останутся как есть.') : t('Подписка начнёт работать сразу после оплаты.'),
           tone: 'muted',
         }
       : fromTrial
-        ? { text: `Пробный период закончится сразу после оплаты, тариф «${nextName}» начнёт действовать с даты оплаты.`, tone: 'muted' }
+        ? { text: t('Пробный период закончится сразу после оплаты, тариф «{name}» начнёт действовать с даты оплаты.', { name: nextName }), tone: 'muted' }
         : transition
           ? {
               text: (
                 <>
-                  <strong>Будет переход на тариф «{nextName}».</strong> {transitionText(currentName)}
+                  <strong>{t('Будет переход на тариф «{name}».', { name: nextName })}</strong> {transitionText(currentName)}
                 </>
               ),
               tone: 'warn',
             }
           : expired
-            ? { text: `Подписка закончилась ${expire ? dateLong(expire, false) : ''}. Новый срок начнётся с даты оплаты.`, tone: 'muted' }
-            : { text: `Сейчас: ${currentName ?? 'текущий тариф'}${expire ? ` до ${dateLong(expire, true)}` : ''}. Новый срок добавится к текущему.`, tone: 'muted' };
+            ? { text: t('Подписка закончилась {date}. Новый срок начнётся с даты оплаты.', { date: expire ? dateLong(expire, false) : '' }), tone: 'muted' }
+            : {
+                text: expire
+                  ? t('Сейчас: {name} до {date}. Новый срок добавится к текущему.', { name: currentName ?? t('текущий тариф'), date: dateLong(expire, true) })
+                  : t('Сейчас: {name}. Новый срок добавится к текущему.', { name: currentName ?? t('текущий тариф') }),
+                tone: 'muted',
+              };
 
   const limit = offer?.tariff.traffic.limit_bytes ?? 0;
-  const trafficNote = limit ? `Трафик: ${gb(limit)} ГБ ${resetPlan(offer?.tariff.traffic.reset ?? 'no_reset')}.` : null;
+  const trafficNote = limit ? t('Трафик: {traffic} {plan}.', { traffic: gbText(limit), plan: resetPlan(offer?.tariff.traffic.reset ?? 'no_reset') }) : null;
 
   const priceOf = (m: Money) => money(m);
   const extraMonthly: Money | null = extra ? { minor: catalog.currency === 'RUB' ? (extra.monthly.rub ?? 0) : (extra.monthly.usd ?? 0), currency: catalog.currency } : null;
@@ -275,8 +281,8 @@ export function Pay() {
   const after =
     quote?.expire_preview && !blocked
       ? change || !live
-        ? `${offer?.tariff.name ?? 'Подписка'} будет действовать до ${dateLong(quote.expire_preview, true)}.`
-        : `Подписка продлится до ${dateLong(quote.expire_preview, true)}.`
+        ? t('{name} будет действовать до {date}.', { name: offer?.tariff.name ?? t('Подписка'), date: dateLong(quote.expire_preview, true) })
+        : t('Подписка продлится до {date}.', { date: dateLong(quote.expire_preview, true) })
       : null;
 
   const pay = async () => {
@@ -310,7 +316,7 @@ export function Pay() {
       await reload();
       navigate('/cabinet');
     } catch (err) {
-      setError(failText(err, 'Оплата не началась'));
+      setError(failText(err, t('Оплата не началась')));
     } finally {
       setBusy(false);
     }
@@ -322,24 +328,24 @@ export function Pay() {
     const failed = waiting.order_status === 'canceled' || waiting.order_status === 'refunded';
     return (
       <div className="cb-stack">
-        <Card className="cb-wait" label="Оплата">
-          <h1 className="cb-h1">{done ? 'Оплата прошла' : review ? 'Оплата принята' : failed ? 'Оплата не прошла' : 'Ждём оплату'}</h1>
+        <Card className="cb-wait" label={t('Оплата')}>
+          <h1 className="cb-h1">{done ? t('Оплата прошла') : review ? t('Оплата принята') : failed ? t('Оплата не прошла') : t('Ждём оплату')}</h1>
           <p className="cb-ink2">
             {done
-              ? 'Подписка обновлена.'
+              ? t('Подписка обновлена.')
               : review
-                ? 'Проверяем платёж, подписка обновится в ближайшее время.'
+                ? t('Проверяем платёж, подписка обновится в ближайшее время.')
                 : failed
-                  ? 'Деньги не списаны или возвращены. Попробуйте ещё раз или выберите другой способ.'
-                  : 'Как только платёжная система подтвердит оплату, подписка обновится сама.'}
+                  ? t('Деньги не списаны или возвращены. Попробуйте ещё раз или выберите другой способ.')
+                  : t('Как только платёжная система подтвердит оплату, подписка обновится сама.')}
           </p>
           <div className="cb-btns">
             <Link to="/cabinet" className="cb-main">
-              В кабинет
+              {t('В кабинет')}
             </Link>
             {!done && !review && waiting.pay_url && !failed ? (
               <a className="cb-second" href={waiting.pay_url}>
-                Вернуться к оплате
+                {t('Вернуться к оплате')}
               </a>
             ) : null}
             {failed ? (
@@ -351,7 +357,7 @@ export function Pay() {
                   setParams({});
                 }}
               >
-                Выбрать заново
+                {t('Выбрать заново')}
               </button>
             ) : null}
           </div>
@@ -370,17 +376,17 @@ export function Pay() {
       <div className="cb-cols">
         <div className="cb-col left">
           {targets.length > 1 ? (
-            <Card className="cb-pick" label="Что оплачиваем">
-              <h2 className="cb-h2">Что оплачиваем</h2>
-              <div role="radiogroup" aria-label="Что оплачиваем" className="cb-method-grid">
-                {targets.map((t) => {
-                  const view = typeof t === 'number' ? targetView(list, t, multi) : null;
+            <Card className="cb-pick" label={t('Что оплачиваем')}>
+              <h2 className="cb-h2">{t('Что оплачиваем')}</h2>
+              <div role="radiogroup" aria-label={t('Что оплачиваем')} className="cb-method-grid">
+                {targets.map((item) => {
+                  const view = typeof item === 'number' ? targetView(list, item, multi) : null;
                   const state = view ? subState(view, me.client.status === 'blocked') : null;
                   return (
-                    <button key={String(t)} type="button" role="radio" aria-checked={target === t} className="cb-method cb-target" onClick={() => chooseTarget(t)}>
+                    <button key={String(item)} type="button" role="radio" aria-checked={target === item} className="cb-method cb-target" onClick={() => chooseTarget(item)}>
                       <span className="cb-radio" aria-hidden="true" />
                       <span className="cb-method-text">
-                        <strong>{view ? `Продлить «${subName(view, list)}»` : 'Новая подписка'}</strong>
+                        <strong>{view ? t('Продлить «{name}»', { name: subName(view, list) }) : t('Новая подписка')}</strong>
                         <span className={`cb-target-note ${state?.tone ?? 'muted'}`}>{state ? state.text : newTargetNote(list, multi)}</span>
                       </span>
                     </button>
@@ -389,11 +395,11 @@ export function Pay() {
               </div>
             </Card>
           ) : null}
-          <Card className="cb-pick" label="Тариф и срок">
+          <Card className="cb-pick" label={t('Тариф и срок')}>
             <div className="cb-row wrap">
-              <h2 className="cb-h2">Тариф и срок</h2>
+              <h2 className="cb-h2">{t('Тариф и срок')}</h2>
               {categories.length > 1 ? (
-                <div role="group" aria-label="Тариф" className="cb-cats">
+                <div role="group" aria-label={t('Тариф')} className="cb-cats">
                   {categories.map((c) => (
                     <button
                       key={c.id}
@@ -415,7 +421,7 @@ export function Pay() {
                 </div>
               ) : null}
             </div>
-            <div role="radiogroup" aria-label="Срок" className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
+            <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
               {offer?.periods.map((p) => {
                 const save = starsMode ? p.stars_savings_percent : p.savings_percent;
                 return (
@@ -424,8 +430,8 @@ export function Pay() {
                     <span className="cb-term-price">{starsMode && p.stars ? stars(p.stars) : priceOf(p.price)}</span>
                     {save ? (
                       <span className="cb-term-save">
-                        <span className="cb-muted">{starsMode && p.stars_per_month ? `${stars(p.stars_per_month)} в месяц` : `${priceOf(p.per_month)} в месяц`}</span>
-                        <strong>Выгоднее на {save}%</strong>
+                        <span className="cb-muted">{t('{price} в месяц', { price: starsMode && p.stars_per_month ? stars(p.stars_per_month) : priceOf(p.per_month) })}</span>
+                        <strong>{t('Выгоднее на {percent}%', { percent: save })}</strong>
                       </span>
                     ) : null}
                   </button>
@@ -435,42 +441,45 @@ export function Pay() {
           </Card>
 
           {extra && extra.max > 0 ? (
-            <Card className="cb-devs" label="Устройства">
+            <Card className="cb-devs" label={t('Устройства')}>
               <span className="cb-devs-text">
-                <h2 className="cb-h2">Устройства</h2>
+                <h2 className="cb-h2">{t('Устройства')}</h2>
                 <span className="cb-muted">
-                  В тариф входят {included}, ещё {extra.max} можно докупить по{' '}
-                  {starsMode && extra.monthly_stars ? stars(extra.monthly_stars) : extraMonthly ? priceOf(extraMonthly) : ''} в месяц.
+                  {t('В тариф входят {included}, ещё {max} можно докупить по {price} в месяц.', {
+                    included,
+                    max: extra.max,
+                    price: starsMode && extra.monthly_stars ? stars(extra.monthly_stars) : extraMonthly ? priceOf(extraMonthly) : '',
+                  })}
                 </span>
               </span>
               <span className="cb-stepper">
-                <button type="button" aria-label="Меньше устройств" aria-disabled={devices <= included} onClick={() => devices > included && setDevices(devices - 1)}>
+                <button type="button" aria-label={t('Меньше устройств')} aria-disabled={devices <= included} onClick={() => devices > included && setDevices(devices - 1)}>
                   {MINUS}
                 </button>
                 <span aria-live="polite">{devices}</span>
-                <button type="button" aria-label="Больше устройств" aria-disabled={devices >= maxDevices} onClick={() => devices < maxDevices && setDevices(devices + 1)}>
+                <button type="button" aria-label={t('Больше устройств')} aria-disabled={devices >= maxDevices} onClick={() => devices < maxDevices && setDevices(devices + 1)}>
                   +
                 </button>
               </span>
             </Card>
           ) : null}
 
-          <Card className="cb-methods" label="Способ оплаты">
-            <h2 className="cb-h2">Способ оплаты</h2>
-            {methods.length === 0 && quote ? <p className="cb-muted">Здесь пока нет способов оплаты. Напишите в поддержку — подскажем, как оплатить.</p> : null}
-            <div role="radiogroup" aria-label="Способ оплаты" className="cb-method-grid">
+          <Card className="cb-methods" label={t('Способ оплаты')}>
+            <h2 className="cb-h2">{t('Способ оплаты')}</h2>
+            {methods.length === 0 && quote ? <p className="cb-muted">{t('Здесь пока нет способов оплаты. Напишите в поддержку — подскажем, как оплатить.')}</p> : null}
+            <div role="radiogroup" aria-label={t('Способ оплаты')} className="cb-method-grid">
               {methods.map((m) => {
                 const off = !!m.unavailable;
                 const sel = chosen === m;
                 const hint =
                   m.unavailable?.type === 'insufficient_balance'
-                    ? `Не хватает: на балансе ${priceOf(m.unavailable.balance)}`
+                    ? t('Не хватает: на балансе {amount}', { amount: priceOf(m.unavailable.balance) })
                     : m.unavailable?.type === 'no_stars_price'
-                      ? 'У этого срока нет цены в звёздах'
+                      ? t('У этого срока нет цены в звёздах')
                       : m.kind === 'balance'
-                        ? `На балансе ${priceOf(me.balance)}`
+                        ? t('На балансе {amount}', { amount: priceOf(me.balance) })
                         : m.kind === 'stars' && methodAmount(m) !== null
-                          ? `${stars(methodAmount(m) ?? 0)}, оплата в Telegram`
+                          ? t('{stars}, оплата в Telegram', { stars: stars(methodAmount(m) ?? 0) })
                           : m.hint;
                 return (
                   <button
@@ -495,8 +504,8 @@ export function Pay() {
         </div>
 
         <div className="cb-col right">
-          <Card className="cb-total" label="Итого">
-            <h2 className="cb-h2">Итого</h2>
+          <Card className="cb-total" label={t('Итого')}>
+            <h2 className="cb-h2">{t('Итого')}</h2>
             {q && offer && periodOffer
               ? (() => {
                   const periodLine = q.lines.find((l) => l.kind.type === 'period') ?? null;
@@ -513,7 +522,7 @@ export function Pay() {
                       </div>
                       {extra && extra.max > 0 ? (
                         <div className="cb-line">
-                          <span>Доп. устройства: {Math.max(0, devices - included)}</span>
+                          <span>{t('Доп. устройства: {n}', { n: Math.max(0, devices - included) })}</span>
                           <span className="num">{starsMode ? stars(extraStars) : priceOf({ minor: extraMinor, currency: q.currency })}</span>
                         </div>
                       ) : null}
@@ -523,7 +532,7 @@ export function Pay() {
               : null}
             {q && (starsMode ? (q.stars?.discount ?? 0) > 0 : q.discount.minor > 0) ? (
               <div className="cb-line">
-                <span>Промокод {promo}</span>
+                <span>{t('Промокод {code}', { code: promo ?? '' })}</span>
                 <span className="num">
                   {MINUS}
                   {starsMode && q.stars ? stars(q.stars.discount) : priceOf(q.discount)}
@@ -547,16 +556,16 @@ export function Pay() {
               }}
             >
               <label className="cb-promo-field">
-                <span className="sr-only">Промокод</span>
-                <input value={promoInput} onChange={(e) => setPromoInput(e.target.value.toUpperCase())} placeholder="Промокод" maxLength={40} disabled={!!promo} />
+                <span className="sr-only">{t('Промокод')}</span>
+                <input value={promoInput} onChange={(e) => setPromoInput(e.target.value.toUpperCase())} placeholder={t('Промокод')} maxLength={40} disabled={!!promo} />
               </label>
               <button type="submit" className="cb-second">
-                {promo ? 'Убрать' : 'Применить'}
+                {promo ? t('Убрать') : t('Применить')}
               </button>
             </form>
             {promoError ? <p className="cb-error">{promoError}</p> : null}
             <div className="cb-due">
-              <strong>К оплате</strong>
+              <strong>{t('К оплате')}</strong>
               <span className="cb-due-sum">{totalText}</span>
             </div>
             {quoteError ? (
@@ -572,16 +581,16 @@ export function Pay() {
             {blocked ? (
               supportTickets(site) ? (
                 <Link className="cb-main big" to="/cabinet/help">
-                  Написать в поддержку
+                  {t('Написать в поддержку')}
                 </Link>
               ) : site.support_url ? (
                 <a className="cb-main big" href={site.support_url} target="_blank" rel="noreferrer">
-                  Написать в поддержку
+                  {t('Написать в поддержку')}
                 </a>
               ) : null
             ) : (
               <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || !chosen || !q}>
-                {busy ? 'Открываем оплату…' : transition ? `Перейти и оплатить ${totalText}` : `Оплатить ${totalText}`}
+                {busy ? t('Открываем оплату…') : transition ? t('Перейти и оплатить {amount}', { amount: totalText }) : t('Оплатить {amount}', { amount: totalText })}
               </button>
             )}
             {after ? <p className="cb-small cb-muted">{after}</p> : null}

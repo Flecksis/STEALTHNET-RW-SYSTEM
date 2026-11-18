@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
+import { t } from '../lib/i18n';
 import { useCabinet } from './CabinetApp';
 import type { Device, SubscriptionView } from './model';
 import { liveSubs, pickSub, readRemembered, remember, subName, subState, useShowPressed, type Remembered } from './subs';
@@ -29,7 +30,7 @@ export function useSubs(): Subs {
       setError(null);
       return next;
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Подписка не загрузилась');
+      setError(err instanceof ApiError ? err.message : t('Подписка не загрузилась'));
       setList((prev) => prev ?? []);
       return [];
     }
@@ -154,7 +155,7 @@ export function SubSwitch({ subs }: { subs: Subs }) {
   }
   const blocked = me.client.status === 'blocked';
   return (
-    <div ref={box} role="group" aria-label="Подписки" className="cb-subs">
+    <div ref={box} role="group" aria-label={t('Подписки')} className="cb-subs">
       {list.map((v) => {
         const on = v.subscription.id === chosenId;
         const state = subState(v, blocked);

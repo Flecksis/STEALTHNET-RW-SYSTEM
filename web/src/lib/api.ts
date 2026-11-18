@@ -1,3 +1,5 @@
+import { lang, t } from './i18n';
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -22,13 +24,13 @@ function errorFrom(status: number, data: unknown): ApiError {
   if (data && typeof data === 'object' && 'error' in data) {
     const err = (data as { error?: { code?: unknown; message?: unknown } }).error;
     const code = typeof err?.code === 'string' ? err.code : `http.${status}`;
-    const message = typeof err?.message === 'string' ? err.message : `Ошибка ${status}`;
+    const message = typeof err?.message === 'string' ? err.message : t('Ошибка {status}', { status });
     return new ApiError(status, code, message);
   }
   if (typeof data === 'string' && data.trim()) {
     return new ApiError(status, `http.${status}`, data.trim());
   }
-  return new ApiError(status, `http.${status}`, `Ошибка ${status}`);
+  return new ApiError(status, `http.${status}`, t('Ошибка {status}', { status }));
 }
 
 let bearer: string | null = null;
@@ -41,6 +43,9 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   const headers: Record<string, string> = { accept: 'application/json' };
   if (bearer && path.startsWith('/api/client')) {
     headers.authorization = `Bearer ${bearer}`;
+  }
+  if (path.startsWith('/api/client') || path.startsWith('/api/public')) {
+    headers['x-sn-lang'] = lang();
   }
   let body: string | undefined;
   if (options.body !== undefined) {
@@ -61,7 +66,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
     if (cause instanceof DOMException && cause.name === 'AbortError') {
       throw cause;
     }
-    throw new ApiError(0, 'network', 'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз');
+    throw new ApiError(0, 'network', t('Нет связи с сервером. Проверьте интернет и попробуйте ещё раз'));
   }
   return read<T>(response);
 }
@@ -92,7 +97,7 @@ export async function upload<T>(path: string, file: Blob): Promise<T> {
       credentials: 'same-origin',
     });
   } catch {
-    throw new ApiError(0, 'network', 'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз');
+    throw new ApiError(0, 'network', t('Нет связи с сервером. Проверьте интернет и попробуйте ещё раз'));
   }
   return read<T>(response);
 }

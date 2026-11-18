@@ -25,7 +25,36 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "auth.totp_invalid" => "The code didn't work. Check the time on your phone.",
         "auth.weak_password" => "The password must be 8 to 128 characters long.",
         "auth.wrong_password" => "Wrong email or password.",
-        "auth.oauth_failed" => "Sign-in didn't go through. Please try again.",
+        "oauth.failed" => "Sign-in didn't go through. Please try again.",
+        "oauth.canceled" => "Sign-in was cancelled.",
+        "oauth.expired" => "The sign-in has expired. Please start again.",
+        "oauth.refused" => "The sign-in wasn't confirmed. Please try again.",
+        "oauth.unavailable" => {
+            "The sign-in service isn't responding. Please try again a bit later."
+        }
+        "oauth.bad_token" | "oauth.bad_reply" => {
+            "Couldn't verify the sign-in reply. Please start signing in again."
+        }
+        "oauth.blocked" => "Your account is blocked. If this is a mistake, please contact support.",
+        "oauth.email_taken" => {
+            "This email already belongs to another account. Sign in to it the usual way and link this sign-in under Security."
+        }
+        "oauth.other_account" => {
+            "Another account of this kind is already linked to the account with this email. Sign in with it or the usual way."
+        }
+        "oauth.taken" => {
+            "This account is already used to sign in elsewhere. Unlink it there first."
+        }
+        "oauth.already_linked" => {
+            "This sign-in is already linked. To switch accounts, unlink the old one first."
+        }
+        "oauth.session_gone" => "Your session has ended. Sign in again and repeat the linking.",
+        "oauth.not_configured" => "This sign-in method isn't available right now.",
+        "oauth.no_request" => "Sign-in didn't finish. Tap the sign-in button again.",
+        "oauth.not_linked" => "This sign-in method isn't linked.",
+        "oauth.last_method" => {
+            "This is your only sign-in method. Link another one first: Telegram, email or another account."
+        }
         "antibot.expired" => "The button has expired. Request the free trial again.",
         "antibot.too_fast" => "Tap the button once more.",
         "antibot.confirm" => "First confirm you're not a robot.",

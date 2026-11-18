@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { Card, useCabinet } from './CabinetApp';
 import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from './payments';
@@ -63,7 +64,7 @@ export function TopUpPage() {
       })
       .catch((err) => {
         if (alive) {
-          setLoadError(err instanceof ApiError ? { code: err.code, message: err.message } : { code: 'network', message: 'Сервер не ответил' });
+          setLoadError(err instanceof ApiError ? { code: err.code, message: err.message } : { code: 'network', message: t('Сервер не ответил') });
         }
       });
     return () => {
@@ -113,10 +114,10 @@ export function TopUpPage() {
     options && custom.trim()
       ? typed === null
         ? currency === 'RUB'
-          ? 'Укажите сумму целым числом рублей, например 700'
-          : 'Укажите сумму числом, например 15 или 12.50'
+          ? t('Укажите сумму целым числом рублей, например 700')
+          : t('Укажите сумму числом, например 15 или 12.50')
         : !inRange
-          ? `Сумма должна быть ${limitsText(options)}`
+          ? t('Сумма должна быть {limits}', { limits: limitsText(options) })
           : null
       : null;
   const methods = useMemo(() => options?.methods ?? [], [options]);
@@ -146,7 +147,7 @@ export function TopUpPage() {
       }
       await reload();
     } catch (err) {
-      setError(failText(err, 'Оплата не началась'));
+      setError(failText(err, t('Оплата не началась')));
     } finally {
       setBusy(false);
     }
@@ -158,24 +159,24 @@ export function TopUpPage() {
     const failed = waiting.order_status === 'canceled' || waiting.order_status === 'refunded';
     return (
       <div className="cb-stack cb-narrow">
-        <Card className="cb-wait" label="Пополнение">
-          <h1 className="cb-h1">{done ? 'Баланс пополнен' : review ? 'Оплата принята' : failed ? 'Оплата не прошла' : 'Ждём оплату'}</h1>
+        <Card className="cb-wait" label={t('Пополнение')}>
+          <h1 className="cb-h1">{done ? t('Баланс пополнен') : review ? t('Оплата принята') : failed ? t('Оплата не прошла') : t('Ждём оплату')}</h1>
           <p className="cb-ink2">
             {done
-              ? `На балансе ${money(me.balance)}.`
+              ? t('На балансе {amount}.', { amount: money(me.balance) })
               : review
-                ? 'Проверяем платёж, деньги поступят на баланс в ближайшее время.'
+                ? t('Проверяем платёж, деньги поступят на баланс в ближайшее время.')
                 : failed
-                  ? 'Деньги не списаны или возвращены. Попробуйте ещё раз или выберите другой способ.'
-                  : 'Как только платёжная система подтвердит оплату, деньги поступят на баланс сами.'}
+                  ? t('Деньги не списаны или возвращены. Попробуйте ещё раз или выберите другой способ.')
+                  : t('Как только платёжная система подтвердит оплату, деньги поступят на баланс сами.')}
           </p>
           <div className="cb-btns">
             <Link to="/cabinet" className="cb-main">
-              В кабинет
+              {t('В кабинет')}
             </Link>
             {!done && !review && !failed && waiting.pay_url ? (
               <a className="cb-second" href={waiting.pay_url}>
-                Вернуться к оплате
+                {t('Вернуться к оплате')}
               </a>
             ) : null}
             {failed ? (
@@ -188,11 +189,11 @@ export function TopUpPage() {
                   setParams({});
                 }}
               >
-                Выбрать заново
+                {t('Выбрать заново')}
               </button>
             ) : (
               <Link to="/cabinet/payments" className="cb-second">
-                История оплат
+                {t('История оплат')}
               </Link>
             )}
           </div>
@@ -204,15 +205,15 @@ export function TopUpPage() {
   if (off || loadError?.code === 'balance.disabled') {
     return (
       <div className="cb-stack cb-narrow">
-        <Card label="Пополнение">
-          <h1 className="cb-h1">Пополнение выключено</h1>
-          <p className="cb-ink2">Пополнить баланс сейчас нельзя. Оплатите подписку напрямую одним из способов оплаты.</p>
+        <Card label={t('Пополнение')}>
+          <h1 className="cb-h1">{t('Пополнение выключено')}</h1>
+          <p className="cb-ink2">{t('Пополнить баланс сейчас нельзя. Оплатите подписку напрямую одним из способов оплаты.')}</p>
           <div className="cb-btns">
             <Link to="/cabinet/pay" className="cb-main">
-              К тарифам
+              {t('К тарифам')}
             </Link>
             <Link to="/cabinet/payments" className="cb-second">
-              История оплат
+              {t('История оплат')}
             </Link>
           </div>
         </Card>
@@ -229,21 +230,21 @@ export function TopUpPage() {
   }
 
   if (!options) {
-    return <p className="cb-muted cb-pad">Загружаем способы пополнения…</p>;
+    return <p className="cb-muted cb-pad">{t('Загружаем способы пополнения…')}</p>;
   }
 
   return (
     <div className="cb-pay">
       <header className="cb-pay-head">
-        <h1 className="cb-title">Пополнение баланса</h1>
-        <p className="cb-lead muted">Сейчас на балансе {money(options.balance)}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.</p>
+        <h1 className="cb-title">{t('Пополнение баланса')}</h1>
+        <p className="cb-lead muted">{t('Сейчас на балансе {amount}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.', { amount: money(options.balance) })}</p>
       </header>
       <div className="cb-cols">
         <div className="cb-col left">
-          <Card className="cb-pick" label="Сумма">
-            <h2 className="cb-h2">Сумма</h2>
+          <Card className="cb-pick" label={t('Сумма')}>
+            <h2 className="cb-h2">{t('Сумма')}</h2>
             {options.presets.length > 0 ? (
-              <div role="radiogroup" aria-label="Сумма пополнения" className="cb-amounts">
+              <div role="radiogroup" aria-label={t('Сумма пополнения')} className="cb-amounts">
                 {options.presets.map((p) => (
                   <button
                     key={p.minor}
@@ -262,26 +263,26 @@ export function TopUpPage() {
               </div>
             ) : null}
             <label className="cb-field">
-              <span>{options.presets.length > 0 ? 'Другая сумма' : 'Сумма пополнения'}</span>
+              <span>{options.presets.length > 0 ? t('Другая сумма') : t('Сумма пополнения')}</span>
               <input
                 value={custom}
                 onChange={(e) => setCustom(e.target.value)}
                 inputMode={currency === 'RUB' ? 'numeric' : 'decimal'}
-                placeholder={currency === 'RUB' ? 'Например, 700' : 'Например, 15'}
+                placeholder={currency === 'RUB' ? t('Например, 700') : t('Например, 15')}
                 aria-invalid={amountError ? true : undefined}
                 aria-describedby="topup-hint"
                 maxLength={12}
               />
             </label>
             <p id="topup-hint" className={amountError ? 'cb-error cb-hint' : 'cb-small cb-muted cb-hint'}>
-              {amountError ?? `Можно ${limitsText(options)}`}
+              {amountError ?? t('Можно {limits}', { limits: limitsText(options) })}
             </p>
           </Card>
 
-          <Card className="cb-methods" label="Способ оплаты">
-            <h2 className="cb-h2">Способ оплаты</h2>
-            {methods.length === 0 ? <p className="cb-muted">Способов пополнения пока нет. Напишите в поддержку — подскажем, как пополнить баланс.</p> : null}
-            <div role="radiogroup" aria-label="Способ оплаты" className="cb-method-grid">
+          <Card className="cb-methods" label={t('Способ оплаты')}>
+            <h2 className="cb-h2">{t('Способ оплаты')}</h2>
+            {methods.length === 0 ? <p className="cb-muted">{t('Способов пополнения пока нет. Напишите в поддержку — подскажем, как пополнить баланс.')}</p> : null}
+            <div role="radiogroup" aria-label={t('Способ оплаты')} className="cb-method-grid">
               {methods.map((m) => (
                 <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="cb-method" onClick={() => setMethod(methodKey(m))}>
                   <span className="cb-radio" aria-hidden="true" />
@@ -296,14 +297,14 @@ export function TopUpPage() {
         </div>
 
         <div className="cb-col right">
-          <Card className="cb-total" label="Итого">
-            <h2 className="cb-h2">Итого</h2>
+          <Card className="cb-total" label={t('Итого')}>
+            <h2 className="cb-h2">{t('Итого')}</h2>
             <div className="cb-line">
-              <span>Пополнение баланса</span>
+              <span>{t('Пополнение баланса')}</span>
               <span className="num">{sum ?? ''}</span>
             </div>
             <div className="cb-due">
-              <strong>К оплате</strong>
+              <strong>{t('К оплате')}</strong>
               <span className="cb-due-sum">{sum ?? ''}</span>
             </div>
             {error ? (
@@ -312,14 +313,14 @@ export function TopUpPage() {
               </p>
             ) : null}
             <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || !sum || !chosen}>
-              {busy ? 'Открываем оплату…' : sum ? `Пополнить на ${sum}` : 'Пополнить'}
+              {busy ? t('Открываем оплату…') : sum ? t('Пополнить на {amount}', { amount: sum }) : t('Пополнить')}
             </button>
-            {after ? <p className="cb-small cb-muted">После оплаты на балансе будет {after}.</p> : null}
+            {after ? <p className="cb-small cb-muted">{t('После оплаты на балансе будет {amount}.', { amount: after })}</p> : null}
           </Card>
           <Link to="/cabinet/payments" className="cb-card cb-help hov">
             <span>
-              <strong>История оплат</strong>
-              <span className="cb-small cb-muted">Оплаты, пополнения и возвраты</span>
+              <strong>{t('История оплат')}</strong>
+              <span className="cb-small cb-muted">{t('Оплаты, пополнения и возвраты')}</span>
             </span>
             <Icon name="chevron-right" size={20} />
           </Link>

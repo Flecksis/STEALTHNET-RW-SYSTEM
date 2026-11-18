@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money } from '../lib/format';
+import { t } from '../lib/i18n';
 import type { Referral, Withdrawal } from '../cabinet/model';
 import { firstPayout, payoutDetails, payoutLabel, WITHDRAWAL_STATUS } from '../cabinet/withdrawals';
 import { BackHead, useMini } from './MiniApp';
@@ -33,8 +34,8 @@ export function MiniWithdraw() {
   if (data === undefined) {
     return (
       <main className="mn-page">
-        <BackHead title="Вывод" />
-        <p className="mn-muted">Загружаем…</p>
+        <BackHead title={t('Вывод')} />
+        <p className="mn-muted">{t('Загружаем…')}</p>
       </main>
     );
   }
@@ -50,11 +51,11 @@ export function MiniWithdraw() {
       return;
     }
     if (!chosen) {
-      setStatus({ text: 'Выберите, куда вывести', bad: true });
+      setStatus({ text: t('Выберите, куда вывести'), bad: true });
       return;
     }
     if (!amount.trim() || !details.trim()) {
-      setStatus({ text: 'Укажите сумму и реквизиты', bad: true });
+      setStatus({ text: t('Укажите сумму и реквизиты'), bad: true });
       return;
     }
     setBusy(true);
@@ -63,10 +64,10 @@ export function MiniWithdraw() {
       await api('/api/client/m/referral/withdrawals', { method: 'POST', body: { amount: amount.trim().replace(',', '.'), method: chosen.id, details: details.trim() } });
       setAmount('');
       setDetails('');
-      setStatus({ text: 'Заявка отправлена. Деньги придут после проверки, статус виден ниже.', bad: false });
+      setStatus({ text: t('Заявка отправлена. Деньги придут после проверки, статус виден ниже.'), bad: false });
       await load();
     } catch (err) {
-      setStatus({ text: failText(err, 'Заявка не отправилась'), bad: true });
+      setStatus({ text: failText(err, t('Заявка не отправилась')), bad: true });
     } finally {
       setBusy(false);
     }
@@ -79,7 +80,7 @@ export function MiniWithdraw() {
       await api(`/api/client/m/referral/withdrawals/${item.id}/cancel`, { method: 'POST', body: {} });
       await load();
     } catch (err) {
-      setStatus({ text: failText(err, 'Заявка не отменилась'), bad: true });
+      setStatus({ text: failText(err, t('Заявка не отменилась')), bad: true });
     } finally {
       setBusy(false);
     }
@@ -87,27 +88,29 @@ export function MiniWithdraw() {
 
   return (
     <main className="mn-page withdraw">
-      <BackHead title="Вывод" />
+      <BackHead title={t('Вывод')} />
       {canWithdraw && balance ? (
         <>
           <p className="mn-notes">
-            Можно вывести {money(balance)}.{chosen?.min ? ` Минимум — ${money(chosen.min)}.` : ''} Заявку проверяют вручную, обычно за день-два.
+            {chosen?.min
+              ? t('Можно вывести {amount}. Минимум — {min}. Заявку проверяют вручную, обычно за день-два.', { amount: money(balance), min: money(chosen.min) })
+              : t('Можно вывести {amount}. Заявку проверяют вручную, обычно за день-два.', { amount: money(balance) })}
           </p>
           <div className="mn-field">
             <input
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               inputMode="decimal"
-              placeholder="Сумма"
-              aria-label="Сумма вывода"
+              placeholder={t('Сумма')}
+              aria-label={t('Сумма вывода')}
               maxLength={12}
               disabled={busy}
             />
             <button type="button" className="mn-link press" onClick={() => setAmount(String(balance.minor / 100))} disabled={busy}>
-              Вывести всё
+              {t('Вывести всё')}
             </button>
           </div>
-          <div role="radiogroup" aria-label="Куда вывести" className="mn-chips">
+          <div role="radiogroup" aria-label={t('Куда вывести')} className="mn-chips">
             {methods.map((m) => (
               <button key={m.id} type="button" role="radio" aria-checked={chosen?.id === m.id} className="mn-chip press" onClick={() => setMethod(m.id)} disabled={busy}>
                 {m.title}
@@ -115,7 +118,7 @@ export function MiniWithdraw() {
             ))}
           </div>
           <div className="mn-field">
-            <input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={chosen?.hint || 'Реквизиты'} aria-label="Реквизиты" maxLength={200} disabled={busy} />
+            <input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={chosen?.hint || t('Реквизиты')} aria-label={t('Реквизиты')} maxLength={200} disabled={busy} />
           </div>
           {status ? (
             <p className={status.bad ? 'mn-error' : 'mn-note'} role={status.bad ? 'alert' : 'status'}>
@@ -123,7 +126,7 @@ export function MiniWithdraw() {
             </p>
           ) : null}
           <button type="button" className="mn-main mn-paybtn press" onClick={() => void submit()} disabled={busy}>
-            {busy ? 'Отправляем…' : 'Отправить заявку'}
+            {busy ? t('Отправляем…') : t('Отправить заявку')}
           </button>
         </>
       ) : status ? (
@@ -132,7 +135,7 @@ export function MiniWithdraw() {
         </p>
       ) : null}
       {withdrawals.length > 0 ? (
-        <ul className="mn-list mn-payrows" aria-label="Заявки на вывод">
+        <ul className="mn-list mn-payrows" aria-label={t('Заявки на вывод')}>
           {withdrawals.map((w) => {
             const st = WITHDRAWAL_STATUS[w.status];
             const open = w.status === 'holding' || w.status === 'pending';
@@ -149,11 +152,11 @@ export function MiniWithdraw() {
                 </span>
                 <span className="mn-payrow-side">
                   <strong className="num">{money(w.amount)}</strong>
-                  <span className={`mn-tone ${st.tone}`}>{st.text}</span>
+                  <span className={`mn-tone ${st.tone}`}>{t(st.text)}</span>
                 </span>
                 {open ? (
                   <button type="button" className="mn-link press mn-payrow-pay" onClick={() => void cancel(w)} disabled={busy}>
-                    Отменить заявку
+                    {t('Отменить заявку')}
                   </button>
                 ) : null}
               </li>

@@ -1,5 +1,6 @@
 import { ApiError } from '../lib/api';
 import { count, dateLong, type Money } from '../lib/format';
+import { t } from '../lib/i18n';
 import type { PeriodOffer } from './model';
 
 export const GIFTS = '/api/client/m/gifts';
@@ -56,43 +57,43 @@ export function term(days: number): string {
 }
 
 export function codeDaysText(days: number): string {
-  return days > 0 ? `Код действует ${term(days)} с момента оплаты.` : 'Код действует без срока.';
+  return days > 0 ? t('Код действует {term} с момента оплаты.', { term: term(days) }) : t('Код действует без срока.');
 }
 
 export function giftState(g: MyGift): { text: string; tone: 'ink2' | 'warn' | 'muted' } {
   switch (g.status) {
     case 'active':
-      return { text: g.expires_at ? `Ждёт активации до ${dateLong(g.expires_at, true)}` : 'Ждёт активации', tone: 'warn' };
+      return { text: g.expires_at ? t('Ждёт активации до {date}', { date: dateLong(g.expires_at, true) }) : t('Ждёт активации'), tone: 'warn' };
     case 'redeemed':
-      return { text: g.redeemed_at ? `Активирован ${dateLong(g.redeemed_at, true)}` : 'Активирован', tone: 'ink2' };
+      return { text: g.redeemed_at ? t('Активирован {date}', { date: dateLong(g.redeemed_at, true) }) : t('Активирован'), tone: 'ink2' };
     case 'expired':
-      return { text: g.expires_at ? `Срок кода истёк ${dateLong(g.expires_at, true)}` : 'Срок кода истёк', tone: 'muted' };
+      return { text: g.expires_at ? t('Срок кода истёк {date}', { date: dateLong(g.expires_at, true) }) : t('Срок кода истёк'), tone: 'muted' };
     case 'canceled':
-      return { text: 'Отменён: деньги вернули', tone: 'muted' };
+      return { text: t('Отменён: деньги вернули'), tone: 'muted' };
   }
 }
 
 function currentName(c: GrantCurrent | null): string {
-  return c?.tariff ?? 'текущая подписка';
+  return c?.tariff ?? t('текущая подписка');
 }
 
 export function planText(p: RedeemPreview, target: GiftTarget): { text: string; tone: 'muted' | 'warn' } {
   if (p.multi && target === 'new') {
-    return { text: 'Это будет отдельная подписка со своей ссылкой, текущие останутся как есть.', tone: 'muted' };
+    return { text: t('Это будет отдельная подписка со своей ссылкой, текущие останутся как есть.'), tone: 'muted' };
   }
   if (p.plan === 'renewal') {
-    return { text: `Срок добавится к подписке «${currentName(p.current)}».`, tone: 'muted' };
+    return { text: t('Срок добавится к подписке «{name}».', { name: currentName(p.current) }), tone: 'muted' };
   }
   if (p.plan === 'change' && p.current?.kind === 'trial') {
-    return { text: `Пробный период закончится, подписка «${p.gift.tariff}» начнёт работать сразу.`, tone: 'muted' };
+    return { text: t('Пробный период закончится, подписка «{name}» начнёт работать сразу.', { name: p.gift.tariff }), tone: 'muted' };
   }
   if (p.plan === 'change') {
     return {
-      text: `Будет переход на тариф «${p.gift.tariff}». Текущая подписка (${currentName(p.current)}) будет заменена, оставшиеся дни не переносятся.`,
+      text: t('Будет переход на тариф «{name}». Текущая подписка ({current}) будет заменена, оставшиеся дни не переносятся.', { name: p.gift.tariff, current: currentName(p.current) }),
       tone: 'warn',
     };
   }
-  return { text: 'Подписка начнёт работать сразу после активации.', tone: 'muted' };
+  return { text: t('Подписка начнёт работать сразу после активации.'), tone: 'muted' };
 }
 
 export function targetBody(code: string, target: GiftTarget) {

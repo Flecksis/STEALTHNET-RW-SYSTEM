@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { Card, useCabinet } from './CabinetApp';
 import { absoluteUrl, amountText, expired, PAGE, paymentNote, paymentState, paymentWhen, payUntil, purchaseText, type ClientPayment, type PaymentsPage } from './payments';
 
@@ -49,7 +50,7 @@ export function PaymentsHistory() {
       setItems((prev) => (before && prev ? [...prev, ...page.items] : page.items));
       setNext(page.next);
     } catch (err) {
-      setError(failText(err, 'История не загрузилась'));
+      setError(failText(err, t('История не загрузилась')));
     } finally {
       setBusy(false);
     }
@@ -64,34 +65,34 @@ export function PaymentsHistory() {
   return (
     <div className="cb-history">
       <header className="cb-pay-head">
-        <h1 className="cb-title">История оплат</h1>
+        <h1 className="cb-title">{t('История оплат')}</h1>
         {canTopUp ? (
           <p className="cb-lead muted">
-            На балансе {money(me.balance)} ·{' '}
+            {t('На балансе {amount}', { amount: money(me.balance) })} ·{' '}
             <Link to="/cabinet/topup" className="cb-accent-link">
-              Пополнить
+              {t('Пополнить')}
             </Link>
           </p>
         ) : null}
       </header>
-      {items === null && !error ? <p className="cb-muted">Загружаем историю…</p> : null}
+      {items === null && !error ? <p className="cb-muted">{t('Загружаем историю…')}</p> : null}
       {items && items.length === 0 ? (
-        <Card label="Оплаты">
-          <p className="cb-ink2">Оплат пока нет.</p>
+        <Card label={t('Оплаты')}>
+          <p className="cb-ink2">{t('Оплат пока нет.')}</p>
           <div className="cb-btns">
             <Link to="/cabinet/pay" className="cb-main">
-              Выбрать тариф
+              {t('Выбрать тариф')}
             </Link>
             {canTopUp ? (
               <Link to="/cabinet/topup" className="cb-second">
-                Пополнить баланс
+                {t('Пополнить баланс')}
               </Link>
             ) : null}
           </div>
         </Card>
       ) : null}
       {items && items.length > 0 ? (
-        <Card className="cb-paylist" label="Оплаты">
+        <Card className="cb-paylist" label={t('Оплаты')}>
           <ul className="cb-payrows">
             {items.map((p) => (
               <PaymentRow key={p.id} payment={p} />
@@ -105,13 +106,13 @@ export function PaymentsHistory() {
             {error}
           </p>
           <button type="button" className="cb-second sm" onClick={() => void load(items && items.length > 0 ? next : null)} disabled={busy}>
-            Повторить
+            {t('Повторить')}
           </button>
         </div>
       ) : null}
       {next && !error ? (
         <button type="button" className="cb-second cb-more" onClick={() => void load(next)} disabled={busy}>
-          {busy ? 'Загружаем…' : 'Показать ещё'}
+          {busy ? t('Загружаем…') : t('Показать ещё')}
         </button>
       ) : null}
     </div>

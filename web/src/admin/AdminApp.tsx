@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router';
 import { api, ApiError } from '../lib/api';
+import { applyLang } from '../lib/i18n';
 import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
@@ -59,6 +60,9 @@ function storedTheme(): Theme | null {
 }
 
 export function AdminApp() {
+  useLayoutEffect(() => {
+    void applyLang('ru');
+  }, []);
   const site = useSite();
   const system = useSystemTheme();
   const [state, setState] = useState<State>({ kind: 'loading' });

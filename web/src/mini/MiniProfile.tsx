@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../lib/api';
 import { money } from '../lib/format';
+import { NATIVE, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import type { Referral } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
@@ -10,7 +11,7 @@ import { siteInviteLink } from '../lib/referral';
 import { supportLink, supportTickets } from '../lib/support';
 
 export function MiniProfile() {
-  const { me, site } = useMini();
+  const { me, site, lang, nextLang, switchLang } = useMini();
   const [referral, setReferral] = useState<Referral | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -36,50 +37,48 @@ export function MiniProfile() {
 
   return (
     <main className="mn-page profile">
-      <BackHead title="Профиль" />
+      <BackHead title={t('Профиль')} />
       {me.balance_enabled !== false ? (
         <div className="mn-card mn-pad">
-          <span className="mn-muted">Баланс</span>
+          <span className="mn-muted">{t('Баланс')}</span>
           <strong className="mn-big">{money(me.balance)}</strong>
           <Link to="/app/topup" className="mn-btn2 press mn-btn-link">
-            Пополнить
+            {t('Пополнить')}
           </Link>
         </div>
       ) : me.balance.minor > 0 ? (
         <div className="mn-card mn-pad">
-          <span className="mn-muted">Остаток на балансе</span>
+          <span className="mn-muted">{t('Остаток на балансе')}</span>
           <strong className="mn-big">{money(me.balance)}</strong>
-          <span className="mn-muted small">Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму</span>
+          <span className="mn-muted small">{t('Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму')}</span>
         </div>
       ) : null}
       {referral ? (
         <div className="mn-card mn-pad">
-          <strong>Друзья</strong>
-          <span className="mn-ink2">Пригласите друга и получайте {referral.levels[0] ?? 0}% от его оплат на баланс.</span>
+          <strong>{t('Друзья')}</strong>
+          <span className="mn-ink2">{t('Пригласите друга и получайте {percent}% от его оплат на баланс.', { percent: referral.levels[0] ?? 0 })}</span>
           {referral.bot_link ? (
             <>
-              <span className="mn-muted small">Ссылка на Telegram-бота</span>
+              <span className="mn-muted small">{t('Ссылка на Telegram-бота')}</span>
               <span className="mn-url mono">{referral.bot_link.replace(/^https:\/\//, '')}</span>
               <button type="button" className="mn-btn2 press" onClick={() => void copy(referral.bot_link ?? '', 'bot')}>
-                {copied === 'bot' ? 'Скопировано' : 'Скопировать ссылку'}
+                {copied === 'bot' ? t('Скопировано') : t('Скопировать ссылку')}
               </button>
             </>
           ) : null}
-          <span className="mn-muted small">Ссылка на сайт</span>
+          <span className="mn-muted small">{t('Ссылка на сайт')}</span>
           <span className="mn-url mono">{siteInviteLink(referral.code).replace(/^https?:\/\//, '')}</span>
           <button type="button" className="mn-btn2 press" onClick={() => void copy(siteInviteLink(referral.code), 'site')}>
-            {copied === 'site' ? 'Скопировано' : 'Скопировать ссылку'}
+            {copied === 'site' ? t('Скопировано') : t('Скопировать ссылку')}
           </button>
-          <span className="mn-muted small">
-            Пришли по ссылке: {referral.invited} · заработано {money(referral.earned)}
-          </span>
+          <span className="mn-muted small">{t('Пришли по ссылке: {count} · заработано {amount}', { count: referral.invited, amount: money(referral.earned) })}</span>
           {referral.withdrawals_enabled && referral.balance && referral.balance.minor > 0 ? (
             <Link to="/app/withdraw" className="mn-btn2 press mn-btn-link">
-              Вывести {money(referral.balance)}
+              {t('Вывести {amount}', { amount: money(referral.balance) })}
             </Link>
           ) : (referral.withdrawals?.length ?? 0) > 0 ? (
             <Link to="/app/withdraw" className="mn-link press">
-              Заявки на вывод
+              {t('Заявки на вывод')}
             </Link>
           ) : null}
         </div>
@@ -87,28 +86,36 @@ export function MiniProfile() {
       <div className="mn-list">
         <Link to="/app/payments" className="mn-row press">
           <Icon name="receipt" size={21} />
-          <span className="mn-row-name">История оплат</span>
+          <span className="mn-row-name">{t('История оплат')}</span>
           {me.payments_count ? <span className="mn-row-val num">{me.payments_count}</span> : null}
           <Icon name="chevron-right" size={16} />
         </Link>
         {chat ? (
           <Link to="/app/support" className="mn-row press">
             <Icon name="chat" size={21} />
-            <span className="mn-row-name">{link ? 'Написать в поддержку' : 'Поддержка'}</span>
+            <span className="mn-row-name">{link ? t('Написать в поддержку') : t('Поддержка')}</span>
             <Icon name="chevron-right" size={16} />
           </Link>
         ) : null}
         {ticketsBot ? (
           <button type="button" className="mn-row press" onClick={() => openExternal(`https://t.me/${ticketsBot}?start=support`)}>
             <Icon name="chat" size={21} />
-            <span className="mn-row-name">{link ? 'Написать в поддержку' : 'Поддержка'}</span>
+            <span className="mn-row-name">{link ? t('Написать в поддержку') : t('Поддержка')}</span>
             <Icon name="chevron-right" size={16} />
           </button>
         ) : null}
         {link ? (
           <button type="button" className="mn-row press" onClick={() => openExternal(link)}>
             <Icon name="chat" size={21} />
-            <span className="mn-row-name">{ticketsBot || chat ? 'Чат поддержки' : 'Поддержка'}</span>
+            <span className="mn-row-name">{ticketsBot || chat ? t('Чат поддержки') : t('Поддержка')}</span>
+            <Icon name="chevron-right" size={16} />
+          </button>
+        ) : null}
+        {nextLang ? (
+          <button type="button" className="mn-row press" onClick={() => switchLang(nextLang)}>
+            <Icon name="globe" size={21} />
+            <span className="mn-row-name">{t('Язык')}</span>
+            <span className="mn-row-val">{NATIVE[lang]}</span>
             <Icon name="chevron-right" size={16} />
           </button>
         ) : null}

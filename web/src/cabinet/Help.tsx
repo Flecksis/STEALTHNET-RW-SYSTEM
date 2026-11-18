@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, dateTime } from '../lib/format';
+import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
-import { AI_NAME, aiAnswering, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
+import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
 import { Card, useCabinet } from './CabinetApp';
 
 export type { TicketBrief };
@@ -15,12 +16,12 @@ function failText(err: unknown, fallback: string): string {
 
 export function ticketState(ticket: TicketBrief): { text: string; tone: string } {
   if (ticket.status === 'closed') {
-    return { text: 'Закрыто', tone: 'muted' };
+    return { text: t('Закрыто'), tone: 'muted' };
   }
   if (ticket.last_author === 'client') {
-    return { text: 'Ждёт ответа', tone: 'muted' };
+    return { text: t('Ждёт ответа'), tone: 'muted' };
   }
-  return { text: 'Есть ответ', tone: 'accent' };
+  return { text: t('Есть ответ'), tone: 'accent' };
 }
 
 function LinkCard({ url, alone }: { url: string; alone: boolean }) {
@@ -28,8 +29,8 @@ function LinkCard({ url, alone }: { url: string; alone: boolean }) {
   return (
     <a className="cb-card cb-help hov" href={url} target="_blank" rel="noreferrer">
       <span>
-        <strong>{alone ? 'Написать в поддержку' : 'Чат поддержки'}</strong>
-        <span className="cb-small cb-muted">{telegram ? 'Откроется чат в Telegram' : 'Откроется страница поддержки'}</span>
+        <strong>{alone ? t('Написать в поддержку') : t('Чат поддержки')}</strong>
+        <span className="cb-small cb-muted">{telegram ? t('Откроется чат в Telegram') : t('Откроется страница поддержки')}</span>
       </span>
       <Icon name="chevron-right" size={20} />
     </a>
@@ -60,7 +61,7 @@ function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: bool
       setList(await api<TicketBrief[]>('/api/client/support/tickets'));
       setError(null);
     } catch (err) {
-      setError(failText(err, 'Обращения не загрузились'));
+      setError(failText(err, t('Обращения не загрузились')));
     }
   }, []);
 
@@ -80,50 +81,51 @@ function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: bool
       setBody('');
       navigate(`/cabinet/help/${res.ticket_id}`);
     } catch (err) {
-      setError(failText(err, 'Сообщение не отправилось'));
+      setError(failText(err, t('Сообщение не отправилось')));
     } finally {
       setBusy(false);
     }
   };
 
-  const open = (list ?? []).filter((t) => t.status === 'open');
-  const closed = (list ?? []).filter((t) => t.status === 'closed');
-  const waiting = open.find((t) => t.last_author === 'client');
+  const open = (list ?? []).filter((ticket) => ticket.status === 'open');
+  const closed = (list ?? []).filter((ticket) => ticket.status === 'closed');
+  const waiting = open.find((ticket) => ticket.last_author === 'client');
+  const [waitingBefore, waitingAfter] = waiting ? t('Обращение №{id} ещё ждёт ответа. Дополнить его можно {link}.', { id: waiting.id }).split('{link}') : [];
 
   return (
     <div className="cb-history">
       <header className="cb-pay-head">
-        <h1 className="cb-title">Помощь</h1>
+        <h1 className="cb-title">{t('Помощь')}</h1>
         <p className="cb-lead muted">
           {tickets
             ? ai
-              ? `Опишите вопрос — сначала ответит ${AI_NAME}. Если он не справится или вы попросите, подключится оператор.`
+              ? t('Опишите вопрос — сначала ответит {ai}. Если он не справится или вы попросите, подключится оператор.', { ai: aiName() })
               : link
-                ? 'Напишите здесь — ответ появится на этой странице. Или откройте чат поддержки.'
-                : 'Опишите вопрос — ответ появится на этой странице.'
-            : 'Поддержка отвечает в чате — кнопка ниже откроет его.'}
+                ? t('Напишите здесь — ответ появится на этой странице. Или откройте чат поддержки.')
+                : t('Опишите вопрос — ответ появится на этой странице.')
+            : t('Поддержка отвечает в чате — кнопка ниже откроет его.')}
         </p>
       </header>
       {link ? <LinkCard url={link} alone={!tickets} /> : null}
       {tickets ? (
-        <Card className="cb-newticket" label="Новое обращение">
-          <h2 className="cb-h2">{waiting ? 'Ещё вопрос' : 'Новое обращение'}</h2>
+        <Card className="cb-newticket" label={t('Новое обращение')}>
+          <h2 className="cb-h2">{waiting ? t('Ещё вопрос') : t('Новое обращение')}</h2>
           {waiting ? (
             <p className="cb-small cb-muted">
-              Обращение №{waiting.id} ещё ждёт ответа. Дополнить его можно{' '}
+              {waitingBefore}
               <Link to={`/cabinet/help/${waiting.id}`} className="cb-accent-link">
-                в переписке
+                {t('в переписке')}
               </Link>
-              .
+              {waitingAfter}
             </p>
           ) : null}
           <label className="cb-field">
-            <span className="cb-sr">Сообщение</span>
-            <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder="Что случилось? Например: не подключается iPhone, после оплаты не продлилась подписка" onChange={(e) => setBody(e.target.value)} disabled={busy} />
+            <span className="cb-sr">{t('Сообщение')}</span>
+            <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder={t('Что случилось? Например: не подключается iPhone, после оплаты не продлилась подписка')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
           </label>
           <div className="cb-btns">
             <button type="button" className="cb-main" onClick={() => void send()} disabled={busy || !body.trim()}>
-              {busy ? 'Отправляем…' : 'Отправить'}
+              {busy ? t('Отправляем…') : t('Отправить')}
             </button>
           </div>
         </Card>
@@ -134,16 +136,16 @@ function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: bool
         </p>
       ) : null}
       {list && list.length > 0 ? (
-        <Card className="cb-paylist" label="Обращения">
+        <Card className="cb-paylist" label={t('Обращения')}>
           <ul className="cb-payrows">
-            {[...open, ...closed].map((t) => {
-              const st = ticketState(t);
+            {[...open, ...closed].map((ticket) => {
+              const st = ticketState(ticket);
               return (
-                <li key={t.id} className="cb-payrow cb-ticketrow">
-                  <Link to={`/cabinet/help/${t.id}`} className="cb-ticketlink">
+                <li key={ticket.id} className="cb-payrow cb-ticketrow">
+                  <Link to={`/cabinet/help/${ticket.id}`} className="cb-ticketlink">
                     <span className="cb-payrow-main">
-                      <strong>{ticketTitle(t)}</strong>
-                      <span className="cb-small cb-muted">{dateTime(t.status === 'closed' && t.closed_at ? t.closed_at : t.updated_at)}</span>
+                      <strong>{ticketTitle(ticket)}</strong>
+                      <span className="cb-small cb-muted">{dateTime(ticket.status === 'closed' && ticket.closed_at ? ticket.closed_at : ticket.updated_at)}</span>
                     </span>
                     <span className="cb-payrow-side">
                       <span className={`cb-small cb-status ${st.tone}`}>{st.text}</span>
@@ -175,7 +177,7 @@ function TicketPage({ id }: { id: number }) {
       setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`));
       setError(null);
     } catch (err) {
-      setError(failText(err, 'Обращение не загрузилось'));
+      setError(failText(err, t('Обращение не загрузилось')));
     }
   }, [id]);
 
@@ -214,7 +216,7 @@ function TicketPage({ id }: { id: number }) {
       setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`, { method: 'POST', body: { body: text } }));
       setBody('');
     } catch (err) {
-      setError(failText(err, 'Сообщение не отправилось'));
+      setError(failText(err, t('Сообщение не отправилось')));
     } finally {
       setBusy(false);
     }
@@ -226,7 +228,7 @@ function TicketPage({ id }: { id: number }) {
     try {
       setThread(await api<ChatThread>(`/api/client/support/tickets/${id}/operator`, { method: 'POST', body: {} }));
     } catch (err) {
-      setError(failText(err, 'Не получилось позвать оператора'));
+      setError(failText(err, t('Не получилось позвать оператора')));
     } finally {
       setBusy(false);
     }
@@ -239,7 +241,7 @@ function TicketPage({ id }: { id: number }) {
       setAsk(false);
       await load();
     } catch (err) {
-      setError(failText(err, 'Обращение не закрылось'));
+      setError(failText(err, t('Обращение не закрылось')));
     } finally {
       setBusy(false);
     }
@@ -254,7 +256,7 @@ function TicketPage({ id }: { id: number }) {
   const link = supportLink(site);
   const handoffNote = (
     <li key="handoff" className="cb-chat-note">
-      Вопрос передан оператору. Ответ придёт сюда.
+      {t('Вопрос передан оператору. Ответ придёт сюда.')}
     </li>
   );
 
@@ -263,12 +265,12 @@ function TicketPage({ id }: { id: number }) {
       <header className="cb-pay-head">
         <Link to="/cabinet/help" className="cb-accent-link cb-back">
           <Icon name="chevron-left" size={18} />
-          Все обращения
+          {t('Все обращения')}
         </Link>
-        <h1 className="cb-title">Обращение №{id}</h1>
+        <h1 className="cb-title">{t('Обращение №{id}', { id })}</h1>
         {ticket && st ? (
           <p className="cb-lead muted">
-            {st.text} · открыто {dateLong(ticket.created_at, true)}
+            {t('{state} · открыто {date}', { state: st.text, date: dateLong(ticket.created_at, true) })}
           </p>
         ) : null}
       </header>
@@ -277,9 +279,9 @@ function TicketPage({ id }: { id: number }) {
           {error}
         </p>
       ) : null}
-      {!thread && !error ? <p className="cb-muted">Загружаем переписку…</p> : null}
+      {!thread && !error ? <p className="cb-muted">{t('Загружаем переписку…')}</p> : null}
       {thread ? (
-        <Card className="cb-thread" label="Переписка">
+        <Card className="cb-thread" label={t('Переписка')}>
           <ol className="cb-msgs">
             {messages.map((m, i) => {
               const mine = m.author === 'client';
@@ -295,21 +297,21 @@ function TicketPage({ id }: { id: number }) {
             {handoff !== null && handoff >= messages.length ? handoffNote : null}
             {typing ? (
               <li className="cb-chat-note" aria-live="polite">
-                {AI_NAME} пишет ответ…
+                {t('{ai} пишет ответ…', { ai: aiName() })}
               </li>
             ) : null}
           </ol>
           <div ref={bottom} />
           {closed ? (
             <div className="cb-thread-end">
-              <p className="cb-ink2">Обращение закрыто. Если вопрос остался, начните новое.</p>
+              <p className="cb-ink2">{t('Обращение закрыто. Если вопрос остался, начните новое.')}</p>
               <div className="cb-btns">
                 <Link to="/cabinet/help" className="cb-main">
-                  Новое обращение
+                  {t('Новое обращение')}
                 </Link>
                 {link ? (
                   <a className="cb-second" href={link} target="_blank" rel="noreferrer">
-                    Чат поддержки
+                    {t('Чат поддержки')}
                   </a>
                 ) : null}
               </div>
@@ -317,35 +319,35 @@ function TicketPage({ id }: { id: number }) {
           ) : (
             <div className="cb-reply">
               <label className="cb-field">
-                <span className="cb-sr">Ответ</span>
-                <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder="Напишите сообщение" onChange={(e) => setBody(e.target.value)} disabled={busy} />
+                <span className="cb-sr">{t('Ответ')}</span>
+                <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder={t('Напишите сообщение')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
               </label>
               <div className="cb-btns">
                 <button type="button" className="cb-main" onClick={() => void reply()} disabled={busy || !body.trim()}>
-                  {busy ? 'Отправляем…' : 'Отправить'}
+                  {busy ? t('Отправляем…') : t('Отправить')}
                 </button>
                 {answering ? (
                   <button type="button" className="cb-text" onClick={() => void callOperator()} disabled={busy}>
-                    Позвать оператора
+                    {t('Позвать оператора')}
                   </button>
                 ) : null}
                 {!ask ? (
                   <button type="button" className="cb-text" onClick={() => setAsk(true)} disabled={busy}>
-                    Вопрос решён, закрыть
+                    {t('Вопрос решён, закрыть')}
                   </button>
                 ) : null}
               </div>
               {ask ? (
                 <div className="cb-ask">
                   <p>
-                    <strong>Закрыть обращение?</strong> Писать в него больше будет нельзя, но можно начать новое.
+                    <strong>{t('Закрыть обращение?')}</strong> {t('Писать в него больше будет нельзя, но можно начать новое.')}
                   </p>
                   <span className="cb-ask-btns">
                     <button type="button" className="cb-main sm" onClick={() => void close()} disabled={busy}>
-                      Закрыть
+                      {t('Закрыть')}
                     </button>
                     <button type="button" className="cb-cancel" onClick={() => setAsk(false)} disabled={busy}>
-                      Отменить
+                      {t('Отменить')}
                     </button>
                   </span>
                 </div>

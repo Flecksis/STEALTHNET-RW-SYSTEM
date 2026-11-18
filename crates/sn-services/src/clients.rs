@@ -189,7 +189,7 @@ pub(crate) fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) ->
             .quote
             .lines
             .first()
-            .map(|line| line.label.clone())
+            .map(|line| line.shown_label())
             .or_else(|| match &order.intent {
                 PurchaseIntent::Imported { label, .. } => label.clone(),
                 _ => None,

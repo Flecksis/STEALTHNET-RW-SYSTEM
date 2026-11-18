@@ -1,5 +1,6 @@
 import type { Subscription } from '../admin/clients/types';
-import { count, dateLong, days, NBSP, type Money } from '../lib/format';
+import { count, dateLong, days, type Money } from '../lib/format';
+import { lang, msg, t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 
 export type TrafficReset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
@@ -25,6 +26,7 @@ export type SubscriptionView = {
 
 export type ClientMe = {
   client: { id: number; status: 'active' | 'blocked'; created_at: string; locale: string };
+  locale?: 'ru' | 'en';
   balance: Money;
   balance_enabled?: boolean;
   multi_subscriptions?: boolean;
@@ -91,7 +93,9 @@ export type Quote = {
 };
 
 export function transitionText(current: string | null): string {
-  return `Текущая подписка (${current ?? 'без тарифа'}) будет удалена, новая станет доступна сразу после оплаты. Оставшиеся дни не переносятся, ссылка подписки останется прежней.`;
+  return t('Текущая подписка ({current}) будет удалена, новая станет доступна сразу после оплаты. Оставшиеся дни не переносятся, ссылка подписки останется прежней.', {
+    current: current ?? t('без тарифа'),
+  });
 }
 
 export type WithdrawalStatus = 'holding' | 'pending' | 'paid' | 'rejected' | 'canceled';
@@ -137,7 +141,11 @@ export function stars(n: number): string {
 export function gb(bytes: number): string {
   const value = bytes / GB;
   const rounded = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
-  return String(rounded).replace('.', ',');
+  return lang() === 'en' ? String(rounded) : String(rounded).replace('.', ',');
+}
+
+export function gbText(bytes: number): string {
+  return t('{n} ГБ', { n: gb(bytes) });
 }
 
 function nextMonthFirst(now = new Date()): Date {
@@ -158,38 +166,41 @@ export function resetWhen(reset: TrafficReset, sub: Subscription | null): { tail
   switch (reset) {
     case 'month': {
       const date = dateLong(nextMonthFirst().toISOString());
-      return { tail: `обновится ${date}`, until: `До ${date}` };
+      return { tail: t('обновится {date}', { date }), until: t('До {date}', { date }) };
     }
     case 'month_rolling': {
       const next = nextAnniversary(sub?.period_started_at ?? sub?.created_at ?? null);
       const date = next ? dateLong(next.toISOString()) : '';
-      return { tail: date ? `обновится ${date}` : 'обновится в день оформления', until: date ? `До ${date}` : 'До дня оформления' };
+      return {
+        tail: date ? t('обновится {date}', { date }) : t('обновится в день оформления'),
+        until: date ? t('До {date}', { date }) : t('До дня оформления'),
+      };
     }
     case 'week':
-      return { tail: 'обновится в понедельник', until: 'До понедельника' };
+      return { tail: t('обновится в понедельник'), until: t('До понедельника') };
     case 'day':
-      return { tail: 'обновится завтра', until: 'До завтра' };
+      return { tail: t('обновится завтра'), until: t('До завтра') };
     case 'on_payment':
-      return { tail: 'обновится при продлении', until: 'До продления' };
+      return { tail: t('обновится при продлении'), until: t('До продления') };
     default:
-      return { tail: 'на весь срок', until: '' };
+      return { tail: t('на весь срок'), until: '' };
   }
 }
 
 export function resetPlan(reset: TrafficReset): string {
   switch (reset) {
     case 'month':
-      return 'в месяц, обновляется 1-го числа';
+      return t('в месяц, обновляется 1-го числа');
     case 'month_rolling':
-      return 'в месяц, обновляется в день оформления';
+      return t('в месяц, обновляется в день оформления');
     case 'week':
-      return 'в неделю, обновляется по понедельникам';
+      return t('в неделю, обновляется по понедельникам');
     case 'day':
-      return 'в день, обновляется каждый день';
+      return t('в день, обновляется каждый день');
     case 'on_payment':
-      return 'на оплаченный срок, обновляется при каждой оплате';
+      return t('на оплаченный срок, обновляется при каждой оплате');
     default:
-      return 'на весь срок';
+      return t('на весь срок');
   }
 }
 
@@ -197,27 +208,27 @@ export type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 
 export function statusWord(view: SubscriptionView | null, blocked: boolean): { text: string; tone: Tone } {
   if (blocked || view?.status === 'blocked') {
-    return { text: 'Заблокирована', tone: 'bad' };
+    return { text: t('Заблокирована'), tone: 'bad' };
   }
   if (!view) {
-    return { text: 'Нет подписки', tone: 'muted' };
+    return { text: t('Нет подписки'), tone: 'muted' };
   }
   switch (view.status) {
     case 'limited':
-      return { text: 'Трафик закончился', tone: 'warn' };
+      return { text: t('Трафик закончился'), tone: 'warn' };
     case 'expired':
-      return { text: 'Истекла', tone: 'muted' };
+      return { text: t('Истекла'), tone: 'muted' };
     case 'expiring':
-      return { text: 'Скоро закончится', tone: 'warn' };
+      return { text: t('Скоро закончится'), tone: 'warn' };
     case 'trial':
-      return { text: 'Пробный период', tone: 'ink2' };
+      return { text: t('Пробный период'), tone: 'ink2' };
     default:
-      return { text: 'Активна', tone: 'ink2' };
+      return { text: t('Активна'), tone: 'ink2' };
   }
 }
 
 export function periodTitle(view: SubscriptionView): string {
-  const name = view.tariff?.name ?? (view.subscription.kind === 'trial' ? 'Пробный период' : 'Подписка');
+  const name = view.tariff?.name ?? (view.subscription.kind === 'trial' ? t('Пробный период') : t('Подписка'));
   const d = view.subscription.period_days;
   if (!d || view.subscription.kind === 'trial') {
     return name;
@@ -236,7 +247,11 @@ export function trafficLine(view: SubscriptionView): { used: string; tail: strin
   const used = exhausted ? limit : (view.subscription.mirror.traffic_used_bytes ?? 0);
   const reset = view.tariff?.traffic.reset ?? 'no_reset';
   const when = resetWhen(reset, view.subscription);
-  return { used: `${gb(used)} из ${gb(limit)}${NBSP}ГБ`, tail: reset === 'no_reset' ? ' на весь срок' : ` · ${when.tail}`, exhausted };
+  return {
+    used: t('{used} из {limit} ГБ', { used: gb(used), limit: gb(limit) }),
+    tail: reset === 'no_reset' ? ` ${t('на весь срок')}` : ` · ${when.tail}`,
+    exhausted,
+  };
 }
 
 export type TrafficMeter = { used: string; limit: string; left: string; share: number; tail: string; exhausted: boolean };
@@ -250,9 +265,9 @@ export function trafficMeter(view: SubscriptionView): TrafficMeter | null {
   const used = exhausted ? limit : Math.min(Math.max(view.subscription.mirror.traffic_used_bytes ?? 0, 0), limit);
   const reset = view.tariff?.traffic.reset ?? 'no_reset';
   return {
-    used: `${gb(used)}${NBSP}ГБ`,
-    limit: `${gb(limit)}${NBSP}ГБ`,
-    left: `${gb(Math.max(limit - used, 0))}${NBSP}ГБ`,
+    used: gbText(used),
+    limit: gbText(limit),
+    left: gbText(Math.max(limit - used, 0)),
     share: Math.min(1, used / limit),
     tail: resetWhen(reset, view.subscription).tail,
     exhausted,
@@ -261,7 +276,7 @@ export function trafficMeter(view: SubscriptionView): TrafficMeter | null {
 
 export function explanation(view: SubscriptionView | null, blocked: boolean): string | null {
   if (blocked || view?.status === 'blocked') {
-    return 'Подписка заблокирована. Напишите в поддержку.';
+    return t('Подписка заблокирована. Напишите в поддержку.');
   }
   if (!view) {
     return null;
@@ -269,11 +284,11 @@ export function explanation(view: SubscriptionView | null, blocked: boolean): st
   if (view.status === 'limited') {
     const reset = view.tariff?.traffic.reset ?? 'no_reset';
     const until = resetWhen(reset, view.subscription).until;
-    const head = until ? `${until} VPN не работает. ` : 'VPN не работает. ';
-    return head + (reset === 'on_payment' ? 'После оплаты трафик обновится.' : 'Продление трафик не добавляет.');
+    const head = until ? t('{until} VPN не работает.', { until }) : t('VPN не работает.');
+    return `${head} ${reset === 'on_payment' ? t('После оплаты трафик обновится.') : t('Продление трафик не добавляет.')}`;
   }
   if (view.status === 'expired') {
-    return 'VPN не работает, пока подписка не продлена. После оплаты обновите подписку в приложении — ссылка останется прежней.';
+    return t('VPN не работает, пока подписка не продлена. После оплаты обновите подписку в приложении — ссылка останется прежней.');
   }
   return null;
 }
@@ -286,12 +301,12 @@ const HAPP_ADD = (url: string) => `happ://add/${url}`;
 const HIDDIFY_ADD = (url: string) => `hiddify://import/${url}`;
 
 export const APPS: Record<Platform, AppInfo> = {
-  ios: { app: 'Happ', store: 'App Store, бесплатно', storeShort: 'App Store', download: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', others: 'Streisand, v2rayTun', add: HAPP_ADD },
-  android: { app: 'Happ', store: 'Google Play или файл APK', storeShort: 'Google Play', download: 'https://play.google.com/store/apps/details?id=com.happproxy', others: 'v2rayTun, Hiddify, NekoBox', add: HAPP_ADD },
-  win: { app: 'Hiddify', store: 'Установщик для Windows 10 и 11', storeShort: 'Скачать', download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, v2rayN', add: HIDDIFY_ADD },
-  mac: { app: 'Hiddify', store: 'Установщик .dmg для macOS', storeShort: 'Скачать', download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Happ, v2rayTun', add: HIDDIFY_ADD },
-  linux: { app: 'Hiddify', store: 'Пакеты .deb и AppImage', storeShort: 'Скачать', download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, NekoBox', add: HIDDIFY_ADD },
-  pc: { app: 'Hiddify', store: 'Windows, macOS и Linux', storeShort: 'Скачать', download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, v2rayN', add: HIDDIFY_ADD },
+  ios: { app: 'Happ', store: msg('App Store, бесплатно'), storeShort: 'App Store', download: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', others: 'Streisand, v2rayTun', add: HAPP_ADD },
+  android: { app: 'Happ', store: msg('Google Play или файл APK'), storeShort: 'Google Play', download: 'https://play.google.com/store/apps/details?id=com.happproxy', others: 'v2rayTun, Hiddify, NekoBox', add: HAPP_ADD },
+  win: { app: 'Hiddify', store: msg('Установщик для Windows 10 и 11'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, v2rayN', add: HIDDIFY_ADD },
+  mac: { app: 'Hiddify', store: msg('Установщик .dmg для macOS'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Happ, v2rayTun', add: HIDDIFY_ADD },
+  linux: { app: 'Hiddify', store: msg('Пакеты .deb и AppImage'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, NekoBox', add: HIDDIFY_ADD },
+  pc: { app: 'Hiddify', store: msg('Windows, macOS и Linux'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, v2rayN', add: HIDDIFY_ADD },
 };
 
 export function guessPlatform(): Platform {

@@ -2,13 +2,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Link, Route, Routes, useLocation } from 'react-router';
 import { api, ApiError, setBearer } from '../lib/api';
 import { BrandMark } from '../lib/brand';
+import { applyLang, guessLang, msg, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon, type IconName } from '../lib/icons';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
-import { initData, loadTelegram } from './telegram';
+import { initData, loadTelegram, telegramLanguage } from './telegram';
 import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
 import { MiniPayments } from './MiniPayments';
@@ -43,6 +44,9 @@ export type MiniCtx = {
   reload: () => Promise<void>;
   theme: Theme;
   flipTheme: (() => void) | null;
+  lang: Lang;
+  nextLang: Lang | null;
+  switchLang: (next: Lang) => void;
 };
 
 const Ctx = createContext<MiniCtx | null>(null);
@@ -78,7 +82,8 @@ function remember(token: string | null) {
 type State = { kind: 'loading' } | { kind: 'outside' } | { kind: 'blocked' } | { kind: 'error'; message: string } | { kind: 'in'; me: ClientMe };
 
 export function MiniApp() {
-  const site = useSite() ?? DEFAULT_SITE;
+  const loadedSite = useSite();
+  const site = loadedSite ?? DEFAULT_SITE;
   const system = useSystemTheme();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
@@ -90,6 +95,13 @@ export function MiniApp() {
     const v = readStored(THEME_KEY);
     return v === 'dark' || v === 'light' ? v : null;
   });
+  const [picked, setPicked] = useState<Lang | null>(null);
+  const langs = siteLangs(loadedSite);
+  const account = state.kind === 'in' && langs.includes(state.me.locale as Lang) ? (state.me.locale as Lang) : null;
+  const wanted: Lang | null =
+    loadedSite && state.kind !== 'loading' ? (picked && langs.includes(picked) ? picked : (account ?? guessLang(loadedSite, telegramLanguage()))) : null;
+  const applied = useApplied(wanted);
+  const lang = useLang();
 
   const fetchDetail = useCallback(async (live: SubscriptionView) => {
     const id = live.subscription.id;
@@ -172,7 +184,7 @@ export function MiniApp() {
         remember(null);
         setState({ kind: 'outside' });
       } else {
-        setState({ kind: 'error', message: err instanceof ApiError ? err.message : 'Сервер не ответил' });
+        setState({ kind: 'error', message: err instanceof ApiError ? err.message : t('Сервер не ответил') });
       }
     }
   }, [loadData]);
@@ -200,26 +212,39 @@ export function MiniApp() {
     }
   }, [loadData]);
 
+  const switchLang = useCallback(
+    (next: Lang) => {
+      rememberLang(next);
+      setPicked(next);
+      void applyLang(next);
+      api('/api/client/locale', { method: 'PUT', body: { locale: next } })
+        .then(() => reload())
+        .catch(() => undefined);
+    },
+    [reload],
+  );
+
   const view = hit?.view ?? base;
   const devices = hit?.devices ?? null;
   const ready = hit !== undefined;
+  const nextLang = otherLang(lang, langs);
   const ctx = useMemo<MiniCtx | null>(
     () =>
       state.kind === 'in'
-        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme }
+        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang }
         : null,
-    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed],
+    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang],
   );
 
-  if (state.kind === 'loading') {
+  if (state.kind === 'loading' || !applied) {
     return <div className="mn-blank" aria-busy="true" />;
   }
   if (!ctx) {
     const text =
       state.kind === 'outside'
-        ? 'Откройте мини-приложение из бота в Telegram.'
+        ? t('Откройте мини-приложение из бота в Telegram.')
         : state.kind === 'blocked'
-          ? 'Аккаунт заблокирован. Напишите в поддержку.'
+          ? t('Аккаунт заблокирован. Напишите в поддержку.')
           : state.kind === 'error'
             ? state.message
             : '';
@@ -230,12 +255,12 @@ export function MiniApp() {
         <p>{text}</p>
         {state.kind === 'error' ? (
           <button type="button" className="mn-main" onClick={() => void start()}>
-            Повторить
+            {t('Повторить')}
           </button>
         ) : null}
         {state.kind === 'outside' && site.bot_username ? (
           <a className="mn-main" href={`https://t.me/${site.bot_username.replace(/^@/, '')}`}>
-            Открыть бота
+            {t('Открыть бота')}
           </a>
         ) : null}
       </div>
@@ -244,7 +269,7 @@ export function MiniApp() {
 
   return (
     <Ctx.Provider value={ctx}>
-      <div className="mn">
+      <div key={lang} className="mn">
         <Routes>
           <Route index element={<MiniHome />} />
           <Route path="plans" element={<MiniPlans />} />
@@ -267,22 +292,22 @@ export function MiniApp() {
 }
 
 const TABS: Array<{ to: string; label: string; icon: IconName }> = [
-  { to: '/app', label: 'Главная', icon: 'home' },
-  { to: '/app/plans', label: 'Тарифы', icon: 'tag' },
-  { to: '/app/connect', label: 'Подключить', icon: 'zap' },
-  { to: '/app/profile', label: 'Профиль', icon: 'user' },
+  { to: '/app', label: msg('Главная'), icon: 'home' },
+  { to: '/app/plans', label: msg('Тарифы'), icon: 'tag' },
+  { to: '/app/connect', label: msg('Подключить'), icon: 'zap' },
+  { to: '/app/profile', label: msg('Профиль'), icon: 'user' },
 ];
 
 function MiniNav() {
   const { pathname } = useLocation();
   return (
-    <nav aria-label="Меню" className="mn-nav">
-      {TABS.map((t) => {
-        const current = t.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments', '/app/roulette'].includes(pathname) : pathname.startsWith(t.to);
+    <nav aria-label={t('Меню')} className="mn-nav">
+      {TABS.map((tab) => {
+        const current = tab.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments', '/app/roulette'].includes(pathname) : pathname.startsWith(tab.to);
         return (
-          <Link key={t.to} to={t.to} className="mn-tab press" aria-current={current ? 'page' : undefined}>
-            <Icon name={t.icon} size={23} />
-            <span>{t.label}</span>
+          <Link key={tab.to} to={tab.to} className="mn-tab press" aria-current={current ? 'page' : undefined}>
+            <Icon name={tab.icon} size={23} />
+            <span>{t(tab.label)}</span>
           </Link>
         );
       })}
@@ -295,7 +320,7 @@ export function ThemeCirc() {
   if (!flipTheme) {
     return null;
   }
-  const label = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  const label = theme === 'dark' ? t('Светлая тема') : t('Тёмная тема');
   return (
     <button type="button" className="mn-circ press" aria-label={label} onClick={flipTheme}>
       <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={19} />
@@ -306,7 +331,7 @@ export function ThemeCirc() {
 export function BackHead({ title, to = '/app' }: { title: string; to?: string }) {
   return (
     <header className="mn-head">
-      <Link to={to} className="mn-circ press back" aria-label="Назад">
+      <Link to={to} className="mn-circ press back" aria-label={t('Назад')}>
         <Icon name="chevron-left" size={20} />
       </Link>
       <h1 className="mn-h1">{title}</h1>
@@ -325,7 +350,7 @@ export function MiniSubSwitch() {
   }
   const blocked = me.client.status === 'blocked';
   return (
-    <div ref={box} role="group" aria-label="Подписки" className="mn-subs">
+    <div ref={box} role="group" aria-label={t('Подписки')} className="mn-subs">
       {subs.map((v) => {
         const on = v.subscription.id === chosenId;
         const state = subState(v, blocked);

@@ -203,3 +203,38 @@ async fn новый_клиент_с_сайта_получает_язык_стр�
     );
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn язык_страницы_берётся_из_cookie_если_нет_заголовка() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    h.write(
+        Method::PUT,
+        "/api/admin/settings/languages",
+        &owner,
+        json!({ "english": true, "default": "ru" }),
+    )
+    .await;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/client/auth/email/register")
+        .header(header::COOKIE, "theme=dark; sn_lang=en")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "email": "cookie@example.com", "password": "очень-длинный-пароль-1" })
+                .to_string(),
+        ))
+        .unwrap();
+    let response = router(h.state.clone()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let client = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.clients()
+            .find_by_identity(sn_domain::client::IdentityKind::Email, "cookie@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(client.locale, sn_domain::client::Locale::En);
+    h.db.cleanup().await;
+}

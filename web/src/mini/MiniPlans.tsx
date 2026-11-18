@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { count, money, MINUS, type Money } from '../lib/format';
-import { gb, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
+import { t } from '../lib/i18n';
+import { gbText, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
 import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
@@ -13,6 +14,13 @@ function failText(err: unknown, fallback: string): string {
 
 function termName(months: number, daysCount: number): string {
   return daysCount >= 28 ? count(months, 'месяц', 'месяца', 'месяцев') : count(daysCount, 'день', 'дня', 'дней');
+}
+
+function payLabel(transition: boolean, total: string, telegram: boolean): string {
+  if (transition) {
+    return telegram ? t('Перейти и оплатить {amount} в Telegram', { amount: total }) : t('Перейти и оплатить {amount}', { amount: total });
+  }
+  return telegram ? t('Оплатить {amount} в Telegram', { amount: total }) : t('Оплатить {amount}', { amount: total });
 }
 
 export function MiniPlans() {
@@ -41,7 +49,7 @@ export function MiniPlans() {
   useEffect(() => {
     api<Catalog>('/api/client/catalog')
       .then(setCatalog)
-      .catch((err) => setError(failText(err, 'Тарифы не загрузились')));
+      .catch((err) => setError(failText(err, t('Тарифы не загрузились'))));
   }, []);
 
   const offers = catalog?.tariffs ?? [];
@@ -115,11 +123,11 @@ export function MiniPlans() {
           return;
         }
         if (promo) {
-          setPromoError(failText(err, 'Промокод не подошёл'));
+          setPromoError(failText(err, t('Промокод не подошёл')));
           setPromo(null);
           return;
         }
-        setError(failText(err, 'Сумма не посчиталась'));
+        setError(failText(err, t('Сумма не посчиталась')));
       }
     }, 150);
     return () => window.clearTimeout(timer);
@@ -164,21 +172,21 @@ export function MiniPlans() {
           try {
             const sent = await api<{ chat_url: string }>(`/api/client/payments/${res.payment_id}/telegram`, { method: 'POST' });
             setOtherWallet(res.pay_url);
-            setNote('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.');
+            setNote(t('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.'));
             openExternal(sent.chat_url);
             return;
           } catch (err) {
-            setError(failText(err, 'Счёт в чат не отправился, открываем другой кошелёк'));
+            setError(failText(err, t('Счёт в чат не отправился, открываем другой кошелёк')));
           }
         }
         openExternal(res.pay_url);
-        setNote('Оплата открылась в новом окне. Когда она пройдёт, подписка обновится сама.');
+        setNote(t('Оплата открылась в новом окне. Когда она пройдёт, подписка обновится сама.'));
         return;
       }
-      setNote('Оплачено. Обновляем подписку…');
+      setNote(t('Оплачено. Обновляем подписку…'));
       window.setTimeout(() => void reload(), 2000);
     } catch (err) {
-      setError(failText(err, 'Оплата не началась'));
+      setError(failText(err, t('Оплата не началась')));
     } finally {
       setBusy(false);
     }
@@ -186,21 +194,21 @@ export function MiniPlans() {
 
   return (
     <main className="mn-page plans">
-      <BackHead title={!view ? (another ? 'Новая подписка' : 'Тарифы') : transition ? 'Переход' : fromTrial ? 'Оплата' : 'Продление'} />
+      <BackHead title={!view ? (another ? t('Новая подписка') : t('Тарифы')) : transition ? t('Переход') : fromTrial ? t('Оплата') : t('Продление')} />
       {targets.length > 1 ? (
-        <section aria-label="Что оплачиваем" className="mn-pay">
+        <section aria-label={t('Что оплачиваем')} className="mn-pay">
           <div className="mn-pay-head">
-            <h2>Что оплачиваем</h2>
+            <h2>{t('Что оплачиваем')}</h2>
           </div>
-          <div role="radiogroup" aria-label="Что оплачиваем" className="mn-terms">
-            {targets.map((t) => {
-              const v = typeof t === 'number' ? targetView(subs, t, multi) : null;
+          <div role="radiogroup" aria-label={t('Что оплачиваем')} className="mn-terms">
+            {targets.map((item) => {
+              const v = typeof item === 'number' ? targetView(subs, item, multi) : null;
               const state = v ? subState(v, me.client.status === 'blocked') : null;
               return (
-                <button key={String(t)} type="button" role="radio" aria-checked={target === t} className="mn-term press" onClick={() => pickTarget(t)}>
+                <button key={String(item)} type="button" role="radio" aria-checked={target === item} className="mn-term press" onClick={() => pickTarget(item)}>
                   <span className="mn-dot" aria-hidden="true" />
                   <span className="mn-term-text">
-                    <strong className="mn-target-name">{v ? `Продлить «${subName(v, subs)}»` : 'Новая подписка'}</strong>
+                    <strong className="mn-target-name">{v ? t('Продлить «{name}»', { name: subName(v, subs) }) : t('Новая подписка')}</strong>
                     <span className={`mn-term-sub ${state?.tone ?? ''}`}>{state ? state.text : newTargetNote(subs, multi)}</span>
                   </span>
                 </button>
@@ -209,10 +217,10 @@ export function MiniPlans() {
           </div>
         </section>
       ) : null}
-      {!catalog ? <p className="mn-muted">{error ?? 'Загружаем тарифы…'}</p> : null}
-      {catalog && offers.length === 0 ? <p className="mn-muted">Тарифов пока нет.</p> : null}
+      {!catalog ? <p className="mn-muted">{error ?? t('Загружаем тарифы…')}</p> : null}
+      {catalog && offers.length === 0 ? <p className="mn-muted">{t('Тарифов пока нет.')}</p> : null}
       {categories.length > 1 ? (
-        <div role="group" aria-label="Тариф" className="mn-seg" style={{ gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))` }}>
+        <div role="group" aria-label={t('Тариф')} className="mn-seg" style={{ gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))` }}>
           {categories.map((c) => (
             <button
               key={c.id}
@@ -235,23 +243,23 @@ export function MiniPlans() {
       ) : null}
       {transition && offer ? (
         <div className="mn-card mn-move" role="note">
-          <strong>Будет переход на тариф «{offer.tariff.name}»</strong>
+          <strong>{t('Будет переход на тариф «{name}»', { name: offer.tariff.name })}</strong>
           <span>{transitionText(currentName)}</span>
         </div>
       ) : null}
       {(fromTrial && offer) || another || limitBytes ? (
         <div className="mn-notes">
-          {fromTrial && offer ? <span>Пробный период закончится сразу после оплаты, тариф «{offer.tariff.name}» начнёт действовать с даты оплаты</span> : null}
-          {another ? <span>У новой подписки будет своя ссылка, текущие подписки останутся как есть</span> : null}
+          {fromTrial && offer ? <span>{t('Пробный период закончится сразу после оплаты, тариф «{name}» начнёт действовать с даты оплаты', { name: offer.tariff.name })}</span> : null}
+          {another ? <span>{t('У новой подписки будет своя ссылка, текущие подписки останутся как есть')}</span> : null}
           {limitBytes ? (
             <span>
-              Трафик: {gb(limitBytes)} ГБ {resetPlan(offer?.tariff.traffic.reset ?? 'no_reset')}
+              {t('Трафик: {traffic} {reset}', { traffic: gbText(limitBytes), reset: resetPlan(offer?.tariff.traffic.reset ?? 'no_reset') })}
             </span>
           ) : null}
         </div>
       ) : null}
       {offer ? (
-        <div role="radiogroup" aria-label="Срок" className="mn-terms">
+        <div role="radiogroup" aria-label={t('Срок')} className="mn-terms">
           {offer.periods.map((p) => {
             const save = starsMode ? p.stars_savings_percent : p.savings_percent;
             return (
@@ -263,8 +271,8 @@ export function MiniPlans() {
                     <strong className="num">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</strong>
                   </span>
                   <span className="mn-term-sub">
-                    {starsMode && p.stars_per_month ? `${stars(p.stars_per_month)} в месяц` : `${money(p.per_month)} в месяц`}
-                    {save ? <span className="mn-save"> · выгоднее на {save}%</span> : null}
+                    {starsMode && p.stars_per_month ? t('{price} в месяц', { price: stars(p.stars_per_month) }) : t('{price} в месяц', { price: money(p.per_month) })}
+                    {save ? <span className="mn-save"> · {t('выгоднее на {percent}%', { percent: save })}</span> : null}
                   </span>
                 </span>
               </button>
@@ -275,20 +283,20 @@ export function MiniPlans() {
       {extra && extra.max > 0 ? (
         <div className="mn-card mn-devs">
           <span className="mn-devs-text">
-            <strong>Устройства</strong>
+            <strong>{t('Устройства')}</strong>
             <span>
-              {included} в тарифе, ещё до {extra.max}{' '}
+              {t('{included} в тарифе, ещё до {max}', { included, max: extra.max })}{' '}
               <span style={{ whiteSpace: 'nowrap' }}>
-                по {starsMode && extra.monthly_stars ? stars(extra.monthly_stars) : extraMonthly ? money(extraMonthly) : ''} в месяц
+                {t('по {price} в месяц', { price: starsMode && extra.monthly_stars ? stars(extra.monthly_stars) : extraMonthly ? money(extraMonthly) : '' })}
               </span>
             </span>
           </span>
           <span className="mn-stepper">
-            <button type="button" className="mn-circ press" aria-label="Меньше устройств" aria-disabled={devices <= included} onClick={() => devices > included && setDevices(devices - 1)}>
+            <button type="button" className="mn-circ press" aria-label={t('Меньше устройств')} aria-disabled={devices <= included} onClick={() => devices > included && setDevices(devices - 1)}>
               {MINUS}
             </button>
             <span aria-live="polite">{devices}</span>
-            <button type="button" className="mn-circ press" aria-label="Больше устройств" aria-disabled={devices >= maxDevices} onClick={() => devices < maxDevices && setDevices(devices + 1)}>
+            <button type="button" className="mn-circ press" aria-label={t('Больше устройств')} aria-disabled={devices >= maxDevices} onClick={() => devices < maxDevices && setDevices(devices + 1)}>
               +
             </button>
           </span>
@@ -296,9 +304,9 @@ export function MiniPlans() {
       ) : null}
       <div className="mn-pay">
         <div className="mn-pay-head">
-          <h2>Оплата</h2>
+          <h2>{t('Оплата')}</h2>
           <button type="button" className="mn-link" aria-expanded={promoOpen} onClick={() => setPromoOpen(!promoOpen)}>
-            {promo ? `Промокод ${promo}` : 'Есть промокод?'}
+            {promo ? t('Промокод {code}', { code: promo }) : t('Есть промокод?')}
           </button>
         </div>
         {promoOpen ? (
@@ -317,35 +325,34 @@ export function MiniPlans() {
               }
             }}
           >
-            <input value={promoInput} onChange={(e) => setPromoInput(e.target.value.toUpperCase())} placeholder="Промокод" aria-label="Промокод" disabled={!!promo} />
+            <input value={promoInput} onChange={(e) => setPromoInput(e.target.value.toUpperCase())} placeholder={t('Промокод')} aria-label={t('Промокод')} disabled={!!promo} />
             <button type="submit" className="mn-btn2 press">
-              {promo ? 'Убрать' : 'Применить'}
+              {promo ? t('Убрать') : t('Применить')}
             </button>
           </form>
         ) : null}
         {promoError ? <p className="mn-error">{promoError}</p> : null}
         {q && (starsMode ? (q.stars?.discount ?? 0) > 0 : q.discount.minor > 0) ? (
           <p className="mn-muted small">
-            Скидка по промокоду: {MINUS}
-            {starsMode && q.stars ? stars(q.stars.discount) : money(q.discount)}
+            {t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode && q.stars ? stars(q.stars.discount) : money(q.discount)}` })}
           </p>
         ) : null}
         {q && methods.length === 0 ? (
           <p className="mn-muted small">
-            В мини-приложении оплатить сейчас нельзя.{' '}
+            {t('В мини-приложении оплатить сейчас нельзя.')}{' '}
             <button type="button" className="mn-link press" onClick={() => openExternal(`${window.location.origin}/cabinet/pay`)}>
-              Оплатить в кабинете на сайте
+              {t('Оплатить в кабинете на сайте')}
             </button>
           </p>
         ) : null}
-        <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
+        <div role="radiogroup" aria-label={t('Способ оплаты')} className="mn-chips">
           {methods.map((m) => (
             <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
               {m.title}
             </button>
           ))}
         </div>
-        {balanceShort?.unavailable?.type === 'insufficient_balance' ? <p className="mn-muted small">Не хватает: на балансе {money(me.balance)}</p> : null}
+        {balanceShort?.unavailable?.type === 'insufficient_balance' ? <p className="mn-muted small">{t('Не хватает: на балансе {amount}', { amount: money(me.balance) })}</p> : null}
         {error && catalog ? <p className="mn-error">{error}</p> : null}
         {note ? (
           <p role="status" className="mn-note">
@@ -354,7 +361,7 @@ export function MiniPlans() {
               <>
                 {' '}
                 <button type="button" className="mn-link press" onClick={() => openExternal(otherWallet)}>
-                  Оплатить другим кошельком
+                  {t('Оплатить другим кошельком')}
                 </button>
               </>
             ) : null}
@@ -362,7 +369,7 @@ export function MiniPlans() {
         ) : null}
       </div>
       <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
-        {busy ? 'Открываем оплату…' : `${transition ? 'Перейти и оплатить' : 'Оплатить'} ${totalText}${inTelegramWallet ? ' в Telegram' : ''}`}
+        {busy ? t('Открываем оплату…') : payLabel(transition, totalText, inTelegramWallet)}
       </button>
     </main>
   );

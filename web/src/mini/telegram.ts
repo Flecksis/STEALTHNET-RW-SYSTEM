@@ -62,3 +62,16 @@ export function openExternal(url: string): void {
   }
   window.location.href = url;
 }
+
+export function telegramLanguage(): string | null {
+  const data = initData();
+  if (!data) {
+    return null;
+  }
+  try {
+    const user = JSON.parse(new URLSearchParams(data).get('user') ?? '{}') as { language_code?: string };
+    return user.language_code ?? null;
+  } catch {
+    return null;
+  }
+}

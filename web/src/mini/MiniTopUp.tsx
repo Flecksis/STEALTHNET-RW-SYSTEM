@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from '../cabinet/payments';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
@@ -39,7 +40,7 @@ export function MiniTopUp() {
       })
       .catch((err) => {
         if (alive) {
-          setLoadError(err instanceof ApiError ? { code: err.code, message: err.message } : { code: 'network', message: 'Сервер не ответил' });
+          setLoadError(err instanceof ApiError ? { code: err.code, message: err.message } : { code: 'network', message: t('Сервер не ответил') });
         }
       });
     return () => {
@@ -64,12 +65,12 @@ export function MiniTopUp() {
           setOtherWallet(null);
           if (progress.order_status === 'fulfilled') {
             await reload();
-            setNote('Баланс пополнен.');
+            setNote(t('Баланс пополнен.'));
           } else if (progress.order_status === 'review') {
-            setNote('Оплата принята. Проверяем платёж, деньги поступят на баланс в ближайшее время.');
+            setNote(t('Оплата принята. Проверяем платёж, деньги поступят на баланс в ближайшее время.'));
           } else {
             setNote(null);
-            setError('Оплата не прошла. Попробуйте ещё раз или выберите другой способ.');
+            setError(t('Оплата не прошла. Попробуйте ещё раз или выберите другой способ.'));
           }
           return;
         }
@@ -97,10 +98,10 @@ export function MiniTopUp() {
     options && custom.trim()
       ? typed === null
         ? currency === 'RUB'
-          ? 'Сумма — целое число рублей, например 700'
-          : 'Сумма — число, например 15 или 12.50'
+          ? t('Сумма — целое число рублей, например 700')
+          : t('Сумма — число, например 15 или 12.50')
         : !inRange
-          ? `Сумма должна быть ${limitsText(options)}`
+          ? t('Сумма должна быть {limits}', { limits: limitsText(options) })
           : null
       : null;
   const methods = options?.methods ?? [];
@@ -123,7 +124,7 @@ export function MiniTopUp() {
       });
       if (res.type !== 'redirect') {
         await reload();
-        setNote('Баланс пополнен.');
+        setNote(t('Баланс пополнен.'));
         return;
       }
       setWatch(res.payment_id);
@@ -131,17 +132,17 @@ export function MiniTopUp() {
         try {
           const sent = await api<{ chat_url: string }>(`/api/client/payments/${res.payment_id}/telegram`, { method: 'POST' });
           setOtherWallet(res.pay_url);
-          setNote('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.');
+          setNote(t('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.'));
           openExternal(sent.chat_url);
           return;
         } catch (err) {
-          setError(failText(err, 'Счёт в чат не отправился, открываем другой кошелёк'));
+          setError(failText(err, t('Счёт в чат не отправился, открываем другой кошелёк')));
         }
       }
       openExternal(res.pay_url);
-      setNote('Оплата открылась в новом окне. Деньги поступят на баланс сами, как только платёжная система подтвердит оплату.');
+      setNote(t('Оплата открылась в новом окне. Деньги поступят на баланс сами, как только платёжная система подтвердит оплату.'));
     } catch (err) {
-      setError(failText(err, 'Оплата не началась'));
+      setError(failText(err, t('Оплата не началась')));
     } finally {
       setBusy(false);
     }
@@ -150,12 +151,12 @@ export function MiniTopUp() {
   if (off || loadError?.code === 'balance.disabled') {
     return (
       <main className="mn-page">
-        <BackHead title="Пополнение" />
+        <BackHead title={t('Пополнение')} />
         <div className="mn-card mn-pad">
-          <strong>Пополнение выключено</strong>
-          <span className="mn-ink2">Пополнить баланс сейчас нельзя. Оплатите подписку напрямую одним из способов оплаты.</span>
+          <strong>{t('Пополнение выключено')}</strong>
+          <span className="mn-ink2">{t('Пополнить баланс сейчас нельзя. Оплатите подписку напрямую одним из способов оплаты.')}</span>
           <Link to="/app/plans" className="mn-main sm press">
-            К тарифам
+            {t('К тарифам')}
           </Link>
         </div>
       </main>
@@ -164,13 +165,13 @@ export function MiniTopUp() {
 
   return (
     <main className="mn-page topup">
-      <BackHead title="Пополнение" />
+      <BackHead title={t('Пополнение')} />
       <p className="mn-notes">
-        Сейчас на балансе {money(me.balance)}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.
+        {t('Сейчас на балансе {amount}. С баланса можно оплатить подписку и продление, если денег хватает на всю сумму.', { amount: money(me.balance) })}
       </p>
-      {!options ? <p className="mn-muted">{loadError?.message ?? 'Загружаем…'}</p> : null}
+      {!options ? <p className="mn-muted">{loadError?.message ?? t('Загружаем…')}</p> : null}
       {options && options.presets.length > 0 ? (
-        <div role="radiogroup" aria-label="Сумма пополнения" className="mn-amounts">
+        <div role="radiogroup" aria-label={t('Сумма пополнения')} className="mn-amounts">
           {options.presets.map((p) => (
             <button
               key={p.minor}
@@ -194,31 +195,31 @@ export function MiniTopUp() {
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
             inputMode={currency === 'RUB' ? 'numeric' : 'decimal'}
-            placeholder={options.presets.length > 0 ? 'Другая сумма' : 'Сумма пополнения'}
-            aria-label={options.presets.length > 0 ? 'Другая сумма' : 'Сумма пополнения'}
+            placeholder={options.presets.length > 0 ? t('Другая сумма') : t('Сумма пополнения')}
+            aria-label={options.presets.length > 0 ? t('Другая сумма') : t('Сумма пополнения')}
             aria-invalid={amountError ? true : undefined}
             aria-describedby="mini-topup-hint"
             maxLength={12}
           />
           <span id="mini-topup-hint" className={amountError ? 'mn-error' : 'mn-muted small'}>
-            {amountError ?? `Можно ${limitsText(options)}`}
+            {amountError ?? t('Можно {limits}', { limits: limitsText(options) })}
           </span>
         </div>
       ) : null}
       {options ? (
         <div className="mn-pay">
           <div className="mn-pay-head">
-            <h2>Оплата</h2>
+            <h2>{t('Оплата')}</h2>
           </div>
           {methods.length === 0 ? (
             <p className="mn-muted small">
-              В мини-приложении пополнить сейчас нельзя.{' '}
+              {t('В мини-приложении пополнить сейчас нельзя.')}{' '}
               <button type="button" className="mn-link press" onClick={() => openExternal(`${window.location.origin}/cabinet/topup`)}>
-                Пополнить в кабинете на сайте
+                {t('Пополнить в кабинете на сайте')}
               </button>
             </p>
           ) : null}
-          <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
+          <div role="radiogroup" aria-label={t('Способ оплаты')} className="mn-chips">
             {methods.map((m) => (
               <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" onClick={() => setMethod(methodKey(m))}>
                 {m.title}
@@ -233,7 +234,7 @@ export function MiniTopUp() {
                 <>
                   {' '}
                   <button type="button" className="mn-link press" onClick={() => openExternal(otherWallet)}>
-                    Оплатить другим кошельком
+                    {t('Оплатить другим кошельком')}
                   </button>
                 </>
               ) : null}
@@ -243,7 +244,7 @@ export function MiniTopUp() {
       ) : null}
       {options ? (
         <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !sum || !chosen}>
-          {busy ? 'Открываем оплату…' : sum ? `Пополнить на ${sum}${inTelegramWallet ? ' в Telegram' : ''}` : 'Пополнить'}
+          {busy ? t('Открываем оплату…') : sum ? (inTelegramWallet ? t('Пополнить на {amount} в Telegram', { amount: sum }) : t('Пополнить на {amount}', { amount: sum })) : t('Пополнить')}
         </button>
       ) : null}
     </main>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { dateLong } from '../lib/format';
+import { t } from '../lib/i18n';
 import { readStored, writeStored } from '../lib/theme';
 import type { SubscriptionView, Tone } from './model';
 
@@ -14,7 +15,7 @@ export function liveSubs(list: SubscriptionView[]): SubscriptionView[] {
 }
 
 function baseName(view: SubscriptionView): string {
-  return view.tariff?.name ?? (view.subscription.kind === 'trial' ? 'Пробный период' : 'Подписка');
+  return view.tariff?.name ?? (view.subscription.kind === 'trial' ? t('Пробный период') : t('Подписка'));
 }
 
 const LEGACY_NAME = /^sn_[0-9a-f]{8}-/i;
@@ -28,25 +29,25 @@ export function subName(view: SubscriptionView, list: SubscriptionView[]): strin
   if (nick && !LEGACY_NAME.test(nick)) {
     return `${base} · ${nick}`;
   }
-  return `Подписка ${list.findIndex((v) => v.subscription.id === view.subscription.id) + 1}`;
+  return t('Подписка {n}', { n: list.findIndex((v) => v.subscription.id === view.subscription.id) + 1 });
 }
 
 export function subState(view: SubscriptionView, blocked: boolean): { text: string; tone: Tone } {
   const expire = view.subscription.mirror.expire_at;
   const date = expire ? dateLong(expire, false) : '';
   if (blocked || view.status === 'blocked') {
-    return { text: 'Заблокирована', tone: 'bad' };
+    return { text: t('Заблокирована'), tone: 'bad' };
   }
   if (view.status === 'expired') {
-    return { text: date ? `Истекла ${date}` : 'Истекла', tone: 'muted' };
+    return { text: date ? t('Истекла {date}', { date }) : t('Истекла'), tone: 'muted' };
   }
   if (view.status === 'limited') {
-    return { text: 'Трафик закончился', tone: 'warn' };
+    return { text: t('Трафик закончился'), tone: 'warn' };
   }
   if (view.status === 'expiring') {
-    return { text: date ? `Закончится ${date}` : 'Скоро закончится', tone: 'warn' };
+    return { text: date ? t('Закончится {date}', { date }) : t('Скоро закончится'), tone: 'warn' };
   }
-  return { text: date ? `Активна до ${date}` : 'Активна', tone: 'ink2' };
+  return { text: date ? t('Активна до {date}', { date }) : t('Активна'), tone: 'ink2' };
 }
 
 export function readRemembered(key: string): Remembered | null {
@@ -92,7 +93,7 @@ export function targetView(list: SubscriptionView[], target: PayTarget | null, m
 }
 
 export function newTargetNote(list: SubscriptionView[], multi: boolean): string {
-  return multi && list.some((v) => v.subscription.kind === 'trial') ? 'Вместо пробного периода' : 'Своя ссылка и свои устройства';
+  return multi && list.some((v) => v.subscription.kind === 'trial') ? t('Вместо пробного периода') : t('Своя ссылка и свои устройства');
 }
 
 export function useShowPressed(box: RefObject<HTMLElement | null>, key: string): void {

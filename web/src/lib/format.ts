@@ -1,3 +1,4 @@
+import { lang, pluralEn, t } from './i18n';
 import type { Currency } from './types';
 
 export const NBSP = ' ';
@@ -8,7 +9,7 @@ export type Money = { minor: number; currency: Currency };
 export function groupDigits(value: number): string {
   const sign = value < 0 ? MINUS : '';
   const digits = Math.abs(Math.trunc(value)).toString();
-  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP);
+  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, lang() === 'en' ? ',' : NBSP);
 }
 
 export function money(value: Money | null | undefined, compact = false): string {
@@ -19,7 +20,7 @@ export function money(value: Money | null | undefined, compact = false): string 
   const abs = Math.abs(value.minor);
   const sign = negative ? MINUS : '';
   if (value.currency === 'RUB') {
-    return `${sign}${groupDigits(Math.round(abs / 100))}${NBSP}₽`;
+    return lang() === 'en' ? `${sign}₽${groupDigits(Math.round(abs / 100))}` : `${sign}${groupDigits(Math.round(abs / 100))}${NBSP}₽`;
   }
   const whole = Math.floor(abs / 100);
   const cents = abs % 100;
@@ -30,6 +31,10 @@ export function money(value: Money | null | undefined, compact = false): string 
 }
 
 export function plural(n: number, one: string, few: string, many: string): string {
+  const english = pluralEn(one);
+  if (english) {
+    return Math.abs(n) === 1 ? english[0] : english[1];
+  }
   const abs = Math.abs(n);
   const mod10 = abs % 10;
   const mod100 = abs % 100;
@@ -62,6 +67,12 @@ export function periodLabel(daysCount: number | null | undefined): string | null
 }
 
 const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const MONTHS_SHORT_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function monthName(index: number): string {
+  return (lang() === 'en' ? MONTHS_EN[index] : MONTHS_GEN[index]) ?? '';
+}
 
 function parse(iso: string | null | undefined): Date | null {
   if (!iso) {
@@ -80,6 +91,9 @@ export function dateNumeric(iso: string | null | undefined): string {
   if (!date) {
     return '';
   }
+  if (lang() === 'en') {
+    return `${date.getDate()}${NBSP}${MONTHS_SHORT_EN[date.getMonth()] ?? ''}${NBSP}${date.getFullYear()}`;
+  }
   return `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()}`;
 }
 
@@ -87,6 +101,9 @@ export function dayMonthNumeric(iso: string | null | undefined): string {
   const date = parse(iso);
   if (!date) {
     return '';
+  }
+  if (lang() === 'en') {
+    return `${date.getDate()}${NBSP}${MONTHS_SHORT_EN[date.getMonth()] ?? ''}`;
   }
   return `${two(date.getDate())}.${two(date.getMonth() + 1)}`;
 }
@@ -97,7 +114,7 @@ export function dateLong(iso: string | null | undefined, withYear?: boolean): st
     return '';
   }
   const year = withYear ?? date.getFullYear() !== new Date().getFullYear();
-  const base = `${date.getDate()}${NBSP}${MONTHS_GEN[date.getMonth()] ?? ''}`;
+  const base = `${date.getDate()}${NBSP}${monthName(date.getMonth())}`;
   return year ? `${base}${NBSP}${date.getFullYear()}` : base;
 }
 
@@ -119,10 +136,10 @@ export function dateTime(iso: string | null | undefined): string {
   const diff = Math.round((startOf(now) - startOf(date)) / 86_400_000);
   const time = timeHM(iso);
   if (diff === 0) {
-    return `Сегодня, ${time}`;
+    return `${t('Сегодня')}, ${time}`;
   }
   if (diff === 1) {
-    return `Вчера, ${time}`;
+    return `${t('Вчера')}, ${time}`;
   }
   return `${dateLong(iso)}, ${time}`;
 }
@@ -135,10 +152,10 @@ export function dayLabel(iso: string | null | undefined): string {
   const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const diff = Math.round((startOf(new Date()) - startOf(date)) / 86_400_000);
   if (diff === 0) {
-    return 'Сегодня';
+    return t('Сегодня');
   }
   if (diff === 1) {
-    return 'Вчера';
+    return t('Вчера');
   }
   return dateLong(iso);
 }
@@ -150,14 +167,14 @@ export function ago(iso: string | null | undefined): string {
   }
   const minutes = Math.floor((Date.now() - date.getTime()) / 60_000);
   if (minutes < 1) {
-    return 'только что';
+    return t('только что');
   }
   if (minutes < 60) {
-    return `${minutes}${NBSP}${plural(minutes, 'минуту', 'минуты', 'минут')} назад`;
+    return t('{n} назад', { n: `${minutes}${NBSP}${plural(minutes, 'минуту', 'минуты', 'минут')}` });
   }
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours}${NBSP}${plural(hours, 'час', 'часа', 'часов')} назад`;
+    return t('{n} назад', { n: `${hours}${NBSP}${plural(hours, 'час', 'часа', 'часов')}` });
   }
   return dateTime(iso);
 }
@@ -175,21 +192,32 @@ const TB = 1024 ** 4;
 
 function amount(value: number): string {
   const fixed = value < 100 && Math.round(value * 10) % 10 !== 0 ? value.toFixed(1) : Math.round(value).toString();
-  return fixed.replace('.', ',');
+  return lang() === 'en' ? fixed : fixed.replace('.', ',');
+}
+
+function unitWord(tera: boolean): string {
+  if (lang() === 'en') {
+    return tera ? 'TB' : 'GB';
+  }
+  return tera ? 'ТБ' : 'ГБ';
 }
 
 export function trafficPair(used: number, limit: number): string {
   const unit = limit >= TB ? TB : GB;
-  const word = limit >= TB ? 'ТБ' : 'ГБ';
-  return `${amount(used / unit)}${NBSP}из${NBSP}${amount(limit / unit)}${NBSP}${word}`;
+  const word = unitWord(limit >= TB);
+  return `${amount(used / unit)}${NBSP}${t('из')}${NBSP}${amount(limit / unit)}${NBSP}${word}`;
 }
 
 export function traffic(bytes: number | null | undefined): string {
   const value = bytes ?? 0;
   if (value >= TB) {
-    return `${amount(value / TB)}${NBSP}ТБ`;
+    return `${amount(value / TB)}${NBSP}${unitWord(true)}`;
   }
-  return `${amount(value / GB)}${NBSP}ГБ`;
+  return `${amount(value / GB)}${NBSP}${unitWord(false)}`;
+}
+
+export function gigabytes(value: number): string {
+  return `${groupDigits(value)}${NBSP}${unitWord(false)}`;
 }
 
 const AVATAR_COLORS = ['#7C3AED', '#0E7490', '#15803D', '#A16207', '#C2410C', '#BE185D', '#1D4ED8', '#0F766E', '#475569'];

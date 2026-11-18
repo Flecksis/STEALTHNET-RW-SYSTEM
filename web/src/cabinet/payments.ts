@@ -1,4 +1,5 @@
-import { count, dateTime, money, NBSP, periodLabel, timeHM, type Money } from '../lib/format';
+import { count, dateTime, money, periodLabel, timeHM, type Money } from '../lib/format';
+import { t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 import { stars } from './model';
 
@@ -59,19 +60,19 @@ export function amountText(amount: Amount): string {
 export function purchaseText(payment: ClientPayment): string {
   const p = payment.purchase;
   if (!p) {
-    return 'Оплата';
+    return t('Оплата');
   }
   const span = periodLabel(p.days) ?? '';
-  const tariff = p.tariff ?? 'Подписка';
+  const tariff = p.tariff ?? t('Подписка');
   switch (p.kind) {
     case 'top_up':
-      return 'Пополнение баланса';
+      return t('Пополнение баланса');
     case 'change':
-      return span ? `Переход на «${tariff}» · ${span}` : `Переход на «${tariff}»`;
+      return span ? t('Переход на «{tariff}» · {span}', { tariff, span }) : t('Переход на «{tariff}»', { tariff });
     case 'trial':
-      return 'Пробный период';
+      return t('Пробный период');
     case 'module':
-      return p.label ?? 'Дополнительная услуга';
+      return p.label ?? t('Дополнительная услуга');
     default:
       return span ? `${tariff} · ${span}` : tariff;
   }
@@ -84,32 +85,32 @@ export function expired(payment: ClientPayment, now = Date.now()): boolean {
 export function paymentState(payment: ClientPayment, now = Date.now()): { text: string; tone: Tone } {
   switch (payment.status) {
     case 'paid':
-      return { text: 'Оплачено', tone: 'ink2' };
+      return { text: t('Оплачено'), tone: 'ink2' };
     case 'pending':
-      return expired(payment, now) ? { text: 'Отменено', tone: 'muted' } : { text: 'Ждёт оплаты', tone: 'warn' };
+      return expired(payment, now) ? { text: t('Отменено'), tone: 'muted' } : { text: t('Ждёт оплаты'), tone: 'warn' };
     case 'refunded':
     case 'partially_refunded':
-      return { text: 'Возврат', tone: 'ink2' };
+      return { text: t('Возврат'), tone: 'ink2' };
     case 'failed':
-      return { text: 'Не прошла', tone: 'muted' };
+      return { text: t('Не прошла'), tone: 'muted' };
     default:
-      return { text: 'Отменено', tone: 'muted' };
+      return { text: t('Отменено'), tone: 'muted' };
   }
 }
 
 export function paymentNote(payment: ClientPayment): string {
-  const parts = [payment.autorenew ? `${payment.method}, автопродление` : payment.method];
+  const parts = [payment.autorenew ? t('{method}, автопродление', { method: payment.method }) : payment.method];
   if (payment.status === 'refunded') {
-    parts.push('деньги вернули');
+    parts.push(t('деньги вернули'));
   } else if (payment.refunded) {
-    parts.push(`вернули ${amountText(payment.refunded)} из ${amountText(payment.amount)}`);
+    parts.push(t('вернули {refunded} из {amount}', { refunded: amountText(payment.refunded), amount: amountText(payment.amount) }));
   } else if (expired(payment)) {
-    parts.push('время оплаты вышло');
+    parts.push(t('время оплаты вышло'));
   }
   if (payment.repeat === 'balance') {
-    parts.push('повторная оплата, деньги на балансе');
+    parts.push(t('повторная оплата, деньги на балансе'));
   } else if (payment.repeat === 'review') {
-    parts.push('повторная оплата, проверяем');
+    parts.push(t('повторная оплата, проверяем'));
   }
   return parts.join(' · ');
 }
@@ -119,7 +120,7 @@ export function paymentWhen(payment: ClientPayment): string {
 }
 
 export function payUntil(payment: ClientPayment): string {
-  return payment.expires_at ? `Оплатить до ${timeHM(payment.expires_at)}` : 'Оплатить';
+  return payment.expires_at ? t('Оплатить до {time}', { time: timeHM(payment.expires_at) }) : t('Оплатить');
 }
 
 export function absoluteUrl(url: string): string {
@@ -135,7 +136,7 @@ export function paymentsCount(n: number): string {
 }
 
 export function limitsText(options: TopUpOptions): string {
-  return `от${NBSP}${money(options.min)} до${NBSP}${money(options.max)}`;
+  return t('от\u00a0{min} до\u00a0{max}', { min: money(options.min), max: money(options.max) });
 }
 
 export function parseAmount(raw: string, currency: Currency): number | null {

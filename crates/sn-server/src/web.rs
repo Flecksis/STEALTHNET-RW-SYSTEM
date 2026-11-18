@@ -4,6 +4,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
+use sn_domain::client::Locale;
 use sn_domain::settings::CoreSettings;
 use sn_services::branding::{TabIcon, tab_icon, touch_icon};
 use std::path::Path;
@@ -119,12 +120,15 @@ pub fn escape_html(text: &str) -> String {
     out
 }
 
-fn head(settings: &CoreSettings, page: Page) -> String {
+fn head(settings: &CoreSettings, page: Page, locale: Locale) -> String {
     let brand = settings.brand_name.as_str();
     let site_title = settings.site.title.as_deref().unwrap_or(brand);
     let title = match page {
         Page::Landing | Page::Other => site_title.to_string(),
-        Page::Cabinet => format!("Личный кабинет — {brand}"),
+        Page::Cabinet => match locale {
+            Locale::Ru => format!("Личный кабинет — {brand}"),
+            Locale::En => format!("Your account — {brand}"),
+        },
         Page::MiniApp => brand.to_string(),
         Page::Admin => format!("Админка — {brand}"),
     };
@@ -228,6 +232,13 @@ fn cut(html: &mut String, open: &str, close: &str) -> Option<usize> {
     html.replace_range(start..end, "");
     Some(start)
 }
+fn with_lang(html: String, locale: Locale) -> String {
+    match locale {
+        Locale::Ru => html,
+        Locale::En => html.replacen("<html lang=\"ru\">", "<html lang=\"en\">", 1),
+    }
+}
+
 fn inject(template: &str, head: &str) -> String {
     let mut html = template.to_string();
     while cut(&mut html, "<meta name=\"robots\"", ">").is_some() {}
@@ -259,17 +270,24 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         {
             tracing::info!(bot, path = %path, "сборщик превью ссылок открыл страницу");
         }
-        return page(&state, &dir, &path).await;
+        let wanted = crate::lang::from_cookie(request.headers());
+        return page(&state, &dir, &path, wanted).await;
     }
     serve(&dir, &path, request).await
 }
 
-async fn page(state: &AppState, dir: &Path, path: &str) -> Response {
+async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) -> Response {
     let Ok(template) = tokio::fs::read_to_string(dir.join("index.html")).await else {
         return ApiError::not_found().into_response();
     };
     let settings = state.services.settings();
-    let mut response = Html(inject(&template, &head(&settings, Page::of(path)))).into_response();
+    let page = Page::of(path);
+    let locale = match page {
+        Page::Admin => Locale::Ru,
+        _ => settings.languages.pick(wanted),
+    };
+    let html = with_lang(inject(&template, &head(&settings, page, locale)), locale);
+    let mut response = Html(html).into_response();
     protect(&mut response, path, REVALIDATE);
     response
 }
@@ -399,7 +417,7 @@ mod tests {
     fn главная_получает_заголовок_описание_и_превью_с_экранированием() {
         let html = inject(
             "<!doctype html><html><head><meta charset=\"utf-8\" />\n<meta name=\"robots\" content=\"noindex\" />\n<title>STEALTHNET</title>\n</head><body></body></html>",
-            &head(&settings(), Page::Landing),
+            &head(&settings(), Page::Landing, Locale::Ru),
         );
         assert!(!html.contains("STEALTHNET"));
         assert!(!html.contains("content=\"noindex\""));
@@ -423,12 +441,12 @@ mod tests {
 
     #[test]
     fn админка_и_кабинет_закрыты_от_поиска_а_админка_без_описания() {
-        let admin = head(&settings(), Page::Admin);
+        let admin = head(&settings(), Page::Admin, Locale::Ru);
         assert!(admin.contains("<title>Админка — Тихий VPN</title>"));
         assert!(admin.contains("noindex, nofollow"));
         assert!(!admin.contains("description"));
         assert!(!admin.contains("og:"));
-        let cabinet = head(&settings(), Page::Cabinet);
+        let cabinet = head(&settings(), Page::Cabinet, Locale::Ru);
         assert!(cabinet.contains("<title>Личный кабинет — Тихий VPN</title>"));
         assert!(cabinet.contains("<meta name=\"robots\" content=\"noindex\">"));
         assert!(cabinet.contains("og:url\" content=\"https://vpn.example/cabinet\""));
@@ -437,7 +455,7 @@ mod tests {
         hidden.site.indexing = false;
         hidden.logo = None;
         hidden.public_url = None;
-        let landing = head(&hidden, Page::Landing);
+        let landing = head(&hidden, Page::Landing, Locale::Ru);
         assert!(landing.contains("<meta name=\"robots\" content=\"noindex\">"));
         assert!(
             landing.contains(
@@ -447,6 +465,15 @@ mod tests {
         assert!(!landing.contains("apple-touch-icon"));
         assert!(!landing.contains("og:image"));
         assert!(!landing.contains("og:url"));
+    }
+
+    #[test]
+    fn кабинет_на_английском_получает_английский_заголовок_и_язык_страницы() {
+        let cabinet = head(&settings(), Page::Cabinet, Locale::En);
+        assert!(cabinet.contains("<title>Your account — Тихий VPN</title>"));
+        let template = "<!doctype html>\n<html lang=\"ru\">\n<head></head><body></body></html>";
+        assert!(with_lang(template.to_string(), Locale::En).contains("<html lang=\"en\">"));
+        assert_eq!(with_lang(template.to_string(), Locale::Ru), template);
     }
 
     #[test]
@@ -466,7 +493,7 @@ mod tests {
             Page::Admin,
             Page::Other,
         ] {
-            let tags = head(&with_icon, page);
+            let tags = head(&with_icon, page, Locale::Ru);
             assert!(
                 tags.contains(
                     "<link rel=\"icon\" type=\"image/x-icon\" href=\"/api/public/favicon/fedcba9876543210.ico\">"
@@ -487,7 +514,7 @@ mod tests {
             height: 512,
             size: 20000,
         });
-        let tags = head(&with_icon, Page::Admin);
+        let tags = head(&with_icon, Page::Admin, Locale::Ru);
         assert!(tags.contains(
             "<link rel=\"apple-touch-icon\" href=\"/api/public/favicon/0011223344556677.png\">"
         ));

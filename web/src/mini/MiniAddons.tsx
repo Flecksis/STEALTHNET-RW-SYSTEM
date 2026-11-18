@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money, MINUS, traffic } from '../lib/format';
+import { t } from '../lib/i18n';
 import { stars } from '../cabinet/model';
 import { addonItem, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from '../cabinet/extras';
 import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
@@ -41,7 +42,7 @@ export function MiniAddons() {
         setPack(next.traffic.offer?.packs[0]?.gb ?? null);
       }
     } catch (err) {
-      setLoadError(failText(err, 'Не удалось загрузить предложения'));
+      setLoadError(failText(err, t('Не удалось загрузить предложения')));
     }
   };
 
@@ -78,7 +79,7 @@ export function MiniAddons() {
       } catch (err) {
         if (mine === seq.current) {
           setQuote(null);
-          setError(failText(err, 'Сумма не посчиталась'));
+          setError(failText(err, t('Сумма не посчиталась')));
         }
       }
     }, 150);
@@ -111,15 +112,15 @@ export function MiniAddons() {
           try {
             const sent = await api<{ chat_url: string }>(`/api/client/payments/${res.payment_id}/telegram`, { method: 'POST' });
             setOtherWallet(res.pay_url);
-            setNote('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.');
+            setNote(t('Счёт отправлен в чат с ботом. Нажмите там «Оплатить в Telegram» — кошелёк откроется с готовой суммой.'));
             openExternal(sent.chat_url);
             return;
           } catch (err) {
-            setError(failText(err, 'Счёт в чат не отправился, открываем другой кошелёк'));
+            setError(failText(err, t('Счёт в чат не отправился, открываем другой кошелёк')));
           }
         }
         openExternal(res.pay_url);
-        setNote('Оплата открылась в новом окне. Когда она пройдёт, лимит обновится сам.');
+        setNote(t('Оплата открылась в новом окне. Когда она пройдёт, лимит обновится сам.'));
         return;
       }
       setNote(doneText(choice));
@@ -128,7 +129,7 @@ export function MiniAddons() {
         void load(subscriptionId, true);
       }, 1500);
     } catch (err) {
-      setError(failText(err, 'Оплата не началась'));
+      setError(failText(err, t('Оплата не началась')));
     } finally {
       setBusy(false);
     }
@@ -137,13 +138,13 @@ export function MiniAddons() {
   if (subscriptionId === null || view?.status === 'expired') {
     return (
       <main className="mn-page">
-        <BackHead title="Докупить" />
+        <BackHead title={t('Докупить')} />
         <MiniSubSwitch />
         <div className="mn-card mn-pad">
-          <strong>Нужна действующая подписка</strong>
-          <span className="mn-ink2">Устройства и трафик докупаются к подписке, пока она действует.</span>
+          <strong>{t('Нужна действующая подписка')}</strong>
+          <span className="mn-ink2">{t('Устройства и трафик докупаются к подписке, пока она действует.')}</span>
           <Link to="/app/plans" className="mn-main sm press">
-            {view ? 'Продлить' : 'Выбрать тариф'}
+            {view ? t('Продлить') : t('Выбрать тариф')}
           </Link>
         </div>
       </main>
@@ -153,21 +154,21 @@ export function MiniAddons() {
   if (!offer) {
     return (
       <main className="mn-page">
-        <BackHead title="Докупить" />
+        <BackHead title={t('Докупить')} />
         <MiniSubSwitch />
-        <p className={loadError ? 'mn-error' : 'mn-muted'}>{loadError ?? 'Загружаем…'}</p>
+        <p className={loadError ? 'mn-error' : 'mn-muted'}>{loadError ?? t('Загружаем…')}</p>
       </main>
     );
   }
 
   if (!devices && !trafficOffer) {
-    const reason = offer.devices.unavailable?.message ?? offer.traffic.unavailable?.message ?? 'Для этой подписки докупить нечего.';
+    const reason = offer.devices.unavailable?.message ?? offer.traffic.unavailable?.message ?? t('Для этой подписки докупить нечего.');
     return (
       <main className="mn-page">
-        <BackHead title="Докупить" />
+        <BackHead title={t('Докупить')} />
         <MiniSubSwitch />
         <div className="mn-card mn-pad">
-          <strong>Докупить нечего</strong>
+          <strong>{t('Докупить нечего')}</strong>
           <span className="mn-ink2">{reason}</span>
         </div>
       </main>
@@ -176,15 +177,15 @@ export function MiniAddons() {
 
   return (
     <main className="mn-page plans">
-      <BackHead title="Докупить" />
+      <BackHead title={t('Докупить')} />
       <MiniSubSwitch />
       {devices && trafficOffer ? (
-        <div role="group" aria-label="Что докупить" className="mn-seg" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+        <div role="group" aria-label={t('Что докупить')} className="mn-seg" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
           <button type="button" aria-pressed={kind === 'devices'} onClick={() => setKind('devices')}>
-            Устройства
+            {t('Устройства')}
           </button>
           <button type="button" aria-pressed={kind === 'traffic'} onClick={() => setKind('traffic')}>
-            Трафик
+            {t('Трафик')}
           </button>
         </div>
       ) : null}
@@ -193,19 +194,18 @@ export function MiniAddons() {
         <>
           <div className="mn-card mn-devs">
             <span className="mn-devs-text">
-              <strong>Устройства</strong>
+              <strong>{t('Устройства')}</strong>
               <span>
-                {devices.included} в тарифе
-                {devices.extra_now > 0 ? `, ${devices.extra_now} докуплено` : ''}
+                {devices.extra_now > 0 ? t('{included} в тарифе, {extra} докуплено', { included: devices.included, extra: devices.extra_now }) : t('{included} в тарифе', { included: devices.included })}
               </span>
             </span>
             {devices.can_add > 0 ? (
               <span className="mn-stepper">
-                <button type="button" className="mn-circ press" aria-label="Меньше устройств" aria-disabled={count <= 1} onClick={() => count > 1 && setCount(count - 1)}>
+                <button type="button" className="mn-circ press" aria-label={t('Меньше устройств')} aria-disabled={count <= 1} onClick={() => count > 1 && setCount(count - 1)}>
                   {MINUS}
                 </button>
                 <span aria-live="polite">+{Math.min(count, devices.can_add)}</span>
-                <button type="button" className="mn-circ press" aria-label="Больше устройств" aria-disabled={count >= devices.can_add} onClick={() => count < devices.can_add && setCount(count + 1)}>
+                <button type="button" className="mn-circ press" aria-label={t('Больше устройств')} aria-disabled={count >= devices.can_add} onClick={() => count < devices.can_add && setCount(count + 1)}>
                   +
                 </button>
               </span>
@@ -214,12 +214,15 @@ export function MiniAddons() {
           <p className="mn-notes">
             {devices.can_add > 0 ? (
               <span>
-                До конца подписки {daysText(devices.days)}, до {dateLong(devices.expire_at, false)}. Одно устройство на этот срок стоит{' '}
-                {starsMode && devices.per_device_stars ? stars(devices.per_device_stars) : money(devices.per_device)}. При продлении устройство стоит{' '}
-                {starsMode && devices.monthly_stars ? stars(devices.monthly_stars) : money(devices.monthly)} в месяц.
+                {t('До конца подписки {days}, до {date}. Одно устройство на этот срок стоит {price}. При продлении устройство стоит {monthly} в месяц.', {
+                  days: daysText(devices.days),
+                  date: dateLong(devices.expire_at, false),
+                  price: starsMode && devices.per_device_stars ? stars(devices.per_device_stars) : money(devices.per_device),
+                  monthly: starsMode && devices.monthly_stars ? stars(devices.monthly_stars) : money(devices.monthly),
+                })}
               </span>
             ) : (
-              <span>К этой подписке больше устройств не докупить.</span>
+              <span>{t('К этой подписке больше устройств не докупить.')}</span>
             )}
           </p>
         </>
@@ -229,17 +232,17 @@ export function MiniAddons() {
         <>
           <p className="mn-notes">
             <span>
-              Израсходовано {traffic(trafficOffer.used_bytes ?? 0)} из {traffic(trafficOffer.limit_bytes ?? 0)}. Докупленный трафик расходуется после основного.
+              {t('Израсходовано {used} из {limit}. Докупленный трафик расходуется после основного.', { used: traffic(trafficOffer.used_bytes ?? 0), limit: traffic(trafficOffer.limit_bytes ?? 0) })}
             </span>
             <span>{leftoverText(trafficOffer)}</span>
           </p>
-          <div role="radiogroup" aria-label="Пакет трафика" className="mn-terms">
+          <div role="radiogroup" aria-label={t('Пакет трафика')} className="mn-terms">
             {trafficOffer.packs.map((p) => (
               <button key={p.gb} type="button" role="radio" aria-checked={pack === p.gb} className="mn-term press" onClick={() => setPack(p.gb)}>
                 <span className="mn-dot" aria-hidden="true" />
                 <span className="mn-term-text">
                   <span className="mn-term-top">
-                    <strong>+{p.gb} ГБ</strong>
+                    <strong>{t('+{n} ГБ', { n: p.gb })}</strong>
                     <strong className="num">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</strong>
                   </span>
                 </span>
@@ -251,17 +254,17 @@ export function MiniAddons() {
 
       <div className="mn-pay">
         <div className="mn-pay-head">
-          <h2>Оплата</h2>
+          <h2>{t('Оплата')}</h2>
         </div>
-        {q && methods.length === 0 ? <p className="mn-muted small">В мини-приложении оплатить сейчас нельзя. Докупить можно в боте или в кабинете на сайте.</p> : null}
-        <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
+        {q && methods.length === 0 ? <p className="mn-muted small">{t('В мини-приложении оплатить сейчас нельзя. Докупить можно в боте или в кабинете на сайте.')}</p> : null}
+        <div role="radiogroup" aria-label={t('Способ оплаты')} className="mn-chips">
           {methods.map((m) => (
             <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
               {m.title}
             </button>
           ))}
         </div>
-        {balanceShort?.unavailable?.type === 'insufficient_balance' ? <p className="mn-muted small">Не хватает: на балансе {money(me.balance)}</p> : null}
+        {balanceShort?.unavailable?.type === 'insufficient_balance' ? <p className="mn-muted small">{t('Не хватает: на балансе {amount}', { amount: money(me.balance) })}</p> : null}
         {error ? <p className="mn-error">{error}</p> : null}
         {note ? (
           <p role="status" className="mn-note">
@@ -270,7 +273,7 @@ export function MiniAddons() {
               <>
                 {' '}
                 <button type="button" className="mn-link press" onClick={() => openExternal(otherWallet)}>
-                  Оплатить другим кошельком
+                  {t('Оплатить другим кошельком')}
                 </button>
               </>
             ) : null}
@@ -278,7 +281,7 @@ export function MiniAddons() {
         ) : null}
       </div>
       <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q || !choice}>
-        {busy ? 'Открываем оплату…' : `Оплатить ${totalText}${inTelegramWallet ? ' в Telegram' : ''}`}
+        {busy ? t('Открываем оплату…') : inTelegramWallet ? t('Оплатить {amount} в Telegram', { amount: totalText }) : t('Оплатить {amount}', { amount: totalText })}
       </button>
     </main>
   );

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateTime } from '../lib/format';
+import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
-import { AI_NAME, aiAnswering, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
+import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
 import { BackHead } from './MiniApp';
 
 function failText(err: unknown, fallback: string): string {
@@ -12,12 +13,12 @@ function failText(err: unknown, fallback: string): string {
 
 function stateOf(ticket: TicketBrief): { text: string; tone: string } {
   if (ticket.status === 'closed') {
-    return { text: 'Закрыто', tone: 'muted' };
+    return { text: t('Закрыто'), tone: 'muted' };
   }
   if (ticket.last_author === 'client') {
-    return { text: 'Ждёт ответа', tone: 'muted' };
+    return { text: t('Ждёт ответа'), tone: 'muted' };
   }
-  return { text: 'Есть ответ', tone: 'ink2' };
+  return { text: t('Есть ответ'), tone: 'ink2' };
 }
 
 export function MiniSupport() {
@@ -30,7 +31,7 @@ export function MiniSupport() {
   useEffect(() => {
     api<TicketBrief[]>('/api/client/support/tickets')
       .then(setList)
-      .catch((err) => setError(failText(err, 'Обращения не загрузились')));
+      .catch((err) => setError(failText(err, t('Обращения не загрузились'))));
   }, []);
 
   const send = async () => {
@@ -45,39 +46,39 @@ export function MiniSupport() {
       setBody('');
       navigate(`/app/support/${res.ticket_id}`);
     } catch (err) {
-      setError(failText(err, 'Сообщение не отправилось'));
+      setError(failText(err, t('Сообщение не отправилось')));
     } finally {
       setBusy(false);
     }
   };
 
-  const open = (list ?? []).filter((t) => t.status === 'open');
-  const closed = (list ?? []).filter((t) => t.status === 'closed');
-  const waiting = open.find((t) => t.last_author === 'client');
+  const open = (list ?? []).filter((item) => item.status === 'open');
+  const closed = (list ?? []).filter((item) => item.status === 'closed');
+  const waiting = open.find((item) => item.last_author === 'client');
 
   return (
     <main className="mn-page">
-      <BackHead title="Поддержка" />
+      <BackHead title={t('Поддержка')} />
       <div className="mn-card mn-pad">
-        <strong>{waiting ? 'Ещё вопрос' : 'Новый вопрос'}</strong>
-        <span className="mn-ink2">Сначала ответит {AI_NAME}. Если он не справится или вы попросите, подключится оператор.</span>
+        <strong>{waiting ? t('Ещё вопрос') : t('Новый вопрос')}</strong>
+        <span className="mn-ink2">{t('Сначала ответит {ai}. Если он не справится или вы попросите, подключится оператор.', { ai: aiName() })}</span>
         <label className="mn-field">
-          <span className="sr-only">Сообщение</span>
-          <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder="Например: не подключается iPhone" onChange={(e) => setBody(e.target.value)} disabled={busy} />
+          <span className="sr-only">{t('Сообщение')}</span>
+          <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder={t('Например: не подключается iPhone')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
         </label>
         {error ? <span className="mn-error">{error}</span> : null}
         <button type="button" className="mn-main sm press" onClick={() => void send()} disabled={busy || !body.trim()}>
-          {busy ? 'Отправляем…' : 'Отправить'}
+          {busy ? t('Отправляем…') : t('Отправить')}
         </button>
       </div>
       {list && list.length > 0 ? (
-        <div className="mn-list" aria-label="Обращения">
-          {[...open, ...closed].map((t) => {
-            const state = stateOf(t);
+        <div className="mn-list" aria-label={t('Обращения')}>
+          {[...open, ...closed].map((item) => {
+            const state = stateOf(item);
             return (
-              <Link key={t.id} to={`/app/support/${t.id}`} className="mn-row press mn-ticket">
+              <Link key={item.id} to={`/app/support/${item.id}`} className="mn-row press mn-ticket">
                 <span className="mn-ticket-text">
-                  <span className="mn-row-name">{ticketTitle(t)}</span>
+                  <span className="mn-row-name">{ticketTitle(item)}</span>
                   <span className={`mn-tone ${state.tone}`}>{state.text}</span>
                 </span>
                 <Icon name="chevron-right" size={16} />
@@ -86,7 +87,7 @@ export function MiniSupport() {
           })}
         </div>
       ) : null}
-      {list === null && !error ? <p className="mn-muted">Загружаем…</p> : null}
+      {list === null && !error ? <p className="mn-muted">{t('Загружаем…')}</p> : null}
     </main>
   );
 }
@@ -105,14 +106,14 @@ export function MiniTicket() {
 
   const load = useCallback(async () => {
     if (!Number.isFinite(ticketId)) {
-      setError('Обращение не найдено');
+      setError(t('Обращение не найдено'));
       return;
     }
     try {
       setThread(await api<ChatThread>(`/api/client/support/tickets/${ticketId}`));
       setError(null);
     } catch (err) {
-      setError(failText(err, 'Обращение не загрузилось'));
+      setError(failText(err, t('Обращение не загрузилось')));
     }
   }, [ticketId]);
 
@@ -159,7 +160,7 @@ export function MiniTicket() {
     if (!text || busy) {
       return;
     }
-    if (await post(`/api/client/support/tickets/${ticketId}`, { body: text }, 'Сообщение не отправилось')) {
+    if (await post(`/api/client/support/tickets/${ticketId}`, { body: text }, t('Сообщение не отправилось'))) {
       setBody('');
     }
   };
@@ -171,7 +172,7 @@ export function MiniTicket() {
       setAsk(false);
       await load();
     } catch (err) {
-      setError(failText(err, 'Обращение не закрылось'));
+      setError(failText(err, t('Обращение не закрылось')));
     } finally {
       setBusy(false);
     }
@@ -183,16 +184,16 @@ export function MiniTicket() {
   const closed = thread?.ticket.status === 'closed';
   const handoffNote = (
     <li key="handoff" className="mn-chat-note">
-      Вопрос передан оператору. Ответ придёт сюда и в Telegram.
+      {t('Вопрос передан оператору. Ответ придёт сюда и в Telegram.')}
     </li>
   );
 
   return (
     <main className="mn-page">
-      <BackHead title={Number.isFinite(ticketId) ? `Обращение №${ticketId}` : 'Обращение'} to="/app/support" />
-      {!thread && !error ? <p className="mn-muted">Загружаем переписку…</p> : null}
+      <BackHead title={Number.isFinite(ticketId) ? t('Обращение №{id}', { id: ticketId }) : t('Обращение')} to="/app/support" />
+      {!thread && !error ? <p className="mn-muted">{t('Загружаем переписку…')}</p> : null}
       {thread ? (
-        <ol className="mn-chat" aria-label="Переписка">
+        <ol className="mn-chat" aria-label={t('Переписка')}>
           {messages.map((m, i) => {
             const mine = m.author === 'client';
             return [
@@ -207,7 +208,7 @@ export function MiniTicket() {
           {handoff !== null && handoff >= messages.length ? handoffNote : null}
           {typing ? (
             <li className="mn-chat-note" aria-live="polite">
-              {AI_NAME} пишет ответ…
+              {t('{ai} пишет ответ…', { ai: aiName() })}
             </li>
           ) : null}
         </ol>
@@ -216,43 +217,43 @@ export function MiniTicket() {
       {error ? <span className="mn-error">{error}</span> : null}
       {thread && closed ? (
         <div className="mn-card mn-pad">
-          <span className="mn-ink2">Обращение закрыто. Если вопрос остался, задайте новый.</span>
+          <span className="mn-ink2">{t('Обращение закрыто. Если вопрос остался, задайте новый.')}</span>
           <Link to="/app/support" className="mn-main sm press">
-            Новый вопрос
+            {t('Новый вопрос')}
           </Link>
         </div>
       ) : null}
       {thread && !closed ? (
         <div className="mn-card mn-pad">
           <label className="mn-field">
-            <span className="sr-only">Ответ</span>
-            <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder="Напишите сообщение" onChange={(e) => setBody(e.target.value)} disabled={busy} />
+            <span className="sr-only">{t('Ответ')}</span>
+            <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder={t('Напишите сообщение')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
           </label>
           <button type="button" className="mn-main sm press" onClick={() => void reply()} disabled={busy || !body.trim()}>
-            {busy ? 'Отправляем…' : 'Отправить'}
+            {busy ? t('Отправляем…') : t('Отправить')}
           </button>
           {answering ? (
-            <button type="button" className="mn-btn2 press" onClick={() => void post(`/api/client/support/tickets/${ticketId}/operator`, {}, 'Не получилось позвать оператора')} disabled={busy}>
-              Позвать оператора
+            <button type="button" className="mn-btn2 press" onClick={() => void post(`/api/client/support/tickets/${ticketId}/operator`, {}, t('Не получилось позвать оператора'))} disabled={busy}>
+              {t('Позвать оператора')}
             </button>
           ) : null}
           {ask ? (
             <div className="mn-ask">
               <span>
-                <strong>Закрыть обращение?</strong> Писать в него будет нельзя, но можно задать новый вопрос.
+                <strong>{t('Закрыть обращение?')}</strong> {t('Писать в него будет нельзя, но можно задать новый вопрос.')}
               </span>
               <div className="mn-ask-grid">
                 <button type="button" className="mn-ask-ok press" onClick={() => void close()} disabled={busy}>
-                  Закрыть
+                  {t('Закрыть')}
                 </button>
                 <button type="button" className="mn-ask-cancel press" onClick={() => setAsk(false)} disabled={busy}>
-                  Отменить
+                  {t('Отменить')}
                 </button>
               </div>
             </div>
           ) : (
             <button type="button" className="mn-link press" onClick={() => setAsk(true)} disabled={busy}>
-              Вопрос решён, закрыть
+              {t('Вопрос решён, закрыть')}
             </button>
           )}
         </div>

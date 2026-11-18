@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } fr
 import { Link, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong } from '../lib/format';
+import { msg, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { supportTickets } from '../lib/support';
@@ -57,7 +58,7 @@ export function SecurityPage() {
       setSetup(await api<Setup>('/api/client/security/totp/setup', { method: 'POST', body: {} }));
       setCode('');
     } catch (err) {
-      setError(failText(err, 'Настройка не началась, попробуйте ещё раз'));
+      setError(failText(err, t('Настройка не началась, попробуйте ещё раз')));
     } finally {
       setBusy(false);
     }
@@ -75,10 +76,10 @@ export function SecurityPage() {
       setState(next);
       setSetup(null);
       setCode('');
-      setNotice('Вход по коду включён. При следующем входе на сайт понадобится код из приложения.');
+      setNotice(t('Вход по коду включён. При следующем входе на сайт понадобится код из приложения.'));
       void reload();
     } catch (err) {
-      setError(failText(err, 'Код не подошёл'));
+      setError(failText(err, t('Код не подошёл')));
     } finally {
       setBusy(false);
     }
@@ -93,10 +94,10 @@ export function SecurityPage() {
       setState(next);
       setTurningOff(false);
       setCode('');
-      setNotice('Вход по коду выключен.');
+      setNotice(t('Вход по коду выключен.'));
       void reload();
     } catch (err) {
-      setError(failText(err, 'Код не подошёл'));
+      setError(failText(err, t('Код не подошёл')));
     } finally {
       setBusy(false);
     }
@@ -111,7 +112,7 @@ export function SecurityPage() {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
-      setError('Браузер не дал скопировать: выделите ключ вручную');
+      setError(t('Браузер не дал скопировать: выделите ключ вручную'));
     }
   };
 
@@ -124,25 +125,27 @@ export function SecurityPage() {
 
   const codeField = (
     <label className="cb-field">
-      <span>Код из приложения</span>
-      <input value={code} onChange={(e) => setCode(digits(e.target.value))} inputMode="numeric" autoComplete="one-time-code" placeholder="6 цифр" />
+      <span>{t('Код из приложения')}</span>
+      <input value={code} onChange={(e) => setCode(digits(e.target.value))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
     </label>
   );
 
+  const [lostBefore, lostAfter] = t('Если телефон с приложением потерян, {link}: вход по коду сбросят, и его можно будет включить заново.').split('{link}');
+
   return (
     <div className="cb-secure">
-      <h1 className="cb-title">Безопасность</h1>
+      <h1 className="cb-title">{t('Безопасность')}</h1>
       <LoginsCard />
       <PasswordCard />
-      <Card label="Вход по коду из приложения">
+      <Card label={t('Вход по коду из приложения')}>
         <div className="cb-row wrap">
-          <h2 className="cb-h2">Вход по коду из приложения</h2>
-          <span className={state.enabled ? 'cb-status ink2' : 'cb-status muted'}>{state.enabled ? 'Включён' : 'Выключен'}</span>
+          <h2 className="cb-h2">{t('Вход по коду из приложения')}</h2>
+          <span className={state.enabled ? 'cb-status ink2' : 'cb-status muted'}>{state.enabled ? t('Включён') : t('Выключен')}</span>
         </div>
         <p className="cb-note">
-          После подтверждения в Telegram или кода из письма сайт спросит ещё шестизначный код из приложения-аутентификатора, например Google Authenticator или Яндекс Ключ. В мини-приложении внутри Telegram код не нужен.
+          {t('После подтверждения в Telegram или кода из письма сайт спросит ещё шестизначный код из приложения-аутентификатора, например Google Authenticator или Яндекс Ключ. В мини-приложении внутри Telegram код не нужен.')}
         </p>
-        {state.enabled && state.enabled_at ? <span className="cb-small cb-muted">Включён {dateLong(state.enabled_at)}</span> : null}
+        {state.enabled && state.enabled_at ? <span className="cb-small cb-muted">{t('Включён {date}', { date: dateLong(state.enabled_at) })}</span> : null}
         {notice ? (
           <p className="cb-result" role="status">
             {notice}
@@ -151,7 +154,7 @@ export function SecurityPage() {
         {!state.enabled && !setup ? (
           <span className="cb-btns">
             <button type="button" className="cb-main" onClick={() => void begin()} disabled={busy}>
-              Включить
+              {t('Включить')}
             </button>
           </span>
         ) : null}
@@ -162,14 +165,14 @@ export function SecurityPage() {
                 <span className="cb-num">1</span>
                 <span className="cb-step">
                   <span className="cb-step-text">
-                    <strong>Добавьте {site.brand_name} в приложение</strong>
-                    <span className="cb-small cb-muted">Отсканируйте QR-код камерой приложения или введите ключ вручную</span>
+                    <strong>{t('Добавьте {brand} в приложение', { brand: site.brand_name })}</strong>
+                    <span className="cb-small cb-muted">{t('Отсканируйте QR-код камерой приложения или введите ключ вручную')}</span>
                   </span>
-                  <QrCode text={setup.uri} size={176} label="QR-код для приложения-аутентификатора" />
+                  <QrCode text={setup.uri} size={176} label={t('QR-код для приложения-аутентификатора')} />
                   <span className="cb-linkrow">
                     <span className="cb-link mono">{grouped(setup.secret)}</span>
                     <button type="button" className="cb-second" onClick={() => void copy()}>
-                      {copied ? 'Скопировано' : 'Скопировать ключ'}
+                      {copied ? t('Скопировано') : t('Скопировать ключ')}
                     </button>
                   </span>
                 </span>
@@ -178,8 +181,8 @@ export function SecurityPage() {
                 <span className="cb-num">2</span>
                 <span className="cb-step">
                   <span className="cb-step-text">
-                    <strong>Введите код, который покажет приложение</strong>
-                    <span className="cb-small cb-muted">Код меняется каждые 30 секунд</span>
+                    <strong>{t('Введите код, который покажет приложение')}</strong>
+                    <span className="cb-small cb-muted">{t('Код меняется каждые 30 секунд')}</span>
                   </span>
                   {codeField}
                 </span>
@@ -187,10 +190,10 @@ export function SecurityPage() {
             </ol>
             <span className="cb-btns">
               <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
-                Включить вход по коду
+                {t('Включить вход по коду')}
               </button>
               <button type="button" className="cb-cancel" onClick={stop} disabled={busy}>
-                Отменить
+                {t('Отменить')}
               </button>
             </span>
           </form>
@@ -206,20 +209,20 @@ export function SecurityPage() {
                 setNotice(null);
               }}
             >
-              Выключить
+              {t('Выключить')}
             </button>
           </span>
         ) : null}
         {state.enabled && turningOff ? (
           <form className="cb-secure-form" onSubmit={disable}>
-            <p className="cb-ink2">Чтобы выключить вход по коду, введите код из приложения.</p>
+            <p className="cb-ink2">{t('Чтобы выключить вход по коду, введите код из приложения.')}</p>
             {codeField}
             <span className="cb-btns">
               <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
-                Выключить вход по коду
+                {t('Выключить вход по коду')}
               </button>
               <button type="button" className="cb-cancel" onClick={stop} disabled={busy}>
-                Отменить
+                {t('Отменить')}
               </button>
             </span>
           </form>
@@ -230,19 +233,19 @@ export function SecurityPage() {
           </p>
         ) : null}
         <p className="cb-small cb-muted">
-          Если телефон с приложением потерян,{' '}
+          {lostBefore}
           {supportTickets(site) ? (
             <Link className="cb-accent-link" to="/cabinet/help">
-              напишите в поддержку
+              {t('напишите в поддержку')}
             </Link>
           ) : site.support_url ? (
             <a className="cb-accent-link" href={site.support_url} target="_blank" rel="noreferrer">
-              напишите в поддержку
+              {t('напишите в поддержку')}
             </a>
           ) : (
-            'напишите в поддержку'
+            t('напишите в поддержку')
           )}
-          : вход по коду сбросят, и его можно будет включить заново.
+          {lostAfter}
         </p>
       </Card>
     </div>
@@ -268,32 +271,32 @@ function PasswordCard() {
       await api('/api/client/security/password', { method: 'POST', body: { current: has ? current : undefined, password: fresh } });
       setCurrent('');
       setFresh('');
-      setResult({ text: has ? 'Пароль изменён. На других устройствах кабинет попросит войти заново.' : 'Пароль задан. Теперь можно входить по почте и паролю.', bad: false });
+      setResult({ text: has ? t('Пароль изменён. На других устройствах кабинет попросит войти заново.') : t('Пароль задан. Теперь можно входить по почте и паролю.'), bad: false });
       await reload();
     } catch (err) {
-      setResult({ text: err instanceof ApiError ? err.message : 'Пароль не сохранился', bad: true });
+      setResult({ text: err instanceof ApiError ? err.message : t('Пароль не сохранился'), bad: true });
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Card label="Пароль">
+    <Card label={t('Пароль')}>
       <div className="cb-row wrap">
-        <h2 className="cb-h2">Пароль</h2>
+        <h2 className="cb-h2">{t('Пароль')}</h2>
         <span className="cb-status muted">{me.email}</span>
       </div>
-      <p className="cb-note">{has ? 'Пароль для входа на сайт по почте.' : 'Пароля пока нет: вы входили через Telegram или по коду из письма. Задайте его, чтобы входить по почте и паролю.'}</p>
+      <p className="cb-note">{has ? t('Пароль для входа на сайт по почте.') : t('Пароля пока нет: вы входили через Telegram или по коду из письма. Задайте его, чтобы входить по почте и паролю.')}</p>
       <form className="cb-secure-form" onSubmit={submit}>
         {has ? (
           <label className="cb-field">
-            <span>Текущий пароль</span>
+            <span>{t('Текущий пароль')}</span>
             <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" />
           </label>
         ) : null}
         <label className="cb-field">
-          <span>Новый пароль</span>
-          <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder="Не короче 10 символов" />
+          <span>{t('Новый пароль')}</span>
+          <input type="password" value={fresh} onChange={(e) => setFresh(e.target.value)} autoComplete="new-password" placeholder={t('Не короче 10 символов')} />
         </label>
         {result ? (
           <p className={result.bad ? 'cb-error' : 'cb-result'} role={result.bad ? 'alert' : 'status'}>
@@ -302,7 +305,7 @@ function PasswordCard() {
         ) : null}
         <span className="cb-btns">
           <button type="submit" className="cb-main" disabled={busy || fresh.length < 10 || (has && !current)}>
-            {busy ? 'Сохраняем…' : has ? 'Сменить пароль' : 'Задать пароль'}
+            {busy ? t('Сохраняем…') : has ? t('Сменить пароль') : t('Задать пароль')}
           </button>
         </span>
       </form>
@@ -314,7 +317,7 @@ type LoginKind = 'telegram' | 'email' | 'google' | 'apple';
 type LoginMethod = { kind: LoginKind; account: string; linked_at: string; removable: boolean };
 type Logins = { methods: LoginMethod[]; can_link: OauthProvider[] };
 
-const KIND_TITLE: Record<LoginKind, string> = { telegram: 'Telegram', email: 'Почта', google: 'Google', apple: 'Apple' };
+const KIND_TITLE: Record<LoginKind, string> = { telegram: 'Telegram', email: msg('Почта'), google: 'Google', apple: 'Apple' };
 
 function isProvider(kind: LoginKind): kind is OauthProvider {
   return kind === 'google' || kind === 'apple';
@@ -341,7 +344,7 @@ function LoginsCard() {
     try {
       setData(await api<Logins>('/api/client/security/logins'));
     } catch (err) {
-      setError(failText(err, 'Способы входа не загрузились'));
+      setError(failText(err, t('Способы входа не загрузились')));
     }
   }, []);
 
@@ -356,10 +359,10 @@ function LoginsCard() {
       .then(
         (res) => {
           if (res.status === 'linked') {
-            setNotice(`Вход через ${PROVIDER_TITLE[res.provider]} привязан. Теперь им можно входить в кабинет.`);
+            setNotice(t('Вход через {provider} привязан. Теперь им можно входить в кабинет.', { provider: PROVIDER_TITLE[res.provider] }));
           }
         },
-        (err) => setError(failText(err, 'Привязка не завершилась, попробуйте ещё раз')),
+        (err) => setError(failText(err, t('Привязка не завершилась, попробуйте ещё раз'))),
       )
       .finally(() => {
         navigate('/cabinet/security', { replace: true });
@@ -374,7 +377,7 @@ function LoginsCard() {
     try {
       await leaveFor(`/api/client/security/logins/${provider}`);
     } catch (err) {
-      setError(failText(err, 'Привязка не началась'));
+      setError(failText(err, t('Привязка не началась')));
       setBusy(false);
     }
   };
@@ -386,9 +389,9 @@ function LoginsCard() {
     try {
       setData(await api<Logins>(`/api/client/security/logins/${provider}`, { method: 'DELETE' }));
       setAsk(null);
-      setNotice(`Вход через ${PROVIDER_TITLE[provider]} отвязан.`);
+      setNotice(t('Вход через {provider} отвязан.', { provider: PROVIDER_TITLE[provider] }));
     } catch (err) {
-      setError(failText(err, 'Не получилось отвязать'));
+      setError(failText(err, t('Не получилось отвязать')));
     } finally {
       setBusy(false);
     }
@@ -400,41 +403,42 @@ function LoginsCard() {
   }
 
   return (
-    <Card label="Способы входа" className="cb-logins">
-      <h2 className="cb-h2">Способы входа</h2>
-      <p className="cb-note">Войти в кабинет можно любым из них. Последний способ отвязать нельзя.</p>
+    <Card label={t('Способы входа')} className="cb-logins">
+      <h2 className="cb-h2">{t('Способы входа')}</h2>
+      <p className="cb-note">{t('Войти в кабинет можно любым из них. Последний способ отвязать нельзя.')}</p>
       {data?.methods.map((m) => (
         <Fragment key={m.kind}>
           <div className="cb-device">
             <KindMark kind={m.kind} />
             <span className="cb-device-text">
-              <strong>{KIND_TITLE[m.kind]}</strong>
+              <strong>{t(KIND_TITLE[m.kind])}</strong>
               <span className="cb-small cb-muted">{m.account}</span>
             </span>
             {isProvider(m.kind) && m.removable ? (
               <button
                 type="button"
                 className={phone ? 'cb-text' : 'cb-second sm'}
-                aria-label={`Отвязать ${KIND_TITLE[m.kind]}`}
+                aria-label={t('Отвязать {kind}', { kind: t(KIND_TITLE[m.kind]) })}
                 aria-expanded={ask === m.kind}
                 onClick={() => setAsk(ask === m.kind ? null : (m.kind as OauthProvider))}
                 disabled={busy}
               >
-                Отвязать
+                {t('Отвязать')}
               </button>
             ) : null}
           </div>
           {ask === m.kind ? (
             <div className="cb-ask">
               <p>
-                <strong>Отвязать вход через {PROVIDER_TITLE[ask]}?</strong> Входить через этот аккаунт {PROVIDER_TITLE[ask]} больше не получится. Привязать его можно снова.
+                <strong>{t('Отвязать вход через {provider}?', { provider: PROVIDER_TITLE[ask] })}</strong>{' '}
+                {t('Входить через этот аккаунт {provider} больше не получится. Привязать его можно снова.', { provider: PROVIDER_TITLE[ask] })}
               </p>
               <span className="cb-ask-btns">
                 <button type="button" className="cb-main sm" onClick={() => void unlink(ask)} disabled={busy}>
-                  Отвязать
+                  {t('Отвязать')}
                 </button>
                 <button type="button" className="cb-cancel" onClick={() => setAsk(null)} disabled={busy}>
-                  Отменить
+                  {t('Отменить')}
                 </button>
               </span>
             </div>
@@ -446,7 +450,7 @@ function LoginsCard() {
           {data.can_link.map((p) => (
             <button key={p} type="button" className="cb-second cb-oauth-btn" onClick={() => void link(p)} disabled={busy}>
               <ProviderMark provider={p} />
-              Привязать {PROVIDER_TITLE[p]}
+              {t('Привязать {provider}', { provider: PROVIDER_TITLE[p] })}
             </button>
           ))}
         </span>

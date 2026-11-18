@@ -588,6 +588,52 @@ pub async fn spins(ctx: &ModuleContext, page: PageRequest) -> Result<Page<SpinIt
     })
 }
 
+fn free_denied() -> String {
+    sn_domain::lang::pick(FREE_DENIED, "Free spins aren't available for this account").to_string()
+}
+
+fn free_reason(free_for: FreeFor) -> String {
+    match (sn_domain::lang::current(), free_for) {
+        (sn_domain::client::Locale::En, FreeFor::All) => "Free spins are for all clients".into(),
+        (sn_domain::client::Locale::En, FreeFor::Subscribers) => {
+            "Free spins are for clients with an active subscription".into()
+        }
+        (sn_domain::client::Locale::En, FreeFor::Paid) => {
+            "Free spins are for clients with a paid subscription".into()
+        }
+        (sn_domain::client::Locale::Ru, free_for) => {
+            format!("Бесплатно крутить можно {}", free_for.title())
+        }
+    }
+}
+
+fn shown_note(note: String) -> String {
+    if sn_domain::lang::current() == sn_domain::client::Locale::Ru {
+        return note;
+    }
+    match note.as_str() {
+        "Дни уже добавлены к подписке" => {
+            "The days are already added to your subscription".into()
+        }
+        "Деньги уже на балансе" => "The money is already on your balance".into(),
+        other => match other.strip_prefix("Промокод действует ") {
+            Some(rest) => {
+                let days: u32 = rest
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+                format!(
+                    "The promo code works for {}",
+                    format::days_in(days, sn_domain::client::Locale::En)
+                )
+            }
+            None => note,
+        },
+    }
+}
+
 fn history_item(row: store::SpinRow) -> HistoryItem {
     let prize: Prize = serde_json::from_value(row.prize).unwrap_or(Prize::Empty);
     HistoryItem {
@@ -596,7 +642,7 @@ fn history_item(row: store::SpinRow) -> HistoryItem {
         prize,
         title: shown_title(row.label, prize),
         state: row.state,
-        note: row.note,
+        note: row.note.map(shown_note),
         code: row.code,
         at: row.created_at,
     }
@@ -628,9 +674,9 @@ async fn free_status(
     if !allowed {
         return Ok(Free {
             blocked: Some(if denied {
-                FREE_DENIED.to_string()
+                free_denied()
             } else {
-                format!("Бесплатно крутить можно {}", config.free_for.title())
+                free_reason(config.free_for)
             }),
             ..Free::default()
         });
@@ -641,7 +687,7 @@ async fn free_status(
     let ready = next.is_none_or(|at| at <= now);
     if denied {
         return Ok(Free {
-            blocked: Some(FREE_DENIED.to_string()),
+            blocked: Some(free_denied()),
             held: ready,
             ..Free::default()
         });

@@ -1,3 +1,5 @@
+import { msg, t } from './i18n';
+
 export type Author = 'client' | 'support' | 'ai' | 'system';
 
 export type HandoffReason = 'human' | 'money' | 'unsure' | 'groq' | 'client_limit' | 'budget' | 'operator' | 'disabled';
@@ -18,7 +20,11 @@ export type ChatMessage = { author: Author; body: string; created_at: string };
 
 export type ChatThread = { ticket: TicketBrief; messages: ChatMessage[]; ai?: TicketAi | null };
 
-export const AI_NAME = 'ИИ-помощник';
+export const AI_NAME = msg('ИИ-помощник');
+
+export function aiName(): string {
+  return t(AI_NAME);
+}
 
 export const MAX_BODY = 4000;
 
@@ -26,9 +32,9 @@ const TYPING_MINUTES = 3;
 
 export function authorName(author: Author): string {
   if (author === 'client') {
-    return 'Вы';
+    return t('Вы');
   }
-  return author === 'ai' ? AI_NAME : 'Поддержка';
+  return author === 'ai' ? aiName() : t('Поддержка');
 }
 
 export function visibleMessages(thread: ChatThread | null): ChatMessage[] {
@@ -60,5 +66,5 @@ export function handoffAfter(thread: ChatThread | null): number | null {
 }
 
 export function ticketTitle(ticket: TicketBrief): string {
-  return ticket.subject?.trim() || `Обращение №${ticket.id}`;
+  return ticket.subject?.trim() || t('Обращение №{id}', { id: ticket.id });
 }

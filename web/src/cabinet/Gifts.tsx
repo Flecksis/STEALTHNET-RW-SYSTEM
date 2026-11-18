@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api } from '../lib/api';
 import { money } from '../lib/format';
+import { t } from '../lib/i18n';
 import { methodKey } from '../lib/methods';
 import { Card, useCabinet } from './CabinetApp';
 import type { ItemQuote, PayResult } from './extras';
@@ -52,7 +53,7 @@ function useMine() {
       setMine(await api<MyGift[]>(`${GIFTS}/mine`));
       setError(null);
     } catch (err) {
-      setError(failText(err, 'Подарки не загрузились'));
+      setError(failText(err, t('Подарки не загрузились')));
     }
   }, []);
   useEffect(() => {
@@ -69,25 +70,25 @@ function ShareButtons({ gift }: { gift: MyGift }) {
       await navigator.clipboard.writeText(text);
       setNote(done);
     } catch {
-      setNote('Не получилось скопировать, выделите код вручную');
+      setNote(t('Не получилось скопировать, выделите код вручную'));
     }
   };
   return (
     <span className="cb-gift-acts">
-      <button type="button" className="cb-second sm" onClick={() => void copy(gift.code, 'Код скопирован')}>
-        Скопировать код
+      <button type="button" className="cb-second sm" onClick={() => void copy(gift.code, t('Код скопирован'))}>
+        {t('Скопировать код')}
       </button>
       {link ? (
         <button
           type="button"
           className="cb-second sm"
           onClick={() =>
-            void shareLink(link, `Дарю подписку «${gift.tariff_name}» на ${gift.term}. Код: ${gift.code}`).then((r) =>
-              setNote(r === 'copied' ? 'Ссылка скопирована' : r === 'failed' ? 'Не получилось поделиться, скопируйте код' : null),
+            void shareLink(link, t('Дарю подписку «{name}» на {term}. Код: {code}', { name: gift.tariff_name, term: gift.term, code: gift.code })).then((r) =>
+              setNote(r === 'copied' ? t('Ссылка скопирована') : r === 'failed' ? t('Не получилось поделиться, скопируйте код') : null),
             )
           }
         >
-          Поделиться ссылкой
+          {t('Поделиться ссылкой')}
         </button>
       ) : null}
       {note ? (
@@ -111,8 +112,8 @@ function MineCard({ mine, error }: { mine: MyGift[] | null; error: string | null
     return null;
   }
   return (
-    <Card className="cb-paylist" label="Мои подарки">
-      <h2 className="cb-h2 cb-gift-h">Мои подарки</h2>
+    <Card className="cb-paylist" label={t('Мои подарки')}>
+      <h2 className="cb-h2 cb-gift-h">{t('Мои подарки')}</h2>
       <ul className="cb-payrows">
         {mine.map((g) => {
           const state = giftState(g);
@@ -120,10 +121,10 @@ function MineCard({ mine, error }: { mine: MyGift[] | null; error: string | null
             <li key={g.id} className="cb-payrow cb-giftrow">
               <span className="cb-payrow-main">
                 <strong>
-                  «{g.tariff_name}» на {g.term}
+                  {t('«{name}» на {term}', { name: g.tariff_name, term: g.term })}
                 </strong>
                 <span className="cb-small cb-muted">
-                  Код <span className="mono cb-gift-code">{g.code}</span>
+                  {t('Код')} <span className="mono cb-gift-code">{g.code}</span>
                 </span>
               </span>
               <span className="cb-payrow-side">
@@ -161,7 +162,7 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
         setPreview(p);
         setTarget(p.multi && p.choices.length > 0 && !p.current ? 'new' : 'auto');
       })
-      .catch((err) => alive && setError(failText(err, 'Подарок не нашёлся')));
+      .catch((err) => alive && setError(failText(err, t('Подарок не нашёлся'))));
     return () => {
       alive = false;
     };
@@ -180,7 +181,7 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
       await reload();
       onDone();
     } catch (err) {
-      setError(failText(err, 'Подарок не активировался'));
+      setError(failText(err, t('Подарок не активировался')));
     } finally {
       setBusy(false);
     }
@@ -188,14 +189,14 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
 
   if (done) {
     return (
-      <Card className="cb-wait cb-gift-card" label="Подарок активирован">
-        <h1 className="cb-h1">Подарок активирован</h1>
+      <Card className="cb-wait cb-gift-card" label={t('Подарок активирован')}>
+        <h1 className="cb-h1">{t('Подарок активирован')}</h1>
         <p className="cb-ink2">
-          Подписка «{done.gift.tariff}» на {done.gift.term} будет готова через минуту.
+          {t('Подписка «{name}» на {term} будет готова через минуту.', { name: done.gift.tariff, term: done.gift.term })}
         </p>
         <div className="cb-btns">
           <Link to="/cabinet" className="cb-main">
-            К подписке
+            {t('К подписке')}
           </Link>
         </div>
       </Card>
@@ -206,37 +207,37 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
   const plan = preview ? planText(preview, target) : null;
 
   return (
-    <Card className="cb-wait cb-gift-card" label="Подарок для вас">
-      <h1 className="cb-h1">{preview ? 'Подарок для вас' : 'Подарок'}</h1>
-      {!preview && !error ? <p className="cb-muted">Проверяем код…</p> : null}
+    <Card className="cb-wait cb-gift-card" label={t('Подарок для вас')}>
+      <h1 className="cb-h1">{preview ? t('Подарок для вас') : t('Подарок')}</h1>
+      {!preview && !error ? <p className="cb-muted">{t('Проверяем код…')}</p> : null}
       {preview ? (
         <>
           <p className="cb-ink2">
-            Подписка «{preview.gift.tariff}» на {preview.gift.term}.
+            {t('Подписка «{name}» на {term}.', { name: preview.gift.tariff, term: preview.gift.term })}
           </p>
           {choose ? (
-            <div role="radiogroup" aria-label="Куда зачесть подарок" className="cb-method-grid">
+            <div role="radiogroup" aria-label={t('Куда зачесть подарок')} className="cb-method-grid">
               {preview.choices.map((c) => (
                 <button key={c.subscription_id} type="button" role="radio" aria-checked={target === c.subscription_id} className="cb-method cb-target" onClick={() => setTarget(c.subscription_id)}>
                   <span className="cb-radio" aria-hidden="true" />
                   <span className="cb-method-text">
-                    <strong>Продлить «{c.tariff ?? 'подписку'}»</strong>
-                    <span className="cb-target-note muted">Срок добавится к этой подписке</span>
+                    <strong>{t('Продлить «{name}»', { name: c.tariff ?? t('подписку') })}</strong>
+                    <span className="cb-target-note muted">{t('Срок добавится к этой подписке')}</span>
                   </span>
                 </button>
               ))}
               <button type="button" role="radio" aria-checked={target === 'new'} className="cb-method cb-target" onClick={() => setTarget('new')}>
                 <span className="cb-radio" aria-hidden="true" />
                 <span className="cb-method-text">
-                  <strong>Новая подписка</strong>
-                  <span className="cb-target-note muted">Со своей ссылкой, текущие останутся как есть</span>
+                  <strong>{t('Новая подписка')}</strong>
+                  <span className="cb-target-note muted">{t('Со своей ссылкой, текущие останутся как есть')}</span>
                 </span>
               </button>
             </div>
           ) : plan ? (
             <p className={`cb-lead ${plan.tone}`}>{plan.text}</p>
           ) : null}
-          {preview.gift.own ? <p className="cb-small cb-muted">Это ваш подарок: после активации код другу уже не пригодится.</p> : null}
+          {preview.gift.own ? <p className="cb-small cb-muted">{t('Это ваш подарок: после активации код другу уже не пригодится.')}</p> : null}
         </>
       ) : null}
       {error ? (
@@ -247,11 +248,11 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
       <div className="cb-btns">
         {preview ? (
           <button type="button" className="cb-main" onClick={() => void activate()} disabled={busy}>
-            {busy ? 'Активируем…' : 'Активировать подарок'}
+            {busy ? t('Активируем…') : t('Активировать подарок')}
           </button>
         ) : null}
         <button type="button" className="cb-second" onClick={onClose} disabled={busy}>
-          {preview ? 'Не сейчас' : 'Ввести другой код'}
+          {preview ? t('Не сейчас') : t('Ввести другой код')}
         </button>
       </div>
     </Card>
@@ -261,8 +262,8 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
 function CodeForm({ onCode }: { onCode: (code: string) => void }) {
   const [value, setValue] = useState('');
   return (
-    <Card className="cb-total cb-gift-code-card" label="Есть код подарка">
-      <h2 className="cb-h2">Есть код подарка?</h2>
+    <Card className="cb-total cb-gift-code-card" label={t('Есть код подарка')}>
+      <h2 className="cb-h2">{t('Есть код подарка?')}</h2>
       <form
         className="cb-promo"
         onSubmit={(e) => {
@@ -274,11 +275,11 @@ function CodeForm({ onCode }: { onCode: (code: string) => void }) {
         }}
       >
         <label className="cb-promo-field">
-          <span className="sr-only">Код подарка</span>
+          <span className="sr-only">{t('Код подарка')}</span>
           <input value={value} onChange={(e) => setValue(e.target.value.toUpperCase())} placeholder="ABCD-EFGH-JKLM" maxLength={64} autoComplete="off" spellCheck={false} />
         </label>
         <button type="submit" className="cb-second">
-          Активировать
+          {t('Активировать')}
         </button>
       </form>
     </Card>
@@ -290,12 +291,12 @@ function PaidCard({ payment, newest, onAgain }: { payment: Payment; newest: MyGi
   const review = payment.order_status === 'review';
   const failed = payment.order_status === 'canceled' || payment.order_status === 'refunded';
   return (
-    <Card className="cb-wait cb-gift-card" label="Оплата подарка">
-      <h1 className="cb-h1">{done ? 'Подарок оплачен' : review ? 'Оплата принята' : failed ? 'Оплата не прошла' : 'Ждём оплату'}</h1>
+    <Card className="cb-wait cb-gift-card" label={t('Оплата подарка')}>
+      <h1 className="cb-h1">{done ? t('Подарок оплачен') : review ? t('Оплата принята') : failed ? t('Оплата не прошла') : t('Ждём оплату')}</h1>
       {done && newest ? (
         <>
           <p className="cb-ink2">
-            «{newest.tariff_name}» на {newest.term}. Отправьте другу код или ссылку — он активирует подарок в боте или здесь, в кабинете.
+            {t('«{name}» на {term}. Отправьте другу код или ссылку — он активирует подарок в боте или здесь, в кабинете.', { name: newest.tariff_name, term: newest.term })}
           </p>
           <p className="cb-gift-big mono">{newest.code}</p>
           <ShareButtons gift={newest} />
@@ -303,22 +304,22 @@ function PaidCard({ payment, newest, onAgain }: { payment: Payment; newest: MyGi
       ) : (
         <p className="cb-ink2">
           {done
-            ? 'Код подарка появится в списке ниже через несколько секунд.'
+            ? t('Код подарка появится в списке ниже через несколько секунд.')
             : review
-              ? 'Проверяем платёж. Код подарка появится в списке ниже, как только проверка закончится.'
+              ? t('Проверяем платёж. Код подарка появится в списке ниже, как только проверка закончится.')
               : failed
-                ? 'Деньги не списаны или возвращены. Попробуйте ещё раз или выберите другой способ.'
-                : 'Как только платёжная система подтвердит оплату, код появится здесь.'}
+                ? t('Деньги не списаны или возвращены. Попробуйте ещё раз или выберите другой способ.')
+                : t('Как только платёжная система подтвердит оплату, код появится здесь.')}
         </p>
       )}
       <div className="cb-btns">
         {!done && !review && !failed && payment.pay_url ? (
           <a className="cb-second" href={payment.pay_url}>
-            Вернуться к оплате
+            {t('Вернуться к оплате')}
           </a>
         ) : null}
         <button type="button" className="cb-second" onClick={onAgain}>
-          {done ? 'Подарить ещё' : 'Выбрать заново'}
+          {done ? t('Подарить ещё') : t('Выбрать заново')}
         </button>
       </div>
     </Card>
@@ -352,7 +353,7 @@ export function GiftsPage() {
           setPeriod(first.periods[Math.min(1, first.periods.length - 1)]?.period_id ?? null);
         }
       })
-      .catch((err) => setOffersError(failText(err, 'Тарифы для подарка не загрузились')));
+      .catch((err) => setOffersError(failText(err, t('Тарифы для подарка не загрузились'))));
   }, []);
 
   const list = offers?.offers ?? [];
@@ -378,7 +379,7 @@ export function GiftsPage() {
       } catch (err) {
         if (mine === seq.current) {
           setQuote(null);
-          setQuoteError(failText(err, 'Сумма не посчиталась'));
+          setQuoteError(failText(err, t('Сумма не посчиталась')));
         }
       }
     }, 150);
@@ -468,7 +469,7 @@ export function GiftsPage() {
         );
       }, 2500);
     } catch (err) {
-      setError(failText(err, 'Оплата не началась'));
+      setError(failText(err, t('Оплата не началась')));
     } finally {
       setBusy(false);
     }
@@ -495,8 +496,8 @@ export function GiftsPage() {
       {code ? null : (
         <>
           <header className="cb-pay-head">
-            <h1 className="cb-title">Подписка в подарок</h1>
-            <p className="cb-lead muted">Выберите тариф и срок, оплатите — и получите код. Друг активирует его в боте или в кабинете. {offers ? codeDaysText(offers.code_days) : null}</p>
+            <h1 className="cb-title">{t('Подписка в подарок')}</h1>
+            <p className="cb-lead muted">{t('Выберите тариф и срок, оплатите — и получите код. Друг активирует его в боте или в кабинете.')} {offers ? codeDaysText(offers.code_days) : null}</p>
           </header>
 
           {offersError ? (
@@ -504,16 +505,16 @@ export function GiftsPage() {
               {offersError}
             </p>
           ) : null}
-          {offers && list.length === 0 ? <p className="cb-muted">Сейчас подарить подписку нельзя: нет тарифов для подарка.</p> : null}
+          {offers && list.length === 0 ? <p className="cb-muted">{t('Сейчас подарить подписку нельзя: нет тарифов для подарка.')}</p> : null}
 
           {list.length ? (
             <div className="cb-cols">
               <div className="cb-col left">
-                <Card className="cb-pick" label="Тариф и срок">
+                <Card className="cb-pick" label={t('Тариф и срок')}>
                   <div className="cb-row wrap">
-                    <h2 className="cb-h2">Тариф и срок</h2>
+                    <h2 className="cb-h2">{t('Тариф и срок')}</h2>
                     {list.length > 1 ? (
-                      <div role="group" aria-label="Тариф" className="cb-cats">
+                      <div role="group" aria-label={t('Тариф')} className="cb-cats">
                         {list.map((o) => (
                           <button
                             key={o.tariff.id}
@@ -532,7 +533,7 @@ export function GiftsPage() {
                     ) : null}
                   </div>
                   {offer?.tariff.description ? <p className="cb-muted cb-small">{offer.tariff.description}</p> : null}
-                  <div role="radiogroup" aria-label="Срок" className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
+                  <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
                     {offer?.periods.map((p) => (
                       <button key={p.period_id} type="button" role="radio" aria-checked={period === p.period_id} className="cb-term-card" onClick={() => setPeriod(p.period_id)}>
                         <span className="cb-term-name">{term(p.days)}</span>
@@ -542,21 +543,21 @@ export function GiftsPage() {
                   </div>
                 </Card>
 
-                <Card className="cb-methods" label="Способ оплаты">
-                  <h2 className="cb-h2">Способ оплаты</h2>
-                  {methods.length === 0 && quote ? <p className="cb-muted">Здесь пока нет способов оплаты. Напишите в поддержку — подскажем, как оплатить.</p> : null}
-                  <div role="radiogroup" aria-label="Способ оплаты" className="cb-method-grid">
+                <Card className="cb-methods" label={t('Способ оплаты')}>
+                  <h2 className="cb-h2">{t('Способ оплаты')}</h2>
+                  {methods.length === 0 && quote ? <p className="cb-muted">{t('Здесь пока нет способов оплаты. Напишите в поддержку — подскажем, как оплатить.')}</p> : null}
+                  <div role="radiogroup" aria-label={t('Способ оплаты')} className="cb-method-grid">
                     {methods.map((m) => {
                       const off = !!m.unavailable;
                       const hint =
                         m.unavailable?.type === 'insufficient_balance'
-                          ? `Не хватает: на балансе ${money(m.unavailable.balance)}`
+                          ? t('Не хватает: на балансе {amount}', { amount: money(m.unavailable.balance) })
                           : m.unavailable?.type === 'no_stars_price'
-                            ? 'У этого срока нет цены в звёздах'
+                            ? t('У этого срока нет цены в звёздах')
                             : m.kind === 'balance'
-                              ? `На балансе ${money(me.balance)}`
+                              ? t('На балансе {amount}', { amount: money(me.balance) })
                               : m.kind === 'stars' && methodAmount(m) !== null
-                                ? `${stars(methodAmount(m) ?? 0)}, оплата в Telegram`
+                                ? t('{stars}, оплата в Telegram', { stars: stars(methodAmount(m) ?? 0) })
                                 : m.hint;
                       return (
                         <button
@@ -581,18 +582,18 @@ export function GiftsPage() {
               </div>
 
               <div className="cb-col right">
-                <Card className="cb-total" label="Итого">
-                  <h2 className="cb-h2">Итого</h2>
+                <Card className="cb-total" label={t('Итого')}>
+                  <h2 className="cb-h2">{t('Итого')}</h2>
                   {q && offer && periodOffer ? (
                     <div className="cb-line">
                       <span>
-                        Подарок: «{offer.tariff.name}» на {term(periodOffer.days)}
+                        {t('Подарок: «{name}» на {term}', { name: offer.tariff.name, term: term(periodOffer.days) })}
                       </span>
                       <span className="num">{totalText}</span>
                     </div>
                   ) : null}
                   <div className="cb-due">
-                    <strong>К оплате</strong>
+                    <strong>{t('К оплате')}</strong>
                     <span className="cb-due-sum">{totalText}</span>
                   </div>
                   {quoteError || error ? (
@@ -601,9 +602,9 @@ export function GiftsPage() {
                     </p>
                   ) : null}
                   <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || blocked || !chosen || !q}>
-                    {busy ? 'Открываем оплату…' : `Оплатить подарок ${totalText}`}
+                    {busy ? t('Открываем оплату…') : t('Оплатить подарок {amount}', { amount: totalText })}
                   </button>
-                  <p className="cb-small cb-muted">Код придёт сразу после оплаты: здесь, в «Моих подарках», и сообщением в Telegram.</p>
+                  <p className="cb-small cb-muted">{t('Код придёт сразу после оплаты: здесь, в «Моих подарках», и сообщением в Telegram.')}</p>
                 </Card>
                 <CodeForm onCode={openCode} />
               </div>

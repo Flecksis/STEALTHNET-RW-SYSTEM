@@ -1,4 +1,5 @@
 import { count, type Money } from '../lib/format';
+import { t } from '../lib/i18n';
 import type { CheckoutMethod, Quote, TrafficReset } from './model';
 
 export type Unavailable = { code: string; message: string };
@@ -64,9 +65,9 @@ const PERIODIC: TrafficReset[] = ['day', 'week', 'month', 'month_rolling'];
 export function leftoverText(offer: TrafficOffer): string {
   const periodic = PERIODIC.includes(offer.reset);
   if (offer.leftover === 'carry') {
-    return periodic ? 'Неизрасходованный остаток перейдёт на следующий период после сброса трафика.' : 'Неизрасходованный остаток сохранится после продления.';
+    return periodic ? t('Неизрасходованный остаток перейдёт на следующий период после сброса трафика.') : t('Неизрасходованный остаток сохранится после продления.');
   }
-  return periodic ? 'Что не израсходуете до сброса трафика, сгорит.' : 'Что не израсходуете до продления, сгорит.';
+  return periodic ? t('Что не израсходуете до сброса трафика, сгорит.') : t('Что не израсходуете до продления, сгорит.');
 }
 
 export function daysText(n: number): string {
@@ -88,5 +89,5 @@ export function firstKind(offer: AddonsOffer, asked: string | null): AddonKind {
 }
 
 export function doneText(choice: AddonChoice): string {
-  return choice.kind === 'devices' ? `Готово, лимит устройств вырос на ${choice.count}.` : `Готово, лимит трафика вырос на ${choice.gb} ГБ.`;
+  return choice.kind === 'devices' ? t('Готово, лимит устройств вырос на {n}.', { n: choice.count }) : t('Готово, лимит трафика вырос на {n} ГБ.', { n: choice.gb });
 }
