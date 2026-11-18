@@ -299,7 +299,7 @@ async fn бот_показывает_лесенку_и_скидку_за_доп_
     handle_update(&ctx, callback_update(5, 782, "d:2")).await;
     let summary = last_text(&server).await;
     assert!(
-        summary.contains("Скидка за 2\u{a0}доп. устройства, −10% — -$0.20"),
+        summary.contains("Скидка за 2\u{a0}доп. устройства, −10% — −$0.20"),
         "{summary}"
     );
     assert!(summary.contains("$4.79"), "{summary}");

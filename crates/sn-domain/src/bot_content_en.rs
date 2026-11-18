@@ -137,7 +137,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.btn.back_to_payment" => "Back to checkout",
         "buy.btn.promo_other" => "Try another",
         "buy.btn.no_promo" => "No promo code",
-        "pay.what_tariff" => "{tariff}.",
+        "pay.what_tariff" => "{tariff}, {term}.",
         "pay.what_topup" => "Top-up of {amount}.",
         "pay.ready" => {
             "{what}\nYour invoice is ready: tap “Pay”. We'll confirm here once it's paid."

@@ -173,6 +173,7 @@ async fn если_telegram_не_принял_виджет_бот_даёт_ссы
     assert_eq!(calls(&server, "sendWidget").await.len(), 1);
     let ready = last_text(&server).await;
     assert!(ready.contains("Счёт готов: нажмите «Оплатить»"), "{ready}");
+    assert!(ready.starts_with("Стандарт, 3\u{a0}месяца.\n"), "{ready}");
     assert!(last_labels(&server).await.contains(&"Оплатить".to_string()));
     db.cleanup().await;
 }
@@ -392,7 +393,7 @@ async fn счёт_gram_из_мини_приложения_приходит_ви�
         widgets[0]["caption"]
             .as_str()
             .unwrap()
-            .starts_with("Стандарт."),
+            .starts_with("Стандарт, 3\u{a0}месяца."),
         "{}",
         widgets[0]
     );

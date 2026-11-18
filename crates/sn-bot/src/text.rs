@@ -89,6 +89,18 @@ pub fn money(value: Money) -> String {
     format::money_in(value, lang::current())
 }
 
+pub fn money_signed(value: Money) -> String {
+    let shown = money(value);
+    match shown.strip_prefix('-') {
+        Some(rest) => format!("\u{2212}{rest}"),
+        None => shown,
+    }
+}
+
+pub fn term(days: u32) -> String {
+    format::term_in(days, lang::current())
+}
+
 pub fn money_compact(value: Money) -> String {
     format::money_compact_in(value, lang::current())
 }
@@ -253,6 +265,21 @@ mod tests {
         let late = Utc.with_ymd_and_hms(2027, 2, 14, 22, 0, 0).unwrap();
         let msk = FixedOffset::east_opt(3 * 3600).unwrap();
         assert_eq!(day_month(late, msk), "15\u{a0}февраля");
+    }
+
+    #[test]
+    fn скидка_пишется_тем_же_минусом_что_и_процент() {
+        let discount = Money {
+            minor: -100,
+            currency: sn_domain::money::Currency::Usd,
+        };
+        assert_eq!(money_signed(discount), "\u{2212}$1.00");
+        let price = Money {
+            minor: 499,
+            currency: sn_domain::money::Currency::Usd,
+        };
+        assert_eq!(money_signed(price), "$4.99");
+        assert_eq!(term(30), "1\u{a0}месяц");
     }
 
     #[test]

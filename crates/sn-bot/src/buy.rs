@@ -568,7 +568,7 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
             "buy.summary_line",
             &[
                 ("label", Text(&line.shown_label())),
-                ("amount", Text(&text::money(line.amount))),
+                ("amount", Text(&text::money_signed(line.amount))),
             ],
         ));
     }
@@ -738,6 +738,20 @@ pub(crate) fn split_target(target: &str) -> (&str, Option<&str>) {
     }
 }
 
+async fn period_term(services: &Services, cart: &Cart) -> String {
+    let (Some(tariff_id), Some(period_id)) = (cart.tariff_id, cart.period_id) else {
+        return String::new();
+    };
+    let tariff = match services.store().conn().await {
+        Ok(mut conn) => conn.tariffs().get(tariff_id).await.ok(),
+        Err(_) => None,
+    };
+    tariff
+        .and_then(|t| t.periods.into_iter().find(|p| p.id == period_id))
+        .map(|p| text::term(p.days))
+        .unwrap_or_default()
+}
+
 pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<Screen, BotError> {
     let (provider, method) = split_target(target);
     let Some(cart) = turn.session.cart.clone() else {
@@ -749,6 +763,7 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<S
     let services = turn.services().clone();
     let content = services.bot_content_in(lang::current());
     let title = tariff_name(&services, cart.tariff_id).await;
+    let term = period_term(&services, &cart).await;
     let result = services
         .checkout()
         .start(
@@ -766,7 +781,11 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<S
         Ok(result) => {
             turn.session.cart = None;
             turn.session.promo = None;
-            let what = ui::text(&content, "pay.what_tariff", &[("tariff", Text(&title))]);
+            let what = ui::text(
+                &content,
+                "pay.what_tariff",
+                &[("tariff", Text(&title)), ("term", Text(&term))],
+            );
             if let CheckoutResult::Redirect { payment_id, .. } = &result
                 && provider == providers::GRAM
                 && send_gram_widget(turn, *payment_id, &what).await?

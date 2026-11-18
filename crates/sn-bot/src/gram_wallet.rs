@@ -109,12 +109,19 @@ pub async fn compose_for(
             .get(payment.order_id)
             .await?
             .snapshot
-            .map(|snapshot| snapshot.name);
+            .map(|snapshot| (snapshot.name, snapshot.days));
         (payment, tariff)
     };
     let content = services.bot_content_in(lang::current());
     let what = match tariff {
-        Some(name) => ui::text(&content, "pay.what_tariff", &[("tariff", Text(&name))]),
+        Some((name, days)) => ui::text(
+            &content,
+            "pay.what_tariff",
+            &[
+                ("tariff", Text(&name)),
+                ("term", Text(&crate::text::term(days))),
+            ],
+        ),
         None => ui::text(&content, "pay.gram_what", &[]),
     };
     Ok(compose(services, &payment, &what))

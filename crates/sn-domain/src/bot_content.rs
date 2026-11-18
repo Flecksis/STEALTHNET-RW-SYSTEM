@@ -1351,8 +1351,8 @@ pub static CATALOG: &[Entry] = &[
         "pay.what_tariff",
         Payment,
         "Что оплачивается: тариф",
-        "{tariff}.",
-        &[TARIFF],
+        "{tariff}, {term}.",
+        &[TARIFF, TERM],
     ),
     text(
         "pay.what_topup",
