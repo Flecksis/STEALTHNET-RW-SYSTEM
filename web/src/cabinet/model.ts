@@ -39,6 +39,7 @@ export type ClientMe = {
   two_factor: TwoFactor;
   payments_count?: number;
   email?: string | null;
+  email_change?: boolean;
   has_password?: boolean;
 };
 

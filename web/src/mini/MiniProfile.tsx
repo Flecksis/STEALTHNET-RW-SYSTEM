@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../lib/api';
 import { money } from '../lib/format';
-import { NATIVE, t } from '../lib/i18n';
+import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { heldBalance, type Referral } from '../cabinet/model';
+import { AccountCard } from './MiniAccount';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 import { siteInviteLink } from '../lib/referral';
 import { supportLink, supportTickets } from '../lib/support';
 
 export function MiniProfile() {
-  const { me, site, lang, nextLang, switchLang } = useMini();
+  const { me, site } = useMini();
   const held = heldBalance(me);
   const [referral, setReferral] = useState<Referral | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -114,15 +115,8 @@ export function MiniProfile() {
             <Icon name="chevron-right" size={16} />
           </button>
         ) : null}
-        {nextLang ? (
-          <button type="button" className="mn-row press" onClick={() => switchLang(nextLang)}>
-            <Icon name="globe" size={21} />
-            <span className="mn-row-name">{t('Язык')}</span>
-            <span className="mn-row-val">{NATIVE[lang]}</span>
-            <Icon name="chevron-right" size={16} />
-          </button>
-        ) : null}
       </div>
+      <AccountCard />
     </main>
   );
 }

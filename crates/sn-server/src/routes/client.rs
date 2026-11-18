@@ -433,6 +433,7 @@ async fn me(
         "two_factor": card.two_factor,
         "payments_count": card.stats.payments_count,
         "email": email,
+        "email_change": state.services.mail().available(),
         "has_password": has_password,
     })))
 }

@@ -112,7 +112,7 @@ fn random_hex(bytes: usize) -> String {
     hex::encode(raw)
 }
 
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
@@ -136,7 +136,7 @@ fn expired_link() -> ServiceError {
     )
 }
 
-fn code_invalid() -> ServiceError {
+pub(crate) fn code_invalid() -> ServiceError {
     ServiceError::rejected("auth.code_invalid", "Код не подошёл или устарел")
 }
 

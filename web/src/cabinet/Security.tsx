@@ -1,12 +1,13 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
-import { dateLong } from '../lib/format';
+import { dateLong, timeHM } from '../lib/format';
 import { msg, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
+import { doneText, sixDigits, useEmailChange } from './email';
 import type { TwoFactor } from './model';
 import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, type OauthProvider } from './oauth';
 
@@ -136,6 +137,7 @@ export function SecurityPage() {
     <div className="cb-secure">
       <h1 className="cb-title">{t('Безопасность')}</h1>
       <LoginsCard />
+      <EmailCard />
       <PasswordCard />
       <Card label={t('Вход по коду из приложения')}>
         <div className="cb-row wrap">
@@ -249,6 +251,132 @@ export function SecurityPage() {
         </p>
       </Card>
     </div>
+  );
+}
+
+function EmailCard() {
+  const { site, reload } = useCabinet();
+  const flow = useEmailChange(reload);
+  const [open, setOpen] = useState(false);
+  const { info, sent } = flow;
+  if (!info) {
+    return flow.failed ? (
+      <Card label={t('Почта')}>
+        <h2 className="cb-h2">{t('Почта')}</h2>
+        <p className="cb-error" role="alert">
+          {flow.failed}
+        </p>
+      </Card>
+    ) : null;
+  }
+  const editing = (open && !flow.done) || sent !== null;
+  const note =
+    info.proof === 'totp'
+      ? t('Для смены почты нужен код из приложения-аутентификатора, затем код из письма на новый адрес.')
+      : info.proof === 'password'
+        ? t('Для смены почты нужен пароль для сайта, затем код из письма на новый адрес.')
+        : t('На новый адрес придёт код. Почта сменится, когда вы его введёте.');
+  const errorLine = flow.error ? (
+    <p className="cb-error" role="alert">
+      {flow.error}
+    </p>
+  ) : null;
+
+  return (
+    <Card label={t('Почта')}>
+      <div className="cb-row wrap">
+        <h2 className="cb-h2">{t('Почта')}</h2>
+        <span className="cb-status muted">{info.email ?? t('не указана')}</span>
+      </div>
+      <p className="cb-note">{site.client_access?.site_login !== false ? t('На эту почту приходят письма, по ней же можно входить на сайт.') : t('На эту почту приходят письма.')}</p>
+      {flow.done ? (
+        <p className="cb-result" role="status">
+          {doneText(flow.done)}
+        </p>
+      ) : null}
+      {!info.available ? (
+        <p className="cb-note">{t('Письма сейчас не отправляются, поэтому сменить почту нельзя.')}</p>
+      ) : !editing ? (
+        <span className="cb-btns">
+          <button
+            type="button"
+            className="cb-second"
+            onClick={() => {
+              flow.reset();
+              setOpen(true);
+            }}
+          >
+            {info.email ? t('Сменить почту') : t('Добавить почту')}
+          </button>
+        </span>
+      ) : sent ? (
+        <form
+          className="cb-secure-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void flow.confirm();
+          }}
+        >
+          <p className="cb-ink2">{t('Код отправлен на {email}. Он действует до {time}.', { email: sent.email, time: timeHM(sent.expires_at) })}</p>
+          <label className="cb-field">
+            <span>{t('Код из письма')}</span>
+            <input value={flow.code} onChange={(e) => flow.setCode(sixDigits(e.target.value))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
+          </label>
+          {errorLine}
+          <span className="cb-btns">
+            <button type="submit" className="cb-main" disabled={flow.busy || flow.code.length !== 6}>
+              {flow.busy ? t('Проверяем…') : t('Подтвердить')}
+            </button>
+            <button type="button" className="cb-cancel" onClick={flow.restart} disabled={flow.busy}>
+              {t('Указать другой адрес')}
+            </button>
+          </span>
+        </form>
+      ) : (
+        <form
+          className="cb-secure-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void flow.start();
+          }}
+        >
+          <label className="cb-field">
+            <span>{t('Новая почта')}</span>
+            <input type="email" value={flow.address} onChange={(e) => flow.setAddress(e.target.value)} autoComplete="email" maxLength={254} />
+          </label>
+          {info.proof === 'password' ? (
+            <label className="cb-field">
+              <span>{t('Пароль для сайта')}</span>
+              <input type="password" value={flow.proof} onChange={(e) => flow.setProof(e.target.value)} autoComplete="current-password" />
+            </label>
+          ) : null}
+          {info.proof === 'totp' ? (
+            <label className="cb-field">
+              <span>{t('Код из приложения')}</span>
+              <input value={flow.proof} onChange={(e) => flow.setProof(sixDigits(e.target.value))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
+            </label>
+          ) : null}
+          <p className="cb-small cb-muted">{note}</p>
+          {errorLine}
+          <span className="cb-btns">
+            <button type="submit" className="cb-main" disabled={flow.busy || !flow.ready}>
+              {flow.busy ? t('Отправляем…') : t('Получить код')}
+            </button>
+            <button
+              type="button"
+              className="cb-cancel"
+              onClick={() => {
+                setOpen(false);
+                flow.reset();
+              }}
+              disabled={flow.busy}
+            >
+              {t('Отменить')}
+            </button>
+          </span>
+        </form>
+      )}
+    </Card>
   );
 }
 

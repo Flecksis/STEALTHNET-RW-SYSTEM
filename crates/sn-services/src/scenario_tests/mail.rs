@@ -8,9 +8,9 @@ use std::sync::Mutex as StdMutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-type Letters = Arc<StdMutex<Vec<String>>>;
+pub(super) type Letters = Arc<StdMutex<Vec<String>>>;
 
-async fn fake_smtp() -> (u16, Letters) {
+pub(super) async fn fake_smtp() -> (u16, Letters) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let letters: Letters = Arc::new(StdMutex::new(Vec::new()));
@@ -60,7 +60,7 @@ async fn fake_smtp() -> (u16, Letters) {
     (port, letters)
 }
 
-fn readable(letter: &str) -> String {
+pub(super) fn readable(letter: &str) -> String {
     let (head, body) = letter.split_once("\n\n").unwrap_or((letter, ""));
     if head
         .to_ascii_lowercase()
@@ -78,7 +78,7 @@ fn readable(letter: &str) -> String {
     }
 }
 
-fn code_in(text: &str) -> String {
+pub(super) fn code_in(text: &str) -> String {
     text.split(|c: char| !c.is_ascii_digit())
         .find(|part| part.len() == crate::login::EMAIL_CODE_DIGITS)
         .unwrap()
@@ -89,7 +89,12 @@ async fn configure(services: &Services, admin: AdminId, port: u16) {
     configure_with(services, admin, port, serde_json::json!({})).await;
 }
 
-async fn configure_with(services: &Services, admin: AdminId, port: u16, extra: serde_json::Value) {
+pub(super) async fn configure_with(
+    services: &Services,
+    admin: AdminId,
+    port: u16,
+    extra: serde_json::Value,
+) {
     let mut config = serde_json::Map::new();
     if let serde_json::Value::Object(extra) = extra {
         config.extend(extra);

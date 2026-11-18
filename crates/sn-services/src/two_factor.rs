@@ -224,6 +224,38 @@ impl<'a> Auth<'a> {
         Ok(())
     }
 
+    pub(crate) async fn verify_client_totp(
+        &self,
+        client_id: ClientId,
+        code: &str,
+    ) -> ServiceResult<()> {
+        let totp = {
+            let mut conn = self.services.store().conn().await?;
+            conn.clients()
+                .totp(client_id)
+                .await?
+                .ok_or_else(not_enabled)?
+        };
+        let secret = self.open_client_totp(client_id, &totp.secret)?;
+        let attempt = self.client_totp_attempt(client_id).await?;
+        let Some(step) = totp::verify(&secret, code, self.services.now().timestamp()) else {
+            self.settle_client_totp(client_id, &attempt, false, None)
+                .await?;
+            return Err(code_rejected(WRONG_CODE));
+        };
+        let fresh = {
+            let mut conn = self.services.store().conn().await?;
+            conn.clients().use_totp_step(client_id, step).await?
+        };
+        self.settle_client_totp(client_id, &attempt, fresh, None)
+            .await?;
+        if fresh {
+            Ok(())
+        } else {
+            Err(code_rejected(USED_CODE))
+        }
+    }
+
     pub async fn client_two_factor(&self, client_id: ClientId) -> ServiceResult<TwoFactor> {
         let mut conn = self.services.store().conn().await?;
         Ok(TwoFactor::of(

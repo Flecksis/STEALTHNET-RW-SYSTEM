@@ -41,6 +41,7 @@ const PATHS = {
   laptop: 'M5 4h14a2 2 0 0 1 2 2v10H3V6a2 2 0 0 1 2-2z M2 20h20',
   image: 'M3 5h18v14H3z M3 16l5-5 4 4 3-3 6 6 M15.5 9a1.5 1.5 0 1 0 0-.01',
   logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9',
+  lock: 'M5 13a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z M8 11V7a4 4 0 0 1 8 0v4',
 } as const;
 
 export type IconName = keyof typeof PATHS;

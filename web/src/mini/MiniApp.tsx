@@ -17,6 +17,7 @@ import { MiniAddons } from './MiniAddons';
 import { MiniGifts } from './MiniGifts';
 import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
+import { MiniEmail, MiniLanguage, MiniPassword, MiniTotp } from './MiniAccount';
 import { MiniTopUp } from './MiniTopUp';
 import { MiniRoulette } from './MiniRoulette';
 import { MiniWithdraw } from './MiniWithdraw';
@@ -275,6 +276,10 @@ export function MiniApp() {
           <Route path="plans" element={<MiniPlans />} />
           <Route path="connect" element={<MiniConnect />} />
           <Route path="profile" element={<MiniProfile />} />
+          <Route path="profile/email" element={<MiniEmail />} />
+          <Route path="profile/password" element={<MiniPassword />} />
+          <Route path="profile/totp" element={<MiniTotp />} />
+          <Route path="profile/language" element={<MiniLanguage />} />
           <Route path="topup" element={<MiniTopUp />} />
           <Route path="payments" element={<MiniPayments />} />
           <Route path="addons" element={<MiniAddons />} />

@@ -105,6 +105,11 @@ pub mod rules {
         limit: 10,
         window_seconds: 900,
     };
+    pub const EMAIL_CHANGE_CLIENT: RateRule = RateRule {
+        scope: "email_change_client",
+        limit: 5,
+        window_seconds: 900,
+    };
     pub const OAUTH_START_IP: RateRule = RateRule {
         scope: "oauth_start_ip",
         limit: 20,

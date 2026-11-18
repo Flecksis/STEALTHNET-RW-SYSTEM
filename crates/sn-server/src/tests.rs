@@ -41,6 +41,7 @@ mod import;
 mod landing;
 mod languages;
 mod mail;
+mod mini_account;
 mod multi_subscriptions;
 mod oauth;
 mod password_reset;

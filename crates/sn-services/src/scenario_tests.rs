@@ -38,6 +38,7 @@ mod antibot;
 mod api_keys;
 mod client_access;
 mod digest;
+mod email_change;
 mod limits;
 mod mail;
 mod nodes;

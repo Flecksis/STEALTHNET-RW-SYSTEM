@@ -379,6 +379,21 @@
   color: var(--muted);
 }
 
+.mn-row.still {
+  cursor: default;
+}
+
+.mn-row-val.cut {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-wrap {
+  overflow-wrap: anywhere;
+}
+
 .mn-nav {
   position: fixed;
   left: 20px;

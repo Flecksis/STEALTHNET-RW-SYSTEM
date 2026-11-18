@@ -4,17 +4,25 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "auth.required" => "Please sign in again.",
         "auth.forbidden" => "Access denied.",
         "auth.rate_limited" => "Too many attempts. Please wait a little and try again.",
+        "auth.app_code_required" => "Enter the code from your authenticator app.",
         "auth.code_attempts" => "Too many wrong codes. Request a new code and try again.",
         "auth.code_invalid" => "The code is wrong or has expired.",
         "auth.email_code_mode" => "Email sign-in works with a code from the email.",
         "auth.email_password_mode" => "Email sign-in works with a password, no code needed.",
         "auth.email_taken" => "This email is already registered. Sign in with your password.",
+        "auth.email_change_off" => {
+            "Emails aren't being sent right now, so the email can't be changed."
+        }
+        "auth.email_in_use" => "This email already belongs to another account.",
+        "auth.email_same" => "This email is already on your account.",
         "auth.login_expired" => "The sign-in has expired. Please start again.",
         "auth.miniapp_off" => "The mini app is turned off. Please use the bot.",
         "auth.no_email" => {
             "No email is linked to this account, so a website password isn't needed."
         }
         "auth.reset_unavailable" => "The password can't be reset by email. Please contact support.",
+        "auth.password_invalid" => "The website password is wrong.",
+        "auth.password_required" => "Enter your website password.",
         "auth.same_password" => "The new password is the same as the old one.",
         "auth.site_off" => "Website sign-in is turned off. Please use the bot.",
         "auth.totp_code" => "The code didn't work. Check the time on your phone.",
@@ -23,7 +31,7 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "auth.totp_secret" => "The setup key is damaged. Start the setup again.",
         "auth.totp_required" => "Enter the code from your authenticator app.",
         "auth.totp_invalid" => "The code didn't work. Check the time on your phone.",
-        "auth.weak_password" => "The password must be 8 to 128 characters long.",
+        "auth.weak_password" => "The password must be 10 to 256 characters long.",
         "auth.wrong_password" => "Wrong email or password.",
         "oauth.failed" => "Sign-in didn't go through. Please try again.",
         "oauth.canceled" => "Sign-in was cancelled.",
