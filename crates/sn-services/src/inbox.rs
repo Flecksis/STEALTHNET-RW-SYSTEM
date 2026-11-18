@@ -646,6 +646,35 @@ impl<'a> PaymentInbox<'a> {
     }
 
     pub async fn handle(&self, hook: InboundWebhook) -> ServiceResult<WebhookResponse> {
+        self.receive(hook, false).await
+    }
+
+    pub async fn handle_legacy(&self, hook: InboundWebhook) -> ServiceResult<WebhookResponse> {
+        self.receive(hook, true).await
+    }
+
+    async fn mark_legacy(&self, source: &str, dedupe_key: &str, path: bool, invoice: Option<i64>) {
+        if !path && invoice.is_none() {
+            return;
+        }
+        let marked = match self.services.store().conn().await {
+            Ok(mut conn) => conn
+                .webhooks()
+                .mark_legacy(source, dedupe_key, path, invoice)
+                .await
+                .map_err(ServiceError::from),
+            Err(err) => Err(err.into()),
+        };
+        if let Err(err) = marked {
+            tracing::warn!(source, error = %err, "пометка старого адреса в журнале не записана");
+        }
+    }
+
+    async fn receive(
+        &self,
+        hook: InboundWebhook,
+        legacy_path: bool,
+    ) -> ServiceResult<WebhookResponse> {
         let registry = self.services.payments();
         let Some(provider) = registry.get(&hook.provider) else {
             return Ok(WebhookResponse::status(404));
@@ -667,6 +696,13 @@ impl<'a> PaymentInbox<'a> {
                 &dedupe_key,
                 InboxOutcome::NotAccepted,
                 reason,
+            )
+            .await;
+            self.mark_legacy(
+                provider.id(),
+                &format!("rejected:{dedupe_key}"),
+                legacy_path,
+                None,
             )
             .await;
             return Ok(WebhookResponse::status(404));
@@ -703,6 +739,13 @@ impl<'a> PaymentInbox<'a> {
                     &err.to_string(),
                 )
                 .await;
+                self.mark_legacy(
+                    provider.id(),
+                    &format!("rejected:{dedupe_key}"),
+                    legacy_path,
+                    None,
+                )
+                .await;
                 return Ok(WebhookResponse::status(status));
             }
         };
@@ -730,7 +773,7 @@ impl<'a> PaymentInbox<'a> {
             conn.webhooks()
                 .record(&NewInboundWebhook {
                     source: provider.id().to_string(),
-                    dedupe_key,
+                    dedupe_key: dedupe_key.clone(),
                     remote_ip: hook.request.remote_ip.map(|ip| ip.to_string()),
                     headers: stored_headers(&hook.request),
                     body: Some(prepared.body),
@@ -739,7 +782,10 @@ impl<'a> PaymentInbox<'a> {
                 })
                 .await?
         };
+        let record_key = dedupe_key;
         if record.duplicate && record.outcome.is_final() {
+            self.mark_legacy(provider.id(), &record_key, legacy_path, None)
+                .await;
             return Ok(WebhookResponse {
                 reply: parsed.reply,
             });
@@ -750,6 +796,40 @@ impl<'a> PaymentInbox<'a> {
             tracing::warn!(error = %err, "старые записи вебхуков не удалены");
         }
         let mut settled = Settled::from(self.apply_outcome(provider.id(), &parsed).await);
+        let mut legacy_invoice = None;
+        if matches!(
+            settled.outcome,
+            InboxOutcome::PaymentNotFound | InboxOutcome::Ignored
+        ) {
+            match crate::legacy::invoices::settle(
+                self.services,
+                provider.id(),
+                &parsed,
+                &hook.request,
+            )
+            .await
+            {
+                Ok(Some(found)) => {
+                    let again = WebhookOutcome {
+                        payment: Some(PaymentRef::Payment(found.payment)),
+                        ..parsed.clone()
+                    };
+                    settled = Settled::from(self.apply_outcome(provider.id(), &again).await);
+                    settled.payment_id = settled.payment_id.or(Some(found.payment));
+                    legacy_invoice = Some(found.invoice);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!(provider = provider.id(), error = %err, "счёт старой панели не проведён");
+                    settled = Settled {
+                        outcome: InboxOutcome::Error,
+                        payment_id: None,
+                        error: Some(format!("счёт старой панели не проведён: {err}")),
+                        failed: true,
+                    };
+                }
+            }
+        }
         if settled.payment_id.is_none() && settled.outcome != InboxOutcome::PaymentNotFound {
             settled.payment_id = self.linked_payment(provider.id(), &parsed).await;
         }
@@ -770,6 +850,9 @@ impl<'a> PaymentInbox<'a> {
                 None,
             )
             .await?;
+        drop(conn);
+        self.mark_legacy(provider.id(), &record_key, legacy_path, legacy_invoice)
+            .await;
         Ok(response)
     }
 
@@ -984,7 +1067,14 @@ impl<'a> PaymentInbox<'a> {
             return Ok(PrecheckVerdict::UnknownInvoice);
         };
         let Some(payment) = lookup(&mut conn, provider, reference).await? else {
-            return Ok(PrecheckVerdict::UnknownInvoice);
+            drop(conn);
+            return Ok(
+                match crate::legacy::invoices::precheck(self.services, provider, outcome).await? {
+                    Some(true) => PrecheckVerdict::Accept,
+                    Some(false) => PrecheckVerdict::WrongAmount,
+                    None => PrecheckVerdict::UnknownInvoice,
+                },
+            );
         };
         let client = conn.clients().get(payment.client_id).await?;
         if account.is_some_and(|account| Uuid::parse_str(account).ok() != Some(client.public_id)) {

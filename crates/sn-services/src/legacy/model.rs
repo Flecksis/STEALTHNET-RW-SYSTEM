@@ -325,6 +325,35 @@ pub struct LAutoRule {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvoicePurpose {
+    TopUp,
+    Tariff {
+        tariff_old_id: String,
+        period_old_id: Option<String>,
+        days: Option<u32>,
+        subscription_old_id: Option<String>,
+    },
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct LInvoice {
+    pub old_id: String,
+    pub client_old_id: String,
+    pub provider: &'static str,
+    pub old_provider: String,
+    pub external_id: Option<String>,
+    pub order_ref: Option<String>,
+    pub amount_minor: i64,
+    pub currency: Currency,
+    pub stars: Option<i64>,
+    pub purpose: InvoicePurpose,
+    pub pay_url: Option<String>,
+    pub recurring: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Legacy {
     pub source: Source,
@@ -344,6 +373,7 @@ pub struct Legacy {
     pub withdrawals: Vec<LWithdrawal>,
     pub gifts: Vec<LGift>,
     pub auto_rules: Vec<LAutoRule>,
+    pub invoices: Vec<LInvoice>,
     pub skipped: Vec<Skip>,
     pub problems: Vec<Problem>,
 }
@@ -368,6 +398,7 @@ impl Legacy {
             withdrawals: Vec::new(),
             gifts: Vec::new(),
             auto_rules: Vec::new(),
+            invoices: Vec::new(),
             skipped: Vec::new(),
             problems: Vec::new(),
         }

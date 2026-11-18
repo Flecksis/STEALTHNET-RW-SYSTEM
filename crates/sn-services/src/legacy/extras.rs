@@ -1,4 +1,7 @@
-use super::model::{LAdmin, LAutoRule, LGift, LWithdrawal, Legacy, Source, WithdrawalState};
+use super::model::{
+    InvoicePurpose, LAdmin, LAutoRule, LGift, LInvoice, LWithdrawal, Legacy, Source,
+    WithdrawalState,
+};
 use super::runs::IssueRow;
 use crate::Services;
 use crate::bot_content::{ContentUpdate, Document, DocumentsUpdate};
@@ -8,8 +11,9 @@ use serde_json::{Map, Value};
 use sn_domain::access::{AdminRole, Permission};
 use sn_domain::bot_content::{ButtonOverride, ButtonStyle, clean_button, clean_text};
 use sn_domain::client::{Languages, Locale};
-use sn_domain::ids::{AdminId, ClientId, OrderId, PeriodId, SquadId, TariffId};
+use sn_domain::ids::{AdminId, ClientId, OrderId, PeriodId, SquadId, SubscriptionId, TariffId};
 use sn_domain::module::ModuleId;
+use sn_domain::money::Money;
 use sn_domain::order::PurchaseIntent;
 use sn_domain::settings::{SupportMode, TrialSettings};
 use sn_domain::traffic::{TrafficPolicy, TrafficReset};
@@ -28,6 +32,7 @@ pub struct Done {
     pub withdrawals: u64,
     pub gifts: u64,
     pub rules: u64,
+    pub invoices: u64,
 }
 
 pub struct Extras<'a> {
@@ -39,6 +44,8 @@ pub struct Extras<'a> {
     pub tariffs: &'a HashMap<String, i64>,
     pub tariff_names: &'a HashMap<i64, String>,
     pub periods_by_days: &'a HashMap<(i64, u32), i64>,
+    pub periods: &'a HashMap<String, i64>,
+    pub subs: &'a HashMap<String, i64>,
     pub issues: Vec<IssueRow>,
     pub done: Done,
 }
@@ -353,6 +360,114 @@ impl<'a> Extras<'a> {
         self.withdrawals().await?;
         self.gifts().await?;
         self.rules().await?;
+        self.invoices().await?;
+        Ok(())
+    }
+
+    fn invoice_intent(&self, invoice: &LInvoice) -> (PurchaseIntent, Option<i64>, String) {
+        let money = Money::new(invoice.amount_minor, invoice.currency);
+        let topup = |label: String| (PurchaseIntent::TopUp { amount: money }, None, label);
+        match &invoice.purpose {
+            InvoicePurpose::TopUp => topup("Пополнение баланса".into()),
+            InvoicePurpose::Other(what) => topup(format!("{what}: оплата пойдёт на баланс")),
+            InvoicePurpose::Tariff {
+                tariff_old_id,
+                period_old_id,
+                days,
+                subscription_old_id,
+            } => {
+                let Some(tariff) = self.tariffs.get(tariff_old_id).copied() else {
+                    return topup("Тариф не перенесён: оплата пойдёт на баланс".into());
+                };
+                let period = period_old_id
+                    .as_ref()
+                    .and_then(|p| self.periods.get(p))
+                    .copied()
+                    .or_else(|| days.and_then(|d| self.periods_by_days.get(&(tariff, d)).copied()))
+                    .or_else(|| self.period_for(tariff, days.unwrap_or(30)).map(|(_, p)| p));
+                let Some(period) = period else {
+                    return topup("Период тарифа не перенесён: оплата пойдёт на баланс".into());
+                };
+                let target = subscription_old_id
+                    .as_ref()
+                    .and_then(|s| self.subs.get(s))
+                    .copied();
+                let name = self
+                    .tariff_names
+                    .get(&tariff)
+                    .cloned()
+                    .unwrap_or_else(|| "Тариф".into());
+                (
+                    PurchaseIntent::Subscription {
+                        tariff_id: TariffId(tariff),
+                        period_id: PeriodId(period),
+                        extra_devices: 0,
+                        target: target.map(SubscriptionId),
+                    },
+                    target,
+                    format!("Тариф «{name}»"),
+                )
+            }
+        }
+    }
+
+    async fn invoices(&mut self) -> ServiceResult<()> {
+        let legacy = self.legacy;
+        let source = legacy.source.as_str();
+        let keep: Vec<&str> = legacy.invoices.iter().map(|i| i.old_id.as_str()).collect();
+        let mut tx = self.services.store().begin().await?;
+        sqlx::query(
+            "DELETE FROM legacy_invoices WHERE source = $1 AND payment_id IS NULL AND NOT (old_id = ANY($2))",
+        )
+        .bind(source)
+        .bind(&keep)
+        .execute(tx.conn())
+        .await?;
+        for invoice in &legacy.invoices {
+            let Some(client) = self.clients.get(&invoice.client_old_id).copied() else {
+                continue;
+            };
+            let (intent, target, label) = self.invoice_intent(invoice);
+            let intent =
+                serde_json::to_value(&intent).map_err(|e| ServiceError::Internal(e.to_string()))?;
+            sqlx::query(
+                "INSERT INTO legacy_invoices (source, old_id, provider, old_provider, external_id, order_ref, client_id, \
+                 intent, label, amount_minor, currency, stars, pay_url, created_at, run_id, recurring) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+                 ON CONFLICT (source, old_id) DO UPDATE SET provider = EXCLUDED.provider, old_provider = EXCLUDED.old_provider, \
+                 external_id = EXCLUDED.external_id, order_ref = EXCLUDED.order_ref, client_id = EXCLUDED.client_id, \
+                 intent = EXCLUDED.intent, label = EXCLUDED.label, amount_minor = EXCLUDED.amount_minor, \
+                 currency = EXCLUDED.currency, stars = EXCLUDED.stars, pay_url = EXCLUDED.pay_url, \
+                 run_id = EXCLUDED.run_id, recurring = EXCLUDED.recurring \
+                 WHERE legacy_invoices.payment_id IS NULL",
+            )
+            .bind(source)
+            .bind(&invoice.old_id)
+            .bind(invoice.provider)
+            .bind(&invoice.old_provider)
+            .bind(&invoice.external_id)
+            .bind(&invoice.order_ref)
+            .bind(client)
+            .bind(&intent)
+            .bind(match (target, invoice.recurring) {
+                (_, true) => format!("{label}: подписка Lava.top с ежемесячным списанием"),
+                (Some(_), false) => format!("{label}, продление"),
+                (None, false) => label,
+            })
+            .bind(invoice.amount_minor)
+            .bind(invoice.currency.code())
+            .bind(invoice.stars.and_then(|s| i32::try_from(s).ok()))
+            .bind(&invoice.pay_url)
+            .bind(invoice.created_at)
+            .bind(self.run_id)
+            .bind(invoice.recurring)
+            .execute(tx.conn())
+            .await?;
+            if !invoice.old_id.starts_with("contract:") {
+                self.done.invoices += 1;
+            }
+        }
+        tx.commit().await?;
         Ok(())
     }
 

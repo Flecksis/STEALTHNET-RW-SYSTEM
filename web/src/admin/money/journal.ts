@@ -29,7 +29,14 @@ export type JournalItem = {
   client: Person | null;
   deliveries: number;
   retry: { available: boolean; note: string | null };
+  legacy_path?: boolean;
+  legacy_invoice?: boolean;
 };
+
+export function legacyText(item: JournalItem): string | null {
+  const parts = [item.legacy_path ? 'старый адрес' : null, item.legacy_invoice ? 'счёт старой панели' : null].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
+}
 
 export type Retention = { days: number; rejected_days: number };
 

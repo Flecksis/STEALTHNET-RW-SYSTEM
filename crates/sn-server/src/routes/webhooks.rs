@@ -31,6 +31,19 @@ pub fn routes() -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY)),
         )
         .route("/api/remnawave/webhook", post(remnawave_webhook))
+        .route("/api/webhooks/remna", post(remnawave_webhook))
+        .route(
+            "/api/webhooks/{old}",
+            post(legacy_webhook)
+                .get(legacy_webhook)
+                .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY)),
+        )
+        .route(
+            "/api/webhooks/{old}/{kind}",
+            post(legacy_webhook_kind)
+                .get(legacy_webhook_kind)
+                .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY)),
+        )
         .route("/api/telegram/webhook", post(telegram_webhook))
         .route("/api/pay/{payment}", get(pay_redirect))
 }
@@ -53,6 +66,14 @@ fn payload(method: &Method, query: Option<&str>, body: Bytes) -> Bytes {
     }
 }
 
+struct Incoming {
+    route_suffix: Option<String>,
+    peer: Option<SocketAddr>,
+    query: Option<String>,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
 async fn handle_payment(
     state: AppState,
     provider: String,
@@ -62,6 +83,29 @@ async fn handle_payment(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Response> {
+    let incoming = Incoming {
+        route_suffix,
+        peer,
+        query,
+        headers,
+        body,
+    };
+    receive(state, provider, incoming, false).await
+}
+
+async fn receive(
+    state: AppState,
+    provider: String,
+    incoming: Incoming,
+    legacy: bool,
+) -> ApiResult<Response> {
+    let Incoming {
+        route_suffix,
+        peer,
+        query,
+        headers,
+        body,
+    } = incoming;
     let request = WebhookRequest {
         headers: headers
             .iter()
@@ -80,12 +124,72 @@ async fn handle_payment(
         route_suffix,
         query,
     };
-    let response = state
-        .services
-        .inbox()
-        .handle(InboundWebhook { provider, request })
-        .await?;
+    let inbox = state.services.inbox();
+    let hook = InboundWebhook { provider, request };
+    let response = if legacy {
+        inbox.handle_legacy(hook).await?
+    } else {
+        inbox.handle(hook).await?
+    };
     Ok(reply(response.reply))
+}
+
+async fn legacy_payment(
+    state: AppState,
+    old: &str,
+    kind: Option<String>,
+    incoming: Incoming,
+) -> ApiResult<Response> {
+    let Some(provider) =
+        sn_services::legacy::stealthnet::old_provider(old).filter(|p| !matches!(*p, "stars"))
+    else {
+        return Err(ApiError::not_found());
+    };
+    let incoming = Incoming {
+        route_suffix: kind,
+        ..incoming
+    };
+    receive(state, provider.to_string(), incoming, true).await
+}
+
+async fn legacy_webhook(
+    State(state): State<AppState>,
+    Path(old): Path<String>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    method: Method,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Response> {
+    let body = payload(&method, query.as_deref(), body);
+    let incoming = Incoming {
+        route_suffix: None,
+        peer: peer.map(|p| p.0.0),
+        query,
+        headers,
+        body,
+    };
+    legacy_payment(state, &old, None, incoming).await
+}
+
+async fn legacy_webhook_kind(
+    State(state): State<AppState>,
+    Path((old, kind)): Path<(String, String)>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    method: Method,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Response> {
+    let body = payload(&method, query.as_deref(), body);
+    let incoming = Incoming {
+        route_suffix: None,
+        peer: peer.map(|p| p.0.0),
+        query,
+        headers,
+        body,
+    };
+    legacy_payment(state, &old, Some(kind), incoming).await
 }
 
 async fn payment_webhook(
@@ -180,9 +284,17 @@ async fn telegram_webhook() -> ApiError {
     )
 }
 
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
 async fn pay_redirect(
     State(state): State<AppState>,
-    Path(payment): Path<Uuid>,
+    Path(raw): Path<String>,
 ) -> ApiResult<Response> {
     let mut conn = state
         .services
@@ -190,20 +302,24 @@ async fn pay_redirect(
         .conn()
         .await
         .map_err(sn_services::ServiceError::from)?;
-    let payment = conn
-        .payments()
-        .by_public_id(payment)
-        .await
-        .map_err(sn_services::ServiceError::from)?;
+    let found = match Uuid::parse_str(raw.trim()) {
+        Ok(id) => match conn.payments().by_public_id(id).await {
+            Ok(payment) => Some(payment),
+            Err(sn_store::StoreError::NotFound(_)) => None,
+            Err(err) => return Err(sn_services::ServiceError::from(err).into()),
+        },
+        Err(_) => None,
+    };
+    drop(conn);
+    let Some(payment) = found else {
+        let link = sn_services::legacy::invoices::pay_link(&state.services, &raw).await?;
+        return match link {
+            Some(link) => Ok(no_store(Redirect::to(&link.url).into_response())),
+            None => Err(ApiError::not_found()),
+        };
+    };
     match (payment.status, payment.pay_url) {
-        (PaymentStatus::Pending, Some(url)) => {
-            let mut response = Redirect::to(&url).into_response();
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                header::HeaderValue::from_static("no-store"),
-            );
-            Ok(response)
-        }
+        (PaymentStatus::Pending, Some(url)) => Ok(no_store(Redirect::to(&url).into_response())),
         (PaymentStatus::Pending, None) => Err(ApiError::not_found()),
         _ => Err(ApiError::new(
             StatusCode::GONE,

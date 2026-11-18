@@ -15,6 +15,7 @@ import {
   eventText,
   failText,
   filtersOf,
+  legacyText,
   paramsOf,
   queryOf,
   retentionText,
@@ -282,6 +283,7 @@ function JournalDesk({ data }: { data: Data }) {
                   <span role="cell" className="pr-cell">
                     <span className="pt-strong">{item.provider_title}</span>
                     <span className="pr-sub">{eventText(item.event)}</span>
+                    {legacyText(item) ? <span className="pr-sub">{legacyText(item)}</span> : null}
                   </span>
                   <span role="cell" className="pr-cell">
                     <Subject item={item} />

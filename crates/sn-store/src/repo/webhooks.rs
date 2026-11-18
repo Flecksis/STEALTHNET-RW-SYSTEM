@@ -13,7 +13,7 @@ const TRAIL: &str = "(CASE WHEN jsonb_array_length(webhook_inbox.trail) >= 30 \
 const COLUMNS: &str = "w.id, w.source, w.outcome, w.payment_id, p.client_id, w.error, w.remote_ip, \
      w.received_at, w.processed_at, w.claimed_at, w.deliveries, w.parsed, w.event, w.body IS NOT NULL AS has_body, \
      p.public_id AS payment_public_id, p.amount_minor, p.currency, p.status AS payment_status, \
-     o.public_id AS order_public_id";
+     o.public_id AS order_public_id, w.legacy_path, w.legacy_invoice_id";
 const BODY_SEARCH_MIN: usize = 6;
 const MASKED_SINCE: &str = "COALESCE((SELECT m.installed_on FROM _sqlx_migrations m WHERE m.version = 290 AND m.success), '-infinity'::timestamptz)";
 
@@ -185,6 +185,8 @@ pub struct JournalRow {
     pub event: Option<String>,
     pub has_body: bool,
     pub payment: Option<JournalPayment>,
+    pub legacy_path: bool,
+    pub legacy_invoice: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +245,8 @@ struct JournalRowData {
     currency: Option<String>,
     payment_status: Option<String>,
     order_public_id: Option<Uuid>,
+    legacy_path: bool,
+    legacy_invoice_id: Option<i64>,
 }
 
 impl JournalRowData {
@@ -277,6 +281,8 @@ impl JournalRowData {
             event: self.event,
             has_body: self.has_body,
             payment,
+            legacy_path: self.legacy_path,
+            legacy_invoice: self.legacy_invoice_id.is_some(),
         })
     }
 }
@@ -324,6 +330,26 @@ impl<'c> WebhooksRepo<'c> {
             duplicate: deliveries > 1,
             outcome: InboxOutcome::parse(&outcome)?,
         })
+    }
+
+    pub async fn mark_legacy(
+        &mut self,
+        source: &str,
+        dedupe_key: &str,
+        path: bool,
+        invoice: Option<i64>,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            "UPDATE webhook_inbox SET legacy_path = legacy_path OR $3, \
+             legacy_invoice_id = COALESCE($4, legacy_invoice_id) WHERE source = $1 AND dedupe_key = $2",
+        )
+        .bind(source)
+        .bind(dedupe_key)
+        .bind(path)
+        .bind(invoice)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
     }
 
     pub async fn finish(

@@ -42,6 +42,7 @@ mod hosts;
 mod import;
 mod landing;
 mod languages;
+mod legacy_webhooks;
 mod mail;
 mod migrated_providers;
 mod mini_account;

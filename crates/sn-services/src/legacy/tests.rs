@@ -2165,3 +2165,435 @@ async fn настройки_новой_панели_не_затираются_п
         "{issues:?}"
     );
 }
+
+fn invoices_dump(second: bool) -> Vec<u8> {
+    let mut sql = String::from("-- Created at: 2026-11-17T09:00:00.000Z\n\n");
+    sql += &copy(
+        "system_settings",
+        &["id", "key", "value"],
+        &[&[Some("ss1"), Some("default_currency"), Some("rub")]],
+    );
+    sql += &copy(
+        "tariff_categories",
+        &["id", "name", "sort_order"],
+        &[&[Some("cat1"), Some("Все"), Some("0")]],
+    );
+    sql += &copy(
+        "tariffs",
+        &[
+            "id",
+            "category_id",
+            "name",
+            "duration_days",
+            "price",
+            "currency",
+        ],
+        &[&[
+            Some("t1"),
+            Some("cat1"),
+            Some("Месяц"),
+            Some("30"),
+            Some("300"),
+            Some("rub"),
+        ]],
+    );
+    sql += &copy(
+        "tariff_price_options",
+        &["id", "tariff_id", "duration_days", "price", "sort_order"],
+        &[&[Some("o1"), Some("t1"), Some("30"), Some("300"), Some("0")]],
+    );
+    sql += &copy(
+        "clients",
+        &["id", "role", "balance", "telegram_id", "telegram_username"],
+        &[&[
+            Some("k1"),
+            Some("CLIENT"),
+            Some("0"),
+            Some("4001"),
+            Some("payer"),
+        ]],
+    );
+    sql += &copy(
+        "subscriptions",
+        &[
+            "id",
+            "owner_id",
+            "remnawave_uuid",
+            "subscription_index",
+            "tariff_id",
+            "expire_at",
+        ],
+        &[&[
+            Some("s1"),
+            Some("k1"),
+            Some("601"),
+            Some("0"),
+            Some("t1"),
+            Some("2026-12-20 00:00:00"),
+        ]],
+    );
+    let p5 = if second { "PAID" } else { "PENDING" };
+    sql += &copy(
+        "payments",
+        &[
+            "id",
+            "client_id",
+            "order_id",
+            "amount",
+            "currency",
+            "status",
+            "provider",
+            "external_id",
+            "tariff_id",
+            "tariff_price_option_id",
+            "subscription_id",
+            "metadata",
+            "created_at",
+            "paid_at",
+        ],
+        &[
+            &[
+                Some("p1"),
+                Some("k1"),
+                Some("ord-p1"),
+                Some("300"),
+                Some("rub"),
+                Some("PENDING"),
+                Some("cryptopay"),
+                None,
+                Some("t1"),
+                Some("o1"),
+                None,
+                Some(
+                    r#"{"extendsSecondarySubId":"s1","redirectTargetUrl":"https://pay.example.com/p1"}"#,
+                ),
+                Some("2026-11-16 10:00:00"),
+                None,
+            ],
+            &[
+                Some("p2"),
+                Some("k1"),
+                Some("ord-p2"),
+                Some("150"),
+                Some("rub"),
+                Some("PENDING"),
+                Some("cryptopay"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("2026-11-16 11:00:00"),
+                None,
+            ],
+            &[
+                Some("p3"),
+                Some("k1"),
+                Some("ord-p3"),
+                Some("150"),
+                Some("rub"),
+                Some("PENDING"),
+                Some("cryptopay"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("2026-08-01 11:00:00"),
+                None,
+            ],
+            &[
+                Some("p4"),
+                Some("k1"),
+                Some("contract-1"),
+                Some("300"),
+                Some("rub"),
+                Some("PAID"),
+                Some("lavatop"),
+                Some("lava-1"),
+                Some("t1"),
+                Some("o1"),
+                Some("s1"),
+                None,
+                Some("2026-11-01 10:00:00"),
+                Some("2026-11-01 10:05:00"),
+            ],
+            &[
+                Some("p6"),
+                Some("k1"),
+                Some("lava-new-1"),
+                Some("300"),
+                Some("rub"),
+                Some("PENDING"),
+                Some("lavatop"),
+                Some("lava-ext-6"),
+                Some("t1"),
+                Some("o1"),
+                None,
+                None,
+                Some("2026-11-16 13:00:00"),
+                None,
+            ],
+            &[
+                Some("p5"),
+                Some("k1"),
+                Some("ord-p5"),
+                Some("200"),
+                Some("rub"),
+                Some(p5),
+                Some("cryptopay"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("2026-11-16 12:00:00"),
+                second.then_some("2026-11-17 08:00:00"),
+            ],
+        ],
+    );
+    sql.into_bytes()
+}
+
+fn crypto_paid(payload: &str, amount: &str, invoice: u64) -> String {
+    serde_json::json!({
+        "update_id": invoice, "update_type": "invoice_paid", "request_date": "2026-11-17T09:30:00.000Z",
+        "payload": {"invoice_id": invoice, "status": "paid", "currency_type": "fiat", "fiat": "RUB",
+                    "amount": amount, "payload": payload}
+    })
+    .to_string()
+}
+
+async fn legacy_hook(env: &Env, body: &str, signature: &str) -> sn_payments::WebhookReply {
+    let request = sn_payments::WebhookRequest {
+        headers: vec![("crypto-pay-api-signature".into(), signature.into())],
+        body: body.to_string().into_bytes().into(),
+        remote_ip: None,
+        route_suffix: None,
+        query: None,
+    };
+    env.services
+        .inbox()
+        .handle_legacy(crate::inbox::InboundWebhook {
+            provider: "cryptopay".into(),
+            request,
+        })
+        .await
+        .unwrap()
+        .reply
+}
+
+#[tokio::test]
+async fn счёт_старой_панели_оплачивается_по_старому_адресу_один_раз() {
+    let Some(env) = env().await else { return };
+    env.remna
+        .insert_user(user(601, "short601", "payer", Some(4001), None));
+    let admin = owner(&env.services).await;
+    let (preview, _) = import(&env, &invoices_dump(false), Some(admin)).await;
+    assert_eq!(
+        preview
+            .skipped
+            .iter()
+            .find(|s| s.code == "invoices_waiting")
+            .map(|s| s.count),
+        Some(4)
+    );
+    let s = &env.services;
+    assert_eq!(scalar(s, "SELECT count(*) FROM legacy_invoices").await, 5);
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM legacy_invoices WHERE recurring AND order_ref = 'contract-1'"
+        )
+        .await,
+        1
+    );
+    let token = "4321:TEST";
+    {
+        use sn_store::Db;
+        let mut conn = s.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                &sn_domain::settings::keys::provider("cryptopay"),
+                &serde_json::json!({ "enabled": true }),
+                None,
+            )
+            .await
+            .unwrap();
+        crate::settings::write_secret(
+            &mut conn,
+            s.secrets(),
+            &sn_domain::settings::secret_keys::provider("cryptopay", "api_token"),
+            Some(token),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    s.reload().await.unwrap();
+    s.set_remna(Some(env.remna.clone()));
+    let sign = |body: &str| sn_payments::providers::cryptopay_signature(token, body.as_bytes());
+
+    let renew = crypto_paid("p1", "300.00", 7001);
+    legacy_hook(&env, &renew, &sign(&renew)).await;
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM orders o JOIN legacy_invoices l ON l.order_id = o.id \
+                   WHERE l.old_id = 'p1' AND o.kind = 'renewal' AND o.status IN ('paid', 'fulfilled') \
+                   AND o.subscription_id = (SELECT s.id FROM subscriptions s WHERE s.remna_user_id = 601)").await,
+        1
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM webhook_inbox w JOIN legacy_invoices l ON l.id = w.legacy_invoice_id \
+                   WHERE w.legacy_path AND l.old_id = 'p1' AND w.outcome = 'accepted'").await,
+        1
+    );
+    let orders = scalar(s, "SELECT count(*) FROM orders").await;
+    legacy_hook(&env, &renew, &sign(&renew)).await;
+    let other = crypto_paid("p1", "300.00", 7001).replace("09:30", "09:31");
+    legacy_hook(&env, &other, &sign(&other)).await;
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM orders").await,
+        orders,
+        "повтор не создаёт заказ"
+    );
+
+    let topup = crypto_paid("p2", "150.00", 7002);
+    legacy_hook(&env, &topup, &sign(&topup)).await;
+    let balance =
+        "SELECT COALESCE(sum(amount_minor), 0) FROM client_balances WHERE currency = 'RUB'";
+    assert_eq!(scalar(s, balance).await, 15_000);
+
+    for charge in ["charge-1", "charge-2"] {
+        let outcome = sn_payments::WebhookOutcome {
+            event_key: charge.into(),
+            payment: Some(sn_payments::PaymentRef::ProviderTxid(charge.into())),
+            provider_txid: Some(charge.into()),
+            status: sn_payments::ProviderStatus::Paid,
+            amount: Some(sn_domain::money::Money::new(30_000, Currency::Rub).into()),
+            saved_method: None,
+            reply: sn_payments::WebhookReply::Empty { status: 200 },
+            signal: None,
+        };
+        let request = sn_payments::WebhookRequest {
+            headers: Vec::new(),
+            body: format!(r#"{{"contractId":"{charge}","parentContractId":"contract-1"}}"#)
+                .into_bytes()
+                .into(),
+            remote_ip: None,
+            route_suffix: None,
+            query: None,
+        };
+        let found = crate::legacy::invoices::settle(s, "lava", &outcome, &request)
+            .await
+            .unwrap();
+        assert!(found.is_some(), "списание {charge} по старому договору");
+    }
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM orders o JOIN payments p ON p.order_id = o.id \
+                   WHERE p.provider = 'lava' AND o.kind = 'renewal'"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM legacy_invoices WHERE recurring AND payment_id IS NULL"
+        )
+        .await,
+        2,
+        "договоры не расходуются"
+    );
+    let lava = |contract: &str, parent: Option<&str>| {
+        let body = match parent {
+            Some(parent) => {
+                format!(r#"{{"contractId":"{contract}","parentContractId":"{parent}"}}"#)
+            }
+            None => format!(r#"{{"contractId":"{contract}"}}"#),
+        };
+        (
+            sn_payments::WebhookOutcome {
+                event_key: contract.into(),
+                payment: Some(sn_payments::PaymentRef::ProviderTxid(contract.into())),
+                provider_txid: Some(contract.into()),
+                status: sn_payments::ProviderStatus::Paid,
+                amount: Some(sn_domain::money::Money::new(30_000, Currency::Rub).into()),
+                saved_method: None,
+                reply: sn_payments::WebhookReply::Empty { status: 200 },
+                signal: None,
+            },
+            sn_payments::WebhookRequest {
+                headers: Vec::new(),
+                body: body.into_bytes().into(),
+                remote_ip: None,
+                route_suffix: None,
+                query: None,
+            },
+        )
+    };
+    let (first, request) = lava("lava-new-1", None);
+    crate::legacy::invoices::settle(s, "lava", &first, &request)
+        .await
+        .unwrap()
+        .expect("первая оплата счёта Lava.top");
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM orders o JOIN legacy_invoices l ON l.order_id = o.id \
+                   WHERE l.old_id = 'p6' AND o.kind = 'new'"
+        )
+        .await,
+        1
+    );
+    {
+        use sn_store::Db;
+        let mut conn = s.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE orders SET subscription_id = \
+             (SELECT id FROM subscriptions WHERE remna_user_id = 601) \
+             WHERE id = (SELECT order_id FROM legacy_invoices WHERE old_id = 'p6')",
+        )
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let (monthly, request) = lava("charge-p6-1", Some("lava-new-1"));
+    crate::legacy::invoices::settle(s, "lava", &monthly, &request)
+        .await
+        .unwrap()
+        .expect("ежемесячное списание по счёту, оплаченному после переезда");
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM orders o JOIN payments p ON p.order_id = o.id \
+                   WHERE p.provider = 'lava' AND o.kind = 'renewal' \
+                   AND o.subscription_id = (SELECT id FROM subscriptions WHERE remna_user_id = 601)"
+        )
+        .await,
+        3
+    );
+
+    let forged = crypto_paid("p5", "200.00", 7005);
+    legacy_hook(&env, &forged, "00").await;
+    assert_eq!(scalar(s, balance).await, 15_000);
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM webhook_inbox WHERE legacy_path AND outcome = 'rejected_signature'").await,
+        1
+    );
+
+    import(&env, &invoices_dump(true), Some(admin)).await;
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM legacy_invoices WHERE old_id = 'p5'"
+        )
+        .await,
+        0,
+        "счёт, оплаченный в старой панели, больше не ждёт оплаты"
+    );
+    let late = crypto_paid("p5", "200.00", 7006);
+    legacy_hook(&env, &late, &sign(&late)).await;
+    assert_eq!(scalar(s, balance).await, 15_000);
+}

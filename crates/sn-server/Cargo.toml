@@ -30,6 +30,7 @@ futures-util.workspace = true
 jsonwebtoken.workspace = true
 sn-store = { workspace = true, features = ["test-util"] }
 sn-remnawave = { workspace = true, features = ["fake"] }
+sqlx.workspace = true
 wiremock.workspace = true
 
 [lints]

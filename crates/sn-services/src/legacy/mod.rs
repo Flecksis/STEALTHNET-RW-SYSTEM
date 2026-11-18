@@ -5,6 +5,7 @@ pub mod check;
 pub mod chill;
 pub mod chill_file;
 pub mod extras;
+pub mod invoices;
 pub mod json_dump;
 pub mod matcher;
 pub mod minishop;

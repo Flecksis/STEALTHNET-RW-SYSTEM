@@ -469,6 +469,35 @@ function NextSteps({ ctx, outcome }: { ctx: Ctx; outcome: Outcome }) {
           </span>
         )}
       </li>
+      <li>
+        <span className="strong">Перенастройте адреса уведомлений.</span>
+        <span>
+          Пока вы это делаете, новая панель принимает уведомления и по старым адресам <code>/api/webhooks/…</code> — с той же проверкой подписи,
+          поэтому оплаты не теряются. Счета, выставленные старой панелью за последние 30 дней, тоже засчитаются: клиент получит купленное. Новый
+          адрес каждой платёжки — в <Link to="/admin/settings/payments">«Настройки → Оплата»</Link>.
+        </span>
+        <details className="imp-hooks">
+          <summary>Где поменять адрес</summary>
+          <ul>
+            <li>ЮKassa — «Интеграция → HTTP-уведомления».</li>
+            <li>ЮMoney — настройки кошелька, «HTTP-уведомления».</li>
+            <li>Crypto Pay — в @CryptoBot: Crypto Pay → приложение → Webhooks.</li>
+            <li>CloudPayments — «Сайты → Настройки → Уведомления», для check, pay, fail и refund.</li>
+            <li>Platega, RollyPay, Lava.top — настройки магазина, поле адреса уведомлений (webhook или callback).</li>
+            <li>
+              Heleket — менять нечего: адрес записан в каждом счёте. Старые счета придут на старый адрес, новые — на новый.
+            </li>
+            <li>
+              Lava.top — ежемесячные списания по договорам старой панели продолжат приходить на старый адрес и продлят подписку здесь. Не
+              выключайте старый домен, пока он ведёт на новую панель.
+            </li>
+            <li>
+              Remnawave — адрес вебхука в настройках панели Remnawave; её секрет должен совпадать с секретом в{' '}
+              <Link to="/admin/settings/remnawave">«Настройки → Remnawave»</Link>.
+            </li>
+          </ul>
+        </details>
+      </li>
       {(outcome.counts.auto_rules ?? 0) > 0 ? (
         <li>
           <span className="strong">Включите авторассылки.</span>

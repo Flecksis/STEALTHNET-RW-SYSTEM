@@ -720,6 +720,8 @@ fn технические_ошибки_базы_пишутся_понятно() 
         event: None,
         has_body: false,
         payment: None,
+        legacy_path: false,
+        legacy_invoice: false,
     };
     let note = |error: &str| crate::inbox::journal::verdict_note(&row(error));
     assert_eq!(

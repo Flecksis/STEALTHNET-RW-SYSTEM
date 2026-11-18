@@ -119,6 +119,8 @@ pub struct JournalItem {
     pub client: Option<ClientPerson>,
     pub deliveries: i32,
     pub retry: RetryState,
+    pub legacy_path: bool,
+    pub legacy_invoice: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -483,6 +485,8 @@ impl PaymentInbox<'_> {
             payment,
             deliveries: row.deliveries,
             retry,
+            legacy_path: row.legacy_path,
+            legacy_invoice: row.legacy_invoice,
         }
     }
 
@@ -761,15 +765,33 @@ fn reference_text(reference: &PaymentRef) -> String {
     }
 }
 
+fn legacy_facts(row: &JournalRow) -> Vec<Fact> {
+    let mut facts = Vec::new();
+    if row.legacy_path {
+        facts.push(Fact {
+            label: "Адрес".into(),
+            value: "старый адрес старой панели — платёжка ещё шлёт уведомления туда".into(),
+        });
+    }
+    if row.legacy_invoice {
+        facts.push(Fact {
+            label: "Счёт".into(),
+            value: "счёт старой панели, оплачен после переезда".into(),
+        });
+    }
+    facts
+}
+
 fn facts(outcome: Option<&WebhookOutcome>, row: &JournalRow) -> Vec<Fact> {
     let Some(outcome) = outcome else {
-        return Vec::new();
+        return legacy_facts(row);
     };
     let mut facts = vec![Fact {
         label: "Событие".into(),
         value: event_text(Some(outcome), row.event.as_deref())
             .unwrap_or_else(|| event_label(outcome)),
     }];
+    facts.extend(legacy_facts(row));
     let mut push = |label: &str, value: String| {
         facts.push(Fact {
             label: label.into(),

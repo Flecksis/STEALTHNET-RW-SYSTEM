@@ -54,14 +54,33 @@ fn settings(dump: &Dump) -> HashMap<String, String> {
 }
 
 fn provider_of(raw: &str) -> String {
+    if let Some(known) = old_provider(raw) {
+        return known.into();
+    }
     match raw.trim().to_ascii_lowercase().as_str() {
-        "telegram_stars" | "stars" => "stars".into(),
-        "cryptobot" | "crypto_pay" | "cryptopay" => "cryptopay".into(),
-        "yoomoney_form" => "yoomoney".into(),
+        "lava" => "lava_business".into(),
         "" => "unknown".into(),
         other => other.to_string(),
     }
 }
+
+pub fn old_provider(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "yookassa" => Some("yookassa"),
+        "platega" | "platega_mir" | "platega-mir" => Some("platega"),
+        "lavatop" | "lava_top" | "lava-top" => Some("lava"),
+        "heleket" => Some("heleket"),
+        "cryptobot" | "crypto_pay" | "cryptopay" => Some("cryptopay"),
+        "rollypay" => Some("rollypay"),
+        "yoomoney" | "yoomoney_form" => Some("yoomoney"),
+        "telegram_stars" | "stars" => Some("stars"),
+        "cloudpayments" => Some("cloudpayments"),
+        "overpay" => Some("overpay"),
+        _ => None,
+    }
+}
+
+pub const INVOICE_DAYS: i64 = 30;
 
 fn paid_status(row: &Row<'_>) -> Option<bool> {
     match row.text("status")?.to_ascii_uppercase().as_str() {
@@ -458,7 +477,10 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
             continue;
         };
         let Some(refunded) = paid_status(&row) else {
-            unpaid += 1;
+            match pending_invoice(&row, legacy, &old_id, &client, option_days) {
+                Some(invoice) => legacy.invoices.push(invoice),
+                None => unpaid += 1,
+            }
             continue;
         };
         let provider = row
@@ -487,6 +509,9 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
         if amount <= 0 || provider == "admin_grant" {
             free += 1;
             continue;
+        }
+        if !refunded && let Some(contract) = lava_contract(&row, &old_id, &client, option_days) {
+            legacy.invoices.push(contract);
         }
         let (kind, label) =
             if row.text("tariff_id").is_some() || row.text("tariff_price_option_id").is_some() {
@@ -534,6 +559,18 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
         unpaid,
         "неоплаченных и отменённых счетов: в истории они не нужны.",
     );
+    let fresh = legacy
+        .invoices
+        .iter()
+        .filter(|i| !i.old_id.starts_with("contract:"))
+        .count() as u64;
+    if fresh > 0 {
+        legacy.skip(
+            "invoices_waiting",
+            fresh,
+            format!("неоплаченных счетов последних {INVOICE_DAYS} дней не попадут в историю, но новая панель их запомнит: если клиент оплатит такой счёт после переключения, купленное выдастся само."),
+        );
+    }
     legacy.skip(
         "payments_free",
         free,
@@ -544,6 +581,125 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
         unknown_currency,
         "оплат в незнакомой валюте: их нет в истории.",
     );
+}
+
+fn pending_invoice(
+    row: &Row<'_>,
+    legacy: &Legacy,
+    old_id: &str,
+    client: &str,
+    option_days: &HashMap<String, u32>,
+) -> Option<LInvoice> {
+    if !row
+        .text("status")
+        .is_some_and(|s| s.eq_ignore_ascii_case("PENDING"))
+    {
+        return None;
+    }
+    let created_at = row.time("created_at")?;
+    let now = legacy.dumped_at.unwrap_or_else(chrono::Utc::now);
+    if now - created_at > chrono::Duration::days(INVOICE_DAYS) {
+        return None;
+    }
+    let raw_provider = row.string("provider")?;
+    let provider = old_provider(&raw_provider).filter(|p| *p != "stars")?;
+    let meta = row.json("metadata").unwrap_or(serde_json::Value::Null);
+    let stars = meta
+        .pointer("/stars/total")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|n| *n > 0);
+    let currency = currency_of(row.text("currency")).unwrap_or(legacy.currency);
+    let amount_minor = row
+        .f64("amount")
+        .and_then(minor_from_float)
+        .filter(|a| *a > 0)?;
+    let text = |key: &str| {
+        meta.get(key).and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+    };
+    let purpose = if let Some(tariff) = row.string("tariff_id") {
+        if meta
+            .get("purchasedAsGift")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            InvoicePurpose::Other("Подарок".into())
+        } else {
+            let period = row.string("tariff_price_option_id");
+            InvoicePurpose::Tariff {
+                days: period.as_ref().and_then(|p| option_days.get(p).copied()),
+                period_old_id: period,
+                subscription_old_id: text("extendsSecondarySubId")
+                    .or_else(|| text("targetSubscriptionId"))
+                    .or_else(|| row.string("subscription_id")),
+                tariff_old_id: tariff,
+            }
+        }
+    } else if meta.get("extraOption").is_some() {
+        InvoicePurpose::Other("Доп. опция".into())
+    } else if row.text("proxy_tariff_id").is_some() || row.text("singbox_tariff_id").is_some() {
+        return None;
+    } else {
+        InvoicePurpose::TopUp
+    };
+    Some(LInvoice {
+        old_id: old_id.to_string(),
+        client_old_id: client.to_string(),
+        provider,
+        old_provider: raw_provider,
+        external_id: row.string("external_id"),
+        order_ref: row.string("order_id"),
+        amount_minor,
+        currency,
+        stars,
+        purpose,
+        pay_url: text("redirectTargetUrl").filter(|u| u.starts_with("https://")),
+        recurring: provider == "lava",
+        created_at,
+    })
+}
+
+fn lava_contract(
+    row: &Row<'_>,
+    old_id: &str,
+    client: &str,
+    option_days: &HashMap<String, u32>,
+) -> Option<LInvoice> {
+    if !row
+        .text("provider")
+        .is_some_and(|p| p.eq_ignore_ascii_case("lavatop"))
+    {
+        return None;
+    }
+    let tariff = row.string("tariff_id")?;
+    let order_ref = row.string("order_id")?;
+    let period = row.string("tariff_price_option_id");
+    Some(LInvoice {
+        old_id: format!("contract:{old_id}"),
+        client_old_id: client.to_string(),
+        provider: "lava",
+        old_provider: "lavatop".into(),
+        external_id: None,
+        order_ref: Some(order_ref),
+        amount_minor: row
+            .f64("amount")
+            .and_then(minor_from_float)
+            .filter(|a| *a > 0)?,
+        currency: currency_of(row.text("currency"))?,
+        stars: None,
+        purpose: InvoicePurpose::Tariff {
+            days: period.as_ref().and_then(|p| option_days.get(p).copied()),
+            period_old_id: period,
+            subscription_old_id: row.string("subscription_id"),
+            tariff_old_id: tariff,
+        },
+        pay_url: None,
+        recurring: true,
+        created_at: row.time("paid_at").or_else(|| row.time("created_at"))?,
+    })
 }
 
 fn promo_code(raw: &str) -> Option<String> {

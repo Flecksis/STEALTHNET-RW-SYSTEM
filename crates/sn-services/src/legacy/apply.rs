@@ -1419,6 +1419,8 @@ impl<'a> Applier<'a> {
             tariffs: &self.tariffs,
             tariff_names: &self.tariff_names,
             periods_by_days: &self.periods_by_days,
+            periods: &self.periods,
+            subs: &self.subs,
             issues: Vec::new(),
             done: super::extras::Done::default(),
         };
