@@ -60,12 +60,48 @@ pub(super) async fn fake_smtp() -> (u16, Letters) {
     (port, letters)
 }
 
+fn boundary_of(head: &str) -> Option<String> {
+    let unfolded = head.replace("\n ", " ").replace("\n\t", " ");
+    let at = unfolded.find("boundary=")?;
+    let rest = unfolded[at + "boundary=".len()..].trim_start_matches('"');
+    rest.split(['"', ';', '\n', ' ']).next().map(str::to_string)
+}
+
+fn quoted_printable(body: &str) -> String {
+    let joined = body.replace("=\n", "");
+    let bytes = joined.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'='
+            && at + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&joined[at + 1..at + 3], 16)
+        {
+            out.push(byte);
+            at += 3;
+            continue;
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub(super) fn readable(letter: &str) -> String {
     let (head, body) = letter.split_once("\n\n").unwrap_or((letter, ""));
-    if head
-        .to_ascii_lowercase()
-        .contains("content-transfer-encoding: base64")
+    let lower = head.to_ascii_lowercase();
+    if lower.contains("multipart/")
+        && let Some(boundary) = boundary_of(head)
     {
+        return body
+            .split(&format!("--{boundary}"))
+            .map(|part| part.trim_start_matches(['\r', '\n']))
+            .filter(|part| !part.trim().is_empty() && !part.starts_with("--"))
+            .map(readable)
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    if lower.contains("content-transfer-encoding: base64") {
         let joined: String = body.split_whitespace().collect();
         String::from_utf8(
             base64::engine::general_purpose::STANDARD
@@ -73,6 +109,8 @@ pub(super) fn readable(letter: &str) -> String {
                 .unwrap(),
         )
         .unwrap()
+    } else if lower.contains("content-transfer-encoding: quoted-printable") {
+        quoted_printable(body)
     } else {
         body.replace("=\n", "")
     }
@@ -626,5 +664,153 @@ async fn пароль_меняется_в_кабинете_и_выдаётся_�
         ),
         "client.no_email"
     );
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn шаблоны_писем_сохраняются_проверяются_и_уходят_на_проверку() {
+    use crate::mail_letters::{DraftLetter, DraftTexts, LangDrafts, LettersUpdate, Saved};
+    use sn_domain::client::Locale;
+    use sn_domain::mail_letters::{Group, LetterId};
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let letters = services.letters();
+    let view = letters.view().await.unwrap();
+    assert_eq!(view.letters.len(), 23);
+    assert!(!view.sends);
+    let ready = |view: &crate::mail_letters::LettersView| {
+        view.letters
+            .iter()
+            .find(|l| l.id == LetterId::SubscriptionReady)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(ready(&view).default.ru.subject, "Подписка готова");
+    assert_eq!(ready(&view).saved.ru, None);
+    let mut typo = LettersUpdate::default();
+    typo.letters.insert(
+        "subscription_ready".into(),
+        LangDrafts {
+            ru: Some(DraftTexts {
+                subject: "Готово".into(),
+                text: "Работает до {datee}".into(),
+                button: String::new(),
+            }),
+            en: None,
+        },
+    );
+    let err = letters.update(&typo, admin).await.unwrap_err();
+    assert_eq!(err.code(), "mail_letters.invalid");
+    assert_eq!(
+        err.to_string(),
+        "«Подписка готова», текст: подстановки {datee} в этом письме нет, можно: {tariff}, {date}, {brand}, {email}"
+    );
+    assert_eq!(ready(&letters.view().await.unwrap()).saved.ru, None);
+    let mut good = LettersUpdate::default();
+    good.letters.insert(
+        "subscription_ready".into(),
+        LangDrafts {
+            ru: Some(DraftTexts {
+                subject: "Подписка «{tariff}» готова".into(),
+                text: "Работает до {date}.".into(),
+                button: "Открыть кабинет".into(),
+            }),
+            en: None,
+        },
+    );
+    good.sign.ru = Some("Команда {brand}".into());
+    good.sign.en = Some("Cheers, {brand}".into());
+    good.sender = Some("Мой VPN".into());
+    good.groups.insert(Group::Support, false);
+    let saved = letters.update(&good, admin).await.unwrap();
+    assert_eq!(
+        ready(&saved).saved.ru,
+        Some(Saved {
+            subject: Some("Подписка «{tariff}» готова".into()),
+            text: Some("Работает до {date}.".into()),
+            button: None,
+        })
+    );
+    assert_eq!(saved.sign.saved.ru, None);
+    assert_eq!(saved.sign.saved.en.as_deref(), Some("Cheers, {brand}"));
+    assert_eq!(saved.sender.as_deref(), Some("Мой VPN"));
+    assert!(
+        !saved
+            .groups
+            .iter()
+            .find(|g| g.key == Group::Support)
+            .unwrap()
+            .on
+    );
+    let mut reset = LettersUpdate::default();
+    reset.letters.insert(
+        "subscription_ready".into(),
+        LangDrafts {
+            ru: Some(DraftTexts::default()),
+            en: None,
+        },
+    );
+    reset.sender = Some(String::new());
+    let back = letters.update(&reset, admin).await.unwrap();
+    assert_eq!(ready(&back).saved.ru, None);
+    assert_eq!(back.sender, None);
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        assert!(
+            conn.settings()
+                .get("mail.letter.subscription_ready.ru")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    let draft = DraftLetter {
+        letter: "topup_done".into(),
+        lang: Locale::En,
+        subject: String::new(),
+        text: "Thanks! +{amount}".into(),
+        button: String::new(),
+        sign: None,
+    };
+    let preview = letters.preview(&draft).await.unwrap();
+    assert_eq!(preview.subject, "Balance topped up");
+    assert!(preview.html.contains("Thanks! +$10.00"), "{}", preview.html);
+    assert!(preview.html.contains("Cheers, STEALTHNET"));
+    assert!(
+        preview.text.starts_with("Thanks! +$10.00"),
+        "{}",
+        preview.text
+    );
+    let broken = DraftLetter {
+        text: "<b>не закрыт".into(),
+        ..draft.clone()
+    };
+    assert_eq!(
+        letters.preview(&broken).await.unwrap_err().to_string(),
+        "«Баланс пополнен», английский, текст: тег <b> не закрыт"
+    );
+    assert_eq!(
+        letters
+            .test(&draft, "owner@example.com")
+            .await
+            .unwrap_err()
+            .code(),
+        "mail.unavailable"
+    );
+    let (port, mails) = fake_smtp().await;
+    configure(services, admin, port).await;
+    assert_eq!(
+        letters.test(&draft, "не адрес").await.unwrap_err().code(),
+        "mail.address"
+    );
+    letters.test(&draft, "Owner@Example.com").await.unwrap();
+    let sent = mails.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert!(readable(&sent[0]).contains("Thanks! +$10.00"));
+    assert!(sent[0].contains("owner@example.com"));
     env.db.cleanup().await;
 }

@@ -3,9 +3,9 @@ import { api, ApiError } from '../../lib/api';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import type { ModuleConfig, ModulesData, ModuleView } from '../modules/model';
 import { useSession } from '../session';
-import { Switch } from '../ui';
 import '../form.css';
 import './admins.css';
+import { MailTabs } from './MailTabs';
 import { SettingsLayout } from './SettingsLayout';
 
 const NO_SECRETS: SecretState = { clear: [], replacing: [] };
@@ -21,8 +21,8 @@ const TRANSPORTS: Array<[Transport, string]> = [
 
 const FIELDS: Record<Transport, string[]> = {
   none: [],
-  smtp: ['smtp_host', 'security', 'smtp_port', 'username', 'password', 'from_email', 'from_name'],
-  resend: ['resend_api_key', 'from_email', 'from_name'],
+  smtp: ['smtp_host', 'security', 'smtp_port', 'username', 'password', 'from_email'],
+  resend: ['resend_api_key', 'from_email'],
 };
 
 const ABOUT: Record<Transport, string> = {
@@ -36,13 +36,7 @@ const LOGINS: Array<[Login, string]> = [
   ['code', 'По коду из письма'],
 ];
 
-const LETTERS: Array<[string, string, string]> = [
-  ['letter_expiring', 'Окончание подписки', 'Напоминание перед концом срока и письма об автопродлении'],
-  ['letter_payments', 'Оплата', 'Оплата получена, подписка выдана или продлена, баланс пополнен'],
-  ['letter_support', 'Ответ поддержки', 'Текст ответа и ссылка на переписку в кабинете'],
-];
-
-const CUSTOM = new Set(['transport', 'login', ...LETTERS.map(([key]) => key)]);
+const CUSTOM = new Set(['transport', 'login', 'letter_expiring', 'letter_payments', 'letter_support', 'from_name']);
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -110,6 +104,7 @@ export function SettingsMail() {
   if (!cfg || !view) {
     return (
       <SettingsLayout>
+        <MailTabs />
         {error ? (
           <p className="err" role="alert">
             {error}
@@ -187,6 +182,7 @@ export function SettingsMail() {
 
   return (
     <SettingsLayout>
+      <MailTabs />
       <div className="sec-stack">
         <section className="sec" aria-labelledby="mail-h">
           <div className="sec-head">
@@ -247,28 +243,6 @@ export function SettingsMail() {
             </span>
           </div>
         </section>
-
-        {transport !== 'none' ? (
-          <section className="sec" aria-labelledby="mail-letters-h">
-            <div className="sec-head">
-              <h2 id="mail-letters-h" className="section-title">
-                Письма клиентам
-              </h2>
-              <span className="muted">Приходят тем, кому нельзя написать в Telegram: Telegram не привязан или клиент остановил бота</span>
-            </div>
-            {LETTERS.map(([key, title, text]) => (
-              <div key={key} className="row adm-row">
-                <span className="adm-who">
-                  <span className="adm-email">{title}</span>
-                  <span className="adm-status">{text}</span>
-                </span>
-                <span className="adm-acts">
-                  <Switch on={values[key] === true} onToggle={() => edit({ [key]: values[key] !== true })} label={title} disabled={busy} />
-                </span>
-              </div>
-            ))}
-          </section>
-        ) : null}
 
         <div className="save-row">
           <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>

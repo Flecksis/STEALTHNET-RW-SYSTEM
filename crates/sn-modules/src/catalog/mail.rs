@@ -3,13 +3,14 @@ use crate::error::ModuleError;
 use crate::module::{Module, ModuleConfig};
 use async_trait::async_trait;
 use sn_domain::client::{IdentityKind, normalize_identity};
+use sn_domain::mail_letters::Group;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::SettingField;
 
 pub const TRANSPORT_OPTIONS: &[&str] = &["none", "smtp", "resend"];
 pub const SECURITY_OPTIONS: &[&str] = &["starttls", "tls", "none"];
 pub const LOGIN_OPTIONS: &[&str] = &["password", "code"];
-const NAME_MAX: usize = 80;
+pub const NAME_MAX: usize = 80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailSecurity {
@@ -45,6 +46,17 @@ pub struct ClientLetters {
     pub expiring: bool,
     pub payments: bool,
     pub support: bool,
+}
+
+impl ClientLetters {
+    pub const fn allows(self, group: Group) -> bool {
+        match group {
+            Group::Payments => self.payments,
+            Group::Renewal => self.expiring,
+            Group::Support => self.support,
+            Group::Login | Group::Service => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,14 +204,14 @@ impl Module for MailModule {
             .optional(),
             SettingField::flag(
                 "letter_expiring",
-                "Письмо об окончании подписки",
-                "Напоминание о конце подписки и об автопродлении",
+                "Письма об автопродлении",
+                "Не хватает денег на продление, продление не прошло, автопродление выключено",
             )
             .with_default("true"),
             SettingField::flag(
                 "letter_payments",
-                "Письмо об оплате",
-                "Оплата прошла, подписка выдана или продлена, баланс пополнен",
+                "Письма об оплате и подарках",
+                "Подписка выдана или продлена, баланс пополнен, оплата на проверке или возвращена, подарки",
             )
             .with_default("true"),
             SettingField::flag(

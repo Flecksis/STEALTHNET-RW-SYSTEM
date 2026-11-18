@@ -5,14 +5,13 @@ use crate::limits::rules;
 use crate::login::{
     EMAIL_CODE_DIGITS, EMAIL_CODE_MAX_ATTEMPTS, EMAIL_CODE_TTL_SECONDS, code_invalid, same,
 };
-use crate::mail::Letter;
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use serde::Serialize;
 use sn_domain::access::ClientPrincipal;
-use sn_domain::client::{IdentityKind, Locale, NewIdentity, normalize_identity};
+use sn_domain::client::{IdentityKind, NewIdentity, normalize_identity};
 use sn_domain::ids::ClientId;
-use sn_domain::lang;
+use sn_domain::mail_letters::{LetterId, Values};
 use sn_store::Db;
 
 pub const EMAIL_CHANGE_OFF: &str = "auth.email_change_off";
@@ -263,28 +262,10 @@ impl<'a> Auth<'a> {
         .fetch_one(tx.conn())
         .await?;
         tx.commit().await?;
-        let brand = self.services.settings().brand_name.clone();
-        let minutes = EMAIL_CODE_TTL_SECONDS / 60;
-        let (subject, text) = match lang::current() {
-            Locale::Ru => (
-                format!("Код для смены почты в {brand}: {code}"),
-                format!(
-                    "Код для смены почты в {brand}: {code}\n\nОн действует {minutes} минут. Если почту меняете не вы, просто не используйте код: адрес не привяжется к аккаунту."
-                ),
-            ),
-            Locale::En => (
-                format!("Your {brand} email change code: {code}"),
-                format!(
-                    "Your code to change the email on {brand}: {code}\n\nIt works for {minutes} minutes. If you didn't ask for this, just ignore it and this address won't be added to the account."
-                ),
-            ),
-        };
-        let sent = mail
-            .send(&Letter {
-                to: email.clone(),
-                subject,
-                text,
-            })
+        let sent = self
+            .services
+            .letters()
+            .send(LetterId::EmailCode, &email, crate::login::code_values(code))
             .await;
         if let Err(err) = sent {
             let mut conn = self.services.store().conn().await?;
@@ -405,30 +386,14 @@ impl<'a> Auth<'a> {
     }
 
     async fn notify_email_changed(&self, old: &str, new: &str) {
-        let brand = self.services.settings().brand_name.clone();
-        let shown = masked_email(new);
-        let (subject, text) = match lang::current() {
-            Locale::Ru => (
-                format!("Почта в {brand} изменена"),
-                format!(
-                    "Почту в аккаунте {brand} сменили на {shown}. Письма теперь приходят на новый адрес, а этот больше не привязан к аккаунту.\n\nЕсли почту меняли не вы, напишите в поддержку {brand}."
-                ),
-            ),
-            Locale::En => (
-                format!("Your {brand} email was changed"),
-                format!(
-                    "The email on your {brand} account was changed to {shown}. Emails now go to the new address, and this one is no longer linked to the account.\n\nIf you didn't change it, please contact {brand} support."
-                ),
-            ),
-        };
         let sent = self
             .services
-            .mail()
-            .send(&Letter {
-                to: old.to_string(),
-                subject,
-                text,
-            })
+            .letters()
+            .send(
+                LetterId::EmailChanged,
+                old,
+                Values::new().with("new_email", masked_email(new)),
+            )
             .await;
         if let Err(err) = sent {
             tracing::warn!(error = %err, "уведомление о смене почты на прежний адрес не отправилось");

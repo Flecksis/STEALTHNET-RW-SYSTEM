@@ -677,7 +677,7 @@ async fn поздняя_оплата_отменённого_счёта_прин�
 }
 
 #[tokio::test]
-async fn пополнение_зачисляется_один_раз() {
+async fn пополнение_зачисляется_один_раз_и_клиент_получает_одно_уведомление() {
     let Some(kit) = kit().await else { return };
     let client_id = client(&kit.services, 103).await;
     let payment = topup(&kit, client_id, 1_000).await;
@@ -719,7 +719,18 @@ async fn пополнение_зачисляется_один_раз() {
     assert_eq!(entries.items.len(), 1);
     assert_eq!(entries.items[0].payment_id, Some(payment.id));
     drop(conn);
-    assert!(jobs(&kit.services).await.is_empty());
+    assert_eq!(
+        jobs(&kit.services).await,
+        vec![JobPayload::Notify {
+            client_id,
+            template: TOPUP_TEMPLATE.into(),
+            params: serde_json::json!({
+                "amount": payment.amount.as_money().unwrap(),
+                "order_id": payment.order_id,
+                "payment_id": payment.id,
+            }),
+        }]
+    );
     kit.db.cleanup().await;
 }
 

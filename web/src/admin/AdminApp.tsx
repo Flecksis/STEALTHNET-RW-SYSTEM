@@ -37,6 +37,7 @@ import { SettingsAdmins } from './pages/SettingsAdmins';
 import { SettingsApiKeys } from './pages/SettingsApiKeys';
 import { SettingsAlerts } from './pages/SettingsAlerts';
 import { SettingsMail } from './pages/SettingsMail';
+import { SettingsMailLetters } from './pages/SettingsMailLetters';
 import { SettingsClientAccess } from './pages/SettingsClientAccess';
 import { SettingsLanguages } from './pages/SettingsLanguages';
 import { ForcedPassword, Security } from './pages/Security';
@@ -261,6 +262,7 @@ export function AdminApp() {
           <Route path="settings/admins" element={<SettingsAdmins />} />
           <Route path="settings/api-keys" element={<SettingsApiKeys />} />
           <Route path="settings/mail" element={<SettingsMail />} />
+          <Route path="settings/mail/letters" element={<SettingsMailLetters />} />
           <Route path="settings/alerts" element={<SettingsAlerts />} />
           <Route path="settings/client" element={<SettingsClientAccess />} />
           <Route path="settings/languages" element={<SettingsLanguages />} />

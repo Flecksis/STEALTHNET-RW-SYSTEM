@@ -835,17 +835,31 @@ fn уведомления_о_возврате_заблокированному_�
         .text
         .starts_with("Списание за продление ушло до того")
     );
-    let letter = notify::letter_head(
+    let (letter, values) = notify::letter_of(
         notify::templates::AUTORENEW_AFTER_OFF,
-        &serde_json::json!({}),
+        &serde_json::json!({"amount": "$6.99", "expire_at": "2027-02-14T10:00:00Z"}),
+        utc,
     )
     .unwrap();
-    assert_eq!(letter.kind, notify::LetterKind::Payments);
-    assert_eq!(letter.path, "/cabinet/help");
-    let letter =
-        notify::letter_head(notify::templates::REFUNDED_BLOCKED, &serde_json::json!({})).unwrap();
-    assert_eq!(letter.kind, notify::LetterKind::Payments);
-    assert_eq!(letter.subject, "Оплата возвращена");
+    assert_eq!(letter, sn_domain::mail_letters::LetterId::ChargedAfterOff);
+    assert_eq!(
+        letter.spec().group,
+        sn_domain::mail_letters::Group::Payments
+    );
+    assert_eq!(letter.spec().path, ["/cabinet/help"]);
+    assert_eq!(values.get("amount"), Some("$6.99"));
+    assert_eq!(values.get("date"), Some("14\u{a0}февраля\u{a0}2027"));
+    let (letter, _) = notify::letter_of(
+        notify::templates::REFUNDED_BLOCKED,
+        &serde_json::json!({}),
+        utc,
+    )
+    .unwrap();
+    assert_eq!(
+        letter.spec().group,
+        sn_domain::mail_letters::Group::Payments
+    );
+    assert_eq!(letter.spec().ru.subject, ["Оплата возвращена"]);
 }
 
 #[test]
@@ -901,11 +915,16 @@ fn уведомление_о_возврате_звёзд_называет_пок
             "{broken}"
         );
     }
-    let letter =
-        notify::letter_head(notify::templates::STARS_REFUNDED, &serde_json::json!({})).unwrap();
-    assert_eq!(letter.kind, notify::LetterKind::Payments);
-    assert_eq!(letter.subject, "Звёзды возвращены");
-    assert_eq!(letter.path, "/cabinet/payments");
+    let (letter, values) =
+        notify::letter_of(notify::templates::STARS_REFUNDED, &params, utc).unwrap();
+    assert_eq!(
+        letter.spec().group,
+        sn_domain::mail_letters::Group::Payments
+    );
+    assert_eq!(letter.spec().ru.subject, ["Звёзды возвращены"]);
+    assert_eq!(letter.spec().path, ["/cabinet/payments"]);
+    assert_eq!(values.get("purchase"), Some("Стандарт <VPN> · 90 дней"));
+    assert_eq!(values.get("stars"), Some("350\u{a0}звёзд"));
 }
 
 #[test]
@@ -936,14 +955,18 @@ fn уведомление_о_привязке_входа_через_google_ил�
         )
         .is_none()
     );
-    let letter = notify::letter_head(
+    let (letter, values) = notify::letter_of(
         sn_modules::catalog::oauth::TEMPLATE_LINKED,
         &serde_json::json!({"provider": "Apple", "account": "почта скрыта"}),
+        utc,
     )
     .unwrap();
-    assert_eq!(letter.kind, notify::LetterKind::Service);
-    assert_eq!(letter.subject, "Привязан вход через Apple");
-    assert_eq!(letter.path, "/cabinet/security");
+    assert_eq!(letter.spec().group, sn_domain::mail_letters::Group::Service);
+    assert_eq!(
+        sn_domain::mail_letters::first_plain(letter.spec().ru.subject.iter().copied(), &values),
+        Some("Привязан вход через Apple".to_string())
+    );
+    assert_eq!(letter.spec().path, ["/cabinet/security"]);
 }
 
 #[tokio::test]

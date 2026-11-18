@@ -1,0 +1,433 @@
+.ml-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.ml-head .head-stack {
+  flex: 1 1 360px;
+  min-width: 0;
+}
+
+.ml-langs .bt-count {
+  margin-left: 6px;
+}
+
+.ml-note {
+  margin: -6px 0 0;
+}
+
+.ml-note a {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ml-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 20px;
+  align-items: start;
+}
+
+.ml-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ml-list {
+  overflow: hidden;
+}
+
+.ml-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.ml-group-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+
+.ml-group-name {
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.ml-group-note {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.ml-group-note a {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ml-item {
+  border-top: 1px solid var(--line);
+}
+
+.ml-item:first-child {
+  border-top: 0;
+}
+
+.ml-item.open {
+  background: var(--surface-2);
+}
+
+.ml-item.off .ml-row-name {
+  color: var(--ink-2);
+}
+
+.ml-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ml-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ml-row-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  font-weight: 700;
+}
+
+.ml-row-sum {
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ml-mark {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+
+.ml-row > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.ml-row[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+
+.ml-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 2px 16px 18px;
+}
+
+.ml-body .field {
+  background: var(--surface);
+}
+
+.ml-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ml-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.ml-label .cap {
+  font-weight: 400;
+}
+
+.ml-text {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.ml-chips .bt-chip {
+  max-width: 100%;
+  background: var(--surface);
+}
+
+.ml-chips .bt-chip-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ml-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.ml-meta > span:first-child {
+  flex: 1 1 auto;
+}
+
+.ml-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-2);
+}
+
+.ml-logo .mark {
+  flex: 0 0 40px;
+  height: 40px;
+}
+
+.ml-link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ml-pv {
+  position: sticky;
+  top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  min-width: 0;
+}
+
+.adm[data-layout='top'] .ml-pv {
+  top: 86px;
+}
+
+.ml-pv-title {
+  font-weight: 700;
+}
+
+.ml-pv-tools {
+  align-self: flex-start;
+}
+
+.ml-env {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 2px;
+}
+
+.ml-env-from {
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.ml-env-subject {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.ml-frame {
+  display: block;
+  width: 100%;
+  height: 520px;
+  border: 0;
+  border-radius: 10px;
+  background: #f2f4f7;
+}
+
+.ml-plain {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ml-test {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.ml-test-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ml-test-row .field {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.ml-test-row .b40 {
+  flex: 0 0 auto;
+}
+
+.ml-save {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.ml-save [role='status'] {
+  color: var(--ink-2);
+}
+
+.ml-save .bad {
+  color: var(--bad);
+}
+
+.adm[data-layout='phone'] .ml-save {
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.ml-save-status {
+  padding: 0 4px;
+  font-size: 14px;
+}
+
+.ml-save-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.ml-save-btns > button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.ml-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  background: var(--bg);
+}
+
+.ml-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ml-sheet-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.ml-close {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ml-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+@media (max-width: 1180px) {
+  .ml-grid {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+
+@media (max-width: 960px) {
+  .ml-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ml-pv {
+    position: static;
+  }
+}
+
+@media (max-width: 600px) {
+  .ml-row {
+    padding: 8px 14px;
+  }
+
+  .ml-body {
+    padding: 2px 14px 16px;
+  }
+
+  .ml-group {
+    padding: 8px 14px;
+  }
+}

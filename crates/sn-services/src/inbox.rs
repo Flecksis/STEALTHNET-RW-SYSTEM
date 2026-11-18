@@ -69,6 +69,7 @@ pub const REPEAT_REVIEW_TEMPLATE: &str = "payment.repeat_review";
 const REFUND_REQUESTED_AUDIT: &str = "payment.refund_requested";
 pub const PAYMENT_CREDITED_TEMPLATE: &str = "payment.credited";
 pub const PAYMENT_REVIEW_TEMPLATE: &str = "payment.review";
+pub const TOPUP_TEMPLATE: &str = "topup_done";
 pub const OUTSIDE_REFUND_PREFIX: &str = "outside:";
 const HOLD_REASON: &str = "платёжная система задержала оплату для проверки";
 const NOTICE_TEXT_LIMIT: usize = 1000;
@@ -409,6 +410,22 @@ pub(crate) async fn credit_topup(
                 delta: amount,
             })
             .await?;
+        if !tx.clients().get(paid.client_id).await?.is_blocked() {
+            tx.jobs()
+                .enqueue(
+                    &JobPayload::Notify {
+                        client_id: paid.client_id,
+                        template: TOPUP_TEMPLATE.into(),
+                        params: serde_json::json!({
+                            "amount": amount,
+                            "order_id": order.id,
+                            "payment_id": paid.id,
+                        }),
+                    },
+                    None,
+                )
+                .await?;
+        }
     }
     Ok(!appended.duplicate)
 }

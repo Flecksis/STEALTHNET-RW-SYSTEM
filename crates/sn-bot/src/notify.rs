@@ -10,12 +10,11 @@ use sn_domain::client::{IdentityKind, Locale};
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::lang;
+use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::money::{Money, Stars};
-use sn_modules::MailSite;
-use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
 use sn_modules::catalog::{contests, gifts, limits, oauth, referral};
 use sn_services::Services;
-use sn_services::mail::{RichLetter, Undelivered};
+use sn_services::mail::Undelivered;
 use sn_store::{Db, StoreError};
 use sn_worker::{CoreHandlers, JobHandler, JobResult};
 use std::sync::{Arc, Mutex};
@@ -24,7 +23,7 @@ use uuid::Uuid;
 pub mod templates {
     pub const TEXT: &str = "text";
     pub const PAYMENT_PAID: &str = "payment_paid";
-    pub const TOPUP_DONE: &str = "topup_done";
+    pub const TOPUP_DONE: &str = sn_services::inbox::TOPUP_TEMPLATE;
     pub const SUBSCRIPTION_READY: &str = "subscription_ready";
     pub const SUBSCRIPTION_RENEWED: &str = "subscription_renewed";
     pub const SUBSCRIPTION_EXPIRING: &str = "subscription_expiring";
@@ -55,53 +54,75 @@ pub struct Rendered {
     pub keyboard: Keyboard,
 }
 
-fn param(params: &serde_json::Value, key: &str) -> Option<String> {
+fn raw(params: &serde_json::Value, key: &str) -> Option<String> {
     match params.get(key)? {
-        serde_json::Value::String(s) if !s.trim().is_empty() => Some(escape(s.trim())),
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         serde_json::Value::Number(n) => Some(n.to_string()),
         value @ serde_json::Value::Object(_) => serde_json::from_value::<Money>(value.clone())
             .ok()
-            .map(|money| escape(&text::money(money))),
+            .map(text::money),
         _ => None,
     }
 }
 
-fn text_param(params: &serde_json::Value) -> Option<String> {
+fn param(params: &serde_json::Value, key: &str) -> Option<String> {
+    raw(params, key).map(|v| escape(&v))
+}
+
+fn raw_text(params: &serde_json::Value) -> Option<String> {
     match lang::current() {
-        Locale::En => param(params, "text_en").or_else(|| param(params, "text")),
-        Locale::Ru => param(params, "text"),
+        Locale::En => raw(params, "text_en").or_else(|| raw(params, "text")),
+        Locale::Ru => raw(params, "text"),
+    }
+}
+
+fn text_param(params: &serde_json::Value) -> Option<String> {
+    raw_text(params).map(|v| escape(&v))
+}
+
+fn raw_label(params: &serde_json::Value) -> Option<String> {
+    match lang::current() {
+        Locale::En => raw(params, "label_en").or_else(|| raw(params, "label")),
+        Locale::Ru => raw(params, "label"),
     }
 }
 
 fn label_param(params: &serde_json::Value) -> Option<String> {
-    match lang::current() {
-        Locale::En => param(params, "label_en").or_else(|| param(params, "label")),
-        Locale::Ru => param(params, "label"),
-    }
+    raw_label(params).map(|v| escape(&v))
 }
 
-fn stars_param(params: &serde_json::Value) -> Option<String> {
+fn raw_stars(params: &serde_json::Value) -> Option<String> {
     let stars = params
         .get("stars")
         .and_then(serde_json::Value::as_i64)
         .filter(|stars| *stars > 0)?;
-    Some(escape(&text::stars(Stars(stars))))
+    Some(text::stars(Stars(stars)))
+}
+
+fn stars_param(params: &serde_json::Value) -> Option<String> {
+    raw_stars(params).map(|v| escape(&v))
+}
+
+fn raw_term(params: &serde_json::Value) -> Option<String> {
+    match params.get("days").and_then(serde_json::Value::as_u64) {
+        Some(days) => Some(gifts::term(u32::try_from(days).unwrap_or(u32::MAX))),
+        None => raw(params, "term"),
+    }
 }
 
 fn term_param(params: &serde_json::Value) -> Option<String> {
-    match params.get("days").and_then(serde_json::Value::as_u64) {
-        Some(days) => Some(escape(&gifts::term(
-            u32::try_from(days).unwrap_or(u32::MAX),
-        ))),
-        None => param(params, "term"),
+    raw_term(params).map(|v| escape(&v))
+}
+
+fn raw_bytes(params: &serde_json::Value, bytes: &str, shown: &str) -> Option<String> {
+    match params.get(bytes).and_then(serde_json::Value::as_u64) {
+        Some(value) => Some(text::traffic(value)),
+        None => raw(params, shown),
     }
 }
 
 fn bytes_param(params: &serde_json::Value, bytes: &str, shown: &str) -> Option<String> {
-    match params.get(bytes).and_then(serde_json::Value::as_u64) {
-        Some(value) => Some(escape(&text::traffic(value))),
-        None => param(params, shown),
-    }
+    raw_bytes(params, bytes, shown).map(|v| escape(&v))
 }
 
 fn limits_period(params: &serde_json::Value) -> Option<(String, String)> {
@@ -118,7 +139,7 @@ fn limits_period(params: &serde_json::Value) -> Option<(String, String)> {
     )
 }
 
-fn until_param(params: &serde_json::Value, offset: FixedOffset) -> Option<String> {
+fn raw_until(params: &serde_json::Value, offset: FixedOffset) -> Option<String> {
     if lang::current() == Locale::En
         && let Some(at) = params
             .get("until_at")
@@ -127,13 +148,17 @@ fn until_param(params: &serde_json::Value, offset: FixedOffset) -> Option<String
     {
         let at = at.with_timezone(&Utc);
         let local = at.with_timezone(&offset);
-        return Some(escape(&format!(
+        return Some(format!(
             "{}, {}",
             text::day_month(at, offset),
             local.format("%H:%M")
-        )));
+        ));
     }
-    param(params, "until")
+    raw(params, "until")
+}
+
+fn until_param(params: &serde_json::Value, offset: FixedOffset) -> Option<String> {
+    raw_until(params, offset).map(|v| escape(&v))
 }
 
 fn prize_param(params: &serde_json::Value) -> Option<String> {
@@ -626,178 +651,134 @@ impl NotifyHandler {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LetterKind {
-    Expiring,
-    Payments,
-    Support,
-    Service,
-}
-
-pub struct LetterHead {
-    pub kind: LetterKind,
-    pub subject: String,
-    pub button: &'static str,
-    pub path: String,
-}
-
-pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterHead> {
-    let ticket = params
-        .get("ticket_id")
-        .and_then(serde_json::Value::as_i64)
-        .filter(|id| *id > 0);
-    let head = |kind, subject: &str, button: &'static str, path: &str| LetterHead {
-        kind,
-        subject: subject.to_string(),
-        button,
-        path: path.to_string(),
-    };
-    Some(match canonical(template, params) {
-        templates::PAYMENT_PAID => head(
-            LetterKind::Payments,
-            lang::pick("Оплата получена", "Payment received"),
-            lang::pick("Открыть кабинет", "Open your account"),
-            "/cabinet",
-        ),
-        templates::TOPUP_DONE => head(
-            LetterKind::Payments,
-            lang::pick("Баланс пополнен", "Balance topped up"),
-            lang::pick("История оплат", "Payment history"),
-            "/cabinet/payments",
-        ),
-        templates::PAYMENT_CREDITED => head(
-            LetterKind::Payments,
-            lang::pick("Деньги зачислены на баланс", "Money added to your balance"),
-            lang::pick("История оплат", "Payment history"),
-            "/cabinet/payments",
-        ),
-        templates::PAYMENT_REVIEW => head(
-            LetterKind::Payments,
-            lang::pick(
-                "Оплату проверим вручную",
-                "We'll check your payment by hand",
-            ),
-            lang::pick("История оплат", "Payment history"),
-            "/cabinet/payments",
-        ),
-        templates::SUBSCRIPTION_READY => head(
-            LetterKind::Payments,
-            lang::pick("Подписка готова", "Your subscription is ready"),
-            lang::pick("Открыть кабинет", "Open your account"),
-            "/cabinet",
-        ),
-        templates::SUBSCRIPTION_RENEWED => head(
-            LetterKind::Payments,
-            lang::pick("Подписка продлена", "Subscription renewed"),
-            lang::pick("Открыть кабинет", "Open your account"),
-            "/cabinet",
-        ),
-        templates::SUBSCRIPTION_EXPIRING => head(
-            LetterKind::Expiring,
-            lang::pick("Подписка скоро закончится", "Your subscription ends soon"),
-            lang::pick("Продлить", "Renew"),
-            "/cabinet/pay",
-        ),
-        templates::AUTORENEW_UPCOMING => head(
-            LetterKind::Expiring,
-            lang::pick("Скоро автопродление", "Auto-renewal is coming up"),
-            lang::pick("Пополнить баланс", "Top up balance"),
-            "/cabinet/topup",
-        ),
-        templates::AUTORENEW_FAILED => head(
-            LetterKind::Expiring,
-            lang::pick(
-                "Подписку не удалось продлить",
-                "Couldn't renew your subscription",
-            ),
-            lang::pick("Продлить", "Renew"),
-            "/cabinet/pay",
-        ),
-        templates::AUTORENEW_DISABLED => head(
-            LetterKind::Expiring,
-            lang::pick("Автопродление выключено", "Auto-renewal is off"),
-            lang::pick("Продлить", "Renew"),
-            "/cabinet/pay",
-        ),
-        templates::AUTORENEW_AFTER_OFF => head(
-            LetterKind::Payments,
-            lang::pick(
-                "Списание прошло до выключения автопродления",
-                "Charged before auto-renewal was turned off",
-            ),
-            lang::pick("Написать в поддержку", "Contact support"),
-            "/cabinet/help",
-        ),
-        templates::REFUNDED_BLOCKED => head(
-            LetterKind::Payments,
-            lang::pick("Оплата возвращена", "Payment refunded"),
-            lang::pick("Открыть сайт", "Open the website"),
-            "/",
-        ),
-        templates::STARS_REFUNDED => head(
-            LetterKind::Payments,
-            lang::pick("Звёзды возвращены", "Stars refunded"),
-            lang::pick("История оплат", "Payment history"),
-            "/cabinet/payments",
-        ),
-        gifts::TEMPLATE_READY => head(
-            LetterKind::Payments,
-            lang::pick("Подарок оплачен", "Gift paid"),
-            lang::pick("Мои подарки", "My gifts"),
-            "/cabinet/gifts",
-        ),
-        gifts::TEMPLATE_REDEEMED => head(
-            LetterKind::Payments,
-            lang::pick("Ваш подарок активировали", "Your gift was activated"),
-            lang::pick("Мои подарки", "My gifts"),
-            "/cabinet/gifts",
-        ),
-        limits::TEMPLATE_WARNING => head(
-            LetterKind::Service,
-            lang::pick("Превышен лимит трафика", "Traffic limit exceeded"),
-            lang::pick("Открыть кабинет", "Open your account"),
-            "/cabinet",
-        ),
-        limits::TEMPLATE_RESTRICTED => head(
-            LetterKind::Service,
-            lang::pick("Доступ временно ограничен", "Access temporarily restricted"),
-            lang::pick("Открыть кабинет", "Open your account"),
-            "/cabinet",
-        ),
-        limits::TEMPLATE_LIFTED => head(
-            LetterKind::Service,
-            lang::pick("Ограничение по трафику снято", "Traffic restriction lifted"),
-            lang::pick("Открыть кабинет", "Open your account"),
-            "/cabinet",
-        ),
-        oauth::TEMPLATE_LINKED => {
-            let provider = params
-                .get("provider")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_else(|| lang::pick("Google или Apple", "Google or Apple"));
-            head(
-                LetterKind::Service,
-                &match lang::current() {
-                    Locale::Ru => format!("Привязан вход через {provider}"),
-                    Locale::En => format!("Sign-in with {provider} linked"),
-                },
-                lang::pick("Безопасность", "Security"),
-                "/cabinet/security",
+pub fn letter_of(
+    template: &str,
+    params: &serde_json::Value,
+    offset: FixedOffset,
+) -> Option<(LetterId, Values)> {
+    let date =
+        date_param(params, "date", offset).or_else(|| date_param(params, "expire_at", offset));
+    let balance_off = params
+        .get("balance_off")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let amount = || raw(params, "amount");
+    Some(match template {
+        templates::ORDER_FULFILLED
+        | templates::SUBSCRIPTION_READY
+        | templates::SUBSCRIPTION_RENEWED => {
+            let id = if canonical(template, params) == templates::SUBSCRIPTION_RENEWED {
+                LetterId::SubscriptionRenewed
+            } else {
+                LetterId::SubscriptionReady
+            };
+            (
+                id,
+                Values::new()
+                    .maybe("date", date)
+                    .maybe("tariff", raw(params, "tariff")),
             )
         }
-        templates::SUPPORT_REPLY => LetterHead {
-            kind: LetterKind::Support,
-            subject: match (ticket, lang::current()) {
-                (Some(id), Locale::Ru) => format!("Ответ поддержки по обращению №{id}"),
-                (Some(id), Locale::En) => format!("Support reply to request #{id}"),
-                (None, _) => lang::pick("Ответ поддержки", "Support reply").to_string(),
-            },
-            button: lang::pick("Открыть переписку", "Open the conversation"),
-            path: match ticket {
-                Some(id) => format!("/cabinet/help/{id}"),
-                None => "/cabinet/help".to_string(),
-            },
-        },
+        templates::TOPUP_DONE => (LetterId::TopupDone, Values::new().maybe("amount", amount())),
+        templates::PAYMENT_CREDITED | templates::REPEAT_CREDITED => (
+            LetterId::PaymentCredited,
+            Values::new()
+                .maybe("amount", amount())
+                .maybe("details", raw_text(params)),
+        ),
+        templates::PAYMENT_REVIEW | templates::REPEAT_REVIEW => (
+            LetterId::PaymentReview,
+            Values::new()
+                .maybe("amount", amount())
+                .maybe("details", raw_text(params)),
+        ),
+        templates::REFUNDED_BLOCKED => (
+            LetterId::PaymentRefunded,
+            Values::new().maybe("amount", amount()),
+        ),
+        templates::STARS_REFUNDED => (
+            LetterId::StarsRefunded,
+            Values::new()
+                .maybe("stars", raw_stars(params))
+                .maybe("purchase", raw_label(params)),
+        ),
+        templates::AUTORENEW_AFTER_OFF => (
+            LetterId::ChargedAfterOff,
+            Values::new().maybe("amount", amount()).maybe("date", date),
+        ),
+        gifts::TEMPLATE_READY => (
+            LetterId::GiftReady,
+            Values::new()
+                .maybe("tariff", raw(params, "tariff"))
+                .maybe("term", raw_term(params))
+                .maybe("code", raw(params, "code"))
+                .maybe("link", raw(params, "bot_link"))
+                .maybe("url", raw(params, "cabinet_link"))
+                .maybe("date", date_param(params, "expire_at", offset)),
+        ),
+        gifts::TEMPLATE_REDEEMED => (
+            LetterId::GiftRedeemed,
+            Values::new()
+                .maybe("code", raw(params, "code"))
+                .maybe("tariff", raw(params, "tariff"))
+                .maybe("term", raw_term(params)),
+        ),
+        templates::AUTORENEW_REMINDER if balance_off => {
+            (LetterId::RenewalManual, Values::new().maybe("date", date))
+        }
+        templates::AUTORENEW_REMINDER => (
+            LetterId::RenewalShort,
+            Values::new()
+                .maybe("date", date)
+                .maybe("missing", raw(params, "missing"))
+                .maybe("amount", amount()),
+        ),
+        templates::AUTORENEW_CHARGE_FAILED | templates::AUTORENEW_FAILED if balance_off => {
+            (LetterId::RenewalManual, Values::new().maybe("date", date))
+        }
+        templates::AUTORENEW_CHARGE_FAILED | templates::AUTORENEW_FAILED => (
+            LetterId::RenewalFailed,
+            Values::new().maybe("date", date).maybe("amount", amount()),
+        ),
+        templates::AUTORENEW_TURNED_OFF | templates::AUTORENEW_DISABLED => {
+            (LetterId::RenewalOff, Values::new().maybe("date", date))
+        }
+        templates::SUPPORT_REPLY => (
+            LetterId::SupportReply,
+            Values::new()
+                .maybe(
+                    "ticket",
+                    params
+                        .get("ticket_id")
+                        .and_then(serde_json::Value::as_i64)
+                        .filter(|id| *id > 0)
+                        .map(|id| id.to_string()),
+                )
+                .maybe("reply", raw(params, "body")),
+        ),
+        oauth::TEMPLATE_LINKED => (
+            LetterId::LoginLinked,
+            Values::new()
+                .maybe("provider", raw(params, "provider"))
+                .maybe("account", raw(params, "account")),
+        ),
+        limits::TEMPLATE_WARNING | limits::TEMPLATE_RESTRICTED => {
+            let (when, per) = limits_period(params)?;
+            let values = Values::new()
+                .with("when", when)
+                .with("per", per)
+                .maybe("used", raw_bytes(params, "used_bytes", "used"))
+                .maybe("limit", raw_bytes(params, "limit_bytes", "limit"));
+            if template == limits::TEMPLATE_RESTRICTED {
+                (
+                    LetterId::TrafficRestricted,
+                    values.maybe("until", raw_until(params, offset)),
+                )
+            } else {
+                (LetterId::TrafficWarning, values)
+            }
+        }
+        limits::TEMPLATE_LIFTED => (LetterId::TrafficLifted, Values::new()),
         _ => return None,
     })
 }
@@ -813,49 +794,28 @@ async fn mail_notice(
     let Some(letters) = mail.letters() else {
         return JobResult::Done;
     };
-    let Some(head) = letter_head(template, params) else {
+    let Some((id, values)) = letter_of(template, params, services.settings().remna_offset()) else {
         return JobResult::Done;
     };
-    let wanted = match head.kind {
-        LetterKind::Expiring => letters.expiring,
-        LetterKind::Payments => letters.payments,
-        LetterKind::Support => letters.support,
-        LetterKind::Service => true,
-    };
-    if !wanted {
+    if !letters.allows(id.spec().group) {
         return JobResult::Done;
     }
-    let settings = services.settings();
-    let content = services.bot_content_in(lang::current());
-    let Some(rendered) = render(&content.content, template, params, settings.remna_offset()) else {
-        return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
+    let letter = match services.letters().letter(id, email, values).await {
+        Ok(Some(letter)) => letter,
+        Ok(None) => {
+            return JobResult::Fail(format!(
+                "письмо «{}» по уведомлению «{template}» без нужных данных",
+                id.spec().title
+            ));
+        }
+        Err(err) => {
+            return JobResult::Retry {
+                after: retry_delay(attempt),
+                error: err.to_string(),
+            };
+        }
     };
-    let base = settings
-        .public_url
-        .as_deref()
-        .map(|url| url.trim().trim_end_matches('/').to_string())
-        .filter(|url| url.starts_with("https://") || url.starts_with("http://"));
-    let buttons: Vec<ButtonSpec> = base
-        .iter()
-        .map(|base| ButtonSpec {
-            text: head.button.to_string(),
-            url: Some(format!("{base}{}", head.path)),
-            section: None,
-        })
-        .collect();
-    let site = MailSite {
-        base_url: base.clone().unwrap_or_default(),
-        brand: settings.brand_name.clone(),
-    };
-    let letter = letter_for(&head.subject, &rendered.text, None, &buttons, &site);
-    let rich = RichLetter {
-        to: email.to_string(),
-        subject: head.subject.clone(),
-        text: letter.notice_text(),
-        html: letter.notice_html(),
-        unsubscribe: None,
-    };
-    match mail.deliver(&rich).await {
+    match mail.deliver(&letter).await {
         Ok(()) => JobResult::Done,
         Err(Undelivered::Off(_)) => JobResult::Done,
         Err(Undelivered::Address(reason)) => {

@@ -11,17 +11,32 @@ use rand::{Rng, RngCore};
 use serde::Serialize;
 use sn_domain::access::{ClientChannel, ClientPrincipal};
 use sn_domain::client::{
-    IdentityKind, Locale, NewIdentity, RegistrationSource, TelegramProfile, normalize_identity,
+    IdentityKind, NewIdentity, RegistrationSource, TelegramProfile, normalize_identity,
 };
 use sn_domain::events::DomainEvent;
+use sn_domain::format;
 use sn_domain::ids::ClientId;
 use sn_domain::lang;
+use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::settings::keys;
 use sn_store::{Db, NewClient, NewSession, SessionChannel, SessionScope, Tx};
 
 pub const TELEGRAM_LOGIN_TTL_SECONDS: i64 = 300;
 pub const TELEGRAM_START_PREFIX: &str = "auth_";
 pub const EMAIL_CODE_TTL_SECONDS: i64 = 900;
+
+pub(crate) fn code_values(code: String) -> Values {
+    let minutes = u64::try_from(EMAIL_CODE_TTL_SECONDS / 60).unwrap_or(15);
+    Values::new().with("code", code).with(
+        "minutes",
+        format::count_in(
+            minutes,
+            lang::current(),
+            ["минута", "минуты", "минут"],
+            ["minute", "minutes"],
+        ),
+    )
+}
 pub const EMAIL_CODE_MAX_ATTEMPTS: i32 = 5;
 pub const EMAIL_CODE_DIGITS: usize = 6;
 pub const LOGIN_RETENTION_DAYS: i64 = 7;
@@ -470,28 +485,10 @@ impl<'a> Auth<'a> {
             ));
         }
         let (code, start) = self.issue_email_code(&email, meta).await?;
-        let brand = self.services.settings().brand_name.clone();
-        let minutes = EMAIL_CODE_TTL_SECONDS / 60;
-        let (subject, text) = match lang::current() {
-            Locale::Ru => (
-                format!("Код для входа в {brand}: {code}"),
-                format!(
-                    "Код для входа в кабинет {brand}: {code}\n\nОн действует {minutes} минут. Если вход запрашивали не вы, просто не используйте код."
-                ),
-            ),
-            Locale::En => (
-                format!("Your {brand} sign-in code: {code}"),
-                format!(
-                    "Your code to sign in to {brand}: {code}\n\nIt works for {minutes} minutes. If you didn't ask to sign in, just ignore it."
-                ),
-            ),
-        };
-        mail.send(&crate::mail::Letter {
-            to: start.email.clone(),
-            subject,
-            text,
-        })
-        .await?;
+        self.services
+            .letters()
+            .send(LetterId::LoginCode, &start.email, code_values(code))
+            .await?;
         Ok(start)
     }
 
@@ -782,28 +779,10 @@ impl<'a> Auth<'a> {
         };
         let (code, start) = self.issue_code(METHOD_RESET, &email, meta).await?;
         if known {
-            let brand = self.services.settings().brand_name.clone();
-            let minutes = EMAIL_CODE_TTL_SECONDS / 60;
-            let (subject, text) = match lang::current() {
-                Locale::Ru => (
-                    format!("Код для смены пароля в {brand}: {code}"),
-                    format!(
-                        "Код для смены пароля в кабинете {brand}: {code}\n\nОн действует {minutes} минут. Если пароль меняете не вы, не используйте код — старый пароль продолжит работать."
-                    ),
-                ),
-                Locale::En => (
-                    format!("Your {brand} password reset code: {code}"),
-                    format!(
-                        "Your code to reset the {brand} password: {code}\n\nIt works for {minutes} minutes. If you didn't ask for this, ignore the code and your old password keeps working."
-                    ),
-                ),
-            };
-            mail.send(&crate::mail::Letter {
-                to: start.email.clone(),
-                subject,
-                text,
-            })
-            .await?;
+            self.services
+                .letters()
+                .send(LetterId::ResetCode, &start.email, code_values(code))
+                .await?;
         }
         Ok(start)
     }

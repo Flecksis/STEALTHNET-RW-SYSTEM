@@ -13,6 +13,7 @@ pub mod jobs;
 pub mod landing;
 pub mod lang;
 pub mod ledger;
+pub mod mail_letters;
 pub mod module;
 pub mod money;
 pub mod order;

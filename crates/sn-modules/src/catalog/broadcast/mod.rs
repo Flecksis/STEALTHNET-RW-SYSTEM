@@ -40,7 +40,7 @@ pub use auto::{
 };
 pub use auto_store::{contest_batch, contest_progress, open_batch, queue_bot, stop_contest};
 pub use engine::{Engine, EngineConfig, Sender};
-pub use letter::Letter;
+pub use letter::{Letter, body_html, body_text};
 pub use store::{
     Broadcast, ChannelProgress, FailedEmail, ImageMeta, ListItem, Problem, Progress, Reach,
     Subscriber,

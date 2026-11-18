@@ -323,6 +323,10 @@ impl Services {
         crate::mail::MailOps::new(self)
     }
 
+    pub fn letters(&self) -> crate::mail_letters::LettersOps<'_> {
+        crate::mail_letters::LettersOps::new(self)
+    }
+
     pub fn clients(&self) -> ClientOps<'_> {
         ClientOps::new(self)
     }
