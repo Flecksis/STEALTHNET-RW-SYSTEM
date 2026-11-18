@@ -1,5 +1,6 @@
 use crate::auth::token_hash;
 use crate::error::{ServiceError, ServiceResult};
+use crate::inbox::{BLOCKED_REFUND_AUDIT, BLOCKED_REFUND_REQUESTED_AUDIT};
 use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
@@ -21,6 +22,7 @@ const LINK_KEY: &str = "alerts.link";
 const TEST_KEY: &str = "alerts.test";
 const TOPICS_KEY: &str = "alerts.topics";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
+const AUTO_REFUND_CURSOR: &str = "alerts.cursor.auto_refunds";
 const BODY_MAX: usize = 300;
 const SCAN_LIMIT: i64 = 500;
 
@@ -128,6 +130,18 @@ fn money(minor: i64, currency: &str) -> Option<String> {
     Currency::parse(currency)
         .ok()
         .map(|currency| format::money(Money::new(minor, currency)))
+}
+
+fn amount_line(amount: &serde_json::Value) -> Option<String> {
+    let minor = amount.get("minor")?.as_i64()?;
+    let currency = amount.get("currency")?.as_str()?;
+    if currency == "XTR" {
+        return Some(format!(
+            "{minor} {}",
+            format::plural_ru(minor.unsigned_abs(), "звезда", "звезды", "звёзд")
+        ));
+    }
+    money(minor, currency)
 }
 
 fn payout_method(method: &str) -> &str {
@@ -463,6 +477,91 @@ impl<'a> AlertsOps<'a> {
         ] {
             out.extend(self.watched(kind, &config).await?);
         }
+        out.extend(self.auto_refunds(&config).await?);
+        Ok(out)
+    }
+
+    async fn auto_refunds(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let cursor = self
+            .state(AUTO_REFUND_CURSOR)
+            .await?
+            .and_then(|v| v.as_i64());
+        let mut conn = self.services.store().conn().await?;
+        let newest: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
+            .fetch_one(conn.conn())
+            .await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(AUTO_REFUND_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+            "SELECT action, details FROM audit_log \
+             WHERE id > $1 AND id <= $2 AND action IN ($3, $4) ORDER BY id",
+        )
+        .bind(cursor)
+        .bind(newest)
+        .bind(BLOCKED_REFUND_AUDIT)
+        .bind(BLOCKED_REFUND_REQUESTED_AUDIT)
+        .fetch_all(conn.conn())
+        .await?;
+        let mut out = Vec::new();
+        if config.route(AlertKind::Refunds).on {
+            for (action, details) in rows.iter().take(PER_KIND) {
+                let done = action == BLOCKED_REFUND_AUDIT;
+                let mut lines = vec![if done {
+                    "<b>Оплату вернули автоматически</b>".to_string()
+                } else {
+                    "<b>Оплату возвращаем автоматически</b>".to_string()
+                }];
+                match details.get("order_id").and_then(serde_json::Value::as_i64) {
+                    Some(order) => {
+                        lines.push(format!("Клиент заблокирован, заказ №{order} не выдан"))
+                    }
+                    None => lines.push("Клиент заблокирован, заказ не выдан".to_string()),
+                }
+                if let Some(client) = details.get("client_id").and_then(serde_json::Value::as_i64) {
+                    lines.push(format!(
+                        "Клиент: {}",
+                        escape(&client_label(&mut conn, client).await)
+                    ));
+                }
+                if let Some(sum) = details.get("amount").and_then(amount_line) {
+                    lines.push(format!("Сумма: {sum}"));
+                }
+                if !done {
+                    lines.push("Ждём подтверждения платёжной системы".to_string());
+                }
+                out.push(Alert {
+                    kind: AlertKind::Refunds,
+                    html: lines.join("\n"),
+                    path: "/admin/money".to_string(),
+                });
+            }
+            if rows.len() > PER_KIND {
+                let rest = rows.len() - PER_KIND;
+                out.push(Alert {
+                    kind: AlertKind::Refunds,
+                    html: format!(
+                        "Ещё {rest} {}",
+                        format::plural_ru(
+                            rest as u64,
+                            "автоматический возврат",
+                            "автоматических возврата",
+                            "автоматических возвратов"
+                        )
+                    ),
+                    path: "/admin/money".to_string(),
+                });
+            }
+        }
+        drop(conn);
+        self.put_state(AUTO_REFUND_CURSOR, &serde_json::json!(newest))
+            .await?;
         Ok(out)
     }
 
@@ -645,7 +744,7 @@ impl<'a> AlertsOps<'a> {
                         lines.push(format!("Сумма: {sum}"));
                     }
                     if let Some(error) = error.as_deref().filter(|e| !e.trim().is_empty()) {
-                        lines.push(format!("Ошибка: {}", escape(&cut(error, BODY_MAX))));
+                        lines.push(format!("Причина: {}", escape(&cut(error, BODY_MAX))));
                     }
                     items.push(Item {
                         id,

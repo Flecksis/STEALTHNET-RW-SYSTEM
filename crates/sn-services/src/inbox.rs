@@ -28,11 +28,16 @@ use sn_store::{
 use std::net::IpAddr;
 use uuid::Uuid;
 
+mod blocked_refund;
 mod refund_action;
 mod refund_requests;
 #[cfg(test)]
 mod tests;
 
+pub use blocked_refund::{
+    BLOCKED_REFUND_AUDIT, BLOCKED_REFUND_REASON, BLOCKED_REFUND_REQUESTED_AUDIT,
+    BLOCKED_REFUND_TEMPLATE, BlockedRefund,
+};
 pub use refund_action::{
     REFUND_ACTION_ATTEMPTS, REFUND_ACTION_FAILED, RefundActionOutcome, RefundActionReview,
 };
@@ -51,6 +56,7 @@ pub const REJECTED_WEBHOOK_RETENTION_DAYS: i64 = 3;
 pub const REPEAT_METHOD: &str = "repeat";
 pub const REPEAT_CREDITED_TEMPLATE: &str = "payment.repeat_credited";
 pub const REPEAT_REVIEW_TEMPLATE: &str = "payment.repeat_review";
+const REFUND_REQUESTED_AUDIT: &str = "payment.refund_requested";
 
 const PURGE_BATCH: i64 = 500;
 const PURGE_ROUNDS: usize = 40;
@@ -199,6 +205,19 @@ struct RecordedRefund {
     refund_id: RefundId,
     status: PaymentStatus,
     order: Order,
+}
+
+enum RefundStep {
+    Requested {
+        request_id: i64,
+        amount: Amount,
+        provider_refund_id: Option<String>,
+        hold: Option<LedgerEntryId>,
+    },
+    Recorded {
+        recorded: Box<RecordedRefund>,
+        amount: Amount,
+    },
 }
 
 struct RefundSpec<'r> {
@@ -1229,6 +1248,15 @@ impl<'a> PaymentInbox<'a> {
         let acts = request.subscription_action != RefundSubscriptionAction::Keep
             && recorded.order.subscription_id.is_some()
             && tx.payments().arm_refund_action(request.id, now).await?;
+        if blocked_refund::requested_by_system(request) {
+            blocked_refund::notify_client(
+                &mut tx,
+                &recorded.order,
+                payment,
+                Amount::new(minor, payment.amount.currency),
+            )
+            .await?;
+        }
         tx.audit()
             .record(&AuditEntry {
                 actor_kind: ActorKind::System,
@@ -1500,7 +1528,7 @@ impl<'a> PaymentInbox<'a> {
         payment: &Payment,
         order: &Order,
         money: Money,
-        admin: AdminId,
+        admin: Option<AdminId>,
     ) -> ServiceResult<LedgerEntryId> {
         let spent = || {
             ServiceError::rejected(
@@ -1529,7 +1557,7 @@ impl<'a> PaymentInbox<'a> {
                 kind: LedgerKind::RefundHold,
                 order_id: Some(order.id),
                 payment_id: Some(payment.id),
-                admin_id: Some(admin),
+                admin_id: admin,
                 comment: Some(format!(
                     "Возврат пополнения через платёжную систему: платёж {}",
                     payment.public_id
@@ -1602,10 +1630,101 @@ impl<'a> PaymentInbox<'a> {
         command: &RefundCommand,
         admin: AdminId,
     ) -> ServiceResult<RefundResult> {
-        let currency = self.services.settings().currency;
-        let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         let payment = tx.payments().lock(payment_id).await?;
+        match self
+            .refund_locked(&mut tx, &payment, command, Some(admin))
+            .await?
+        {
+            RefundStep::Requested {
+                request_id,
+                amount,
+                provider_refund_id,
+                hold,
+            } => {
+                tx.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::Admin,
+                        actor_id: Some(admin.0),
+                        action: REFUND_REQUESTED_AUDIT.into(),
+                        entity_kind: Some("payment".into()),
+                        entity_id: Some(payment.id.0),
+                        details: serde_json::json!({
+                            "request_id": request_id,
+                            "amount": amount,
+                            "method": command.method,
+                            "subscription_action": command.subscription_action,
+                            "provider_refund_id": provider_refund_id,
+                            "hold_entry_id": hold,
+                        }),
+                        ip: None,
+                    })
+                    .await?;
+                tx.commit().await?;
+                Ok(RefundResult {
+                    refund_id: None,
+                    request_id: Some(request_id),
+                    pending: true,
+                    payment_id: payment.id,
+                    amount,
+                    status: payment.status,
+                    subscription_error: None,
+                })
+            }
+            RefundStep::Recorded { recorded, amount } => {
+                tx.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::Admin,
+                        actor_id: Some(admin.0),
+                        action: "payment.refund".into(),
+                        entity_kind: Some("payment".into()),
+                        entity_id: Some(payment.id.0),
+                        details: serde_json::json!({
+                            "refund_id": recorded.refund_id,
+                            "amount": amount,
+                            "method": command.method,
+                            "subscription_action": command.subscription_action,
+                        }),
+                        ip: None,
+                    })
+                    .await?;
+                tx.commit().await?;
+                let subscription_error = match self
+                    .refund_subscription_action(
+                        &recorded.order,
+                        command.subscription_action,
+                        Some(admin),
+                    )
+                    .await
+                {
+                    Ok(()) => None,
+                    Err(err) => {
+                        tracing::warn!(payment = %payment.id, error = %err, "действие с подпиской после возврата не выполнено");
+                        Some(err.to_string())
+                    }
+                };
+                Ok(RefundResult {
+                    refund_id: Some(recorded.refund_id),
+                    request_id: None,
+                    pending: false,
+                    payment_id: payment.id,
+                    amount,
+                    status: recorded.status,
+                    subscription_error,
+                })
+            }
+        }
+    }
+
+    async fn refund_locked(
+        &self,
+        tx: &mut Tx,
+        payment: &Payment,
+        command: &RefundCommand,
+        admin: Option<AdminId>,
+    ) -> ServiceResult<RefundStep> {
+        let currency = self.services.settings().currency;
+        let now = self.services.now();
         if !matches!(
             payment.status,
             PaymentStatus::Paid | PaymentStatus::PartiallyRefunded
@@ -1615,7 +1734,7 @@ impl<'a> PaymentInbox<'a> {
                 "Вернуть можно только оплаченный платёж",
             ));
         }
-        let already = refunded_minor(&mut tx, payment.id).await?;
+        let already = refunded_minor(tx, payment.id).await?;
         let waiting = pending_minor(&tx.payments().provider_refunds(payment.id).await?);
         let remaining = payment.amount.minor - already - waiting;
         let minor = match command.amount {
@@ -1678,10 +1797,9 @@ impl<'a> PaymentInbox<'a> {
                     )
                 })?;
                 let hold = match amount.as_money() {
-                    Some(money) if credited => Some(
-                        self.hold_refund(&mut tx, &payment, &order, money, admin)
-                            .await?,
-                    ),
+                    Some(money) if credited => {
+                        Some(self.hold_refund(tx, payment, &order, money, admin).await?)
+                    }
                     _ => None,
                 };
                 let config = self.services.payments().config(provider.id());
@@ -1719,28 +1837,10 @@ impl<'a> PaymentInbox<'a> {
                     amount,
                     subscription_action: command.subscription_action,
                     reason: command.reason.clone(),
-                    admin_id: Some(admin),
+                    admin_id: admin,
                     provider_refund_id: provider_refund_id.clone(),
                     hold_entry_id: hold,
                     requested_at: now,
-                })
-                .await?;
-            tx.audit()
-                .record(&AuditEntry {
-                    actor_kind: ActorKind::Admin,
-                    actor_id: Some(admin.0),
-                    action: "payment.refund_requested".into(),
-                    entity_kind: Some("payment".into()),
-                    entity_id: Some(payment.id.0),
-                    details: serde_json::json!({
-                        "request_id": request.id,
-                        "amount": amount,
-                        "method": command.method,
-                        "subscription_action": command.subscription_action,
-                        "provider_refund_id": provider_refund_id,
-                        "hold_entry_id": hold,
-                    }),
-                    ip: None,
                 })
                 .await?;
             tx.jobs()
@@ -1751,67 +1851,31 @@ impl<'a> PaymentInbox<'a> {
                     Some(now + Duration::seconds(REFUND_POLL_DELAY_SECONDS)),
                 )
                 .await?;
-            tx.commit().await?;
-            return Ok(RefundResult {
-                refund_id: None,
-                request_id: Some(request.id),
-                pending: true,
-                payment_id: payment.id,
+            return Ok(RefundStep::Requested {
+                request_id: request.id,
                 amount,
-                status: payment.status,
-                subscription_error: None,
+                provider_refund_id,
+                hold,
             });
         }
         let recorded = self
             .record_refund(
-                &mut tx,
-                &payment,
+                tx,
+                payment,
                 &RefundSpec {
                     amount,
                     method: command.method,
                     action: command.subscription_action,
                     reason: command.reason.as_deref(),
-                    admin: Some(admin),
+                    admin,
                     provider_refund_id: provider_refund_id.as_deref(),
                     held: hold.is_some(),
                 },
             )
             .await?;
-        tx.audit()
-            .record(&AuditEntry {
-                actor_kind: ActorKind::Admin,
-                actor_id: Some(admin.0),
-                action: "payment.refund".into(),
-                entity_kind: Some("payment".into()),
-                entity_id: Some(payment.id.0),
-                details: serde_json::json!({
-                    "refund_id": recorded.refund_id,
-                    "amount": amount,
-                    "method": command.method,
-                    "subscription_action": command.subscription_action,
-                }),
-                ip: None,
-            })
-            .await?;
-        tx.commit().await?;
-        let subscription_error = match self
-            .refund_subscription_action(&recorded.order, command.subscription_action, Some(admin))
-            .await
-        {
-            Ok(()) => None,
-            Err(err) => {
-                tracing::warn!(payment = %payment.id, error = %err, "действие с подпиской после возврата не выполнено");
-                Some(err.to_string())
-            }
-        };
-        Ok(RefundResult {
-            refund_id: Some(recorded.refund_id),
-            request_id: None,
-            pending: false,
-            payment_id: payment.id,
+        Ok(RefundStep::Recorded {
+            recorded: Box::new(recorded),
             amount,
-            status: recorded.status,
-            subscription_error,
         })
     }
 

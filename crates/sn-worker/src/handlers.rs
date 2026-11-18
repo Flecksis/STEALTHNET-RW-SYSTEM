@@ -57,6 +57,7 @@ impl JobHandler for CoreHandlers {
                         error: reason,
                     },
                     Ok(FulfillmentOutcome::Review { reason }) => JobResult::Review(reason),
+                    Ok(FulfillmentOutcome::Refunded { .. }) => JobResult::Done,
                     Err(err) => JobResult::from_error(err, attempt),
                 }
             }

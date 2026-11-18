@@ -33,6 +33,7 @@ pub(crate) mod tests;
 pub const AUTORENEW_METHOD: &str = "autorenew";
 pub const CHARGE_UNCLEAR_AUDIT: &str = "payment.autorenew_unclear";
 pub const CHARGE_BLOCKED_AUDIT: &str = "payment.autorenew_blocked";
+pub const CHARGED_AFTER_OFF_TEMPLATE: &str = "autorenew.charged_after_off";
 pub const ENDED_AFTER_DAYS: i64 = 90;
 const DUE_BATCH: i64 = 500;
 const DUE_MARGIN_DAYS: i64 = 7;
@@ -111,7 +112,7 @@ fn renewal_period<'t>(
         .min_by_key(|p| (i64::from(p.days) - days).abs())
 }
 
-fn transient(err: &PaymentError) -> bool {
+pub(crate) fn transient(err: &PaymentError) -> bool {
     err.is_retryable() || matches!(err, PaymentError::Http { status: 408 | 429 })
 }
 
@@ -915,7 +916,7 @@ impl<'a> AutoRenew<'a> {
             return Ok(());
         }
         let reason = "касса подтвердила автосписание у заблокированного клиента: \
-                      заказ не выдаётся и ждёт ручной проверки";
+                      заказ не выдаётся, оплата возвращается автоматически или ждёт ручной проверки";
         conn.audit()
             .record(&Actor::System.audit(
                 CHARGE_BLOCKED_AUDIT,
@@ -924,7 +925,7 @@ impl<'a> AutoRenew<'a> {
                 charge_details(&payment, &order, reason),
             ))
             .await?;
-        tracing::warn!(payment = %payment.id, order = %order.id, client = %payment.client_id, "автосписание заблокированного клиента подтверждено кассой, заказ ждёт ручной проверки");
+        tracing::warn!(payment = %payment.id, order = %order.id, client = %payment.client_id, "автосписание заблокированного клиента подтверждено кассой, заказ не выдаётся");
         Ok(())
     }
 

@@ -1,6 +1,8 @@
 use crate::Actor;
+use crate::autorenew::{AUTORENEW_METHOD, CHARGED_AFTER_OFF_TEMPLATE};
 use crate::checkout::single_subscription;
 use crate::error::{ServiceError, ServiceResult};
+use crate::inbox::{BLOCKED_REFUND_REASON, BlockedRefund};
 use crate::services::Services;
 use crate::subscriptions::{
     actions, disable_remna_user, drop_everywhere, enable_remna_user, with_subscription_lock,
@@ -9,10 +11,12 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sn_domain::client::{ClientStatus, IdentityKind};
 use sn_domain::events::DomainEvent;
+use sn_domain::format;
 use sn_domain::ids::{CategoryId, ClientId, JobId, OrderId, RemnaUserId, SquadId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
 use sn_domain::order::{Order, OrderKind, OrderStatus, PurchaseIntent};
+use sn_domain::payment::Payment;
 use sn_domain::plan::{
     CurrentTariff, FulfillmentPlan, HeldDevices, NewUserProfile, PlanAction, PlanInput, PlanKind,
     classify, plan,
@@ -116,7 +120,7 @@ pub fn abandoned_reason(attempts: u32, error: &str) -> String {
 pub async fn holds_autorenew(db: &mut impl Db, order_id: OrderId) -> ServiceResult<bool> {
     Ok(db
         .orders()
-        .holds_renewal(order_id, crate::autorenew::AUTORENEW_METHOD)
+        .holds_renewal(order_id, AUTORENEW_METHOD)
         .await?)
 }
 
@@ -162,6 +166,9 @@ pub enum FulfillmentOutcome {
     Review {
         reason: String,
     },
+    Refunded {
+        reason: String,
+    },
 }
 
 impl FulfillmentOutcome {
@@ -177,6 +184,7 @@ enum Halt {
     Retry(String),
     Review(String),
     Stale(String),
+    Blocked(String),
     Failed(ServiceError),
 }
 
@@ -216,6 +224,15 @@ async fn client_blocked(tx: &mut Tx, client_id: ClientId) -> Result<bool, Halt> 
     Ok(status.as_deref() == Some(ClientStatus::Blocked.as_str()))
 }
 
+async fn autorenew_charge(tx: &mut Tx, order_id: OrderId) -> Result<Option<Payment>, Halt> {
+    Ok(tx
+        .payments()
+        .for_order(order_id)
+        .await?
+        .into_iter()
+        .find(|p| p.status.is_paid_like() && p.method.as_deref() == Some(AUTORENEW_METHOD)))
+}
+
 fn db_count(value: u32, what: &str) -> Result<i32, Halt> {
     i32::try_from(value).map_err(|_| Halt::Review(format!("{what}: слишком большое значение")))
 }
@@ -232,7 +249,7 @@ fn stale_reason(saved: Option<String>) -> String {
 }
 
 fn blocked_halt(order: &Order) -> Halt {
-    Halt::Review(format!(
+    Halt::Blocked(format!(
         "клиент заблокирован: заказ {} не выдаётся, после разблокировки выдайте его повторно",
         order.public_id
     ))
@@ -363,20 +380,62 @@ impl<'a> Fulfillment<'a> {
                 tracing::info!(order = %order.id, %reason, "выдача отложена");
                 Ok(FulfillmentOutcome::retry(MIN_RETRY, reason))
             }
-            Err(Halt::Review(reason)) => {
-                tracing::warn!(order = %order.id, %reason, "выдача ждёт ручной проверки");
-                let mut conn = self.services.store().conn().await?;
-                match conn.orders().mark_review(order.id, &reason).await {
-                    Ok(()) | Err(StoreError::Invalid(_)) => {}
-                    Err(err) => return Err(err.into()),
-                }
-                Ok(FulfillmentOutcome::Review { reason })
-            }
+            Err(Halt::Review(reason)) => self.hold(&order, reason).await,
+            Err(Halt::Blocked(reason)) => self.blocked_order(&order, reason).await,
             Err(Halt::Stale(reason)) => {
                 tracing::warn!(order = %order.id, %reason, "заказ ждёт решения администратора");
                 Ok(FulfillmentOutcome::Review { reason })
             }
             Err(Halt::Failed(err)) => Err(err),
+        }
+    }
+
+    async fn hold(&self, order: &Order, reason: String) -> ServiceResult<FulfillmentOutcome> {
+        tracing::warn!(order = %order.id, %reason, "выдача ждёт ручной проверки");
+        let mut conn = self.services.store().conn().await?;
+        match conn.orders().mark_review(order.id, &reason).await {
+            Ok(()) | Err(StoreError::Invalid(_)) => {}
+            Err(err) => return Err(err.into()),
+        }
+        Ok(FulfillmentOutcome::Review { reason })
+    }
+
+    async fn blocked_order(
+        &self,
+        order: &Order,
+        reason: String,
+    ) -> ServiceResult<FulfillmentOutcome> {
+        match self.services.inbox().refund_blocked(order.id).await? {
+            BlockedRefund::Refunded => Ok(FulfillmentOutcome::Refunded {
+                reason: BLOCKED_REFUND_REASON.into(),
+            }),
+            BlockedRefund::Requested => Ok(FulfillmentOutcome::retry(
+                REFUND_WAIT,
+                REFUND_PENDING_REASON,
+            )),
+            BlockedRefund::Retry(why) => {
+                tracing::info!(order = %order.id, reason = %why, "выдача отложена");
+                Ok(FulfillmentOutcome::retry(MIN_RETRY, why))
+            }
+            BlockedRefund::NothingPaid => self.hold(order, reason).await,
+            BlockedRefund::Kept(why) => {
+                self.hold(
+                    order,
+                    format!("{reason}. Оплату не вернули автоматически: {why}"),
+                )
+                .await
+            }
+            BlockedRefund::Unblocked => {
+                self.hold(
+                    order,
+                    format!(
+                        "клиента разблокировали до автоматического возврата: заказ {} не выдан, \
+                         выдайте его повторно или верните оплату",
+                        order.public_id
+                    ),
+                )
+                .await
+            }
         }
     }
 
@@ -1588,22 +1647,31 @@ impl<'a> Fulfillment<'a> {
                 })
                 .await?;
         }
-        if let PurchaseIntent::Subscription { period_id, .. } = &order.intent {
-            let enabled = if subscription.kind == SubscriptionKind::Trial {
-                settings.autorenew.enable_for_new
-            } else {
-                subscription.autorenew.enabled
-            };
-            tx.subscriptions()
-                .set_autorenew(
-                    subscription.id,
-                    AutoRenewState {
-                        enabled,
-                        period_id: Some(*period_id),
-                    },
-                )
-                .await?;
-        }
+        let charged_after_off = match &order.intent {
+            PurchaseIntent::Subscription { period_id, .. } => {
+                let current = tx.subscriptions().lock(subscription.id).await?;
+                let enabled = if subscription.kind == SubscriptionKind::Trial {
+                    settings.autorenew.enable_for_new
+                } else {
+                    current.autorenew.enabled
+                };
+                tx.subscriptions()
+                    .set_autorenew(
+                        subscription.id,
+                        AutoRenewState {
+                            enabled,
+                            period_id: Some(*period_id),
+                        },
+                    )
+                    .await?;
+                if enabled {
+                    None
+                } else {
+                    autorenew_charge(&mut tx, order.id).await?
+                }
+            }
+            _ => None,
+        };
         let (fulfilled, changed) = tx
             .orders()
             .transition(order.id, OrderStatus::Fulfilled)
@@ -1682,6 +1750,25 @@ impl<'a> Fulfillment<'a> {
                         None,
                     )
                     .await?;
+                if let Some(charge) = charged_after_off {
+                    tracing::info!(order = %fulfilled.id, subscription = %subscription.id, "списание ушло до выключения автопродления: подписка продлена, клиент предупреждён");
+                    tx.jobs()
+                        .enqueue(
+                            &JobPayload::Notify {
+                                client_id: order.client_id,
+                                template: CHARGED_AFTER_OFF_TEMPLATE.into(),
+                                params: serde_json::json!({
+                                    "order_id": fulfilled.public_id,
+                                    "subscription_id": subscription.id,
+                                    "payment_id": charge.id,
+                                    "amount": charge.amount.as_money().map(format::money),
+                                    "expire_at": user.expire_at,
+                                }),
+                            },
+                            None,
+                        )
+                        .await?;
+                }
             }
         }
         tx.commit().await?;

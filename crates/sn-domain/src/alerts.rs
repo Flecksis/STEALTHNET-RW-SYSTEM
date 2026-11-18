@@ -39,7 +39,7 @@ impl AlertKind {
             AlertKind::Support => "Обращения в поддержку",
             AlertKind::Orders => "Заказы на ручной проверке",
             AlertKind::Stars => "Оплаты звёздами на разборе",
-            AlertKind::Refunds => "Возвраты, которые не прошли",
+            AlertKind::Refunds => "Возвраты: автоматические и незавершённые",
             AlertKind::Withdrawals => "Заявки на вывод",
         }
     }

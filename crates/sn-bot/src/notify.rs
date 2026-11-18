@@ -42,6 +42,8 @@ pub mod templates {
         sn_modules::catalog::referral::TEMPLATE_WITHDRAWAL_REJECTED;
     pub const REPEAT_CREDITED: &str = sn_services::inbox::REPEAT_CREDITED_TEMPLATE;
     pub const REPEAT_REVIEW: &str = sn_services::inbox::REPEAT_REVIEW_TEMPLATE;
+    pub const REFUNDED_BLOCKED: &str = sn_services::inbox::BLOCKED_REFUND_TEMPLATE;
+    pub const AUTORENEW_AFTER_OFF: &str = sn_services::autorenew::CHARGED_AFTER_OFF_TEMPLATE;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +177,26 @@ pub fn render(
         templates::AUTORENEW_DISABLED => (
             t("notify.autorenew_disabled", &[]),
             Some(("notify.btn.extend", "buy")),
+        ),
+        templates::AUTORENEW_AFTER_OFF => (
+            match (&amount, &date) {
+                (Some(amount), Some(date)) => t(
+                    "notify.autorenew_after_off",
+                    &[("amount", Html(amount)), ("date", Text(date))],
+                ),
+                _ => t("notify.autorenew_after_off_plain", &[]),
+            },
+            Some(("notify.btn.support", "sup")),
+        ),
+        templates::REFUNDED_BLOCKED => (
+            match &amount {
+                Some(amount) => t(
+                    "notify.payment_refunded_blocked",
+                    &[("amount", Html(amount))],
+                ),
+                None => t("notify.payment_refunded_blocked_plain", &[]),
+            },
+            None,
         ),
         templates::SUPPORT_REPLY => (
             t(
@@ -434,6 +456,18 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
             "Автопродление выключено",
             "Продлить",
             "/cabinet/pay",
+        ),
+        templates::AUTORENEW_AFTER_OFF => head(
+            LetterKind::Payments,
+            "Списание прошло до выключения автопродления",
+            "Написать в поддержку",
+            "/cabinet/help",
+        ),
+        templates::REFUNDED_BLOCKED => head(
+            LetterKind::Payments,
+            "Оплата возвращена",
+            "Открыть сайт",
+            "/",
         ),
         templates::SUPPORT_REPLY => LetterHead {
             kind: LetterKind::Support,

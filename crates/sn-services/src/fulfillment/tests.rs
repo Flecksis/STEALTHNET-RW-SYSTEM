@@ -955,7 +955,7 @@ async fn оплата_заблокированного_клиента_уходи
 }
 
 #[tokio::test]
-async fn блокировка_отменяет_открытые_счета_а_поздняя_оплата_ждёт_проверки() {
+async fn блокировка_отменяет_открытые_счета_а_поздняя_оплата_возвращается() {
     let Some(kit) = kit().await else { return };
     let client_id = client(&kit.services, 228).await;
     let tariff = standard(&kit.services).await;
@@ -987,9 +987,18 @@ async fn блокировка_отменяет_открытые_счета_а_п
     );
     let outcome = kit.services.fulfillment().run(opened.id).await.unwrap();
     assert!(
-        matches!(&outcome, FulfillmentOutcome::Review { reason } if reason.contains("заблокирован")),
+        matches!(&outcome, FulfillmentOutcome::Refunded { .. }),
         "{outcome:?}"
     );
+    assert_eq!(
+        order(&kit.services, opened.id).await.status,
+        OrderStatus::Refunded
+    );
+    let refunded = payment(&kit, payment_id).await;
+    assert_eq!(refunded.status, PaymentStatus::Refunded);
+    let sent = kit.pay.refunds.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].amount, refunded.amount);
     assert!(kit.remna.users().is_empty());
     kit.db.cleanup().await;
 }

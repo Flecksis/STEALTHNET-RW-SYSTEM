@@ -1,4 +1,4 @@
-use super::{PaymentInbox, STORED_TEXT_LIMIT, clip};
+use super::{PaymentInbox, REFUND_REQUESTED_AUDIT, STORED_TEXT_LIMIT, clip};
 use crate::error::{ServiceError, ServiceResult};
 use crate::subscriptions::{disable_remna_user, with_subscription_lock};
 use chrono::{DateTime, Duration, Utc};
@@ -92,6 +92,20 @@ pub(super) fn cut_target(current: DateTime<Utc>, days: u32, now: DateTime<Utc>) 
     }
 }
 
+fn bought_meanwhile(action: RefundSubscriptionAction, order: OrderId) -> ServiceError {
+    let kept = match action {
+        RefundSubscriptionAction::Cut => "срок подписки не укоротили",
+        _ => "подписку не отключили",
+    };
+    ServiceError::rejected(
+        ACTION_CONFLICT,
+        format!(
+            "После запроса возврата по подписке прошла новая оплата (заказ №{order}), \
+             поэтому {kept}. Решите вручную и закройте заявку"
+        ),
+    )
+}
+
 fn subject(order: &Order, request: &ProviderRefund) -> (&'static str, i64) {
     match order.subscription_id {
         Some(id) => (audit_entity::SUBSCRIPTION, id.0),
@@ -167,6 +181,17 @@ impl PaymentInbox<'_> {
             return Ok(());
         };
         let remna = self.services.remna()?;
+        if let Some(request) = request {
+            let newer = {
+                let mut conn = self.services.store().conn().await?;
+                conn.payments()
+                    .paid_after_refund(request.id, REFUND_REQUESTED_AUDIT)
+                    .await?
+            };
+            if let Some(newer) = newer {
+                return Err(bought_meanwhile(action, newer));
+            }
+        }
         let user = match action {
             RefundSubscriptionAction::Cut => {
                 let current = remna.get_user(link.user_id).await?;

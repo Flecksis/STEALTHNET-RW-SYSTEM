@@ -1,6 +1,7 @@
 use super::*;
 use crate::FixedClock;
 use crate::inbox::refund_action::{cut_target, retry_delay};
+use sn_domain::alerts::AlertKind;
 use sn_domain::order::Order;
 use sn_domain::subscription::Subscription;
 use sn_remnawave::UserStatus;
@@ -765,6 +766,186 @@ async fn обрезка_срока_снимает_дни_заказа_котор
             .timestamp(),
         before.timestamp(),
         "дни заказа, которые успели попасть в панель, снимаются"
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отключение_после_возврата_ждёт_админа_если_за_время_сбоя_оплачен_новый_срок() {
+    let kassa = Arc::new(Kassa::default());
+    let Some((kit, clock)) = clocked_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 7610).await;
+    let tariff = standard(&kit.services).await;
+    let bought = buy(&kit, client_id, &tariff, 90, None).await;
+    let alerts = kit.services.alerts();
+    alerts.collect().await.unwrap();
+    let request_id = request_refund(&kit, admin, &bought, RefundSubscriptionAction::Disable).await;
+    kit.remna.fail_on("disable_user", Fault::Unavailable);
+    confirm(&kit, &bought, "kr-1").await;
+    assert_eq!(
+        action(&kit, &bought).await.status,
+        RefundActionStatus::Pending
+    );
+    let renewal = buy(&kit, client_id, &tariff, 30, Some(&bought.subscription)).await;
+    assert_eq!(renewal.subscription.id, bought.subscription.id);
+    let extended = remna_user(&kit, &bought.subscription).await.expire_at;
+    advance(&kit, &clock, chrono::Duration::seconds(61));
+    let inbox = kit.services.inbox();
+    assert_eq!(
+        inbox.poll_refunds(10).await.unwrap(),
+        RefundPollReport {
+            actions_failed: 1,
+            ..RefundPollReport::default()
+        }
+    );
+    let user = remna_user(&kit, &bought.subscription).await;
+    assert_eq!(user.status, UserStatus::Active);
+    assert_eq!(user.expire_at, extended);
+    assert_eq!(kit.remna.calls_of("disable_user").len(), 1);
+    let failed = action(&kit, &bought).await;
+    assert_eq!(failed.status, RefundActionStatus::Failed);
+    let error = failed.error.unwrap();
+    assert!(
+        error.contains(&format!("заказ №{}", renewal.order.id)),
+        "{error}"
+    );
+    assert!(error.contains("подписку не отключили"), "{error}");
+    let review = inbox.refund_actions_review(50).await.unwrap();
+    assert_eq!(review.len(), 1, "{review:?}");
+    assert_eq!(review[0].request_id, request_id);
+    assert_eq!(review[0].error.as_deref(), Some(error.as_str()));
+    assert_eq!(
+        subscription_audit(&kit, &bought.subscription).await,
+        vec![REFUND_ACTION_FAILED.to_string()]
+    );
+    let got = alerts.collect().await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].kind, AlertKind::Refunds);
+    assert!(
+        got[0]
+            .html
+            .contains(&format!("Возврат №{request_id} не завершён")),
+        "{}",
+        got[0].html
+    );
+    assert!(
+        got[0]
+            .html
+            .contains("Причина: После запроса возврата по подписке прошла новая оплата"),
+        "{}",
+        got[0].html
+    );
+    advance(&kit, &clock, chrono::Duration::hours(3));
+    assert_eq!(
+        inbox.poll_refunds(10).await.unwrap(),
+        RefundPollReport::default()
+    );
+    inbox
+        .close_refund_action(
+            request_id,
+            admin,
+            "Клиент продлил подписку, оставили как есть",
+        )
+        .await
+        .unwrap();
+    assert_eq!(action(&kit, &bought).await.status, RefundActionStatus::Done);
+    assert_eq!(
+        remna_user(&kit, &bought.subscription).await.status,
+        UserStatus::Active
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn укорочение_после_возврата_ждёт_админа_пока_новый_срок_оплачен() {
+    let kassa = Arc::new(Kassa::default());
+    let Some((kit, _clock)) = clocked_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 7611).await;
+    let tariff = standard(&kit.services).await;
+    let bought = buy(&kit, client_id, &tariff, 90, None).await;
+    let request_id = request_refund(&kit, admin, &bought, RefundSubscriptionAction::Cut).await;
+    let renewal = buy(&kit, client_id, &tariff, 30, Some(&bought.subscription)).await;
+    let extended = remna_user(&kit, &bought.subscription).await.expire_at;
+    let updates = kit.remna.calls_of("update_user").len();
+    confirm(&kit, &bought, "kr-1").await;
+    let failed = action(&kit, &bought).await;
+    assert_eq!(failed.status, RefundActionStatus::Failed);
+    assert_eq!(failed.attempts, 1);
+    assert_eq!(failed.base_expire_at, None);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("срок подписки не укоротили")
+                && e.contains(&format!("заказ №{}", renewal.order.id))),
+        "{failed:?}"
+    );
+    assert_eq!(kit.remna.calls_of("update_user").len(), updates);
+    assert_eq!(
+        remna_user(&kit, &bought.subscription).await.expire_at,
+        extended
+    );
+    let inbox = kit.services.inbox();
+    assert_eq!(
+        inbox.retry_refund_action(request_id, admin).await.unwrap(),
+        RefundActionOutcome::Failed
+    );
+    assert_eq!(
+        remna_user(&kit, &bought.subscription).await.expire_at,
+        extended
+    );
+    *kassa.refund_completed.lock().unwrap() = true;
+    let returned = inbox
+        .refund(
+            renewal.payment.id,
+            &refund_command(
+                None,
+                RefundSubscriptionAction::Keep,
+                Some("Вернули и продление"),
+            ),
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(!returned.pending);
+    assert_eq!(
+        inbox.retry_refund_action(request_id, admin).await.unwrap(),
+        RefundActionOutcome::Done
+    );
+    assert_eq!(
+        remna_user(&kit, &bought.subscription)
+            .await
+            .expire_at
+            .timestamp(),
+        (extended - chrono::Duration::days(90)).timestamp()
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn покупка_до_запроса_возврата_не_мешает_отключению() {
+    let kassa = Arc::new(Kassa::default());
+    let Some((kit, _clock)) = clocked_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 7612).await;
+    let tariff = standard(&kit.services).await;
+    let first = buy(&kit, client_id, &tariff, 90, None).await;
+    let renewal = buy(&kit, client_id, &tariff, 30, Some(&first.subscription)).await;
+    assert_eq!(renewal.subscription.id, first.subscription.id);
+    request_refund(&kit, admin, &first, RefundSubscriptionAction::Disable).await;
+    confirm(&kit, &first, "kr-1").await;
+    assert_eq!(action(&kit, &first).await.status, RefundActionStatus::Done);
+    assert_eq!(
+        remna_user(&kit, &first.subscription).await.status,
+        UserStatus::Disabled
     );
     kit.db.cleanup().await;
 }

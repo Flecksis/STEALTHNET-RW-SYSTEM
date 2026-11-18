@@ -817,6 +817,30 @@ impl<'c> PaymentsRepo<'c> {
         plan.ok_or(StoreError::NotFound("заявка на возврат"))
     }
 
+    pub async fn paid_after_refund(
+        &mut self,
+        id: i64,
+        requested_action: &str,
+    ) -> StoreResult<Option<OrderId>> {
+        let found: Option<i64> = sqlx::query_scalar(
+            "WITH req AS (SELECT p.order_id, refunded.subscription_id, COALESCE(( \
+                 SELECT min(a.created_at) FROM audit_log a WHERE a.entity_kind = 'payment' \
+                 AND a.entity_id = r.payment_id AND a.action = $2 \
+                 AND a.details->>'request_id' = r.id::text), r.created_at) AS since \
+               FROM provider_refunds r JOIN payments p ON p.id = r.payment_id \
+               JOIN orders refunded ON refunded.id = p.order_id WHERE r.id = $1) \
+             SELECT o.id FROM req JOIN orders o ON o.subscription_id = req.subscription_id \
+             AND o.id <> req.order_id WHERE o.kind NOT IN ('topup', 'trial', 'admin_grant') \
+             AND o.status IN ('paid', 'review', 'fulfilled') AND o.paid_at > req.since \
+             ORDER BY o.paid_at, o.id LIMIT 1",
+        )
+        .bind(id)
+        .bind(requested_action)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(found.map(OrderId))
+    }
+
     pub async fn finish_refund_action(&mut self, id: i64) -> StoreResult<bool> {
         let done = sqlx::query(
             "UPDATE provider_refunds SET action_status = 'done', action_next_at = NULL, action_error = NULL \

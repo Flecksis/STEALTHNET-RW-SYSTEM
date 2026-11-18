@@ -25,6 +25,7 @@ use sn_store::testing::test_store;
 use std::sync::{Arc, Mutex};
 
 mod actions;
+mod blocked;
 mod gate;
 mod holds;
 mod polling;
@@ -37,6 +38,7 @@ const KASSA_SECRET: &str = "kassa-secret";
 struct Kassa {
     refund_completed: Mutex<bool>,
     refund_fails: Mutex<bool>,
+    refund_keys: Mutex<Vec<Uuid>>,
     refunds: Mutex<Vec<RefundRequest>>,
     status: Mutex<Option<WebhookOutcome>>,
     lookups: Mutex<Vec<String>>,
@@ -151,6 +153,7 @@ impl PaymentProvider for Kassa {
         _config: &ProviderConfig,
         request: &RefundRequest,
     ) -> PaymentResult<RefundOutcome> {
+        self.refund_keys.lock().unwrap().push(request.key);
         if *self.refund_fails.lock().unwrap() {
             return Err(PaymentError::Transport("касса не отвечает".into()));
         }

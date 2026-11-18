@@ -774,6 +774,74 @@ fn шаблоны_уведомлений_с_параметрами() {
     );
 }
 
+#[test]
+fn уведомления_о_возврате_заблокированному_и_о_продлении_после_выключения_автопродления() {
+    let utc = chrono::FixedOffset::east_opt(0).unwrap();
+    let content = sn_domain::bot_content::Content::default();
+    let refunded = notify::render(
+        &content,
+        notify::templates::REFUNDED_BLOCKED,
+        &serde_json::json!({"amount": "$6.99"}),
+        utc,
+    )
+    .unwrap();
+    assert_eq!(
+        refunded.text,
+        "Оплата $6.99 возвращена: аккаунт заблокирован, заказ не выдан."
+    );
+    assert_eq!(refunded.keyboard, crate::telegram::Keyboard::new());
+    assert_eq!(
+        notify::render(
+            &content,
+            notify::templates::REFUNDED_BLOCKED,
+            &serde_json::json!({}),
+            utc
+        )
+        .unwrap()
+        .text,
+        "Оплата возвращена: аккаунт заблокирован, заказ не выдан."
+    );
+    let renewed = notify::render(
+        &content,
+        notify::templates::AUTORENEW_AFTER_OFF,
+        &serde_json::json!({"amount": "$6.99", "expire_at": "2027-02-14T10:00:00Z"}),
+        utc,
+    )
+    .unwrap();
+    assert_eq!(
+        renewed.text,
+        "Списание $6.99 за продление ушло до того, как автопродление выключили, поэтому \
+         подписка продлена до 14\u{a0}февраля\u{a0}2027. Если продление не нужно, напишите в \
+         поддержку — вернём деньги."
+    );
+    assert_eq!(
+        renewed.keyboard,
+        crate::telegram::Keyboard::new().button("Поддержка", "sup")
+    );
+    assert!(
+        notify::render(
+            &content,
+            notify::templates::AUTORENEW_AFTER_OFF,
+            &serde_json::json!({"expire_at": "2027-02-14T10:00:00Z"}),
+            utc
+        )
+        .unwrap()
+        .text
+        .starts_with("Списание за продление ушло до того")
+    );
+    let letter = notify::letter_head(
+        notify::templates::AUTORENEW_AFTER_OFF,
+        &serde_json::json!({}),
+    )
+    .unwrap();
+    assert_eq!(letter.kind, notify::LetterKind::Payments);
+    assert_eq!(letter.path, "/cabinet/help");
+    let letter =
+        notify::letter_head(notify::templates::REFUNDED_BLOCKED, &serde_json::json!({})).unwrap();
+    assert_eq!(letter.kind, notify::LetterKind::Payments);
+    assert_eq!(letter.subject, "Оплата возвращена");
+}
+
 #[tokio::test]
 async fn бот_читает_апдейты_и_хранит_смещение() {
     let Some((db, services, server, _ctx)) = setup().await else {

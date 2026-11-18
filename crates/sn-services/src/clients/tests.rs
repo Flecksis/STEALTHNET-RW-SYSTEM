@@ -94,7 +94,7 @@ async fn inflight_charge(kit: &Kit, telegram_id: i64) -> (Subscription, Payment)
 }
 
 #[tokio::test]
-async fn блокировка_не_отменяет_автосписание_а_подтверждённая_оплата_ждёт_проверки() {
+async fn блокировка_не_отменяет_автосписание_а_подтверждённая_оплата_возвращается() {
     let Some(kit) = kit().await else { return };
     let (subscription, charge) = inflight_charge(&kit, 401).await;
     let client_id = subscription.client_id;
@@ -153,13 +153,20 @@ async fn блокировка_не_отменяет_автосписание_а_
         .await
         .unwrap();
     assert!(
-        matches!(&outcome, FulfillmentOutcome::Review { reason } if reason.contains("заблокирован")),
+        matches!(&outcome, FulfillmentOutcome::Refunded { .. }),
         "{outcome:?}"
     );
     assert_eq!(
         order(&kit.services, charge.order_id).await.status,
-        OrderStatus::Review
+        OrderStatus::Refunded
     );
+    assert_eq!(
+        payment(&kit, charge.id).await.status,
+        PaymentStatus::Refunded
+    );
+    let sent = kit.pay.refunds.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].amount, charge.amount);
     assert_eq!(
         autorenew.check_charge(charge.id).await.unwrap(),
         Some(ChargeCheck::Settled)

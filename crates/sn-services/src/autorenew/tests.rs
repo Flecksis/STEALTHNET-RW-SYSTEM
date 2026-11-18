@@ -1419,3 +1419,144 @@ async fn при_выключенном_балансе_тратится_оста�
     assert!(autorenew.has_saved_card(poor).await.unwrap());
     kit.db.cleanup().await;
 }
+
+fn notices(queued: &[JobPayload], name: &str) -> Vec<(ClientId, serde_json::Value)> {
+    queued
+        .iter()
+        .filter_map(|job| match job {
+            JobPayload::Notify {
+                client_id,
+                template,
+                params,
+            } if template == name => Some((*client_id, params.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn autorenew_enabled(kit: &Kit, subscription: &Subscription) -> bool {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.subscriptions()
+        .get(subscription.id)
+        .await
+        .unwrap()
+        .autorenew
+        .enabled
+}
+
+#[tokio::test]
+async fn списание_после_выключения_автопродления_продлевает_подписку_и_предупреждает_клиента() {
+    let Some(kit) = kit().await else { return };
+    *kit.pay.charge.lock().unwrap() = Some(ProviderStatus::Pending);
+    let (subscription, charge) = unknown_charge(&kit, 360).await;
+    let client_id = subscription.client_id;
+    let expire = subscription.mirror.expire_at.unwrap();
+    kit.services
+        .subscriptions()
+        .set_autorenew(
+            subscription.id,
+            false,
+            None,
+            crate::Actor::Client(client_id),
+        )
+        .await
+        .unwrap();
+    let txid = charge.provider_txid.clone().unwrap();
+    *kit.pay.status.lock().unwrap() = Some(WebhookOutcome {
+        event_key: format!("payment.succeeded:{txid}"),
+        payment: None,
+        provider_txid: Some(txid),
+        status: ProviderStatus::Paid,
+        amount: Some(charge.amount),
+        saved_method: None,
+        reply: WebhookReply::ok(),
+    });
+    assert_eq!(
+        kit.services
+            .autorenew()
+            .check_charge(charge.id)
+            .await
+            .unwrap(),
+        Some(ChargeCheck::Settled)
+    );
+    jobs(&kit.services).await;
+    let done = kit
+        .services
+        .fulfillment()
+        .run(charge.order_id)
+        .await
+        .unwrap();
+    assert!(
+        matches!(done, crate::fulfillment::FulfillmentOutcome::Done { .. }),
+        "{done:?}"
+    );
+    let renewed = remna_user(&kit, &subscription).await.expire_at;
+    assert_eq!(renewed, expire + Days::days(90));
+    assert!(!autorenew_enabled(&kit, &subscription).await);
+    let queued = jobs(&kit.services).await;
+    assert_eq!(notifications(&queued, "order.fulfilled"), 1);
+    let warned = notices(&queued, CHARGED_AFTER_OFF_TEMPLATE);
+    assert_eq!(warned.len(), 1, "{queued:?}");
+    let (to, params) = &warned[0];
+    assert_eq!(*to, client_id);
+    assert_eq!(params["amount"], "$6.99");
+    assert_eq!(params["expire_at"], serde_json::json!(renewed));
+    assert_eq!(
+        params["subscription_id"],
+        serde_json::json!(subscription.id)
+    );
+    assert_eq!(params["payment_id"], serde_json::json!(charge.id));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn продление_с_баланса_предупреждает_только_тех_кто_выключил_автопродление_до_выдачи() {
+    let Some(kit) = kit().await else { return };
+    let kept = client(&kit.services, 361).await;
+    let dropped = client(&kit.services, 362).await;
+    let mut subscriptions = Vec::new();
+    for client_id in [kept, dropped] {
+        subscriptions.push(
+            due_subscription(&kit, client_id, Days::hours(12), SubscriptionStatus::Active).await,
+        );
+    }
+    let report = kit
+        .services
+        .autorenew()
+        .run_due(kit.services.now())
+        .await
+        .unwrap();
+    assert_eq!(report.charged, 2);
+    kit.services
+        .subscriptions()
+        .set_autorenew(
+            subscriptions[1].id,
+            false,
+            None,
+            crate::Actor::Client(dropped),
+        )
+        .await
+        .unwrap();
+    jobs(&kit.services).await;
+    for subscription in &subscriptions {
+        let (order, payments) = renewals(&kit, subscription).await.remove(0);
+        assert_eq!(payments[0].provider.as_str(), providers::BALANCE);
+        let done = kit.services.fulfillment().run(order.id).await.unwrap();
+        assert!(
+            matches!(done, crate::fulfillment::FulfillmentOutcome::Done { .. }),
+            "{done:?}"
+        );
+    }
+    let queued = jobs(&kit.services).await;
+    assert_eq!(notifications(&queued, "order.fulfilled"), 2);
+    let warned = notices(&queued, CHARGED_AFTER_OFF_TEMPLATE);
+    assert_eq!(warned.len(), 1, "{queued:?}");
+    assert_eq!(warned[0].0, dropped);
+    assert_eq!(
+        warned[0].1["expire_at"],
+        serde_json::json!(remna_user(&kit, &subscriptions[1]).await.expire_at)
+    );
+    assert!(autorenew_enabled(&kit, &subscriptions[0]).await);
+    assert!(!autorenew_enabled(&kit, &subscriptions[1]).await);
+    kit.db.cleanup().await;
+}
