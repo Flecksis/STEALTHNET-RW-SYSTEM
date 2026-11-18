@@ -3,6 +3,8 @@ use crate::json::Json;
 use crate::provider::*;
 use crate::util;
 use async_trait::async_trait;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use sn_domain::money::{Amount, Currency, PayCurrency};
 use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
@@ -10,6 +12,62 @@ use uuid::Uuid;
 
 const API: &str = "https://gate.lava.top";
 const KEY_HEADER: &str = "x-api-key";
+const WEBHOOK_KEY_MAX: usize = 80;
+const SALE_PAGES: u32 = 5;
+const PAGE_SIZE: usize = 20;
+
+#[derive(Debug, Clone, Copy)]
+struct Route {
+    pay: PayMethod,
+    provider: Option<&'static str>,
+    method: Option<&'static str>,
+}
+
+const RUB_ROUTES: [Route; 2] = [
+    Route {
+        pay: PayMethod::new("card", "Карта", "Карты российских банков"),
+        provider: Some("SMART_GLOCAL"),
+        method: Some("CARD"),
+    },
+    Route {
+        pay: PayMethod::new("sbp", "СБП", "Через приложение банка"),
+        provider: Some("PAY2ME"),
+        method: Some("SBP"),
+    },
+];
+
+const USD_ROUTES: [Route; 2] = [
+    Route {
+        pay: PayMethod::new("card", "Карта", "Visa и Mastercard любых стран"),
+        provider: None,
+        method: None,
+    },
+    Route {
+        pay: PayMethod::new("paypal", "PayPal", "Со счёта PayPal"),
+        provider: Some("PAYPAL"),
+        method: None,
+    },
+];
+
+fn routes(currency: Currency) -> &'static [Route] {
+    match currency {
+        Currency::Rub => &RUB_ROUTES,
+        Currency::Usd => &USD_ROUTES,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sale {
+    id: String,
+    amount: Amount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Share {
+    Full,
+    Partial,
+    ByAmount,
+}
 
 pub struct Lava {
     http: reqwest::Client,
@@ -46,6 +104,207 @@ impl Lava {
             .header("X-Api-Key", config.require("api_key")?)
             .header(reqwest::header::ACCEPT, "application/json"))
     }
+
+    async fn get(
+        &self,
+        config: &ProviderConfig,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> PaymentResult<Json> {
+        let reply = util::send(
+            self.request(config, reqwest::Method::GET, path)?
+                .query(query),
+        )
+        .await?;
+        let parsed = reply.json()?;
+        if !reply.is_success() {
+            return Err(reply.failure(message(&parsed)));
+        }
+        Ok(parsed)
+    }
+
+    async fn invoice(&self, config: &ProviderConfig, id: &str) -> PaymentResult<Json> {
+        let id = util::safe_id(id)?;
+        let invoice = self
+            .get(config, &format!("/api/v1/invoices/{id}"), &[])
+            .await?;
+        if invoice
+            .get("id")
+            .and_then(Json::as_str)
+            .is_some_and(|got| !got.eq_ignore_ascii_case(id))
+        {
+            return Err(util::bad("Lava.top вернула другой счёт"));
+        }
+        Ok(invoice)
+    }
+
+    async fn checked_payment(
+        &self,
+        config: &ProviderConfig,
+        body: &Json,
+        event: &str,
+        contract: &str,
+    ) -> PaymentResult<WebhookOutcome> {
+        let invoice = self.invoice(config, contract).await?;
+        let (_, status) = invoice_status(&invoice)?;
+        if event == "payment.success" && status == ProviderStatus::Pending {
+            return Err(PaymentError::Transport(
+                "Lava.top ещё не отметила счёт оплаченным, ждём повторного уведомления".into(),
+            ));
+        }
+        let amount = match status {
+            ProviderStatus::Paid => Some(match invoice_total(&invoice) {
+                Some(total) => total_amount(total)?,
+                None => util::json_amount(body.get("amount"), body.get("currency"))?,
+            }),
+            _ => None,
+        };
+        Ok(WebhookOutcome {
+            event_key: format!("{event}:{contract}"),
+            payment: Some(PaymentRef::ProviderTxid(contract.to_string())),
+            provider_txid: Some(contract.to_string()),
+            status,
+            amount,
+            saved_method: None,
+            reply: WebhookReply::ok(),
+        })
+    }
+
+    async fn sales(
+        &self,
+        config: &ProviderConfig,
+        email: &str,
+        currency: Currency,
+        product: Option<&str>,
+    ) -> PaymentResult<Option<Vec<Sale>>> {
+        let mut found = Vec::new();
+        let mut seen = 0usize;
+        for page in 1..=SALE_PAGES {
+            let reply = self
+                .get(
+                    config,
+                    "/api/v2/invoices",
+                    &[
+                        ("buyerEmail", email.to_string()),
+                        ("currencies", currency.code().to_string()),
+                        ("invoiceStatuses", "COMPLETED".to_string()),
+                        ("page", page.to_string()),
+                    ],
+                )
+                .await?;
+            let items = reply
+                .get("items")
+                .and_then(Json::as_array)
+                .ok_or_else(|| util::bad("Lava.top не вернула список оплат"))?;
+            seen += items.len();
+            found.extend(
+                items
+                    .iter()
+                    .filter_map(|item| sale(item, email, currency, product)),
+            );
+            let complete = match reply
+                .get("total")
+                .and_then(Json::scalar_text)
+                .and_then(|t| t.parse::<usize>().ok())
+            {
+                Some(total) => seen >= total,
+                None => items.len() < PAGE_SIZE,
+            };
+            if complete || items.is_empty() {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn reversal(
+        &self,
+        config: &ProviderConfig,
+        body: &Json,
+        event: &str,
+    ) -> PaymentResult<WebhookOutcome> {
+        let event_id = body
+            .get("event_id")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let data = body.get("data");
+        let (prefix, id_field, share) = match event {
+            "refund.success" => (
+                "refund",
+                "refund_id",
+                match data
+                    .and_then(|d| d.get("refund_type"))
+                    .and_then(Json::as_str)
+                {
+                    Some("full") => Share::Full,
+                    Some("partial") => Share::Partial,
+                    _ => Share::ByAmount,
+                },
+            ),
+            "chargeback.initiated" => ("chargeback", "chargeback_id", Share::ByAmount),
+            _ => return Ok(ignored(format!("{event}:{event_id}"))),
+        };
+        let Some(data) = data else {
+            return Ok(ignored(format!("{event}:{event_id}")));
+        };
+        let id = data
+            .get(id_field)
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(event_id);
+        if id.is_empty() {
+            return Ok(ignored(format!("{event}:")));
+        }
+        let event_key = format!("{prefix}:{id}");
+        let amount = match util::json_amount(data.get("amount"), data.get("currency")) {
+            Ok(amount) if amount.minor > 0 => amount,
+            _ => return Ok(ignored(event_key)),
+        };
+        let (Some(currency), Some(email)) = (
+            amount.currency.as_currency(),
+            data.get("customer_email")
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|e| e.contains('@')),
+        ) else {
+            return Ok(ignored(event_key));
+        };
+        let product = data
+            .at(&["product", "product_name"])
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let sales = self
+            .sales(config, email, currency, product)
+            .await?
+            .unwrap_or_default();
+        let Some(sale) = pick(&sales, amount, share) else {
+            tracing::warn!(
+                event = %event_key,
+                found = sales.len(),
+                "возврат Lava.top не привязан к оплате: нет единственной подходящей оплаты"
+            );
+            return Ok(ignored(event_key));
+        };
+        let status = match share {
+            Share::Full => ProviderStatus::Refunded,
+            Share::ByAmount if sale.amount == amount => ProviderStatus::Refunded,
+            Share::Partial | Share::ByAmount => {
+                ProviderStatus::PartiallyRefunded { refunded: amount }
+            }
+        };
+        Ok(WebhookOutcome {
+            event_key,
+            payment: Some(PaymentRef::ProviderTxid(sale.id.clone())),
+            provider_txid: Some(sale.id.clone()),
+            status,
+            amount: Some(amount),
+            saved_method: None,
+            reply: WebhookReply::ok(),
+        })
+    }
 }
 
 fn message(body: &Json) -> Option<&str> {
@@ -54,12 +313,131 @@ fn message(body: &Json) -> Option<&str> {
         .and_then(Json::as_str)
 }
 
-fn invoice_amount(info: &Json) -> Option<PaymentResult<Amount>> {
-    let total = info.get("amountTotal").or_else(|| info.get("receipt"))?;
-    Some(util::json_amount(
-        total.get("amount"),
-        total.get("currency"),
-    ))
+fn invoice_total(info: &Json) -> Option<&Json> {
+    info.get("amountTotal").or_else(|| info.get("receipt"))
+}
+
+fn total_amount(total: &Json) -> PaymentResult<Amount> {
+    util::json_amount(total.get("amount"), total.get("currency"))
+}
+
+fn whole_units(total: &Json) -> bool {
+    total
+        .get("amount")
+        .and_then(Json::scalar_text)
+        .is_some_and(|raw| !raw.contains('.'))
+}
+
+fn same_price(charged: Amount, requested: Amount, whole: bool) -> bool {
+    let unit = 10_i64.pow(requested.currency.decimals());
+    charged == requested
+        || (whole
+            && charged.currency == requested.currency
+            && (charged.minor - requested.minor).abs() < unit)
+}
+
+fn invoice_status(invoice: &Json) -> PaymentResult<(&str, ProviderStatus)> {
+    let text = invoice
+        .get("status")
+        .and_then(Json::as_str)
+        .ok_or_else(|| util::bad("нет статуса счёта"))?;
+    let status = match text.to_ascii_uppercase().as_str() {
+        "COMPLETED" => ProviderStatus::Paid,
+        "FAILED" => ProviderStatus::Failed,
+        _ => ProviderStatus::Pending,
+    };
+    Ok((text, status))
+}
+
+fn basic_password(header: &str) -> Option<String> {
+    let (scheme, encoded) = header.trim().split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let text = String::from_utf8(STANDARD.decode(encoded.trim()).ok()?).ok()?;
+    text.split_once(':')
+        .map(|(_, password)| password.trim().to_string())
+}
+
+fn authorize(config: &ProviderConfig, request: &WebhookRequest) -> PaymentResult<()> {
+    let expected = config
+        .get("webhook_key")
+        .ok_or_else(|| PaymentError::NotConfigured("не задан ключ вебхука".into()))?;
+    let by_key = request
+        .header(KEY_HEADER)
+        .is_some_and(|key| util::secret_eq(expected, key.trim()));
+    let by_login = request
+        .header("authorization")
+        .and_then(basic_password)
+        .is_some_and(|password| util::secret_eq(expected, &password));
+    if by_key | by_login {
+        Ok(())
+    } else {
+        Err(PaymentError::BadSignature)
+    }
+}
+
+fn ignored(event_key: String) -> WebhookOutcome {
+    util::skipped(event_key, None, None, WebhookReply::ok())
+}
+
+fn offer_id(config: &ProviderConfig) -> Option<Uuid> {
+    config
+        .get("offer_id")
+        .and_then(|offer| Uuid::parse_str(offer).ok())
+}
+
+fn sale(item: &Json, email: &str, currency: Currency, product: Option<&str>) -> Option<Sale> {
+    if item
+        .get("status")
+        .and_then(Json::as_str)
+        .is_some_and(|s| !s.eq_ignore_ascii_case("COMPLETED"))
+    {
+        return None;
+    }
+    let buyer = item.at(&["buyer", "email"]).and_then(Json::as_str)?;
+    if buyer.trim().to_lowercase() != email.to_lowercase() {
+        return None;
+    }
+    if let (Some(wanted), Some(name)) = (
+        product,
+        item.at(&["product", "name"]).and_then(Json::as_str),
+    ) && wanted != name.trim()
+    {
+        return None;
+    }
+    let amount = total_amount(item.get("receipt")?).ok()?;
+    if amount.currency != PayCurrency::from(currency) || amount.minor <= 0 {
+        return None;
+    }
+    let id = item
+        .get("id")
+        .and_then(Json::as_str)
+        .filter(|id| util::safe_id(id).is_ok())?;
+    Some(Sale {
+        id: id.to_string(),
+        amount,
+    })
+}
+
+fn single<'a>(sales: &[&'a Sale]) -> Option<&'a Sale> {
+    match sales {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+fn pick(sales: &[Sale], amount: Amount, share: Share) -> Option<&Sale> {
+    let exact: Vec<&Sale> = sales.iter().filter(|s| s.amount == amount).collect();
+    let larger: Vec<&Sale> = sales
+        .iter()
+        .filter(|s| s.amount.minor > amount.minor)
+        .collect();
+    match share {
+        Share::Partial => single(&larger),
+        Share::Full | Share::ByAmount if exact.is_empty() => single(&larger),
+        Share::Full | Share::ByAmount => single(&exact),
+    }
 }
 
 #[async_trait]
@@ -86,35 +464,49 @@ impl PaymentProvider for Lava {
         }
     }
 
+    fn methods(&self, currency: Currency) -> Vec<PayMethod> {
+        routes(currency).iter().map(|route| route.pay).collect()
+    }
+
     fn settings_schema(&self) -> Vec<SettingField> {
         vec![
-            SettingField::secret("api_key", "API-ключ", "Lava.top → Интеграция → Public API"),
+            SettingField::secret(
+                "api_key",
+                "API-ключ",
+                "Кабинет Lava → Интеграции → API → Настроить API key",
+            ),
             SettingField::text(
                 "offer_id",
                 "ID оффера",
-                "Оффер продукта с признаком «Цена по запросу API»",
+                "Оффер продукта с включённой «Цена по запросу API»",
             ),
             SettingField::secret(
                 "webhook_key",
                 "Ключ вебхука",
-                "API-ключ, который Lava.top присылает в X-Api-Key; пусто — тот же API-ключ",
-            )
-            .optional(),
+                "Придумайте ключ до 80 латинских букв и цифр. В Lava: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
+            ),
         ]
     }
 
     fn is_configured(&self, config: &ProviderConfig) -> bool {
-        self.validate_settings(config).is_ok()
+        config.get("api_key").is_some() && offer_id(config).is_some()
     }
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
         util::require_fields(&self.settings_schema(), config)?;
-        match config.get("offer_id").map(Uuid::parse_str) {
-            Some(Ok(_)) => Ok(()),
-            _ => Err(PaymentError::NotConfigured(
+        if offer_id(config).is_none() {
+            return Err(PaymentError::NotConfigured(
                 "ID оффера Lava.top — это UUID из кабинета".into(),
-            )),
+            ));
         }
+        if config.get("webhook_key").is_some_and(|key| {
+            key.len() > WEBHOOK_KEY_MAX || !key.bytes().all(|b| b.is_ascii_graphic())
+        }) {
+            return Err(PaymentError::NotConfigured(
+                "ключ вебхука: до 80 латинских букв, цифр и знаков без пробелов, иначе Lava.top его не примет".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn enabled_by_default(&self) -> bool {
@@ -130,19 +522,37 @@ impl PaymentProvider for Lava {
         config: &ProviderConfig,
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
-        let currency = match request.amount.currency {
-            PayCurrency::Usd => "USD",
-            PayCurrency::Rub => "RUB",
+        let (currency, language) = match request.amount.currency {
+            PayCurrency::Usd => (Currency::Usd, "EN"),
+            PayCurrency::Rub => (Currency::Rub, "RU"),
             other => return Err(PaymentError::UnsupportedCurrency(other.code().into())),
+        };
+        let route = match request.method.as_deref() {
+            Some(code) => Some(
+                routes(currency)
+                    .iter()
+                    .find(|route| route.pay.code == code)
+                    .ok_or_else(|| {
+                        PaymentError::Rejected("этот способ оплаты недоступен".into())
+                    })?,
+            ),
+            None => None,
         };
         let offer = config.require("offer_id")?;
         let email = util::client_email(request).ok_or(PaymentError::EmailRequired)?;
         let mut body = Json::object([
             ("email", Json::from(email)),
             ("offerId", Json::from(offer)),
-            ("currency", Json::from(currency)),
+            ("currency", Json::from(currency.code())),
             ("amount", Json::number(request.amount.units())),
+            ("buyerLanguage", Json::from(language)),
         ]);
+        if let Some(provider) = route.and_then(|r| r.provider) {
+            body.push("paymentProvider", Json::from(provider));
+        }
+        if let Some(method) = route.and_then(|r| r.method) {
+            body.push("paymentMethod", Json::from(method));
+        }
         if let Some(url) = util::return_url(request).filter(|u| util::is_https(u) && u.len() <= 512)
         {
             body.push("successful_return_url", Json::from(url.clone()));
@@ -169,8 +579,9 @@ impl PaymentProvider for Lava {
             .and_then(Json::as_str)
             .filter(|u| util::is_https(u))
             .ok_or_else(|| util::bad("Lava.top не вернула ссылку на оплату"))?;
-        if let Some(Ok(charged)) = invoice_amount(&parsed)
-            && charged != request.amount
+        if let Some(total) = invoice_total(&parsed)
+            && let Ok(charged) = total_amount(total)
+            && !same_price(charged, request.amount, whole_units(total))
         {
             return Err(PaymentError::Rejected(format!(
                 "Lava.top выставила счёт на {charged}, а не на {}: включите у продукта «Цена по запросу API»",
@@ -193,61 +604,25 @@ impl PaymentProvider for Lava {
         config: &ProviderConfig,
         request: &WebhookRequest,
     ) -> PaymentResult<WebhookOutcome> {
-        let expected = config
-            .get("webhook_key")
-            .or_else(|| config.get("api_key"))
-            .ok_or_else(|| PaymentError::NotConfigured("не задан ключ вебхука".into()))?;
-        let received = request
-            .header(KEY_HEADER)
-            .ok_or(PaymentError::BadSignature)?;
-        if !util::secret_eq(expected, received.trim()) {
-            return Err(PaymentError::BadSignature);
-        }
+        authorize(config, request)?;
         let body = Json::parse(&request.body).ok_or_else(|| util::bad("тело не JSON"))?;
         if let Some(event) = body.get("event_type").and_then(Json::as_str) {
-            let id = body
-                .get("event_id")
-                .and_then(Json::as_str)
-                .unwrap_or_default();
-            return Ok(util::skipped(
-                format!("{event}:{id}"),
-                None,
-                None,
-                WebhookReply::ok(),
-            ));
+            return self.reversal(config, &body, event).await;
         }
-        let event = body
-            .get("eventType")
-            .and_then(Json::as_str)
-            .ok_or_else(|| util::bad("нет eventType"))?;
+        let Some(event) = body.get("eventType").and_then(Json::as_str) else {
+            return Ok(ignored("unknown".into()));
+        };
         let contract = body
             .get("contractId")
             .and_then(Json::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| util::bad("нет contractId"))?;
-        let event_key = format!("{event}:{contract}");
-        let status = match event {
-            "payment.success" => ProviderStatus::Paid,
-            "payment.failed" => ProviderStatus::Failed,
-            _ => {
-                return Ok(util::skipped(event_key, None, None, WebhookReply::ok()));
+            .map(str::trim)
+            .filter(|c| !c.is_empty());
+        match (event, contract) {
+            ("payment.success" | "payment.failed", Some(contract)) => {
+                self.checked_payment(config, &body, event, contract).await
             }
-        };
-        let amount = match status {
-            ProviderStatus::Paid => {
-                Some(util::json_amount(body.get("amount"), body.get("currency"))?)
-            }
-            _ => None,
-        };
-        Ok(WebhookOutcome {
-            event_key,
-            payment: Some(PaymentRef::ProviderTxid(contract.to_string())),
-            provider_txid: Some(contract.to_string()),
-            status,
-            amount,
-            saved_method: None,
-            reply: WebhookReply::ok(),
-        })
+            (_, contract) => Ok(ignored(format!("{event}:{}", contract.unwrap_or("-")))),
+        }
     }
 
     async fn fetch_status(
@@ -256,29 +631,14 @@ impl PaymentProvider for Lava {
         external_id: &str,
     ) -> PaymentResult<Option<WebhookOutcome>> {
         let id = util::safe_id(external_id)?;
-        let reply = util::send(self.request(
-            config,
-            reqwest::Method::GET,
-            &format!("/api/v1/invoices/{id}"),
-        )?)
-        .await?;
-        let parsed = reply.json()?;
-        if !reply.is_success() {
-            return Err(reply.failure(message(&parsed)));
-        }
-        let status_text = parsed
-            .get("status")
-            .and_then(Json::as_str)
-            .ok_or_else(|| util::bad("нет статуса счёта"))?;
-        let status = match status_text {
-            "COMPLETED" => ProviderStatus::Paid,
-            "FAILED" => ProviderStatus::Failed,
-            _ => ProviderStatus::Pending,
-        };
+        let invoice = self.invoice(config, id).await?;
+        let (status_text, status) = invoice_status(&invoice)?;
         let amount = match status {
-            ProviderStatus::Paid => {
-                Some(invoice_amount(&parsed).ok_or_else(|| util::bad("нет суммы счёта"))??)
-            }
+            ProviderStatus::Paid => Some(
+                invoice_total(&invoice)
+                    .ok_or_else(|| util::bad("нет суммы счёта"))
+                    .and_then(total_amount)?,
+            ),
             _ => None,
         };
         Ok(Some(WebhookOutcome {
@@ -297,27 +657,30 @@ impl PaymentProvider for Lava {
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use sn_domain::payment::{AmountCheck, check_paid_amount};
-    use wiremock::matchers::{body_json, body_partial_json, header, method, path};
+    use wiremock::matchers::{body_json, body_partial_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const OFFER: &str = "836b9fc5-7ae9-4a27-9642-592bc44072b7";
     const CONTRACT: &str = "7ea82675-4ded-4133-95a7-a6efbaf165cc";
+    const SECOND: &str = "c5a0cacc-3453-44b0-9532-aa492f1ba191";
+    const KEY: &str = "lava-webhook-key";
+    const EMAIL: &str = "client@example.com";
 
     fn settings() -> ProviderConfig {
         config(&[
             ("api_key", json!("lava-api-key")),
             ("offer_id", json!(OFFER)),
-            ("webhook_key", json!("lava-webhook-key")),
+            ("webhook_key", json!(KEY)),
         ])
     }
 
-    fn event(kind: &str, amount: serde_json::Value, currency: &str) -> Vec<u8> {
+    fn event(kind: &str, amount: Value, currency: &str) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "eventType": kind,
             "product": {"id": "p-1", "title": "STEALTHNET"},
-            "buyer": {"email": "client@example.com"},
+            "buyer": {"email": EMAIL},
             "contractId": CONTRACT,
             "amount": amount,
             "currency": currency,
@@ -327,110 +690,224 @@ mod tests {
         .unwrap()
     }
 
-    async fn parse(key: Option<&str>, body: Vec<u8>) -> PaymentResult<WebhookOutcome> {
-        let headers: Vec<(&str, &str)> = key.map(|k| vec![("X-Api-Key", k)]).unwrap_or_default();
-        Lava::new()
-            .parse_webhook(&settings(), &hook(&headers, body))
-            .await
-    }
-
-    #[tokio::test]
-    async fn ключ_вебхука_сверяется() {
-        let body = event("payment.success", json!(6.99), "USD");
-        let outcome = parse(Some("lava-webhook-key"), body.clone()).await.unwrap();
-        assert_eq!(outcome.status, ProviderStatus::Paid);
-        assert_eq!(outcome.amount, Some(usd(699)));
-        assert_eq!(
-            outcome.payment,
-            Some(PaymentRef::ProviderTxid(CONTRACT.into()))
-        );
-        assert_eq!(outcome.event_key, format!("payment.success:{CONTRACT}"));
-        assert_eq!(
-            parse(Some("lava-api-key"), body.clone()).await,
-            Err(PaymentError::BadSignature)
-        );
-        assert_eq!(parse(None, body).await, Err(PaymentError::BadSignature));
-    }
-
-    #[tokio::test]
-    async fn без_отдельного_ключа_вебхука_сверяется_api_ключ() {
-        let settings = config(&[
-            ("api_key", json!("lava-api-key")),
-            ("offer_id", json!(OFFER)),
-        ]);
-        let outcome = Lava::new()
-            .parse_webhook(
-                &settings,
-                &hook(
-                    &[("x-api-key", "lava-api-key")],
-                    event("payment.failed", json!(6.99), "USD"),
-                ),
-            )
-            .await
-            .unwrap();
-        assert_eq!(outcome.status, ProviderStatus::Failed);
-    }
-
-    #[tokio::test]
-    async fn события_lava() {
-        for kind in [
-            "subscription.recurring.payment.success",
-            "subscription.cancelled",
-        ] {
-            let outcome = parse(Some("lava-webhook-key"), event(kind, json!(6.99), "USD"))
-                .await
-                .unwrap();
-            assert_eq!(outcome.payment, None, "{kind}");
-            assert_eq!(outcome.status, ProviderStatus::Pending);
-        }
-        let refund = serde_json::to_vec(&json!({
-            "event_id": "e-1",
+    fn refund(kind: &str, id: &str, amount: Value, currency: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "event_id": format!("e-{id}"),
             "event_type": "refund.success",
-            "created_at": "2026-11-16T14:52:00Z",
-            "data": {"refund_id": "r-1", "refund_type": "full", "amount": 6.99, "currency": "USD"}
+            "created_at": "2026-11-17T09:38:27.33277Z",
+            "data": {
+                "refund_id": id,
+                "refund_type": kind,
+                "initiator": "creator",
+                "amount": amount,
+                "currency": currency,
+                "product": {
+                    "product_name": "STEALTHNET",
+                    "product_id": "d31384b8-e412-4be5-a2ec-297ae6666c8f",
+                    "product_type": "DIGITAL_PRODUCT",
+                    "tier_id": OFFER
+                },
+                "customer_email": "Client@Example.com",
+                "balance_impact": {"debited_amount": amount, "currency": currency},
+                "subscription_cancelled": false
+            }
         }))
-        .unwrap();
-        let outcome = parse(Some("lava-webhook-key"), refund).await.unwrap();
-        assert_eq!(outcome.payment, None);
-        assert_eq!(outcome.event_key, "refund.success:e-1");
+        .unwrap()
+    }
+
+    fn chargeback(amount: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "event_id": "e-cb",
+            "event_type": "chargeback.initiated",
+            "created_at": "2026-11-17T09:38:27.33277Z",
+            "data": {
+                "chargeback_id": "cb-1",
+                "dispute_date": "2026-11-17",
+                "reason_category": "fraud",
+                "amount": amount,
+                "currency": "USD",
+                "product": {"product_name": "STEALTHNET", "tier_id": OFFER},
+                "customer_email": "Client@Example.com",
+                "balance_impact": {"debited_amount": amount, "provider_fee": 0.5, "currency": "USD"},
+                "subscription_cancelled": false
+            }
+        }))
+        .unwrap()
+    }
+
+    fn sold(id: &str, email: &str, amount: Value, product: &str) -> Value {
+        json!({
+            "id": id,
+            "type": "INVOICE",
+            "datetime": "2026-11-10T10:00:00Z",
+            "status": "COMPLETED",
+            "receipt": {"amount": amount, "currency": "USD", "fee": 0.35},
+            "buyer": {"email": email, "cardMask": "**** **** **** 1234"},
+            "product": {"name": product, "offer": "Цена по запросу API"}
+        })
+    }
+
+    fn keyed(body: Vec<u8>) -> WebhookRequest {
+        hook(&[("X-Api-Key", KEY)], body)
+    }
+
+    async fn with_invoice(status: &str, receipt: Value) -> (MockServer, Lava) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/invoices/{CONTRACT}")))
+            .and(header("X-Api-Key", "lava-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": CONTRACT,
+                "type": "ONE_TIME",
+                "status": status,
+                "receipt": receipt
+            })))
+            .mount(&server)
+            .await;
+        let lava = Lava::with_api_base(server.uri());
+        (server, lava)
+    }
+
+    async fn with_sales(items: Vec<Value>) -> (MockServer, Lava) {
+        let server = MockServer::start().await;
+        let total = items.len();
+        Mock::given(method("GET"))
+            .and(path("/api/v2/invoices"))
+            .and(header("X-Api-Key", "lava-api-key"))
+            .and(query_param("buyerEmail", "Client@Example.com"))
+            .and(query_param("currencies", "USD"))
+            .and(query_param("invoiceStatuses", "COMPLETED"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": items,
+                "page": 1,
+                "size": 20,
+                "total": total
+            })))
+            .mount(&server)
+            .await;
+        let lava = Lava::with_api_base(server.uri());
+        (server, lava)
+    }
+
+    async fn created(answer: Value, request: &InvoiceRequest) -> (PaymentResult<Invoice>, Value) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/invoice"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(answer))
+            .mount(&server)
+            .await;
+        let result = Lava::with_api_base(server.uri())
+            .create_invoice(&settings(), request)
+            .await;
+        let sent = server.received_requests().await.unwrap();
+        let body = sent
+            .first()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .unwrap_or(Value::Null);
+        (result, body)
+    }
+
+    fn answer(amount: Value, currency: &str) -> Value {
+        json!({
+            "id": CONTRACT,
+            "status": "in-progress",
+            "amountTotal": {"currency": currency, "amount": amount},
+            "paymentUrl": "https://app.lava.top/payment/7ea82675"
+        })
+    }
+
+    fn with_method(amount: Amount, code: &str) -> InvoiceRequest {
+        InvoiceRequest {
+            method: Some(code.to_string()),
+            ..invoice(amount, Some(EMAIL))
+        }
+    }
+
+    #[test]
+    fn способы_оплаты_lava_по_валютам() {
+        let lava = Lava::new();
+        let list = |currency| {
+            lava.methods(currency)
+                .into_iter()
+                .map(|m| (m.code, m.title))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(list(Currency::Rub), [("card", "Карта"), ("sbp", "СБП")]);
+        assert_eq!(
+            list(Currency::Usd),
+            [("card", "Карта"), ("paypal", "PayPal")]
+        );
+        assert!(lava.method(Currency::Usd, "sbp").is_none());
+        assert!(lava.method(Currency::Rub, "paypal").is_none());
+        for currency in [Currency::Rub, Currency::Usd] {
+            for m in lava.methods(currency) {
+                assert!(m.code.len() <= 20, "{}", m.code);
+                assert!(
+                    m.code
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                    "{}",
+                    m.code
+                );
+                assert!(!m.hint.is_empty(), "{}", m.code);
+            }
+        }
     }
 
     #[tokio::test]
-    async fn недоплата_и_чужая_валюта_lava() {
-        let expected = usd(699);
-        let under = parse(
-            Some("lava-webhook-key"),
-            event("payment.success", json!(6.98), "USD"),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            check_paid_amount(expected, under.amount),
-            AmountCheck::Underpaid { .. }
-        ));
-        let rub = parse(
-            Some("lava-webhook-key"),
-            event("payment.success", json!(6.99), "RUB"),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            check_paid_amount(expected, rub.amount),
-            AmountCheck::CurrencyMismatch { .. }
-        ));
-        for (amount, currency) in [
-            (json!(6.999), "USD"),
-            (json!("abc"), "USD"),
-            (json!(6.99), "EUR"),
+    async fn выбранный_способ_lava_уходит_в_счёт() {
+        for (amount, code, provider, kind, language) in [
+            (
+                rub(49_900),
+                "card",
+                Some("SMART_GLOCAL"),
+                Some("CARD"),
+                "RU",
+            ),
+            (rub(49_900), "sbp", Some("PAY2ME"), Some("SBP"), "RU"),
+            (usd(699), "card", None, None, "EN"),
+            (usd(699), "paypal", Some("PAYPAL"), None, "EN"),
         ] {
-            assert!(matches!(
-                parse(
-                    Some("lava-webhook-key"),
-                    event("payment.success", amount, currency)
-                )
-                .await,
-                Err(PaymentError::BadPayload(_))
-            ));
+            let currency = amount.currency.code();
+            let (result, sent) = created(
+                answer(json!(amount.units()), currency),
+                &with_method(amount, code),
+            )
+            .await;
+            assert!(result.is_ok(), "{code} {currency}: {result:?}");
+            assert_eq!(sent["currency"], currency, "{code}");
+            assert_eq!(sent["buyerLanguage"], language, "{code}");
+            assert_eq!(
+                sent.get("paymentProvider").and_then(Value::as_str),
+                provider,
+                "{code} {currency}"
+            );
+            assert_eq!(
+                sent.get("paymentMethod").and_then(Value::as_str),
+                kind,
+                "{code} {currency}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn чужой_способ_lava_отклоняется_без_запроса() {
+        for (amount, code) in [
+            (usd(699), "sbp"),
+            (rub(49_900), "paypal"),
+            (rub(49_900), "crypto"),
+        ] {
+            let (result, sent) =
+                created(answer(json!(6.99), "USD"), &with_method(amount, code)).await;
+            assert_eq!(
+                result,
+                Err(PaymentError::Rejected(
+                    "этот способ оплаты недоступен".into()
+                )),
+                "{code}"
+            );
+            assert_eq!(sent, Value::Null, "{code}");
         }
     }
 
@@ -441,26 +918,22 @@ mod tests {
             .and(path("/api/v3/invoice"))
             .and(header("X-Api-Key", "lava-api-key"))
             .and(body_json(json!({
-                "email": "client@example.com",
+                "email": EMAIL,
                 "offerId": OFFER,
                 "currency": "USD",
                 "amount": 6.99,
+                "buyerLanguage": "EN",
                 "successful_return_url": "https://panel.example.com/cabinet/payment-wait",
                 "failure_return_url": "https://panel.example.com/cabinet/payment-wait",
                 "cancel_return_url": "https://panel.example.com/cabinet/payment-wait"
             })))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-                "id": CONTRACT,
-                "status": "in-progress",
-                "amountTotal": {"currency": "USD", "amount": 6.99},
-                "paymentUrl": "https://app.lava.top/payment/7ea82675"
-            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(answer(json!(6.99), "USD")))
             .expect(1)
             .mount(&server)
             .await;
         let lava = Lava::with_api_base(server.uri());
         let created = lava
-            .create_invoice(&settings(), &invoice(usd(699), Some("client@example.com")))
+            .create_invoice(&settings(), &invoice(usd(699), Some(EMAIL)))
             .await
             .unwrap();
         assert_eq!(created.external_id.as_deref(), Some(CONTRACT));
@@ -483,14 +956,9 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/v3/invoice"))
             .and(body_partial_json(
-                json!({"currency": "RUB", "offerId": OFFER}),
+                json!({"currency": "RUB", "offerId": OFFER, "buyerLanguage": "RU"}),
             ))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-                "id": CONTRACT,
-                "status": "in-progress",
-                "amountTotal": {"currency": "RUB", "amount": 499},
-                "paymentUrl": "https://app.lava.top/payment/7ea82675"
-            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(answer(json!(499), "RUB")))
             .expect(1)
             .mount(&server)
             .await;
@@ -501,15 +969,55 @@ mod tests {
             .unwrap();
         assert_eq!(created.external_id.as_deref(), Some(CONTRACT));
         let sent = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
         assert!(
             String::from_utf8_lossy(&sent[0].body).contains("\"amount\":499"),
-            "{}",
-            String::from_utf8_lossy(&sent[0].body)
+            "{body}"
         );
+        assert!(body.get("paymentProvider").is_none(), "{body}");
+        assert!(body.get("paymentMethod").is_none(), "{body}");
         assert!(lava.currencies().contains(&Currency::Rub));
         assert_eq!(
             lava.client_label(Currency::Rub).hint,
             "Карты российских банков"
+        );
+    }
+
+    #[tokio::test]
+    async fn сумма_счёта_lava_числом_строкой_и_целым() {
+        for (amount, accepted) in [
+            (json!(6.99), true),
+            (json!("6.99"), true),
+            (json!("6.990"), true),
+            (json!(7), true),
+            (json!(6), true),
+            (json!("7"), true),
+            (json!(10), false),
+            (json!(5), false),
+            (json!(7.5), false),
+            (json!("6.98"), false),
+        ] {
+            let (result, _) = created(
+                answer(amount.clone(), "USD"),
+                &invoice(usd(699), Some(EMAIL)),
+            )
+            .await;
+            assert_eq!(result.is_ok(), accepted, "{amount}: {result:?}");
+            if !accepted {
+                assert!(matches!(result, Err(PaymentError::Rejected(_))), "{amount}");
+            }
+        }
+        let (rubles, _) = created(
+            answer(json!(499), "RUB"),
+            &invoice(rub(49_950), Some(EMAIL)),
+        )
+        .await;
+        assert!(rubles.is_ok(), "{rubles:?}");
+        let (dollars, _) =
+            created(answer(json!(6.99), "RUB"), &invoice(usd(699), Some(EMAIL))).await;
+        assert!(
+            matches!(dollars, Err(PaymentError::Rejected(_))),
+            "{dollars:?}"
         );
     }
 
@@ -526,42 +1034,478 @@ mod tests {
             .mount(&server)
             .await;
         let result = Lava::with_api_base(server.uri())
-            .create_invoice(&settings(), &invoice(usd(699), Some("client@example.com")))
+            .create_invoice(&settings(), &invoice(usd(699), Some(EMAIL)))
             .await;
         assert!(matches!(result, Err(PaymentError::Rejected(_))));
     }
 
     #[tokio::test]
-    async fn статус_счёта_lava() {
+    async fn ключ_вебхука_сверяется() {
+        let (_server, lava) =
+            with_invoice("COMPLETED", json!({"amount": 6.99, "currency": "USD"})).await;
+        let body = event("payment.success", json!(6.99), "USD");
+        let outcome = lava
+            .parse_webhook(&settings(), &keyed(body.clone()))
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Paid);
+        assert_eq!(outcome.amount, Some(usd(699)));
+        assert_eq!(
+            outcome.payment,
+            Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+        );
+        assert_eq!(outcome.event_key, format!("payment.success:{CONTRACT}"));
+        for headers in [
+            vec![("X-Api-Key", "lava-api-key")],
+            vec![("X-Api-Key", "lava-webhook-ke")],
+            vec![],
+        ] {
+            assert_eq!(
+                lava.parse_webhook(&settings(), &hook(&headers, body.clone()))
+                    .await,
+                Err(PaymentError::BadSignature),
+                "{headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn вебхук_lava_по_логину_и_паролю() {
+        let server = MockServer::start().await;
+        let lava = Lava::with_api_base(server.uri());
+        let body = event("subscription.cancelled", json!(6.99), "USD");
+        let basic = |pair: &str| format!("Basic {}", STANDARD.encode(pair));
+        let signed = |value: &str| hook(&[("Authorization", value)], body.clone());
+        for pair in [
+            "lava:lava-webhook-key",
+            ":lava-webhook-key",
+            "shop:lava-webhook-key",
+        ] {
+            let outcome = lava
+                .parse_webhook(&settings(), &signed(&basic(pair)))
+                .await
+                .unwrap();
+            assert_eq!(outcome.payment, None, "{pair}");
+        }
+        for value in [
+            basic("lava:wrong"),
+            basic("lava-webhook-key:"),
+            basic("lava-webhook-key"),
+            format!("Bearer {KEY}"),
+            "Basic не-base64".to_string(),
+        ] {
+            assert_eq!(
+                lava.parse_webhook(&settings(), &signed(&value)).await,
+                Err(PaymentError::BadSignature),
+                "{value}"
+            );
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn без_ключа_вебхука_api_ключ_не_подходит() {
+        let settings = config(&[
+            ("api_key", json!("lava-api-key")),
+            ("offer_id", json!(OFFER)),
+        ]);
+        let result = Lava::new()
+            .parse_webhook(
+                &settings,
+                &hook(
+                    &[("x-api-key", "lava-api-key")],
+                    event("payment.failed", json!(6.99), "USD"),
+                ),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(PaymentError::NotConfigured(_))),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn незнакомые_события_lava_получают_200() {
+        let server = MockServer::start().await;
+        let lava = Lava::with_api_base(server.uri());
+        let mut bodies = vec![
+            event("subscription.recurring.payment.success", json!(6.99), "USD"),
+            event("subscription.cancelled", json!(6.99), "USD"),
+            serde_json::to_vec(&json!({"eventType": "payment.success", "amount": 6.99})).unwrap(),
+            serde_json::to_vec(&json!({"eventType": "payout.created"})).unwrap(),
+            serde_json::to_vec(&json!({"hello": "world"})).unwrap(),
+            serde_json::to_vec(&json!([1, 2, 3])).unwrap(),
+            serde_json::to_vec(
+                &json!({"event_id": "e-9", "event_type": "payout.done", "data": {}}),
+            )
+            .unwrap(),
+            serde_json::to_vec(&json!({"event_id": "e-8", "event_type": "refund.success"}))
+                .unwrap(),
+        ];
+        bodies.push(refund("full", "r-eur", json!(6.99), "EUR"));
+        bodies.push(refund("full", "r-zero", json!(0), "USD"));
+        let mut no_email: Value =
+            serde_json::from_slice(&refund("full", "r-x", json!(6.99), "USD")).unwrap();
+        no_email["data"]["customer_email"] = Value::Null;
+        bodies.push(serde_json::to_vec(&no_email).unwrap());
+        for body in bodies {
+            let outcome = lava
+                .parse_webhook(&settings(), &keyed(body.clone()))
+                .await
+                .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&body)));
+            assert_eq!(outcome.payment, None, "{}", String::from_utf8_lossy(&body));
+            assert_eq!(outcome.status, ProviderStatus::Pending);
+            assert_eq!(outcome.reply.status(), 200);
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(matches!(
+            lava.parse_webhook(&settings(), &keyed(b"not json".to_vec()))
+                .await,
+            Err(PaymentError::BadPayload(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn оплата_lava_перепроверяется_через_api() {
+        let (_server, lava) =
+            with_invoice("IN_PROGRESS", json!({"amount": 6.99, "currency": "USD"})).await;
+        let early = lava
+            .parse_webhook(
+                &settings(),
+                &keyed(event("payment.success", json!(6.99), "USD")),
+            )
+            .await;
+        assert!(
+            matches!(&early, Err(e @ PaymentError::Transport(_)) if e.is_retryable()),
+            "{early:?}"
+        );
+        let waiting = lava
+            .parse_webhook(
+                &settings(),
+                &keyed(event("payment.failed", json!(6.99), "USD")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(waiting.status, ProviderStatus::Pending);
+        let (_server, lava) =
+            with_invoice("FAILED", json!({"amount": 6.99, "currency": "USD"})).await;
+        for kind in ["payment.success", "payment.failed"] {
+            let outcome = lava
+                .parse_webhook(&settings(), &keyed(event(kind, json!(6.99), "USD")))
+                .await
+                .unwrap();
+            assert_eq!(outcome.status, ProviderStatus::Failed, "{kind}");
+            assert_eq!(outcome.amount, None);
+            assert_eq!(
+                outcome.payment,
+                Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+            );
+        }
+        let (_server, lava) =
+            with_invoice("COMPLETED", json!({"amount": 6.99, "currency": "USD"})).await;
+        let late = lava
+            .parse_webhook(
+                &settings(),
+                &keyed(event("payment.failed", json!(6.99), "USD")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(late.status, ProviderStatus::Paid);
+        assert_eq!(late.amount, Some(usd(699)));
+    }
+
+    #[tokio::test]
+    async fn чужой_счёт_в_ответе_api_lava_не_засчитывается() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(format!("/api/v1/invoices/{CONTRACT}")))
-            .and(header("X-Api-Key", "lava-api-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": CONTRACT,
-                "type": "ONE_TIME",
+                "id": SECOND,
                 "status": "COMPLETED",
-                "receipt": {"amount": 6.99, "currency": "USD", "fee": 0.35}
+                "receipt": {"amount": 6.99, "currency": "USD"}
             })))
             .mount(&server)
             .await;
+        let result = Lava::with_api_base(server.uri())
+            .parse_webhook(
+                &settings(),
+                &keyed(event("payment.success", json!(6.99), "USD")),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(PaymentError::BadPayload(_))),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn недоплата_и_чужая_валюта_lava() {
+        let expected = usd(699);
+        let paid = |receipt: Value| async move {
+            let (_server, lava) = with_invoice("COMPLETED", receipt).await;
+            lava.parse_webhook(
+                &settings(),
+                &keyed(event("payment.success", json!(6.99), "USD")),
+            )
+            .await
+        };
+        let under = paid(json!({"amount": 6.98, "currency": "USD"}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            check_paid_amount(expected, under.amount),
+            AmountCheck::Underpaid { .. }
+        ));
+        let rub = paid(json!({"amount": 6.99, "currency": "RUB"}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            check_paid_amount(expected, rub.amount),
+            AmountCheck::CurrencyMismatch { .. }
+        ));
+        for receipt in [
+            json!({"amount": 6.999, "currency": "USD"}),
+            json!({"amount": "abc", "currency": "USD"}),
+            json!({"amount": 6.99, "currency": "EUR"}),
+        ] {
+            assert!(
+                matches!(
+                    paid(receipt.clone()).await,
+                    Err(PaymentError::BadPayload(_))
+                ),
+                "{receipt}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn полный_возврат_lava_находит_оплату_по_почте_и_сумме() {
+        let (_server, lava) = with_sales(vec![
+            sold(CONTRACT, "client@example.com", json!(6.99), "STEALTHNET"),
+            sold(
+                SECOND,
+                "other.client@example.com",
+                json!(6.99),
+                "STEALTHNET",
+            ),
+            sold(
+                "0d8a7c44-1b9e-4c0f-9a51-3e2f6d7b8c90",
+                EMAIL,
+                json!(6.99),
+                "Курс",
+            ),
+            sold(
+                "6f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b",
+                EMAIL,
+                json!(2.99),
+                "STEALTHNET",
+            ),
+        ])
+        .await;
+        let outcome = lava
+            .parse_webhook(
+                &settings(),
+                &keyed(refund("full", "r-1", json!(6.99), "USD")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Refunded);
+        assert_eq!(
+            outcome.payment,
+            Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+        );
+        assert_eq!(outcome.provider_txid.as_deref(), Some(CONTRACT));
+        assert_eq!(outcome.amount, Some(usd(699)));
+        assert_eq!(outcome.event_key, "refund:r-1");
+    }
+
+    #[tokio::test]
+    async fn частичный_возврат_lava() {
+        let (_server, lava) = with_sales(vec![
+            sold(CONTRACT, EMAIL, json!(6.99), "STEALTHNET"),
+            sold(SECOND, EMAIL, json!(1.99), "STEALTHNET"),
+        ])
+        .await;
+        let outcome = lava
+            .parse_webhook(
+                &settings(),
+                &keyed(refund("partial", "r-2", json!("2.50"), "USD")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.status,
+            ProviderStatus::PartiallyRefunded { refunded: usd(250) }
+        );
+        assert_eq!(
+            outcome.payment,
+            Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+        );
+        assert_eq!(outcome.event_key, "refund:r-2");
+    }
+
+    #[tokio::test]
+    async fn возврат_lava_без_однозначной_оплаты_пропускается() {
+        for (items, body) in [
+            (
+                vec![
+                    sold(CONTRACT, EMAIL, json!(6.99), "STEALTHNET"),
+                    sold(SECOND, EMAIL, json!(6.99), "STEALTHNET"),
+                ],
+                refund("full", "r-3", json!(6.99), "USD"),
+            ),
+            (
+                vec![
+                    sold(CONTRACT, EMAIL, json!(6.99), "STEALTHNET"),
+                    sold(SECOND, EMAIL, json!(9.99), "STEALTHNET"),
+                ],
+                refund("partial", "r-4", json!(1), "USD"),
+            ),
+            (vec![], refund("full", "r-5", json!(6.99), "USD")),
+            (
+                vec![sold(CONTRACT, EMAIL, json!(1.99), "STEALTHNET")],
+                refund("full", "r-6", json!(6.99), "USD"),
+            ),
+        ] {
+            let (_server, lava) = with_sales(items).await;
+            let outcome = lava.parse_webhook(&settings(), &keyed(body)).await.unwrap();
+            assert_eq!(outcome.payment, None, "{}", outcome.event_key);
+            assert_eq!(outcome.status, ProviderStatus::Pending);
+        }
+    }
+
+    #[tokio::test]
+    async fn чарджбэк_lava_считается_возвратом() {
+        let (_server, lava) =
+            with_sales(vec![sold(CONTRACT, EMAIL, json!(6.99), "STEALTHNET")]).await;
+        let full = lava
+            .parse_webhook(&settings(), &keyed(chargeback(json!(6.99))))
+            .await
+            .unwrap();
+        assert_eq!(full.status, ProviderStatus::Refunded);
+        assert_eq!(full.event_key, "chargeback:cb-1");
+        assert_eq!(
+            full.payment,
+            Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+        );
+        let rest = lava
+            .parse_webhook(&settings(), &keyed(chargeback(json!(4.49))))
+            .await
+            .unwrap();
+        assert_eq!(
+            rest.status,
+            ProviderStatus::PartiallyRefunded { refunded: usd(449) }
+        );
+        let mut untyped: Value =
+            serde_json::from_slice(&refund("full", "r-7", json!(6.99), "USD")).unwrap();
+        untyped["data"]["refund_type"] = Value::Null;
+        let outcome = lava
+            .parse_webhook(&settings(), &keyed(serde_json::to_vec(&untyped).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Refunded);
+    }
+
+    #[tokio::test]
+    async fn оплаты_lava_на_нескольких_страницах() {
+        let server = MockServer::start().await;
+        let page = |n: &str, items: Vec<Value>| {
+            Mock::given(method("GET"))
+                .and(path("/api/v2/invoices"))
+                .and(query_param("page", n))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "items": items, "page": 1, "size": 1, "total": 2
+                })))
+        };
+        page(
+            "1",
+            vec![sold(
+                SECOND,
+                "a.client@example.com",
+                json!(6.99),
+                "STEALTHNET",
+            )],
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+        page("2", vec![sold(CONTRACT, EMAIL, json!(6.99), "STEALTHNET")])
+            .expect(1)
+            .mount(&server)
+            .await;
         let outcome = Lava::with_api_base(server.uri())
+            .parse_webhook(
+                &settings(),
+                &keyed(refund("full", "r-8", json!(6.99), "USD")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.payment,
+            Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn статус_счёта_lava() {
+        let (_server, lava) = with_invoice(
+            "COMPLETED",
+            json!({"amount": 6.99, "currency": "USD", "fee": 0.35}),
+        )
+        .await;
+        let outcome = lava
             .fetch_status(&settings(), CONTRACT)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(outcome.status, ProviderStatus::Paid);
         assert_eq!(outcome.amount, Some(usd(699)));
+        assert_eq!(outcome.event_key, format!("invoice.COMPLETED:{CONTRACT}"));
+        assert!(matches!(
+            lava.fetch_status(&settings(), "../x").await,
+            Err(PaymentError::BadPayload(_))
+        ));
     }
 
     #[test]
     fn настройки_lava() {
         let lava = Lava::new();
         assert!(lava.is_configured(&settings()));
+        assert!(lava.validate_settings(&settings()).is_ok());
+        let old = config(&[("api_key", json!("k")), ("offer_id", json!(OFFER))]);
+        assert!(
+            lava.is_configured(&old),
+            "старые настройки без ключа вебхука продолжают выставлять счета"
+        );
+        assert!(lava.validate_settings(&old).is_err());
         assert!(!lava.is_configured(&config(&[("api_key", json!("k"))])));
         assert!(!lava.is_configured(&config(&[
             ("api_key", json!("k")),
             ("offer_id", json!("offer-1"))
         ])));
+        for key in [
+            "k".repeat(81),
+            "ключ-вебхука".to_string(),
+            "two words".to_string(),
+        ] {
+            let mut bad = settings();
+            bad.set("webhook_key", json!(key));
+            assert!(lava.validate_settings(&bad).is_err(), "{key}");
+        }
+        let mut longest = settings();
+        longest.set("webhook_key", json!("k".repeat(80)));
+        assert!(lava.validate_settings(&longest).is_ok());
+        let schema = lava.settings_schema();
+        let field = schema.iter().find(|f| f.key == "webhook_key").unwrap();
+        assert!(field.required && field.is_secret());
+        for needle in [
+            "Добавить Webhook",
+            "Успешный возврат",
+            "чарджбэк",
+            "Basic",
+            "80",
+        ] {
+            assert!(field.hint.contains(needle), "{needle}");
+        }
     }
 }
