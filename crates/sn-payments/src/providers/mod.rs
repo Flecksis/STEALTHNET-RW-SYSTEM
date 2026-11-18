@@ -6,6 +6,7 @@ mod heleket;
 mod lava;
 mod overpay;
 mod platega;
+mod rollypay;
 mod stars;
 mod yookassa;
 mod yoomoney;
@@ -18,6 +19,7 @@ pub use heleket::{Heleket, signature as heleket_signature};
 pub use lava::Lava;
 pub use overpay::{Overpay, hook_token as overpay_hook_token};
 pub use platega::Platega;
+pub use rollypay::{RollyPay, signature as rollypay_signature};
 pub use stars::{
     STARS_TOKEN_FIELD, StarDirection, StarTransaction, StarsPayment, StarsPaymentEvent,
     StarsPreCheckout, TelegramStars,
@@ -39,6 +41,7 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(YooMoney),
         Arc::new(CloudPayments::new()),
         Arc::new(Overpay::new()),
+        Arc::new(RollyPay::new()),
         Arc::new(TelegramStars::new()),
         Arc::new(Balance),
     ]
@@ -84,6 +87,10 @@ mod tests {
                 ("login", json!("l")),
                 ("password", json!("p")),
                 ("certificate", json!(overpay::tests::MERCHANT)),
+            ]),
+            providers::ROLLYPAY => config(&[
+                ("api_key", json!("rpk_live_abc123def456")),
+                ("signing_secret", json!("s")),
             ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
             _ => config(&[]),
@@ -131,6 +138,7 @@ mod tests {
                     providers::OVERPAY,
                     providers::CRYPTOPAY,
                     providers::LAVA,
+                    providers::ROLLYPAY,
                     providers::BALANCE,
                 ],
             ),
@@ -151,6 +159,9 @@ mod tests {
             assert_eq!(ids, expected, "{currency}");
             assert!(registry.is_available(providers::OVERPAY, Currency::Rub));
             assert!(!registry.is_available(providers::OVERPAY, Currency::Usd));
+            assert!(registry.is_available(providers::ROLLYPAY, Currency::Rub));
+            assert!(!registry.is_available(providers::ROLLYPAY, Currency::Usd));
+            assert!(registry.accepts_webhooks(providers::ROLLYPAY));
         }
     }
 
@@ -171,6 +182,7 @@ mod tests {
             providers::YOOMONEY,
             providers::CLOUDPAYMENTS,
             providers::OVERPAY,
+            providers::ROLLYPAY,
             providers::STARS,
             providers::BALANCE,
         ] {

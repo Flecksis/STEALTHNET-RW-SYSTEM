@@ -47,6 +47,7 @@ mod payment_journal;
 mod photos;
 mod provider_check;
 mod robots;
+mod rollypay;
 mod support_mode;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";

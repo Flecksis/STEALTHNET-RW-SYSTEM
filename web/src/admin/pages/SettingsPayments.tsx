@@ -193,6 +193,7 @@ const ACCEPTS: Record<string, string> = {
   yoomoney: 'Карта или кошелёк ЮMoney',
   cloudpayments: 'Карты и СБП',
   overpay: 'Карты и СБП',
+  rollypay: 'СБП, карты, криптовалюта',
 };
 
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'] };
@@ -204,6 +205,8 @@ const OWN_HOOKS: Record<string, string> = {
 const HOOK_HINTS: Record<string, string> = {
   cloudpayments:
     'В кабинете CloudPayments в настройках сайта включите уведомления Check, Pay, Fail и Refund, каждое на свой адрес из списка выше. Метод GET или POST, кодировка UTF-8, формат CloudPayments.',
+  rollypay:
+    'У RollyPay это поле callback_url в настройках кассы. Если доступа к кабинету нет, адрес можно передать поддержке RollyPay. Возвраты делаются в кабинете RollyPay, панель отметит их по уведомлению.',
 };
 
 function failText(err: unknown, fallback: string): string {

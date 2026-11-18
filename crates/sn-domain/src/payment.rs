@@ -20,6 +20,7 @@ pub mod providers {
     pub const CLOUDPAYMENTS: &str = "cloudpayments";
     pub const OVERPAY: &str = "overpay";
     pub const GRAM: &str = "gram";
+    pub const ROLLYPAY: &str = "rollypay";
 }
 
 const fn shown() -> bool {
