@@ -1115,21 +1115,34 @@ async fn в_зачёт_друзей_не_идут_отмеченные_и_сам
     let friend = tg_client(&db.store, 9332).await;
     let marked = tg_client(&db.store, 9333).await;
     let twin = tg_client(&db.store, 9334).await;
+    let fresh = tg_client(&db.store, 9335).await;
     let mut new = draft(PrizeDraft::Balance { amount: "1".into() }, 1);
-    new.conditions.friends = 3;
+    new.conditions.friends = 4;
     let created = create(&ctx, &new, None).await.unwrap();
-    for guest in [friend, marked, twin] {
+    for guest in [friend, marked, twin, fresh] {
         invite(&db.store, guest, host).await;
     }
     suspect(&db.store, marked).await;
     session(&db.store, host, "198.51.100.20").await;
     session(&db.store, twin, "198.51.100.20").await;
     session(&db.store, friend, "203.0.113.5").await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        conn.clients()
+            .add_identity(
+                fresh,
+                &NewIdentity::new(IdentityKind::Email, "fresh@mailinator.com", true).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
     let line = |c: &ClientContest| c.checks[0].text.clone();
-    let blocked = client_view(&ctx, created.id, host).await.unwrap().unwrap();
+    let seen = async |ctx: &ModuleContext| {
+        line(&client_view(ctx, created.id, host).await.unwrap().unwrap())
+    };
     assert_eq!(
-        line(&blocked),
-        "Пригласить 3 друзей за время конкурса: 1 из 3"
+        seen(&ctx).await,
+        "Пригласить 4 друзей за время конкурса: 1 из 4"
     );
     assert_eq!(
         join(&ctx, created.id, host).await.unwrap(),
@@ -1146,6 +1159,14 @@ async fn в_зачёт_друзей_не_идут_отмеченные_и_сам
             [crate::catalog::antibot::signals::Signal::SelfInvite]
         );
         assert_eq!(mark.details["referrer_id"], host.0);
+        let assessed = crate::catalog::antibot::store::mark_of(&mut conn, fresh)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            assessed.reasons,
+            [crate::catalog::antibot::signals::Signal::DisposableEmail]
+        );
         assert!(
             crate::catalog::antibot::store::mark_of(&mut conn, friend)
                 .await
@@ -1155,16 +1176,40 @@ async fn в_зачёт_друзей_не_идут_отмеченные_и_сам
     }
 
     antibot(&db.store, guarded("confirm")).await;
-    let soft = client_view(&ctx, created.id, host).await.unwrap().unwrap();
-    assert_eq!(line(&soft), "Пригласить 3 друзей за время конкурса: 2 из 3");
+    assert_eq!(
+        seen(&ctx).await,
+        "Пригласить 4 друзей за время конкурса: 1 из 4"
+    );
+    let confirm = async |client: ClientId| {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query("UPDATE antibot_marks SET confirmed_at = now() WHERE client_id = $1")
+            .bind(client.0)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    };
+    confirm(marked).await;
+    assert_eq!(
+        seen(&ctx).await,
+        "Пригласить 4 друзей за время конкурса: 2 из 4"
+    );
+
+    antibot(&db.store, guarded("mark")).await;
+    assert_eq!(
+        seen(&ctx).await,
+        "Пригласить 4 друзей за время конкурса: 3 из 4"
+    );
 
     let mut off = guarded("block");
     off["contest_guard"] = serde_json::json!(false);
     antibot(&db.store, off).await;
-    let open = client_view(&ctx, created.id, host).await.unwrap().unwrap();
-    assert_eq!(line(&open), "Пригласить 3 друзей за время конкурса: 3 из 3");
+    assert_eq!(
+        seen(&ctx).await,
+        "Пригласить 4 друзей за время конкурса: 4 из 4"
+    );
 
     antibot(&db.store, guarded("confirm")).await;
+    confirm(fresh).await;
     crate::catalog::antibot::clear(&ctx, twin, None)
         .await
         .unwrap();

@@ -527,17 +527,28 @@ pub async fn screen_invites(
                 .reasons
                 .iter()
                 .any(|r| matches!(r, Signal::SelfInvite | Signal::MassInvites));
-            if invited_badly || settings.mode == Mode::Block {
+            let unproven = match settings.mode {
+                Mode::Mark => false,
+                Mode::Confirm => mark.confirmed_at.is_none(),
+                Mode::Block => true,
+            };
+            if invited_badly || unproven {
                 out.insert(invite.invitee);
                 continue;
             }
-        } else if settings.mode == Mode::Block
-            && assess(db, invite.invitee, settings, now)
-                .await?
-                .suspicious()
-        {
-            out.insert(invite.invitee);
-            continue;
+        } else if settings.mode != Mode::Mark {
+            let assessment = assess(db, invite.invitee, settings, now).await?;
+            if assessment.suspicious() {
+                remember(
+                    db,
+                    invite.invitee,
+                    &assessment.signals,
+                    &assessment.details_value(),
+                )
+                .await?;
+                out.insert(invite.invitee);
+                continue;
+            }
         }
         if !settings.referral_guard {
             continue;
@@ -1018,7 +1029,7 @@ impl Module for AntibotModule {
             SettingField::flag(
                 "contest_guard",
                 "Защищать конкурсы",
-                "Участие подозрительных — по режиму антибота; в условие «пригласить друзей» не идут самоприглашения, а в режиме block и отмеченные друзья",
+                "Участие подозрительных и зачёт приглашённых друзей — по режиму антибота; самоприглашения и массовые приглашения не засчитываются никогда",
             )
             .with_default("true"),
         ]
