@@ -2160,3 +2160,70 @@ async fn проверка_письмом_уходит_на_указанный_а
     assert_eq!(mail.mailed().last().unwrap().to, "route@example.com");
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn подвал_письма_и_страница_отписки_на_языке_получателя() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    let ann = mail_client(store, None, Some("ann@example.com")).await;
+    mail_client(store, None, Some("ivan@example.com")).await;
+    exec(
+        store,
+        "UPDATE clients SET locale = 'en' WHERE id = $1",
+        ann.0,
+    )
+    .await;
+    {
+        let mut conn = store.conn().await.unwrap();
+        conn.settings()
+            .set_as(
+                "core.languages",
+                &serde_json::json!({ "english": true, "default": "ru" }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let created = create(&ctx, &mail_draft("<b>Новости</b>", Channel::Email), None)
+        .await
+        .unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let tokens = tokens(store, created.id).await;
+    let engine = spawn_mail(&ctx, &mail, fast_mail());
+    wait_status(store, created.id, Status::Done).await;
+    engine.stop().await;
+    let mailed = mail.mailed();
+    let english = mailed.iter().find(|m| m.to == "ann@example.com").unwrap();
+    let russian = mailed.iter().find(|m| m.to == "ivan@example.com").unwrap();
+    assert!(english.html.contains("Unsubscribe") && english.html.contains("lang=\"en\""));
+    assert!(english.text.contains("You're getting this email because"));
+    assert!(
+        russian.html.contains("Отписаться от рассылок") && russian.html.contains("lang=\"ru\"")
+    );
+    let router =
+        Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap()).public_router(ctx.clone());
+    let page = |token: Uuid| {
+        router.clone().oneshot(
+            Request::get(format!("/broadcast/unsubscribe/{token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let shown = text_of(page(tokens["ann@example.com"]).await.unwrap()).await;
+    assert!(shown.contains("Unsubscribe from newsletters?"), "{shown}");
+    let shown = text_of(page(tokens["ivan@example.com"]).await.unwrap()).await;
+    assert!(shown.contains("Отписаться от рассылок?"), "{shown}");
+    exec(
+        store,
+        "DELETE FROM settings WHERE key = 'core.languages' AND $1 > 0",
+        1,
+    )
+    .await;
+    let shown = text_of(page(tokens["ann@example.com"]).await.unwrap()).await;
+    assert!(shown.contains("Отписаться от рассылок?"), "{shown}");
+    db.cleanup().await;
+}

@@ -1,5 +1,6 @@
 import { useSite, DEFAULT_SITE } from '../lib/site';
 import { BrandMark } from '../lib/brand';
+import { t } from '../lib/i18n';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import './soon.css';
 
@@ -25,7 +26,7 @@ export function Soon({ title, text }: Props) {
         <p>{text}</p>
         {site.bot_username ? (
           <a className="soon-btn" href={`https://t.me/${site.bot_username.replace(/^@/, '')}`}>
-            Открыть бота
+            {t('Открыть бота')}
           </a>
         ) : null}
       </div>

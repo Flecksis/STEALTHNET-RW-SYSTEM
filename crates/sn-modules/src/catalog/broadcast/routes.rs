@@ -16,7 +16,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use sn_domain::access::Permission;
+use sn_domain::client::Locale;
 use sn_domain::ids::ClientId;
+use sn_domain::lang;
 use sn_domain::paging::{Page, PageRequest};
 use uuid::Uuid;
 
@@ -418,17 +420,21 @@ async fn public_image(
     Ok(response)
 }
 
-fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
+fn unsubscribe_html(view: &UnsubscribeView, token: Uuid) -> (StatusCode, String) {
     let email = view.email.as_deref().unwrap_or_default();
     let unsubscribe = format!("/api/public/m/broadcast/unsubscribe/{token}");
     let resubscribe = format!("/api/public/m/broadcast/resubscribe/{token}");
-    let (status, html) = match view.state {
+    let english = lang::current() == Locale::En;
+    match view.state {
         Unsubscribe::Unknown => (
             StatusCode::NOT_FOUND,
             page(
                 &view.brand,
-                "Ссылка не найдена",
-                "Возможно, она устарела. Отписаться можно по ссылке из любого нового письма с рассылкой.",
+                lang::pick("Ссылка не найдена", "Link not found"),
+                lang::pick(
+                    "Возможно, она устарела. Отписаться можно по ссылке из любого нового письма с рассылкой.",
+                    "It may be out of date. You can unsubscribe with the link in any new newsletter email.",
+                ),
                 None,
             ),
         ),
@@ -436,8 +442,11 @@ fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
             StatusCode::OK,
             page(
                 &view.brand,
-                "Это проверочное письмо",
-                "В настоящей рассылке по этой ссылке получатель сможет отписаться от писем.",
+                lang::pick("Это проверочное письмо", "This is a test email"),
+                lang::pick(
+                    "В настоящей рассылке по этой ссылке получатель сможет отписаться от писем.",
+                    "In a real newsletter, this link lets the recipient unsubscribe.",
+                ),
                 None,
             ),
         ),
@@ -445,13 +454,19 @@ fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
             StatusCode::OK,
             page(
                 &view.brand,
-                "Отписаться от рассылок?",
-                &format!(
-                    "Письма с новостями и предложениями на {email} больше не придут. Служебные письма, например коды входа, будут приходить как раньше."
-                ),
+                lang::pick("Отписаться от рассылок?", "Unsubscribe from newsletters?"),
+                &if english {
+                    format!(
+                        "News and offers won't be sent to {email} anymore. Service emails, such as sign-in codes, will keep coming."
+                    )
+                } else {
+                    format!(
+                        "Письма с новостями и предложениями на {email} больше не придут. Служебные письма, например коды входа, будут приходить как раньше."
+                    )
+                },
                 Some(Form {
                     action: &unsubscribe,
-                    button: "Отписаться",
+                    button: lang::pick("Отписаться", "Unsubscribe"),
                     quiet: false,
                 }),
             ),
@@ -460,11 +475,15 @@ fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
             StatusCode::OK,
             page(
                 &view.brand,
-                "Вы отписаны",
-                &format!("Рассылки на {email} больше не придут."),
+                lang::pick("Вы отписаны", "You're unsubscribed"),
+                &if english {
+                    format!("Newsletters won't be sent to {email} anymore.")
+                } else {
+                    format!("Рассылки на {email} больше не придут.")
+                },
                 Some(Form {
                     action: &resubscribe,
-                    button: "Вернуть рассылки",
+                    button: lang::pick("Вернуть рассылки", "Subscribe again"),
                     quiet: true,
                 }),
             ),
@@ -473,12 +492,20 @@ fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
             StatusCode::OK,
             page(
                 &view.brand,
-                "Рассылки вернутся",
-                &format!("Письма с новостями снова будут приходить на {email}."),
+                lang::pick("Рассылки вернутся", "Newsletters are back"),
+                &if english {
+                    format!("News emails will come to {email} again.")
+                } else {
+                    format!("Письма с новостями снова будут приходить на {email}.")
+                },
                 None,
             ),
         ),
-    };
+    }
+}
+
+fn rendered(view: &UnsubscribeView, token: Uuid) -> Response {
+    let (status, html) = lang::sync_scope(view.locale, || unsubscribe_html(view, token));
     let mut response = (status, Html(html)).into_response();
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,

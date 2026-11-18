@@ -154,6 +154,7 @@ async fn страница_оплаты_gram_показывает_счёт_и_и�
     );
     assert_eq!(body["back"]["bot"], "https://t.me/stealth_vpn_bot");
     assert_eq!(body["back"]["cabinet"], "https://panel.example.com/cabinet");
+    assert_eq!(body["locale"], "ru");
     assert!(body.get("client").is_none());
     let (status, _, again) = h.send(Method::GET, &url, None, None).await;
     assert_eq!(status, StatusCode::OK);

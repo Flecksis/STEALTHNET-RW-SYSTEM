@@ -3,6 +3,7 @@ import { useParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { money, plural, type Money } from '../lib/format';
+import { guessLang, lang, msg, siteLangs, t, useApplied } from '../lib/i18n';
 import { usePhone } from '../lib/media';
 import { QrCode } from '../lib/qr';
 import { DEFAULT_SITE, useSite } from '../lib/site';
@@ -25,21 +26,22 @@ type PayView = {
     tonkeeper_link: string;
   };
   back: { bot: string | null; cabinet: string | null };
+  locale?: 'ru' | 'en';
   checked?: 'found' | 'not_found' | 'failed' | 'too_often';
 };
 
 const CHECK_PAUSE_MS = 5000;
 
 const CHECK_TEXT: Record<'not_found' | 'failed' | 'too_often', string> = {
-  not_found: 'Перевод пока не найден. Если вы только что отправили GRAM, подождите минуту: сеть подтверждает перевод, страница проверит его сама.',
-  failed: 'Сеть TON сейчас не ответила. Попробуйте через минуту, проверка идёт и без вас.',
-  too_often: 'Проверяем не чаще раза в 5 секунд. Нажмите чуть позже.',
+  not_found: msg('Перевод пока не найден. Если вы только что отправили GRAM, подождите минуту: сеть подтверждает перевод, страница проверит его сама.'),
+  failed: msg('Сеть TON сейчас не ответила. Попробуйте через минуту, проверка идёт и без вас.'),
+  too_often: msg('Проверяем не чаще раза в 5 секунд. Нажмите чуть позже.'),
 };
 
 const POLL_MS = 5000;
 
 function grams(value: string): string {
-  return value.replace('.', ',');
+  return lang() === 'en' ? value : value.replace('.', ',');
 }
 
 function minutesLeft(iso: string | null, now: number): number | null {
@@ -57,9 +59,9 @@ function leftText(minutes: number): string {
   if (minutes >= 60) {
     const hours = Math.floor(minutes / 60);
     const rest = minutes % 60;
-    return rest ? `${hours} ч ${rest} мин` : `${hours} ${plural(hours, 'час', 'часа', 'часов')}`;
+    return rest ? t('{h} ч {m} мин', { h: hours, m: rest }) : `${hours} ${plural(hours, 'час', 'часа', 'часов')}`;
   }
-  return `${minutes} мин`;
+  return t('{n} мин', { n: minutes });
 }
 
 function CopyRow({ label, value, shown, warn }: { label: string; value: string; shown?: string; warn?: string }) {
@@ -80,12 +82,12 @@ function CopyRow({ label, value, shown, warn }: { label: string; value: string; 
       <div className="gp-row-head">
         <span className="gp-label">{label}</span>
         <button type="button" className="gp-copy" onClick={() => void copy()}>
-          {done ? 'Скопировано' : 'Скопировать'}
+          {done ? t('Скопировано') : t('Скопировать')}
         </button>
       </div>
       <span className="gp-value mono">{shown ?? value}</span>
       {warn ? <span className="gp-warn">{warn}</span> : null}
-      {failed ? <span className="gp-muted">Браузер не дал скопировать: выделите текст вручную</span> : null}
+      {failed ? <span className="gp-muted">{t('Браузер не дал скопировать: выделите текст вручную')}</span> : null}
     </div>
   );
 }
@@ -101,10 +103,10 @@ function CheckPaid({ id, onView }: { id: string; onView: (view: PayView) => void
       const data = await api<PayView>(`/api/public/pay/${encodeURIComponent(id)}/check`, { method: 'POST' });
       onView(data);
       if (data.checked && data.checked !== 'found') {
-        setAnswer(CHECK_TEXT[data.checked]);
+        setAnswer(t(CHECK_TEXT[data.checked]));
       }
     } catch (err) {
-      setAnswer(err instanceof ApiError ? err.message : 'Не получилось проверить. Проверьте интернет.');
+      setAnswer(err instanceof ApiError ? err.message : t('Не получилось проверить. Проверьте интернет.'));
     } finally {
       setBusy(false);
       setResting(true);
@@ -114,7 +116,7 @@ function CheckPaid({ id, onView }: { id: string; onView: (view: PayView) => void
   return (
     <div className="gp-check">
       <button type="button" className="gp-btn line" onClick={() => void run()} disabled={busy || resting}>
-        {busy ? 'Проверяем…' : 'Я оплатил, проверить'}
+        {busy ? t('Проверяем…') : t('Я оплатил, проверить')}
       </button>
       {answer ? (
         <p className="gp-muted" role="status">
@@ -133,12 +135,12 @@ function BackLinks({ back }: { back: PayView['back'] }) {
     <div className="gp-actions">
       {back.bot ? (
         <a className="gp-btn" href={back.bot}>
-          Вернуться в бот
+          {t('Вернуться в бот')}
         </a>
       ) : null}
       {back.cabinet ? (
         <a className={back.bot ? 'gp-btn line' : 'gp-btn'} href={back.cabinet}>
-          Открыть кабинет
+          {t('Открыть кабинет')}
         </a>
       ) : null}
     </div>
@@ -147,7 +149,8 @@ function BackLinks({ back }: { back: PayView['back'] }) {
 
 export function PayPage() {
   const { id = '' } = useParams();
-  const site = useSite() ?? DEFAULT_SITE;
+  const loadedSite = useSite();
+  const site = loadedSite ?? DEFAULT_SITE;
   const system = useSystemTheme();
   const phone = usePhone();
   const choice = site.appearance.client_theme;
@@ -167,9 +170,9 @@ export function PayPage() {
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
-        setError('Счёт не найден. Откройте оплату заново из бота или кабинета.');
+        setError(msg('Счёт не найден. Откройте оплату заново из бота или кабинета.'));
       } else {
-        setError(err instanceof ApiError ? err.message : 'Не получилось загрузить счёт. Проверьте интернет.');
+        setError(err instanceof ApiError ? err.message : msg('Не получилось загрузить счёт. Проверьте интернет.'));
       }
     }
   }, [id]);
@@ -190,6 +193,10 @@ export function PayPage() {
     return () => window.clearInterval(timer);
   }, [pending, load]);
 
+  const langs = siteLangs(loadedSite);
+  const account = view?.locale && langs.includes(view.locale) ? view.locale : null;
+  const ready = useApplied(loadedSite && (view || error) ? (account ?? guessLang(loadedSite)) : null);
+
   const brand = (
     <div className="gp-brand">
       <BrandMark name={site.brand_name} logo={site.logo_url} className="gp-mark" />
@@ -197,20 +204,22 @@ export function PayPage() {
     </div>
   );
 
-  if (!view) {
+  if (!view || !ready) {
     return (
       <main className="gp">
         <div className="gp-box">
           {brand}
-          {error ? (
+          {error && ready ? (
             <section className="gp-card">
-              <h1 className="gp-title">Оплата в GRAM</h1>
+              <h1 className="gp-title">{t('Оплата в GRAM')}</h1>
               <p className="gp-muted" role="alert">
-                {error}
+                {t(error)}
               </p>
             </section>
           ) : (
-            <p className="gp-muted">Загружаем счёт…</p>
+            <p className="gp-muted" aria-busy="true">
+              {ready ? t('Загружаем счёт…') : null}
+            </p>
           )}
         </div>
       </main>
@@ -225,9 +234,9 @@ export function PayPage() {
         <div className="gp-box">
           {brand}
           <section className="gp-card" aria-live="polite">
-            <h1 className="gp-title">Оплата получена</h1>
+            <h1 className="gp-title">{t('Оплата получена')}</h1>
             <p className="gp-sub">
-              {grams(view.gram.amount)} GRAM за {money(view.amount)}. Подписка обновится в течение минуты, подтверждение придёт в бот.
+              {t('{gram} GRAM за {amount}. Подписка обновится в течение минуты, подтверждение придёт в бот.', { gram: grams(view.gram.amount), amount: money(view.amount) })}
             </p>
             <BackLinks back={view.back} />
           </section>
@@ -242,11 +251,11 @@ export function PayPage() {
         <div className="gp-box">
           {brand}
           <section className="gp-card">
-            <h1 className="gp-title">{view.status === 'expired' ? 'Срок счёта истёк' : 'Счёт закрыт'}</h1>
+            <h1 className="gp-title">{view.status === 'expired' ? t('Срок счёта истёк') : t('Счёт закрыт')}</h1>
             <p className="gp-sub">
               {view.status === 'expired'
-                ? 'Курс для этого счёта больше не действует. Если GRAM с этим комментарием уже отправлены, мы всё равно засчитаем перевод: сеть проверяется ещё сутки, а кнопка ниже проверит сразу. Если не отправляли, оформите оплату заново.'
-                : 'По этому счёту оплатить уже нельзя. Оформите оплату заново в боте или кабинете.'}
+                ? t('Курс для этого счёта больше не действует. Если GRAM с этим комментарием уже отправлены, мы всё равно засчитаем перевод: сеть проверяется ещё сутки, а кнопка ниже проверит сразу. Если не отправляли, оформите оплату заново.')
+                : t('По этому счёту оплатить уже нельзя. Оформите оплату заново в боте или кабинете.')}
             </p>
             <span className="gp-value mono">{view.gram.comment}</span>
             {view.status === 'expired' ? <CheckPaid id={id} onView={setView} /> : null}
@@ -263,7 +272,7 @@ export function PayPage() {
         {brand}
         <section className="gp-card" aria-labelledby="gp-title">
           <h1 id="gp-title" className="gp-title">
-            Оплата в GRAM
+            {t('Оплата в GRAM')}
           </h1>
           <div className="gp-sum">
             <span className="gp-big num">{grams(view.gram.amount)} GRAM</span>
@@ -271,33 +280,33 @@ export function PayPage() {
           </div>
           <p className="gp-status" role="status">
             <span className="gp-dot" aria-hidden="true" />
-            Ждём перевод. Страница обновится сама, когда он придёт
+            {t('Ждём перевод. Страница обновится сама, когда он придёт')}
           </p>
-          {left !== null ? <p className="gp-muted">Курс закреплён ещё {leftText(left)}</p> : null}
+          {left !== null ? <p className="gp-muted">{t('Курс закреплён ещё {time}', { time: leftText(left) })}</p> : null}
           <div className="gp-qr">
-            <QrCode text={view.gram.ton_link} size={phone ? 200 : 220} label="QR-код для оплаты в кошельке TON" />
+            <QrCode text={view.gram.ton_link} size={phone ? 200 : 220} label={t('QR-код для оплаты в кошельке TON')} />
           </div>
           <div className="gp-actions">
             <a className="gp-btn" href={view.gram.ton_link}>
-              Открыть кошелёк
+              {t('Открыть кошелёк')}
             </a>
             <a className="gp-btn line" href={view.gram.tonkeeper_link} target="_blank" rel="noreferrer">
-              Открыть в Tonkeeper
+              {t('Открыть в Tonkeeper')}
             </a>
           </div>
           <CheckPaid id={id} onView={setView} />
         </section>
-        <section className="gp-card gp-list" aria-label="Данные для перевода вручную">
-          <CopyRow label="Сумма" value={view.gram.amount} shown={`${grams(view.gram.amount)} GRAM`} />
-          <CopyRow label="Адрес" value={view.gram.address} />
+        <section className="gp-card gp-list" aria-label={t('Данные для перевода вручную')}>
+          <CopyRow label={t('Сумма')} value={view.gram.amount} shown={`${grams(view.gram.amount)} GRAM`} />
+          <CopyRow label={t('Адрес')} value={view.gram.address} />
           <CopyRow
-            label="Комментарий"
+            label={t('Комментарий')}
             value={view.gram.comment}
-            warn="Обязательно укажите комментарий: без него оплата не найдётся"
+            warn={t('Обязательно укажите комментарий: без него оплата не найдётся')}
           />
         </section>
         <p className="gp-note">
-          Переводите GRAM (бывший Toncoin) в сети TON. Сумма — не меньше указанной. Обычно перевод доходит за минуту.
+          {t('Переводите GRAM (бывший Toncoin) в сети TON. Сумма — не меньше указанной. Обычно перевод доходит за минуту.')}
         </p>
       </div>
     </main>

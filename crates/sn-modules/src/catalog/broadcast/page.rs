@@ -19,7 +19,7 @@ pub fn page(brand: &str, title: &str, text: &str, form: Option<Form<'_>>) -> Str
         })
         .unwrap_or_default();
     format!(
-        "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">\
+        "<!doctype html><html lang=\"{lang}\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <meta name=\"robots\" content=\"noindex\"><title>{title} — {brand}</title><style>\
          :root{{color-scheme:light dark;--bg:#f2f4f7;--card:#ffffff;--ink:#151a22;--muted:#626b78;--line:#e5e8ed;--btn:#151a22;--btn-ink:#ffffff}}\
@@ -39,5 +39,6 @@ pub fn page(brand: &str, title: &str, text: &str, form: Option<Form<'_>>) -> Str
         brand = escape(brand),
         title = escape(title),
         text = escape(text),
+        lang = sn_domain::lang::current().as_str(),
     )
 }

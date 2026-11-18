@@ -22,6 +22,7 @@ use axum::Router;
 use chrono::{DateTime, Duration as Span, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::bot_content::{CAPTION_MAX, TEXT_MAX, normalize_markup, visible_len};
+use sn_domain::client::Locale;
 use sn_domain::format::plural_ru;
 use sn_domain::ids::{AdminId, ClientId, TariffId};
 use sn_domain::image::{self, ImageKind};
@@ -1196,6 +1197,7 @@ pub struct UnsubscribeView {
     pub state: Unsubscribe,
     pub email: Option<String>,
     pub brand: String,
+    pub locale: Locale,
 }
 
 async fn unsubscribe_step(
@@ -1213,6 +1215,7 @@ async fn unsubscribe_step(
             state: Unsubscribe::Preview,
             email: None,
             brand,
+            locale: Locale::Ru,
         });
     }
     let Some(who) = store::subscriber(&mut conn, token).await? else {
@@ -1220,6 +1223,7 @@ async fn unsubscribe_step(
             state: Unsubscribe::Unknown,
             email: None,
             brand,
+            locale: Locale::Ru,
         });
     };
     let state = match act {
@@ -1258,10 +1262,12 @@ async fn unsubscribe_step(
             Unsubscribe::Restored
         }
     };
+    let locale = store::client_locale(&mut conn, who.client_id).await?;
     Ok(UnsubscribeView {
         state,
         email: Some(who.email),
         brand,
+        locale,
     })
 }
 

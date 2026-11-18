@@ -6,6 +6,8 @@ use crate::error::ModuleError;
 use crate::sender::{
     BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
 };
+use sn_domain::client::Locale;
+use sn_domain::lang;
 use sn_store::Db;
 use std::collections::HashMap;
 use std::future::Future;
@@ -607,6 +609,7 @@ impl Engine {
                     buttons,
                     source,
                 }) => {
+                    let buttons = shown_buttons(&buttons, recipient.locale);
                     let delivery = match recipient.chat_id {
                         Some(chat) => {
                             sender
@@ -638,14 +641,17 @@ impl Engine {
                 }) => {
                     let token = recipient.unsubscribe.unwrap_or(PREVIEW_TOKEN);
                     let url = letter::unsubscribe_url(&site, token);
+                    let (text, html) = lang::sync_scope(recipient.locale, || {
+                        (letter.text(&url), letter.html(&url))
+                    });
                     let delivery = match recipient.email.as_deref() {
                         Some(to) => {
                             sender
                                 .send(&MailOut {
                                     to,
                                     subject: &letter.subject,
-                                    text: &letter.text(&url),
-                                    html: &letter.html(&url),
+                                    text: &text,
+                                    html: &html,
                                     unsubscribe: Some(&url),
                                 })
                                 .await
@@ -921,6 +927,24 @@ impl Engine {
             });
         Ok(wait.clamp(Duration::from_millis(10), self.config.idle))
     }
+}
+
+fn shown_buttons(buttons: &[OutButton], locale: Locale) -> Vec<OutButton> {
+    buttons
+        .iter()
+        .map(|button| {
+            let text = match (locale, button.text.as_str()) {
+                (Locale::En, "Участвовать") => "Join".to_string(),
+                (Locale::En, "Открыть конкурс") => "Open the giveaway".to_string(),
+                (Locale::En, "Итоги конкурса") => "Giveaway results".to_string(),
+                _ => button.text.clone(),
+            };
+            OutButton {
+                text,
+                ..button.clone()
+            }
+        })
+        .collect()
 }
 
 fn millis(duration: Duration) -> i64 {

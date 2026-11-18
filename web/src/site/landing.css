@@ -689,6 +689,21 @@
   cursor: pointer;
 }
 
+.ld-lang {
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ld-circ.ld-lang {
+  background: var(--surface);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
 .ld-enter {
   height: 44px;
   display: flex;

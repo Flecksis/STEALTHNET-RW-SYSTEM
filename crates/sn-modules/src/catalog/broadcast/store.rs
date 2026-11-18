@@ -1,6 +1,7 @@
 use super::{Audience, ButtonSpec, Channel, Cleaned, Lane, Status};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
+use sn_domain::client::Locale;
 use sn_domain::ids::{AdminId, ClientId, TariffId};
 use sn_domain::image::ImageInfo;
 use sn_domain::paging::{Page, PageRequest};
@@ -921,9 +922,25 @@ pub struct Claimed {
     pub email: Option<String>,
     pub unsubscribe: Option<Uuid>,
     pub attempts: i32,
+    pub locale: Locale,
 }
 
-type ClaimRow = (i64, Option<i64>, Option<String>, Option<Uuid>, i32);
+type ClaimRow = (i64, Option<i64>, Option<String>, Option<Uuid>, i32, String);
+
+pub async fn client_locale(db: &mut impl Db, client: ClientId) -> StoreResult<Locale> {
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT CASE WHEN c.locale = 'en' \
+                 AND EXISTS (SELECT 1 FROM settings s WHERE s.key = 'core.languages' AND s.value->>'english' = 'true') \
+                THEN 'en' ELSE 'ru' END \
+         FROM clients c WHERE c.id = $1",
+    )
+    .bind(client.0)
+    .fetch_optional(db.conn())
+    .await?;
+    Ok(raw
+        .and_then(|value| Locale::parse(&value).ok())
+        .unwrap_or_default())
+}
 
 pub async fn claim(db: &mut impl Db, id: i64, lane: Lane, limit: i64) -> StoreResult<Vec<Claimed>> {
     let rows: Vec<ClaimRow> = sqlx::query_as(
@@ -935,7 +952,10 @@ pub async fn claim(db: &mut impl Db, id: i64, lane: Lane, limit: i64) -> StoreRe
          UPDATE broadcast_recipients r SET state = 'sending', attempts = r.attempts + 1, claimed_at = now() \
          FROM pick WHERE r.broadcast_id = $1 AND r.channel = $3 AND r.client_id = pick.client_id \
            AND EXISTS (SELECT 1 FROM broadcasts b WHERE b.id = $1 AND b.status = 'sending') \
-         RETURNING r.client_id, r.chat_id, r.email, r.unsubscribe, r.attempts",
+         RETURNING r.client_id, r.chat_id, r.email, r.unsubscribe, r.attempts, \
+           CASE WHEN EXISTS (SELECT 1 FROM clients c WHERE c.id = r.client_id AND c.locale = 'en') \
+                 AND EXISTS (SELECT 1 FROM settings s WHERE s.key = 'core.languages' AND s.value->>'english' = 'true') \
+                THEN 'en' ELSE 'ru' END",
     )
     .bind(id)
     .bind(limit)
@@ -945,12 +965,13 @@ pub async fn claim(db: &mut impl Db, id: i64, lane: Lane, limit: i64) -> StoreRe
     Ok(rows
         .into_iter()
         .map(
-            |(client_id, chat_id, email, unsubscribe, attempts)| Claimed {
+            |(client_id, chat_id, email, unsubscribe, attempts, locale)| Claimed {
                 client_id: ClientId(client_id),
                 chat_id,
                 email,
                 unsubscribe,
                 attempts,
+                locale: Locale::parse(&locale).unwrap_or_default(),
             },
         )
         .collect())

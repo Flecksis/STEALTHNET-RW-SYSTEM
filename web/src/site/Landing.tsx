@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { count, money, NBSP } from '../lib/format';
 import { countriesIn, countryName, joinAnd } from '../lib/geo';
+import { applyLang, guessLang, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
@@ -22,6 +23,7 @@ import {
   FOOTER_LINKS,
   footerText,
   HERO_BUTTONS,
+  HERO_TITLE,
   heroLead,
   imageUrl,
   isOn,
@@ -57,23 +59,25 @@ function termName(months: number, daysCount: number): string {
 function trafficText(offer: Offer): string {
   const limit = offer.tariff.traffic.limit_bytes ?? 0;
   if (!limit) {
-    return 'трафик без лимита';
+    return t('трафик без лимита');
   }
+  const traffic = `${Math.round(limit / GB)}${NBSP}${t('ГБ')}`;
   const per: Record<Reset, string> = {
-    month: 'в месяц',
-    month_rolling: 'в месяц',
-    week: 'в неделю',
-    day: 'в день',
-    on_payment: 'на оплаченный срок',
-    no_reset: 'на весь срок',
+    month: t('{traffic} в месяц', { traffic }),
+    month_rolling: t('{traffic} в месяц', { traffic }),
+    week: t('{traffic} в неделю', { traffic }),
+    day: t('{traffic} в день', { traffic }),
+    on_payment: t('{traffic} на оплаченный срок', { traffic }),
+    no_reset: t('{traffic} на весь срок', { traffic }),
   };
-  return `${Math.round(limit / GB)}${NBSP}ГБ ${per[offer.tariff.traffic.reset]}`;
+  return per[offer.tariff.traffic.reset];
 }
 
 function everywhere(offer: Offer): string {
   const devices = count(offer.tariff.devices.included, 'устройство', 'устройства', 'устройств');
-  const where = offer.countries.length ? (countriesIn(offer.countries) ? `серверы в ${countriesIn(offer.countries)}` : `серверы: ${joinAnd(offer.countries.map(countryName))}`) : null;
-  return `Во всех вариантах: ${[devices, trafficText(offer), where].filter(Boolean).join(', ')}.`;
+  const named = countriesIn(offer.countries);
+  const where = offer.countries.length ? (named ? t('серверы в {where}', { where: named }) : t('серверы: {list}', { list: joinAnd(offer.countries.map(countryName)) })) : null;
+  return t('Во всех вариантах: {list}.', { list: [devices, trafficText(offer), where].filter(Boolean).join(', ') });
 }
 
 function Go({ link, className, label }: { link: ResolvedLink; className?: string; label?: string }) {
@@ -104,33 +108,33 @@ function Illustration({ offer }: { offer: Offer | null }) {
           <span>{window.location.host}</span>
         </div>
         <div className="ld-win-body">
-          <span className="ld-muted small">Личный кабинет</span>
-          <strong>{offer ? `${offer.tariff.name} · 3 месяца` : '3 месяца'}</strong>
-          <span className="ld-win-days">90 дней</span>
+          <span className="ld-muted small">{t('Личный кабинет')}</span>
+          <strong>{offer ? `${offer.tariff.name} · ${t('3 месяца')}` : t('3 месяца')}</strong>
+          <span className="ld-win-days">{t('90 дней')}</span>
           <span className="ld-win-bar2">
             <span />
           </span>
           <span className="ld-win-btns">
-            <span className="ld-chip main">Подключить устройство</span>
-            <span className="ld-chip">Продлить</span>
+            <span className="ld-chip main">{t('Подключить устройство')}</span>
+            <span className="ld-chip">{t('Продлить')}</span>
           </span>
         </div>
       </div>
       <div className="ld-phone-art">
         <div className="ld-screen">
-          <span className="ld-screen-cap">Мини-приложение в Telegram</span>
+          <span className="ld-screen-cap">{t('Мини-приложение в Telegram')}</span>
           <svg viewBox="0 0 130 130" width="130" height="130">
             <circle cx="65" cy="65" r="56" fill="none" stroke="rgba(255,255,255,.07)" strokeWidth="9" />
             <circle cx="65" cy="65" r="56" fill="none" stroke="var(--accent)" strokeWidth="9" />
           </svg>
           <span className="ld-screen-num">
             <strong>90</strong>
-            <span>дней</span>
+            <span>{t('дней')}</span>
           </span>
-          <span className="ld-screen-btn">Подключить</span>
+          <span className="ld-screen-btn">{t('Подключить')}</span>
           <span className="ld-screen-list">
-            <span>Продлить</span>
-            <span>Устройства 2/{offer?.tariff.devices.included ?? 3}</span>
+            <span>{t('Продлить')}</span>
+            <span>{t('Устройства 2/{n}', { n: offer?.tariff.devices.included ?? 3 })}</span>
           </span>
         </div>
       </div>
@@ -150,7 +154,18 @@ export function LandingPreview() {
 
 function LandingPage({ mode }: { mode: Mode }) {
   const framed = mode === 'preview' && window.parent !== window;
-  const site = useSite() ?? DEFAULT_SITE;
+  const loadedSite = useSite();
+  const site = loadedSite ?? DEFAULT_SITE;
+  const [picked, setPicked] = useState<Lang | null>(null);
+  const langs = siteLangs(loadedSite);
+  const ready = useApplied(mode === 'preview' ? 'ru' : loadedSite ? (picked && langs.includes(picked) ? picked : guessLang(loadedSite)) : null);
+  const lang = useLang();
+  const nextLang = mode === 'preview' ? null : otherLang(lang, langs);
+  const switchLang = (next: Lang) => {
+    rememberLang(next);
+    setPicked(next);
+    void applyLang(next);
+  };
   const system = useSystemTheme();
   const phone = usePhone();
   const [personal, setPersonal] = useState<Theme | null>(() => {
@@ -263,10 +278,10 @@ function LandingPage({ mode }: { mode: Mode }) {
     writeStored(THEME_KEY, next);
     setPersonal(next);
   };
-  const themeLabel = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  const themeLabel = theme === 'dark' ? t('Светлая тема') : t('Тёмная тема');
   const rootClass = phone ? 'ld ld-phone' : 'ld';
 
-  if (!blocks) {
+  if (!blocks || !ready) {
     return <div className={rootClass} aria-busy="true" />;
   }
 
@@ -302,13 +317,18 @@ function LandingPage({ mode }: { mode: Mode }) {
         <span>{site.brand_name.toUpperCase()}</span>
       </a>
       <span className="ld-grow" />
+      {nextLang ? (
+        <button type="button" className="ld-circ ld-lang" lang={nextLang} aria-label={NATIVE[nextLang]} title={NATIVE[nextLang]} onClick={() => switchLang(nextLang)}>
+          {nextLang.toUpperCase()}
+        </button>
+      ) : null}
       {fixed ? null : (
         <button type="button" className="ld-circ" aria-label={themeLabel} onClick={flipTheme}>
           <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
         </button>
       )}
       <Link to="/cabinet" className="ld-enter">
-        Войти
+        {t('Войти')}
       </Link>
     </header>
   ) : (
@@ -319,7 +339,7 @@ function LandingPage({ mode }: { mode: Mode }) {
           <span>{site.brand_name.toUpperCase()}</span>
         </a>
         {nav.length ? (
-          <nav aria-label="Разделы страницы" className="ld-nav">
+          <nav aria-label={t('Разделы страницы')} className="ld-nav">
             {nav.map((item) => (
               <a key={item.href} href={item.href}>
                 {item.label}
@@ -328,6 +348,11 @@ function LandingPage({ mode }: { mode: Mode }) {
           </nav>
         ) : null}
         <span className="ld-head-end">
+          {nextLang ? (
+            <button type="button" className="ld-ghost ld-lang hov" lang={nextLang} onClick={() => switchLang(nextLang)}>
+              {NATIVE[nextLang]}
+            </button>
+          ) : null}
           {fixed ? null : (
             <button type="button" className="ld-icon hov" aria-label={themeLabel} title={themeLabel} onClick={flipTheme}>
               <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
@@ -335,11 +360,11 @@ function LandingPage({ mode }: { mode: Mode }) {
           )}
           {bot ? (
             <a href={bot} className="ld-ghost hov">
-              Telegram-бот
+              {t('Telegram-бот')}
             </a>
           ) : null}
           <Link to="/cabinet" className="ld-btn sm">
-            Личный кабинет
+            {t('Личный кабинет')}
           </Link>
         </span>
       </div>
@@ -351,13 +376,16 @@ function LandingPage({ mode }: { mode: Mode }) {
   const lead = text(hero.lead, heroLead(phone));
   const note = hero.note ?? '';
   const art = hero.art ?? 'default';
+  const [heroFirst, ...heroRest] = t(HERO_TITLE).split(' ');
   const heroSection = (
     <section key="hero" aria-labelledby="hero-h" className="ld-sec ld-hero" data-block="hero">
       <div className="ld-hero-text">
         <h1 id="hero-h">
           {hero.title === null || hero.title === undefined ? (
             <>
-              Подключение{phone ? <br /> : ' '}за минуту
+              {heroFirst}
+              {heroRest.length ? (phone ? <br /> : ' ') : null}
+              {heroRest.join(' ')}
             </>
           ) : (
             hero.title
@@ -372,7 +400,7 @@ function LandingPage({ mode }: { mode: Mode }) {
           </div>
         ) : null}
         {hero.note === null || hero.note === undefined ? (
-          trial ? <p className="ld-muted">Первые {trialWord(trial)} бесплатно, оплата не нужна</p> : null
+          trial ? <p className="ld-muted">{t('Первые {days} бесплатно, оплата не нужна', { days: trialWord(trial) })}</p> : null
         ) : note ? (
           <p className="ld-muted">{note}</p>
         ) : null}
@@ -397,7 +425,7 @@ function LandingPage({ mode }: { mode: Mode }) {
         const items = shownItems('features', block.items, ctx, sections);
         return (
           <section key="features" id="ways" aria-labelledby="ways-h" className="ld-sec" data-block="features">
-            <h2 id="ways-h">{text(block.title, DEFAULT_TEXT.featuresTitle) || DEFAULT_TEXT.featuresTitle}</h2>
+            <h2 id="ways-h">{text(block.title, t(DEFAULT_TEXT.featuresTitle)) || t(DEFAULT_TEXT.featuresTitle)}</h2>
             {items.length ? (
               <div className="ld-grid two">
                 {items.map((item) => (
@@ -417,12 +445,12 @@ function LandingPage({ mode }: { mode: Mode }) {
         const items = shownItems('steps', block.items, ctx, sections);
         return (
           <section key="steps" id="steps" aria-labelledby="steps-h" className="ld-sec" data-block="steps">
-            <h2 id="steps-h">{text(block.title, DEFAULT_TEXT.stepsTitle) || DEFAULT_TEXT.stepsTitle}</h2>
+            <h2 id="steps-h">{text(block.title, t(DEFAULT_TEXT.stepsTitle)) || t(DEFAULT_TEXT.stepsTitle)}</h2>
             {items.length ? (
               <ol className="ld-grid three ld-steps">
                 {items.map((item, i) => (
                   <li key={item.key} className="ld-item">
-                    {phone ? <span className="ld-num num">{i + 1}</span> : <span className="ld-step">Шаг {i + 1}</span>}
+                    {phone ? <span className="ld-num num">{i + 1}</span> : <span className="ld-step">{t('Шаг {n}', { n: i + 1 })}</span>}
                     <h3>{item.title}</h3>
                     {item.text ? <p>{item.text}</p> : null}
                   </li>
@@ -441,12 +469,12 @@ function LandingPage({ mode }: { mode: Mode }) {
           <section key="plans" id="plans" aria-labelledby="plans-h" className="ld-sec ld-plans" data-block="plans">
             <div className="ld-plans-head">
               <div>
-                <h2 id="plans-h">{text(block.title, DEFAULT_TEXT.plansTitle) || DEFAULT_TEXT.plansTitle}</h2>
+                <h2 id="plans-h">{text(block.title, t(DEFAULT_TEXT.plansTitle)) || t(DEFAULT_TEXT.plansTitle)}</h2>
                 {plansText ? <p className="ld-ink2 ld-plans-text">{plansText}</p> : null}
                 {!phone && offer.tariff.description ? <p className="ld-ink2">{offer.tariff.description}</p> : null}
               </div>
               {categories.length > 1 ? (
-                <div role="group" aria-label="Тип тарифа" className="ld-seg">
+                <div role="group" aria-label={t('Тип тарифа')} className="ld-seg">
                   {categories.map((c) => (
                     <button
                       key={c.id}
@@ -469,22 +497,22 @@ function LandingPage({ mode }: { mode: Mode }) {
             </p>
             {phone ? (
               <>
-                <div role="radiogroup" aria-label="Срок подписки" className="ld-terms">
+                <div role="radiogroup" aria-label={t('Срок подписки')} className="ld-terms">
                   {offer.periods.map((p) => (
                     <button key={p.period_id} type="button" role="radio" aria-checked={selected?.period_id === p.period_id} className="ld-term" onClick={() => setTerm(p.period_id)}>
                       <span className="ld-dot" aria-hidden="true" />
                       <span className="ld-term-name">{termName(p.months, p.days)}</span>
                       <span className="ld-term-price num">{money(p.price)}</span>
                       <span className="ld-term-sub">
-                        {money(p.per_month)} в месяц
-                        {p.savings_percent ? <span className="ld-save"> · выгоднее на {p.savings_percent}%</span> : null}
+                        {t('{price} в месяц', { price: money(p.per_month) })}
+                        {p.savings_percent ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
                       </span>
                     </button>
                   ))}
                 </div>
                 {selected ? (
                   <Link to={`/cabinet/pay?tariff=${offer.tariff.id}&period=${selected.period_id}`} className="ld-btn big full">
-                    Купить за {money(selected.price)}
+                    {t('Купить за {price}', { price: money(selected.price) })}
                   </Link>
                 ) : null}
               </>
@@ -495,15 +523,15 @@ function LandingPage({ mode }: { mode: Mode }) {
                     <span className="ld-card-name">{termName(p.months, p.days)}</span>
                     <span className="ld-card-price">{money(p.price)}</span>
                     <span className="ld-muted">
-                      {money(p.per_month)} в месяц
-                      {p.savings_percent ? <span className="ld-save"> · выгоднее на {p.savings_percent}%</span> : null}
+                      {t('{price} в месяц', { price: money(p.per_month) })}
+                      {p.savings_percent ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
                     </span>
                     <Link
                       to={`/cabinet/pay?tariff=${offer.tariff.id}&period=${p.period_id}`}
                       className={i === 1 ? 'ld-btn mid' : 'ld-btn2 mid'}
-                      aria-label={`Выбрать: ${offer.tariff.name}, ${termName(p.months, p.days)}`}
+                      aria-label={t('Выбрать: {plan}, {period}', { plan: offer.tariff.name, period: termName(p.months, p.days) })}
                     >
-                      Выбрать
+                      {t('Выбрать')}
                     </Link>
                   </div>
                 ))}
@@ -520,11 +548,11 @@ function LandingPage({ mode }: { mode: Mode }) {
           return null;
         }
         return (
-          <section key="servers" id="servers" aria-label="Серверы и приложения" className="ld-sec" data-block="servers">
+          <section key="servers" id="servers" aria-label={t('Серверы и приложения')} className="ld-sec" data-block="servers">
             <div className="ld-grid two wide">
               {serversLines.length ? (
                 <div className="ld-item">
-                  <h2 className="ld-h2s">{text(block.servers_title, DEFAULT_TEXT.serversTitle) || DEFAULT_TEXT.serversTitle}</h2>
+                  <h2 className="ld-h2s">{text(block.servers_title, t(DEFAULT_TEXT.serversTitle)) || t(DEFAULT_TEXT.serversTitle)}</h2>
                   {phone ? (
                     <div className="ld-list">
                       {serversLines.map((l) => (
@@ -545,7 +573,7 @@ function LandingPage({ mode }: { mode: Mode }) {
               ) : null}
               {apps.length ? (
                 <div className="ld-item">
-                  <h2 className="ld-h2s">{text(block.apps_title, DEFAULT_TEXT.appsTitle) || DEFAULT_TEXT.appsTitle}</h2>
+                  <h2 className="ld-h2s">{text(block.apps_title, t(DEFAULT_TEXT.appsTitle)) || t(DEFAULT_TEXT.appsTitle)}</h2>
                   {phone ? (
                     <>
                       <div className="ld-apps">
@@ -568,7 +596,7 @@ function LandingPage({ mode }: { mode: Mode }) {
         const items = shownItems('faq', block.items, ctx, sections);
         return (
           <section key="faq" id="faq" aria-labelledby="faq-h" className="ld-sec ld-faq" data-block="faq">
-            <h2 id="faq-h">{text(block.title, DEFAULT_TEXT.faqTitle) || DEFAULT_TEXT.faqTitle}</h2>
+            <h2 id="faq-h">{text(block.title, t(DEFAULT_TEXT.faqTitle)) || t(DEFAULT_TEXT.faqTitle)}</h2>
             {items.map((item) => (
               <details key={item.key}>
                 <summary>
@@ -626,7 +654,7 @@ function LandingPage({ mode }: { mode: Mode }) {
             footerText(footer.text, site.brand_name, ctx.year)
           )}
         </span>
-        <nav aria-label="Ссылки" className="ld-foot-nav">
+        <nav aria-label={t('Ссылки')} className="ld-foot-nav">
           {footerLinks.map((link, i) => (
             <Go key={`${link.href}-${i}`} link={link} />
           ))}

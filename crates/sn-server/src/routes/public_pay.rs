@@ -75,6 +75,7 @@ struct PayView {
     expires_at: Option<DateTime<Utc>>,
     gram: GramDetails,
     back: Back,
+    locale: sn_domain::client::Locale,
     #[serde(skip_serializing_if = "Option::is_none")]
     checked: Option<Checked>,
 }
@@ -209,6 +210,15 @@ async fn view(state: &AppState, payment: Uuid, asked: bool) -> ApiResult<PayView
         .public_url
         .as_deref()
         .map(|base| format!("{}/cabinet", base.trim_end_matches('/')));
+    let locale = match state.services.store().conn().await {
+        Ok(mut conn) => conn
+            .clients()
+            .get(found.client_id)
+            .await
+            .map(|client| state.services.locale_of(client.locale))
+            .unwrap_or_default(),
+        Err(_) => sn_domain::client::Locale::Ru,
+    };
     Ok(PayView {
         status: state_of(&found, state.services.now()),
         provider: providers::GRAM,
@@ -223,6 +233,7 @@ async fn view(state: &AppState, payment: Uuid, asked: bool) -> ApiResult<PayView
             comment: invoice.comment,
         },
         back: Back { bot, cabinet },
+        locale,
         checked,
     })
 }

@@ -1,4 +1,5 @@
 import { count, money, type Money } from '../lib/format';
+import { msg, t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 
 export type Reset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
@@ -100,11 +101,11 @@ export const ANCHORS: Record<SectionKind, string> = {
 export const SECTION_KINDS: SectionKind[] = ['features', 'steps', 'plans', 'servers', 'faq', 'cta'];
 
 export const DEFAULT_MENU: Record<MenuKind, string> = {
-  features: 'Кабинет и бот',
+  features: msg('Кабинет и бот'),
   steps: '',
-  plans: 'Тарифы',
+  plans: msg('Тарифы'),
   servers: '',
-  faq: 'Вопросы',
+  faq: msg('Вопросы'),
 };
 
 export const STD_KEYS: Record<ItemKind, string[]> = {
@@ -115,28 +116,28 @@ export const STD_KEYS: Record<ItemKind, string[]> = {
 
 export const DEFAULT_APPS = ['Happ', 'v2rayTun', 'Hiddify', 'Streisand', 'Clash Verge', 'NekoBox'];
 
-export const HERO_TITLE = 'Подключение за минуту';
+export const HERO_TITLE = msg('Подключение за минуту');
 export const HERO_BUTTONS: LandingLink[] = [
-  { label: 'Начать в браузере', to: 'cabinet' },
-  { label: 'Начать в Telegram', to: 'bot' },
+  { label: msg('Начать в браузере'), to: 'cabinet' },
+  { label: msg('Начать в Telegram'), to: 'bot' },
 ];
 export const CTA_BUTTONS: LandingLink[] = [
-  { label: 'Личный кабинет', to: 'cabinet' },
-  { label: 'Telegram-бот', to: 'bot' },
+  { label: msg('Личный кабинет'), to: 'cabinet' },
+  { label: msg('Telegram-бот'), to: 'bot' },
 ];
 export const FOOTER_LINKS: LandingLink[] = [
-  { label: 'Поддержка', to: 'support' },
-  { label: 'Telegram-бот', to: 'bot' },
-  { label: 'Личный кабинет', to: 'cabinet' },
+  { label: msg('Поддержка'), to: 'support' },
+  { label: msg('Telegram-бот'), to: 'bot' },
+  { label: msg('Личный кабинет'), to: 'cabinet' },
 ];
 
 export const DEFAULT_TEXT = {
-  featuresTitle: 'Где удобнее, там и пользуйтесь',
-  stepsTitle: 'Как подключиться',
-  plansTitle: 'Тарифы',
-  serversTitle: 'Серверы',
-  appsTitle: 'Приложения',
-  faqTitle: 'Вопросы',
+  featuresTitle: msg('Где удобнее, там и пользуйтесь'),
+  stepsTitle: msg('Как подключиться'),
+  plansTitle: msg('Тарифы'),
+  serversTitle: msg('Серверы'),
+  appsTitle: msg('Приложения'),
+  faqTitle: msg('Вопросы'),
 };
 
 export function trialWord(days: number): string {
@@ -145,28 +146,28 @@ export function trialWord(days: number): string {
 
 export function heroLead(phone: boolean): string {
   return phone
-    ? 'Купите подписку в личном кабинете на сайте или в Telegram-боте. После оплаты придёт ссылка для приложения на iPhone, Android, Windows, macOS или Linux.'
-    : 'Купите подписку в личном кабинете на сайте или в Telegram-боте, как вам удобнее. После оплаты придёт ссылка для приложения на iPhone, Android, Windows, macOS или Linux.';
+    ? t('Купите подписку в личном кабинете на сайте или в Telegram-боте. После оплаты придёт ссылка для приложения на iPhone, Android, Windows, macOS или Linux.')
+    : t('Купите подписку в личном кабинете на сайте или в Telegram-боте, как вам удобнее. После оплаты придёт ссылка для приложения на iPhone, Android, Windows, macOS или Linux.');
 }
 
 export function heroNote(trial: number): string {
-  return trial ? `Первые ${trialWord(trial)} бесплатно, оплата не нужна` : '';
+  return trial ? t('Первые {days} бесплатно, оплата не нужна', { days: trialWord(trial) }) : '';
 }
 
 export function ctaTitle(trial: number): string {
-  return trial ? `${trialWord(trial)} бесплатно` : 'Подключитесь сегодня';
+  return trial ? t('{days} бесплатно', { days: trialWord(trial) }) : t('Подключитесь сегодня');
 }
 
 export function ctaText(trial: number): string {
-  return trial ? 'Откройте кабинет или бота и включите пробный период.' : 'Откройте кабинет или бота и выберите тариф.';
+  return trial ? t('Откройте кабинет или бота и включите пробный период.') : t('Откройте кабинет или бота и выберите тариф.');
 }
 
 export function serversNote(phone: boolean): string {
-  return phone ? 'Страну можно сменить в приложении' : 'Переключаться между странами можно в приложении.';
+  return phone ? t('Страну можно сменить в приложении') : t('Переключаться между странами можно в приложении.');
 }
 
 export function appsNote(phone: boolean): string {
-  return phone ? 'Кабинет и бот подскажут, какое поставить' : 'Кабинет и бот подскажут, какое поставить на ваше устройство.';
+  return phone ? t('Кабинет и бот подскажут, какое поставить') : t('Кабинет и бот подскажут, какое поставить на ваше устройство.');
 }
 
 export function footerText(text: Text, brand: string, year: number): string {
@@ -178,8 +179,8 @@ export function footerText(text: Text, brand: string, year: number): string {
 
 export function payText(currency: Currency): string {
   return currency === 'RUB'
-    ? 'Через СБП, картой российского банка, ЮMoney или звёздами Telegram.'
-    : 'Криптовалютой (USDT, TON, BTC), картой Visa или Mastercard любой страны или звёздами Telegram.';
+    ? t('Через СБП, картой российского банка, ЮMoney или звёздами Telegram.')
+    : t('Криптовалютой (USDT, TON, BTC), картой Visa или Mastercard любой страны или звёздами Telegram.');
 }
 
 type StdItem = { title: string; text: string; link?: LandingLink };
@@ -188,35 +189,35 @@ export function stdItem(kind: ItemKind, key: string, ctx: LandingContext): StdIt
   if (kind === 'features') {
     if (key === 'cabinet') {
       return {
-        title: 'Личный кабинет в браузере',
+        title: t('Личный кабинет в браузере'),
         text: ctx.phone
-          ? 'Вход через Telegram. Удобно с компьютера: оплата, устройства, инструкции и поддержка.'
-          : 'Вход через Telegram. Удобно с компьютера: тарифы и оплата, устройства, инструкции по подключению и поддержка.',
-        link: { label: 'Открыть кабинет', to: 'cabinet' },
+          ? t('Вход через Telegram. Удобно с компьютера: оплата, устройства, инструкции и поддержка.')
+          : t('Вход через Telegram. Удобно с компьютера: тарифы и оплата, устройства, инструкции по подключению и поддержка.'),
+        link: { label: t('Открыть кабинет'), to: 'cabinet' },
       };
     }
     if (key === 'bot') {
       return {
-        title: 'Telegram-бот и мини-приложение',
-        text: 'Без регистрации: открыли бота, и подписка уже в чате. Там же оплата, ссылка для приложения и напоминания о продлении.',
-        link: { label: 'Открыть бота', to: 'bot' },
+        title: t('Telegram-бот и мини-приложение'),
+        text: t('Без регистрации: открыли бота, и подписка уже в чате. Там же оплата, ссылка для приложения и напоминания о продлении.'),
+        link: { label: t('Открыть бота'), to: 'bot' },
       };
     }
     return null;
   }
   if (kind === 'steps') {
     if (key === 'pick') {
-      return { title: 'Выберите тариф', text: 'В кабинете или в боте: месяц, три месяца или год.' };
+      return { title: t('Выберите тариф'), text: t('В кабинете или в боте: месяц, три месяца или год.') };
     }
     if (key === 'pay') {
-      return { title: 'Оплатите', text: payText(ctx.currency) };
+      return { title: t('Оплатите'), text: payText(ctx.currency) };
     }
     if (key === 'connect') {
       return {
-        title: 'Подключитесь',
+        title: t('Подключитесь'),
         text: ctx.phone
-          ? 'Ссылка подписки появится в кабинете или в боте. Откройте её в приложении.'
-          : 'Откройте ссылку подписки в приложении. Кабинет и бот подскажут, какое поставить.',
+          ? t('Ссылка подписки появится в кабинете или в боте. Откройте её в приложении.')
+          : t('Откройте ссылку подписки в приложении. Кабинет и бот подскажут, какое поставить.'),
       };
     }
     return null;
@@ -224,28 +225,34 @@ export function stdItem(kind: ItemKind, key: string, ctx: LandingContext): StdIt
   switch (key) {
     case 'channels':
       return {
-        title: 'Чем кабинет отличается от бота?',
-        text: 'По возможностям ничем: подписка, оплата, устройства и поддержка есть в обоих. Кабинет удобнее с компьютера, бот — с телефона.',
+        title: t('Чем кабинет отличается от бота?'),
+        text: t('По возможностям ничем: подписка, оплата, устройства и поддержка есть в обоих. Кабинет удобнее с компьютера, бот — с телефона.'),
       };
     case 'devices': {
       const offer = ctx.offer;
       const extra = offer?.tariff.devices.extra;
+      const devices = offer ? count(offer.tariff.devices.included, 'устройство', 'устройства', 'устройств') : '';
       return {
-        title: 'Сколько устройств можно подключить?',
+        title: t('Сколько устройств можно подключить?'),
         text: offer
-          ? `В тариф входят ${count(offer.tariff.devices.included, 'устройство', 'устройства', 'устройств')}.${extra?.max && ctx.extra ? ` Ещё ${extra.max} можно докупить в кабинете или в боте, ${money(ctx.extra)} в месяц за каждое.` : ''}`
-          : 'Сколько устройств входит, указано в тарифе.',
+          ? extra?.max && ctx.extra
+            ? t('В тариф входят {devices}. Ещё {extra} можно докупить в кабинете или в боте, {price} в месяц за каждое.', { devices, extra: extra.max, price: money(ctx.extra) })
+            : t('В тариф входят {devices}.', { devices })
+          : t('Сколько устройств входит, указано в тарифе.'),
       };
     }
     case 'renewal':
       return {
-        title: 'Что будет, когда подписка закончится?',
-        text: `Напомним заранее в боте. Если включено автопродление, оплата спишется с баланса${ctx.currency === 'RUB' ? ' или сохранённой карты' : ''}.`,
+        title: t('Что будет, когда подписка закончится?'),
+        text:
+          ctx.currency === 'RUB'
+            ? t('Напомним заранее в боте. Если включено автопродление, оплата спишется с баланса или сохранённой карты.')
+            : t('Напомним заранее в боте. Если включено автопродление, оплата спишется с баланса.'),
       };
     case 'refund':
-      return { title: 'Можно вернуть деньги?', text: 'Да, если сервис у вас не заработал. Напишите в поддержку.' };
+      return { title: t('Можно вернуть деньги?'), text: t('Да, если сервис у вас не заработал. Напишите в поддержку.') };
     case 'privacy':
-      return { title: 'Вы храните, какие сайты я открываю?', text: 'Нет. Мы не записываем, какие сайты вы открываете.' };
+      return { title: t('Вы храните, какие сайты я открываю?'), text: t('Нет. Мы не записываем, какие сайты вы открываете.') };
     default:
       return null;
   }
@@ -377,7 +384,7 @@ export function resolveLink(link: LandingLink, ctx: LandingContext, sections: Se
 }
 
 export function resolveLinks(links: LandingLink[] | null | undefined, fallback: LandingLink[], ctx: LandingContext, sections: Set<SectionKind>): ResolvedLink[] {
-  return (links ?? fallback).map((link) => resolveLink(link, ctx, sections)).filter((link): link is ResolvedLink => link !== null);
+  return (links ?? fallback.map((link) => ({ ...link, label: t(link.label) }))).map((link) => resolveLink(link, ctx, sections)).filter((link): link is ResolvedLink => link !== null);
 }
 
 export type ShownItem = { key: string; title: string; text: string; link: ResolvedLink | null; image: LandingImage | null };
@@ -415,7 +422,7 @@ export function menuLinks(blocks: Block[]): Array<{ label: string; href: string 
     if (block.kind === 'hero' || block.kind === 'footer' || block.kind === 'cta' || !isOn(block)) {
       continue;
     }
-    const label = text(block.menu, DEFAULT_MENU[block.kind]).trim();
+    const label = text(block.menu, t(DEFAULT_MENU[block.kind])).trim();
     if (label) {
       out.push({ label, href: `#${ANCHORS[block.kind]}` });
     }
