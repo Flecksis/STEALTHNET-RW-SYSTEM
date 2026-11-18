@@ -1,6 +1,7 @@
 import { count, money, type Money } from '../lib/format';
 import { msg, t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
+import { withBotStart } from '../lib/utmTags';
 
 export type Reset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
 
@@ -74,6 +75,8 @@ export type LandingContext = {
   year: number;
   offer: Offer | null;
   extra: Money | null;
+  botName?: string | null;
+  botStart?: string | null;
 };
 
 export const DEFAULT_ORDER: BlockKind[] = ['hero', 'features', 'steps', 'plans', 'servers', 'faq', 'cta', 'footer'];
@@ -370,7 +373,7 @@ export function linkTarget(to: string, ctx: LandingContext, sections: Set<Sectio
     return sections.has(kind) ? { ok: true, href: `#${ANCHORS[kind]}`, route: false } : { ok: false, reason: `блок «${BLOCK_NAMES[kind]}» скрыт` };
   }
   if (/^https?:\/\/\S+$/i.test(to)) {
-    return { ok: true, href: to, route: false };
+    return { ok: true, href: withBotStart(to, ctx.botName, ctx.botStart), route: false };
   }
   return { ok: false, reason: 'ссылка не подходит' };
 }
@@ -438,6 +441,8 @@ export function landingContext(input: {
   support: string | null;
   brand: string;
   offer: Offer | null;
+  botName?: string | null;
+  botStart?: string | null;
 }): LandingContext {
   const extraConfig = input.offer?.tariff.devices.extra;
   let extra: Money | null = null;

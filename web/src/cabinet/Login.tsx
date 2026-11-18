@@ -6,7 +6,9 @@ import { NATIVE, t, type Lang } from '../lib/i18n';
 import { QrCode } from '../lib/qr';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import type { Site } from '../lib/types';
-import { storedReferral } from '../lib/referral';
+import { botLink, storedReferral } from '../lib/referral';
+import { reportVisit, storedUtm } from '../lib/utm';
+import { startParam } from '../lib/utmTags';
 import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, type OauthProvider } from './oauth';
 
 type Tg = { poll_token: string; link: string; expires_at: string };
@@ -47,6 +49,10 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
   const providers = (['google', 'apple'] as const).filter((p) => site.oauth?.[p]);
 
   useEffect(() => {
+    reportVisit();
+  }, []);
+
+  useEffect(() => {
     if (!back || finished.current) {
       return;
     }
@@ -75,7 +81,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setError(null);
     try {
       const referral = storedReferral();
-      await leaveFor(`/api/client/auth/oauth/${provider}`, referral ? { ref: referral } : {});
+      const utm = storedUtm();
+      await leaveFor(`/api/client/auth/oauth/${provider}`, { ...(referral ? { ref: referral } : {}), ...(utm ? { utm } : {}) });
     } catch (err) {
       setError(failText(err, t('Вход не начался')));
       setLeaving(null);
@@ -160,7 +167,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setBusy(true);
     setError(null);
     try {
-      const res = await api<Verified>('/api/client/auth/email/verify', { method: 'POST', body: { email: email.trim(), code: code.trim() } });
+      const res = await api<Verified>('/api/client/auth/email/verify', { method: 'POST', body: { email: email.trim(), code: code.trim(), utm: storedUtm() ?? undefined } });
       if (res.status === 'totp_required' && res.challenge) {
         setChallenge(res.challenge);
         setTotp('');
@@ -181,7 +188,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     try {
       const res = await api<Verified>(joining ? '/api/client/auth/email/register' : '/api/client/auth/email/password', {
         method: 'POST',
-        body: { email: email.trim(), password },
+        body: { email: email.trim(), password, utm: joining ? (storedUtm() ?? undefined) : undefined },
       });
       if (res.status === 'totp_required' && res.challenge) {
         setChallenge(res.challenge);
@@ -298,7 +305,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
           <div className="cb-login-wait">
             <p>{t('Вход на сайт сейчас выключен. Подписка, оплата и поддержка доступны в Telegram-боте.')}</p>
             {site.bot_username ? (
-              <a className="cb-main" href={`https://t.me/${site.bot_username}`} target="_blank" rel="noreferrer">
+              <a className="cb-main" href={botLink(site.bot_username, startParam(storedUtm(), storedReferral()))} target="_blank" rel="noreferrer">
                 {t('Открыть бота')}
               </a>
             ) : null}

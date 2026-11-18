@@ -11,6 +11,8 @@ import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
 import { botLink, storedReferral } from '../lib/referral';
+import { reportVisit, storedUtm } from '../lib/utm';
+import { startParam } from '../lib/utmTags';
 import {
   appsNote,
   CTA_BUTTONS,
@@ -194,6 +196,12 @@ function LandingPage({ mode }: { mode: Mode }) {
   }, [framed, site.title, site.brand_name]);
 
   useEffect(() => {
+    if (mode !== 'preview') {
+      reportVisit();
+    }
+  }, [mode]);
+
+  useEffect(() => {
     api<PublicCatalog>('/api/public/catalog')
       .then((c) => {
         setCatalog(c);
@@ -267,11 +275,11 @@ function LandingPage({ mode }: { mode: Mode }) {
   }, [offers]);
   const offer = offers.find((o) => o.category.id === cat) ?? offers[0] ?? null;
   const currency = catalog?.currency ?? site.currency;
-  const invite = storedReferral();
-  const bot = site.bot_username ? botLink(site.bot_username, invite ? `ref_${invite}` : null) : null;
+  const start = startParam(storedUtm(), storedReferral());
+  const bot = site.bot_username ? botLink(site.bot_username, start) : null;
   const trial = site.trial?.enabled ? site.trial.days : 0;
   const selected = offer?.periods.find((p) => p.period_id === term) ?? offer?.periods[Math.min(1, (offer?.periods.length ?? 1) - 1)] ?? null;
-  const ctx: LandingContext = landingContext({ phone, currency, trial, bot, support: site.support_url, brand: site.brand_name, offer });
+  const ctx: LandingContext = landingContext({ phone, currency, trial, bot, support: site.support_url, brand: site.brand_name, offer, botName: site.bot_username, botStart: start });
 
   const flipTheme = () => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';

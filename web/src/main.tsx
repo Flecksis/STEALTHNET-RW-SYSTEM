@@ -7,6 +7,7 @@ import { BrowserRouter, Route, Routes } from 'react-router';
 import { guessLang, t, useApplied } from './lib/i18n';
 import { captureReferral } from './lib/referral';
 import { useSite } from './lib/site';
+import { captureUtm } from './lib/utm';
 
 const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp })));
 const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon })));
@@ -44,6 +45,7 @@ function App() {
 }
 
 captureReferral();
+captureUtm();
 
 const root = document.getElementById('root');
 if (root) {
