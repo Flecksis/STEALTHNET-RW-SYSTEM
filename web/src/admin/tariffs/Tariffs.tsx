@@ -46,8 +46,9 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function Tariffs() {
-  const { can } = useSession();
+  const { can, me } = useSession();
   const settingsOk = can('settings');
+  const remnaOff = me.remnawave === false;
   const [view, setView] = useState<View | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [squads, setSquads] = useState<Squad[] | null>(null);
@@ -76,13 +77,20 @@ export function Tariffs() {
 
   useEffect(() => {
     void load();
-    api<Squad[]>('/api/admin/tariffs/squads')
-      .then(setSquads)
-      .catch(() => setSquads([]));
+    if (remnaOff) {
+      setSquads([]);
+      setHwidOff(false);
+    } else {
+      api<Squad[]>('/api/admin/tariffs/squads')
+        .then(setSquads)
+        .catch(() => setSquads([]));
+    }
     if (settingsOk) {
-      api<{ hwidSettings?: { enabled: boolean } | null }>('/api/admin/settings/subscription')
-        .then((sub) => setHwidOff(sub.hwidSettings ? !sub.hwidSettings.enabled : false))
-        .catch(() => setHwidOff(false));
+      if (!remnaOff) {
+        api<{ hwidSettings?: { enabled: boolean } | null }>('/api/admin/settings/subscription')
+          .then((sub) => setHwidOff(sub.hwidSettings ? !sub.hwidSettings.enabled : false))
+          .catch(() => setHwidOff(false));
+      }
       api<Trial>('/api/admin/settings/trial')
         .then(setTrial)
         .catch(() => setTrial(null));
@@ -90,7 +98,7 @@ export function Tariffs() {
         .then(setMulti)
         .catch(() => setMulti(null));
     }
-  }, [load, settingsOk]);
+  }, [load, settingsOk, remnaOff]);
 
   const currency = view?.currency ?? 'USD';
   const stats = useMemo(() => new Map((view?.stats ?? []).map((s) => [s.tariff_id, s])), [view]);

@@ -58,8 +58,9 @@ export function useOverview() {
     return () => window.clearInterval(timer);
   }, [load]);
 
+  const remnaUp = !!dashboard?.remna;
   useEffect(() => {
-    if (!can('infrastructure')) {
+    if (!can('infrastructure') || !remnaUp) {
       return;
     }
     api<{ billingNodes?: BillingNode[] }>('/api/admin/infra/billing')
@@ -68,7 +69,7 @@ export function useOverview() {
         setBilling((data.billingNodes ?? []).filter((b) => Date.parse(b.nextBillingAt) <= soon));
       })
       .catch(() => setBilling([]));
-  }, [can]);
+  }, [can, remnaUp]);
 
   const restart = useCallback(
     async (uuid: string) => {

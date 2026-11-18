@@ -1095,7 +1095,9 @@ async fn главная_лента_и_ноды_через_http() {
     let (status, remna) = h.get("/api/admin/remnawave/status", &owner).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(remna["ok"], true);
+    assert_eq!(h.get("/api/admin/me", &owner).await.1["remnawave"], true);
     h.services().set_remna(None);
+    assert_eq!(h.get("/api/admin/me", &owner).await.1["remnawave"], false);
     let (status, dashboard) = h.get("/api/admin/dashboard", &owner).await;
     assert_eq!(status, StatusCode::OK);
     assert!(dashboard["remna_error"].is_string());

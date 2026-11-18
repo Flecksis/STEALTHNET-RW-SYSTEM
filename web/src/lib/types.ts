@@ -70,4 +70,5 @@ export type Me = {
   brand_name: string;
   logo_url?: string | null;
   appearance: Appearance;
+  remnawave?: boolean;
 };

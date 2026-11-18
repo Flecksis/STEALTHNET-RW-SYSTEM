@@ -192,5 +192,6 @@ async fn me(
         "brand_name": settings.brand_name,
         "logo_url": settings.logo_url(),
         "appearance": settings.appearance,
+        "remnawave": state.services.remna().is_ok(),
     })))
 }

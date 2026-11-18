@@ -195,7 +195,7 @@ function maskEnv(env: string): string {
 }
 
 export function SettingsRemna() {
-  const { can } = useSession();
+  const { can, reload } = useSession();
   const [data, setData] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [work, setWork] = useState<Work | null>(null);
@@ -215,10 +215,11 @@ export function SettingsRemna() {
         api<RemnaView>('/api/admin/settings/remnawave'),
         api<Connect>('/api/admin/settings/connect'),
       ]);
+      const linked = !!remna.url && remna.token_set;
       const [check, sub, configs, apps] = await Promise.all([
         remna.url ? api<Check>('/api/admin/settings/remnawave/check', { method: 'POST' }).catch(() => null) : Promise.resolve(null),
-        api<SubSettings>('/api/admin/settings/subscription').catch(() => null),
-        api<PageConfig[]>('/api/admin/settings/remnawave/page-configs').catch(() => [] as PageConfig[]),
+        linked ? api<SubSettings>('/api/admin/settings/subscription').catch(() => null) : Promise.resolve(null),
+        linked ? api<PageConfig[]>('/api/admin/settings/remnawave/page-configs').catch(() => [] as PageConfig[]) : Promise.resolve([] as PageConfig[]),
         api<AppsView>('/api/admin/settings/connect-apps').catch(() => null),
       ]);
       const loaded = { remna, check, sub, connect, configs, apps };
@@ -352,6 +353,7 @@ export function SettingsRemna() {
           body.guard = guardBody(work);
         }
         await api('/api/admin/settings/remnawave', { method: 'PUT', body });
+        void reload();
       }
       if (devChanged || remChanged) {
         const remarks = {} as Record<RemKey, string[]>;
