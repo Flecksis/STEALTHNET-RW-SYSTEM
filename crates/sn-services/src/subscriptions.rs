@@ -1520,25 +1520,23 @@ impl<'a> SubscriptionOps<'a> {
             Some(None) => Some(0),
             None => None,
         };
-        let purchase = match change.extra_devices {
+        let (purchase, bare_extra) = match change.extra_devices {
             Some(extra) if extra != subscription.extra_devices => {
                 match (subscription.period_started_at, subscription.period_days) {
-                    (Some(period_started_at), Some(period_days)) => Some(PurchaseApplied {
-                        tariff_id: subscription.tariff_id,
-                        kind: subscription.kind,
-                        extra_devices: extra,
-                        period_started_at,
-                        period_days,
-                    }),
-                    _ => {
-                        return Err(ServiceError::NotImplemented(
-                            "subscriptions.change_limits: у подписки нет оплаченного периода, \
-                             для записи доп. устройств нужен subscriptions().set_extra_devices",
-                        ));
-                    }
+                    (Some(period_started_at), Some(period_days)) => (
+                        Some(PurchaseApplied {
+                            tariff_id: subscription.tariff_id,
+                            kind: subscription.kind,
+                            extra_devices: extra,
+                            period_started_at,
+                            period_days,
+                        }),
+                        None,
+                    ),
+                    _ => (None, Some(extra)),
                 }
             }
-            _ => None,
+            _ => (None, None),
         };
         let user_id = linked_user(&subscription)?;
         let included = match subscription.tariff_id {
@@ -1596,6 +1594,9 @@ impl<'a> SubscriptionOps<'a> {
                     .bind(id.0)
                     .execute(conn.conn())
                     .await?;
+                if let Some(extra) = bare_extra {
+                    conn.subscriptions().set_extra_devices(id, extra).await?;
+                }
             }
             if traffic_limit.is_some() {
                 let mut conn = self.services.store().conn().await?;
@@ -2461,24 +2462,38 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn лимиты_без_оплаченного_периода_не_пишут_доп_устройства() {
+    async fn лимиты_без_оплаченного_периода_записывают_доп_устройства() {
         let Some(env) = env().await else { return };
         let client = env.client().await;
         let subscription = env.linked(client.id, sample_user(1, "sn_noperiod")).await;
         let ops = env.services.subscriptions();
-        let err = ops
+        let view = ops
             .change_limits(
                 subscription.id,
                 &LimitsChange {
                     traffic_limit_bytes: None,
-                    extra_devices: Some(1),
+                    extra_devices: Some(2),
                 },
                 ADMIN,
             )
             .await
-            .unwrap_err();
-        assert_eq!(code(&err), "not_implemented");
-        assert!(env.fake.calls().is_empty());
+            .unwrap();
+        assert_eq!(view.subscription.extra_devices, 2);
+        assert_eq!(view.subscription.period_started_at, None);
+        let user = env.fake.user(RemnaUserId(1)).unwrap();
+        assert_eq!(user.hwid_device_limit, Some(2));
+        let view = ops
+            .change_limits(
+                subscription.id,
+                &LimitsChange {
+                    traffic_limit_bytes: None,
+                    extra_devices: Some(0),
+                },
+                ADMIN,
+            )
+            .await
+            .unwrap();
+        assert_eq!(view.subscription.extra_devices, 0);
         let view = ops
             .change_limits(
                 subscription.id,
