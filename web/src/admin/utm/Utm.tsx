@@ -41,6 +41,8 @@ import './utm.css';
 
 const STRAY_SHOWN = 12;
 
+const ALL_FROM = '2015-01-01';
+
 type Mode = { kind: 'link'; id: number } | { kind: 'stray'; index: number } | { kind: 'new'; draft: Draft; id: number | null } | null;
 
 function percent(part: number, whole: number): string {
@@ -182,12 +184,28 @@ function Funnel({ s, trials, since, currency }: { s: Stat; trials: boolean; sinc
         ))}
       </dl>
       {days !== null ? (
-        <p className={early(days) ? 'ut-age early' : 'ut-age'}>
-          {early(days) ? `Метка ${ageText(days).replace('идёт', 'идёт всего')} — рано судить: часть пришедших ещё не успела подключиться и оплатить.` : `Метка ${ageText(days)}.`}
-        </p>
+        <p className={early(days) ? 'ut-age early' : 'ut-age'}>{ageLine(days)}</p>
       ) : null}
     </>
   );
+}
+
+function periodTitle(data: Data): string {
+  const p = data.page;
+  if (!p) {
+    return 'За период';
+  }
+  return p.from <= ALL_FROM ? `За всё время, по ${dateLong(p.to)}` : `${dateLong(p.from)} — ${dateLong(p.to)}`;
+}
+
+function ageLine(days: number): string {
+  if (days === 0) {
+    return 'Метка появилась сегодня — рано судить: пришедшие ещё не успели подключиться и оплатить.';
+  }
+  if (early(days)) {
+    return `Метке ${ageText(days)} — рано судить: часть пришедших ещё не успела подключиться и оплатить.`;
+  }
+  return `Метке ${ageText(days)}.`;
 }
 
 function clickLine(s: Stat): string | null {
@@ -314,7 +332,7 @@ function LinkDetail({ row, data, currency, onEdit, onRemoved, phone }: { row: Li
       </div>
       <LinksBox built={built} title={l.title} phone={phone} />
       <div className="ut-period">
-        <h3 className="ax-h3">{data.page ? `${dateLong(data.page.from)} — ${dateLong(data.page.to)}` : 'За период'}</h3>
+        <h3 className="ax-h3">{periodTitle(data)}</h3>
         <Funnel s={row.stats} trials={data.page?.trials ?? true} since={l.created_at} currency={currency} />
         {clicks ? <p className="ut-say">{clicks}</p> : null}
       </div>
@@ -357,7 +375,7 @@ function StrayDetail({ s, data, currency, onMake, phone }: { s: Stat; data: Data
         </div>
       </div>
       <div className="ut-period">
-        <h3 className="ax-h3">{data.page ? `${dateLong(data.page.from)} — ${dateLong(data.page.to)}` : 'За период'}</h3>
+        <h3 className="ax-h3">{periodTitle(data)}</h3>
         <Funnel s={s} trials={data.page?.trials ?? true} since={s.since} currency={currency} />
         {clicks ? <p className="ut-say">{clicks}</p> : null}
       </div>
@@ -427,14 +445,17 @@ export function Utm() {
   const [mode, setMode] = useState<Mode>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const page = data.page;
+  const ordered = [...(page?.links ?? [])].sort(
+    (a, b) => b.stats.registrations - a.stats.registrations || b.link.created_at.localeCompare(a.link.created_at),
+  );
+  const total = (src: string) => ordered.filter((r) => r.link.source === src).reduce((acc, r) => acc + r.stats.registrations, 0);
+  const sources = Array.from(new Set(ordered.map((r) => r.link.source))).sort((a, b) => total(b) - total(a));
+  const top = sources.length ? ordered.find((r) => r.link.source === sources[0]) : undefined;
   useEffect(() => {
-    if (mode === null && page && page.links.length && !phone) {
-      const first = page.links[0];
-      if (first) {
-        setMode({ kind: 'link', id: first.link.id });
-      }
+    if (mode === null && top && !phone) {
+      setMode({ kind: 'link', id: top.link.id });
     }
-  }, [page, mode, phone]);
+  }, [top, mode, phone]);
   if (!data.allowed) {
     return <NoAccess title="UTM-метки" text="Раздел доступен администраторам с правом «Маркетинг»." />;
   }
@@ -496,11 +517,6 @@ export function Utm() {
     );
   };
   const now = Date.now();
-  const ordered = [...(page?.links ?? [])].sort(
-    (a, b) => b.stats.registrations - a.stats.registrations || b.link.created_at.localeCompare(a.link.created_at),
-  );
-  const total = (src: string) => ordered.filter((r) => r.link.source === src).reduce((acc, r) => acc + r.stats.registrations, 0);
-  const sources = Array.from(new Set(ordered.map((r) => r.link.source))).sort((a, b) => total(b) - total(a));
   const tagLine = (base: string, since: string | null) => (early(ageDays(since, now)) ? `${base} · рано судить` : base);
   const list = (
     <>

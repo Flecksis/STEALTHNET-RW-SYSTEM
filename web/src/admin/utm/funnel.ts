@@ -48,5 +48,5 @@ function plural(n: number, one: string, few: string, many: string): string {
 }
 
 export function ageText(days: number): string {
-  return `идёт ${days} ${plural(days, 'день', 'дня', 'дней')}`;
+  return `${days} ${plural(days, 'день', 'дня', 'дней')}`;
 }

@@ -89,7 +89,9 @@
 
 .ut-head-btns {
   display: flex;
+  flex: none;
   gap: 8px;
+  white-space: nowrap;
 }
 
 .ut-links-box {

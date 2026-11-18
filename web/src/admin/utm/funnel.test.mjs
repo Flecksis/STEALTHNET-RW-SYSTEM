@@ -32,8 +32,8 @@ test('метке меньше 30 дней — рано судить, дни ск
   assert.equal(early(12), true);
   assert.equal(early(30), false);
   assert.equal(early(null), false);
-  assert.equal(ageText(1), 'идёт 1 день');
-  assert.equal(ageText(22), 'идёт 22 дня');
-  assert.equal(ageText(11), 'идёт 11 дней');
-  assert.equal(ageText(45), 'идёт 45 дней');
+  assert.equal(ageText(1), '1 день');
+  assert.equal(ageText(22), '22 дня');
+  assert.equal(ageText(11), '11 дней');
+  assert.equal(ageText(45), '45 дней');
 });

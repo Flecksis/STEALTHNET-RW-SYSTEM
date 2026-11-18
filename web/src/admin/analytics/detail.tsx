@@ -286,7 +286,8 @@ function TableDetail({ metric, report, onList, compact }: Props) {
             return null;
           }
           const part = shareOf(r.cells, col, i);
-          return `${col.title.toLowerCase()} ${cellText(r.cells[i] ?? null, col, c)}${part ? ` (${part})` : ''}`;
+          const name = /^[A-Z0-9]+$/.test(col.title) ? col.title : col.title.toLowerCase();
+          return `${name} ${cellText(r.cells[i] ?? null, col, c)}${part ? ` (${part})` : ''}`;
         })
         .filter(Boolean)
         .join(' · ');

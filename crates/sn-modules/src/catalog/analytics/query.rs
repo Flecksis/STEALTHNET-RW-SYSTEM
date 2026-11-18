@@ -131,12 +131,10 @@ pub fn previous(dates: Dates, compare: Compare) -> Option<Dates> {
                         to: dates.from.pred_opt()?,
                     });
                 }
-                if months == 1 {
-                    return Some(Dates {
-                        from: dates.from.checked_sub_months(Months::new(1))?,
-                        to: dates.to.checked_sub_months(Months::new(1))?,
-                    });
-                }
+                return Some(Dates {
+                    from: dates.from.checked_sub_months(Months::new(months))?,
+                    to: dates.to.checked_sub_months(Months::new(months))?,
+                });
             }
             let len = Days::new(u64::try_from(dates.days()).unwrap_or(1));
             let to = dates.from.checked_sub_days(Days::new(1))?;
@@ -701,8 +699,30 @@ mod tests {
         assert_eq!(
             previous(across, Compare::Prev),
             Some(Dates {
-                from: d(2026, 8, 13),
-                to: d(2026, 9, 30)
+                from: d(2026, 8, 1),
+                to: d(2026, 9, 18)
+            })
+        );
+        let year = Dates {
+            from: d(2025, 12, 1),
+            to: d(2026, 11, 18),
+        };
+        assert_eq!(
+            previous(year, Compare::Prev),
+            Some(Dates {
+                from: d(2024, 12, 1),
+                to: d(2025, 11, 18)
+            })
+        );
+        let mid = Dates {
+            from: d(2026, 10, 5),
+            to: d(2026, 11, 18),
+        };
+        assert_eq!(
+            previous(mid, Compare::Prev),
+            Some(Dates {
+                from: d(2026, 8, 21),
+                to: d(2026, 10, 4)
             })
         );
         assert_eq!(
