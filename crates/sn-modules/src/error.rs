@@ -11,6 +11,8 @@ pub enum ModuleError {
     Duplicate(ModuleId),
     #[error("неверные настройки модуля: {0}")]
     Invalid(String),
+    #[error("{0}")]
+    SecretsAgain(String),
     #[error("не найдено: {0}")]
     NotFound(&'static str),
     #[error("ядро отказало: {0}")]

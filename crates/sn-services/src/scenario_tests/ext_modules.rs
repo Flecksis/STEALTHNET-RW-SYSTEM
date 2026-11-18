@@ -47,6 +47,8 @@ fn confirm(source: &str) -> InstallRequest {
         permissions: parsed.permissions,
         events: parsed.events,
         update: None,
+        webhook: parsed.webhook,
+        page: parsed.page.map(|page| page.url),
     }
 }
 
@@ -372,6 +374,107 @@ async fn обновление_описания_с_новыми_правами_м
             .await
             .unwrap()
             .is_none()
+    );
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn смена_адреса_модуля_требует_подтверждения_и_пишется_в_журнал() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let owner = owner(services).await;
+    let by_owner = session(owner, AdminRole::Owner, &[]);
+    let first = manifest(
+        "https://hello.example.com/events",
+        &["clients_read"],
+        &["client_registered"],
+    );
+    install(services, &by_owner, &first).await;
+    let mut same: serde_json::Value = serde_json::from_str(&first).unwrap();
+    same["version"] = "1.0.1".into();
+    let mut quiet = confirm(&same.to_string());
+    quiet.update = Some("hello".into());
+    quiet.webhook = None;
+    quiet.page = None;
+    services
+        .ext_modules()
+        .install(&by_owner, &quiet)
+        .await
+        .unwrap();
+    let mut moved: serde_json::Value = serde_json::from_str(&first).unwrap();
+    moved["version"] = "1.1.0".into();
+    moved["webhook"] = "https://collector.example.net/events".into();
+    moved["page"]["url"] = "https://admin.example.net/hello".into();
+    let moved = moved.to_string();
+    let preview = services
+        .ext_modules()
+        .preview(&by_owner, &moved, Some("hello"))
+        .await
+        .unwrap()
+        .preview
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&preview.moved).unwrap(),
+        serde_json::json!([
+            {
+                "address": "webhook",
+                "before": "https://hello.example.com/events",
+                "after": "https://collector.example.net/events"
+            },
+            {
+                "address": "page",
+                "before": "https://hello.example.com/admin",
+                "after": "https://admin.example.net/hello"
+            }
+        ])
+    );
+    let mut request = confirm(&moved);
+    request.update = Some("hello".into());
+    let mut stale = request.clone();
+    stale.webhook = Some("https://hello.example.com/events".into());
+    let mut silent = request.clone();
+    silent.webhook = None;
+    silent.page = None;
+    let mut half = request.clone();
+    half.page = Some("https://hello.example.com/admin".into());
+    for refused in [&stale, &silent, &half] {
+        assert_eq!(
+            code(services.ext_modules().install(&by_owner, refused).await),
+            "ext_modules.confirm"
+        );
+    }
+    assert_eq!(
+        services
+            .ext_modules()
+            .card("hello")
+            .await
+            .unwrap()
+            .webhook
+            .as_deref(),
+        Some("https://hello.example.com/events")
+    );
+    services
+        .ext_modules()
+        .install(&by_owner, &request)
+        .await
+        .unwrap();
+    let card = services.ext_modules().card("hello").await.unwrap();
+    assert_eq!(
+        card.webhook.as_deref(),
+        Some("https://collector.example.net/events")
+    );
+    assert_eq!(card.page.unwrap().url, "https://admin.example.net/hello");
+    let mut conn = services.store().conn().await.unwrap();
+    let journal = conn
+        .audit()
+        .recent_by_action("ext_module.updated", 1)
+        .await
+        .unwrap();
+    assert_eq!(journal[0].actor_id, Some(owner.0));
+    assert_eq!(journal[0].details["version"], "1.1.0");
+    assert_eq!(
+        journal[0].details["moved"],
+        serde_json::to_value(&preview.moved).unwrap()
     );
     env.db.cleanup().await;
 }

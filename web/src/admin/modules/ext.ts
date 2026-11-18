@@ -46,6 +46,8 @@ export type ExtCard = {
 
 export type Problem = { path: string; message: string };
 
+export type Moved = { address: 'webhook' | 'page'; before: string | null; after: string | null };
+
 export type Preview = {
   id: string;
   name: string;
@@ -60,6 +62,7 @@ export type Preview = {
   permissions: ExtPermission[];
   sensitive: boolean;
   installed: { version: string; enabled: boolean } | null;
+  moved: Moved[];
 };
 
 export type PreviewResult = { errors: Problem[]; preview: Preview | null };

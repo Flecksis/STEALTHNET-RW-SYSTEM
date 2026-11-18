@@ -60,6 +60,9 @@ impl From<ModuleError> for WebError {
             ModuleError::Invalid(message) => {
                 WebError::rejected("validation.invalid_value", message)
             }
+            ModuleError::SecretsAgain(message) => {
+                WebError::rejected("settings.secrets_again", message)
+            }
             ModuleError::Store(StoreError::Invalid(message)) => {
                 WebError::rejected("validation.invalid_value", message)
             }

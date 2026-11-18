@@ -74,6 +74,7 @@ impl ServiceError {
             ServiceError::Module(ModuleError::Unavailable { .. }) => "module.unavailable",
             ServiceError::Module(ModuleError::NotImplemented(_)) => "not_implemented",
             ServiceError::Module(ModuleError::Invalid(_)) => "module.invalid",
+            ServiceError::Module(ModuleError::SecretsAgain(_)) => crate::settings::SECRETS_AGAIN,
             ServiceError::Module(_) => "module.error",
             ServiceError::Internal(_) => "internal",
         }

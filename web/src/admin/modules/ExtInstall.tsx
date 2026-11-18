@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { CredentialsBlock } from './ExtCredentials';
-import { extLink, MANIFEST_LIMIT, type ExtEvent, type ExtPermission, type InstallResult, type Preview, type PreviewResult, type Problem } from './ext';
+import { extLink, MANIFEST_LIMIT, type ExtEvent, type ExtPermission, type InstallResult, type Moved, type Preview, type PreviewResult, type Problem } from './ext';
 import '../form.css';
 import '../pages/admins.css';
 import './modules.css';
@@ -74,6 +74,22 @@ function PermissionList({ permissions }: { permissions: ExtPermission[] }) {
   );
 }
 
+function MovedNote({ moved, address }: { moved: Moved[]; address: Moved['address'] }) {
+  const change = moved.find((m) => m.address === address);
+  if (!change) {
+    return null;
+  }
+  const now =
+    address === 'webhook'
+      ? change.before
+        ? `Сейчас события уходят на ${change.before}.`
+        : 'Сейчас события не уходят.'
+      : change.before
+        ? `Сейчас страница открывается с ${change.before}.`
+        : 'Сейчас страницы нет.';
+  return <span className="md-warn">Адрес меняется. {now} Проверьте, что новый адрес принадлежит автору модуля.</span>;
+}
+
 function PreviewCard({ preview }: { preview: Preview }) {
   return (
     <section className="sec ext-facts" aria-labelledby="ext-what-h">
@@ -101,6 +117,7 @@ function PreviewCard({ preview }: { preview: Preview }) {
         <span className="rl">Адрес для событий</span>
         <span className="rc">
           {preview.webhook ? <span className="mono ext-url">{preview.webhook}</span> : <span className="cap">Не указан: события не приходят.</span>}
+          <MovedNote moved={preview.moved} address="webhook" />
         </span>
       </div>
       <div className="row">
@@ -115,6 +132,7 @@ function PreviewCard({ preview }: { preview: Preview }) {
           ) : (
             <span className="cap">Нет.</span>
           )}
+          <MovedNote moved={preview.moved} address="page" />
         </span>
       </div>
       <div className="row">
@@ -190,6 +208,8 @@ export function ExtInstall() {
           update,
           permissions: preview.permissions.filter((p) => p.change !== 'removed').map((p) => p.key),
           events: preview.events.filter((e) => e.change !== 'removed').map((e) => e.kind),
+          webhook: preview.webhook,
+          page: preview.page?.url ?? null,
         },
       });
       if (installed.credentials) {

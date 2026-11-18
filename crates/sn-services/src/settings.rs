@@ -2677,7 +2677,12 @@ impl<'a> SettingsOps<'a> {
             .collect();
         module
             .validate_change(&before, &merged, &new_secrets)
-            .map_err(|e| ServiceError::rejected("modules.config", e.to_string()))?;
+            .map_err(|e| match e {
+                sn_modules::ModuleError::SecretsAgain(message) => {
+                    ServiceError::rejected(SECRETS_AGAIN, message)
+                }
+                other => ServiceError::rejected("modules.config", other.to_string()),
+            })?;
         for change in &changes {
             match change {
                 SecretChange::Set(key, value) => {

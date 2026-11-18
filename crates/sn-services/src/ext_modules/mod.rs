@@ -104,6 +104,46 @@ pub struct PageView {
     pub permission_title: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Address {
+    Webhook,
+    Page,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Moved {
+    pub address: Address,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+fn page_url(manifest: &Manifest) -> Option<&str> {
+    manifest.page.as_ref().map(|page| page.url.as_str())
+}
+
+fn moved_addresses(manifest: &Manifest, old: Option<&Manifest>) -> Vec<Moved> {
+    let Some(old) = old else {
+        return Vec::new();
+    };
+    let mut moved = Vec::new();
+    if old.webhook != manifest.webhook {
+        moved.push(Moved {
+            address: Address::Webhook,
+            before: old.webhook.clone(),
+            after: manifest.webhook.clone(),
+        });
+    }
+    if page_url(old) != page_url(manifest) {
+        moved.push(Moved {
+            address: Address::Page,
+            before: page_url(old).map(str::to_string),
+            after: page_url(manifest).map(str::to_string),
+        });
+    }
+    moved
+}
+
 fn page_view(manifest: &Manifest) -> Option<PageView> {
     manifest.page.as_ref().map(|page| PageView {
         url: page.url.clone(),
@@ -200,6 +240,7 @@ pub struct Preview {
     pub permissions: Vec<PermissionView>,
     pub sensitive: bool,
     pub installed: Option<InstalledVersion>,
+    pub moved: Vec<Moved>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -217,6 +258,20 @@ pub struct InstallRequest {
     pub events: Vec<String>,
     #[serde(default)]
     pub update: Option<String>,
+    #[serde(default)]
+    pub webhook: Option<String>,
+    #[serde(default)]
+    pub page: Option<String>,
+}
+
+impl InstallRequest {
+    fn confirms(&self, moved: &Moved) -> bool {
+        let confirmed = match moved.address {
+            Address::Webhook => self.webhook.as_deref(),
+            Address::Page => self.page.as_deref(),
+        };
+        confirmed == moved.after.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -588,9 +643,11 @@ impl<'a> ExtModulesOps<'a> {
         };
         let old = existing.as_ref().map(|row| &row.manifest);
         let permissions = permissions_diff(&manifest, old);
+        let moved = moved_addresses(&manifest, old);
         Ok(PreviewResult {
             errors,
             preview: Some(Preview {
+                moved,
                 sensitive: permissions
                     .iter()
                     .any(|p| p.sensitive && p.change != Change::Removed),
@@ -723,6 +780,7 @@ impl<'a> ExtModulesOps<'a> {
                             "permissions": manifest.permissions,
                             "events": manifest.events,
                             "webhook": manifest.webhook,
+                            "page": page_url(&manifest),
                             "api_key": key_id,
                         }),
                     ))
@@ -733,6 +791,13 @@ impl<'a> ExtModulesOps<'a> {
                 })
             }
             Some(row) => {
+                let moved = moved_addresses(&manifest, Some(&row.manifest));
+                if !moved.iter().all(|m| request.confirms(m)) {
+                    return Err(rejected(
+                        "ext_modules.confirm",
+                        "Адрес модуля в файле отличается от того, что вы подтвердили. Загрузите файл ещё раз и проверьте адреса",
+                    ));
+                }
                 let (config, dropped) = carry_config(&row, &manifest.settings);
                 for key in dropped {
                     tx.secrets()
@@ -773,6 +838,7 @@ impl<'a> ExtModulesOps<'a> {
                             "permissions_removed": removed,
                             "events": manifest.events,
                             "webhook": manifest.webhook,
+                            "moved": moved,
                         }),
                     ))
                     .await?;

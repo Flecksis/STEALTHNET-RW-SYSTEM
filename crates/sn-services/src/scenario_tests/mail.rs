@@ -918,3 +918,83 @@ async fn подтверждение_почты_кодом_отвязывает_g
     drop(conn);
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn смена_сервера_smtp_без_пароля_не_сохраняется() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let ops = services.settings_ops();
+    let update = |config: serde_json::Value, clear: &[&str]| ModuleConfigUpdate {
+        config: serde_json::from_value(config).unwrap(),
+        clear: clear.iter().map(|key| (*key).to_string()).collect(),
+    };
+    ops.update_module_config(
+        ModuleId::Mail,
+        &update(
+            serde_json::json!({
+                "transport": "smtp",
+                "smtp_host": "smtp.yandex.ru",
+                "username": "robot@example.com",
+                "password": "app-password",
+                "from_email": "robot@example.com"
+            }),
+            &[],
+        ),
+        admin,
+    )
+    .await
+    .unwrap();
+    let saved = |key: &str| {
+        services
+            .modules()
+            .config(ModuleId::Mail)
+            .text(key)
+            .map(str::to_string)
+    };
+    for moved in [
+        serde_json::json!({ "smtp_host": "smtp.attacker.example" }),
+        serde_json::json!({ "smtp_port": 2525 }),
+        serde_json::json!({ "security": "tls" }),
+        serde_json::json!({ "username": "other@example.com" }),
+    ] {
+        assert_eq!(
+            code(
+                ops.update_module_config(ModuleId::Mail, &update(moved.clone(), &[]), admin)
+                    .await
+            ),
+            crate::settings::SECRETS_AGAIN,
+            "{moved}"
+        );
+    }
+    assert_eq!(saved("smtp_host").as_deref(), Some("smtp.yandex.ru"));
+    assert_eq!(saved("password").as_deref(), Some("app-password"));
+    ops.update_module_config(
+        ModuleId::Mail,
+        &update(
+            serde_json::json!({ "smtp_host": "smtp.mail.ru", "password": "mail-ru-password" }),
+            &[],
+        ),
+        admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved("smtp_host").as_deref(), Some("smtp.mail.ru"));
+    assert_eq!(saved("password").as_deref(), Some("mail-ru-password"));
+    ops.update_module_config(
+        ModuleId::Mail,
+        &update(
+            serde_json::json!({ "smtp_host": "smtp.gmail.com" }),
+            &["password"],
+        ),
+        admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved("smtp_host").as_deref(), Some("smtp.gmail.com"));
+    assert!(saved("password").is_none());
+    env.db.cleanup().await;
+}

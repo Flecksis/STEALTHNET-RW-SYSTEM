@@ -689,8 +689,8 @@ impl Module for AiModule {
         if new.api_key.is_empty() || new_secrets.contains(&"api_key") || old.same_address(&new) {
             return Ok(());
         }
-        Err(ModuleError::Invalid(
-            "при смене провайдера или адреса API вставьте ключ заново: сохранённый ключ не отправляется на новый адрес".into(),
+        Err(ModuleError::SecretsAgain(
+            "При смене провайдера или адреса API вставьте ключ заново: сохранённый ключ не отправляется на новый адрес".into(),
         ))
     }
 

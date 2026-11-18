@@ -2760,7 +2760,12 @@ async fn почта_старой_панели_переносится_и_не_з�
     );
     assert_eq!(again.mail, None);
 
-    set_mail(&env, admin, &[("smtp_host", "mail.other.com")]).await;
+    set_mail(
+        &env,
+        admin,
+        &[("smtp_host", "mail.other.com"), ("password", "other-pass")],
+    )
+    .await;
     let (differs, kept) = import(&env, &mail_dump(OLD_SMTP), Some(admin)).await;
     match &differs.mail {
         Some(MailPlan::Differs { current, incoming }) => {

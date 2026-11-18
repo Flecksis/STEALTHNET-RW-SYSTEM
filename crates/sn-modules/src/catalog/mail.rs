@@ -76,31 +76,39 @@ fn optional_text(config: &ModuleConfig, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn security(config: &ModuleConfig) -> Result<MailSecurity, String> {
+    match optional_text(config, "security").as_deref() {
+        None | Some("starttls") => Ok(MailSecurity::StartTls),
+        Some("tls") => Ok(MailSecurity::Tls),
+        Some("none") => Ok(MailSecurity::Plain),
+        Some(_) => Err("шифрование: starttls, tls или none".into()),
+    }
+}
+
+fn port(config: &ModuleConfig, security: MailSecurity) -> Result<u16, String> {
+    let standard = match security {
+        MailSecurity::Tls => 465,
+        MailSecurity::StartTls => 587,
+        MailSecurity::Plain => 25,
+    };
+    match config.get("smtp_port") {
+        None | Some(serde_json::Value::Null) => Ok(standard),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(standard),
+        Some(_) => config_number(config, "smtp_port")
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .ok_or_else(|| "порт — число от 1 до 65535".to_string()),
+    }
+}
+
 fn smtp(config: &ModuleConfig) -> Result<SmtpSettings, String> {
     let host =
         optional_text(config, "smtp_host").ok_or_else(|| "не указан сервер SMTP".to_string())?;
     if host.contains(char::is_whitespace) || host.contains('/') || host.contains(':') {
         return Err("сервер SMTP записан неверно: нужно имя вроде smtp.example.com".into());
     }
-    let security = match optional_text(config, "security").as_deref() {
-        None | Some("starttls") => MailSecurity::StartTls,
-        Some("tls") => MailSecurity::Tls,
-        Some("none") => MailSecurity::Plain,
-        Some(_) => return Err("шифрование: starttls, tls или none".into()),
-    };
-    let standard = match security {
-        MailSecurity::Tls => 465,
-        MailSecurity::StartTls => 587,
-        MailSecurity::Plain => 25,
-    };
-    let port = match config.get("smtp_port") {
-        None | Some(serde_json::Value::Null) => standard,
-        Some(serde_json::Value::String(s)) if s.trim().is_empty() => standard,
-        Some(_) => config_number(config, "smtp_port")
-            .and_then(|n| u16::try_from(n).ok())
-            .filter(|n| *n > 0)
-            .ok_or_else(|| "порт — число от 1 до 65535".to_string())?,
-    };
+    let security = security(config)?;
+    let port = port(config, security)?;
     let username = optional_text(config, "username");
     let password = config
         .text("password")
@@ -176,6 +184,34 @@ impl MailSettings {
     pub fn code_login(&self) -> bool {
         self.sends() && self.login == EmailLogin::Code
     }
+}
+
+fn lowered(config: &ModuleConfig, key: &str) -> Option<String> {
+    optional_text(config, key).map(|value| value.trim_end_matches('.').to_lowercase())
+}
+
+fn server_moved(before: &ModuleConfig, after: &ModuleConfig) -> Vec<&'static str> {
+    let port_of = |config: &ModuleConfig| {
+        port(config, security(config).unwrap_or(MailSecurity::StartTls)).ok()
+    };
+    [
+        (
+            "«Сервер SMTP»",
+            lowered(before, "smtp_host") != lowered(after, "smtp_host"),
+        ),
+        ("«Порт»", port_of(before) != port_of(after)),
+        (
+            "«Шифрование»",
+            security(before).ok() != security(after).ok(),
+        ),
+        (
+            "«Логин»",
+            lowered(before, "username") != lowered(after, "username"),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(label, moved)| moved.then_some(label))
+    .collect()
 }
 
 pub struct MailModule;
@@ -267,6 +303,25 @@ impl Module for MailModule {
         MailSettings::parse(config)
             .map(|_| ())
             .map_err(ModuleError::Invalid)
+    }
+
+    fn validate_change(
+        &self,
+        before: &ModuleConfig,
+        after: &ModuleConfig,
+        new_secrets: &[&str],
+    ) -> Result<(), ModuleError> {
+        if after.text("password").is_none() || new_secrets.contains(&"password") {
+            return Ok(());
+        }
+        let what = match server_moved(before, after).as_slice() {
+            [] => return Ok(()),
+            [one] => format!("поля {one}"),
+            [rest @ .., last] => format!("полей {} и {last}", rest.join(", ")),
+        };
+        Err(ModuleError::SecretsAgain(format!(
+            "При смене {what} введите пароль заново: панель не отправляет сохранённый пароль на другой сервер или под другим логином"
+        )))
     }
 }
 
@@ -387,5 +442,68 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn смена_сервера_smtp_требует_пароль_заново() {
+        let saved = json!({
+            "transport": "smtp",
+            "smtp_host": "smtp.yandex.ru",
+            "username": "robot@example.com",
+            "password": "app-password",
+            "from_email": "robot@example.com"
+        });
+        let with = |patch: serde_json::Value| {
+            let mut value = saved.clone();
+            for (key, field) in patch.as_object().unwrap() {
+                value[key] = field.clone();
+            }
+            config(value)
+        };
+        let before = config(saved.clone());
+        let refused = |after: &ModuleConfig| match MailModule
+            .validate_change(&before, after, &[])
+            .unwrap_err()
+        {
+            ModuleError::SecretsAgain(text) => text,
+            other => panic!("ждали отказ «введите пароль заново», пришло {other}"),
+        };
+        let text = refused(&with(json!({ "smtp_host": "smtp.attacker.example" })));
+        assert!(
+            text.contains("поля «Сервер SMTP» введите пароль заново"),
+            "{text}"
+        );
+        assert!(refused(&with(json!({ "smtp_port": 2525 }))).contains("«Порт»"));
+        assert!(
+            refused(&with(json!({ "security": "none" }))).contains("полей «Порт» и «Шифрование»")
+        );
+        assert!(refused(&with(json!({ "username": "other@example.com" }))).contains("«Логин»"));
+        let moved = with(json!({ "smtp_host": "smtp.mail.ru" }));
+        assert!(
+            MailModule
+                .validate_change(&before, &moved, &["password"])
+                .is_ok()
+        );
+        let mut cleared = moved.to_value();
+        cleared.as_object_mut().unwrap().remove("password");
+        assert!(
+            MailModule
+                .validate_change(&before, &config(cleared), &[])
+                .is_ok()
+        );
+        for same in [
+            json!({ "smtp_host": " SMTP.Yandex.ru. ", "username": "Robot@Example.com" }),
+            json!({ "smtp_port": 587 }),
+            json!({ "security": "starttls", "smtp_port": "" }),
+            json!({ "from_email": "news@example.com", "from_name": "Сервис" }),
+            json!({ "transport": "none" }),
+        ] {
+            assert!(
+                MailModule
+                    .validate_change(&before, &with(same.clone()), &[])
+                    .is_ok(),
+                "{same}"
+            );
+        }
     }
 }
