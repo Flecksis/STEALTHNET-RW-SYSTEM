@@ -322,16 +322,10 @@ pub fn default_gateway(route_table: &str) -> Option<IpAddr> {
     })
 }
 
-fn in_container() -> bool {
-    ["/.dockerenv", "/run/.containerenv"]
-        .iter()
-        .any(|path| std::path::Path::new(path).exists())
-}
-
 pub fn docker_gateway() -> Option<IpAddr> {
     static GATEWAY: OnceLock<Option<IpAddr>> = OnceLock::new();
     *GATEWAY.get_or_init(|| {
-        let gateway = in_container()
+        let gateway = sn_services::server_load::in_container()
             .then(|| std::fs::read_to_string("/proc/net/route").ok())
             .flatten()
             .and_then(|table| default_gateway(&table))

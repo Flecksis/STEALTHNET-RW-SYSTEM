@@ -67,6 +67,7 @@ async fn services_for(
         kdf: KdfParams::QUICK,
         upload_dir: dir.join("uploads"),
         telegram_part: telegram::PART_SIZE,
+        container: false,
     }));
     services.reload().await.unwrap();
     let fake = Arc::new(FakeRemnawave::new());
@@ -810,13 +811,23 @@ async fn без_папки_для_копий_панель_объясняет_ч�
     assert_eq!(err.code(), NO_DIR);
     let view = env.ops().view(None).await.unwrap();
     assert!(!view.storage.configured);
+    let problem = view.storage.problem.unwrap();
+    assert!(problem.contains("SN_BACKUP_DIR"), "{problem}");
+    assert!(!problem.contains("stealthnet update"), "{problem}");
+    assert!(err.to_string().contains("SN_BACKUP_DIR"), "{err}");
+    assert_eq!(view.next_at, None);
+    assert_eq!(env.ops().next_run_in().await.unwrap(), None);
+    let mut docker = env.ops().env();
+    docker.container = true;
+    env.services.set_backup_env(Some(docker));
+    let view = env.ops().view(None).await.unwrap();
     assert!(
         view.storage
             .problem
             .unwrap()
             .contains("sudo stealthnet update")
     );
-    assert_eq!(view.next_at, None);
-    assert_eq!(env.ops().next_run_in().await.unwrap(), None);
+    let err = env.ops().make_now(RunKind::Manual, None).await.unwrap_err();
+    assert!(err.to_string().contains("sudo stealthnet update"), "{err}");
     env.cleanup().await;
 }

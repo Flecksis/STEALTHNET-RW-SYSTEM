@@ -32,6 +32,7 @@ pub fn env(config: &Config) -> BackupEnv {
         host_dir: config.backup_host_dir.clone(),
         telegram_api: config.telegram_api.clone(),
         secret_key: config.secret_key.clone(),
+        container: sn_services::server_load::in_container(),
         ..BackupEnv::default()
     }
 }

@@ -7,6 +7,12 @@ const FRESH_SAMPLE: Duration = Duration::from_millis(400);
 const SAMPLE_MIN_AGE: Duration = Duration::from_secs(1);
 const SAMPLE_MAX_AGE: Duration = Duration::from_secs(120);
 
+pub fn in_container() -> bool {
+    ["/.dockerenv", "/run/.containerenv"]
+        .iter()
+        .any(|path| Path::new(path).exists())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Usage {
     pub used_bytes: u64,

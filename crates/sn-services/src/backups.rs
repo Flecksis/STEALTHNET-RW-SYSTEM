@@ -115,6 +115,7 @@ pub struct BackupEnv {
     pub kdf: KdfParams,
     pub upload_dir: PathBuf,
     pub telegram_part: u64,
+    pub container: bool,
 }
 
 impl Default for BackupEnv {
@@ -127,6 +128,7 @@ impl Default for BackupEnv {
             kdf: KdfParams::STRONG,
             upload_dir: std::env::temp_dir().join("stealthnet-backup-uploads"),
             telegram_part: telegram::PART_SIZE,
+            container: false,
         }
     }
 }
@@ -582,6 +584,26 @@ pub struct BackupOps<'a> {
     services: &'a Services,
 }
 
+fn no_dir_problem(container: bool) -> &'static str {
+    if container {
+        "Папка для копий на сервере не подключена. Выполните на сервере: sudo stealthnet update"
+    } else {
+        "Папка для копий не задана. Укажите в переменной окружения SN_BACKUP_DIR папку, куда панель может записывать, и перезапустите панель."
+    }
+}
+
+fn unwritable_problem(container: bool, dir: &std::path::Path) -> String {
+    if container {
+        "Панель не может записывать в папку для копий. Выполните на сервере: sudo stealthnet update"
+            .into()
+    } else {
+        format!(
+            "Панель не может записывать в папку для копий {}. Дайте пользователю, от которого работает панель, право на запись в неё или укажите в SN_BACKUP_DIR другую папку и перезапустите панель.",
+            dir.display()
+        )
+    }
+}
+
 impl<'a> BackupOps<'a> {
     pub fn new(services: &'a Services) -> Self {
         BackupOps { services }
@@ -599,12 +621,9 @@ impl<'a> BackupOps<'a> {
     }
 
     fn dir(&self) -> ServiceResult<PathBuf> {
-        self.env().dir.ok_or_else(|| {
-            rejected(
-                NO_DIR,
-                "Папка для копий на сервере не подключена. Выполните на сервере: sudo stealthnet update",
-            )
-        })
+        let env = self.env();
+        env.dir
+            .ok_or_else(|| rejected(NO_DIR, no_dir_problem(env.container)))
     }
 
     pub async fn config(&self) -> ServiceResult<BackupConfig> {
@@ -700,16 +719,19 @@ impl<'a> BackupOps<'a> {
                 host_dir: env.host_dir,
                 used_bytes: 0,
                 free_bytes: None,
-                problem: Some(
-                    "Папка для копий на сервере не подключена. Выполните на сервере: sudo stealthnet update"
-                        .into(),
-                ),
+                problem: Some(no_dir_problem(env.container).into()),
             };
         };
         let probe = dir.clone();
+        let container = env.container;
         let (writable, problem, used, free) = tokio::task::spawn_blocking(move || {
             if std::fs::create_dir_all(&probe).is_err() {
-                return (false, Some("папка для копий не создаётся".to_string()), 0, None);
+                return (
+                    false,
+                    Some("папка для копий не создаётся".to_string()),
+                    0,
+                    None,
+                );
             }
             let test = probe.join(format!(".write-test-{}", Uuid::new_v4().simple()));
             let writable = std::fs::write(&test, b"ok").is_ok();
@@ -718,10 +740,7 @@ impl<'a> BackupOps<'a> {
                 .iter()
                 .map(|(_, _, size)| *size)
                 .sum::<u64>();
-            let problem = (!writable).then(|| {
-                "Панель не может записывать в папку для копий. Выполните на сервере: sudo stealthnet update"
-                    .to_string()
-            });
+            let problem = (!writable).then(|| unwritable_problem(container, &probe));
             (writable, problem, used, free_space(&probe))
         })
         .await

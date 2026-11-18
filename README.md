@@ -138,7 +138,7 @@ sudo stealthnet restore /путь/к/stealthnet-backup-20261118-040000-auto.tar.
 | `REMNAWAVE_X_API_KEY` | — | Заголовок `X-Api-Key` для защиты eGames: `Basic <base64 от логин:пароль>` для TinyAuth или ключ портала Caddy как есть |
 | `TELEGRAM_BOT_TOKEN` | — | Токен бота, пока он не задан в «Настройки → Бот» |
 | `SN_IMPORT_DIR` | временная папка | Куда сохранять копию старого бота при переносе; после переноса файл удаляется |
-| `SN_BACKUP_DIR` | задан в `docker-compose.yml` | Папка резервных копий внутри контейнера; без неё копии не делаются, а раздел копий подсказывает, что выполнить |
+| `SN_BACKUP_DIR` | задан в `docker-compose.yml` | Папка резервных копий внутри контейнера; при запуске без Docker — любая папка, куда панель может писать. Без неё копии не делаются, а раздел копий подсказывает, что сделать |
 | `SN_BACKUP_HOST_DIR` | заполняет установщик | Путь к той же папке на сервере, его показывает раздел копий |
 | `SN_BACKUP_PASSWORD` | — | Только для `restore`: пароль зашифрованной копии, иначе он читается из stdin |
 | `SN_ADMIN_PASSWORD` | — | Только для `create-admin`, иначе пароль читается из stdin |
@@ -163,6 +163,7 @@ cargo build --release -p sn-app
 export DATABASE_URL=postgres://stealthnet:пароль@127.0.0.1:5432/stealthnet
 export SN_SECRET_KEY='ключ из gen-secret-key'
 export SN_WEB_DIR=$PWD/web/dist
+export SN_BACKUP_DIR=$PWD/backups
 ./target/release/stealthnet migrate
 SN_ADMIN_PASSWORD='пароль владельца' ./target/release/stealthnet create-admin --email owner@example.com
 ./target/release/stealthnet serve

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { count, dateLong, dateTime, dayLabel, groupDigits, NBSP, timeHM } from '../../lib/format';
@@ -1532,7 +1532,17 @@ export function SettingsBackups() {
 
   const problem: ReactNode = view.storage.problem ? (
     <div className="bk-problem" role="alert">
-      <p>{view.storage.problem.replace(/\. Выполните на сервере: sudo stealthnet update$/, '.')}</p>
+      <p>
+        {view.storage.problem
+          .replace(/\. Выполните на сервере: sudo stealthnet update$/, '.')
+          .split('SN_BACKUP_DIR')
+          .map((part, index) => (
+            <Fragment key={index}>
+              {index > 0 ? <code>SN_BACKUP_DIR</code> : null}
+              {part}
+            </Fragment>
+          ))}
+      </p>
       {view.storage.problem.includes('sudo stealthnet update') ? (
         <p className="cap">
           Выполните на сервере: <Command text="sudo stealthnet update" />
