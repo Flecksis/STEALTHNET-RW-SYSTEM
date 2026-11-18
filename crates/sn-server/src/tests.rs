@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 mod admins;
 mod alerts;
+mod analytics;
 mod api_keys;
 mod balance_off;
 mod bot_content;

@@ -1,4 +1,5 @@
 import { useParams } from 'react-router';
+import { Analytics } from '../analytics/Analytics';
 import { Broadcasts } from '../broadcast/Broadcasts';
 import { Gifts } from '../gifts/Gifts';
 import { Contests } from '../contests/Contests';
@@ -11,6 +12,8 @@ import { Roulette } from '../roulette/Roulette';
 export function ModuleScreen() {
   const { module = '' } = useParams();
   switch (module) {
+    case 'analytics':
+      return <Analytics />;
     case 'broadcast':
       return <Broadcasts />;
     case 'promo':

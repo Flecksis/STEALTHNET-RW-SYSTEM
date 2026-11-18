@@ -9,8 +9,8 @@ pub mod sender;
 
 pub use context::{
     BalanceChange, CoreApi, GrantCurrent, GrantPreview, GrantRefusal, GrantSpec, GrantTarget,
-    GrantedOrder, Lifted, ModuleContext, Notification, Restricted, SubscriptionGrant,
-    TrafficReading, TrafficRestriction,
+    GrantedOrder, Lifted, MethodTitle, ModuleContext, Notification, PaymentTitle, Restricted,
+    SubscriptionGrant, TrafficReading, TrafficRestriction,
 };
 pub use error::ModuleError;
 pub use module::{BotEntry, ItemHook, Module, ModuleConfig, QuoteHook, QuoteOrigin, ScheduledTask};

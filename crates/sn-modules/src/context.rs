@@ -146,6 +146,20 @@ pub enum Lifted {
     Ended,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MethodTitle {
+    pub code: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaymentTitle {
+    pub provider: String,
+    pub title: String,
+    pub button: String,
+    pub methods: Vec<MethodTitle>,
+}
+
 #[async_trait]
 pub trait CoreApi: Send + Sync {
     async fn change_balance(&self, change: BalanceChange) -> Result<Money, ModuleError>;
@@ -252,6 +266,10 @@ pub trait CoreApi: Send + Sync {
 
     fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
         None
+    }
+
+    fn payment_titles(&self) -> Vec<PaymentTitle> {
+        Vec::new()
     }
 }
 

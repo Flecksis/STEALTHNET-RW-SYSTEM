@@ -6,12 +6,13 @@ use sn_domain::events::DomainEvent;
 use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
-use sn_domain::money::Money;
+use sn_domain::money::{Currency, Money};
 use sn_modules::{
     BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, Lifted,
-    MailSender, ModuleError, Notification, Restricted, SubscriptionGrant, TrafficReading,
-    TrafficRestriction,
+    MailSender, MethodTitle, ModuleError, Notification, PaymentTitle, Restricted,
+    SubscriptionGrant, TrafficReading, TrafficRestriction,
 };
+use sn_payments::ProviderConfig;
 use sn_store::{Db, StoreError, Tx};
 use std::sync::Arc;
 
@@ -197,6 +198,56 @@ impl CoreApi for Services {
 
     fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
         Some(Arc::new(crate::mail::MailBridge::new(self.clone())))
+    }
+
+    fn payment_titles(&self) -> Vec<PaymentTitle> {
+        let registry = self.payments();
+        let snapshot = registry.snapshot();
+        registry
+            .providers()
+            .iter()
+            .map(|provider| {
+                let state = snapshot.states.get(provider.id());
+                let choices = state
+                    .map(|state| state.methods.as_slice())
+                    .unwrap_or_default();
+                let empty = ProviderConfig::default();
+                let button = state
+                    .and_then(|state| state.label.title.clone())
+                    .unwrap_or_else(|| {
+                        provider
+                            .client_label(
+                                snapshot.currency,
+                                state.map_or(&empty, |state| &state.config),
+                            )
+                            .title
+                            .to_string()
+                    });
+                let mut methods: Vec<MethodTitle> = Vec::new();
+                for currency in Currency::ALL {
+                    for method in provider.methods(currency) {
+                        if methods.iter().any(|m| m.code == method.code) {
+                            continue;
+                        }
+                        let title = choices
+                            .iter()
+                            .find(|choice| choice.code == method.code)
+                            .and_then(|choice| choice.title.clone())
+                            .unwrap_or_else(|| method.title.to_string());
+                        methods.push(MethodTitle {
+                            code: method.code.to_string(),
+                            title,
+                        });
+                    }
+                }
+                PaymentTitle {
+                    provider: provider.id().to_string(),
+                    title: provider.title().to_string(),
+                    button,
+                    methods,
+                }
+            })
+            .collect()
     }
 }
 
