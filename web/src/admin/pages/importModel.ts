@@ -32,6 +32,7 @@ export type Skip = { code: string; count: number; text: string };
 
 export type MailPlan =
   | { action: 'transfer'; incoming: string }
+  | { action: 'partial'; incoming: string; reason: string }
   | { action: 'same'; incoming: string }
   | { action: 'differs'; current: string; incoming: string }
   | { action: 'skipped'; reason: string };

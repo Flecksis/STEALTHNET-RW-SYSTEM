@@ -16,6 +16,7 @@ const NAME_MAX: usize = 80;
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum MailPlan {
     Transfer { incoming: String },
+    Partial { incoming: String, reason: String },
     Same { incoming: String },
     Differs { current: String, incoming: String },
     Skipped { reason: String },
@@ -26,6 +27,7 @@ pub struct OldMail {
     pub config: Map<String, Value>,
     pub summary: String,
     pub resend: bool,
+    pub missing: Option<String>,
     fingerprint: String,
 }
 
@@ -62,6 +64,25 @@ fn clean_host(raw: &str) -> String {
         }
         _ => host.to_string(),
     }
+}
+
+fn host_ok(host: &str) -> bool {
+    !host.is_empty() && !host.contains(char::is_whitespace) && !host.contains(['/', ':'])
+}
+
+fn filled(config: &Map<String, Value>) -> String {
+    [
+        ("smtp_host", "сервер SMTP"),
+        ("username", "логин и пароль"),
+        ("resend_api_key", "ключ Resend"),
+        ("from_email", "адрес отправителя"),
+        ("from_name", "имя отправителя"),
+    ]
+    .iter()
+    .filter(|(key, _)| config.contains_key(*key))
+    .map(|(_, label)| *label)
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 fn sender_name(raw: &str) -> Option<String> {
@@ -128,59 +149,79 @@ pub fn old_mail(old: &BTreeMap<String, String>) -> Old {
     }
     let resend = text(old, "mail_provider").is_some_and(|p| p.eq_ignore_ascii_case("resend"));
     let mut config = Map::new();
-    let from = if resend {
-        let Some(key) = text(old, "resend_api_key") else {
-            return Old::Broken(
-                "в старой панели выбрана отправка через Resend, но не задан ключ API".into(),
-            );
-        };
-        config.insert("transport".into(), Value::String("resend".into()));
-        config.insert("resend_api_key".into(), Value::String(key.into()));
-        text(old, "resend_from_email").or_else(|| text(old, "smtp_from_email"))
+    let mut problems: Vec<String> = Vec::new();
+    if resend {
+        match text(old, "resend_api_key") {
+            Some(key) => {
+                config.insert("resend_api_key".into(), Value::String(key.into()));
+            }
+            None => problems.push("выбрана отправка через Resend, но не задан ключ API".into()),
+        }
     } else {
-        let Some(host) = text(old, "smtp_host") else {
-            return Old::Broken("в старой панели не задан сервер SMTP".into());
-        };
-        let secure = text(old, "smtp_secure").is_some_and(truthy);
-        let port = text(old, "smtp_port")
-            .and_then(|p| p.parse::<u16>().ok())
-            .filter(|p| *p > 0)
-            .unwrap_or(587);
-        config.insert("transport".into(), Value::String("smtp".into()));
-        config.insert("smtp_host".into(), Value::String(clean_host(host)));
-        config.insert(
-            "security".into(),
-            Value::String(if secure { "tls" } else { "starttls" }.into()),
-        );
-        config.insert("smtp_port".into(), Value::String(port.to_string()));
+        match text(old, "smtp_host").map(clean_host) {
+            Some(host) if host_ok(&host) => {
+                let secure = text(old, "smtp_secure").is_some_and(truthy);
+                let port = text(old, "smtp_port")
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .filter(|p| *p > 0)
+                    .unwrap_or(587);
+                config.insert("smtp_host".into(), Value::String(host));
+                config.insert(
+                    "security".into(),
+                    Value::String(if secure { "tls" } else { "starttls" }.into()),
+                );
+                config.insert("smtp_port".into(), Value::String(port.to_string()));
+            }
+            Some(host) => problems.push(format!("сервер SMTP «{host}» записан неверно")),
+            None => problems.push("не задан сервер SMTP".into()),
+        }
         let password = old.get("smtp_password").filter(|p| !p.trim().is_empty());
         if let (Some(user), Some(password)) = (text(old, "smtp_user"), password) {
             config.insert("username".into(), Value::String(user.into()));
             config.insert("password".into(), Value::String(password.clone()));
         }
+    }
+    let from = if resend {
+        text(old, "resend_from_email").or_else(|| text(old, "smtp_from_email"))
+    } else {
         text(old, "smtp_from_email")
     };
-    let Some(from) = from else {
-        return Old::Broken("в старой панели не задан адрес отправителя".into());
-    };
-    let Ok(from) = normalize_identity(IdentityKind::Email, from) else {
-        return Old::Broken(format!(
-            "адрес отправителя «{from}» в старой панели записан неверно"
-        ));
-    };
-    config.insert("from_email".into(), Value::String(from));
+    match from.map(|raw| (raw, normalize_identity(IdentityKind::Email, raw))) {
+        Some((_, Ok(from))) => {
+            config.insert("from_email".into(), Value::String(from));
+        }
+        Some((raw, Err(_))) => problems.push(format!("адрес отправителя «{raw}» записан неверно")),
+        None => problems.push("не задан адрес отправителя".into()),
+    }
     if let Some(name) = text(old, "smtp_from_name").and_then(sender_name) {
         config.insert("from_name".into(), Value::String(name));
     }
-    match MailSettings::parse(&ModuleConfig(config.clone())) {
-        Ok(settings) => Old::Ready(OldMail {
-            summary: summary(&settings),
-            fingerprint: fingerprint(&settings),
-            resend,
-            config,
-        }),
-        Err(reason) => Old::Broken(format!("в старой панели {reason}")),
+    if problems.is_empty() {
+        let transport = if resend { "resend" } else { "smtp" };
+        config.insert("transport".into(), Value::String(transport.into()));
+        return match MailSettings::parse(&ModuleConfig(config.clone())) {
+            Ok(settings) => Old::Ready(OldMail {
+                summary: summary(&settings),
+                fingerprint: fingerprint(&settings),
+                resend,
+                missing: None,
+                config,
+            }),
+            Err(reason) => Old::Broken(reason),
+        };
     }
+    let reason = problems.join("; ");
+    let summary = filled(&config);
+    if summary.is_empty() {
+        return Old::Broken(reason);
+    }
+    Old::Ready(OldMail {
+        summary,
+        fingerprint: String::new(),
+        resend,
+        missing: Some(reason),
+        config,
+    })
 }
 
 struct Current {
@@ -234,8 +275,18 @@ pub async fn plan(
         Old::Broken(reason) => return Ok(Some(MailPlan::Skipped { reason })),
         Old::Ready(old) => old,
     };
+    let now = current(services);
+    if let Some(reason) = old.missing {
+        if now.is_some() || moved_before(services, entity).await? {
+            return Ok(None);
+        }
+        return Ok(Some(MailPlan::Partial {
+            incoming: old.summary,
+            reason,
+        }));
+    }
     let incoming = old.summary;
-    Ok(Some(match current(services) {
+    Ok(Some(match now {
         Some(now) if now.fingerprint.as_deref() == Some(old.fingerprint.as_str()) => {
             MailPlan::Same { incoming }
         }
@@ -326,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn незаданная_и_сломанная_почта_не_переносится() {
+    fn неполная_почта_переносится_частично_а_пустая_нет() {
         assert_eq!(old_mail(&settings(&[])), Old::Absent);
         assert_eq!(
             old_mail(&settings(&[
@@ -335,21 +386,60 @@ mod tests {
             ])),
             Old::Absent
         );
-        for broken in [
-            settings(&[("smtp_from_email", "robot@example.com")]),
-            settings(&[("smtp_host", "smtp.example.com")]),
-            settings(&[
+        let partial = |pairs: &[(&str, &str)]| {
+            let mail = ready(old_mail(&settings(pairs)));
+            assert!(!mail.config.contains_key("transport"), "{mail:?}");
+            (mail.summary, mail.missing.unwrap_or_default())
+        };
+        assert_eq!(
+            partial(&[
+                ("smtp_from_email", "robot@example.com"),
+                ("smtp_from_name", "Сервис"),
+                ("smtp_port", "587"),
+                ("smtp_secure", "false"),
+            ]),
+            (
+                "адрес отправителя, имя отправителя".to_string(),
+                "не задан сервер SMTP".to_string()
+            )
+        );
+        assert_eq!(
+            partial(&[("smtp_host", "smtp.example.com")]),
+            (
+                "сервер SMTP".to_string(),
+                "не задан адрес отправителя".to_string()
+            )
+        );
+        assert_eq!(
+            partial(&[
                 ("mail_provider", "resend"),
                 ("resend_from_email", "robot@example.com"),
             ]),
-            settings(&[
+            (
+                "адрес отправителя".to_string(),
+                "выбрана отправка через Resend, но не задан ключ API".to_string()
+            )
+        );
+        assert_eq!(
+            partial(&[
                 ("smtp_host", "smtp.example.com"),
                 ("smtp_from_email", "не почта"),
-            ]),
-            settings(&[
+            ])
+            .1,
+            "адрес отправителя «не почта» записан неверно"
+        );
+        assert_eq!(
+            partial(&[
                 ("smtp_host", "smtp example com"),
                 ("smtp_from_email", "robot@example.com"),
-            ]),
+            ])
+            .1,
+            "сервер SMTP «smtp example com» записан неверно"
+        );
+        for broken in [
+            settings(&[("smtp_user", "robot")]),
+            settings(&[("smtp_password", "secret")]),
+            settings(&[("smtp_from_email", "не почта")]),
         ] {
             assert!(matches!(old_mail(&broken), Old::Broken(_)), "{broken:?}");
         }

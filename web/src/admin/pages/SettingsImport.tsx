@@ -294,6 +294,14 @@ function MailFact({ plan }: { plan: MailPlan }) {
   if (plan.action === 'transfer') {
     return <li>Почта: перенесём отправку писем — {plan.incoming} — и включим модуль «Почта». Вход на сайт останется по паролю, как в старой панели.</li>;
   }
+  if (plan.action === 'partial') {
+    return (
+      <li className="imp-warn-line">
+        Почта: в старой панели письма не отправлялись — {plan.reason}. Перенесём, что заполнено ({plan.incoming}), модуль «Почта» не включаем:
+        допишите настройки в <Link to={MAIL_PAGE}>«Настройки → Почта и уведомления»</Link>.
+      </li>
+    );
+  }
   if (plan.action === 'same') {
     return <li>Почта в этой установке уже настроена так же, как в старой панели: {plan.incoming}. Менять нечего.</li>;
   }

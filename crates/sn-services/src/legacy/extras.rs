@@ -383,6 +383,55 @@ impl<'a> Extras<'a> {
         self.issue(code, "setting", None, Some("Почта".into()), details);
     }
 
+    async fn mail_partial(&mut self, incoming: String, reason: String) -> ServiceResult<()> {
+        let mail::Old::Ready(old) = mail::old_mail(&self.legacy.settings) else {
+            return Ok(());
+        };
+        let Some(actor) = self.actor().await? else {
+            self.mail_issue(
+                "mail_skipped",
+                "В установке нет владельца — почта не перенесена. Создайте владельца и перенесите снова".into(),
+            );
+            return Ok(());
+        };
+        let current = self.services.modules().config(ModuleId::Mail);
+        let config: Map<String, Value> = old
+            .config
+            .into_iter()
+            .filter(|(key, _)| current.text(key).is_none_or(|v| v.trim().is_empty()))
+            .collect();
+        if !config.is_empty() {
+            let update = ModuleConfigUpdate {
+                config,
+                clear: Vec::new(),
+            };
+            if let Err(err) = self
+                .services
+                .settings_ops()
+                .update_module_config(ModuleId::Mail, &update, actor)
+                .await
+            {
+                self.mail_issue(
+                    "mail_skipped",
+                    format!("Почта не перенесена: {err}. Настройте её в «Настройки → Почта и уведомления»"),
+                );
+                return Ok(());
+            }
+            self.done.settings += 1;
+        }
+        let mut conn = self.services.store().conn().await?;
+        self.remember(&mut conn, "mail", "applied", self.run_id)
+            .await?;
+        self.mail_issue(
+            "mail_partial",
+            format!(
+                "В старой панели письма не отправлялись: {reason}. Перенесено в пустые поля: {incoming}. \
+                 Модуль «Почта» не включён — допишите настройки в «Настройки → Почта и уведомления»"
+            ),
+        );
+        Ok(())
+    }
+
     async fn mail(&mut self) -> ServiceResult<()> {
         let entity = self.entity("mail");
         let Some(plan) = mail::plan(self.services, &entity, &self.legacy.settings).await? else {
@@ -414,6 +463,9 @@ impl<'a> Extras<'a> {
                     ),
                 );
                 return Ok(());
+            }
+            MailPlan::Partial { incoming, reason } => {
+                return self.mail_partial(incoming, reason).await;
             }
             MailPlan::Differs { .. } => false,
             MailPlan::Transfer { .. } => true,

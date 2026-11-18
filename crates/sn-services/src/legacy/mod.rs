@@ -697,6 +697,9 @@ fn print_preview(preview: &runs::Preview, out: &dyn Fn(&str)) {
         Some(mail::MailPlan::Transfer { incoming }) => out(&format!(
             "Почта: перенесётся отправка писем — {incoming}, модуль «Почта» включится."
         )),
+        Some(mail::MailPlan::Partial { incoming, reason }) => out(&format!(
+            "Почта: в старой панели письма не отправлялись ({reason}). Перенесётся заполненное — {incoming}, модуль «Почта» не включится."
+        )),
         Some(mail::MailPlan::Same { .. }) => out("Почта: в этой установке уже те же настройки."),
         Some(mail::MailPlan::Differs { current, incoming }) => out(&format!(
             "Почта: в этой установке уже настроена — {current}, в старой панели — {incoming}. Из командной строки почта не заменяется: \

@@ -3036,3 +3036,51 @@ async fn лимит_подписок_категории_и_скидки_за_у�
         2
     );
 }
+
+#[tokio::test]
+async fn почта_без_сервера_переносится_частично_и_не_включается() {
+    use super::mail::MailPlan;
+    let modules =
+        ModuleRegistry::new(vec![Arc::new(sn_modules::catalog::mail::MailModule)]).unwrap();
+    let Some(env) = env_with(modules).await else {
+        return;
+    };
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+    let half: &[(&str, &str)] = &[
+        ("default_currency", "rub"),
+        ("mail_provider", "smtp"),
+        ("smtp_port", "587"),
+        ("smtp_secure", "false"),
+        ("smtp_from_email", "robot@example.com"),
+        ("smtp_from_name", "Сервис"),
+    ];
+    let (preview, outcome) = import(&env, &mail_dump(half), Some(admin)).await;
+    match &preview.mail {
+        Some(MailPlan::Partial { incoming, reason }) => {
+            assert_eq!(incoming, "адрес отправителя, имя отправителя");
+            assert_eq!(reason, "не задан сервер SMTP");
+        }
+        other => panic!("ожидался частичный перенос: {other:?}"),
+    }
+    assert_eq!(outcome.mail, None);
+    let (_, config) = mail_config(s);
+    assert_eq!(config.text("from_email"), Some("robot@example.com"));
+    assert_eq!(config.text("from_name"), Some("Сервис"));
+    assert!(
+        !sn_modules::catalog::mail::MailSettings::parse(&config)
+            .unwrap()
+            .sends(),
+        "без сервера отправка не включается"
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM import_issues WHERE code = 'mail_partial'"
+        )
+        .await,
+        1
+    );
+    let (again, _) = import(&env, &mail_dump(half), Some(admin)).await;
+    assert_eq!(again.mail, None, "частичный перенос не повторяется");
+}
