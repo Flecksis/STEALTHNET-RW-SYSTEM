@@ -277,3 +277,122 @@ async fn оператор_не_может_включить_чужой_спосо
     );
     kit.db.cleanup().await;
 }
+
+async fn rename(
+    kit: &Kit,
+    admin: AdminId,
+    provider: &str,
+    title: Option<&str>,
+    hint: Option<&str>,
+) -> ServiceResult<()> {
+    kit.services
+        .settings_ops()
+        .update_provider(
+            provider,
+            &ProviderUpdate {
+                label: Some(sn_domain::payment::ButtonLabel {
+                    title: title.map(str::to_string),
+                    hint: hint.map(str::to_string),
+                }),
+                ..Default::default()
+            },
+            admin,
+        )
+        .await?;
+    kit.services.set_remna(Some(kit.remna.clone()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn любую_кнопку_оплаты_можно_переименовать() {
+    let Some(kit) = kit().await else { return };
+    let admin = owner(&kit).await;
+    let client_id = client(&kit.services, 5_093_118_425).await;
+    rename(
+        &kit,
+        admin,
+        TEST_PAY,
+        Some("  Оплата картой "),
+        Some("Visa, Mastercard и МИР"),
+    )
+    .await
+    .unwrap();
+    let checkout = kit.services.checkout();
+    let options = checkout
+        .topup_options(client_id, Channel::Cabinet)
+        .await
+        .unwrap();
+    let button = options
+        .methods
+        .iter()
+        .find(|m| m.provider == TEST_PAY)
+        .unwrap();
+    assert_eq!(
+        (button.title.as_str(), button.hint.as_str()),
+        ("Оплата картой", "Visa, Mastercard и МИР")
+    );
+    checkout
+        .topup(
+            client_id,
+            Money::new(1_000, Currency::Usd),
+            TEST_PAY,
+            None,
+            Channel::Cabinet,
+        )
+        .await
+        .unwrap();
+    let history = kit
+        .services
+        .clients()
+        .payments(client_id, None, None)
+        .await
+        .unwrap();
+    assert_eq!(history.items[0].method, "Оплата картой");
+
+    choose(&kit, admin, vec![choice("sbp", None)])
+        .await
+        .unwrap();
+    let options = checkout
+        .topup_options(client_id, Channel::Cabinet)
+        .await
+        .unwrap();
+    let titles: Vec<&str> = options
+        .methods
+        .iter()
+        .filter(|m| m.provider == TEST_PAY)
+        .map(|m| m.title.as_str())
+        .collect();
+    assert_eq!(titles, vec!["СБП"], "у отмеченных способов свои названия");
+
+    rename(&kit, admin, TEST_PAY, Some(" "), None)
+        .await
+        .unwrap();
+    let view = kit
+        .services
+        .payments()
+        .views()
+        .into_iter()
+        .find(|v| v.id == TEST_PAY)
+        .unwrap();
+    assert_eq!(
+        view.custom_label,
+        sn_domain::payment::ButtonLabel::default()
+    );
+    assert_eq!(
+        code(
+            rename(&kit, admin, TEST_PAY, Some(&"К".repeat(41)), None)
+                .await
+                .unwrap_err()
+        ),
+        "settings.method_title"
+    );
+    assert_eq!(
+        code(
+            rename(&kit, admin, TEST_PAY, None, Some(&"П".repeat(81)))
+                .await
+                .unwrap_err()
+        ),
+        "settings.label_hint"
+    );
+    kit.db.cleanup().await;
+}

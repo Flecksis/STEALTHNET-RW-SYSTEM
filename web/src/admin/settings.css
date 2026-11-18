@@ -527,6 +527,24 @@
   }
 }
 
+.pay-lrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.pay-ltitle {
+  width: 240px;
+  max-width: 100%;
+  height: 36px;
+}
+
+.pay-lhint {
+  flex: 1 1 260px;
+  max-width: 420px;
+  height: 36px;
+}
+
 .pay-hook {
   display: flex;
   flex-wrap: wrap;

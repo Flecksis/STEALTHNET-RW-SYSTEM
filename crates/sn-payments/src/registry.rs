@@ -1,8 +1,10 @@
-use crate::provider::{PayMethod, PaymentProvider, ProviderConfig, ProviderIssue, ProviderKind};
+use crate::provider::{
+    ClientLabel, PayMethod, PaymentProvider, ProviderConfig, ProviderIssue, ProviderKind,
+};
 use serde::Serialize;
 use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
-use sn_domain::payment::{MethodChoice, PaymentChannels};
+use sn_domain::payment::{ButtonLabel, MethodChoice, PaymentChannels};
 use sn_domain::pricing::{BalanceCheck, balance_check};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -13,6 +15,7 @@ pub struct ProviderState {
     pub config: ProviderConfig,
     pub channels: PaymentChannels,
     pub methods: Vec<MethodChoice>,
+    pub label: ButtonLabel,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -115,6 +118,8 @@ pub struct ProviderView {
     pub settings: serde_json::Map<String, serde_json::Value>,
     pub issue: Option<ProviderIssue>,
     pub methods: Vec<MethodView>,
+    pub label: ClientLabel,
+    pub custom_label: ButtonLabel,
 }
 
 pub struct ProviderRegistry {
@@ -134,6 +139,7 @@ impl ProviderRegistry {
                         config: ProviderConfig::default(),
                         channels: PaymentChannels::ALL,
                         methods: Vec::new(),
+                        label: ButtonLabel::default(),
                     },
                 )
             })
@@ -250,6 +256,8 @@ impl ProviderRegistry {
                     settings: state.config.public_view(&p.settings_schema()),
                     issue: p.issue(),
                     methods: method_views(p.as_ref(), &state.methods, snapshot.currency),
+                    label: p.client_label(snapshot.currency, &state.config),
+                    custom_label: state.label.clone(),
                 }
             })
             .collect()
@@ -288,13 +296,16 @@ impl ProviderRegistry {
                 continue;
             }
             let empty = ProviderConfig::default();
-            let label = provider.client_label(
-                ctx.currency,
-                snapshot
-                    .states
-                    .get(id)
-                    .map_or(&empty, |state| &state.config),
-            );
+            let state = snapshot.states.get(id);
+            let label =
+                provider.client_label(ctx.currency, state.map_or(&empty, |state| &state.config));
+            let custom = state.map(|state| &state.label);
+            let title = custom
+                .and_then(|l| l.title.clone())
+                .unwrap_or_else(|| label.title.to_string());
+            let hint = custom
+                .and_then(|l| l.hint.clone())
+                .unwrap_or_else(|| label.hint.to_string());
             let (amount, unavailable) = match provider.kind() {
                 ProviderKind::External => {
                     let choices = snapshot
@@ -343,8 +354,8 @@ impl ProviderRegistry {
                         provider: provider.id(),
                         method: None,
                         kind: ProviderKind::Balance,
-                        title: label.title.to_string(),
-                        hint: label.hint.to_string(),
+                        title,
+                        hint,
                         amount: Some(ctx.total.into()),
                         unavailable,
                     });
@@ -355,8 +366,8 @@ impl ProviderRegistry {
                 provider: provider.id(),
                 method: None,
                 kind: provider.kind(),
-                title: label.title.to_string(),
-                hint: label.hint.to_string(),
+                title,
+                hint,
                 amount,
                 unavailable,
             });
@@ -517,6 +528,7 @@ mod tests {
                         config: ProviderConfig::default(),
                         channels: sn_domain::payment::PaymentChannels::ALL,
                         methods: Vec::new(),
+                        label: ButtonLabel::default(),
                     },
                 )
             })
@@ -820,6 +832,7 @@ mod tests {
                                 config: configured(p.id()),
                                 channels: sn_domain::payment::PaymentChannels::ALL,
                                 methods: Vec::new(),
+                                label: ButtonLabel::default(),
                             },
                         )
                     })

@@ -98,13 +98,6 @@ impl PaymentProvider for YooMoney {
                 "Секрет уведомлений",
                 "ЮMoney → HTTP-уведомления",
             ),
-            SettingField::select(
-                "payment_type",
-                "Способ оплаты",
-                "AC — банковская карта, PC — кошелёк ЮMoney",
-                PAYMENT_TYPES,
-            )
-            .with_default(DEFAULT_PAYMENT_TYPE),
         ]
     }
 

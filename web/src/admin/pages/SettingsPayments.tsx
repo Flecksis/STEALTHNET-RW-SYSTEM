@@ -42,6 +42,8 @@ type Provider = {
   settings: Record<string, unknown>;
   issue?: { at: string; message: string } | null;
   methods?: MethodView[];
+  label?: { title: string; hint: string };
+  custom_label?: { title?: string | null; hint?: string | null };
 };
 
 function issueTime(iso: string): string {
@@ -308,7 +310,11 @@ export function SettingsPayments() {
 
   const methodLine = (p: Provider) => {
     const on = (p.methods ?? []).filter((m) => m.enabled);
-    return on.length ? <p className="pay-mline muted">Кнопки у клиента: {on.map((m) => m.custom_title || m.title).join(' · ')}</p> : null;
+    if (on.length) {
+      return <p className="pay-mline muted">Кнопки у клиента: {on.map((m) => m.custom_title || m.title).join(' · ')}</p>;
+    }
+    const custom = p.custom_label?.title;
+    return custom ? <p className="pay-mline muted">Кнопка у клиента: «{custom}»</p> : null;
   };
 
   const balance = providers.find((p) => p.kind === 'balance');
@@ -390,10 +396,12 @@ export function SettingsPayments() {
               <span className="pay-switch">
                 <Switch on={balanceOn} onToggle={() => edit({ shown: { ...work.shown, [balance.id]: !balanceOn } })} label="Пополнение и оплата с баланса" disabled={busy} />
               </span>
-              <span className="pay-setup pay-ghost" aria-hidden="true">
+              <button type="button" className="pay-setup hov" aria-expanded={setup === balance.id} aria-label="Настроить: С баланса" onClick={() => setSetup(setup === balance.id ? null : balance.id)}>
                 Настроить
-              </span>
+              </button>
             </div>
+            {setup === balance.id ? <ProviderSetup provider={balance} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
+            {methodLine(balance)}
             {balanceOn ? (
               channelLine(balance.id, 'С баланса')
             ) : (
@@ -557,6 +565,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
   const [copied, setCopied] = useState<string | null>(null);
   const [rows, setRows] = useState<MethodRow[]>([]);
   const [savedRows, setSavedRows] = useState('[]');
+  const [labelTitle, setLabelTitle] = useState('');
+  const [labelHint, setLabelHint] = useState('');
+  const [savedLabel, setSavedLabel] = useState('');
 
   useEffect(() => {
     api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
@@ -567,6 +578,11 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
         const loaded = settle(methodRows(d.provider.methods));
         setRows(loaded);
         setSavedRows(JSON.stringify(chosenMethods(loaded)));
+        const title = d.provider.custom_label?.title ?? '';
+        const hint = d.provider.custom_label?.hint ?? '';
+        setLabelTitle(title);
+        setLabelHint(hint);
+        setSavedLabel(JSON.stringify([title.trim(), hint.trim()]));
       })
       .catch((err) => setError(failText(err, 'Настройки системы не загрузились')));
   }, [provider.id]);
@@ -624,6 +640,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
           config: changedConfig(schema, config, values),
           clear: secrets.clear,
           ...(JSON.stringify(chosenMethods(rows)) !== savedRows ? { methods: chosenMethods(rows) } : {}),
+          ...(JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel ? { label: { title: labelTitle.trim() || null, hint: labelHint.trim() || null } } : {}),
         },
       });
       onSaved(saved.provider);
@@ -637,12 +654,8 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
   return (
     <div className="pay-setup-panel" role="group" aria-label={`Настройка ${provider.title}`}>
       {schema === null && !error ? <p className="muted">Загружаем…</p> : null}
-      {schema && schema.length === 0 ? (
-        <p className="muted">
-          {provider.kind === 'stars'
-            ? 'Звёзды принимает бот сервиса: отдельных ключей не нужно. Система станет «Подключена», когда в настройках будет указан токен бота.'
-            : 'У этой системы нет настроек.'}
-        </p>
+      {schema && schema.length === 0 && provider.kind === 'stars' ? (
+        <p className="muted">Звёзды принимает бот сервиса: отдельных ключей не нужно. Система станет «Подключена», когда в настройках будет указан токен бота.</p>
       ) : null}
       {schema && schema.length > 0 ? (
         <SchemaFields schema={schema} config={config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`pay-${provider.id}`} />
@@ -653,7 +666,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
             Способы оплаты
           </span>
           <span className="cap">
-            Отмеченные способы станут отдельными кнопками у клиента, в этом порядке. Если ничего не отмечено, у клиента одна кнопка {provider.title}, как раньше.
+            Отмеченные способы станут отдельными кнопками у клиента, в этом порядке. Если ничего не отмечено, у клиента одна кнопка «{provider.label?.title ?? provider.title}».
           </span>
           {rows.map((r, i) => (
             <div key={r.code} className="pay-mrow">
@@ -685,6 +698,34 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
           ))}
         </div>
       ) : null}
+      {schema && !rows.some((r) => r.on) ? (
+        <div className="sf-field" style={{ maxWidth: 'none' }} role="group" aria-labelledby={`pay-l-${provider.id}`}>
+          <span className="sf-label" id={`pay-l-${provider.id}`}>
+            Кнопка у клиента
+          </span>
+          <span className="cap">Так кнопка называется в боте, кабинете и мини-приложении. Пустое поле — текст по умолчанию.</span>
+          <span className="pay-lrow">
+            <input
+              className="field pay-ltitle"
+              value={labelTitle}
+              placeholder={provider.label?.title || provider.title}
+              maxLength={40}
+              aria-label="Название кнопки"
+              onChange={(e) => setLabelTitle(e.target.value)}
+              disabled={busy}
+            />
+            <input
+              className="field pay-lhint"
+              value={labelHint}
+              placeholder={provider.label?.hint || 'Пояснение под названием'}
+              maxLength={80}
+              aria-label="Пояснение под названием кнопки"
+              onChange={(e) => setLabelHint(e.target.value)}
+              disabled={busy}
+            />
+          </span>
+        </div>
+      ) : null}
       {hooks.length ? (
         <div className="sf-field" style={{ maxWidth: 'none' }}>
           <span className="sf-label">{hooks.length > 1 ? 'Адреса для уведомлений' : 'Адрес для уведомлений'}</span>
@@ -713,13 +754,13 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
         </p>
       ) : null}
       <div className="cc-btns" style={{ gap: 10 }}>
-        {schema && schema.length > 0 ? (
+        {schema ? (
           <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
             {busy ? 'Сохраняем…' : 'Сохранить'}
           </button>
         ) : null}
         <button type="button" className="btn-line hov" onClick={onClose} disabled={busy} style={{ padding: '0 16px' }}>
-          {schema && schema.length > 0 ? 'Отменить' : 'Закрыть'}
+          Отменить
         </button>
       </div>
     </div>

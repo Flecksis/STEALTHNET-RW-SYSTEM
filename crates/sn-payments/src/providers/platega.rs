@@ -333,13 +333,6 @@ impl PaymentProvider for Platega {
         vec![
             SettingField::text("merchant_id", "MerchantId", "Кабинет Platega → Настройки"),
             SettingField::secret("secret", "Секрет", "Кабинет Platega → Настройки"),
-            SettingField::select(
-                "method",
-                "Способ оплаты",
-                "2 — СБП, 3 — ЕРИП, 11 — карты, 12 — иностранные карты, 13 — криптовалюта, 14 — SberPay",
-                METHODS,
-            )
-            .with_default("2"),
         ]
     }
 

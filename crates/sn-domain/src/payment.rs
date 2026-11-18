@@ -27,6 +27,15 @@ const fn shown() -> bool {
 }
 
 pub const METHOD_TITLE_MAX: usize = 40;
+pub const LABEL_HINT_MAX: usize = 80;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ButtonLabel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MethodChoice {

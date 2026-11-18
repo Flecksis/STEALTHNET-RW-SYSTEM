@@ -10,7 +10,9 @@ use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
-use sn_domain::payment::{METHOD_TITLE_MAX, MethodChoice, PaymentChannels, providers};
+use sn_domain::payment::{
+    ButtonLabel, LABEL_HINT_MAX, METHOD_TITLE_MAX, MethodChoice, PaymentChannels, providers,
+};
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
     ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, SupportMode,
@@ -46,6 +48,8 @@ pub struct ProviderSettings {
     pub channels: PaymentChannels,
     #[serde(default)]
     pub methods: Vec<MethodChoice>,
+    #[serde(default)]
+    pub label: ButtonLabel,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(key: &str, value: Value) -> Option<T> {
@@ -270,6 +274,37 @@ pub fn clean_methods(
     Ok(cleaned)
 }
 
+pub fn clean_label(label: &ButtonLabel) -> ServiceResult<ButtonLabel> {
+    let tidy = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    let title = tidy(&label.title);
+    let hint = tidy(&label.hint);
+    if title
+        .as_deref()
+        .is_some_and(|t| t.chars().count() > METHOD_TITLE_MAX)
+    {
+        return Err(ServiceError::rejected(
+            "settings.method_title",
+            format!("Название кнопки — не длиннее {METHOD_TITLE_MAX} символов"),
+        ));
+    }
+    if hint
+        .as_deref()
+        .is_some_and(|t| t.chars().count() > LABEL_HINT_MAX)
+    {
+        return Err(ServiceError::rejected(
+            "settings.label_hint",
+            format!("Пояснение к кнопке — не длиннее {LABEL_HINT_MAX} символов"),
+        ));
+    }
+    Ok(ButtonLabel { title, hint })
+}
+
 pub async fn registry_snapshot(
     db: &mut impl Db,
     secrets: Option<&SecretBox>,
@@ -308,6 +343,7 @@ pub async fn registry_snapshot(
                 config,
                 channels: stored.channels,
                 methods: stored.methods,
+                label: stored.label,
             },
         );
     }
@@ -583,6 +619,8 @@ pub struct ProviderUpdate {
     pub channels: Option<PaymentChannels>,
     #[serde(default)]
     pub methods: Option<Vec<MethodChoice>>,
+    #[serde(default)]
+    pub label: Option<ButtonLabel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1344,6 +1382,9 @@ impl<'a> SettingsOps<'a> {
                 self.services.settings().currency,
             )?;
         }
+        if let Some(label) = &update.label {
+            stored.label = clean_label(label)?;
+        }
         let secrets = self.services.secrets();
         let mut merged = stored.config.clone();
         for field in schema.iter().filter(|f| f.is_secret()) {
@@ -1431,6 +1472,7 @@ impl<'a> SettingsOps<'a> {
                     "enabled": stored.enabled,
                     "channels": update.channels,
                     "methods": update.methods,
+                    "label": update.label,
                     "fields": update.config.keys().collect::<Vec<_>>(),
                     "secrets": changed_secrets,
                 }),
