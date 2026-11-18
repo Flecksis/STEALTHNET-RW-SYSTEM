@@ -462,19 +462,20 @@ pub async fn active_restrictions(
     rows.into_iter().map(Exceed::try_from).collect()
 }
 
-pub async fn restricted_by_others(
-    db: &mut impl Db,
-    subscription_id: SubscriptionId,
-    except: i64,
-) -> StoreResult<bool> {
-    Ok(sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM traffic_exceeds WHERE subscription_id = $1 AND id <> $2 \
-            AND restricted_at IS NOT NULL AND lifted_at IS NULL)",
+pub async fn hand_over_previous(db: &mut impl Db, from: &Exceed) -> StoreResult<u64> {
+    Ok(sqlx::query(
+        "UPDATE traffic_exceeds SET previous_squads = $4 \
+         WHERE subscription_id = $1 AND id <> $2 AND restriction = 'squad' AND squad_uuid = $3 \
+           AND restricted_at IS NOT NULL AND lifted_at IS NULL \
+           AND (previous_squads IS NULL OR previous_squads = '[]'::jsonb)",
     )
-    .bind(subscription_id.0)
-    .bind(except)
-    .fetch_one(db.conn())
-    .await?)
+    .bind(from.subscription_id.0)
+    .bind(from.id)
+    .bind(from.squad)
+    .bind(serde_json::json!(from.previous_squads))
+    .execute(db.conn())
+    .await?
+    .rows_affected())
 }
 
 pub async fn mark_restricted(

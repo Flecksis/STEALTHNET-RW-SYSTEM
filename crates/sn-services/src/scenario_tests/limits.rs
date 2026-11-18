@@ -437,3 +437,87 @@ async fn кнопка_админа_снимает_все_ограничения_
     );
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn два_правила_со_сквадом_в_одном_проходе_держат_ограничение_до_последнего_окна() {
+    let Some(kit) = limits_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let (_, subscription) = trial_subscription(&kit, 7_020).await;
+    let user = user_of(&subscription);
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(9)]);
+    add_rule(services, rule(Period::Day, 5.0, Restriction::Squad)).await;
+    add_rule(services, rule(Period::Week, 8.0, Restriction::Squad)).await;
+    let ctx = services.module_context();
+    set_lifetime(&kit, user, 0);
+    limits::scan_at(&ctx, at(10, 9, 0)).await.unwrap();
+    set_lifetime(&kit, user, 9 * GIB);
+    let report = limits::scan_at(&ctx, at(10, 9, 10)).await.unwrap();
+    assert_eq!(report.restricted, 2);
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(3)]);
+    limits::lift_due(&ctx, at(11, 0, 1), false).await.unwrap();
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(3)]);
+    limits::lift_due(&ctx, at(16, 0, 1), false).await.unwrap();
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(9)]);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn суточный_сквад_поверх_недельного_не_оставляет_подписку_без_сквадов() {
+    let Some(kit) = limits_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let (_, subscription) = trial_subscription(&kit, 7_021).await;
+    let user = user_of(&subscription);
+    add_rule(services, rule(Period::Day, 5.0, Restriction::Squad)).await;
+    add_rule(services, rule(Period::Week, 8.0, Restriction::Squad)).await;
+    let ctx = services.module_context();
+    set_lifetime(&kit, user, 0);
+    limits::scan_at(&ctx, at(10, 9, 0)).await.unwrap();
+    set_lifetime(&kit, user, 4 * GIB);
+    limits::scan_at(&ctx, at(10, 23, 58)).await.unwrap();
+    set_lifetime(&kit, user, 17 * GIB / 2);
+    let week = limits::scan_at(&ctx, at(11, 23, 58)).await.unwrap();
+    assert_eq!(week.restricted, 1);
+    set_lifetime(&kit, user, 14 * GIB);
+    let day = limits::scan_at(&ctx, at(12, 23, 58)).await.unwrap();
+    assert_eq!(day.restricted, 1);
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(3)]);
+    limits::lift_due(&ctx, at(13, 0, 1), false).await.unwrap();
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(3)]);
+    limits::lift_due(&ctx, at(16, 0, 1), false).await.unwrap();
+    assert_eq!(kit.remna.user(user).unwrap().squad_ids(), vec![squad(9)]);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отключение_срабатывает_и_поверх_ограничения_сквадом() {
+    let Some(kit) = limits_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let (_, subscription) = trial_subscription(&kit, 7_022).await;
+    let user = user_of(&subscription);
+    add_rule(services, rule(Period::Day, 5.0, Restriction::Squad)).await;
+    add_rule(services, rule(Period::Week, 8.0, Restriction::Disable)).await;
+    let ctx = services.module_context();
+    set_lifetime(&kit, user, 0);
+    limits::scan_at(&ctx, at(10, 9, 0)).await.unwrap();
+    set_lifetime(&kit, user, 9 * GIB);
+    let report = limits::scan_at(&ctx, at(10, 9, 10)).await.unwrap();
+    assert_eq!(report.restricted, 2);
+    let restricted = kit.remna.user(user).unwrap();
+    assert_eq!(restricted.status, UserStatus::Disabled);
+    assert_eq!(restricted.squad_ids(), vec![squad(3)]);
+    limits::lift_due(&ctx, at(11, 0, 1), false).await.unwrap();
+    let night = kit.remna.user(user).unwrap();
+    assert_eq!(night.status, UserStatus::Disabled);
+    assert_eq!(night.squad_ids(), vec![squad(9)]);
+    limits::lift_due(&ctx, at(16, 0, 1), false).await.unwrap();
+    let after = kit.remna.user(user).unwrap();
+    assert_eq!(after.status, UserStatus::Active);
+    assert_eq!(after.squad_ids(), vec![squad(9)]);
+    kit.db.cleanup().await;
+}

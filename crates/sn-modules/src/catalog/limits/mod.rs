@@ -581,10 +581,9 @@ async fn restrict(
         .await?;
         return Ok(false);
     }
-    if exceed.restriction == Restriction::Disable
-        && store::restricted_by_others(&mut conn, exceed.subscription_id, exceed.id).await?
-    {
-        store::mark_restricted(&mut conn, exceed.id, now, exceed.window_end, &[]).await?;
+    let others = store::active_restrictions(&mut conn, exceed.subscription_id, exceed.id).await?;
+    if let Some(previous) = shared_with(exceed, &others) {
+        store::mark_restricted(&mut conn, exceed.id, now, exceed.window_end, &previous).await?;
         return Ok(true);
     }
     drop(conn);
@@ -616,6 +615,21 @@ async fn restrict(
             store::note_restriction(&mut conn, exceed.id, &err.to_string(), true).await?;
             Ok(false)
         }
+    }
+}
+
+fn shared_with(exceed: &Exceed, others: &[Exceed]) -> Option<Vec<Uuid>> {
+    match exceed.restriction {
+        Restriction::Disable => others
+            .iter()
+            .any(|o| o.restriction == Restriction::Disable)
+            .then(Vec::new),
+        Restriction::Squad => others
+            .iter()
+            .filter(|o| o.restriction == Restriction::Squad && o.squad == exceed.squad)
+            .max_by_key(|o| !o.previous_squads.is_empty())
+            .map(|o| o.previous_squads.clone()),
+        Restriction::None => None,
     }
 }
 
@@ -722,15 +736,24 @@ async fn lift_one(
         let mut conn = ctx.store.conn().await?;
         store::subscription_live(&mut conn, exceed.subscription_id).await?
     };
-    let others = live && exceed.restriction == Restriction::Disable && {
+    let others = if live {
         let mut conn = ctx.store.conn().await?;
-        store::restricted_by_others(&mut conn, exceed.subscription_id, exceed.id).await?
+        let active =
+            store::active_restrictions(&mut conn, exceed.subscription_id, exceed.id).await?;
+        shared_with(exceed, &active).is_some()
+    } else {
+        false
     };
     let outcome = if !live {
         Lifted::Ended
     } else if others {
         let mut conn = ctx.store.conn().await?;
+        if exceed.restriction == Restriction::Squad && !exceed.previous_squads.is_empty() {
+            store::hand_over_previous(&mut conn, exceed).await?;
+        }
         return Ok(store::mark_lifted(&mut conn, exceed.id, now, reason, admin).await?);
+    } else if exceed.restriction == Restriction::Squad && exceed.previous_squads.is_empty() {
+        Lifted::Changed("прежние сквады подписки неизвестны".into())
     } else {
         let restriction = match exceed.restriction {
             Restriction::Squad => TrafficRestriction::Squad {
