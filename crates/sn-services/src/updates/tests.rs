@@ -341,3 +341,68 @@ fn файл_хода_очищается_от_лишнего() {
         serde_json::from_value(serde_json::json!({ "id": "a b", "state": "done" })).unwrap();
     assert!(clean_run(broken).is_none());
 }
+
+#[test]
+fn после_смены_версии_проверка_идёт_через_минуты_а_дальше_раз_в_шесть_часов() {
+    let now = parse_time("2026-11-18T20:00:00Z").unwrap();
+    let jitter = Jitter {
+        soon: Duration::seconds(90),
+        spread: Duration::minutes(30),
+        stale: Duration::minutes(20),
+    };
+    let hour_ago = now - Duration::hours(1);
+    let checked = CheckState {
+        last_checked_at: Some(hour_ago),
+        last_ok_at: Some(hour_ago),
+        checked_build: Some(OLD.into()),
+        ..CheckState::default()
+    };
+    assert_eq!(
+        check_due(&checked, COMMIT, now, jitter),
+        now + Duration::seconds(90)
+    );
+    let before_field = CheckState {
+        checked_build: None,
+        ..checked.clone()
+    };
+    assert_eq!(
+        check_due(&before_field, COMMIT, now, jitter),
+        now + Duration::seconds(90)
+    );
+    let same = CheckState {
+        checked_build: Some(COMMIT.into()),
+        ..checked.clone()
+    };
+    assert_eq!(
+        check_due(&same, COMMIT, now, jitter),
+        hour_ago + Duration::hours(6) + Duration::minutes(30)
+    );
+    let failed = CheckState {
+        failures: 4,
+        ..same.clone()
+    };
+    assert_eq!(
+        check_due(&failed, COMMIT, now, jitter),
+        hour_ago + Duration::hours(6)
+    );
+    assert_eq!(
+        check_due(&CheckState::default(), COMMIT, now, jitter),
+        now + Duration::seconds(90)
+    );
+}
+
+#[test]
+fn сборка_узнаётся_по_коммиту_иначе_по_номеру() {
+    let mut build = BuildInfo {
+        version: "0.1.0".into(),
+        label: Some("0.1.203".into()),
+        commit: Some(COMMIT.into()),
+        built_at: None,
+        arch: "amd64".into(),
+    };
+    assert_eq!(build_key(&build), COMMIT);
+    build.commit = None;
+    assert_eq!(build_key(&build), "0.1.203");
+    build.label = None;
+    assert_eq!(build_key(&build), "0.1.0");
+}

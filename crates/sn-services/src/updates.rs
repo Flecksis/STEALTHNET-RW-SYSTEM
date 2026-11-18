@@ -47,7 +47,7 @@ const LOST_SECONDS: i64 = 600;
 const REQUEST_GAP_SECONDS: i64 = 30;
 const CHECK_GAP_SECONDS: i64 = 60;
 const RECENT_HOURS: i64 = 24;
-const CHECK_EVERY_HOURS: i64 = 24;
+const CHECK_EVERY_HOURS: i64 = 6;
 const STALE_HOURS: i64 = 20;
 const USER_AGENT: &str = "stealthnet-update-check";
 
@@ -450,6 +450,36 @@ pub struct CheckState {
     pub latest: Option<PublishedBuild>,
     #[serde(default)]
     pub failures: u32,
+    #[serde(default)]
+    pub checked_build: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Jitter {
+    soon: Duration,
+    spread: Duration,
+    stale: Duration,
+}
+
+fn build_key(build: &BuildInfo) -> String {
+    build
+        .commit
+        .clone()
+        .or_else(|| build.label.clone())
+        .unwrap_or_else(|| build.version.clone())
+}
+
+fn check_due(state: &CheckState, build: &str, now: DateTime<Utc>, jitter: Jitter) -> DateTime<Utc> {
+    match (state.last_checked_at, state.last_ok_at) {
+        (None, _) => now + jitter.soon,
+        (Some(_), _) if state.checked_build.as_deref() != Some(build) => now + jitter.soon,
+        (Some(last), _) if state.failures > 0 => {
+            let hours = 1i64 << state.failures.saturating_sub(1).min(5);
+            last + Duration::hours(hours.min(CHECK_EVERY_HOURS))
+        }
+        (Some(_), Some(ok)) if now - ok > Duration::hours(STALE_HOURS) => now + jitter.stale,
+        (Some(last), _) => last + Duration::hours(CHECK_EVERY_HOURS) + jitter.spread,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1096,6 +1126,7 @@ impl<'a> Updates<'a> {
         let now = self.services.now();
         let mut state = self.check_state().await?;
         state.last_checked_at = Some(now);
+        state.checked_build = Some(build_key(&config.build));
         match result {
             Ok(build) => {
                 state.state = CheckOutcome::Ok;
@@ -1177,19 +1208,12 @@ impl<'a> Updates<'a> {
         }
         let state = self.check_state().await?;
         let mut rng = rand::thread_rng();
-        let due = match (state.last_checked_at, state.last_ok_at) {
-            (None, _) => now + Duration::seconds(rng.gen_range(60..180)),
-            (Some(last), _) if state.failures > 0 => {
-                let hours = 1i64 << state.failures.saturating_sub(1).min(5);
-                last + Duration::hours(hours.min(CHECK_EVERY_HOURS))
-            }
-            (Some(_), Some(ok)) if now - ok > Duration::hours(STALE_HOURS) => {
-                now + Duration::minutes(rng.gen_range(15..45))
-            }
-            (Some(last), _) => {
-                last + Duration::hours(CHECK_EVERY_HOURS) + Duration::minutes(rng.gen_range(0..180))
-            }
+        let jitter = Jitter {
+            soon: Duration::seconds(rng.gen_range(60..180)),
+            spread: Duration::minutes(rng.gen_range(0..60)),
+            stale: Duration::minutes(rng.gen_range(15..45)),
         };
+        let due = check_due(&state, &build_key(&config.build), now, jitter);
         Ok(Some((due - now).to_std().unwrap_or_default()))
     }
 
