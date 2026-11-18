@@ -95,3 +95,41 @@ async fn фото_клиента_видит_админка_и_сам_клиен�
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn кабинет_узнаёт_о_фото_из_профиля_и_не_просит_картинку_зря() {
+    let Some(h) = http().await else { return };
+    let alexey = h.client(5_093_118_423).await;
+    let mine = h.client_token(alexey).await;
+    let (status, body) = h.get("/api/client/me", &mine).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["photo"], Value::Null);
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        let due = conn.client_photos().due(10).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].client_id, alexey);
+        conn.client_photos()
+            .save(
+                alexey,
+                Some(NewPhoto {
+                    version: "AQADnew",
+                    content: JPEG,
+                    content_type: "image/jpeg",
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    let (status, body) = h.get("/api/client/me", &mine).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["photo"], "AQADnew");
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        assert!(conn.client_photos().due(10).await.unwrap().is_empty());
+    }
+    let (status, _, bytes) = raw(&h, "/api/client/photo?v=AQADnew", Some(&mine)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, JPEG);
+    h.db.cleanup().await;
+}

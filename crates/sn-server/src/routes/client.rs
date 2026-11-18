@@ -9,10 +9,11 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::ClientChannel;
-use sn_domain::ids::{PeriodId, SubscriptionId, TicketFileId, TicketId};
+use sn_domain::ids::{ClientId, PeriodId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::money::{Money, parse_units};
 use sn_domain::support::{Ticket, TicketChannel};
 use sn_modules::catalog::antibot;
+use sn_services::ServiceError;
 use sn_services::checkout::{
     CartRequest, Channel, CheckoutRequest, CheckoutResult, ItemCheckoutRequest, ItemQuoteView,
     ItemRequest,
@@ -21,6 +22,7 @@ use sn_services::login::TelegramLoginStatus;
 use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
 use sn_services::two_factor::{CabinetLogin, TwoFactor};
 use sn_services::utm_tracking::site_utm;
+use sn_store::Db;
 use uuid::Uuid;
 
 pub fn routes() -> Router<AppState> {
@@ -425,6 +427,7 @@ async fn me(
         .autorenew()
         .has_saved_card(client.0.client_id)
         .await?;
+    let photo = photo_version(&state, client.0.client_id).await?;
     let must_change_password = match client.0.session_id {
         Some(session) if client.0.channel == sn_domain::access::ClientChannel::Cabinet => {
             state
@@ -457,7 +460,31 @@ async fn me(
         "email_change": state.services.mail().available(),
         "has_password": has_password,
         "must_change_password": must_change_password,
+        "photo": photo,
     })))
+}
+
+async fn photo_version(state: &AppState, id: ClientId) -> ApiResult<Option<String>> {
+    let mut conn = state
+        .services
+        .store()
+        .conn()
+        .await
+        .map_err(ServiceError::from)?;
+    let mut photos = conn.client_photos();
+    let version = photos
+        .versions(&[id])
+        .await
+        .map_err(ServiceError::from)?
+        .into_iter()
+        .next()
+        .map(|(_, version)| version);
+    if version.is_none()
+        && let Err(err) = photos.request_missing(&[id]).await
+    {
+        tracing::debug!(error = %err, "запрос фото клиента не сохранён");
+    }
+    Ok(version)
 }
 
 #[derive(Deserialize)]

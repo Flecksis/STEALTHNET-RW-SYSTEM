@@ -16,7 +16,7 @@ import { FriendsPage } from './Friends';
 import { GiftsPage } from './Gifts';
 import { HelpPage, type TicketBrief } from './Help';
 import { Login } from './Login';
-import type { ClientMe } from './model';
+import { photoUrl, type ClientMe } from './model';
 import { Pay } from './Pay';
 import { ForcedPassword } from './ForcedPassword';
 import { PaymentsHistory } from './PaymentHistory';
@@ -360,7 +360,8 @@ function Header() {
   const { me, logout, nextLang, switchLang } = useCabinet();
   const location = useLocation();
   const [open, setOpen] = useState(false);
-  const [photo, setPhoto] = useState(true);
+  const photo = photoUrl(me);
+  const [failed, setFailed] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) {
@@ -403,7 +404,7 @@ function Header() {
           <div className="cb-prof" ref={ref}>
             <button type="button" className="cb-ava" aria-label={t('Профиль')} aria-expanded={open} onClick={() => setOpen((v) => !v)} style={{ background: avatarColor(me.client.id) }}>
               <Icon name="user" size={20} />
-              {photo ? <img className="cb-ava-img" src="/api/client/photo" alt="" decoding="async" onError={() => setPhoto(false)} /> : null}
+              {photo && failed !== photo ? <img className="cb-ava-img" src={photo} alt="" decoding="async" onError={() => setFailed(photo)} /> : null}
             </button>
             {open ? (
               <div className="cb-pop" role="menu">

@@ -46,7 +46,12 @@ export type ClientMe = {
   email_change?: boolean;
   has_password?: boolean;
   must_change_password?: boolean;
+  photo?: string | null;
 };
+
+export function photoUrl(me: ClientMe): string | null {
+  return me.photo ? `/api/client/photo?v=${encodeURIComponent(me.photo)}` : null;
+}
 
 export type TwoFactor = { enabled: boolean; enabled_at: string | null };
 
