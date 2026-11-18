@@ -1,7 +1,7 @@
 use crate::BotError;
 use crate::account::payment_screen;
 use crate::gram_wallet;
-use crate::handler::{Screen, Turn, id_arg, live, tariff_name};
+use crate::handler::{Screen, Turn, id_arg, live, subscription_names, tariff_name};
 use crate::session::{Awaiting, Cart};
 use crate::telegram::Keyboard;
 use crate::text;
@@ -48,9 +48,9 @@ pub async fn start(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<S
                 let content = services.bot_content_in(lang::current());
                 let c = &*content;
                 let offset = services.settings().remna_offset();
+                let names = subscription_names(&services, many).await;
                 let mut keyboard = Keyboard::new();
-                for sub in many {
-                    let name = tariff_name(&services, sub.tariff_id).await;
+                for (sub, name) in many.iter().zip(names) {
                     let data = format!("buy:{}", sub.id);
                     keyboard = keyboard.push(match sub.mirror.expire_at {
                         Some(at) => ui::button(
@@ -171,9 +171,9 @@ async fn category_choice(
     tariff_id: TariffId,
 ) -> Screen {
     let offset = services.settings().remna_offset();
+    let names = subscription_names(services, &full.held).await;
     let mut keyboard = Keyboard::new();
-    for sub in &full.held {
-        let name = tariff_name(services, sub.tariff_id).await;
+    for (sub, name) in full.held.iter().zip(names) {
         let data = format!("tb:{tariff_id}:{}", sub.id);
         keyboard = keyboard.push(match sub.mirror.expire_at {
             Some(at) => ui::button(

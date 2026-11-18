@@ -1,5 +1,5 @@
 use crate::BotError;
-use crate::handler::{Screen, Turn, id_arg, live, main_menu, tariff_name};
+use crate::handler::{Screen, Turn, id_arg, live, main_menu, subscription_names};
 use crate::session::{Awaiting, WithdrawalDraft};
 use crate::telegram::{Button, Keyboard};
 use crate::text;
@@ -122,9 +122,9 @@ pub async fn promo_entered(
         }
         many => {
             turn.session.days_code = Some(code.code);
+            let names = subscription_names(&services, many).await;
             let mut keyboard = Keyboard::new();
-            for sub in many {
-                let name = tariff_name(&services, sub.tariff_id).await;
+            for (sub, name) in many.iter().zip(names) {
                 keyboard = keyboard.push(ui::button(
                     c,
                     "sub.btn.item_open",
@@ -474,9 +474,9 @@ async fn options_start(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, B
         [] => Ok(Screen::notice(ui::text(c, "opt.no_subscription", &[])).section(Section::Options)),
         [only] => options_menu(turn, client, only.id).await,
         many => {
+            let names = subscription_names(&services, many).await;
             let mut keyboard = Keyboard::new();
-            for sub in many {
-                let name = tariff_name(&services, sub.tariff_id).await;
+            for (sub, name) in many.iter().zip(names) {
                 keyboard = keyboard.push(ui::button(
                     c,
                     "sub.btn.item_open",

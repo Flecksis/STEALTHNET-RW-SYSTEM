@@ -384,3 +384,78 @@ async fn при_лимите_категории_бот_продлевает_её
     );
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn подписки_одного_тарифа_различаются_по_имени_в_remnawave() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let standard = tariff_in(&db, "Обычный", "Стандарт").await;
+    let premium = tariff_in(&db, "Быстрый", "Премиум").await;
+    set_multi(&services, true).await;
+    handle_update(&ctx, text_update(1, 703, "/start")).await;
+    let client = client_of(&services, 703).await.unwrap();
+    let first = give(&db, client.id, &standard, 81).await;
+    let second = give(&db, client.id, &standard, 82).await;
+    let third = give(&db, client.id, &premium, 83).await;
+    handle_update(&ctx, callback_update(2, 703, "subs")).await;
+    let labels = last_labels(&server).await;
+    assert!(
+        labels[0].starts_with("Стандарт · morozov_a_81 · до "),
+        "{labels:?}"
+    );
+    assert!(
+        labels[1].starts_with("Стандарт · morozov_a_82 · до "),
+        "{labels:?}"
+    );
+    assert!(labels[2].starts_with("Премиум · до "), "{labels:?}");
+    assert_eq!(
+        last_buttons(&server).await[..3],
+        [
+            format!("sub:{first}"),
+            format!("sub:{second}"),
+            format!("sub:{third}")
+        ]
+    );
+    handle_update(&ctx, callback_update(3, 703, "buy")).await;
+    let labels = last_labels(&server).await;
+    assert!(
+        labels.iter().any(|l| l.contains("Стандарт · morozov_a_82")),
+        "{labels:?}"
+    );
+    db.cleanup().await;
+}
+
+#[test]
+fn без_имени_в_remnawave_подписки_одного_тарифа_нумеруются() {
+    let sub = |username: Option<&str>| sn_domain::subscription::Subscription {
+        id: SubscriptionId(1),
+        public_id: uuid::Uuid::nil(),
+        client_id: ClientId(1),
+        tariff_id: None,
+        kind: SubscriptionKind::Paid,
+        remna: username.map(|name| RemnaLink {
+            user_id: RemnaUserId(1),
+            username: name.into(),
+            short_uuid: None,
+        }),
+        extra_devices: 0,
+        period_started_at: None,
+        period_days: None,
+        autorenew: AutoRenewState::default(),
+        mirror: RemnaMirror::default(),
+        created_at: Utc::now(),
+        ended_at: None,
+        device_limit: None,
+    };
+    let bases = vec![
+        "Стандарт".to_string(),
+        "Стандарт".to_string(),
+        "Премиум".to_string(),
+    ];
+    let subs = vec![sub(Some("sn_1a2b3c4d-old")), sub(None), sub(Some("anna"))];
+    assert_eq!(
+        crate::handler::distinct_names(&bases, &subs),
+        ["Подписка 1", "Подписка 2", "Премиум"]
+    );
+}

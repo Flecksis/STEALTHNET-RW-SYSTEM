@@ -683,6 +683,43 @@ pub async fn tariff_name(services: &Services, tariff_id: Option<TariffId>) -> St
     found.map_or_else(fallback, |t| t.name)
 }
 
+pub async fn subscription_names(services: &Services, subs: &[Subscription]) -> Vec<String> {
+    let mut bases = Vec::with_capacity(subs.len());
+    for sub in subs {
+        bases.push(tariff_name(services, sub.tariff_id).await);
+    }
+    distinct_names(&bases, subs)
+}
+
+pub fn distinct_names(bases: &[String], subs: &[Subscription]) -> Vec<String> {
+    bases
+        .iter()
+        .zip(subs)
+        .enumerate()
+        .map(|(index, (base, sub))| {
+            if bases.iter().filter(|other| *other == base).count() < 2 {
+                return base.clone();
+            }
+            match sub
+                .remna
+                .as_ref()
+                .map(|remna| remna.username.as_str())
+                .filter(|nick| !nick.is_empty() && !legacy_nick(nick))
+            {
+                Some(nick) => format!("{base} · {nick}"),
+                None => format!("{} {}", lang::pick("Подписка", "Subscription"), index + 1),
+            }
+        })
+        .collect()
+}
+
+fn legacy_nick(nick: &str) -> bool {
+    nick.strip_prefix("sn_").is_some_and(|rest| {
+        let bytes = rest.as_bytes();
+        bytes.len() > 8 && bytes[8] == b'-' && bytes[..8].iter().all(u8::is_ascii_hexdigit)
+    })
+}
+
 pub fn live(views: Vec<SubscriptionView>) -> Vec<Subscription> {
     views
         .into_iter()

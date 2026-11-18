@@ -1,5 +1,5 @@
 use crate::BotError;
-use crate::handler::{Screen, Turn, live, status_text, tariff_name};
+use crate::handler::{Screen, Turn, live, status_text, subscription_names, tariff_name};
 use crate::session::{Awaiting, DevicePick};
 use crate::telegram::Keyboard;
 use crate::text;
@@ -63,9 +63,9 @@ pub async fn subscriptions(turn: &mut Turn<'_>, client: &Client) -> Result<Scree
         [only] => subscription(turn, client, only.id.0).await,
         many => {
             let offset = services.settings().remna_offset();
+            let names = subscription_names(&services, many).await;
             let mut keyboard = Keyboard::new();
-            for sub in many {
-                let name = tariff_name(&services, sub.tariff_id).await;
+            for (sub, name) in many.iter().zip(names) {
                 let button = match sub.mirror.expire_at {
                     Some(at) => ui::button(
                         c,

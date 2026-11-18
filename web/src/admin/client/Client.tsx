@@ -120,6 +120,7 @@ function ClientDesktop() {
   }, [loadCard, refreshHistory]);
 
   const live = useMemo(() => (card ? liveSubscriptions(card) : []), [card]);
+  const tabs = useMemo(() => [...live].sort((a, b) => a.id - b.id), [live]);
   const sub: Subscription | null = live.find((s) => s.id === subId) ?? live[0] ?? null;
 
   useEffect(() => {
@@ -368,9 +369,9 @@ function ClientDesktop() {
 
       <div className="cc-cols">
         <div className="cc-main">
-          {live.length > 1 ? (
+          {tabs.length > 1 ? (
             <div role="group" aria-label="Подписки клиента" className="segs" style={{ alignSelf: 'flex-start' }}>
-              {live.map((s, index) => (
+              {tabs.map((s, index) => (
                 <button key={s.id} type="button" aria-pressed={s.id === sub?.id} onClick={() => setSubId(s.id)}>
                   Подписка {index + 1}
                 </button>
