@@ -150,14 +150,8 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         .note_opt(hosting.is_err().then(|| unreachable.to_string()))
         .detail(Detail::Table {
             columns: vec![
-                Column {
-                    title: "Сумма".into(),
-                    unit: Unit::Money,
-                },
-                Column {
-                    title: "Оплат".into(),
-                    unit: Unit::Count,
-                },
+                Column::new("Сумма", Unit::Money),
+                Column::new("Оплат", Unit::Count),
             ],
             rows: by_provider
                 .into_iter()
@@ -173,14 +167,8 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         .note_opt(traffic.is_err().then(|| unreachable.to_string()))
         .detail(Detail::Table {
             columns: vec![
-                Column {
-                    title: "Трафик".into(),
-                    unit: Unit::Bytes,
-                },
-                Column {
-                    title: "Доля".into(),
-                    unit: Unit::Percent,
-                },
+                Column::new("Трафик", Unit::Bytes),
+                Column::new("Доля", Unit::Percent),
             ],
             rows: traffic
                 .as_ref()
@@ -252,18 +240,9 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         })
         .detail(Detail::Table {
             columns: vec![
-                Column {
-                    title: "Сейчас".into(),
-                    unit: Unit::Count,
-                },
-                Column {
-                    title: "Пик за период".into(),
-                    unit: Unit::Count,
-                },
-                Column {
-                    title: "В среднем".into(),
-                    unit: Unit::Count,
-                },
+                Column::new("Сейчас", Unit::Count),
+                Column::new("Пик за период", Unit::Count),
+                Column::new("В среднем", Unit::Count),
             ],
             rows: online_rows,
             note: Some("Пики и среднее — по замерам раз в 10 минут".into()),
@@ -290,10 +269,7 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
     )
     .note("по последнему подключению")
     .detail(Detail::Table {
-        columns: vec![Column {
-            title: "Подписок".into(),
-            unit: Unit::Count,
-        }],
+        columns: vec![Column::new("Подписок", Unit::Count)],
         rows: node_rows,
         note: None,
     });
@@ -302,14 +278,8 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         .note(format!("{} раз", down.iter().map(|d| d.2).sum::<i64>()))
         .detail(Detail::Table {
             columns: vec![
-                Column {
-                    title: "Не отвечала".into(),
-                    unit: Unit::Seconds,
-                },
-                Column {
-                    title: "Раз".into(),
-                    unit: Unit::Count,
-                },
+                Column::new("Не отвечала", Unit::Seconds),
+                Column::new("Раз", Unit::Count),
             ],
             rows: down
                 .iter()
@@ -337,10 +307,7 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         .note_opt(share(margin, net).map(|s| format!("{} выручки", super::metric::pct_text(s))))
         .hint("Без комиссий платёжек: панель их не знает")
         .detail(Detail::Table {
-            columns: vec![Column {
-                title: "Сумма".into(),
-                unit: Unit::Money,
-            }],
+            columns: vec![Column::new("Сумма", Unit::Money)],
             rows: vec![
                 row("Выручка без возвратов".into(), None, vec![Some(net)]),
                 row("Хостинг".into(), None, vec![hosting_sum.map(|h| -h)]),

@@ -14,24 +14,31 @@ pub struct SourceStat {
     pub campaign: String,
     pub registrations: i64,
     pub trials: i64,
+    pub connected: i64,
     pub paid: i64,
     pub revenue: i64,
     pub revenue_all: i64,
     pub kept_base: i64,
     pub kept: i64,
     pub clicks: i64,
+    pub since: Option<DateTime<Utc>>,
 }
 
 impl SourceStat {
     fn add(&mut self, o: &SourceStat) {
         self.registrations += o.registrations;
         self.trials += o.trials;
+        self.connected += o.connected;
         self.paid += o.paid;
         self.revenue += o.revenue;
         self.revenue_all += o.revenue_all;
         self.kept_base += o.kept_base;
         self.kept += o.kept;
         self.clicks += o.clicks;
+        self.since = match (self.since, o.since) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
     }
 
     pub fn conversion(&self) -> Option<f64> {
@@ -59,7 +66,18 @@ type StatRow = (
     i64,
     i64,
     i64,
+    i64,
 );
+
+type Since = (String, String, String, DateTime<Utc>);
+
+pub async fn trial_on(db: &mut impl sn_store::Db) -> StoreResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT COALESCE((SELECT (value ->> 'enabled')::boolean FROM settings WHERE key = 'billing.trial'), false)",
+    )
+    .fetch_one(db.conn())
+    .await?)
+}
 
 pub async fn stats(
     store: &Store,
@@ -76,7 +94,7 @@ pub async fn stats(
     let text = format!(
         "WITH cohort AS ( \
            SELECT ac.client_id, ac.source_type, ac.source_key, ac.utm_medium, ac.utm_campaign, ac.first_paid_at, \
-             ac.trial_at, ac.first_island_at, ac.kept30 \
+             ac.trial_at, ac.connected_at, ac.first_island_at, ac.kept30 \
            FROM analytics_clients ac WHERE ac.created_at >= {s} AND ac.created_at < {e} AND NOT ac.deleted AND {f}), \
          money AS ( \
            SELECT p.client_id, \
@@ -85,7 +103,7 @@ pub async fn stats(
            FROM analytics_payments p JOIN cohort USING (client_id) \
            WHERE NOT p.stars AND p.provider <> 'balance' GROUP BY p.client_id) \
          SELECT c.source_type, c.source_key, c.utm_medium, c.utm_campaign, count(*)::bigint, \
-           count(c.trial_at)::bigint, \
+           count(c.trial_at)::bigint, count(c.connected_at)::bigint, \
            count(*) FILTER (WHERE c.first_paid_at IS NOT NULL)::bigint, \
            COALESCE(sum(m.in_range), 0)::bigint, COALESCE(sum(m.total), 0)::bigint, \
            count(*) FILTER (WHERE c.first_island_at <= {n})::bigint, \
@@ -98,19 +116,21 @@ pub async fn stats(
     let mut out: Vec<SourceStat> = found
         .into_iter()
         .map(
-            |(t, k, m, c, regs, trials, paid, rev, all, base, kept)| SourceStat {
+            |(t, k, m, c, regs, trials, connected, paid, rev, all, base, kept)| SourceStat {
                 source_type: t,
                 source_key: k,
                 medium: m,
                 campaign: c,
                 registrations: regs,
                 trials,
+                connected,
                 paid,
                 revenue: rev,
                 revenue_all: all,
                 kept_base: base,
                 kept,
                 clicks: 0,
+                since: None,
             },
         )
         .collect();
@@ -154,6 +174,54 @@ pub async fn stats(
             }
         }
     }
+    if utm_only {
+        let links: Vec<Since> = sqlx::query_as(
+            "SELECT source, COALESCE(medium, ''), COALESCE(campaign, ''), min(created_at) FROM utm_links \
+             WHERE archived_at IS NULL GROUP BY 1, 2, 3",
+        )
+        .fetch_all(sn_store::Db::conn(&mut conn))
+        .await?;
+        let first: Vec<Since> = sqlx::query_as(
+            "SELECT source_key, utm_medium, utm_campaign, min(created_at) FROM analytics_clients \
+             WHERE source_type = 'utm' AND NOT deleted GROUP BY 1, 2, 3",
+        )
+        .fetch_all(sn_store::Db::conn(&mut conn))
+        .await?;
+        let find = |list: &[Since], s: &SourceStat| {
+            list.iter()
+                .find(|x| x.0 == s.source_key && x.1 == s.medium && x.2 == s.campaign)
+                .map(|x| x.3)
+        };
+        for st in out.iter_mut().filter(|st| st.source_type == "utm") {
+            st.since = find(&links, st).or_else(|| find(&first, st));
+        }
+        for (source, medium, campaign, created) in links {
+            if let Some(super::query::SourceFilter::Utm {
+                source: want,
+                campaign: camp,
+            }) = &filters.source
+                && (want != &source || camp.as_ref().is_some_and(|c| c != &campaign))
+            {
+                continue;
+            }
+            let known = out.iter().any(|st| {
+                st.source_type == "utm"
+                    && st.source_key == source
+                    && st.medium == medium
+                    && st.campaign == campaign
+            });
+            if !known {
+                out.push(SourceStat {
+                    source_type: "utm".into(),
+                    source_key: source,
+                    medium,
+                    campaign,
+                    since: Some(created),
+                    ..SourceStat::default()
+                });
+            }
+        }
+    }
     out.sort_by(|a, b| {
         b.registrations
             .cmp(&a.registrations)
@@ -163,61 +231,52 @@ pub async fn stats(
     Ok(out)
 }
 
-const TYPES: [&str; 5] = ["utm", "promo", "ref", "gift", "none"];
-
-fn columns() -> Vec<Column> {
-    vec![
-        Column {
-            title: "Перешли".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Регистрации".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Пробные".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Заплатили".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Конверсия".into(),
-            unit: Unit::Percent,
-        },
-        Column {
-            title: "Выручка за период".into(),
-            unit: Unit::Money,
-        },
-        Column {
-            title: "За всё время".into(),
-            unit: Unit::Money,
-        },
-        Column {
-            title: "LTV".into(),
-            unit: Unit::Money,
-        },
-        Column {
-            title: "Платят через месяц".into(),
-            unit: Unit::Percent,
-        },
-    ]
+pub fn age(since: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<String> {
+    let days = (now - since?).num_days().max(0);
+    let text = format!("идёт {}", labels::count(days, "день", "дня", "дней"));
+    Some(if days < 30 {
+        format!("{text} · рано судить")
+    } else {
+        text
+    })
 }
 
-fn cells(s: &SourceStat, with_clicks: bool) -> Vec<Option<f64>> {
-    vec![
+const TYPES: [&str; 5] = ["utm", "promo", "ref", "gift", "none"];
+
+fn columns(trials: bool) -> Vec<Column> {
+    let mut out = vec![
+        Column::new("Перешли", Unit::Count),
+        Column::new("Пришли", Unit::Count),
+    ];
+    if trials {
+        out.push(Column::new("Попробовали", Unit::Count).share_of(1));
+    }
+    out.extend([
+        Column::new("Подключились", Unit::Count).share_of(1),
+        Column::new("Оплатили", Unit::Count).share_of(1),
+        Column::new("Выручка за период", Unit::Money),
+        Column::new("LTV", Unit::Money),
+        Column::new("Платят через месяц", Unit::Percent),
+    ]);
+    out
+}
+
+fn cells(s: &SourceStat, with_clicks: bool, trials: bool) -> Vec<Option<f64>> {
+    let mut out = vec![
         with_clicks.then(|| num(s.clicks)),
         Some(num(s.registrations)),
-        Some(num(s.trials)),
+    ];
+    if trials {
+        out.push(Some(num(s.trials)));
+    }
+    out.extend([
+        Some(num(s.connected)),
         Some(num(s.paid)),
-        s.conversion(),
         Some(num(s.revenue)),
-        Some(num(s.revenue_all)),
         s.ltv(),
         s.kept_share(),
-    ]
+    ]);
+    out
 }
 
 fn slice_of(s: &SourceStat, by_campaign: bool) -> String {
@@ -229,7 +288,13 @@ fn slice_of(s: &SourceStat, by_campaign: bool) -> String {
     }
 }
 
-pub fn rows_for(stats: &[SourceStat], kind: Option<&str>, names: &Names, c: &Ctx<'_>) -> Vec<Row> {
+pub fn rows_for(
+    stats: &[SourceStat],
+    kind: Option<&str>,
+    names: &Names,
+    c: &Ctx<'_>,
+    trials: bool,
+) -> Vec<Row> {
     let mut groups: Vec<(String, String, SourceStat, Vec<SourceStat>)> = Vec::new();
     for s in stats
         .iter()
@@ -276,8 +341,11 @@ pub fn rows_for(stats: &[SourceStat], kind: Option<&str>, names: &Names, c: &Ctx
                             } else {
                                 p.campaign.clone()
                             },
-                            sub: (!p.medium.is_empty()).then(|| p.medium.clone()),
-                            cells: cells(p, true),
+                            sub: join_sub(
+                                (!p.medium.is_empty()).then(|| p.medium.clone()),
+                                age(p.since, c.range.now),
+                            ),
+                            cells: cells(p, true, trials),
                             list: Some(
                                 ListRef::clients("source")
                                     .slice(slice_of(p, true))
@@ -291,8 +359,11 @@ pub fn rows_for(stats: &[SourceStat], kind: Option<&str>, names: &Names, c: &Ctx
                 };
             Row {
                 label: names.source(&t, &k),
-                sub: utm.then(|| "UTM-метка".to_string()),
-                cells: cells(&total, utm),
+                sub: utm.then(|| {
+                    join_sub(Some("UTM-метка".into()), age(total.since, c.range.now))
+                        .unwrap_or_default()
+                }),
+                cells: cells(&total, utm, trials),
                 list: Some(
                     ListRef::clients("source")
                         .slice(slice_of(&total, false))
@@ -302,6 +373,13 @@ pub fn rows_for(stats: &[SourceStat], kind: Option<&str>, names: &Names, c: &Ctx
             }
         })
         .collect()
+}
+
+fn join_sub(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+        (a, b) => a.or(b),
+    }
 }
 
 pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
@@ -334,11 +412,18 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     };
     let all = sum(&now, None);
     let all_prev = before.as_ref().map(|b| sum(b, None));
+    let trials = {
+        let mut conn = c.store.conn().await?;
+        trial_on(&mut conn).await? || now.iter().any(|s| s.trials > 0)
+    };
     let table = |kind: Option<&str>| {
         Detail::Table {
-        columns: columns(),
-        rows: rows_for(&now, kind, &c.names, c),
-        note: Some("Клиенты, пришедшие за период. «Заплатили» и «За всё время» — их оплаты до сегодняшнего дня. Перешли — нажали «Старт» в боте, открыли мини-приложение или сайт по ссылке с меткой.".into()),
+        columns: columns(trials),
+        rows: rows_for(&now, kind, &c.names, c, trials),
+        note: Some(
+            "Клиенты, пришедшие за период, и что они сделали потом: взяли пробный период, подключили VPN, оплатили. Доли — от пришедших. Перешли — нажали «Старт» в боте, открыли мини-приложение или сайт по ссылке с меткой. Метке меньше 30 дней — рано судить."
+                .into(),
+        ),
     }
     };
     let mut metrics = vec![
@@ -360,6 +445,20 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         )
         .prev(all_prev.as_ref().and_then(SourceStat::conversion))
         .note(format!("{} из {}", all.paid, all.registrations))
+        .detail(table(None)),
+        Metric::new(
+            "connected",
+            "Подключились",
+            Unit::Percent,
+            share(num(all.connected), num(all.registrations)),
+        )
+        .prev(
+            all_prev
+                .as_ref()
+                .and_then(|p| share(num(p.connected), num(p.registrations))),
+        )
+        .note(format!("{} из {}", all.connected, all.registrations))
+        .hint("Пришедшие за период, у которых хотя бы одна подписка уже подключалась к VPN")
         .detail(table(None)),
     ];
     let mut by_type = Vec::new();

@@ -118,4 +118,21 @@ async fn ссылки_меток_проверяются_и_получают_ци
     assert_eq!(found.stray.len(), 1);
     assert_eq!(found.stray[0].source_key, "tiktok");
     assert_eq!(found.stray[0].registrations, 1);
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query("UPDATE utm_links SET archived_at = now() WHERE source = 'vk'")
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let after = crate::catalog::utm::links::page(&ctx, &q, now())
+        .await
+        .unwrap();
+    assert!(after.links.is_empty());
+    let vk = after
+        .stray
+        .iter()
+        .find(|s| s.source_key == "vk" && s.campaign == "games")
+        .unwrap();
+    assert_eq!((vk.registrations, vk.paid, vk.revenue), (1, 1, 15_000));
 }

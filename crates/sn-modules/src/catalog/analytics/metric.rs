@@ -97,6 +97,23 @@ pub struct Breakdown {
 pub struct Column {
     pub title: String,
     pub unit: Unit,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_of: Option<usize>,
+}
+
+impl Column {
+    pub fn new(title: impl Into<String>, unit: Unit) -> Column {
+        Column {
+            title: title.into(),
+            unit,
+            share_of: None,
+        }
+    }
+
+    pub fn share_of(mut self, column: usize) -> Column {
+        self.share_of = Some(column);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

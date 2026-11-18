@@ -100,6 +100,13 @@ const FIRST_ISLANDS: &str = "UPDATE analytics_clients ac SET first_island_at = f
            FROM $CLIENTS LEFT JOIN analytics_islands i ON i.client_id = c.id AND i.seq = 1) f \
      WHERE ac.client_id = f.client_id";
 
+const CONNECTED: &str = "UPDATE analytics_clients ac SET connected_at = s.first \
+     FROM (SELECT sb.client_id, min(sb.first_connected_at) AS first FROM subscriptions sb \
+           WHERE sb.first_connected_at IS NOT NULL AND $FILTER GROUP BY 1) s \
+     WHERE ac.client_id = s.client_id AND ac.connected_at IS DISTINCT FROM s.first";
+
+const PAID: &str = "provider <> 'balance' AND kind <> 'trial' AND amount_minor > 0";
+
 pub async fn rebuild_all(db: &mut impl Db, currency: Currency) -> StoreResult<()> {
     sqlx::query("DELETE FROM analytics_clients")
         .execute(db.conn())
@@ -123,15 +130,18 @@ pub async fn rebuild_all(db: &mut impl Db, currency: Currency) -> StoreResult<()
         .bind(currency.code())
         .execute(db.conn())
         .await?;
-    sqlx::query(
+    sqlx::query(&format!(
         "UPDATE analytics_clients ac SET first_paid_at = f.first \
          FROM (SELECT client_id, min(paid_at) AS first FROM analytics_payments \
-               WHERE provider <> 'balance' GROUP BY client_id) f \
-         WHERE ac.client_id = f.client_id",
-    )
+               WHERE {PAID} GROUP BY client_id) f \
+         WHERE ac.client_id = f.client_id"
+    ))
     .execute(db.conn())
     .await?;
     sqlx::query(&TRIALS.replace("$FILTER", "true"))
+        .execute(db.conn())
+        .await?;
+    sqlx::query(&CONNECTED.replace("$FILTER", "true"))
         .execute(db.conn())
         .await?;
     sqlx::query(&FIRST_ISLANDS.replace(
@@ -161,6 +171,14 @@ pub async fn refresh_since(
     sqlx::query(&TRIALS.replace(
         "$FILTER",
         "o.client_id IN (SELECT client_id FROM orders WHERE kind = 'trial' AND updated_at > $1)",
+    ))
+    .bind(since)
+    .execute(db.conn())
+    .await?;
+    sqlx::query(&CONNECTED.replace(
+        "$FILTER",
+        "sb.client_id IN (SELECT client_id FROM subscriptions \
+           WHERE first_connected_at > $1 - interval '1 day')",
     ))
     .bind(since)
     .execute(db.conn())
@@ -202,13 +220,13 @@ pub async fn refresh_since(
     .bind(currency.code())
     .execute(db.conn())
     .await?;
-    sqlx::query(
+    sqlx::query(&format!(
         "UPDATE analytics_clients ac SET first_paid_at = f.first \
          FROM (SELECT client_id, min(paid_at) AS first FROM analytics_payments \
-               WHERE provider <> 'balance' AND client_id IN (SELECT client_id FROM payments WHERE id = ANY($1)) \
+               WHERE {PAID} AND client_id IN (SELECT client_id FROM payments WHERE id = ANY($1)) \
                GROUP BY client_id) f \
-         WHERE ac.client_id = f.client_id",
-    )
+         WHERE ac.client_id = f.client_id"
+    ))
     .bind(&ids)
     .execute(db.conn())
     .await?;

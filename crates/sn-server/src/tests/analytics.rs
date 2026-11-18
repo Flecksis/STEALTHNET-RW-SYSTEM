@@ -267,8 +267,8 @@ async fn ссылки_меток_создаются_и_не_повторяютс
     );
     let (status, body) = h
         .write(
-            Method::POST,
-            &format!("/api/admin/m/utm/links/{id}/archive"),
+            Method::DELETE,
+            &format!("/api/admin/m/utm/links/{id}"),
             &owner,
             json!({}),
         )

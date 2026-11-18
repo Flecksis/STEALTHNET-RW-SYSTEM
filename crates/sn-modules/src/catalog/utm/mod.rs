@@ -252,7 +252,10 @@ impl Module for UtmModule {
                 .route("/report", get(report_route))
                 .route("/clients/{client_id}", get(client_route))
                 .route("/links", get(links::links_route).post(links::create_route))
-                .route("/links/{id}", axum::routing::put(links::update_route))
+                .route(
+                    "/links/{id}",
+                    axum::routing::put(links::update_route).delete(links::archive_route),
+                )
                 .route(
                     "/links/{id}/archive",
                     axum::routing::post(links::archive_route),

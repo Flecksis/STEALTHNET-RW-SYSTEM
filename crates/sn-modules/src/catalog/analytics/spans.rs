@@ -4,7 +4,7 @@ use sn_store::{Db, Store, StoreResult};
 
 pub const GRACE_DAYS: i64 = 3;
 pub const MONTH_DAYS: i64 = 30;
-pub const VERSION: i32 = 3;
+pub const VERSION: i32 = 4;
 const LOCK: i64 = 7_240_001;
 const OVERLAP_MINUTES: i64 = 10;
 const CHUNK: usize = 2_000;

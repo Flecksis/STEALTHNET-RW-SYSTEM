@@ -6,12 +6,15 @@ import { Icon } from '../../lib/icons';
 import { usePhone } from '../../lib/media';
 import { QrCode } from '../../lib/qr';
 import type { Currency } from '../../lib/types';
+import { ShareBar } from '../analytics/charts';
 import { downloadRows } from '../analytics/csv';
+import { percentText } from '../analytics/model';
+import { ConfirmDialog } from '../client/dialogs';
 import { PhoneHeader } from '../phone';
 import { NoAccess } from '../promo/Promo';
 import { useSession } from '../session';
+import { ageDays, ageText, early, funnel } from './funnel';
 import {
-  archive,
   dates,
   draftOf,
   draftOfStat,
@@ -20,6 +23,7 @@ import {
   links,
   param,
   PERIODS,
+  remove,
   save,
   tag,
   tags,
@@ -133,32 +137,61 @@ function LinksBox({ built, title, phone }: { built: Built[]; title: string; phon
   );
 }
 
-function Facts({ s, currency }: { s: Stat; currency: Currency }) {
-  const facts: Array<[string, string]> = [
-    ['Перешли', groupDigits(s.clicks)],
-    ['Регистрации', groupDigits(s.registrations)],
-    ['Пробные', groupDigits(s.trials)],
-    ['Впервые заплатили', groupDigits(s.paid)],
-    ['Конверсия в оплату', percent(s.paid, s.registrations)],
-    ['Выручка', money({ minor: s.revenue, currency })],
+function chain(s: Stat): string {
+  return [s.registrations, s.connected, s.paid].map(groupDigits).join(' → ');
+}
+
+function Funnel({ s, trials, since, currency }: { s: Stat; trials: boolean; since: string | null; currency: Currency }) {
+  const days = ageDays(since, Date.now());
+  const figures: Array<[string, string]> = [
+    ['Выручка за период', money({ minor: s.revenue, currency })],
     ['На платящего', s.paid ? money({ minor: Math.round(s.revenue_all / s.paid), currency }) : '—'],
     ['Платят через месяц', percent(s.kept, s.kept_base)],
   ];
   return (
-    <dl className="ut-facts">
-      {facts.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd className="num">{v}</dd>
-        </div>
-      ))}
-    </dl>
+    <>
+      <div className="ut-funnel">
+        {s.clicks ? (
+          <div className="ut-step clicks">
+            <span className="ut-step-name">Перешли</span>
+            <strong className="num">{groupDigits(s.clicks)}</strong>
+            <span className="ut-step-share">по ссылке</span>
+          </div>
+        ) : null}
+        {funnel(s, trials).map((st) => (
+          <div key={st.key} className="ut-step">
+            <span className="ut-step-name">{st.title}</span>
+            <strong className="num">{groupDigits(st.value)}</strong>
+            {st.share === null ? (
+              <span className="ut-step-share">{st.key === 'arrived' ? 'с меткой за период' : '—'}</span>
+            ) : (
+              <>
+                <span className="ut-step-share">{percentText(st.share)} от пришедших</span>
+                <ShareBar value={st.share} />
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      <dl className="ut-facts">
+        {figures.map(([k, v]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd className="num">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {days !== null ? (
+        <p className={early(days) ? 'ut-age early' : 'ut-age'}>
+          {early(days) ? `Метка ${ageText(days).replace('идёт', 'идёт всего')} — рано судить: часть пришедших ещё не успела подключиться и оплатить.` : `Метка ${ageText(days)}.`}
+        </p>
+      ) : null}
+    </>
   );
 }
 
-function sentence(s: Stat): string {
-  const head = s.clicks ? `Из ${groupDigits(s.clicks)} перешедших зарегистрировались ${groupDigits(s.registrations)} (${percent(s.registrations, s.clicks)})` : `Зарегистрировались ${groupDigits(s.registrations)}`;
-  return `${head}, пробный период взяли ${groupDigits(s.trials)}, заплатили ${groupDigits(s.paid)} — ${percent(s.paid, s.registrations)} от регистраций.`;
+function clickLine(s: Stat): string | null {
+  return s.clicks ? `Из ${groupDigits(s.clicks)} перешедших пришли ${groupDigits(s.registrations)} — ${percent(s.registrations, s.clicks)}.` : null;
 }
 
 function analyticsLink(s: { source_key: string; campaign: string }): string {
@@ -255,11 +288,12 @@ function Builder({
   );
 }
 
-function LinkDetail({ row, data, currency, onEdit, onArchived, phone }: { row: LinkRow; data: Data; currency: Currency; onEdit: () => void; onArchived: () => void; phone: boolean }) {
+function LinkDetail({ row, data, currency, onEdit, onRemoved, phone }: { row: LinkRow; data: Data; currency: Currency; onEdit: () => void; onRemoved: () => void; phone: boolean }) {
   const navigate = useNavigate();
-  const [busy, setBusy] = useState(false);
+  const [asking, setAsking] = useState(false);
   const l = row.link;
   const built = links(data.page, draftOf(l));
+  const clicks = clickLine(row.stats);
   return (
     <div className={phone ? 'ut-pdetail' : 'ax-detail'}>
       <div className="ax-dhead">
@@ -273,54 +307,59 @@ function LinkDetail({ row, data, currency, onEdit, onArchived, phone }: { row: L
           <button type="button" className="b36 hov" onClick={onEdit}>
             Изменить
           </button>
-          <button
-            type="button"
-            className="b36 hov"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void archive(l.id)
-                .then(onArchived)
-                .finally(() => setBusy(false));
-            }}
-          >
-            В архив
+          <button type="button" className="b36 hov" onClick={() => setAsking(true)}>
+            Удалить
           </button>
         </div>
       </div>
       <LinksBox built={built} title={l.title} phone={phone} />
       <div className="ut-period">
         <h3 className="ax-h3">{data.page ? `${dateLong(data.page.from)} — ${dateLong(data.page.to)}` : 'За период'}</h3>
-        <Facts s={row.stats} currency={currency} />
-        <p className="ut-say">{sentence(row.stats)}</p>
+        <Funnel s={row.stats} trials={data.page?.trials ?? true} since={l.created_at} currency={currency} />
+        {clicks ? <p className="ut-say">{clicks}</p> : null}
       </div>
       <p className="ax-note muted">
-        Перешли — нажали «Старт» в боте, открыли мини-приложение или сайт по этой ссылке; считаются с обновления панели. Выручка — оплаты этих клиентов за период, как в «Аналитика → Источники».{' '}
+        Пришли — зарегистрировались по этой ссылке за период; остальные шаги — что они сделали потом, за всё время. Подключились — хотя бы одна подписка уже подключалась к VPN. Перешли — нажали «Старт» в боте, открыли мини-приложение или сайт; считаются с обновления панели.{' '}
         <button type="button" className="ut-more" onClick={() => navigate(analyticsLink(row.stats))}>
           Подробно по дням, удержание и LTV — в аналитике <Icon name="chevron-right" size={14} stroke={2.4} />
         </button>
       </p>
+      {asking ? (
+        <ConfirmDialog
+          title="Удалить ссылку"
+          text="Ссылка пропадёт из списка. Клиенты, которые уже пришли по ней, сохранят метку: их цифры останутся в аналитике, а метка появится в разделе «Не заведены» — её можно будет сохранить снова."
+          confirm="Удалить ссылку"
+          onClose={() => setAsking(false)}
+          run={async () => {
+            await remove(l.id);
+            setAsking(false);
+            onRemoved();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function StrayDetail({ s, currency, onMake, phone }: { s: Stat; currency: Currency; onMake: () => void; phone: boolean }) {
+function StrayDetail({ s, data, currency, onMake, phone }: { s: Stat; data: Data; currency: Currency; onMake: () => void; phone: boolean }) {
+  const clicks = clickLine(s);
   return (
     <div className={phone ? 'ut-pdetail' : 'ax-detail'}>
       <div className="ax-dhead">
         <div>
           <h2 className="ax-h2 mono">{tags([s.source_key, s.medium, s.campaign]) || 'Метка без источника'}</h2>
-          <span className="ax-sub">Ссылку сделали без конструктора — например, вручную в рекламном кабинете</span>
+          <span className="ax-sub">Метка не заведена: клиенты пришли по ссылке, сделанной не здесь, — например, в рекламном кабинете или у блогера</span>
         </div>
         <div className="ut-head-btns">
           <button type="button" className="b36 hov" onClick={onMake}>
-            Сделать ссылку
+            Сохранить метку
           </button>
         </div>
       </div>
       <div className="ut-period">
-        <Facts s={s} currency={currency} />
-        <p className="ut-say">{sentence(s)}</p>
+        <h3 className="ax-h3">{data.page ? `${dateLong(data.page.from)} — ${dateLong(data.page.to)}` : 'За период'}</h3>
+        <Funnel s={s} trials={data.page?.trials ?? true} since={s.since} currency={currency} />
+        {clicks ? <p className="ut-say">{clicks}</p> : null}
       </div>
     </div>
   );
@@ -332,11 +371,50 @@ function csv(data: Data, currency: Currency) {
     return;
   }
   const money = (minor: number) => (currency === 'RUB' ? String(Math.round(minor / 100)) : (minor / 100).toFixed(2).replace('.', ','));
-  const row = (title: string, s: Stat) => [title, s.source_key, s.medium, s.campaign, s.clicks, s.registrations, s.trials, s.paid, money(s.revenue), money(s.revenue_all)];
+  const now = Date.now();
+  const share = (part: number) => (s: Stat) => (s.registrations ? percentText((part / s.registrations) * 100) : '');
+  const row = (title: string, s: Stat, since: string | null) => {
+    const days = ageDays(since, now);
+    return [
+      title,
+      s.source_key,
+      s.medium,
+      s.campaign,
+      s.clicks,
+      s.registrations,
+      s.trials,
+      share(s.trials)(s),
+      s.connected,
+      share(s.connected)(s),
+      s.paid,
+      share(s.paid)(s),
+      money(s.revenue),
+      money(s.revenue_all),
+      days ?? '',
+      early(days) ? 'рано судить' : '',
+    ];
+  };
   downloadRows(`UTM-метки ${page.from} ${page.to}`, [
-    ['Ссылка', 'Источник', 'Канал', 'Кампания', 'Перешли', 'Регистрации', 'Пробные', 'Заплатили', 'Выручка за период', 'За всё время'],
-    ...page.links.map((r) => row(r.link.title, r.stats)),
-    ...page.stray.map((s) => row('не из конструктора', s)),
+    [
+      'Ссылка',
+      'Источник',
+      'Канал',
+      'Кампания',
+      'Перешли',
+      'Пришли',
+      'Попробовали',
+      'Попробовали, доля',
+      'Подключились',
+      'Подключились, доля',
+      'Оплатили',
+      'Оплатили, доля',
+      'Выручка за период',
+      'За всё время',
+      'Дней',
+      'Оценка',
+    ],
+    ...page.links.map((r) => row(r.link.title, r.stats, r.link.created_at)),
+    ...page.stray.map((s) => row('не заведена', s, s.since)),
   ]);
 }
 
@@ -401,7 +479,7 @@ export function Utm() {
           currency={currency}
           phone={phone}
           onEdit={() => startNew(draftOf(selectedLink.link), selectedLink.link.id)}
-          onArchived={() => {
+          onRemoved={() => {
             setMode(null);
             data.reload();
           }}
@@ -409,7 +487,7 @@ export function Utm() {
       );
     }
     if (selectedStray) {
-      return <StrayDetail s={selectedStray} currency={currency} phone={phone} onMake={() => startNew(draftOfStat(selectedStray))} />;
+      return <StrayDetail s={selectedStray} data={data} currency={currency} phone={phone} onMake={() => startNew(draftOfStat(selectedStray))} />;
     }
     return phone ? null : (
       <div className="ax-detail">
@@ -417,12 +495,18 @@ export function Utm() {
       </div>
     );
   };
-  const sources = Array.from(new Set((page?.links ?? []).map((r) => r.link.source)));
+  const now = Date.now();
+  const ordered = [...(page?.links ?? [])].sort(
+    (a, b) => b.stats.registrations - a.stats.registrations || b.link.created_at.localeCompare(a.link.created_at),
+  );
+  const total = (src: string) => ordered.filter((r) => r.link.source === src).reduce((acc, r) => acc + r.stats.registrations, 0);
+  const sources = Array.from(new Set(ordered.map((r) => r.link.source))).sort((a, b) => total(b) - total(a));
+  const tagLine = (base: string, since: string | null) => (early(ageDays(since, now)) ? `${base} · рано судить` : base);
   const list = (
     <>
       {sources.map((src) => {
-        const rows = (page?.links ?? []).filter((r) => r.link.source === src);
-        const regs = rows.reduce((acc, r) => acc + r.stats.registrations, 0);
+        const rows = ordered.filter((r) => r.link.source === src);
+        const regs = total(src);
         return phone ? (
           <section key={src} className="hp-group">
             <h2 className="hp-h2">{src}</h2>
@@ -431,13 +515,11 @@ export function Utm() {
                 <button key={r.link.id} type="button" className="axp-row" onClick={() => setMode({ kind: 'link', id: r.link.id })}>
                   <span className="ut-ptext">
                     <span className="axp-name">{r.link.title}</span>
-                    <span className="ut-tags">{tags([r.link.medium, r.link.campaign])}</span>
+                    <span className="ut-tags">{tagLine(tags([r.link.medium, r.link.campaign]) || 'без кампании', r.link.created_at)}</span>
                   </span>
                   <span className="axp-right">
-                    <span className="axp-val num">{groupDigits(r.stats.registrations)} рег.</span>
-                    <span className="axp-chg">
-                      {money({ minor: r.stats.revenue, currency })} · {percent(r.stats.paid, r.stats.registrations)}
-                    </span>
+                    <span className="axp-val num">{chain(r.stats)}</span>
+                    <span className="axp-chg">оплатили {percent(r.stats.paid, r.stats.registrations)}</span>
                   </span>
                   <Icon name="chevron-right" size={16} stroke={2.2} className="chev" />
                 </button>
@@ -453,9 +535,9 @@ export function Utm() {
             {rows.map((r) => (
               <button key={r.link.id} type="button" className={`ut-row${selectedLink?.link.id === r.link.id ? ' on' : ''}`} onClick={() => setMode({ kind: 'link', id: r.link.id })}>
                 <span className="ut-title">{r.link.title}</span>
-                <span className="ut-num num">{groupDigits(r.stats.registrations)}</span>
-                <span className="ut-tags">{tags([r.link.medium, r.link.campaign]) || 'без кампании'}</span>
-                <span className="ut-sub num">{money({ minor: r.stats.revenue, currency })}</span>
+                <span className="ut-num num">{chain(r.stats)}</span>
+                <span className="ut-tags">{tagLine(tags([r.link.medium, r.link.campaign]) || 'без кампании', r.link.created_at)}</span>
+                <span className="ut-sub num">оплатили {percent(r.stats.paid, r.stats.registrations)}</span>
               </button>
             ))}
           </div>
@@ -464,17 +546,17 @@ export function Utm() {
       {page?.stray.length ? (
         phone ? (
           <section className="hp-group">
-            <h2 className="hp-h2">Метки не из конструктора</h2>
+            <h2 className="hp-h2">Не заведены</h2>
             <div className="hp-card hp-list">
               {page.stray.slice(0, STRAY_SHOWN).map((s, i) => (
                 <button key={`${s.source_key}/${s.medium}/${s.campaign}`} type="button" className="axp-row" onClick={() => setMode({ kind: 'stray', index: i })}>
                   <span className="ut-ptext">
                     <span className="axp-name">{tags([s.source_key, s.medium, s.campaign]) || 'без источника'}</span>
-                    <span className="ut-tags">ссылку сделали вручную</span>
+                    <span className="ut-tags">{tagLine('не заведена', s.since)}</span>
                   </span>
                   <span className="axp-right">
-                    <span className="axp-val num">{groupDigits(s.registrations)} рег.</span>
-                    <span className="axp-chg">{money({ minor: s.revenue, currency })}</span>
+                    <span className="axp-val num">{chain(s)}</span>
+                    <span className="axp-chg">оплатили {percent(s.paid, s.registrations)}</span>
                   </span>
                   <Icon name="chevron-right" size={16} stroke={2.2} className="chev" />
                 </button>
@@ -484,7 +566,7 @@ export function Utm() {
         ) : (
           <div className="ut-group">
             <div className="ax-cap ut-cap">
-              <span>Метки не из конструктора</span>
+              <span>Не заведены</span>
               <span className="num">{groupDigits(page.stray.reduce((a, s) => a + s.registrations, 0))}</span>
             </div>
             {page.stray.slice(0, STRAY_SHOWN).map((s, i) => (
@@ -495,9 +577,9 @@ export function Utm() {
                 onClick={() => setMode({ kind: 'stray', index: i })}
               >
                 <span className="ut-title">{tags([s.source_key, s.medium, s.campaign]) || 'без источника'}</span>
-                <span className="ut-num num">{groupDigits(s.registrations)}</span>
-                <span className="ut-tags">ссылку сделали вручную</span>
-                <span className="ut-sub num">{money({ minor: s.revenue, currency })}</span>
+                <span className="ut-num num">{chain(s)}</span>
+                <span className="ut-tags">{tagLine('не заведена', s.since)}</span>
+                <span className="ut-sub num">оплатили {percent(s.paid, s.registrations)}</span>
               </button>
             ))}
             {page.stray.length > STRAY_SHOWN ? (
@@ -561,7 +643,7 @@ export function Utm() {
             Новая ссылка
           </button>
         </div>
-        {notice ? <p className="anp-note">{notice}</p> : <p className="anp-note">Регистрации, выручка и доля заплативших за период.</p>}
+        {notice ? <p className="anp-note">{notice}</p> : <p className="anp-note">Справа: пришли → подключились → оплатили, ниже — доля оплативших от пришедших.</p>}
         {list}
         {!page?.links.length && !page?.stray.length && !data.loading ? <p className="anp-note">Ссылок ещё нет.</p> : null}
       </div>
@@ -594,7 +676,7 @@ export function Utm() {
             </div>
           ) : null}
           {list}
-          <p className="ut-list-note">{`Числа — регистрации и выручка за ${dateLong(dates(period).from)} — ${dateLong(dates(period).to)}`}</p>
+          <p className="ut-list-note">{`Справа: пришли → подключились → оплатили, ниже — доля оплативших от пришедших. Пришли — за ${dateLong(dates(period).from)} — ${dateLong(dates(period).to)}.`}</p>
         </div>
         {right()}
       </section>

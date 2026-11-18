@@ -240,18 +240,9 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     .note_opt(note.clone())
     .detail(Detail::Table {
         columns: vec![
-            Column {
-                title: "Продаж".into(),
-                unit: Unit::Count,
-            },
-            Column {
-                title: "Сумма".into(),
-                unit: Unit::Money,
-            },
-            Column {
-                title: "Средняя цена".into(),
-                unit: Unit::Money,
-            },
+            Column::new("Продаж", Unit::Count),
+            Column::new("Сумма", Unit::Money),
+            Column::new("Средняя цена", Unit::Money),
         ],
         rows: tariff_rows,
         note: Some("Средняя цена — после скидок. Нажмите на тариф, чтобы увидеть сроки.".into()),
@@ -264,10 +255,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         Some(total_moves),
     )
     .detail(Detail::Table {
-        columns: vec![Column {
-            title: "Переходов".into(),
-            unit: Unit::Count,
-        }],
+        columns: vec![Column::new("Переходов", Unit::Count)],
         rows: moved
             .iter()
             .map(|(a, b, n)| {
@@ -307,22 +295,10 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         ))
         .detail(Detail::Table {
             columns: vec![
-                Column {
-                    title: "Применений".into(),
-                    unit: Unit::Count,
-                },
-                Column {
-                    title: "Скидка".into(),
-                    unit: Unit::Money,
-                },
-                Column {
-                    title: "Выручка с ними".into(),
-                    unit: Unit::Money,
-                },
-                Column {
-                    title: "Дней подарено".into(),
-                    unit: Unit::Days,
-                },
+                Column::new("Применений", Unit::Count),
+                Column::new("Скидка", Unit::Money),
+                Column::new("Выручка с ними", Unit::Money),
+                Column::new("Дней подарено", Unit::Days),
             ],
             rows: promo
                 .iter()
@@ -352,10 +328,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             labels::money_short(gift.bought_sum, c.currency)
         ))
         .detail(Detail::Table {
-            columns: vec![Column {
-                title: "Подарков".into(),
-                unit: Unit::Count,
-            }],
+            columns: vec![Column::new("Подарков", Unit::Count)],
             rows: vec![
                 row("Куплено".into(), None, vec![Some(gift.bought)], None),
                 row("Активировано".into(), None, vec![Some(gift.redeemed)], None),
@@ -382,14 +355,8 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     ))
     .detail(Detail::Table {
         columns: vec![
-            Column {
-                title: "Деньгами".into(),
-                unit: Unit::Money,
-            },
-            Column {
-                title: "Призов или дней".into(),
-                unit: Unit::Count,
-            },
+            Column::new("Деньгами", Unit::Money),
+            Column::new("Призов или дней", Unit::Count),
         ],
         rows: vec![
             row(

@@ -12,7 +12,7 @@ export type ListRef = { kind: 'payments' | 'clients'; set: string; slice?: strin
 export type Point = { at: string; value: number };
 export type BRow = { key: string; label: string; value: number; count?: number; prev?: number; list?: ListRef };
 export type Breakdown = { key: string; title: string; rows: BRow[] };
-export type Column = { title: string; unit: Unit };
+export type Column = { title: string; unit: Unit; share_of?: number };
 export type Row = { label: string; sub?: string; cells: Array<number | null>; list?: ListRef; children?: Row[] };
 export type Bar = { label: string; value: number; list?: ListRef };
 export type CohortRow = { month: string; size: number; kept: Array<number | null>; money: Array<number | null> };
@@ -196,6 +196,22 @@ export function axisLabel(day: string, step: Step, first: boolean, prevDay: stri
 
 export function stars(n: number): string {
   return count(Math.round(n), 'звезда', 'звезды', 'звёзд');
+}
+
+export function shareOf(cells: Array<number | null>, col: Column, i: number): string | null {
+  if (col.share_of === undefined) {
+    return null;
+  }
+  const value = cells[i];
+  const base = cells[col.share_of];
+  if (value === null || value === undefined || !base) {
+    return null;
+  }
+  return percentText((value / base) * 100);
+}
+
+export function linkColumn(columns: Column[]): number {
+  return columns.find((col) => col.share_of !== undefined)?.share_of ?? 0;
 }
 
 export function percentText(v: number): string {

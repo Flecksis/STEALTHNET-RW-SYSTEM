@@ -493,10 +493,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             list: Some(ListRef::clients("returned").dates(from, to)),
         });
     let exp_table = |a: f64, m: f64, set: &str| Detail::Table {
-        columns: vec![Column {
-            title: "Подписок".into(),
-            unit: Unit::Count,
-        }],
+        columns: vec![Column::new("Подписок", Unit::Count)],
         rows: vec![
             Row {
                 label: "С автопродлением".into(),

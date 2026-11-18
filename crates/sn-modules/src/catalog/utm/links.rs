@@ -58,6 +58,7 @@ pub struct LinksPage {
     pub bot: Option<String>,
     pub site: Option<String>,
     pub preparing: bool,
+    pub trials: bool,
     pub links: Vec<LinkRow>,
     pub stray: Vec<SourceStat>,
 }
@@ -200,9 +201,12 @@ pub async fn page(
         .from
         .unwrap_or_else(|| to.with_day(1).unwrap_or(to))
         .min(to);
-    let ready = {
+    let (ready, trial_on) = {
         let mut conn = ctx.store.conn().await?;
-        analytics::ready(&mut conn, currency).await?
+        (
+            analytics::ready(&mut conn, currency).await?,
+            analytics::sources::trial_on(&mut conn).await?,
+        )
     };
     let mut rows: Vec<LinkRow> = links
         .into_iter()
@@ -226,6 +230,7 @@ pub async fn page(
             bot,
             site,
             preparing: true,
+            trials: trial_on,
             links: rows,
             stray: Vec::new(),
         });
@@ -250,12 +255,15 @@ pub async fn page(
             None => stray.push(s),
         }
     }
+    let trials =
+        trial_on || rows.iter().any(|r| r.stats.trials > 0) || stray.iter().any(|s| s.trials > 0);
     Ok(LinksPage {
         from,
         to,
         bot,
         site,
         preparing: false,
+        trials,
         links: rows,
         stray,
     })

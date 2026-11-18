@@ -274,46 +274,16 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         })
         .collect();
     let columns = vec![
-        Column {
-            title: "Выручка".into(),
-            unit: Unit::Money,
-        },
-        Column {
-            title: "Доля выручки".into(),
-            unit: Unit::Percent,
-        },
-        Column {
-            title: "Счетов".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Оплачено".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Доля оплаченных".into(),
-            unit: Unit::Percent,
-        },
-        Column {
-            title: "Брошено".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "Ошибки".into(),
-            unit: Unit::Count,
-        },
-        Column {
-            title: "До оплаты".into(),
-            unit: Unit::Seconds,
-        },
-        Column {
-            title: "Возвраты".into(),
-            unit: Unit::Money,
-        },
-        Column {
-            title: "Споры".into(),
-            unit: Unit::Count,
-        },
+        Column::new("Выручка", Unit::Money),
+        Column::new("Доля выручки", Unit::Percent),
+        Column::new("Счетов", Unit::Count),
+        Column::new("Оплачено", Unit::Count),
+        Column::new("Доля оплаченных", Unit::Percent),
+        Column::new("Брошено", Unit::Count),
+        Column::new("Ошибки", Unit::Count),
+        Column::new("До оплаты", Unit::Seconds),
+        Column::new("Возвраты", Unit::Money),
+        Column::new("Споры", Unit::Count),
     ];
     let note = c.filters.ignored(&APPLIES);
     let table = Detail::Table {
@@ -368,10 +338,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     let errors = Metric::new("failed", "Ошибки оплаты", Unit::Count, Some(inv.total(2)))
         .prev(prev_total(&inv_prev, 2))
         .detail(Detail::Table {
-            columns: vec![Column {
-                title: "Раз".into(),
-                unit: Unit::Count,
-            }],
+            columns: vec![Column::new("Раз", Unit::Count)],
             rows: reasons
                 .iter()
                 .take(30)
@@ -423,10 +390,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     )
     .hint("Уведомления платёжек, которые панель не приняла. Журнал хранится 30 дней.")
     .detail(Detail::Table {
-        columns: vec![Column {
-            title: "Раз".into(),
-            unit: Unit::Count,
-        }],
+        columns: vec![Column::new("Раз", Unit::Count)],
         rows: rej
             .iter()
             .map(|(source, outcome, n)| Row {

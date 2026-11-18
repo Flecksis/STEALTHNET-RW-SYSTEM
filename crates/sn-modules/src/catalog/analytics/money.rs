@@ -667,14 +667,8 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         .note_opt(sub_note.clone())
         .detail(Detail::Table {
             columns: vec![
-                Column {
-                    title: "MRR".into(),
-                    unit: Unit::Money,
-                },
-                Column {
-                    title: "Клиентов".into(),
-                    unit: Unit::Count,
-                },
+                Column::new("MRR", Unit::Money),
+                Column::new("Клиентов", Unit::Count),
             ],
             rows: vec![
                 move_row("Новые", moves.new, 1.0, "mrr_new"),
@@ -715,10 +709,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         });
     let table2 = |a: &str, av: f64, au: Unit, b: &str, bv: f64, total: &str, tv: Option<f64>| {
         Detail::Table {
-            columns: vec![Column {
-                title: "Значение".into(),
-                unit: Unit::Money,
-            }],
+            columns: vec![Column::new("Значение", Unit::Money)],
             rows: vec![
                 Row {
                     label: a.into(),
@@ -989,7 +980,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             Metric::new("forecast", &format!("Прогноз на {month}"), Unit::Money, Some(fc.total()))
                 .note("оценка")
                 .detail(Detail::Table {
-                    columns: vec![Column { title: "Сумма".into(), unit: Unit::Money }],
+                    columns: vec![Column::new("Сумма", Unit::Money)],
                     rows: vec![
                         Row { label: "Уже получено".into(), sub: None, cells: vec![Some(fc.received)], list: None, children: Vec::new() },
                         Row { label: "Ожидаем продлений".into(), sub: Some("подписки, которые закончатся до конца месяца, с поправкой на долю продлений за 3 месяца".into()), cells: vec![Some(fc.renewals)], list: None, children: Vec::new() },

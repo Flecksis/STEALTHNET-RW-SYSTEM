@@ -491,14 +491,8 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     .note_opt(sub_note.clone())
     .detail(Detail::Table {
         columns: vec![
-            Column {
-                title: "Платных".into(),
-                unit: Unit::Count,
-            },
-            Column {
-                title: "Всего".into(),
-                unit: Unit::Count,
-            },
+            Column::new("Платных", Unit::Count),
+            Column::new("Всего", Unit::Count),
         ],
         rows: tariff_rows,
         note: None,
@@ -592,14 +586,8 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     ))
     .detail(Detail::Table {
         columns: vec![
-            Column {
-                title: "Сумма".into(),
-                unit: Unit::Money,
-            },
-            Column {
-                title: "Клиентов".into(),
-                unit: Unit::Count,
-            },
+            Column::new("Сумма", Unit::Money),
+            Column::new("Клиентов", Unit::Count),
         ],
         rows: vec![
             Row {

@@ -221,10 +221,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     ))
     .hint("Обращения, где ответил только ИИ, без человека")
     .detail(Detail::Table {
-        columns: vec![Column {
-            title: "Обращений".into(),
-            unit: Unit::Count,
-        }],
+        columns: vec![Column::new("Обращений", Unit::Count)],
         rows: reasons
             .iter()
             .map(|(l, n)| Row {

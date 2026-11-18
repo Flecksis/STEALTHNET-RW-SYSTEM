@@ -20,6 +20,8 @@ import {
   type Row,
   type Step,
   type TabReport,
+  shareOf,
+  linkColumn,
 } from './model';
 
 export type OpenList = (ref: ListRef, title: string) => void;
@@ -275,10 +277,17 @@ function TableDetail({ metric, report, onList, compact }: Props) {
     setOpen(next);
   };
   const lineTitle = (r: Row) => `${metric.title} · ${r.label}`;
+  const link = linkColumn(d.columns);
   if (compact) {
     const item = (r: Row, sub: boolean) => {
       const facts = d.columns
-        .map((col, i) => (r.cells[i] === null || r.cells[i] === undefined ? null : `${col.title.toLowerCase()} ${cellText(r.cells[i] ?? null, col, c)}`))
+        .map((col, i) => {
+          if (r.cells[i] === null || r.cells[i] === undefined) {
+            return null;
+          }
+          const part = shareOf(r.cells, col, i);
+          return `${col.title.toLowerCase()} ${cellText(r.cells[i] ?? null, col, c)}${part ? ` (${part})` : ''}`;
+        })
         .filter(Boolean)
         .join(' · ');
       const kids = r.children?.length ?? 0;
@@ -360,13 +369,14 @@ function TableDetail({ metric, report, onList, compact }: Props) {
                     </td>
                     {d.columns.map((col, i) => (
                       <td key={col.title} className="r num">
-                        {i === 0 && r.list && r.cells[i] != null ? (
+                        {i === link && r.list && r.cells[i] != null ? (
                           <button type="button" className="ax-num" onClick={() => onList(r.list as ListRef, lineTitle(r))}>
                             {cellText(r.cells[i] ?? null, col, c)}
                           </button>
                         ) : (
                           cellText(r.cells[i] ?? null, col, c)
                         )}
+                        {shareOf(r.cells, col, i) ? <span className="ax-cshare">{shareOf(r.cells, col, i)}</span> : null}
                       </td>
                     ))}
                   </tr>
@@ -379,13 +389,14 @@ function TableDetail({ metric, report, onList, compact }: Props) {
                           </td>
                           {d.columns.map((col, i) => (
                             <td key={col.title} className="r num">
-                              {i === 0 && ch.list && ch.cells[i] != null ? (
+                              {i === link && ch.list && ch.cells[i] != null ? (
                                 <button type="button" className="ax-num" onClick={() => onList(ch.list as ListRef, lineTitle(ch))}>
                                   {cellText(ch.cells[i] ?? null, col, c)}
                                 </button>
                               ) : (
                                 cellText(ch.cells[i] ?? null, col, c)
                               )}
+                              {shareOf(ch.cells, col, i) ? <span className="ax-cshare">{shareOf(ch.cells, col, i)}</span> : null}
                             </td>
                           ))}
                         </tr>

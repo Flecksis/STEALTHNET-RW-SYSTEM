@@ -1280,6 +1280,14 @@ button.anp-row {
   padding: 0 9px;
 }
 
+.ax-cshare {
+  display: block;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .ax-rowsub {
   display: block;
   margin-top: 1px;

@@ -9,12 +9,14 @@ export type Stat = {
   campaign: string;
   registrations: number;
   trials: number;
+  connected: number;
   paid: number;
   revenue: number;
   revenue_all: number;
   kept_base: number;
   kept: number;
   clicks: number;
+  since: string | null;
 };
 
 export type Link = {
@@ -36,6 +38,7 @@ export type LinksPage = {
   bot: string | null;
   site: string | null;
   preparing: boolean;
+  trials: boolean;
   links: LinkRow[];
   stray: Stat[];
 };
@@ -259,6 +262,6 @@ export async function save(draft: Draft, id: number | null): Promise<Link> {
     : api<Link>(`/api/admin/m/utm/links/${id}`, { method: 'PUT', body });
 }
 
-export async function archive(id: number): Promise<void> {
-  await api(`/api/admin/m/utm/links/${id}/archive`, { method: 'POST', body: {} });
+export async function remove(id: number): Promise<void> {
+  await api(`/api/admin/m/utm/links/${id}`, { method: 'DELETE' });
 }

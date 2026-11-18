@@ -1,5 +1,5 @@
 import type { Currency } from '../../lib/types';
-import { format, type Metric, type TabReport } from './model';
+import { format, shareOf, type Metric, type TabReport } from './model';
 
 type Cell = string | number | null;
 
@@ -53,16 +53,24 @@ export function metricRows(metric: Metric, report: TabReport): Cell[][] {
         b.rows.forEach((r) => out.push([r.label, plain(r.value, metric.unit, c), r.count ?? '', r.prev === undefined ? '' : plain(r.prev, metric.unit, c)]));
       }
       break;
-    case 'table':
+    case 'table': {
+      const line = (label: string, cells: Array<number | null>): Cell[] => [
+        label,
+        ...d.columns.flatMap((col, i) => {
+          const v = plain(cells[i] ?? null, col.unit, c);
+          return col.share_of === undefined ? [v] : [v, shareOf(cells, col, i) ?? ''];
+        }),
+      ];
       out.push([]);
-      out.push(['', ...d.columns.map((col) => col.title)]);
+      out.push(['', ...d.columns.flatMap((col) => (col.share_of === undefined ? [col.title] : [col.title, `${col.title}, доля`]))]);
       for (const r of d.rows) {
-        out.push([r.label, ...r.cells.map((v, i) => plain(v, d.columns[i]?.unit ?? 'count', c))]);
+        out.push(line(r.label, r.cells));
         for (const ch of r.children ?? []) {
-          out.push([`  ${ch.label}`, ...ch.cells.map((v, i) => plain(v, d.columns[i]?.unit ?? 'count', c))]);
+          out.push(line(`  ${ch.label}`, ch.cells));
         }
       }
       break;
+    }
     case 'bars':
       out.push([]);
       d.bars.forEach((b) => out.push([b.label, b.value]));
