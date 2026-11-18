@@ -1,3 +1,5 @@
+pub mod clicks;
+
 use crate::catalog::installation_currency;
 use crate::catalog::start_param::Utm;
 use crate::catalog::web::{Admin, WebError};

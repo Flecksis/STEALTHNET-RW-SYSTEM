@@ -53,6 +53,58 @@ impl Utm {
             && self.content.is_none()
             && self.term.is_none()
     }
+
+    pub fn from_parts(
+        source: Option<&str>,
+        medium: Option<&str>,
+        campaign: Option<&str>,
+        content: Option<&str>,
+        term: Option<&str>,
+    ) -> Option<Utm> {
+        let pick = |value: Option<&str>| {
+            value
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .filter(|v| tag_value(v))
+                .map(str::to_string)
+        };
+        let utm = Utm {
+            source: pick(source),
+            medium: pick(medium),
+            campaign: pick(campaign),
+            content: pick(content),
+            term: pick(term),
+        };
+        (!utm.is_empty()).then_some(utm)
+    }
+
+    pub fn to_param(&self) -> String {
+        [
+            ("s_", &self.source),
+            ("m_", &self.medium),
+            ("k_", &self.campaign),
+            ("n_", &self.content),
+            ("t_", &self.term),
+        ]
+        .iter()
+        .filter_map(|(prefix, value)| value.as_deref().map(|v| format!("{prefix}{v}")))
+        .collect::<Vec<_>>()
+        .join(SEPARATOR)
+    }
+}
+
+pub fn tag_value(value: &str) -> bool {
+    valid_value(value) && !value.contains(SEPARATOR) && !value.starts_with('_') && !value.ends_with('_')
+}
+
+pub fn with_referral(param: Option<&str>, referral: Option<&str>) -> Option<String> {
+    let parts: Vec<String> = referral
+        .map(|code| format!("ref_{code}"))
+        .into_iter()
+        .chain(param.map(str::to_string))
+        .filter(|p| !p.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(SEPARATOR))
 }
 
 pub fn referral_code(raw: &str) -> Option<String> {
@@ -90,6 +142,22 @@ mod tests {
         assert_eq!(referral_code("auth_x"), None);
         assert_eq!(referral_code("ref_"), None);
         assert_eq!(referral_code("ref_A-B"), None);
+    }
+
+    #[test]
+    fn метки_собираются_в_параметр_и_разбираются_обратно() {
+        let utm = Utm::from_parts(Some("tiktok"), Some("video"), Some("osen-shorts"), None, Some(" ")).unwrap();
+        assert_eq!(utm.to_param(), "s_tiktok__m_video__k_osen-shorts");
+        assert_eq!(Utm::parse(&utm.to_param()), Some(utm));
+        assert_eq!(Utm::from_parts(Some("telegram_ads"), None, None, None, None).unwrap().to_param(), "s_telegram_ads");
+        assert_eq!(Utm::from_parts(Some("bad__value"), Some("ok"), None, None, None).unwrap().to_param(), "m_ok");
+        assert_eq!(Utm::from_parts(Some("осень"), None, None, None, None), None);
+        assert_eq!(Utm::from_parts(None, None, None, None, None), None);
+        assert_eq!(
+            with_referral(Some("s_tiktok"), Some("ABC123")).as_deref(),
+            Some("ref_ABC123__s_tiktok")
+        );
+        assert_eq!(with_referral(None, None), None);
     }
 
     #[test]
