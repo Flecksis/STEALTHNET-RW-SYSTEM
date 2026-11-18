@@ -33,11 +33,11 @@ async fn счета_оплаты_брошенные_и_ошибки() {
     assert_eq!(value(&r, "time_to_pay"), 180.0);
     let rows = table(&r, "invoices");
     let yk = rows.iter().find(|r| r.0 == "ЮKassa").unwrap();
-    assert_eq!(yk.1[0], Some(5.0));
-    assert_eq!(yk.1[1], Some(2.0));
+    assert_eq!(yk.1[0], Some(75_000.0));
+    assert_eq!(yk.1[2], Some(5.0));
     assert_eq!(yk.1[3], Some(2.0));
-    assert_eq!(yk.1[4], Some(1.0));
-    assert_eq!(yk.1[8], Some(75_000.0));
+    assert_eq!(yk.1[5], Some(2.0));
+    assert_eq!(yk.1[6], Some(1.0));
     let errors = table(&r, "failed");
     assert_eq!(errors[0], ("Карта отклонена".to_string(), vec![Some(1.0)]));
     let q = filtered(month(3, Compare::None), |q| {

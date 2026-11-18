@@ -159,9 +159,9 @@ fn describe(ctx: &ModuleContext, names: &labels::Names, r: &PayRow) -> String {
         labels::provider(&titles, provider)
     } else {
         format!(
-            "{}, {}",
+            "{} · {}",
             labels::provider(&titles, provider),
-            labels::method(&titles, provider, method).to_lowercase()
+            labels::method(&titles, provider, method)
         )
     };
     parts.push(way);
@@ -313,9 +313,9 @@ async fn invoices(
                         labels::provider(&titles, &provider)
                     } else {
                         format!(
-                            "{}, {}",
+                            "{} · {}",
                             labels::provider(&titles, &provider),
-                            labels::method(&titles, &provider, &method).to_lowercase()
+                            labels::method(&titles, &provider, &method)
                         )
                     };
                     ListItem {

@@ -188,7 +188,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
             true,
         ),
         "UTM-метки",
-        "pin",
+        "flag",
         7,
     ),
     with_menu(

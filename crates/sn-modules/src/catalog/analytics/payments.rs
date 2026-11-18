@@ -170,6 +170,8 @@ impl Line {
             label,
             sub: None,
             cells: vec![
+                Some(self.revenue),
+                share(self.revenue, total),
                 Some(self.invoices),
                 Some(self.paid),
                 share(self.paid, self.invoices),
@@ -178,8 +180,6 @@ impl Line {
                 self.wait,
                 Some(self.refunded),
                 Some(self.disputes),
-                Some(self.revenue),
-                share(self.revenue, total),
             ],
             list: Some(list),
             children,
@@ -275,6 +275,14 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         .collect();
     let columns = vec![
         Column {
+            title: "Выручка".into(),
+            unit: Unit::Money,
+        },
+        Column {
+            title: "Доля выручки".into(),
+            unit: Unit::Percent,
+        },
+        Column {
             title: "Счетов".into(),
             unit: Unit::Count,
         },
@@ -305,14 +313,6 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         Column {
             title: "Споры".into(),
             unit: Unit::Count,
-        },
-        Column {
-            title: "Выручка".into(),
-            unit: Unit::Money,
-        },
-        Column {
-            title: "Доля выручки".into(),
-            unit: Unit::Percent,
         },
     ];
     let note = c.filters.ignored(&APPLIES);

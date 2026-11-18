@@ -58,10 +58,10 @@ export function Analytics() {
   return phone ? <AnalyticsPhone page={page} /> : <AnalyticsDesk page={page} />;
 }
 
-export const COMPARES: Array<[Compare, string]> = [
-  ['prev', 'с прошлым периодом'],
-  ['year', 'с прошлым годом'],
-  ['none', 'не сравнивать'],
+export const COMPARES: Array<[Compare, string, string]> = [
+  ['prev', 'с прошлым периодом', 'к прошлому'],
+  ['year', 'с прошлым годом', 'к году назад'],
+  ['none', 'не сравнивать', 'без сравнения'],
 ];
 
 export function Off() {
@@ -272,9 +272,9 @@ export function CompareSelect({ page, phone }: { page: Page; phone?: boolean }) 
   const { q, setQ } = page;
   const select = (
     <select value={q.compare} onChange={(e) => setQ({ compare: e.target.value as Compare })}>
-      {COMPARES.map(([c, label]) => (
+      {COMPARES.map(([c, label, short]) => (
         <option key={c} value={c}>
-          {label}
+          {phone ? short : label}
         </option>
       ))}
     </select>
@@ -294,9 +294,6 @@ export function CompareSelect({ page, phone }: { page: Page; phone?: boolean }) 
 }
 
 export function rowChange(m: Metric): string | null {
-  if (m.note) {
-    return m.note;
-  }
   return change(m.value, m.prev, m.unit);
 }
 
@@ -364,7 +361,14 @@ function AnalyticsDesk({ page }: { page: Page }) {
                         aria-current={m.key === metric?.key ? 'true' : undefined}
                         onClick={() => select(m.key)}
                       >
-                        <span className="ax-name">{m.title}</span>
+                        <span className="ax-name">
+                          {m.title}
+                          {m.note ? (
+                            <span className="ax-rnote" title={m.note}>
+                              {m.note}
+                            </span>
+                          ) : null}
+                        </span>
                         <span className="ax-chg">{rowChange(m) ?? ''}</span>
                         <span className="ax-val num">{format(m.value, m.unit, report.currency, true)}</span>
                       </button>

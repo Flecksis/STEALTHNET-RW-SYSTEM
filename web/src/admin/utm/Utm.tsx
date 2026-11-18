@@ -94,7 +94,9 @@ function LinksBox({ built, title, phone }: { built: Built[]; title: string; phon
   const [copied, copy] = useCopy();
   const [qr, setQr] = useState(0);
   const holder = useRef<HTMLDivElement | null>(null);
-  const shown = built[qr]?.url ?? built.find((b) => b.url)?.url ?? null;
+  const pick = built[qr]?.url ? qr : built.findIndex((b) => b.url);
+  const shown = built[pick]?.url ?? null;
+  const shownName = built[pick]?.name ?? '';
   return (
     <div className={phone ? 'ut-links-box phone' : 'ut-links-box'}>
       <div className="ut-links">
@@ -110,7 +112,7 @@ function LinksBox({ built, title, phone }: { built: Built[]; title: string; phon
                 <button type="button" className="b34 hov" onClick={() => copy(b.url as string)}>
                   {copied === b.url ? 'Скопировано' : 'Скопировать'}
                 </button>
-                <button type="button" className="b34 hov ut-qr-btn" aria-pressed={qr === i} onClick={() => setQr(i)}>
+                <button type="button" className="b34 hov ut-qr-btn" aria-pressed={pick === i} onClick={() => setQr(i)}>
                   QR
                 </button>
               </span>
@@ -120,8 +122,8 @@ function LinksBox({ built, title, phone }: { built: Built[]; title: string; phon
       </div>
       {shown ? (
         <div className="ut-qr" ref={holder}>
-          <QrCode text={shown} size={phone ? 168 : 132} label={`QR: ${built[qr]?.name ?? ''}`} />
-          <span>{`QR: ${(built[qr]?.name ?? '').toLowerCase()}`}</span>
+          <QrCode text={shown} size={phone ? 168 : 132} label={`QR: ${shownName}`} />
+          <span>{`QR: ${shownName.toLowerCase()}`}</span>
           <button type="button" className="b34 hov" onClick={() => savePng(holder.current, title)}>
             Скачать PNG
           </button>
@@ -143,7 +145,7 @@ function Facts({ s, currency }: { s: Stat; currency: Currency }) {
     ['Платят через месяц', percent(s.kept, s.kept_base)],
   ];
   return (
-    <dl className="an-facts ut-facts">
+    <dl className="ut-facts">
       {facts.map(([k, v]) => (
         <div key={k}>
           <dt>{k}</dt>

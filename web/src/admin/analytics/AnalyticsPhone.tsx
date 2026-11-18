@@ -37,7 +37,11 @@ export function AnalyticsPhone({ page }: { page: Page }) {
         <section className="hp-card axp-card">
           <span className="hp-cap">{periodText(report.range.from, report.range.to)}</span>
           {metric.detail.type !== 'cohorts' ? <strong className="axp-big num">{format(metric.value, metric.unit, report.currency)}</strong> : null}
-          {sentence ? <span className="axp-vs">{sentence}</span> : metric.note ? <span className="axp-vs">{metric.note}</span> : null}
+          {metric.detail.type === 'cohorts' ? null : sentence ? (
+            <span className="axp-vs">{sentence}</span>
+          ) : metric.note ? (
+            <span className="axp-vs">{metric.note}</span>
+          ) : null}
           {metric.hint && metric.detail.type !== 'cohorts' ? <span className="hp-cap">{metric.hint}</span> : null}
         </section>
         <div className={data.loading ? 'anp-body busy' : 'anp-body'}>
@@ -102,7 +106,10 @@ export function AnalyticsPhone({ page }: { page: Page }) {
                           window.scrollTo(0, 0);
                         }}
                       >
-                        <span className="axp-name">{m.title}</span>
+                        <span className="axp-name">
+                          {m.title}
+                          {m.note ? <span className="axp-note">{m.note}</span> : null}
+                        </span>
                         <span className="axp-right">
                           <span className="axp-val num">{format(m.value, m.unit, report.currency, true)}</span>
                           {rowChange(m) ? <span className="axp-chg">{rowChange(m)}</span> : null}

@@ -269,7 +269,7 @@ export function change(value: number | null | undefined, prev: number | null | u
     return `${d > 0 ? '↑' : '↓'}${NBSP}${String(Math.abs(d)).replace('.', ',')}${NBSP}п.`;
   }
   if (prev === 0) {
-    return value === 0 ? `0${NBSP}%` : null;
+    return null;
   }
   const r = ((value - prev) / Math.abs(prev)) * 100;
   if (Math.abs(r) < 0.05) {

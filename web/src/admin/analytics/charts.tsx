@@ -49,10 +49,8 @@ type Props = {
 
 export function SeriesChart({ points, prev, unit, currency, step, live, height, active, onActive, compact = false }: Props) {
   const [ref, width] = useWidth<HTMLDivElement>();
-  const left = compact ? 46 : 64;
   const bottom = 24;
   const top = 8;
-  const inner = Math.max(0, width - left - 4);
   const plot = height - bottom - top;
   const values = [...points.map((p) => p.value), ...prev.map((p) => p.value)];
   const max = Math.max(1, ...values);
@@ -65,6 +63,9 @@ export function SeriesChart({ points, prev, unit, currency, step, live, height, 
   for (let v = floor; v <= ceil + stepY / 2; v += stepY) {
     lines.push(v);
   }
+  const longest = Math.max(1, ...lines.map((v) => (v === 0 ? 1 : format(v, unit, currency, true).length)));
+  const left = Math.max(compact ? 34 : 56, Math.round(longest * (compact ? 6.4 : 7)) + 12);
+  const inner = Math.max(0, width - left - 4);
   const n = Math.max(points.length, prev.length, 1);
   const slot = inner / n;
   const bar = Math.max(2, Math.min(36, slot * (n > 40 ? 0.66 : 0.56)));

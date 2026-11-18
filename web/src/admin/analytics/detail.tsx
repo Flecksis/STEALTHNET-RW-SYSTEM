@@ -39,6 +39,12 @@ const STEPS: Array<[Step, string]> = [
   ['month', 'По месяцам'],
 ];
 
+const SHORT_STEPS: Record<Step, string> = {
+  day: 'Дни',
+  week: 'Недели',
+  month: 'Месяцы',
+};
+
 function stepsFor(from: string, to: string): Array<[Step, string]> {
   const days = (Date.parse(to) - Date.parse(from)) / 86_400_000 + 1;
   return STEPS.filter(([s]) => (s === 'day' ? days <= 120 : s === 'week' ? days >= 14 && days <= 840 : days >= 60));
@@ -77,7 +83,7 @@ function SeriesDetail({ metric, report, setQ, onList, compact }: Props) {
             <div className="segs small" role="group" aria-label="Шаг графика">
               {steps.map(([s, label]) => (
                 <button key={s} type="button" aria-pressed={range.step === s} onClick={() => setQ({ step: s })}>
-                  {compact ? label.replace('По ', '') : label}
+                  {compact ? SHORT_STEPS[s] : label}
                 </button>
               ))}
             </div>
@@ -142,7 +148,8 @@ type BreakdownProps = {
   comparing: boolean;
 };
 
-function BreakdownTable({ all, breakdown, setBy, metric, currency, onList, compact, comparing }: BreakdownProps) {
+function BreakdownTable({ all, breakdown, setBy, metric, currency, onList, compact, comparing: wanted }: BreakdownProps) {
+  const comparing = wanted && breakdown.rows.some((r) => r.prev !== null && r.prev !== undefined);
   const total = breakdown.rows.reduce((acc, r) => acc + Math.max(0, r.value), 0);
   const counted = breakdown.rows.some((r) => r.count !== undefined);
   return (
@@ -444,7 +451,7 @@ function heat(part: number | null, size: number): string | undefined {
   return `color-mix(in srgb, var(--accent) ${Math.round(8 + v * 86)}%, transparent)`;
 }
 
-function CohortDetail({ metric, report }: Props) {
+function CohortDetail({ metric, report, compact }: Props) {
   const d = metric.detail;
   const [view, setView] = useState<'share' | 'money'>('share');
   if (d.type !== 'cohorts') {
@@ -456,7 +463,7 @@ function CohortDetail({ metric, report }: Props) {
   return (
     <>
       <div className="ax-chart-top">
-        <p className="ax-coh-say">{metric.hint}</p>
+        {compact ? <p className="ax-coh-say">{metric.hint}</p> : null}
         <div className="segs small" role="group" aria-label="Что показывать">
           <button type="button" aria-pressed={view === 'share'} onClick={() => setView('share')}>
             Доля клиентов
