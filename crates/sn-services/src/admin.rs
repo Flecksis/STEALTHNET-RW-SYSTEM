@@ -1,5 +1,5 @@
 use crate::Actor;
-use crate::clients::{OrderBrief, PaymentBrief, TicketBrief, order_brief};
+use crate::clients::{OrderBrief, PaymentBrief, TicketBrief, admin_event, order_brief};
 use crate::error::{ServiceError, ServiceResult};
 use crate::inbox::{AcceptResult, RefundCommand, RefundResult};
 use crate::services::Services;
@@ -707,7 +707,7 @@ impl<'a> AdminOps<'a> {
         let mut core_items = Vec::with_capacity(core_rows.len());
         for row in core_rows {
             let event: DomainEvent = match serde_json::from_value(row.payload.0) {
-                Ok(event) => event,
+                Ok(event) => admin_event(event),
                 Err(err) => {
                     tracing::warn!(event = row.id, error = %err, "событие ядра не разобрано, в ленте пропущено");
                     continue;

@@ -2,6 +2,7 @@ import { count, dateLong, money, NBSP, plural, timeHM, type Money } from '../../
 import { amountText, lowerFirst, methodText } from '../client/history';
 import type { Amount, OrderBrief } from '../client/types';
 import type { Attention } from '../money/journal';
+import { START_VIA_TEXT, startMark, startVia } from '../../lib/utmTags';
 import { termText } from '../tariffs/model';
 import type { Decisions } from './todo';
 
@@ -274,6 +275,15 @@ const SOURCE: Record<string, string> = {
   migration: 'клиент перенесён из прежней панели',
 };
 
+function startNote(raw: unknown): string {
+  const mark = startMark(raw);
+  if (mark) {
+    return `Метка ${mark}`;
+  }
+  const via = startVia(raw);
+  return via ? START_VIA_TEXT[via] : '';
+}
+
 export function feedLine(item: FeedItem, nodes: NodeBrief[]): FeedLine | null {
   const base = { key: `${item.source}-${item.id}`, when: shortAgo(item.at), clientId: item.client_id };
   const who = personName(item.client, item.client_id);
@@ -293,7 +303,7 @@ export function feedLine(item: FeedItem, nodes: NodeBrief[]): FeedLine | null {
           ...base,
           who,
           what: SOURCE[String(item.data?.source ?? '')] ?? 'новый клиент',
-          note: item.data?.start_param ? `Метка ${String(item.data.start_param)}` : '',
+          note: startNote(item.data?.start_param),
           tone: 0,
           icon: 'person',
           action: null,

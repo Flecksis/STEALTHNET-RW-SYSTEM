@@ -86,3 +86,35 @@ export function withBotStart(href: string, bot: string | null | undefined, start
   url.search = `?start=${start}`;
   return url.toString();
 }
+
+const HIDDEN_STARTS = ['gift_', 'pl_', 'auth_'];
+
+function startParts(raw: unknown): string[] {
+  return typeof raw === 'string'
+    ? raw
+        .split('__')
+        .map((part) => part.trim())
+        .filter(Boolean)
+    : [];
+}
+
+export function startMark(raw: unknown): string | null {
+  const shown = startParts(raw).filter((part) => !HIDDEN_STARTS.some((prefix) => part.startsWith(prefix)));
+  return shown.length ? shown.join('__') : null;
+}
+
+export function startVia(raw: unknown): 'gift' | 'promo' | null {
+  const parts = startParts(raw);
+  if (parts.some((part) => part.startsWith('gift_'))) {
+    return 'gift';
+  }
+  if (parts.some((part) => part.startsWith('pl_'))) {
+    return 'promo';
+  }
+  return null;
+}
+
+export const START_VIA_TEXT: Record<'gift' | 'promo', string> = {
+  gift: 'По ссылке подарка',
+  promo: 'По промо-ссылке',
+};

@@ -1050,6 +1050,37 @@ async fn главная_лента_и_ноды_через_http() {
     let (status, feed) = h.get("/api/admin/feed?kind=clients&limit=5", &owner).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(feed["items"][0]["title"], "Новый клиент");
+    let gifted = h
+        .services()
+        .clients()
+        .ensure_telegram(
+            &TelegramProfile {
+                id: 5_093_118_499,
+                username: None,
+                first_name: Some("Дима".into()),
+                last_name: None,
+                language_code: Some("ru".into()),
+                is_premium: false,
+            },
+            RegistrationSource::Bot,
+            Some("ref_ABC123__s_tiktok__gift_WRWM-48NG-B662"),
+        )
+        .await
+        .unwrap()
+        .0
+        .id;
+    let (_, feed) = h.get("/api/admin/feed?kind=clients&limit=5", &owner).await;
+    assert_eq!(
+        feed["items"][0]["data"]["start_param"],
+        "ref_ABC123__s_tiktok__gift_"
+    );
+    assert!(!feed.to_string().contains("WRWM-48NG-B662"));
+    let (status, history) = h
+        .get(&format!("/api/admin/clients/{}/history", gifted.0), &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    assert!(history.to_string().contains("ref_ABC123__s_tiktok__gift_"));
+    assert!(!history.to_string().contains("WRWM-48NG-B662"));
     let (status, body) = h.get("/api/admin/feed?kind=planets", &owner).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "validation.invalid_query");

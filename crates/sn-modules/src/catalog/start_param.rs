@@ -110,6 +110,24 @@ pub fn with_referral(param: Option<&str>, referral: Option<&str>) -> Option<Stri
     (!parts.is_empty()).then(|| parts.join(SEPARATOR))
 }
 
+pub const SECRET_PREFIXES: [&str; 3] = [
+    crate::catalog::gifts::START_PREFIX,
+    crate::catalog::promolinks::START_PREFIX,
+    "auth_",
+];
+
+pub fn masked(raw: &str) -> String {
+    segments(raw)
+        .map(|segment| {
+            SECRET_PREFIXES
+                .iter()
+                .find(|prefix| segment.starts_with(**prefix))
+                .map_or(segment, |prefix| prefix)
+        })
+        .collect::<Vec<_>>()
+        .join(SEPARATOR)
+}
+
 pub fn referral_code(raw: &str) -> Option<String> {
     segment(raw, "ref_")
         .map(str::to_ascii_uppercase)
@@ -178,6 +196,19 @@ mod tests {
             Some("ref_ABC123__s_tiktok")
         );
         assert_eq!(with_referral(None, None), None);
+    }
+
+    #[test]
+    fn коды_подарков_промо_ссылок_и_входа_скрываются() {
+        assert_eq!(masked("gift_WRWM-48NG-B662"), "gift_");
+        assert_eq!(masked("pl_blogger-nov"), "pl_");
+        assert_eq!(masked("auth_0123456789abcdef"), "auth_");
+        assert_eq!(
+            masked("ref_ABC123__s_tiktok__gift_WRWM-48NG-B662"),
+            "ref_ABC123__s_tiktok__gift_"
+        );
+        assert_eq!(masked("youtube"), "youtube");
+        assert_eq!(masked(""), "");
     }
 
     #[test]

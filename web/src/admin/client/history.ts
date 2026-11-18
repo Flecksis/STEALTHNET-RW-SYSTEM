@@ -1,4 +1,5 @@
 import { count, dateLong, days, money, periodLabel, timeHM, type Money } from '../../lib/format';
+import { START_VIA_TEXT, startMark, startVia } from '../../lib/utmTags';
 import type { Amount, HistoryItem, OrderBrief, Person } from './types';
 
 export type HistoryLine = { key: string; when: string; what: string; note: string; sum: string; refund?: number };
@@ -227,8 +228,9 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
           if (referrer) {
             return { ...base, what: `${source} по приглашению`, note: `Приглашение от ${personText(referrer)}`, sum: '' };
           }
-          const mark = str(event.start_param);
-          return { ...base, what: source, note: mark ? `Метка «${cut(mark, 40)}»` : '', sum: '' };
+          const mark = startMark(event.start_param);
+          const via = startVia(event.start_param);
+          return { ...base, what: source, note: mark ? `Метка «${cut(mark, 40)}»` : via ? START_VIA_TEXT[via] : '', sum: '' };
         }
         case 'subscription_status_changed':
           return { ...base, what: event.to === 'limited' ? 'Закончился трафик' : 'Подписка истекла', note: '', sum: '' };

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UTM_TTL_MS, savedTags, startParam, tagsFrom, withBotStart } from './utmTags.ts';
+import { UTM_TTL_MS, savedTags, startMark, startParam, startVia, tagsFrom, withBotStart } from './utmTags.ts';
 
 test('метки берутся из адреса, неподходящие значения отбрасываются', () => {
   assert.deepEqual(tagsFrom('?utm_source=tiktok&utm_medium=cpc&utm_campaign=osen-shorts&utm_content=%D0%B2%D0%B8%D0%B4%D0%B5%D0%BE&utm_term=a__b&ref=ABC'), {
@@ -43,4 +43,19 @@ test('метка добавляется только к ссылке на сво
   assert.equal(withBotStart('https://example.com/stealth_bot', 'stealth_bot', 's_vk'), 'https://example.com/stealth_bot');
   assert.equal(withBotStart('https://t.me/stealth_bot', 'stealth_bot', null), 'https://t.me/stealth_bot');
   assert.equal(withBotStart('https://t.me/stealth_bot', null, 's_vk'), 'https://t.me/stealth_bot');
+});
+
+test('коды подарков, промо-ссылок и входа не показываются как метка', () => {
+  assert.equal(startMark('gift_WRWM-48NG-B662'), null);
+  assert.equal(startVia('gift_WRWM-48NG-B662'), 'gift');
+  assert.equal(startMark('pl_blogger-nov'), null);
+  assert.equal(startVia('pl_blogger-nov'), 'promo');
+  assert.equal(startMark('auth_0123456789abcdef'), null);
+  assert.equal(startVia('auth_0123456789abcdef'), null);
+  assert.equal(startMark('ref_ABC123__s_tiktok__gift_WRWM-48NG-B662'), 'ref_ABC123__s_tiktok');
+  assert.equal(startMark('s_tiktok__m_cpc'), 's_tiktok__m_cpc');
+  assert.equal(startMark('youtube'), 'youtube');
+  assert.equal(startVia('youtube'), null);
+  assert.equal(startMark(''), null);
+  assert.equal(startMark(null), null);
 });

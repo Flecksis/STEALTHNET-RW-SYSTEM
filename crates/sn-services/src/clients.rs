@@ -102,6 +102,23 @@ pub enum HistoryRecord {
     },
 }
 
+pub(crate) fn admin_event(event: DomainEvent) -> DomainEvent {
+    match event {
+        DomainEvent::ClientRegistered {
+            client_id,
+            source,
+            start_param,
+        } => DomainEvent::ClientRegistered {
+            client_id,
+            source,
+            start_param: start_param
+                .map(|raw| sn_modules::catalog::start_param::masked(&raw))
+                .filter(|masked| !masked.is_empty()),
+        },
+        other => other,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryItem {
     pub at: DateTime<Utc>,
@@ -1052,7 +1069,7 @@ impl<'a> ClientOps<'a> {
                         };
                         HistoryRecord::Event {
                             kind: stored.event.kind().to_string(),
-                            event: stored.event,
+                            event: admin_event(stored.event),
                             ticket,
                         }
                     }
