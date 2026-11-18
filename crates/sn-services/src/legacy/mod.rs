@@ -7,8 +7,11 @@ pub mod chill_file;
 pub mod extras;
 pub mod json_dump;
 pub mod matcher;
+pub mod minishop;
 pub mod model;
+pub mod pgcustom;
 pub mod pgdump;
+pub mod remnashop;
 pub mod runs;
 pub mod sqlite;
 pub mod stealthnet;
@@ -17,6 +20,8 @@ pub mod telegram_shop;
 
 #[cfg(test)]
 mod go_tests;
+#[cfg(test)]
+mod shop_tests;
 #[cfg(test)]
 mod tests;
 
@@ -44,6 +49,8 @@ pub fn wanted(table: &str) -> bool {
         || bedolaga::TABLES.contains(&table)
         || telegram_shop::TABLES.contains(&table)
         || chill::TABLES.contains(&table)
+        || remnashop::TABLES.contains(&table)
+        || minishop::TABLES.contains(&table)
 }
 
 pub fn import_dir() -> PathBuf {
@@ -58,6 +65,10 @@ pub fn import_dir() -> PathBuf {
 pub fn map_dump(dump: &Dump) -> Result<Legacy, OpenError> {
     if stealthnet::looks_like(dump) {
         Ok(stealthnet::map(dump))
+    } else if remnashop::looks_like(dump) {
+        Ok(remnashop::map(dump))
+    } else if minishop::looks_like(dump) {
+        Ok(minishop::map(dump))
     } else if bedolaga::looks_like(dump) {
         Ok(bedolaga::map(dump))
     } else if telegram_shop::looks_like(dump) {

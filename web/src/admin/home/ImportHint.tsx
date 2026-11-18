@@ -34,7 +34,7 @@ export function ImportHint({ compact = false }: { compact?: boolean }) {
           Переезжаете с другого бота?
         </h2>
         <p className="muted">
-          Перенесите клиентов, подписки, балансы и историю оплат из STEALTHNET или бота Бедолаги. Старый бот при этом не меняется, клиентам ничего
+          Перенесите клиентов, подписки, балансы и историю оплат из STEALTHNET, бота Бедолаги, Remnashop, Minishop, Remnawave Telegram Shop или Chill Remna bot. Старый бот при этом не меняется, клиентам ничего
           не приходит.
         </p>
       </div>

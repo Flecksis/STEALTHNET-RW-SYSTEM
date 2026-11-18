@@ -1,5 +1,5 @@
 use super::table::Dump;
-use super::{chill_file, json_dump, pgdump, sqlite};
+use super::{chill_file, json_dump, pgcustom, pgdump, sqlite};
 use flate2::read::MultiGzDecoder;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
@@ -7,6 +7,7 @@ use std::path::Path;
 
 const PEEK: usize = 1024;
 const READ_BUFFER: usize = 1 << 20;
+const SIDE_FILE_MAX: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
@@ -112,11 +113,6 @@ impl Reader<'_> {
                 "Внутри архива зашифрованный бэкап Chill Remna bot. Загрузите сам файл .bak, без архива",
             ));
         }
-        if head.starts_with(b"PGDMP") {
-            return Err(unsupported(
-                "Копия сделана pg_dump в сжатом формате -Fc, его перенос не читает. Сделайте копию обычным SQL: pg_dump без ключа -Fc, файл .sql",
-            ));
-        }
         if is_json(&head) && chill_file::is_lines(&head) {
             chill_file::read_lines(
                 BufReader::with_capacity(READ_BUFFER, chained),
@@ -124,6 +120,16 @@ impl Reader<'_> {
                 &mut self.dump,
             )?;
             return Ok(());
+        }
+        if head.starts_with(pgcustom::MAGIC) {
+            self.dump.format = "custom";
+            pgcustom::read(chained, self.wanted, &mut self.dump)?;
+            return Ok(());
+        }
+        if is_json(&head) && String::from_utf8_lossy(&head).contains("-backup-parts\"") {
+            return Err(unsupported(
+                "Это список частей резервной копии, а не сама копия. Склейте части в один файл .zip или скачайте копию целиком в админке старого бота — как это сделать, написано в подсказке",
+            ));
         }
         if is_json(&head) {
             self.dump.format = "json";
@@ -188,6 +194,7 @@ impl Reader<'_> {
                 && (inner.starts_with("database.")
                     || inner.ends_with(".sql")
                     || inner.ends_with(".sql.gz")
+                    || inner.ends_with(".dump")
                     || inner.ends_with(".tar.gz")
                     || inner.ends_with(".tgz"))
                 || database
@@ -223,7 +230,8 @@ impl Drop for Spool {
 
 fn zip_name_wanted(name: &str) -> bool {
     [
-        ".tar.gz", ".tgz", ".tar", ".json", ".sql", ".gz", ".bak", ".db", ".sqlite", ".sqlite3",
+        ".tar.gz", ".tgz", ".tar", ".json", ".sql", ".dump", ".gz", ".bak", ".db", ".sqlite",
+        ".sqlite3",
     ]
     .iter()
     .any(|ext| name.ends_with(ext))
@@ -240,8 +248,85 @@ fn zip_error(err: zip::result::ZipError) -> OpenError {
     }
 }
 
+struct Member {
+    name: String,
+    encrypted: bool,
+    dir: bool,
+}
+
+fn listing(zip: &mut zip::ZipArchive<BufReader<File>>) -> Result<Vec<Member>, OpenError> {
+    (0..zip.len())
+        .map(|i| {
+            let raw = zip.by_index_raw(i).map_err(zip_error)?;
+            Ok(Member {
+                name: raw
+                    .name()
+                    .replace('\\', "/")
+                    .trim_start_matches("./")
+                    .to_ascii_lowercase(),
+                encrypted: raw.encrypted(),
+                dir: raw.is_dir(),
+            })
+        })
+        .collect()
+}
+
+fn bot_backup(members: &[Member]) -> bool {
+    members.iter().any(|m| m.name == "manifest.json")
+        && members
+            .iter()
+            .any(|m| !m.dir && m.name.starts_with("database/"))
+}
+
+fn open_bot_backup(
+    zip: &mut zip::ZipArchive<BufReader<File>>,
+    members: &[Member],
+    password: Option<&str>,
+    reader: &mut Reader<'_>,
+) -> Result<(), OpenError> {
+    let mut found = false;
+    for (i, member) in members.iter().enumerate() {
+        let name = member.name.as_str();
+        let side =
+            name == "manifest.json" || (name.starts_with("database/") && name.ends_with(".json"));
+        let data = name.starts_with("database/")
+            && (name.ends_with(".dump") || name.ends_with(".sql") || name.ends_with(".sql.gz"));
+        if member.dir || !(side || data) {
+            continue;
+        }
+        let entry = if member.encrypted {
+            let Some(password) = password.filter(|p| !p.is_empty()) else {
+                return Err(OpenError::NeedsPassword);
+            };
+            zip.by_index_decrypt(i, password.as_bytes())
+                .map_err(zip_error)?
+        } else {
+            zip.by_index(i).map_err(zip_error)?
+        };
+        if side {
+            let mut text = String::new();
+            if entry.take(SIDE_FILE_MAX).read_to_string(&mut text).is_ok() {
+                reader.dump.files.insert(name.to_string(), text);
+            }
+            continue;
+        }
+        found = true;
+        reader.stream(Box::new(entry), 1)?;
+    }
+    if !found {
+        return Err(unsupported(
+            "В этой резервной копии нет выгрузки базы: при её создании выгрузка базы была выключена. Включите её в настройках резервных копий старого бота и сделайте копию заново",
+        ));
+    }
+    Ok(())
+}
+
 fn open_zip(path: &Path, password: Option<&str>, reader: &mut Reader<'_>) -> Result<(), OpenError> {
     let mut zip = zip::ZipArchive::new(BufReader::new(File::open(path)?)).map_err(zip_error)?;
+    let members = listing(&mut zip)?;
+    if bot_backup(&members) {
+        return open_bot_backup(&mut zip, &members, password, reader);
+    }
     let mut found = false;
     for i in 0..zip.len() {
         let (encrypted, dir, name) = {
@@ -312,6 +397,10 @@ pub fn extract_zip(
         return Ok(None);
     }
     let mut zip = zip::ZipArchive::new(BufReader::new(File::open(path)?)).map_err(zip_error)?;
+    let members = listing(&mut zip)?;
+    if bot_backup(&members) && members.iter().all(|m| !m.encrypted) {
+        return Ok(None);
+    }
     for i in 0..zip.len() {
         let (encrypted, dir, name) = {
             let raw = zip.by_index_raw(i).map_err(zip_error)?;

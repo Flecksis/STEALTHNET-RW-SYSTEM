@@ -93,6 +93,37 @@ function HowTo({ source }: { source: Source }) {
       </ol>
     );
   }
+  if (source === 'remnashop') {
+    return (
+      <ol className="imp-how">
+        <li>
+          В боте откройте <b>«Панель управления» → «RemnaShop» → «Бэкап»</b> и нажмите <b>«Запустить бэкап базы данных»</b>.
+        </li>
+        <li>
+          Бот пришлёт файл <span className="mono">db_backup_….sql</span>. Скачайте его из Telegram и перетащите сюда.
+        </li>
+        <li>
+          Если база большая и файл не пришёл, возьмите копию на сервере: автоматические копии лежат в папке <span className="mono">backups</span>{' '}
+          рядом с <span className="mono">docker-compose.yml</span> бота.
+        </li>
+      </ol>
+    );
+  }
+  if (source === 'minishop') {
+    return (
+      <ol className="imp-how">
+        <li>
+          В админке Minishop откройте <b>«Система» → «Бэкапы»</b>, создайте копию и скачайте её — это один файл{' '}
+          <span className="mono">minishop-….zip</span>.
+        </li>
+        <li>Перетащите этот файл сюда. В нём есть и база, и тарифы — их перенесём вместе.</li>
+        <li>
+          Если бот прислал копию в Telegram частями (<span className="mono">.part0001</span> и список <span className="mono">.parts.json</span>),
+          не загружайте части по одной — скачайте полный файл в админке.
+        </li>
+      </ol>
+    );
+  }
   return (
     <ol className="imp-how">
       <li>

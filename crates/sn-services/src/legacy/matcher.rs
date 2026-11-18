@@ -153,6 +153,10 @@ fn names_for(source: Source, client: &LClient, sub: &LSubscription) -> Names {
     let exact = match source {
         Source::Stealthnet => with_suffix(source, &panel_base(client), sub.ordinal),
         Source::TelegramShop | Source::Chill => vec![sub.old_id.clone()],
+        Source::Remnashop => vec![match client.telegram_id {
+            Some(tg) => format!("rs_{tg}"),
+            None => format!("rs_web_{}", client.old_id),
+        }],
         _ => Vec::new(),
     };
     let mut bases = Vec::new();

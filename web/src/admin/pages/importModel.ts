@@ -1,6 +1,6 @@
 import type { Currency } from '../../lib/types';
 
-export type Source = 'stealthnet' | 'bedolaga' | 'telegram_shop' | 'chill';
+export type Source = 'stealthnet' | 'bedolaga' | 'telegram_shop' | 'chill' | 'remnashop' | 'minishop';
 
 export type RunState =
   | 'uploaded'
@@ -97,6 +97,8 @@ export const SOURCES: Array<{ id: Source; name: string; what: string; of: string
   { id: 'bedolaga', name: 'Бот Бедолаги', what: 'remnawave-bedolaga-telegram-bot', of: 'бота Бедолаги' },
   { id: 'telegram_shop', name: 'Remnawave Telegram Shop', what: 'remnawave-telegram-shop', of: 'Remnawave Telegram Shop' },
   { id: 'chill', name: 'Chill Remna bot', what: 'chill-remna-bot', of: 'Chill Remna bot' },
+  { id: 'remnashop', name: 'Remnashop', what: 'Бот remnashop от snoups', of: 'Remnashop' },
+  { id: 'minishop', name: 'Minishop', what: 'remnawave-minishop', of: 'Minishop' },
 ];
 
 export const STAGES: Array<{ key: Stage; label: string }> = [
@@ -137,6 +139,8 @@ export const ACCEPT: Record<Source, string> = {
   bedolaga: '.gz,.tgz,.tar,.zip,.json',
   telegram_shop: '.sql,.gz,.tgz,.tar,.zip',
   chill: '.bak,.db,.sqlite,.sql,.gz,.tgz,.tar,.zip',
+  remnashop: '.sql,.gz,.dump',
+  minishop: '.zip,.dump,.sql,.gz',
 };
 
 export const FILES: Record<Source, string> = {
@@ -144,6 +148,8 @@ export const FILES: Record<Source, string> = {
   bedolaga: 'Файл .tar.gz, .tar или .zip',
   telegram_shop: 'Файл .sql или .sql.gz',
   chill: 'Файл .bak, файл базы .db или .sql',
+  remnashop: 'Файл .sql',
+  minishop: 'Файл .zip',
 };
 
 export const ACTIVE: RunState[] = ['checking', 'running'];

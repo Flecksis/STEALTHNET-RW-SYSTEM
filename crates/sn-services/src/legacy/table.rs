@@ -99,6 +99,7 @@ pub struct Dump {
     pub tables: BTreeMap<String, Table>,
     pub dumped_at: Option<DateTime<Utc>>,
     pub format: &'static str,
+    pub files: BTreeMap<String, String>,
 }
 
 impl Dump {

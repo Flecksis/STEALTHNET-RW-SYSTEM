@@ -13,6 +13,8 @@ pub enum Source {
     Bedolaga,
     TelegramShop,
     Chill,
+    Remnashop,
+    Minishop,
 }
 
 impl Source {
@@ -22,6 +24,8 @@ impl Source {
             Source::Bedolaga => "bedolaga",
             Source::TelegramShop => "telegram_shop",
             Source::Chill => "chill",
+            Source::Remnashop => "remnashop",
+            Source::Minishop => "minishop",
         }
     }
 
@@ -31,6 +35,8 @@ impl Source {
             "bedolaga" | "bdl" => Some(Source::Bedolaga),
             "telegram_shop" | "remnawave-telegram-shop" => Some(Source::TelegramShop),
             "chill" | "chill-remna-bot" => Some(Source::Chill),
+            "remnashop" => Some(Source::Remnashop),
+            "minishop" | "remnawave-minishop" => Some(Source::Minishop),
             _ => None,
         }
     }
@@ -41,6 +47,8 @@ impl Source {
             Source::Bedolaga => "Бот Бедолаги",
             Source::TelegramShop => "remnawave-telegram-shop",
             Source::Chill => "chill-remna-bot",
+            Source::Remnashop => "Remnashop",
+            Source::Minishop => "Minishop",
         }
     }
 
