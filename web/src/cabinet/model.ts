@@ -44,6 +44,7 @@ export type ClientMe = {
   email?: string | null;
   email_change?: boolean;
   has_password?: boolean;
+  must_change_password?: boolean;
 };
 
 export type TwoFactor = { enabled: boolean; enabled_at: string | null };

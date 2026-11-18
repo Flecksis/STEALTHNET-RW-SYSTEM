@@ -23,6 +23,7 @@ type Options = {
   to_balance: Way;
   via_provider: Way;
   outside: Way;
+  gift: { client_id: number; subscription_id: number | null } | null;
 };
 
 export type RefundResult = { refund_id: number | null; request_id: number | null; pending: boolean; amount: Amount; subscription_error: string | null };
@@ -74,6 +75,9 @@ export function RefundDialog({ paymentId, onClose, onDone }: Props) {
         }
         setOptions(data);
         setSum(units(data.remaining));
+        if (data.gift) {
+          setAction('disable');
+        }
         setTarget(data.via_provider.available ? 'provider' : data.to_balance.available ? 'balance' : 'outside');
       })
       .catch((err) => {
@@ -105,11 +109,18 @@ export function RefundDialog({ paymentId, onClose, onDone }: Props) {
     balance: 'Сумма сразу появится на балансе клиента в панели, её можно потратить на подписку.',
     outside: 'Панель только отметит возврат: деньги вы уже вернули в кабинете платёжной системы или вручную.',
   };
-  const actions: Array<[Action, string, string]> = [
-    ['keep', 'Оставить', 'Подписка продолжит работать как сейчас.'],
-    ['cut', 'Снять дни', options ? `Срок подписки уменьшится на ${days(options.days)} — столько добавил этот заказ.` : ''],
-    ['disable', 'Отключить', 'Подписка перестанет работать, клиент не сможет подключиться.'],
-  ];
+  const gift = options?.gift ?? null;
+  const actions: Array<[Action, string, string]> = gift
+    ? [
+        ['keep', 'Оставить', 'Подписка получателя продолжит работать, хотя деньги за подарок вернутся.'],
+        ['cut', 'Укоротить', options ? `Срок подписки получателя уменьшится на ${days(options.days)} — столько дал подарок.` : ''],
+        ['disable', 'Отключить', 'Подписка получателя перестанет работать, он не сможет подключиться.'],
+      ]
+    : [
+        ['keep', 'Оставить', 'Подписка продолжит работать как сейчас.'],
+        ['cut', 'Снять дни', options ? `Срок подписки уменьшится на ${days(options.days)} — столько добавил этот заказ.` : ''],
+        ['disable', 'Отключить', 'Подписка перестанет работать, клиент не сможет подключиться.'],
+      ];
 
   const submit = async () => {
     if (!options || minor === null || minor <= 0 || tooMuch) {
@@ -192,7 +203,16 @@ export function RefundDialog({ paymentId, onClose, onDone }: Props) {
           </div>
           {options.subscription ? (
             <div className="field-row">
-              <span style={{ fontWeight: 600 }}>Подписка</span>
+              <span style={{ fontWeight: 600 }}>{gift ? 'Подписка получателя подарка' : 'Подписка'}</span>
+              {gift ? (
+                <span className="warn-line" role="note">
+                  Подарок уже активировал{' '}
+                  <a href={`/admin/clients/${gift.client_id}`} target="_blank" rel="noreferrer">
+                    клиент №{gift.client_id}
+                  </a>
+                  . Если подписку оставить, он продолжит пользоваться ею после возврата денег.
+                </span>
+              ) : null}
               <div role="group" aria-label="Что сделать с подпиской" className="segs" style={{ alignSelf: 'flex-start' }}>
                 {actions.map(([value, label]) => (
                   <button key={value} type="button" aria-pressed={action === value} onClick={() => setAction(value)} disabled={busy}>

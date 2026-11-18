@@ -141,7 +141,7 @@ pub async fn order_state(db: &mut impl Db, order_id: OrderId) -> StoreResult<(St
         .bind(order_id.0)
         .fetch_one(db.conn())
         .await?;
-    let pending = db.orders().refund_pending(order_id).await?;
+    let pending = db.orders().refund_pending_settled(order_id).await?;
     Ok((status, pending))
 }
 

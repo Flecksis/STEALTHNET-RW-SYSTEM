@@ -44,7 +44,8 @@ export type Permission =
   | 'marketing'
   | 'modules'
   | 'settings'
-  | 'admins';
+  | 'admins'
+  | 'clients_login';
 
 export type AdminRole = 'owner' | 'admin' | 'support' | 'read_only';
 

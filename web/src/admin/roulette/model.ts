@@ -80,7 +80,7 @@ export const KINDS: Array<[PrizeKind, string]> = [
 ];
 
 export const FREE_FOR: Array<[FreeFor, string]> = [
-  ['paid', 'С оплаченной подпиской'],
+  ['paid', 'С купленной или подаренной подпиской'],
   ['subscribers', 'С любой подпиской'],
   ['all', 'Всем'],
 ];

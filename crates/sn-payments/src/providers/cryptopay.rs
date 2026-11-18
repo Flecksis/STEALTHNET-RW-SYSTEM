@@ -290,6 +290,39 @@ impl PaymentProvider for CryptoPay {
         }
     }
 
+    async fn cancel_invoice(
+        &self,
+        config: &ProviderConfig,
+        invoice: &IssuedInvoice<'_>,
+    ) -> PaymentResult<()> {
+        let token = config.require("api_token")?;
+        let invoice_id: i64 = invoice
+            .external_id
+            .and_then(|id| id.trim().parse().ok())
+            .ok_or_else(|| PaymentError::BadPayload("нет номера счёта Crypto Pay".into()))?;
+        let response = self
+            .http
+            .post(format!("{}/api/deleteInvoice", self.base(config)))
+            .header("Crypto-Pay-API-Token", token)
+            .json(&serde_json::json!({ "invoice_id": invoice_id }))
+            .send()
+            .await
+            .map_err(PaymentError::transport)?;
+        let status = response.status();
+        let parsed: ApiResponse<bool> = response.json().await.map_err(|_| PaymentError::Http {
+            status: status.as_u16(),
+        })?;
+        match (parsed.ok, parsed.result) {
+            (true, Some(true)) => Ok(()),
+            _ => Err(PaymentError::Rejected(
+                parsed
+                    .error
+                    .map(|e| e.name)
+                    .unwrap_or_else(|| format!("HTTP {status}")),
+            )),
+        }
+    }
+
     async fn parse_webhook(
         &self,
         config: &ProviderConfig,
@@ -815,5 +848,47 @@ mod tests {
             provider.fetch_status(&config(), "../x").await,
             Err(PaymentError::BadPayload(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn заменённый_счёт_удаляется_в_crypto_pay() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/deleteInvoice"))
+            .and(header("Crypto-Pay-API-Token", "1234:AAA"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "ok": true, "result": true })),
+            )
+            .mount(&server)
+            .await;
+        let provider = CryptoPay::with_api_base(server.uri());
+        let payload = serde_json::json!({});
+        provider
+            .cancel_invoice(
+                &config(),
+                &IssuedInvoice {
+                    external_id: Some("77"),
+                    payload: &payload,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sent_bodies(&server).await,
+            [serde_json::json!({ "invoice_id": 77 })]
+        );
+        assert!(
+            provider
+                .cancel_invoice(
+                    &config(),
+                    &IssuedInvoice {
+                        external_id: None,
+                        payload: &payload,
+                    },
+                )
+                .await
+                .is_err()
+        );
     }
 }

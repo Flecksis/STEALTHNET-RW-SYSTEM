@@ -322,7 +322,7 @@ pub async fn eligible_free(
     Ok(sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM subscriptions s WHERE s.client_id = $1 AND s.remna_user_id IS NOT NULL \
          AND s.ended_at IS NULL AND s.expire_at > $2 AND s.remna_missing_at IS NULL \
-         AND (s.status IS NULL OR s.status <> 'disabled') AND (NOT $3 OR s.kind <> 'trial'))",
+         AND (s.status IS NULL OR s.status <> 'disabled') AND (NOT $3 OR s.kind IN ('paid', 'gift')))",
     )
     .bind(client_id.0)
     .bind(now)

@@ -1051,3 +1051,57 @@ async fn токен_из_пути_уведомления_не_попадает_�
     assert!(keys[0].starts_with("route-"), "{}", keys[0]);
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn чарджбэк_по_активированному_подарку_ждёт_решения() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let giver = client(&kit.services, 8124).await;
+    let friend = client(&kit.services, 8125).await;
+    let tariff = standard(&kit.services).await;
+    let bought = pending(&kit, giver, &tariff, KASSA, usd(1_000), None).await;
+    let granted = pending(&kit, friend, &tariff, KASSA, usd(1_000), None).await;
+    let inbox = kit.services.inbox();
+    inbox
+        .apply_outcome(KASSA, &with(&bought, ProviderStatus::Paid, "g-1:paid"))
+        .await
+        .unwrap();
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO gifts (code, order_id, giver_id, tariff_id, period_id, days, tariff_name, status, \
+             redeemed_by, redeemed_at, grant_order_id) \
+             VALUES ('GIFT-AAAA-BBBB', $1, $2, $3, 1, 30, 'Стандарт', 'redeemed', $4, now(), $5)",
+        )
+        .bind(bought.order_id.0)
+        .bind(giver.0)
+        .bind(tariff.id.0)
+        .bind(friend.0)
+        .bind(granted.order_id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let chargeback = noticed(
+        with(&bought, ProviderStatus::Refunded, "g-1:chargeback"),
+        NoticeKind::Chargeback,
+        "Покупатель оспорил оплату в банке, подписка не изменена",
+    );
+    inbox.apply_outcome(KASSA, &chargeback).await.unwrap();
+    let waiting = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.payment_notices().waiting(10).await.unwrap()
+    };
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert_eq!(waiting[0].kind, NoticeKind::RefundReported);
+    assert_eq!(waiting[0].payment_id, Some(bought.id));
+    assert!(
+        waiting[0]
+            .text
+            .contains(&format!("активировал клиент #{}", friend.0)),
+        "{}",
+        waiting[0].text
+    );
+    kit.db.cleanup().await;
+}

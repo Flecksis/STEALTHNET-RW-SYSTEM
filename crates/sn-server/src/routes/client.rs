@@ -418,6 +418,16 @@ async fn me(
         .autorenew()
         .has_saved_card(client.0.client_id)
         .await?;
+    let must_change_password = match client.0.session_id {
+        Some(session) if client.0.channel == sn_domain::access::ClientChannel::Cabinet => {
+            state
+                .services
+                .auth()
+                .password_change_pending(session)
+                .await?
+        }
+        _ => false,
+    };
     Ok(Json(serde_json::json!({
         "locale": state.services.locale_of(card.client.locale),
         "client": card.client,
@@ -435,6 +445,7 @@ async fn me(
         "email": email,
         "email_change": state.services.mail().available(),
         "has_password": has_password,
+        "must_change_password": must_change_password,
     })))
 }
 

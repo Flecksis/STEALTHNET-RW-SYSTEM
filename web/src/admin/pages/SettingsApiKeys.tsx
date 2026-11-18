@@ -25,6 +25,7 @@ type Issued = { key: ApiKey; token: string };
 const GRANTS: Array<[Permission, string]> = [
   ['clients_read', 'Клиенты: просмотр'],
   ['clients_write', 'Клиенты: изменения'],
+  ['clients_login', 'Вход за клиента'],
   ['support', 'Поддержка'],
   ['money', 'Деньги'],
   ['refunds', 'Возвраты'],

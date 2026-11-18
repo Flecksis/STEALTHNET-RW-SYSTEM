@@ -5,7 +5,7 @@ use crate::auth::{
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::rules;
-use crate::two_factor::{CabinetLogin, cabinet_session};
+use crate::two_factor::{CabinetLogin, cabinet_session, cabinet_session_for};
 use chrono::{DateTime, Duration, Utc};
 use rand::{Rng, RngCore};
 use serde::Serialize;
@@ -16,6 +16,7 @@ use sn_domain::client::{
 use sn_domain::events::DomainEvent;
 use sn_domain::format;
 use sn_domain::ids::ClientId;
+use sn_domain::jobs::JobPayload;
 use sn_domain::lang;
 use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::settings::keys;
@@ -199,12 +200,13 @@ fn account_title(profile: &TelegramProfile) -> String {
     }
 }
 
-pub(crate) async fn issue_session(
+pub(crate) async fn issue_session_scoped(
     tx: &mut Tx,
     client_id: ClientId,
     now: DateTime<Utc>,
     meta: &RequestMeta,
     created: bool,
+    scope: SessionScope,
 ) -> ServiceResult<ClientLogin> {
     let (token, hash) = crate::auth::new_token();
     let expires_at = now + Duration::days(CLIENT_SESSION_DAYS);
@@ -213,7 +215,7 @@ pub(crate) async fn issue_session(
         .create_client(
             client_id,
             SessionChannel::Cabinet,
-            SessionScope::Full,
+            scope,
             &NewSession {
                 token_hash: hash,
                 expires_at,
@@ -582,20 +584,19 @@ impl<'a> Auth<'a> {
                 .clients()
                 .find_by_identity(IdentityKind::Email, &email)
                 .await?;
-            let hash: Option<String> = match &client {
-                Some(client) => {
-                    sqlx::query_scalar(
-                        "SELECT password_hash FROM client_passwords WHERE client_id = $1",
-                    )
-                    .bind(client.id.0)
-                    .fetch_optional(conn.conn())
-                    .await?
-                }
+            let stored: Option<(String, bool)> = match &client {
+                Some(client) => sqlx::query_as(
+                    "SELECT password_hash, must_change FROM client_passwords WHERE client_id = $1",
+                )
+                .bind(client.id.0)
+                .fetch_optional(conn.conn())
+                .await?,
                 None => None,
             };
-            (client, hash)
+            (client, stored)
         };
-        let valid = check_password(password, hash).await?;
+        let must_change = hash.as_ref().is_some_and(|(_, must_change)| *must_change);
+        let valid = check_password(password, hash.map(|(hash, _)| hash)).await?;
         let Some(client) = client.filter(|_| valid) else {
             return Err(ServiceError::rejected(
                 "auth.wrong_password",
@@ -607,7 +608,7 @@ impl<'a> Auth<'a> {
         }
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
-        let login = cabinet_session(&mut tx, client.id, now, meta, false).await?;
+        let login = cabinet_session_for(&mut tx, client.id, now, meta, false, must_change).await?;
         tx.commit().await?;
         Ok(login)
     }
@@ -745,6 +746,9 @@ impl<'a> Auth<'a> {
         .bind(now)
         .execute(tx.conn())
         .await?;
+        if !created {
+            crate::oauth::confirm_email(&mut tx, client_id, &email).await?;
+        }
         let login = cabinet_session(&mut tx, client_id, now, meta, created).await?;
         tx.commit().await?;
         Ok(login)
@@ -842,7 +846,7 @@ impl<'a> Auth<'a> {
             Some(client) => client,
             None => return Err(code_invalid()),
         };
-        store_password(&mut tx, client.id, &hash).await?;
+        store_password(&mut tx, client.id, &hash, false).await?;
         let revoked = tx
             .sessions()
             .revoke_client_channel(client.id, SessionChannel::Cabinet)
@@ -864,6 +868,7 @@ impl<'a> Auth<'a> {
                 serde_json::json!({ "revoked_sessions": revoked }),
             ))
             .await?;
+        crate::oauth::confirm_email(&mut tx, client.id, &email).await?;
         let login = cabinet_session(&mut tx, client.id, now, meta, false).await?;
         tx.commit().await?;
         Ok(login)
@@ -886,7 +891,7 @@ impl<'a> Auth<'a> {
         password: &str,
     ) -> ServiceResult<()> {
         let client_id = principal.client_id;
-        let existing: Option<String> = {
+        let existing: Option<(String, bool)> = {
             let mut conn = self.services.store().conn().await?;
             let email = conn
                 .clients()
@@ -900,23 +905,43 @@ impl<'a> Auth<'a> {
                     "К аккаунту не привязана почта: пароль для входа на сайт не нужен",
                 ));
             }
-            sqlx::query_scalar("SELECT password_hash FROM client_passwords WHERE client_id = $1")
-                .bind(client_id.0)
-                .fetch_optional(conn.conn())
-                .await?
+            sqlx::query_as(
+                "SELECT password_hash, must_change FROM client_passwords WHERE client_id = $1",
+            )
+            .bind(client_id.0)
+            .fetch_optional(conn.conn())
+            .await?
         };
-        if existing.is_some() {
-            let valid = check_password(current.unwrap_or_default(), existing).await?;
-            if !valid {
-                return Err(ServiceError::rejected(
-                    "auth.wrong_password",
-                    "Текущий пароль не подошёл",
-                ));
+        match existing {
+            Some((issued, true)) => {
+                if check_password(password, Some(issued)).await? {
+                    return Err(ServiceError::rejected(
+                        "auth.same_password",
+                        "Придумайте свой пароль: выданный администратором пароль одноразовый",
+                    ));
+                }
             }
+            Some((stored, false)) => {
+                if !check_password(current.unwrap_or_default(), Some(stored)).await? {
+                    return Err(ServiceError::rejected(
+                        "auth.wrong_password",
+                        "Текущий пароль не подошёл",
+                    ));
+                }
+            }
+            None => {}
         }
         let hash = hash_password_async(password).await?;
         let mut tx = self.services.store().begin().await?;
-        store_password(&mut tx, client_id, &hash).await?;
+        store_password(&mut tx, client_id, &hash, false).await?;
+        if let Some(session) = principal.session_id {
+            sqlx::query(
+                "UPDATE client_sessions SET scope = 'full' WHERE id = $1 AND scope = 'password_change'",
+            )
+            .bind(session)
+            .execute(tx.conn())
+            .await?;
+        }
         let revoked: u64 = match principal.session_id {
             Some(keep) => sqlx::query(
                 "UPDATE client_sessions SET revoked_at = now() \
@@ -949,44 +974,72 @@ impl<'a> Auth<'a> {
         let password = crate::admins::temporary_password();
         let hash = hash_password_async(&password).await?;
         let mut tx = self.services.store().begin().await?;
-        tx.clients().lock(client_id).await?;
-        let email = tx
-            .clients()
-            .identities(client_id)
-            .await?
-            .into_iter()
-            .any(|i| i.kind == IdentityKind::Email);
-        if !email {
+        let client = tx.clients().lock(client_id).await?;
+        let identities = tx.clients().identities(client_id).await?;
+        let Some(email) = identities
+            .iter()
+            .find(|i| i.kind == IdentityKind::Email)
+            .map(|i| i.value.clone())
+        else {
             return Err(ServiceError::rejected(
                 "client.no_email",
                 "У клиента нет почты: на сайт он входит через Telegram",
             ));
-        }
-        store_password(&mut tx, client_id, &hash).await?;
+        };
+        let in_bot =
+            !client.bot_unreachable && identities.iter().any(|i| i.kind == IdentityKind::Telegram);
+        store_password(&mut tx, client_id, &hash, true).await?;
         let revoked = tx
             .sessions()
             .revoke_client_channel(client_id, SessionChannel::Cabinet)
+            .await?;
+        tx.jobs()
+            .enqueue(
+                &JobPayload::Notify {
+                    client_id,
+                    template: sn_modules::catalog::oauth::TEMPLATE_PASSWORD_ISSUED.into(),
+                    params: serde_json::json!({}),
+                },
+                None,
+            )
             .await?;
         tx.audit()
             .record(&actor.audit(
                 "client.password_issued",
                 "client",
                 Some(client_id.0),
-                serde_json::json!({ "revoked_sessions": revoked }),
+                serde_json::json!({ "revoked_sessions": revoked, "one_time": true }),
             ))
             .await?;
         tx.commit().await?;
+        if in_bot {
+            let sent = self
+                .services
+                .letters()
+                .send(LetterId::PasswordIssued, &email, Values::new())
+                .await;
+            if let Err(err) = sent {
+                tracing::warn!(client = %client_id, error = %err, "письмо о выданном пароле не отправилось");
+            }
+        }
         Ok(password)
     }
 }
 
-async fn store_password(tx: &mut Tx, client_id: ClientId, hash: &str) -> ServiceResult<()> {
+async fn store_password(
+    tx: &mut Tx,
+    client_id: ClientId,
+    hash: &str,
+    must_change: bool,
+) -> ServiceResult<()> {
     sqlx::query(
-        "INSERT INTO client_passwords (client_id, password_hash) VALUES ($1, $2) \
-         ON CONFLICT (client_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated_at = now()",
+        "INSERT INTO client_passwords (client_id, password_hash, must_change) VALUES ($1, $2, $3) \
+         ON CONFLICT (client_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, \
+         must_change = EXCLUDED.must_change, updated_at = now()",
     )
     .bind(client_id.0)
     .bind(hash)
+    .bind(must_change)
     .execute(tx.conn())
     .await?;
     Ok(())

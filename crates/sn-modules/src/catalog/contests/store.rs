@@ -370,7 +370,7 @@ pub async fn facts(
          EXISTS (SELECT 1 FROM subscriptions s WHERE s.client_id = c.id AND s.remna_user_id IS NOT NULL \
              AND s.created_at <= $2 AND (s.ended_at IS NULL OR s.ended_at > $2) AND s.expire_at > $2 \
              AND (s.remna_missing_at IS NULL OR s.remna_missing_at > $2) \
-             AND (s.status IS NULL OR s.status <> 'disabled') AND (NOT $3 OR s.kind <> 'trial')) AS subscribed, \
+             AND (s.status IS NULL OR s.status <> 'disabled') AND (NOT $3 OR s.kind IN ('paid', 'gift'))) AS subscribed, \
          EXISTS (SELECT 1 FROM orders o WHERE o.client_id = c.id AND {PAID_ORDER} \
              AND o.paid_at >= $4 AND o.paid_at < $5 AND o.total_minor >= $6) AS purchased, \
          (SELECT count(*) FROM referral_links l WHERE l.referrer_id = c.id AND l.created_at >= $7 \

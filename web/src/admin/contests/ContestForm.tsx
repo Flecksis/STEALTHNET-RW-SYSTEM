@@ -312,7 +312,10 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
         {draft.subscription ? (
           <label className="pf-check ct-indent">
             <input type="checkbox" checked={draft.paidOnly} onChange={(e) => set('paidOnly', e.target.checked)} />
-            <span>Пробная не считается</span>
+            <span>
+              Только купленная или подаренная
+              <span className="cap">Пробная, по промо-ссылке и выданная вручную не считаются</span>
+            </span>
           </label>
         ) : null}
         <label className="pf-check">

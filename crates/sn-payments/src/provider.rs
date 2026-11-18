@@ -125,6 +125,12 @@ pub struct ClientRef {
     pub email: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IssuedInvoice<'a> {
+    pub external_id: Option<&'a str>,
+    pub payload: &'a serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvoiceRequest {
     pub payment_id: PaymentId,
@@ -612,6 +618,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
         _external_id: &str,
     ) -> PaymentResult<Option<WebhookOutcome>> {
         Ok(None)
+    }
+
+    async fn cancel_invoice(
+        &self,
+        _config: &ProviderConfig,
+        _invoice: &IssuedInvoice<'_>,
+    ) -> PaymentResult<()> {
+        Err(PaymentError::Unsupported("отмена счёта"))
     }
 
     async fn charge_saved(

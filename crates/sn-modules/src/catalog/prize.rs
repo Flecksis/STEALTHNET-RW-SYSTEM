@@ -209,8 +209,9 @@ pub async fn personal_code(
     kind: PromoKind,
     valid_until: Option<DateTime<Utc>>,
     note: &str,
+    owner: ClientId,
 ) -> Result<String, ModuleError> {
-    Ok(promo::issue_personal(db, kind, valid_until, note)
+    Ok(promo::issue_personal(db, kind, valid_until, note, owner)
         .await?
         .code)
 }

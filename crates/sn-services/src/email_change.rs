@@ -341,12 +341,14 @@ impl<'a> Auth<'a> {
             tx.commit().await?;
             return Err(in_use());
         }
-        let removed: Vec<String> = sqlx::query_scalar(
-            "DELETE FROM client_identities WHERE client_id = $1 AND kind = 'email' RETURNING value",
+        let removed: Vec<(String, bool)> = sqlx::query_as(
+            "DELETE FROM client_identities WHERE client_id = $1 AND kind = 'email' RETURNING value, verified",
         )
         .bind(client_id.0)
         .fetch_all(tx.conn())
         .await?;
+        let unconfirmed = removed.iter().any(|(_, verified)| !verified);
+        let removed: Vec<String> = removed.into_iter().map(|(value, _)| value).collect();
         if !tx
             .clients()
             .add_identity_if_free(
@@ -356,6 +358,9 @@ impl<'a> Auth<'a> {
             .await?
         {
             return Err(in_use());
+        }
+        if unconfirmed {
+            crate::oauth::unlink_unconfirmed(&mut tx, client_id).await?;
         }
         sqlx::query(
             "UPDATE client_login_requests SET status = 'consumed', confirmed_at = $2, consumed_at = $2 \

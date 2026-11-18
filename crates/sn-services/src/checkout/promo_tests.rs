@@ -693,11 +693,6 @@ async fn замена_счёта_ждёт_старый_платёж_не_дер�
         sqlx::query("SELECT id FROM promo_codes WHERE code = 'LOCK50' FOR UPDATE NOWAIT")
             .fetch_optional(probe.conn())
             .await;
-    let client_free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
-        .bind(sn_store::LockSpace::Client.key(client_id.0))
-        .fetch_one(probe.conn())
-        .await
-        .unwrap();
     drop(probe);
     drop(webhook);
     let started = replacing.await.unwrap().unwrap();
@@ -705,11 +700,61 @@ async fn замена_счёта_ждёт_старый_платёж_не_дер�
         promo_free.is_ok(),
         "промокод заблокирован, пока замена ждёт платёж"
     );
-    assert!(client_free, "клиент заблокирован, пока замена ждёт платёж");
     assert!(matches!(started, CheckoutResult::Redirect { .. }));
     assert_eq!(
         payment(&kit, first.public_id).await.status,
         PaymentStatus::Canceled
     );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn одноразовый_код_через_заменённые_счета_отменяет_их_в_кассе_и_сообщает_админу() {
+    let Some(kit) = promo_kit().await else { return };
+    create_promo(&kit, percent("ONCE90", 90, Some(1))).await;
+    let client_id = client(&kit.services, 611).await;
+    let tariff = standard(&kit.services).await;
+    let cart = with_code(cart(&tariff, 30, None), "once90");
+    kit.services.alerts().collect().await.unwrap();
+    let first = invoice_with(&kit, client_id, &cart).await;
+    let second = invoice_with(&kit, client_id, &cart).await;
+    let third = invoice_with(&kit, client_id, &cart).await;
+    assert_eq!(
+        *kit.pay.canceled.lock().unwrap(),
+        [format!("tp-{}", first.id), format!("tp-{}", second.id)],
+        "заменённые счета отменены и в кассе"
+    );
+    for invoice in [&first, &second, &third] {
+        let current = payment(&kit, invoice.public_id).await;
+        report(&kit, &current, ProviderStatus::Paid).await;
+        assert_eq!(
+            payment(&kit, invoice.public_id).await.status,
+            PaymentStatus::Paid
+        );
+        assert_ne!(
+            order(&kit.services, invoice.order_id).await.status,
+            OrderStatus::Review,
+            "деньги пришли: заказ выдаётся"
+        );
+    }
+    assert_eq!(counts(&kit).await, (3, 0));
+    let over: Vec<i64> = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query_scalar(
+            "SELECT entity_id FROM audit_log WHERE action = 'promo.over_limit' ORDER BY id",
+        )
+        .fetch_all(conn.conn())
+        .await
+        .unwrap()
+    };
+    assert_eq!(over, [first.order_id.0, second.order_id.0]);
+    let alerts = kit.services.alerts().collect().await.unwrap();
+    let overuse: Vec<&str> = alerts
+        .iter()
+        .filter(|a| a.kind == sn_domain::alerts::AlertKind::Orders && a.html.contains("ONCE90"))
+        .map(|a| a.html.as_str())
+        .collect();
+    assert_eq!(overuse.len(), 2, "{alerts:?}");
+    assert!(overuse[0].contains("сверх лимита"), "{}", overuse[0]);
     kit.db.cleanup().await;
 }

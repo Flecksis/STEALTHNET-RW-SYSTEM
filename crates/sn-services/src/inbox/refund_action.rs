@@ -106,6 +106,22 @@ fn bought_meanwhile(action: RefundSubscriptionAction, order: OrderId) -> Service
     )
 }
 
+pub(crate) async fn gift_grant(
+    db: &mut impl Db,
+    order_id: OrderId,
+) -> ServiceResult<Option<Order>> {
+    let grant: Option<Option<i64>> = sqlx::query_scalar(
+        "SELECT grant_order_id FROM gifts WHERE order_id = $1 AND status = 'redeemed'",
+    )
+    .bind(order_id.0)
+    .fetch_optional(db.conn())
+    .await?;
+    match grant.flatten() {
+        Some(id) => Ok(Some(db.orders().get(OrderId(id)).await?)),
+        None => Ok(None),
+    }
+}
+
 fn subject(order: &Order, request: &ProviderRefund) -> (&'static str, i64) {
     match order.subscription_id {
         Some(id) => (audit_entity::SUBSCRIPTION, id.0),
@@ -123,6 +139,11 @@ impl PaymentInbox<'_> {
         if action == RefundSubscriptionAction::Keep {
             return Ok(());
         }
+        let target = {
+            let mut conn = self.services.store().conn().await?;
+            gift_grant(&mut conn, order.id).await?
+        };
+        let order = target.as_ref().unwrap_or(order);
         let Some(subscription_id) = order.subscription_id else {
             return Ok(());
         };
@@ -344,7 +365,8 @@ impl PaymentInbox<'_> {
     async fn action_order(&self, request: &ProviderRefund) -> ServiceResult<Order> {
         let mut conn = self.services.store().conn().await?;
         let payment = conn.payments().get(request.payment_id).await?;
-        Ok(conn.orders().get(payment.order_id).await?)
+        let order = conn.orders().get(payment.order_id).await?;
+        Ok(gift_grant(&mut conn, order.id).await?.unwrap_or(order))
     }
 
     pub(super) async fn run_refund_action(

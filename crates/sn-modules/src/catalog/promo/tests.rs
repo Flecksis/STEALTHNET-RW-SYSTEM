@@ -37,6 +37,7 @@ fn code(kind: PromoKind) -> PromoCode {
         active: true,
         note: None,
         created_at: now(),
+        owner: None,
     }
 }
 
@@ -708,6 +709,66 @@ async fn клиент_проверяет_код_и_видит_причину_о�
     assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let missing = body_json(missing).await;
     assert_eq!(missing["error"]["code"], "promo.not_found");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn код_приз_применяет_только_победитель() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let winner = client(&db.store).await;
+    let stranger = client(&db.store).await;
+    let prize = {
+        let mut tx = db.store.begin().await.unwrap();
+        let prize = issue_personal(
+            &mut tx,
+            PromoKind::Percent { percent: 30 },
+            None,
+            "Приз рулетки",
+            winner,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        prize
+    };
+    assert_eq!(prize.owner, Some(winner));
+    let refused = check(&ctx, stranger, &prize.code, checkout())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, PromoError::Rejected(PromoRejection::NotYours)),
+        "{refused:?}"
+    );
+    assert!(refused.to_string().contains("выдан другому клиенту"));
+    assert_eq!(PromoRejection::NotYours.code(), "promo.not_yours");
+    let accepted = check(&ctx, winner, &prize.code, checkout()).await.unwrap();
+    assert_eq!(accepted.id, prize.id);
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx);
+    let principal = ClientPrincipal {
+        client_id: stranger,
+        channel: ClientChannel::Cabinet,
+        full_access: true,
+        session_id: Some(1),
+    };
+    let answer = router
+        .oneshot(
+            Request::post("/promo/check")
+                .header("content-type", "application/json")
+                .extension(principal)
+                .body(Body::from(
+                    serde_json::json!({ "code": prize.code }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body_json(answer).await["error"]["code"], "promo.not_yours");
     db.cleanup().await;
 }
 

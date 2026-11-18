@@ -341,6 +341,13 @@ pub struct RefundOptions {
     pub to_balance: RefundWay,
     pub via_provider: RefundWay,
     pub outside: RefundWay,
+    pub gift: Option<GiftRecipient>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GiftRecipient {
+    pub client_id: ClientId,
+    pub subscription_id: Option<sn_domain::ids::SubscriptionId>,
 }
 
 struct RecordedRefund {
@@ -1144,6 +1151,26 @@ impl<'a> PaymentInbox<'a> {
                 payment = ?payment.as_ref().map(|p| p.id),
                 "платёжная система сообщила о событии, которое нужно проверить вручную"
             );
+        }
+        if notice.kind == NoticeKind::Chargeback
+            && let Some(payment) = &payment
+            && let Some(grant) = refund_action::gift_grant(&mut conn, payment.order_id).await?
+        {
+            conn.payment_notices()
+                .record(&NewPaymentNotice {
+                    provider: provider.to_string(),
+                    event_key: format!("gift_chargeback:{}", outcome.event_key),
+                    kind: NoticeKind::RefundReported,
+                    payment_id: Some(payment.id),
+                    client_id: Some(payment.client_id),
+                    amount: outcome.amount.or(Some(payment.amount)),
+                    text: format!(
+                        "Чарджбэк по подарку, который уже активировал клиент #{}: его подписка не изменена. \
+                         Решите, отключить ли её или укоротить",
+                        grant.client_id
+                    ),
+                })
+                .await?;
         }
         Ok(())
     }
@@ -2971,6 +2998,7 @@ impl<'a> PaymentInbox<'a> {
         let waiting = pending_minor(&conn.payments().provider_refunds(payment.id).await?);
         let remaining = (payment.amount.minor - already - waiting).max(0);
         let order = conn.orders().get(payment.order_id).await?;
+        let grant = refund_action::gift_grant(&mut conn, order.id).await?;
         let topup = credits_balance(&order, conn.payments().repeat_action(payment.id).await?);
         let registry = self.services.payments();
         let provider = registry.get(payment.provider.as_str());
@@ -3035,12 +3063,16 @@ impl<'a> PaymentInbox<'a> {
             waiting: Amount::new(waiting, payment.amount.currency),
             remaining: Amount::new(remaining, payment.amount.currency),
             topup,
-            subscription: order.subscription_id.is_some(),
-            days: order.quote.days,
+            subscription: grant.as_ref().unwrap_or(&order).subscription_id.is_some(),
+            days: grant.as_ref().unwrap_or(&order).quote.days,
             note,
             to_balance,
             via_provider,
             outside,
+            gift: grant.as_ref().map(|grant| GiftRecipient {
+                client_id: grant.client_id,
+                subscription_id: grant.subscription_id,
+            }),
         })
     }
 

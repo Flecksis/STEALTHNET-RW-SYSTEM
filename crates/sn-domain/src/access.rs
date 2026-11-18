@@ -25,10 +25,11 @@ pub enum Permission {
     Modules,
     Settings,
     Admins,
+    ClientsLogin,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 11] = [
+    pub const ALL: [Permission; 12] = [
         Permission::ClientsRead,
         Permission::ClientsWrite,
         Permission::Money,
@@ -40,6 +41,7 @@ impl Permission {
         Permission::Modules,
         Permission::Settings,
         Permission::Admins,
+        Permission::ClientsLogin,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -55,6 +57,7 @@ impl Permission {
             Permission::Modules => "modules",
             Permission::Settings => "settings",
             Permission::Admins => "admins",
+            Permission::ClientsLogin => "clients_login",
         }
     }
 
@@ -158,5 +161,13 @@ mod tests {
             Permission::Refunds
         ));
         assert!(!AdminRole::ReadOnly.allows(Permission::ClientsWrite));
+        assert!(AdminRole::Owner.allows(Permission::ClientsLogin));
+        assert!(AdminRole::Admin.allows(Permission::ClientsLogin));
+        assert!(!AdminRole::Support.allows(Permission::ClientsLogin));
+        assert!(!AdminRole::ReadOnly.allows(Permission::ClientsLogin));
+        assert_eq!(
+            Permission::parse("clients_login").unwrap(),
+            Permission::ClientsLogin
+        );
     }
 }

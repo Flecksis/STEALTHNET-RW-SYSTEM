@@ -8,7 +8,9 @@ use sn_domain::access::ClientChannel;
 use sn_domain::client::{Client, IdentityKind};
 use sn_domain::events::DomainEvent;
 use sn_domain::format;
-use sn_domain::ids::{CategoryId, ClientId, OrderId, PeriodId, SubscriptionId, TariffId};
+use sn_domain::ids::{
+    CategoryId, ClientId, OrderId, PaymentId, PeriodId, SubscriptionId, TariffId,
+};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::module::ModuleId;
@@ -25,8 +27,8 @@ use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_of
 use sn_modules::catalog::{antibot, promo};
 use sn_modules::{ItemHook, ModuleContext, ModuleRegistry, QuoteHook, QuoteOrigin};
 use sn_payments::{
-    CheckoutMethod, ClientRef, InvoiceRequest, MethodsContext, PaymentProvider, ProviderKind,
-    ProviderRegistry, Unavailable,
+    CheckoutMethod, ClientRef, InvoiceRequest, IssuedInvoice, MethodsContext, PaymentError,
+    PaymentProvider, ProviderKind, ProviderRegistry, Unavailable,
 };
 use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx, audit_entity};
 use std::collections::HashMap;
@@ -62,6 +64,7 @@ pub use topup::{TopUpMethod, TopUpOptions};
 
 const POLL_DELAY_SECONDS: i64 = 120;
 const CHAIN_POLL_DELAY_SECONDS: i64 = 30;
+const PROVIDER_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CartRequest {
@@ -359,6 +362,7 @@ pub(crate) async fn category_full(
 pub(crate) struct PaidOrder {
     pub order: Order,
     pub payment: Payment,
+    pub replaced: Vec<PaymentId>,
 }
 
 struct OrderHooks<'h> {
@@ -448,7 +452,7 @@ async fn replace_unpaid(
     ctx: &ModuleContext,
     tx: &mut Tx,
     created: &Order,
-) -> ServiceResult<()> {
+) -> ServiceResult<Vec<PaymentId>> {
     let replaced = detach_unpaid(modules, tx, created).await?;
     cancel_replaced(modules, ctx, tx, created, &replaced).await
 }
@@ -459,8 +463,9 @@ async fn cancel_replaced(
     tx: &mut Tx,
     created: &Order,
     replaced: &[OrderId],
-) -> ServiceResult<()> {
+) -> ServiceResult<Vec<PaymentId>> {
     let code = promo::promo_in_quote(&created.quote).map(|(_, code)| code);
+    let mut dropped = Vec::new();
     for &order_id in replaced {
         let mut payments = Vec::new();
         for payment in tx.payments().for_order(order_id).await? {
@@ -482,6 +487,7 @@ async fn cancel_replaced(
                 Err(err) => return Err(err.into()),
             }
         }
+        dropped.extend(payments.iter().copied());
         let canceled = match tx
             .orders()
             .transition(order_id, OrderStatus::Canceled)
@@ -506,7 +512,60 @@ async fn cancel_replaced(
             .await?;
         tracing::info!(order = %order_id, by = %created.id, "неоплаченный счёт отменён, промокод перенесён в новый счёт");
     }
-    Ok(())
+    Ok(dropped)
+}
+
+type InvoiceRow = (String, Option<String>, Option<serde_json::Value>);
+
+pub(crate) async fn cancel_at_providers(services: &Services, payments: &[PaymentId]) {
+    for &payment_id in payments {
+        let found: ServiceResult<Option<InvoiceRow>> = async {
+            let mut conn = services.store().conn().await?;
+            Ok(sqlx::query_as(
+                "SELECT provider, provider_txid, provider_payload FROM payments WHERE id = $1",
+            )
+            .bind(payment_id.0)
+            .fetch_optional(conn.conn())
+            .await?)
+        }
+        .await;
+        let (provider_id, txid, payload) = match found {
+            Ok(Some(found)) => found,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(payment = %payment_id, error = %err, "заменённый счёт не прочитан для отмены в кассе");
+                continue;
+            }
+        };
+        let Some(provider) = services.payments().get(&provider_id) else {
+            continue;
+        };
+        let payload = payload.unwrap_or(serde_json::Value::Null);
+        let config = services.payments().config(provider.id());
+        let canceled = tokio::time::timeout(
+            PROVIDER_CANCEL_TIMEOUT,
+            provider.cancel_invoice(
+                &config,
+                &IssuedInvoice {
+                    external_id: txid.as_deref(),
+                    payload: &payload,
+                },
+            ),
+        )
+        .await;
+        match canceled {
+            Ok(Ok(())) => {
+                tracing::info!(payment = %payment_id, provider = provider.id(), "заменённый счёт отменён и в платёжной системе");
+            }
+            Ok(Err(PaymentError::Unsupported(_))) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(payment = %payment_id, provider = provider.id(), error = %err, "заменённый счёт не отменился в платёжной системе");
+            }
+            Err(_) => {
+                tracing::warn!(payment = %payment_id, provider = provider.id(), "платёжная система не ответила на отмену заменённого счёта");
+            }
+        }
+    }
 }
 
 pub(crate) async fn record_paid_order(
@@ -547,8 +606,9 @@ async fn record_paid(
             expires_at: None,
         })
         .await?;
+    let mut replaced = Vec::new();
     if let Some(hooks) = hooks {
-        replace_unpaid(hooks.modules, hooks.ctx, tx, &created).await?;
+        replaced = replace_unpaid(hooks.modules, hooks.ctx, tx, &created).await?;
         hooks
             .modules
             .order_created(hooks.ctx, tx, &created, &payment)
@@ -628,6 +688,7 @@ async fn record_paid(
     Ok(PaidOrder {
         order,
         payment: paid,
+        replaced,
     })
 }
 
@@ -1575,6 +1636,7 @@ impl<'a> Checkout<'a> {
             )
             .await?;
             tx.commit().await?;
+            cancel_at_providers(self.services, &paid.replaced).await;
             return Ok(CheckoutResult::Completed {
                 order_id: paid.order.public_id,
             });
@@ -1593,6 +1655,7 @@ impl<'a> Checkout<'a> {
                 )
                 .await?;
                 tx.commit().await?;
+                cancel_at_providers(self.services, &paid.replaced).await;
                 Ok(CheckoutResult::Completed {
                     order_id: paid.order.public_id,
                 })
@@ -1774,13 +1837,17 @@ impl<'a> Checkout<'a> {
         let ctx = self.services.module_context();
         let finished = async {
             let mut tx = self.services.store().begin().await?;
-            cancel_replaced(self.services.modules(), &ctx, &mut tx, created, replaced).await?;
+            let dropped =
+                cancel_replaced(self.services.modules(), &ctx, &mut tx, created, replaced).await?;
             tx.commit().await?;
-            Ok::<_, ServiceError>(())
+            Ok::<_, ServiceError>(dropped)
         }
         .await;
-        if let Err(err) = finished {
-            tracing::warn!(order = %created.id, error = %err, "старый счёт не отменён после выставления нового");
+        match finished {
+            Ok(dropped) => cancel_at_providers(self.services, &dropped).await,
+            Err(err) => {
+                tracing::warn!(order = %created.id, error = %err, "старый счёт не отменён после выставления нового");
+            }
         }
     }
 }

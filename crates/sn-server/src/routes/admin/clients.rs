@@ -338,7 +338,7 @@ async fn reset_two_factor(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    admin.require(Permission::ClientsWrite)?;
+    admin.require(Permission::ClientsLogin)?;
     state
         .services
         .clients()
@@ -352,7 +352,7 @@ async fn issue_password(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    admin.require(Permission::ClientsWrite)?;
+    admin.require(Permission::ClientsLogin)?;
     admin.require_session()?;
     let password = state
         .services

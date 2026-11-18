@@ -62,6 +62,7 @@ pub struct PromoCode {
     pub active: bool,
     pub note: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub owner: Option<ClientId>,
 }
 
 impl PromoCode {
@@ -142,6 +143,7 @@ pub enum PromoRejection {
     Reserved,
     TooManyAttempts,
     Protected,
+    NotYours,
 }
 
 impl PromoRejection {
@@ -156,6 +158,7 @@ impl PromoRejection {
                 | PromoRejection::FirstPurchaseOnly
                 | PromoRejection::WrongTariff
                 | PromoRejection::WrongCurrency
+                | PromoRejection::NotYours
         )
     }
 
@@ -168,6 +171,7 @@ impl PromoRejection {
             PromoRejection::Reserved => "promo.reserved",
             PromoRejection::TooManyAttempts => "promo.rate_limited",
             PromoRejection::Protected => "promo.protected",
+            PromoRejection::NotYours => "promo.not_yours",
             PromoRejection::NotFound
             | PromoRejection::Disabled
             | PromoRejection::NotStarted
@@ -208,6 +212,10 @@ impl PromoRejection {
             PromoRejection::Protected => lang::pick(
                 "Промокоды на дни недоступны для этого аккаунта. Если это ошибка, напишите в поддержку",
                 "Promo codes for days aren't available for this account. If this is a mistake, contact support",
+            ),
+            PromoRejection::NotYours => lang::pick(
+                "Этот промокод выдан другому клиенту как приз, применить его может только он",
+                "This promo code was given to another account as a prize, only that account can use it",
             ),
             PromoRejection::NotFound
             | PromoRejection::Disabled
@@ -329,6 +337,13 @@ fn kind_fits(code: &PromoCode, purpose: Purpose) -> Result<(), PromoRejection> {
         (Purpose::Activate, PromoKind::Percent { .. } | PromoKind::Fixed { .. }) => {
             Err(PromoRejection::DiscountCode)
         }
+        _ => Ok(()),
+    }
+}
+
+pub fn owned(code: &PromoCode, client_id: ClientId) -> Result<(), PromoRejection> {
+    match code.owner {
+        Some(owner) if owner != client_id => Err(PromoRejection::NotYours),
         _ => Ok(()),
     }
 }
@@ -463,6 +478,7 @@ async fn lookup(
     let promo = store::by_code(db, code, false)
         .await?
         .ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
+    owned(&promo, client_id).map_err(PromoError::Rejected)?;
     let usage = store::usage(db, promo.id, client_id, now, &[]).await?;
     let Err(rejection) = evaluate(&promo, &usage, now, purpose) else {
         return Ok(promo);
@@ -507,6 +523,8 @@ pub async fn superseded(tx: &mut Tx, order: &Order) -> Result<Vec<OrderId>, Modu
     }
     Ok(Vec::new())
 }
+
+pub const OVER_LIMIT_AUDIT: &str = "promo.over_limit";
 
 pub async fn replacement_candidates(
     tx: &mut Tx,
@@ -612,6 +630,7 @@ async fn hold(
     if let Some(existing) = store::redemption_for_order(tx, order.id).await? {
         return Ok(Some(existing));
     }
+    owned(&promo, order.client_id).map_err(rejected)?;
     let now = db_now(tx).await?;
     let usage = store::usage(tx, promo.id, order.client_id, now, &[order.id]).await?;
     evaluate(&promo, &usage, now, order_purpose(order)).map_err(rejected)?;
@@ -656,6 +675,30 @@ async fn confirm(tx: &mut Tx, order: &Order, payment: &Payment) -> Result<(), Mo
         code = %promo.code,
         "оплата пришла после брони промокода: заказ выдаётся по цене счёта"
     );
+    let usage = store::usage(tx, promo.id, order.client_id, now, &[order.id]).await?;
+    if let Err(rejection) = limits(&promo, &usage) {
+        tracing::warn!(order = %order.id, code = %promo.code, "промокод использован сверх лимита поздней оплатой счёта");
+        tx.audit()
+            .record(&sn_store::AuditEntry {
+                actor_kind: sn_store::ActorKind::System,
+                actor_id: None,
+                action: OVER_LIMIT_AUDIT.into(),
+                entity_kind: Some(sn_store::audit_entity::ORDER.into()),
+                entity_id: Some(order.id.0),
+                details: serde_json::json!({
+                    "promo_id": promo.id,
+                    "code": promo.code,
+                    "client_id": order.client_id,
+                    "payment_id": payment.id,
+                    "max_uses": promo.max_uses,
+                    "per_client": promo.per_client,
+                    "used": usage.active_total,
+                    "reason": rejection.code(),
+                }),
+                ip: None,
+            })
+            .await?;
+    }
     match existing {
         Some(held) => store::set_status(tx, held.id, store::RedemptionStatus::Used).await?,
         None => {
@@ -722,6 +765,7 @@ async fn hold_days(
     let promo = store::by_code(&mut tx, code, true)
         .await?
         .ok_or(PromoError::Rejected(PromoRejection::NotFound))?;
+    owned(&promo, client_id).map_err(PromoError::Rejected)?;
     let now = db_now(&mut tx).await?;
     let usage = store::usage(&mut tx, promo.id, client_id, now, &[]).await?;
     evaluate(&promo, &usage, now, Purpose::Activate).map_err(PromoError::Rejected)?;
@@ -933,6 +977,7 @@ pub async fn issue_personal(
     kind: PromoKind,
     valid_until: Option<DateTime<Utc>>,
     note: &str,
+    owner: ClientId,
 ) -> Result<PromoCode, ModuleError> {
     let value = match kind {
         PromoKind::Percent { percent } => NewPromoValue::Percent { percent },
@@ -954,7 +999,7 @@ pub async fn issue_personal(
             tariff_ids: Vec::new(),
             note: Some(note.chars().take(500).collect()),
         };
-        if let Some(created) = store::create_if_free(db, &code, kind, &new).await? {
+        if let Some(created) = store::create_if_free(db, &code, kind, &new, owner).await? {
             return Ok(created);
         }
     }

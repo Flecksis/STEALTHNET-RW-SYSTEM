@@ -18,6 +18,7 @@ import { HelpPage, type TicketBrief } from './Help';
 import { Login } from './Login';
 import type { ClientMe } from './model';
 import { Pay } from './Pay';
+import { ForcedPassword } from './ForcedPassword';
 import { PaymentsHistory } from './PaymentHistory';
 import { SecurityPage } from './Security';
 import { SubscriptionPage } from './Subscription';
@@ -159,6 +160,9 @@ export function CabinetApp() {
         </div>
       </div>
     );
+  }
+  if (state.kind === 'in' && state.me.must_change_password) {
+    return <ForcedPassword onDone={() => void load()} onLogout={() => void logout()} />;
   }
   if (state.kind === 'error' || !ctx) {
     return (

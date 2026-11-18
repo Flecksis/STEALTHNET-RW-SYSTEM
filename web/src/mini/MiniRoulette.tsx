@@ -101,7 +101,7 @@ function rules(state: RouletteState): string[] {
     const period = days(state.free_every_days);
     out.push(
       state.free_for === 'paid'
-        ? t('Бесплатно — раз в {period}, клиентам с оплаченной подпиской.', { period })
+        ? t('Бесплатно — раз в {period}, клиентам с купленной или подаренной подпиской.', { period })
         : state.free_for === 'subscribers'
           ? t('Бесплатно — раз в {period}, клиентам с подпиской.', { period })
           : t('Бесплатно — раз в {period}.', { period }),

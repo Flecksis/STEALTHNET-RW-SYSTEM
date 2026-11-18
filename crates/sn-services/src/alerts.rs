@@ -30,6 +30,7 @@ const OUTBOX_KEY: &str = "alerts.outbox";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
 const AI_HANDOFF_CURSOR: &str = "alerts.cursor.ai_handoffs";
 const AUTO_REFUND_CURSOR: &str = "alerts.cursor.auto_refunds";
+const PROMO_OVERUSE_CURSOR: &str = "alerts.cursor.promo_overuse";
 const PAYMENTS_CURSOR: &str = "alerts.cursor.payments";
 const TRAFFIC_CURSOR: &str = "alerts.cursor.traffic";
 const TRAFFIC_SETTLE_SECONDS: i64 = 60;
@@ -729,6 +730,7 @@ impl<'a> AlertsOps<'a> {
         }
         out.extend(self.charges(&config).await?);
         out.extend(self.auto_refunds(&config).await?);
+        out.extend(self.promo_overuse(&config).await?);
         out.extend(self.traffic(&config).await?);
         out.extend(self.nodes(&config).await?);
         out.extend(self.new_clients(&config).await?);
@@ -876,6 +878,78 @@ impl<'a> AlertsOps<'a> {
         }
         drop(conn);
         self.put_state(AUTO_REFUND_CURSOR, &serde_json::json!(newest))
+            .await?;
+        Ok(out)
+    }
+
+    async fn promo_overuse(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let cursor = self
+            .state(PROMO_OVERUSE_CURSOR)
+            .await?
+            .and_then(|v| v.as_i64());
+        let mut conn = self.services.store().conn().await?;
+        let newest: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
+            .fetch_one(conn.conn())
+            .await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(PROMO_OVERUSE_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(Option<i64>, serde_json::Value)> = sqlx::query_as(
+            "SELECT entity_id, details FROM audit_log \
+             WHERE id > $1 AND id <= $2 AND action = $3 ORDER BY id",
+        )
+        .bind(cursor)
+        .bind(newest)
+        .bind(sn_modules::catalog::promo::OVER_LIMIT_AUDIT)
+        .fetch_all(conn.conn())
+        .await?;
+        let mut out = Vec::new();
+        if config.route(AlertKind::Orders).on {
+            for (order, details) in rows.iter().take(PER_KIND) {
+                let code = details
+                    .get("code")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?");
+                let mut lines = vec![
+                    "<b>Промокод использован сверх лимита</b>".to_string(),
+                    format!(
+                        "Код {}: оплатили старый счёт, заказ{} выдан по цене счёта",
+                        escape(code),
+                        order.map(|id| format!(" №{id}")).unwrap_or_default()
+                    ),
+                ];
+                if let Some(client) = details.get("client_id").and_then(serde_json::Value::as_i64) {
+                    lines.push(format!(
+                        "Клиент: {}",
+                        escape(&client_label(&mut conn, client).await)
+                    ));
+                }
+                out.push(Alert {
+                    kind: AlertKind::Orders,
+                    html: lines.join("\n"),
+                    path: "/admin/money".to_string(),
+                });
+            }
+            if rows.len() > PER_KIND {
+                let rest = rows.len() - PER_KIND;
+                out.push(Alert {
+                    kind: AlertKind::Orders,
+                    html: format!(
+                        "Ещё {rest} {} сверх лимита промокода",
+                        format::plural_ru(rest as u64, "оплата", "оплаты", "оплат")
+                    ),
+                    path: "/admin/money".to_string(),
+                });
+            }
+        }
+        drop(conn);
+        self.put_state(PROMO_OVERUSE_CURSOR, &serde_json::json!(newest))
             .await?;
         Ok(out)
     }

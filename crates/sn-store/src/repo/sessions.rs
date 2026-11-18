@@ -38,6 +38,7 @@ impl SessionChannel {
 pub enum SessionScope {
     Full,
     SubscriptionView,
+    PasswordChange,
 }
 
 impl SessionScope {
@@ -45,6 +46,7 @@ impl SessionScope {
         match self {
             SessionScope::Full => "full",
             SessionScope::SubscriptionView => "subscription_view",
+            SessionScope::PasswordChange => "password_change",
         }
     }
 
@@ -52,6 +54,7 @@ impl SessionScope {
         match value {
             "full" => Ok(SessionScope::Full),
             "subscription_view" => Ok(SessionScope::SubscriptionView),
+            "password_change" => Ok(SessionScope::PasswordChange),
             other => Err(StoreError::Decode(format!("права сессии: {other}"))),
         }
     }

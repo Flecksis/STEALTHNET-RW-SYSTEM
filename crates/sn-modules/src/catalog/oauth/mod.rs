@@ -12,6 +12,8 @@ use sn_domain::settings::SettingField;
 
 pub const NOT_CONFIGURED: &str = "Не заданы ключи Google или Apple: кнопок входа в кабинете нет";
 pub const TEMPLATE_LINKED: &str = "oauth_linked";
+pub const TEMPLATE_UNLINKED: &str = "oauth_unlinked";
+pub const TEMPLATE_PASSWORD_ISSUED: &str = "password_issued";
 const PEM_BEGIN: &str = "-----BEGIN PRIVATE KEY-----";
 const PEM_END: &str = "-----END PRIVATE KEY-----";
 const GOOGLE_SUFFIX: &str = ".apps.googleusercontent.com";

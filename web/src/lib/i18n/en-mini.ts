@@ -70,7 +70,7 @@ export const MINI: Record<string, string> = {
   'Бесплатное — {when}': 'Free spin {when}',
   'Вращение даётся за каждую покупку': 'You get a spin for every purchase',
   'Загляните позже': 'Check back later',
-  'Бесплатно — раз в {period}, клиентам с оплаченной подпиской.': 'Free spin once every {period} for customers with a paid subscription.',
+  'Бесплатно — раз в {period}, клиентам с купленной или подаренной подпиской.': 'Free spin once every {period} for customers with a subscription they bought or received as a gift.',
   'Бесплатно — раз в {period}, клиентам с подпиской.': 'Free spin once every {period} for subscribers.',
   'Бесплатно — раз в {period}.': 'Free spin once every {period}.',
   'За каждую оплату от {amount} — ещё одно вращение.': 'One more spin for every payment of {amount} or more.',

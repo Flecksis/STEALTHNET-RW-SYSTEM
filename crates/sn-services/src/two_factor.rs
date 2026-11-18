@@ -3,14 +3,14 @@ use crate::auth::{Auth, ClientLogin, RequestMeta, TotpSetup, token_hash};
 use crate::clients::ClientOps;
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::{Strike, rules};
-use crate::login::issue_session;
+use crate::login::issue_session_scoped;
 use crate::totp;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use serde::Serialize;
 use sn_domain::client::{Identity, IdentityKind};
 use sn_domain::ids::ClientId;
-use sn_store::{ClientTotp, Db, SealedSecret, SessionChannel, Tx};
+use sn_store::{ClientTotp, Db, SealedSecret, SessionChannel, SessionScope, Tx};
 
 pub const TOTP_CHALLENGE_TTL_SECONDS: i64 = 300;
 pub const TOTP_CHALLENGE_ATTEMPTS: i32 = 5;
@@ -144,16 +144,35 @@ pub(crate) async fn cabinet_session(
     meta: &RequestMeta,
     created: bool,
 ) -> ServiceResult<CabinetLogin> {
+    cabinet_session_for(tx, client_id, now, meta, created, false).await
+}
+
+pub(crate) async fn cabinet_session_for(
+    tx: &mut Tx,
+    client_id: ClientId,
+    now: DateTime<Utc>,
+    meta: &RequestMeta,
+    created: bool,
+    password_change: bool,
+) -> ServiceResult<CabinetLogin> {
     if tx.clients().totp(client_id).await?.is_none() {
         return Ok(CabinetLogin::Session(
-            issue_session(tx, client_id, now, meta, created).await?,
+            issue_session_scoped(
+                tx,
+                client_id,
+                now,
+                meta,
+                created,
+                scope_for(password_change),
+            )
+            .await?,
         ));
     }
     let challenge = challenge_token();
     let expires_at = now + Duration::seconds(TOTP_CHALLENGE_TTL_SECONDS);
     sqlx::query(
-        "INSERT INTO client_login_requests (method, code_hash, client_id, ip, user_agent, created_at, expires_at) \
-         VALUES ('totp', $1, $2, $3, $4, $5, $6)",
+        "INSERT INTO client_login_requests (method, code_hash, client_id, ip, user_agent, created_at, expires_at, password_change) \
+         VALUES ('totp', $1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(token_hash(&challenge))
     .bind(client_id.0)
@@ -161,6 +180,7 @@ pub(crate) async fn cabinet_session(
     .bind(&meta.user_agent)
     .bind(now)
     .bind(expires_at)
+    .bind(password_change)
     .execute(tx.conn())
     .await?;
     Ok(CabinetLogin::TotpRequired(TotpChallenge {
@@ -176,6 +196,15 @@ struct ChallengeRow {
     client_id: Option<i64>,
     attempts: i32,
     expires_at: DateTime<Utc>,
+    password_change: bool,
+}
+
+const fn scope_for(password_change: bool) -> SessionScope {
+    if password_change {
+        SessionScope::PasswordChange
+    } else {
+        SessionScope::Full
+    }
 }
 
 impl<'a> Auth<'a> {
@@ -378,7 +407,7 @@ impl<'a> Auth<'a> {
         let (row, client_id, totp) = {
             let mut conn = self.services.store().conn().await?;
             let row: Option<ChallengeRow> = sqlx::query_as(
-                "SELECT id, status, client_id, attempts, expires_at FROM client_login_requests \
+                "SELECT id, status, client_id, attempts, expires_at, password_change FROM client_login_requests \
                  WHERE method = 'totp' AND code_hash = $1",
             )
             .bind(&hash)
@@ -409,7 +438,7 @@ impl<'a> Auth<'a> {
         let step = totp::verify(&secret, code, now.timestamp());
         let mut tx = self.services.store().begin().await?;
         let locked: ChallengeRow = sqlx::query_as(
-            "SELECT id, status, client_id, attempts, expires_at FROM client_login_requests \
+            "SELECT id, status, client_id, attempts, expires_at, password_change FROM client_login_requests \
              WHERE id = $1 FOR UPDATE",
         )
         .bind(row.id)
@@ -452,7 +481,15 @@ impl<'a> Auth<'a> {
         .bind(now)
         .execute(tx.conn())
         .await?;
-        let login = issue_session(&mut tx, client_id, now, meta, false).await?;
+        let login = issue_session_scoped(
+            &mut tx,
+            client_id,
+            now,
+            meta,
+            false,
+            scope_for(locked.password_change),
+        )
+        .await?;
         tx.commit().await?;
         self.settle_client_totp(client_id, &attempt, true, meta.ip.as_deref())
             .await?;

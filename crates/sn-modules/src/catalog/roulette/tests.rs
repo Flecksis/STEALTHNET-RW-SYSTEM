@@ -385,7 +385,7 @@ async fn бесплатное_вращение_только_тем_кому_ра
     assert!(!seen.spins.free_ready);
     assert_eq!(
         seen.spins.free_blocked.as_deref(),
-        Some("Бесплатно крутить можно клиентам с оплаченной подпиской")
+        Some("Бесплатно крутить можно клиентам с купленной или подаренной подпиской")
     );
     assert!(spin(&ctx, trial, Uuid::new_v4(), None).await.is_err());
     let payer = client(&db.store).await;
@@ -941,5 +941,35 @@ async fn оборванное_вращение_доводит_приз_дням�
     }
     assert_eq!(state, "issued");
     assert!(core.days().iter().any(|(s, _, _)| *s == sub));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn подписка_по_промо_ссылке_не_считается_оплаченной() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let mut draft = config(vec![
+        sector(PrizeDraft::Balance { amount: "1".into() }, 1),
+        sector(PrizeDraft::Empty, 1),
+    ]);
+    draft.free_for = FreeFor::Paid;
+    save(&ctx, &draft, None).await.unwrap();
+    let mut ready = Vec::new();
+    for kind in [
+        SubscriptionKind::Paid,
+        SubscriptionKind::Gift,
+        SubscriptionKind::Promo,
+        SubscriptionKind::Manual,
+        SubscriptionKind::Custom,
+        SubscriptionKind::Trial,
+    ] {
+        let holder = client(&db.store).await;
+        live_sub(&db.store, holder, kind).await;
+        ready.push(state(&ctx, holder).await.unwrap().spins.free_ready);
+    }
+    assert_eq!(ready, [true, true, false, false, false, false]);
     db.cleanup().await;
 }

@@ -295,6 +295,113 @@ async fn подарок_в_боте_покупается_и_активирует
 }
 
 #[tokio::test]
+async fn возврат_активированного_подарка_отключает_подписку_получателя() {
+    let Some((db, services, _server, ctx)) = setup().await else {
+        return;
+    };
+    enable(&services, ModuleId::Gifts).await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        conn.settings()
+            .set(
+                keys::BOT_USERNAME,
+                &serde_json::json!("stealth_test_bot"),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let remna = remnawave();
+    services.set_remna(Some(remna.clone()));
+    let tariff = standard(&db).await;
+    let period = tariff.periods[0].id;
+    handle_update(&ctx, text_update(1, 741, "/start")).await;
+    let giver = client_of(&services, 741).await.unwrap();
+    top_up(&db, giver.id, 1_000).await;
+    handle_update(
+        &ctx,
+        callback_update(2, 741, &format!("gy:{}:{}:balance", tariff.id, period)),
+    )
+    .await;
+    let order = orders_of(&db, giver.id)
+        .await
+        .into_iter()
+        .find(|o| o.kind == OrderKind::Module)
+        .expect("заказ подарка");
+    services.fulfillment().run(order.id).await.unwrap();
+    let code = notifications(&db, TEMPLATE_READY).await[0].1["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    handle_update(&ctx, text_update(3, 742, &format!("/start gift_{code}"))).await;
+    handle_update(&ctx, callback_update(4, 742, "gr")).await;
+    let friend = client_of(&services, 742).await.unwrap();
+    let granted = orders_of(&db, friend.id)
+        .await
+        .into_iter()
+        .find(|o| o.kind == OrderKind::ModuleGrant)
+        .expect("заказ выдачи подарка");
+    services.fulfillment().run(granted.id).await.unwrap();
+    let gifted = services
+        .subscriptions()
+        .list_for_client(friend.id)
+        .await
+        .unwrap()[0]
+        .subscription
+        .clone();
+    let payment = {
+        let mut conn = db.store.conn().await.unwrap();
+        conn.payments()
+            .for_order(order.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.status.is_paid_like())
+            .expect("оплата подарка")
+    };
+    let options = services.inbox().refund_options(payment.id).await.unwrap();
+    assert!(options.subscription, "{options:?}");
+    let gift = options.gift.clone().expect("получатель подарка");
+    assert_eq!(gift.client_id, friend.id);
+    assert_eq!(gift.subscription_id, Some(gifted.id));
+    assert_eq!(options.days, 30);
+    let admin = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap()
+        .0;
+    services
+        .inbox()
+        .refund(
+            payment.id,
+            &sn_services::inbox::RefundCommand {
+                amount: None,
+                method: sn_domain::payment::RefundMethod::Balance,
+                subscription_action: sn_domain::payment::RefundSubscriptionAction::Disable,
+                reason: Some("подарок вернули".into()),
+                key: None,
+                outside: false,
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    let link = gifted
+        .remna
+        .clone()
+        .expect("пользователь Remnawave получателя");
+    let user = services
+        .remna()
+        .unwrap()
+        .get_user(link.user_id)
+        .await
+        .unwrap();
+    assert_eq!(user.status, sn_remnawave::UserStatus::Disabled);
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn код_подарка_можно_прислать_сообщением() {
     let Some((db, services, server, ctx)) = setup().await else {
         return;

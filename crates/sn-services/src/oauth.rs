@@ -23,7 +23,7 @@ use sn_domain::events::DomainEvent;
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
-use sn_modules::catalog::oauth::{OauthSettings, Provider, TEMPLATE_LINKED};
+use sn_modules::catalog::oauth::{OauthSettings, Provider, TEMPLATE_LINKED, TEMPLATE_UNLINKED};
 use sn_store::{Db, NewClient, Tx};
 
 pub const COOKIE: &str = "sn_oauth";
@@ -32,7 +32,10 @@ pub const REQUEST_TTL_SECONDS: i64 = 600;
 pub const FINISH_SECONDS: i64 = 300;
 const RETENTION_DAYS: i64 = 7;
 const LOCK_SPACE: i32 = 0x6f61;
-const CODES: [&str; 15] = [
+pub const EMAIL_UNVERIFIED: &str = "oauth.email_unverified";
+pub const UNLINKED_ON_CONFIRM_AUDIT: &str = "client.oauth_unlinked_on_confirm";
+
+const CODES: [&str; 16] = [
     "oauth.canceled",
     "oauth.expired",
     "oauth.refused",
@@ -48,7 +51,80 @@ const CODES: [&str; 15] = [
     "oauth.not_configured",
     "oauth.no_request",
     "oauth.failed",
+    EMAIL_UNVERIFIED,
 ];
+
+fn unconfirmed_only(identities: &[Identity]) -> bool {
+    let other = identities.iter().any(|i| {
+        matches!(
+            i.kind,
+            IdentityKind::Telegram | IdentityKind::Google | IdentityKind::Apple
+        )
+    });
+    !other
+        && identities
+            .iter()
+            .any(|i| i.kind == IdentityKind::Email && !i.verified)
+}
+
+fn unconfirmed_text(provider: Provider) -> String {
+    format!(
+        "Сначала подтвердите почту: войдите по коду из письма или восстановите пароль через «Забыли пароль». После этого привяжите вход через {}.",
+        provider.title()
+    )
+}
+
+pub(crate) async fn unlink_unconfirmed(tx: &mut Tx, client_id: ClientId) -> ServiceResult<usize> {
+    let removed: Vec<String> = sqlx::query_scalar(
+        "DELETE FROM client_identities WHERE client_id = $1 AND kind IN ('google', 'apple') RETURNING kind",
+    )
+    .bind(client_id.0)
+    .fetch_all(tx.conn())
+    .await?;
+    if removed.is_empty() {
+        return Ok(0);
+    }
+    let revoked = tx.sessions().revoke_all_client(client_id).await?;
+    tx.jobs()
+        .enqueue(
+            &JobPayload::Notify {
+                client_id,
+                template: TEMPLATE_UNLINKED.into(),
+                params: serde_json::json!({ "providers": removed }),
+            },
+            None,
+        )
+        .await?;
+    tx.audit()
+        .record(&Actor::Client(client_id).audit(
+            UNLINKED_ON_CONFIRM_AUDIT,
+            "client",
+            Some(client_id.0),
+            serde_json::json!({ "providers": removed, "revoked_sessions": revoked }),
+        ))
+        .await?;
+    tracing::warn!(client = %client_id, providers = ?removed, "почту подтвердили кодом: вход через Google или Apple, привязанный до этого, отвязан");
+    Ok(removed.len())
+}
+
+pub(crate) async fn confirm_email(
+    tx: &mut Tx,
+    client_id: ClientId,
+    email: &str,
+) -> ServiceResult<usize> {
+    let confirmed: Option<String> = sqlx::query_scalar(
+        "UPDATE client_identities SET verified = true \
+         WHERE client_id = $1 AND kind = 'email' AND value = $2 AND NOT verified RETURNING value",
+    )
+    .bind(client_id.0)
+    .bind(email)
+    .fetch_optional(tx.conn())
+    .await?;
+    if confirmed.is_none() {
+        return Ok(0);
+    }
+    unlink_unconfirmed(tx, client_id).await
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -487,14 +563,17 @@ impl<'a> OauthOps<'a> {
         meta: &RequestMeta,
     ) -> ServiceResult<OauthStart> {
         let session = principal.session_id.ok_or(ServiceError::Forbidden)?;
-        let linked = {
+        let identities = {
             let mut conn = self.services.store().conn().await?;
-            conn.clients()
-                .identities(principal.client_id)
-                .await?
-                .into_iter()
-                .any(|i| i.kind == provider.identity())
+            conn.clients().identities(principal.client_id).await?
         };
+        if unconfirmed_only(&identities) {
+            return Err(ServiceError::rejected(
+                EMAIL_UNVERIFIED,
+                unconfirmed_text(provider),
+            ));
+        }
+        let linked = identities.iter().any(|i| i.kind == provider.identity());
         if linked {
             return Err(ServiceError::rejected(
                 "oauth.already_linked",
@@ -876,6 +955,12 @@ impl<'a> OauthOps<'a> {
         let client = tx.clients().lock(client_id).await?;
         if client.is_blocked() {
             return Ok(Err(blocked()));
+        }
+        if unconfirmed_only(&tx.clients().identities(client_id).await?) {
+            return Ok(Err(Refusal::new(
+                EMAIL_UNVERIFIED,
+                unconfirmed_text(provider),
+            )));
         }
         if let Some(owner) = tx.clients().find_by_identity(kind, &claims.sub).await? {
             if owner.id == client_id {

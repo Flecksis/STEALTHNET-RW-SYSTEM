@@ -423,6 +423,14 @@ pub fn render(
             t("notify.traffic_lifted", &[]),
             Some(("notify.btn.subscription", "subs")),
         ),
+        oauth::TEMPLATE_UNLINKED => (
+            t("notify.oauth_unlinked", &[]),
+            Some(("notify.btn.support", "sup")),
+        ),
+        oauth::TEMPLATE_PASSWORD_ISSUED => (
+            t("notify.password_issued", &[]),
+            Some(("notify.btn.support", "sup")),
+        ),
         oauth::TEMPLATE_LINKED => (
             t(
                 "notify.oauth_linked",
@@ -756,6 +764,8 @@ pub fn letter_of(
                 )
                 .maybe("reply", raw(params, "body")),
         ),
+        oauth::TEMPLATE_UNLINKED => (LetterId::LoginsUnlinked, Values::new()),
+        oauth::TEMPLATE_PASSWORD_ISSUED => (LetterId::PasswordIssued, Values::new()),
         oauth::TEMPLATE_LINKED => (
             LetterId::LoginLinked,
             Values::new()

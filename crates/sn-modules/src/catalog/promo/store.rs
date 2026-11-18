@@ -99,6 +99,7 @@ struct CodeRow {
     active: bool,
     note: Option<String>,
     created_at: DateTime<Utc>,
+    owner_client_id: Option<i64>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -111,7 +112,7 @@ struct ListRow {
 
 const COLUMNS: &str = "p.id, p.code, p.kind, p.percent, p.amount_minor, p.currency, p.days, p.max_uses, \
                        p.per_client, p.valid_from, p.valid_until, p.first_purchase_only, p.tariff_ids, p.active, \
-                       p.note, p.created_at";
+                       p.note, p.created_at, p.owner_client_id";
 
 fn decode(field: &str) -> StoreError {
     StoreError::Decode(format!("промокод: поле {field}"))
@@ -159,6 +160,7 @@ impl TryFrom<CodeRow> for PromoCode {
             active: row.active,
             note: row.note,
             created_at: row.created_at,
+            owner: row.owner_client_id.map(ClientId),
         })
     }
 }
@@ -411,7 +413,7 @@ pub async fn create(
     new: &NewPromo,
     by: Option<AdminId>,
 ) -> StoreResult<PromoCode> {
-    insert(db, code, kind, new, by, false)
+    insert(db, code, kind, new, by, None, false)
         .await?
         .ok_or(StoreError::NotFound("промокод"))
 }
@@ -421,8 +423,9 @@ pub async fn create_if_free(
     code: &str,
     kind: PromoKind,
     new: &NewPromo,
+    owner: ClientId,
 ) -> StoreResult<Option<PromoCode>> {
-    insert(db, code, kind, new, None, true).await
+    insert(db, code, kind, new, None, Some(owner), true).await
 }
 
 async fn insert(
@@ -431,6 +434,7 @@ async fn insert(
     kind: PromoKind,
     new: &NewPromo,
     by: Option<AdminId>,
+    owner: Option<ClientId>,
     skip_taken: bool,
 ) -> StoreResult<Option<PromoCode>> {
     let (kind_name, percent, amount, currency, days) = match kind {
@@ -458,8 +462,8 @@ async fn insert(
     tariffs.dedup();
     let row: Option<CodeRow> = sqlx::query_as(&format!(
         "INSERT INTO promo_codes AS p (code, kind, percent, amount_minor, currency, days, max_uses, per_client, \
-         valid_from, valid_until, first_purchase_only, tariff_ids, note, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) {} RETURNING {COLUMNS}",
+         valid_from, valid_until, first_purchase_only, tariff_ids, note, created_by, owner_client_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) {} RETURNING {COLUMNS}",
         if skip_taken { "ON CONFLICT (code) DO NOTHING" } else { "" }
     ))
     .bind(code)
@@ -476,6 +480,7 @@ async fn insert(
     .bind(&tariffs)
     .bind(new.note.as_deref().map(str::trim).filter(|n| !n.is_empty()))
     .bind(by.map(|a| a.0))
+    .bind(owner.map(|c| c.0))
     .fetch_optional(db.conn())
     .await?;
     row.map(TryInto::try_into).transpose()

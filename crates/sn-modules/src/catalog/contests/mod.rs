@@ -599,8 +599,8 @@ fn purchase_window(
 fn subscription_text(rule: SubscriptionRule) -> String {
     if rule.paid_only {
         lang::pick(
-            "Действующая оплаченная подписка, пробная не считается",
-            "An active paid subscription, the free trial doesn't count",
+            "Действующая купленная или подаренная подписка",
+            "An active subscription that was bought or received as a gift",
         )
         .into()
     } else {
@@ -2073,6 +2073,7 @@ async fn issue_one(
                 PromoKind::Percent { percent },
                 Some(until),
                 &format!("Приз конкурса «{}», клиент #{}", row.title, client_id.0),
+                client_id,
             )
             .await?;
             let note = format!("Промокод действует до {}.", day(until, offset));

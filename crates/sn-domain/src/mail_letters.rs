@@ -71,6 +71,8 @@ pub enum LetterId {
     RenewalOff,
     SupportReply,
     LoginLinked,
+    LoginsUnlinked,
+    PasswordIssued,
     EmailChanged,
     TrafficWarning,
     TrafficRestricted,
@@ -289,7 +291,7 @@ const NEW_EMAIL: Var = var(
     Sample::Text("n***@example.com", "n***@example.com"),
 );
 
-pub const CATALOG: [Spec; 23] = [
+pub const CATALOG: [Spec; 25] = [
     Spec {
         id: LetterId::LoginCode,
         group: Group::Login,
@@ -708,6 +710,52 @@ pub const CATALOG: [Spec; 23] = [
         },
     },
     Spec {
+        id: LetterId::LoginsUnlinked,
+        group: Group::Service,
+        title: "Отвязан вход через Google или Apple",
+        when: "Клиент подтвердил почту кодом, и способы входа, привязанные до подтверждения, отвязаны",
+        vars: &[],
+        required: &[],
+        path: &["/cabinet/security"],
+        ru: Texts {
+            subject: &["Мы отвязали вход через Google или Apple"],
+            text: &[
+                "Вы подтвердили почту кодом, поэтому мы отвязали вход через Google или Apple, привязанный до подтверждения, и завершили все сеансы. Если этот вход привязывали вы, привяжите его снова в разделе «Безопасность».",
+            ],
+            button: "Безопасность",
+        },
+        en: Texts {
+            subject: &["We unlinked sign-in with Google or Apple"],
+            text: &[
+                "You confirmed your email with a code, so we unlinked the Google or Apple sign-in that was added before the confirmation and signed out all sessions. If you added it yourself, link it again under Security.",
+            ],
+            button: "Security",
+        },
+    },
+    Spec {
+        id: LetterId::PasswordIssued,
+        group: Group::Service,
+        title: "Выдан пароль для сайта",
+        when: "Администратор выдал клиенту временный пароль для входа на сайт",
+        vars: &[],
+        required: &[],
+        path: &["/cabinet/security"],
+        ru: Texts {
+            subject: &["Вам выдали пароль для входа на сайт"],
+            text: &[
+                "Администратор выдал вам временный пароль для входа на сайт. При первом входе с ним задайте свой пароль. Если вы не просили новый пароль, сразу напишите в поддержку.",
+            ],
+            button: "Безопасность",
+        },
+        en: Texts {
+            subject: &["A password for the website was issued to you"],
+            text: &[
+                "An administrator issued you a temporary password for the website. Set your own password when you first sign in with it. If you didn't ask for a new password, contact support right away.",
+            ],
+            button: "Security",
+        },
+    },
+    Spec {
         id: LetterId::EmailChanged,
         group: Group::Service,
         title: "Почта изменена",
@@ -819,6 +867,8 @@ impl LetterId {
             LetterId::RenewalOff => "renewal_off",
             LetterId::SupportReply => "support_reply",
             LetterId::LoginLinked => "login_linked",
+            LetterId::LoginsUnlinked => "logins_unlinked",
+            LetterId::PasswordIssued => "password_issued",
             LetterId::EmailChanged => "email_changed",
             LetterId::TrafficWarning => "traffic_warning",
             LetterId::TrafficRestricted => "traffic_restricted",

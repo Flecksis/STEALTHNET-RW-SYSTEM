@@ -59,7 +59,7 @@ fn тексты_условий_и_подстановки() {
     assert_eq!(
         texts,
         [
-            "Действующая оплаченная подписка, пробная не считается",
+            "Действующая купленная или подаренная подписка",
             "Оплата подписки или опций во время конкурса от 300\u{a0}₽",
             "Пригласить 2 друзей за время конкурса, друг должен оплатить подписку",
         ]
@@ -752,7 +752,7 @@ async fn маршруты_конкурсов_под_модулем_и_право
     assert_eq!(created["seed_hash"].as_str().unwrap().len(), 64);
     assert_eq!(
         created["condition_lines"][0]["text"],
-        "Действующая оплаченная подписка, пробная не считается"
+        "Действующая купленная или подаренная подписка"
     );
     let id = created["id"].as_i64().unwrap();
     let get = |path: String| {
@@ -1272,5 +1272,46 @@ async fn призы_ждущие_подписку_не_задерживают_в
         Some("issued")
     );
     assert_eq!(balance(&db.store, lucky).await, 500);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оплаченной_считается_только_купленная_или_подаренная_подписка() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let mut paid_only = draft(PrizeDraft::Days { days: 10 }, 1);
+    paid_only.conditions.subscription = true;
+    paid_only.conditions.paid_only = true;
+    let created = create(&ctx, &paid_only, None).await.unwrap();
+    let mut outcomes = Vec::new();
+    for (n, kind) in [
+        SubscriptionKind::Paid,
+        SubscriptionKind::Gift,
+        SubscriptionKind::Promo,
+        SubscriptionKind::Manual,
+        SubscriptionKind::Custom,
+        SubscriptionKind::Trial,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let member = tg_client(&db.store, 9_300 + n as i64).await;
+        live_sub(&db.store, member, kind).await;
+        outcomes.push(join(&ctx, created.id, member).await.unwrap());
+    }
+    assert_eq!(
+        outcomes,
+        [
+            JoinOutcome::Joined,
+            JoinOutcome::Joined,
+            JoinOutcome::NotEligible,
+            JoinOutcome::NotEligible,
+            JoinOutcome::NotEligible,
+            JoinOutcome::NotEligible,
+        ]
+    );
     db.cleanup().await;
 }

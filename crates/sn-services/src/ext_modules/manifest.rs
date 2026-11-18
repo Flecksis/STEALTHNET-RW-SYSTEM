@@ -160,6 +160,7 @@ pub const fn permission_title(permission: Permission) -> &'static str {
         Permission::Modules => "Модули",
         Permission::Settings => "Настройки",
         Permission::Admins => "Администраторы",
+        Permission::ClientsLogin => "Вход за клиента",
     }
 }
 
@@ -180,6 +181,9 @@ pub const fn permission_about(permission: Permission) -> &'static str {
             "менять настройки панели, в том числе ключи платёжных систем и бота"
         }
         Permission::Admins => "управлять администраторами",
+        Permission::ClientsLogin => {
+            "выдавать клиенту пароль для сайта и снимать ему вход по коду из приложения"
+        }
     }
 }
 
@@ -399,12 +403,13 @@ fn format_version(map: &Map<String, Value>, problems: &mut Problems) -> u64 {
 fn permission(raw: &str) -> Result<Permission, String> {
     match Permission::parse(raw) {
         Ok(Permission::Admins) => Err("право «Администраторы» модулю дать нельзя".into()),
+        Ok(Permission::ClientsLogin) => Err("право «Вход за клиента» модулю дать нельзя".into()),
         Ok(permission) => Ok(permission),
         Err(_) => Err(format!(
             "неизвестное право «{raw}». Есть: {}",
             Permission::ALL
                 .iter()
-                .filter(|p| **p != Permission::Admins)
+                .filter(|p| !matches!(p, Permission::Admins | Permission::ClientsLogin))
                 .map(|p| p.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")

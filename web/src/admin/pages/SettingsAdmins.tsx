@@ -28,7 +28,7 @@ const ROLES: AdminRole[] = ['owner', 'admin', 'support', 'read_only'];
 const ROLE_NOTE: Record<AdminRole, string> = {
   owner: 'всё, включая администраторов',
   admin: 'всё, кроме администраторов',
-  support: 'клиенты и обращения',
+  support: 'клиенты и обращения, без выдачи пароля клиенту',
   read_only: 'только просмотр клиентов',
 };
 

@@ -1343,3 +1343,44 @@ async fn кнопки_есть_только_у_включённого_и_нас�
         "oauth.not_configured"
     );
 }
+
+#[tokio::test]
+async fn google_не_привязать_к_аккаунту_только_с_неподтверждённой_почтой() {
+    let Some(h) = harness().await else { return };
+    let squatted = h.email_client("vika@gmail.com", false, true).await;
+    assert_eq!(
+        refused(
+            h.link(
+                &h.cabinet(squatted).await,
+                Provider::Google,
+                "6001",
+                serde_json::json!({ "email": "evil@gmail.com", "email_verified": true }),
+            )
+            .await
+        ),
+        crate::oauth::EMAIL_UNVERIFIED
+    );
+    let mut conn = h.services.store().conn().await.unwrap();
+    assert!(
+        conn.clients()
+            .find_by_identity(IdentityKind::Google, "6001")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(conn);
+    let owner = h.email_client("dasha@gmail.com", true, true).await;
+    assert_eq!(
+        h.link(
+            &h.cabinet(owner).await,
+            Provider::Google,
+            "6002",
+            serde_json::json!({ "email": "dasha@gmail.com", "email_verified": true }),
+        )
+        .await
+        .unwrap(),
+        OauthFinish::Linked {
+            provider: Provider::Google
+        }
+    );
+}

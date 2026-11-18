@@ -680,7 +680,7 @@ async fn шаблоны_писем_сохраняются_проверяются
     let admin = owner(services).await;
     let letters = services.letters();
     let view = letters.view().await.unwrap();
-    assert_eq!(view.letters.len(), 23);
+    assert_eq!(view.letters.len(), 25);
     assert!(!view.sends);
     let ready = |view: &crate::mail_letters::LettersView| {
         view.letters
@@ -812,5 +812,109 @@ async fn шаблоны_писем_сохраняются_проверяются
     assert_eq!(sent.len(), 1);
     assert!(readable(&sent[0]).contains("Thanks! +$10.00"));
     assert!(sent[0].contains("owner@example.com"));
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn подтверждение_почты_кодом_отвязывает_google_привязанный_до_него() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let auth = services.auth();
+    let who = meta("203.0.113.22");
+    auth.email_register("nina@example.com", "пароль-нины-1", &who)
+        .await
+        .unwrap();
+    let client_id = {
+        let mut conn = services.store().conn().await.unwrap();
+        let client = conn
+            .clients()
+            .find_by_identity(IdentityKind::Email, "nina@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        conn.clients()
+            .add_identity(
+                client.id,
+                &sn_domain::client::NewIdentity::new(IdentityKind::Google, "7001", true).unwrap(),
+            )
+            .await
+            .unwrap();
+        client.id
+    };
+    let CabinetLogin::Session(before) = auth
+        .email_password_login("nina@example.com", "пароль-нины-1", &who)
+        .await
+        .unwrap()
+    else {
+        panic!("ожидался вход без второго фактора");
+    };
+    let (port, letters) = fake_smtp().await;
+    configure_with(
+        services,
+        admin,
+        port,
+        serde_json::json!({ "login": "password" }),
+    )
+    .await;
+    auth.email_reset_start("nina@example.com", &who)
+        .await
+        .unwrap();
+    let sent_code = code_in(&readable(&letters.lock().unwrap()[0]));
+    auth.email_reset_confirm("nina@example.com", &sent_code, "новый-пароль-нины", &who)
+        .await
+        .unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    assert!(
+        conn.clients()
+            .find_by_identity(IdentityKind::Google, "7001")
+            .await
+            .unwrap()
+            .is_none(),
+        "вход через Google, привязанный до подтверждения почты, отвязан"
+    );
+    let email = conn
+        .clients()
+        .identities(client_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|i| i.kind == IdentityKind::Email)
+        .unwrap();
+    assert!(email.verified);
+    let notified: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE payload->>'template' = 'oauth_unlinked' \
+         AND (payload->>'client_id')::bigint = $1",
+    )
+    .bind(client_id.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(notified, 1);
+    drop(conn);
+    assert!(matches!(
+        auth.client_session(&before.token).await,
+        Err(ServiceError::Unauthorized)
+    ));
+    auth.email_reset_start("nina@example.com", &who)
+        .await
+        .unwrap();
+    let second = code_in(&readable(&letters.lock().unwrap()[1]));
+    auth.email_reset_confirm("nina@example.com", &second, "ещё-пароль-нины", &who)
+        .await
+        .unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'client.oauth_unlinked_on_confirm' AND entity_id = $1",
+    )
+    .bind(client_id.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(audits, 1, "повторное подтверждение ничего не отвязывает");
+    drop(conn);
     env.db.cleanup().await;
 }

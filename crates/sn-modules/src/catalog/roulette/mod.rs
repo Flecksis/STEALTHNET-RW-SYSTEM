@@ -54,7 +54,7 @@ impl FreeFor {
         match self {
             FreeFor::All => "всем клиентам",
             FreeFor::Subscribers => "клиентам с действующей подпиской",
-            FreeFor::Paid => "клиентам с оплаченной подпиской",
+            FreeFor::Paid => "клиентам с купленной или подаренной подпиской",
         }
     }
 }
@@ -600,7 +600,8 @@ fn free_reason(free_for: FreeFor) -> String {
             "Free spins are for clients with an active subscription".into()
         }
         (sn_domain::client::Locale::En, FreeFor::Paid) => {
-            "Free spins are for clients with a paid subscription".into()
+            "Free spins are for clients with a subscription they bought or received as a gift"
+                .into()
         }
         (sn_domain::client::Locale::Ru, free_for) => {
             format!("Бесплатно крутить можно {}", free_for.title())
@@ -1068,6 +1069,7 @@ async fn issue_in_tx(
                 PromoKind::Percent { percent },
                 Some(until),
                 &format!("Приз рулетки, клиент #{}", client_id.0),
+                client_id,
             )
             .await?;
             store::set_spin(

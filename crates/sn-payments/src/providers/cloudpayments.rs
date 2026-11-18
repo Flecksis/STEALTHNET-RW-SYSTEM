@@ -691,6 +691,27 @@ impl PaymentProvider for CloudPayments {
         }
     }
 
+    async fn cancel_invoice(
+        &self,
+        config: &ProviderConfig,
+        invoice: &IssuedInvoice<'_>,
+    ) -> PaymentResult<()> {
+        let order = invoice
+            .payload
+            .get("order_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| PaymentError::BadPayload("нет номера счёта CloudPayments".into()))?;
+        self.call(
+            config,
+            "orders/cancel",
+            &Json::object([("Id", Json::from(order))]),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn parse_webhook(
         &self,
         config: &ProviderConfig,
@@ -1866,5 +1887,46 @@ mod tests {
         assert!(cloud.supports_refunds());
         assert!(cloud.supports_refund_polling());
         assert!(cloud.accepts_http_webhooks());
+    }
+
+    #[tokio::test]
+    async fn заменённый_счёт_отменяется_в_cloudpayments() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/orders/cancel"))
+            .and(basic_auth("pk_8f3b2c1d0e", SECRET))
+            .and(body_json(json!({ "Id": "f2K8LV6reGE9WBFn" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "Success": true, "Message": null })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = CloudPayments::with_api_base(server.uri());
+        let payload = json!({ "order_id": "f2K8LV6reGE9WBFn" });
+        provider
+            .cancel_invoice(
+                &settings(),
+                &IssuedInvoice {
+                    external_id: None,
+                    payload: &payload,
+                },
+            )
+            .await
+            .unwrap();
+        let empty = json!({});
+        assert!(
+            provider
+                .cancel_invoice(
+                    &settings(),
+                    &IssuedInvoice {
+                        external_id: None,
+                        payload: &empty,
+                    },
+                )
+                .await
+                .is_err()
+        );
     }
 }

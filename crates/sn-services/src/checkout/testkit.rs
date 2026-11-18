@@ -49,6 +49,7 @@ pub(crate) struct TestPay {
     pub charge: Mutex<Option<ProviderStatus>>,
     pub charges: Mutex<Vec<(InvoiceRequest, String)>>,
     pub refunds: Mutex<Vec<RefundRequest>>,
+    pub canceled: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -111,6 +112,18 @@ impl PaymentProvider for TestPay {
             expires_at: None,
             payload: serde_json::json!({}),
         })
+    }
+
+    async fn cancel_invoice(
+        &self,
+        _config: &ProviderConfig,
+        invoice: &sn_payments::IssuedInvoice<'_>,
+    ) -> PaymentResult<()> {
+        self.canceled
+            .lock()
+            .unwrap()
+            .push(invoice.external_id.unwrap_or_default().to_string());
+        Ok(())
     }
 
     async fn parse_webhook(

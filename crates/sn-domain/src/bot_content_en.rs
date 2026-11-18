@@ -436,6 +436,12 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.oauth_linked" => {
             "Sign-in with {provider} is now linked to your account: {account}. If this wasn't you, contact support right away."
         }
+        "notify.oauth_unlinked" => {
+            "You confirmed your email with a code, so we unlinked the Google or Apple sign-in that was added before the confirmation and signed out all website sessions. If you added it yourself, link it again under Security."
+        }
+        "notify.password_issued" => {
+            "An administrator issued you a temporary password for the website. Set your own password when you first sign in with it. If you didn't ask for a new password, contact support right away."
+        }
         "notify.referral_credit" => "You earned {amount} from a friend's payment.",
         "notify.withdrawal_paid" => "Your withdrawal of {amount} has been paid.",
         "notify.withdrawal_rejected" => {

@@ -247,18 +247,36 @@ async fn admin_principal(
         .await?)
 }
 
+fn full_path(parts: &Parts) -> String {
+    parts
+        .extensions
+        .get::<axum::extract::OriginalUri>()
+        .map_or_else(
+            || parts.uri.path().to_string(),
+            |uri| uri.0.path().to_string(),
+        )
+}
+
+const PASSWORD_CHANGE_PATHS: [&str; 3] = [
+    "/api/client/me",
+    "/api/client/security/password",
+    "/api/client/auth/logout",
+];
+
 async fn client_principal(
     state: &AppState,
     method: &Method,
     headers: &HeaderMap,
+    path: &str,
 ) -> ApiResult<ClientPrincipal> {
     let credential = request_credential(state, method, headers, CLIENT_COOKIE)?
         .ok_or_else(ApiError::unauthorized)?;
-    let principal = state
-        .services
-        .auth()
-        .client_session(credential.token())
-        .await?;
+    let auth = state.services.auth();
+    let principal = if PASSWORD_CHANGE_PATHS.contains(&path) {
+        auth.client_session_pending(credential.token()).await?
+    } else {
+        auth.client_session(credential.token()).await?
+    };
     if credential.from_cookie() && principal.channel == ClientChannel::Miniapp {
         return Err(ApiError::unauthorized());
     }
@@ -876,7 +894,7 @@ impl FromRequestParts<AppState> for CurrentClient {
             return Ok(CurrentClient(principal.clone()));
         }
         Ok(CurrentClient(
-            client_principal(state, &parts.method, &parts.headers).await?,
+            client_principal(state, &parts.method, &parts.headers, &full_path(parts)).await?,
         ))
     }
 }
@@ -933,7 +951,13 @@ pub async fn require_client(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let principal = client_principal(&state, request.method(), request.headers()).await;
+    let principal = client_principal(
+        &state,
+        request.method(),
+        request.headers(),
+        request.uri().path(),
+    )
+    .await;
     match principal {
         Ok(principal) => {
             let address = client_ip(

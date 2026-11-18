@@ -24,6 +24,7 @@ pub const MAX_PASSWORD_LEN: usize = 256;
 pub const KNOWN_ADDRESS_DAYS: i64 = 30;
 pub const TOTP_REQUIRED: &str = "auth.totp_required";
 pub const TOTP_INVALID: &str = "auth.totp_invalid";
+pub const PASSWORD_CHANGE_REQUIRED: &str = "auth.password_change_required";
 pub const TOTP_LOCKED_AUDIT: &str = "admin.totp_locked";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -990,6 +991,28 @@ impl<'a> Auth<'a> {
     }
 
     pub async fn client_session(&self, token: &str) -> ServiceResult<ClientPrincipal> {
+        self.client_session_with(token, false).await
+    }
+
+    pub async fn client_session_pending(&self, token: &str) -> ServiceResult<ClientPrincipal> {
+        self.client_session_with(token, true).await
+    }
+
+    pub async fn password_change_pending(&self, session_id: i64) -> ServiceResult<bool> {
+        let mut conn = self.services.store().conn().await?;
+        let scope: Option<String> =
+            sqlx::query_scalar("SELECT scope FROM client_sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(conn.conn())
+                .await?;
+        Ok(scope.as_deref() == Some(SessionScope::PasswordChange.as_str()))
+    }
+
+    async fn client_session_with(
+        &self,
+        token: &str,
+        pending_ok: bool,
+    ) -> ServiceResult<ClientPrincipal> {
         let mut conn = self.services.store().conn().await?;
         let session = conn
             .sessions()
@@ -1008,13 +1031,22 @@ impl<'a> Auth<'a> {
         if !open {
             return Err(ServiceError::Unauthorized);
         }
+        if session.scope == SessionScope::PasswordChange && !pending_ok {
+            return Err(ServiceError::rejected(
+                PASSWORD_CHANGE_REQUIRED,
+                "Сначала задайте свой пароль: выданный администратором пароль одноразовый",
+            ));
+        }
         Ok(ClientPrincipal {
             client_id: session.client_id,
             channel: match session.channel {
                 SessionChannel::Cabinet => ClientChannel::Cabinet,
                 SessionChannel::Miniapp => ClientChannel::Miniapp,
             },
-            full_access: session.scope == SessionScope::Full,
+            full_access: matches!(
+                session.scope,
+                SessionScope::Full | SessionScope::PasswordChange
+            ),
             session_id: Some(session.id),
         })
     }

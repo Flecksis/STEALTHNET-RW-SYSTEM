@@ -43,6 +43,7 @@ function ClientDesktop() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const writable = can('clients_write');
+  const loginOk = can('clients_login');
   const moneyOk = can('money');
   const refundsOk = can('refunds');
   const [refundFor, setRefundFor] = useState<number | null>(null);
@@ -561,10 +562,12 @@ function ClientDesktop() {
                     Заблокировать
                   </button>
                 )}
-                <button type="button" className="b36 bad hov" onClick={() => setDialog('reset-2fa')} disabled={!card.two_factor.enabled}>
-                  Сбросить 2FA
-                </button>
-                {emailOf(card) ? (
+                {loginOk ? (
+                  <button type="button" className="b36 bad hov" onClick={() => setDialog('reset-2fa')} disabled={!card.two_factor.enabled}>
+                    Сбросить 2FA
+                  </button>
+                ) : null}
+                {loginOk && emailOf(card) ? (
                   <button type="button" className="b36 bad hov" onClick={() => setDialog('password')}>
                     Новый пароль для сайта
                   </button>

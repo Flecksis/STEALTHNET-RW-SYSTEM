@@ -39,7 +39,7 @@ export function PasswordDialog({ clientId, email, onClose, onIssued }: { clientI
     return (
       <Dialog title="Новый пароль выдан" onClose={onClose}>
         <p className="muted">
-          Передайте клиенту пароль для входа на сайт с почтой {email}. Пароль показан один раз, после входа клиент сможет сменить его в разделе «Безопасность».
+          Передайте клиенту пароль для входа на сайт с почтой {email}. Пароль показан один раз и работает только для первого входа: сразу после него клиент задаст свой пароль.
         </p>
         <div className="pw-issued">
           <span className="mono">{password}</span>
@@ -63,7 +63,7 @@ export function PasswordDialog({ clientId, email, onClose, onIssued }: { clientI
 
   return (
     <Dialog title="Новый пароль для сайта" busy={busy} onClose={onClose}>
-      <p className="muted">Клиент получит новый пароль для входа на сайт с почтой {email}. Старый пароль перестанет работать, все входы в кабинет на сайте закроются. Мини-приложение в Telegram продолжит работать.</p>
+      <p className="muted">Клиент получит одноразовый пароль для входа на сайт с почтой {email}. Старый пароль перестанет работать, все входы в кабинет на сайте закроются. Мини-приложение в Telegram продолжит работать. Клиенту придёт сообщение в бот и на почту, что пароль выдан.</p>
       {error ? (
         <p className="err" role="alert">
           {error}
