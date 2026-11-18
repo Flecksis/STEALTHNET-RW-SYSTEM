@@ -1256,6 +1256,10 @@
   align-self: flex-start;
 }
 
+.mn-promo-back {
+  align-self: center;
+}
+
 .mr-page {
   gap: 14px;
 }

@@ -93,7 +93,7 @@ export function PromoForm({ phone = false, currency, tariffs, onCancel, onCreate
   const valueLabel = draft.kind === 'percent' ? 'Размер скидки' : draft.kind === 'fixed' ? 'Сумма скидки' : 'Сколько дней добавить';
   const unitBefore = draft.kind === 'fixed' && currency === 'USD' ? '$' : null;
   const unitAfter = draft.kind === 'percent' ? '%' : draft.kind === 'fixed' ? (currency === 'RUB' ? '₽' : null) : 'дней';
-  const valueHint = draft.kind === 'days' ? 'Клиент вводит код в боте или кабинете, дни добавляются к его подписке' : 'Скидка применяется к оплате тарифа';
+  const valueHint = draft.kind === 'days' ? 'Клиент вводит код в боте, кабинете или мини-приложении, дни сразу добавляются к его подписке' : 'Скидка применяется к оплате тарифа';
   const showTariffs = draft.kind !== 'days' && tariffs !== null && tariffs.length > 0;
 
   return (

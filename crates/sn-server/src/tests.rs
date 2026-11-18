@@ -52,6 +52,7 @@ mod oauth;
 mod password_reset;
 mod payment_journal;
 mod photos;
+mod promo_days;
 mod provider_check;
 mod robokassa;
 mod robots;

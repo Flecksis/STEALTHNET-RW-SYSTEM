@@ -435,6 +435,10 @@ async fn me(
         "balance_held": card.balance_held,
         "balance_enabled": state.services.payments().balance_enabled(),
         "multi_subscriptions": state.services.settings().multi_subscriptions,
+        "promo_codes": state
+            .services
+            .modules()
+            .is_enabled(sn_domain::module::ModuleId::Promo),
         "autorenew_card": autorenew_card,
         "referral_balance": card.referral_balance,
         "currency": state.services.settings().currency,

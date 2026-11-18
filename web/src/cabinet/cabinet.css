@@ -507,6 +507,25 @@
   font-weight: 700;
 }
 
+.cb-promo-box .cb-promo-field input {
+  background: var(--surface);
+}
+
+.cb-phone .cb-promo-box .cb-ask-btns > * {
+  flex: 0 0 auto;
+  height: 44px;
+  border-radius: 12px;
+}
+
+.cb-phone .cb-pay .cb-promo .cb-second,
+.cb-phone .cb-promo-box .cb-promo .cb-second {
+  flex: 0 0 auto;
+  width: auto;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 12px;
+}
+
 .cb-plats {
   display: flex;
   flex-wrap: wrap;

@@ -100,7 +100,9 @@ export function MiniHome() {
   if (gifts) {
     rows.push({ label: t('Подарить подписку'), icon: 'gift', to: '/app/gifts' });
   }
-  rows.push({ label: t('Промокод'), icon: 'percent', to: '/app/plans' });
+  if (me.promo_codes === true) {
+    rows.push({ label: t('Промокод'), icon: 'percent', to: '/app/promo' });
+  }
   rows.push({ label: t('История оплат'), icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });
   rows.push({ label: t('Инструкции'), icon: 'book', to: '/app/connect' });
   if (supportTickets(site) && site.support_ai?.miniapp) {

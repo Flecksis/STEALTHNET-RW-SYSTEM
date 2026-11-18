@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
-import { count, dateLong, money, MINUS, type Money } from '../lib/format';
+import { count, dateLong, days as dayCount, money, MINUS, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type QuoteLineView, type TariffOffer } from './model';
+import { checkPromo, handedCode, promoFailText } from './promo';
 import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
 import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 import { methodKey } from '../lib/methods';
@@ -36,6 +37,7 @@ function methodAmount(method: CheckoutMethod): number | null {
 export function Pay() {
   const { me, site, reload } = useCabinet();
   const navigate = useNavigate();
+  const location = useLocation();
   const [params, setParams] = useSearchParams();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const subs = useSubs();
@@ -44,9 +46,13 @@ export function Pay() {
   const [cat, setCat] = useState<number | null>(null);
   const [period, setPeriod] = useState<number | null>(null);
   const [devices, setDevices] = useState<number>(0);
-  const [promoInput, setPromoInput] = useState('');
-  const [promo, setPromo] = useState<string | null>(null);
+  const promoOn = me.promo_codes === true;
+  const [handed] = useState(() => (promoOn ? handedCode(location.state) : null));
+  const [promoInput, setPromoInput] = useState(handed ?? '');
+  const [promo, setPromo] = useState<string | null>(handed);
   const [promoError, setPromoError] = useState<string | null>(null);
+  const [promoDays, setPromoDays] = useState<{ code: string; days: number } | null>(null);
+  const [promoBusy, setPromoBusy] = useState(false);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [method, setMethod] = useState<string | null>(null);
@@ -305,6 +311,29 @@ export function Pay() {
         ? t('{name} будет действовать до {date}.', { name: offer?.tariff.name ?? t('Подписка'), date: dateLong(quote.expire_preview, true) })
         : t('Подписка продлится до {date}.', { date: dateLong(quote.expire_preview, true) })
       : null;
+
+  const applyPromo = async () => {
+    const code = promoInput.trim().toUpperCase();
+    if (!code || promoBusy) {
+      return;
+    }
+    setPromoBusy(true);
+    setPromoError(null);
+    setPromoDays(null);
+    try {
+      const found = await checkPromo(code, offer?.tariff.id ?? null);
+      if (found.type === 'days') {
+        setPromoDays({ code: found.code, days: found.days });
+        return;
+      }
+      setPromoInput(found.code);
+      setPromo(found.code);
+    } catch (err) {
+      setPromoError(promoFailText(err, true));
+    } finally {
+      setPromoBusy(false);
+    }
+  };
 
   const pay = async () => {
     if (!offer || !periodOffer || !chosen) {
@@ -568,31 +597,48 @@ export function Pay() {
                     </div>
                   ))
               : null}
-            <form
-              className="cb-promo"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (promo) {
-                  setPromo(null);
-                  setPromoInput('');
-                  return;
-                }
-                const code = promoInput.trim().toUpperCase();
-                if (code) {
-                  setPromoError(null);
-                  setPromo(code);
-                }
-              }}
-            >
-              <label className="cb-promo-field">
-                <span className="sr-only">{t('Промокод')}</span>
-                <input value={promoInput} onChange={(e) => setPromoInput(e.target.value.toUpperCase())} placeholder={t('Промокод')} maxLength={40} disabled={!!promo} />
-              </label>
-              <button type="submit" className="cb-second">
-                {promo ? t('Убрать') : t('Применить')}
-              </button>
-            </form>
+            {promoOn || promo ? (
+              <form
+                className="cb-promo"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (promo) {
+                    setPromo(null);
+                    setPromoInput('');
+                    return;
+                  }
+                  void applyPromo();
+                }}
+              >
+                <label className="cb-promo-field">
+                  <span className="sr-only">{t('Промокод')}</span>
+                  <input
+                    value={promoInput}
+                    onChange={(e) => {
+                      setPromoInput(e.target.value.toUpperCase());
+                      setPromoDays(null);
+                    }}
+                    placeholder={t('Промокод')}
+                    maxLength={40}
+                    disabled={!!promo || promoBusy}
+                  />
+                </label>
+                <button type="submit" className="cb-second" disabled={promoBusy}>
+                  {promo ? t('Убрать') : promoBusy ? t('Проверяем…') : t('Применить')}
+                </button>
+              </form>
+            ) : null}
             {promoError ? <p className="cb-error">{promoError}</p> : null}
+            {promoDays ? (
+              <div className="cb-ask" role="status">
+                <p>{t('Промокод {code} добавляет {days} к подписке, при оплате он не нужен.', { code: promoDays.code, days: dayCount(promoDays.days) })}</p>
+                <span className="cb-ask-btns">
+                  <button type="button" className="cb-main sm" onClick={() => navigate(subs.link('/cabinet'), { state: { promo: promoDays.code } })}>
+                    {t('Добавить дни')}
+                  </button>
+                </span>
+              </div>
+            ) : null}
             <div className="cb-due">
               <strong>{t('К оплате')}</strong>
               <span className="cb-due-sum">{totalText}</span>

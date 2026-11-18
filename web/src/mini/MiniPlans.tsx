@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
-import { count, money, MINUS, type Money } from '../lib/format';
+import { count, days as dayCount, money, MINUS, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
+import { checkPromo, handedCode, promoFailText } from '../cabinet/promo';
 import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
@@ -25,6 +27,8 @@ function payLabel(transition: boolean, total: string, telegram: boolean): string
 
 export function MiniPlans() {
   const { me, subs, view: shown, choose, reload } = useMini();
+  const location = useLocation();
+  const navigate = useNavigate();
   const multi = me.multi_subscriptions === true;
   const [picked, setPicked] = useState<PayTarget | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -37,10 +41,14 @@ export function MiniPlans() {
   const view = targetView(subs, target, multi);
   const [period, setPeriod] = useState<number | null>(null);
   const [devices, setDevices] = useState(0);
-  const [promoOpen, setPromoOpen] = useState(false);
-  const [promoInput, setPromoInput] = useState('');
-  const [promo, setPromo] = useState<string | null>(null);
+  const promoOn = me.promo_codes === true;
+  const [handed] = useState(() => (promoOn ? handedCode(location.state) : null));
+  const [promoOpen, setPromoOpen] = useState(handed !== null);
+  const [promoInput, setPromoInput] = useState(handed ?? '');
+  const [promo, setPromo] = useState<string | null>(handed);
   const [promoError, setPromoError] = useState<string | null>(null);
+  const [promoDays, setPromoDays] = useState<{ code: string; days: number } | null>(null);
+  const [promoBusy, setPromoBusy] = useState(false);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [method, setMethod] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -167,6 +175,29 @@ export function MiniPlans() {
   const promoLines = q ? linesOf(q.lines, 'adjustment') : [];
   const promoMinor = promoLines.reduce((sum, line) => sum - line.amount.minor, 0);
   const promoStars = promoLines.reduce((sum, line) => sum - (line.stars ?? 0), 0);
+
+  const applyPromo = async () => {
+    const code = promoInput.trim().toUpperCase();
+    if (!code || promoBusy) {
+      return;
+    }
+    setPromoBusy(true);
+    setPromoError(null);
+    setPromoDays(null);
+    try {
+      const found = await checkPromo(code, offer?.tariff.id ?? null);
+      if (found.type === 'days') {
+        setPromoDays({ code: found.code, days: found.days });
+        return;
+      }
+      setPromoInput(found.code);
+      setPromo(found.code);
+    } catch (err) {
+      setPromoError(promoFailText(err, true));
+    } finally {
+      setPromoBusy(false);
+    }
+  };
 
   const pay = async () => {
     if (!offer || !periodOffer || !chosen) {
@@ -332,11 +363,13 @@ export function MiniPlans() {
       <div className="mn-pay">
         <div className="mn-pay-head">
           <h2>{t('Оплата')}</h2>
-          <button type="button" className="mn-link" aria-expanded={promoOpen} onClick={() => setPromoOpen(!promoOpen)}>
-            {promo ? t('Промокод {code}', { code: promo }) : t('Есть промокод?')}
-          </button>
+          {promoOn || promo ? (
+            <button type="button" className="mn-link" aria-expanded={promoOpen} onClick={() => setPromoOpen(!promoOpen)}>
+              {promo ? t('Промокод {code}', { code: promo }) : t('Есть промокод?')}
+            </button>
+          ) : null}
         </div>
-        {promoOpen ? (
+        {promoOpen && (promoOn || promo) ? (
           <form
             className="mn-promo"
             onSubmit={(e) => {
@@ -346,19 +379,33 @@ export function MiniPlans() {
                 setPromoInput('');
                 return;
               }
-              const code = promoInput.trim().toUpperCase();
-              if (code) {
-                setPromo(code);
-              }
+              void applyPromo();
             }}
           >
-            <input value={promoInput} onChange={(e) => setPromoInput(e.target.value.toUpperCase())} placeholder={t('Промокод')} aria-label={t('Промокод')} disabled={!!promo} />
-            <button type="submit" className="mn-btn2 press">
-              {promo ? t('Убрать') : t('Применить')}
+            <input
+              value={promoInput}
+              onChange={(e) => {
+                setPromoInput(e.target.value.toUpperCase());
+                setPromoDays(null);
+              }}
+              placeholder={t('Промокод')}
+              aria-label={t('Промокод')}
+              disabled={!!promo || promoBusy}
+            />
+            <button type="submit" className="mn-btn2 press" disabled={promoBusy}>
+              {promo ? t('Убрать') : promoBusy ? t('Проверяем…') : t('Применить')}
             </button>
           </form>
         ) : null}
         {promoError ? <p className="mn-error">{promoError}</p> : null}
+        {promoDays ? (
+          <p className="mn-note" role="status">
+            {t('Промокод {code} добавляет {days} к подписке, при оплате он не нужен.', { code: promoDays.code, days: dayCount(promoDays.days) })}{' '}
+            <button type="button" className="mn-link press" onClick={() => navigate('/app/promo', { state: { promo: promoDays.code } })}>
+              {t('Добавить дни')}
+            </button>
+          </p>
+        ) : null}
         {q && (starsMode ? promoStars > 0 : promoMinor > 0) ? (
           <p className="mn-muted small">
             {t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode ? stars(promoStars) : money({ minor: promoMinor, currency: q.currency })}` })}

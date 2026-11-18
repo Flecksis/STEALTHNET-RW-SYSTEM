@@ -17,6 +17,7 @@ import { MiniAddons } from './MiniAddons';
 import { MiniGifts } from './MiniGifts';
 import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
+import { MiniPromo } from './MiniPromo';
 import { MiniEmail, MiniLanguage, MiniPassword, MiniTotp } from './MiniAccount';
 import { MiniTopUp } from './MiniTopUp';
 import { MiniRoulette } from './MiniRoulette';
@@ -284,6 +285,7 @@ export function MiniApp() {
           <Route path="payments" element={<MiniPayments />} />
           <Route path="addons" element={<MiniAddons />} />
           <Route path="gifts" element={<MiniGifts />} />
+          <Route path="promo" element={<MiniPromo />} />
           <Route path="roulette" element={<MiniRoulette />} />
           <Route path="withdraw" element={<MiniWithdraw />} />
           <Route path="support" element={<MiniSupport />} />
@@ -308,7 +310,7 @@ function MiniNav() {
   return (
     <nav aria-label={t('Меню')} className="mn-nav">
       {TABS.map((tab) => {
-        const current = tab.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments', '/app/roulette'].includes(pathname) : pathname.startsWith(tab.to);
+        const current = tab.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments', '/app/roulette', '/app/promo'].includes(pathname) : pathname.startsWith(tab.to);
         return (
           <Link key={tab.to} to={tab.to} className="mn-tab press" aria-current={current ? 'page' : undefined}>
             <Icon name={tab.icon} size={23} />

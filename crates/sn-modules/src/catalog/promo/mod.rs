@@ -190,8 +190,8 @@ impl PromoRejection {
                 "You've already used this promo code",
             ),
             PromoRejection::DaysCode => lang::pick(
-                "Этот промокод добавляет дни к подписке: активируйте его в боте, в разделе «Промокод»",
-                "This promo code adds days to a subscription. Activate it in the bot under “Promo code”",
+                "Этот промокод добавляет дни к подписке, при оплате он не нужен: активируйте его в разделе «Промокод»",
+                "This promo code adds days to a subscription and isn't needed at checkout. Activate it under “Promo code”",
             ),
             PromoRejection::DiscountCode => lang::pick(
                 "Это промокод на скидку: введите его при оплате",

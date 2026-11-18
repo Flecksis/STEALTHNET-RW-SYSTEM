@@ -11,6 +11,7 @@ import { supportLink, supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { ConnectSteps } from './ConnectSteps';
 import { DevicesCard } from './DevicesCard';
+import { PromoBox } from './PromoBox';
 import { SubSwitch, useSubDetail, useSubs } from './SubSwitch';
 import { explanation, heldBalance, periodTitle, statusWord, trafficLine, type Catalog, type Referral } from './model';
 
@@ -233,6 +234,7 @@ export function SubscriptionPage() {
           </button>
         </div>
       ) : null}
+      <PromoBox subs={subs} />
     </Card>
   ) : (
     <Card className="cb-sub" label={t('Подписка')}>
@@ -314,6 +316,7 @@ export function SubscriptionPage() {
           </>
         )}
       </div>
+      <PromoBox subs={subs} />
     </Card>
   );
 
