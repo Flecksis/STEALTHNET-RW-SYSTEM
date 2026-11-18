@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
 
+pub const REPLACED_REASON: &str = "счёт заменён новым счётом с тем же промокодом";
+
 pub mod providers {
     pub const BALANCE: &str = "balance";
     pub const STARS: &str = "stars";

@@ -332,3 +332,53 @@ async fn ровная_проверка_находит_оплату_и_поздн
     assert_eq!(again.checked, 0);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn перевод_по_заменённому_счёту_находится_в_блокчейне() {
+    let Some(Setup {
+        db,
+        services,
+        chain,
+        client_id,
+        tariff,
+    }) = setup(Some(PUBLIC_URL)).await
+    else {
+        return;
+    };
+    let replaced = gram_payment(&services, client_id, &tariff).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.payments()
+            .transition(
+                replaced.id,
+                PaymentStatus::Canceled,
+                None,
+                Some(REPLACED_REASON),
+            )
+            .await
+            .unwrap();
+    }
+    let comment = GramInvoice::parse(replaced.provider_txid.as_deref().unwrap())
+        .unwrap()
+        .comment;
+    Mock::given(method("GET"))
+        .and(path("/getTransactions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": [{
+                "transaction_id": {"lt": "7", "hash": "dHg3"},
+                "in_msg": {"source": "EQSender", "value": "1400000000", "message": comment}
+            }]
+        })))
+        .mount(&chain)
+        .await;
+    let report = services.inbox().watch_chain(services.now()).await.unwrap();
+    assert_eq!((report.checked, report.settled), (1, 1));
+    let mut conn = db.store.conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(replaced.id).await.unwrap().status,
+        PaymentStatus::Paid
+    );
+    drop(conn);
+    db.cleanup().await;
+}

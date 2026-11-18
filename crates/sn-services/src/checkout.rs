@@ -419,7 +419,7 @@ fn describe_for(brand: &str, quote: &Quote, provider: &str) -> String {
     }
 }
 
-pub const REPLACED_REASON: &str = "счёт заменён новым счётом с тем же промокодом";
+pub use sn_domain::payment::REPLACED_REASON;
 pub const ORDER_REPLACED: &str = "order.replaced";
 
 async fn replace_unpaid(
