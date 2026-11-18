@@ -1040,6 +1040,7 @@
 
 .mn-payrow-main strong {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .mn-payrow-main > span {

@@ -72,6 +72,15 @@ export function MiniProfile() {
           <span className="mn-muted small">
             Пришли по ссылке: {referral.invited} · заработано {money(referral.earned)}
           </span>
+          {referral.withdrawals_enabled && referral.balance && referral.balance.minor > 0 ? (
+            <Link to="/app/withdraw" className="mn-btn2 press mn-btn-link">
+              Вывести {money(referral.balance)}
+            </Link>
+          ) : (referral.withdrawals?.length ?? 0) > 0 ? (
+            <Link to="/app/withdraw" className="mn-link press">
+              Заявки на вывод
+            </Link>
+          ) : null}
         </div>
       ) : null}
       <div className="mn-list">

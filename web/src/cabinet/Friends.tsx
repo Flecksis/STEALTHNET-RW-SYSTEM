@@ -3,28 +3,11 @@ import { api, ApiError } from '../lib/api';
 import { dateLong, money } from '../lib/format';
 import { siteInviteLink } from '../lib/referral';
 import { Card, useCabinet } from './CabinetApp';
-import type { PayoutMethod, Referral, Withdrawal, WithdrawalStatus } from './model';
-
-const METHODS: Array<{ key: PayoutMethod; label: string; hint: string }> = [
-  { key: 'sbp', label: 'СБП', hint: 'Номер телефона и банк, например: +7 900 123-45-67, Т-Банк' },
-  { key: 'card', label: 'Карта', hint: 'Номер карты, 16 цифр' },
-  { key: 'usdt_trc20', label: 'USDT (TRC20)', hint: 'Адрес кошелька TRC20, начинается с T' },
-];
-
-const STATUS: Record<WithdrawalStatus, { text: string; tone: string }> = {
-  holding: { text: 'На рассмотрении', tone: 'muted' },
-  pending: { text: 'На рассмотрении', tone: 'muted' },
-  paid: { text: 'Выплачено', tone: 'ok' },
-  rejected: { text: 'Отклонено', tone: 'bad' },
-  canceled: { text: 'Отменено', tone: 'muted' },
-};
+import type { PayoutMethod, Referral, Withdrawal } from './model';
+import { PAYOUT_METHODS as METHODS, payoutDetails, payoutLabel as methodLabel, WITHDRAWAL_STATUS as STATUS } from './withdrawals';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
-}
-
-function methodLabel(method: PayoutMethod): string {
-  return METHODS.find((m) => m.key === method)?.label ?? method;
 }
 
 function shareUrl(link: string, brand: string): string {
@@ -196,11 +179,6 @@ export function FriendsPage() {
         </dl>
       </Card>
 
-      {canWithdraw && balance.minor <= 0 ? (
-        <p className="cb-small cb-muted">
-          {data.withdraw_min ? `Вывести заработанное можно от ${money(data.withdraw_min)}.` : 'Заработанное можно будет вывести, когда оно появится.'}
-        </p>
-      ) : null}
       {canWithdraw && balance.minor > 0 ? (
         <Card className="cb-withdraw" label="Вывод">
           <h2 className="cb-h2">Вывести заработанное</h2>
@@ -253,7 +231,7 @@ export function FriendsPage() {
                 <li key={w.id} className="cb-payrow">
                   <span className="cb-payrow-main">
                     <strong>
-                      {methodLabel(w.method)} · {w.details}
+                      {methodLabel(w.method)} · {payoutDetails(w.details)}
                     </strong>
                     <span className="cb-small cb-muted">
                       {dateLong(w.created_at, true)}

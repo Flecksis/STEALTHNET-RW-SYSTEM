@@ -18,6 +18,7 @@ import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
 import { MiniTopUp } from './MiniTopUp';
 import { MiniRoulette } from './MiniRoulette';
+import { MiniWithdraw } from './MiniWithdraw';
 import './mini.css';
 
 const TOKEN_KEY = 'sn.mini.token';
@@ -253,6 +254,7 @@ export function MiniApp() {
           <Route path="addons" element={<MiniAddons />} />
           <Route path="gifts" element={<MiniGifts />} />
           <Route path="roulette" element={<MiniRoulette />} />
+          <Route path="withdraw" element={<MiniWithdraw />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />

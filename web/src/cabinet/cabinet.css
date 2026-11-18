@@ -1582,6 +1582,10 @@
   font-weight: 700;
 }
 
+.cb-payrow-main strong {
+  overflow-wrap: anywhere;
+}
+
 .cb-payrow-side {
   align-items: flex-end;
   text-align: right;
