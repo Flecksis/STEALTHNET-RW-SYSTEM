@@ -195,9 +195,13 @@ const ACCEPTS: Record<string, string> = {
   cloudpayments: 'Карты и СБП',
   overpay: 'Карты и СБП',
   rollypay: 'СБП, карты, криптовалюта',
+  mulenpay: 'Карты, СБП, SberPay и T-Pay',
+  pal24: 'Карты и СБП',
+  kassa_ai: 'СБП, карты, SberPay',
+  aurapay: 'Карты и СБП',
 };
 
-const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'] };
+const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'], pal24: ['', 'refund', 'chargeback'] };
 
 const OWN_HOOKS: Record<string, string> = {
   cryptomus: 'Панель передаёт Cryptomus адрес для уведомлений вместе с каждым счётом, в кабинете Cryptomus его указывать не нужно.',
@@ -209,6 +213,14 @@ const HOOK_HINTS: Record<string, string> = {
     'В кабинете CloudPayments в настройках сайта включите уведомления Check, Pay, Fail и Refund, каждое на свой адрес из списка выше. Метод GET или POST, кодировка UTF-8, формат CloudPayments.',
   rollypay:
     'У RollyPay это поле callback_url в настройках кассы. Если доступа к кабинету нет, адрес можно передать поддержке RollyPay. Возвраты делаются в кабинете RollyPay, панель отметит их по уведомлению.',
+  mulenpay:
+    'Адрес указывается в настройках магазина MulenPay. Сама MulenPay уведомления не повторяет, поэтому панель ещё и спрашивает статус счёта. Возврат из панели — только на всю сумму, часть суммы возвращается в кабинете MulenPay.',
+  pal24:
+    'В настройках магазина PayPalych (Pally): первый адрес — Result URL, второй — Refund URL, третий — Chargeback URL. Success URL и Fail URL — страницы, куда вернётся покупатель, например ваш сайт или бот. Возвраты через API включает поддержка PayPalych.',
+  kassa_ai:
+    'Это «URL оповещения» в настройках магазина Kassa.ai, метод POST. Уведомления приходят с адресов 168.119.157.136, 168.119.60.227, 178.154.197.79 и 51.250.54.238. Если в магазине включён тестовый режим, тестовые оплаты засчитываются как настоящие: после проверки выключите его.',
+  aurapay:
+    'Панель передаёт этот адрес с каждым счётом. Если в настройках кассы AuraPay стоит адрес старого бота, замените его этим. Возвратов через API у AuraPay нет: деньги возвращает поддержка AuraPay, а в панели возврат отмечается вручную.',
 };
 
 function failText(err: unknown, fallback: string): string {

@@ -41,6 +41,7 @@ mod import;
 mod landing;
 mod languages;
 mod mail;
+mod migrated_providers;
 mod mini_account;
 mod multi_subscriptions;
 mod oauth;

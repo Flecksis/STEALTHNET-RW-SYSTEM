@@ -1,26 +1,34 @@
+mod aurapay;
 mod balance;
 mod cloudpayments;
 mod cryptomus;
 mod cryptopay;
 mod gram;
 mod heleket;
+mod kassaai;
 mod lava;
 mod merchant;
+mod mulenpay;
 mod overpay;
+mod paypalych;
 mod platega;
 mod rollypay;
 mod stars;
 mod yookassa;
 mod yoomoney;
 
+pub use aurapay::{AuraPay, signature as aurapay_signature};
 pub use balance::Balance;
 pub use cloudpayments::{CloudPayments, signature as cloudpayments_signature};
 pub use cryptomus::{Cryptomus, signature as cryptomus_signature};
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
 pub use gram::{Gram, GramInvoice, comment_payload, format_grams, friendly_address};
 pub use heleket::{Heleket, signature as heleket_signature};
+pub use kassaai::{KassaAi, notice_signature as kassaai_notice_signature};
 pub use lava::Lava;
+pub use mulenpay::MulenPay;
 pub use overpay::{Overpay, hook_token as overpay_hook_token};
+pub use paypalych::{PayPalych, signature as paypalych_signature};
 pub use platega::Platega;
 pub use rollypay::{RollyPay, signature as rollypay_signature};
 pub use stars::{
@@ -46,6 +54,10 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(CloudPayments::new()),
         Arc::new(Overpay::new()),
         Arc::new(RollyPay::new()),
+        Arc::new(MulenPay::new()),
+        Arc::new(PayPalych::new()),
+        Arc::new(KassaAi::new()),
+        Arc::new(AuraPay::new()),
         Arc::new(TelegramStars::new()),
         Arc::new(Balance),
     ]
@@ -100,6 +112,25 @@ mod tests {
                 ("api_key", json!("rpk_live_abc123def456")),
                 ("signing_secret", json!("s")),
             ]),
+            providers::MULENPAY => config(&[
+                ("shop_id", json!("5")),
+                ("api_key", json!("k")),
+                ("secret_key", json!("s")),
+            ]),
+            providers::PAL24 => config(&[
+                ("api_token", json!("72|abc")),
+                ("shop_id", json!("LXZv3R7Q8B")),
+            ]),
+            providers::KASSA_AI => config(&[
+                ("shop_id", json!("777")),
+                ("api_key", json!("k")),
+                ("secret_word_2", json!("s")),
+            ]),
+            providers::AURAPAY => config(&[
+                ("shop_id", json!("9bee9309-2585-4332-b63d-e1d897f7ce84")),
+                ("api_key", json!("k")),
+                ("secret_key", json!("s")),
+            ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
             _ => config(&[]),
         }
@@ -149,6 +180,10 @@ mod tests {
                     providers::CRYPTOMUS,
                     providers::LAVA,
                     providers::ROLLYPAY,
+                    providers::MULENPAY,
+                    providers::PAL24,
+                    providers::KASSA_AI,
+                    providers::AURAPAY,
                     providers::BALANCE,
                 ],
             ),
@@ -175,6 +210,16 @@ mod tests {
             assert!(registry.is_available(providers::CRYPTOMUS, Currency::Rub));
             assert!(registry.is_available(providers::CRYPTOMUS, Currency::Usd));
             assert!(registry.accepts_webhooks(providers::CRYPTOMUS));
+            for id in [
+                providers::MULENPAY,
+                providers::PAL24,
+                providers::KASSA_AI,
+                providers::AURAPAY,
+            ] {
+                assert!(registry.is_available(id, Currency::Rub), "{id}");
+                assert!(!registry.is_available(id, Currency::Usd), "{id}");
+                assert!(registry.accepts_webhooks(id), "{id}");
+            }
         }
     }
 
@@ -197,6 +242,10 @@ mod tests {
             providers::CLOUDPAYMENTS,
             providers::OVERPAY,
             providers::ROLLYPAY,
+            providers::MULENPAY,
+            providers::PAL24,
+            providers::KASSA_AI,
+            providers::AURAPAY,
             providers::STARS,
             providers::BALANCE,
         ] {
@@ -248,6 +297,9 @@ mod tests {
                 providers::PLATEGA,
                 providers::CLOUDPAYMENTS,
                 providers::OVERPAY,
+                providers::MULENPAY,
+                providers::PAL24,
+                providers::KASSA_AI,
                 providers::STARS
             ]
         );
@@ -276,7 +328,8 @@ mod tests {
                 providers::YOOKASSA,
                 providers::PLATEGA,
                 providers::CLOUDPAYMENTS,
-                providers::OVERPAY
+                providers::OVERPAY,
+                providers::PAL24
             ]
         );
     }

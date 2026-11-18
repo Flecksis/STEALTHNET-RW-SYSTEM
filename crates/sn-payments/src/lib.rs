@@ -1,5 +1,6 @@
 pub mod english;
 pub mod error;
+pub mod form;
 mod json;
 mod md5;
 pub mod provider;

@@ -22,6 +22,10 @@ pub mod providers {
     pub const GRAM: &str = "gram";
     pub const ROLLYPAY: &str = "rollypay";
     pub const CRYPTOMUS: &str = "cryptomus";
+    pub const MULENPAY: &str = "mulenpay";
+    pub const PAL24: &str = "pal24";
+    pub const KASSA_AI: &str = "kassa_ai";
+    pub const AURAPAY: &str = "aurapay";
 }
 
 const fn shown() -> bool {

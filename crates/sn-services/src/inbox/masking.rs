@@ -445,6 +445,10 @@ pub fn mask_body(body: &[u8]) -> (MaskedBody, bool) {
         let changed = walk(&mut value, None, 0);
         return (MaskedBody::Json(value), changed);
     }
+    if let Some(mut pairs) = sn_payments::form::multipart(body) {
+        mask_pairs(&mut pairs);
+        return (MaskedBody::Form(pairs), true);
+    }
     if let Some(mut pairs) = form_pairs(text.trim()) {
         let changed = mask_pairs(&mut pairs);
         return (MaskedBody::Form(pairs), changed);
@@ -452,7 +456,7 @@ pub fn mask_body(body: &[u8]) -> (MaskedBody, bool) {
     (MaskedBody::Text(clip(text)), false)
 }
 
-const EVENT_KEYS: [&str; 9] = [
+const EVENT_KEYS: [&str; 10] = [
     "event",
     "eventType",
     "event_type",
@@ -462,6 +466,7 @@ const EVENT_KEYS: [&str; 9] = [
     "OperationType",
     "status",
     "Status",
+    "payment_status",
 ];
 const EVENT_LIMIT: usize = 64;
 
@@ -726,5 +731,63 @@ mod tests {
         assert_eq!(masked["name"], "");
         assert_eq!(masked["token"], "•••");
         assert_eq!(masked["deep"][0][0][0][0]["password"], "•••");
+    }
+
+    fn form_of(body: &[u8]) -> Vec<(String, String)> {
+        match mask_body(body).0 {
+            MaskedBody::Form(pairs) => pairs,
+            other => panic!("ожидалась форма, получено {other:?}"),
+        }
+    }
+
+    fn value<'a>(pairs: &'a [(String, String)], key: &str) -> &'a str {
+        pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn уведомления_kassaai_и_paypalych_маскируются_в_форме_и_multipart() {
+        let kassa = "MERCHANT_ID=777&AMOUNT=1500&intid=652367&MERCHANT_ORDER_ID=6a1c0c8e-3f4b-4d2a-9b7e-51c02d3e4f50&P_EMAIL=ivan.petrov%40example.com&P_PHONE=79161234567&CUR_ID=44&payer_account=2200123456781234&SIGN=30c76991785c43f10af2079878acd3d6";
+        let pairs = form_of(kassa.as_bytes());
+        assert_eq!(value(&pairs, "SIGN"), "•••");
+        assert_eq!(value(&pairs, "AMOUNT"), "1500");
+        assert_ne!(value(&pairs, "P_EMAIL"), "ivan.petrov@example.com");
+        assert_ne!(value(&pairs, "P_PHONE"), "79161234567");
+        assert_ne!(value(&pairs, "payer_account"), "2200123456781234");
+        let mut multipart = String::new();
+        for (key, val) in kassa.split('&').filter_map(|p| p.split_once('=')) {
+            let val = val.replace("%40", "@");
+            multipart.push_str(&format!(
+                "--Zb7\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{val}\r\n"
+            ));
+        }
+        multipart.push_str("--Zb7--\r\n");
+        let stored = String::from_utf8(prepare(multipart.as_bytes(), None).body).unwrap();
+        for secret in [
+            "30c76991785c43f10af2079878acd3d6",
+            "ivan.petrov@",
+            "79161234567",
+            "2200123456781234",
+        ] {
+            assert!(!stored.contains(secret), "{secret} остался в {stored}");
+        }
+        assert_eq!(value(&form_of(stored.as_bytes()), "AMOUNT"), "1500");
+        let palych = "Status=SUCCESS&InvId=6a1c0c8e-3f4b-4d2a-9b7e-51c02d3e4f50&OutSum=1500.00&TrsId=GkLWvKx3&AccountNumber=220220%2A%2A%2A%2A%2A%2A7046&PayerEmail=ivan.petrov%40example.com&SignatureValue=DC32D403CE6BD2E54D4D213278DB286C";
+        let prepared = prepare(palych.as_bytes(), None);
+        assert_eq!(prepared.event.as_deref(), Some("SUCCESS"));
+        let stored = String::from_utf8(prepared.body).unwrap();
+        assert!(
+            !stored.contains("DC32D403CE6BD2E54D4D213278DB286C"),
+            "{stored}"
+        );
+        assert!(!stored.contains("ivan.petrov@"), "{stored}");
+        let mulen = json!({"id": 777, "amount": 1500.5, "currency": "RUB", "uuid": "6a1c0c8e-3f4b-4d2a-9b7e-51c02d3e4f50", "payment_status": "success"}).to_string();
+        assert_eq!(
+            prepare(mulen.as_bytes(), None).event.as_deref(),
+            Some("success")
+        );
     }
 }

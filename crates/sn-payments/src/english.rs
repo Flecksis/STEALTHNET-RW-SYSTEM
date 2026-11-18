@@ -19,6 +19,8 @@ pub fn text(russian: &str) -> Option<&'static str> {
         "Из кошелька ЮMoney" => "From a YooMoney wallet",
         "Иностранная карта" => "Foreign card",
         "Карта" => "Card",
+        "Карта или СБП" => "Card or SBP",
+        "Карты, СБП, SberPay и T-Pay" => "Cards, SBP, SberPay and T-Pay",
         "Карты зарубежных банков" => "Cards from banks outside Russia",
         "Карты российских банков" => "Russian bank cards",
         "Карты российских банков и СБП" => "Russian bank cards and SBP",
