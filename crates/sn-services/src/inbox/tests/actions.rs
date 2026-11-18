@@ -38,6 +38,7 @@ async fn buy(
             &CheckoutRequest {
                 cart: cart(tariff, days, current),
                 provider: KASSA.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -524,6 +525,7 @@ async fn paid_undelivered_renewal(
             &CheckoutRequest {
                 cart: cart(tariff, 30, Some(current)),
                 provider: KASSA.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },

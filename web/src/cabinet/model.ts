@@ -65,6 +65,7 @@ export type Catalog = { currency: Currency; tariffs: TariffOffer[] };
 
 export type CheckoutMethod = {
   provider: string;
+  method: string | null;
   kind: 'external' | 'stars' | 'balance';
   title: string;
   hint: string;

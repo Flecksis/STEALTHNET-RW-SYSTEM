@@ -38,6 +38,7 @@ fn balance_purchase(tariff: &Tariff, days: u32) -> CheckoutRequest {
     CheckoutRequest {
         cart: cart(tariff, days, None),
         provider: providers::BALANCE.into(),
+        method: None,
         channel: Channel::Cabinet,
         return_url: None,
     }

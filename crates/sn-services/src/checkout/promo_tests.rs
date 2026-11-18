@@ -37,6 +37,7 @@ fn request(cart: CartRequest, provider: &str) -> CheckoutRequest {
     CheckoutRequest {
         cart,
         provider: provider.into(),
+        method: None,
         channel: Channel::Cabinet,
         return_url: None,
     }

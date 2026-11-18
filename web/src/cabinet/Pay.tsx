@@ -7,6 +7,7 @@ import { Card, useCabinet } from './CabinetApp';
 import { gb, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type TariffOffer } from './model';
 import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
 import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
+import { methodKey } from '../lib/methods';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
 
@@ -170,7 +171,7 @@ export function Pay() {
   }, [offer, periodOffer, devices, included, subscriptionId, promo]);
 
   const methods = quote?.methods ?? [];
-  const chosen = methods.find((m) => m.provider === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
+  const chosen = methods.find((m) => methodKey(m) === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
 
   useEffect(() => {
@@ -290,6 +291,7 @@ export function Pay() {
         body: {
           cart: { tariff_id: offer.tariff.id, period_id: periodOffer.period_id, extra_devices: Math.max(0, devices - included), subscription_id: subscriptionId, promo_code: promo },
           provider: chosen.provider,
+          method: chosen.method ?? undefined,
           return_url: `${window.location.origin}/cabinet/pay`,
         },
       });
@@ -459,7 +461,7 @@ export function Pay() {
             <div role="radiogroup" aria-label="Способ оплаты" className="cb-method-grid">
               {methods.map((m) => {
                 const off = !!m.unavailable;
-                const sel = chosen?.provider === m.provider;
+                const sel = chosen === m;
                 const hint =
                   m.unavailable?.type === 'insufficient_balance'
                     ? `Не хватает: на балансе ${priceOf(m.unavailable.balance)}`
@@ -472,13 +474,13 @@ export function Pay() {
                           : m.hint;
                 return (
                   <button
-                    key={m.provider}
+                    key={methodKey(m)}
                     type="button"
                     role="radio"
                     aria-checked={sel}
                     aria-disabled={off ? true : undefined}
                     className={off ? 'cb-method off' : 'cb-method'}
-                    onClick={() => !off && setMethod(m.provider)}
+                    onClick={() => !off && setMethod(methodKey(m))}
                   >
                     <span className="cb-radio" aria-hidden="true" />
                     <span className="cb-method-text">

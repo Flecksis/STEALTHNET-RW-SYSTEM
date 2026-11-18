@@ -11,8 +11,9 @@ use sn_store::Db;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TopUpMethod {
     pub provider: &'static str,
-    pub title: &'static str,
-    pub hint: &'static str,
+    pub method: Option<String>,
+    pub title: String,
+    pub hint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -31,9 +32,10 @@ impl Checkout<'_> {
         client_id: ClientId,
         amount: Money,
         provider: &str,
+        method: Option<&str>,
         channel: Channel,
     ) -> ServiceResult<CheckoutResult> {
-        self.topup_from(client_id, amount, provider, channel, None)
+        self.topup_from(client_id, amount, provider, method, channel, None)
             .await
     }
 
@@ -69,6 +71,7 @@ impl Checkout<'_> {
             .filter(|method| method.kind == ProviderKind::External && method.unavailable.is_none())
             .map(|method| TopUpMethod {
                 provider: method.provider,
+                method: method.method,
                 title: method.title,
                 hint: method.hint,
             })

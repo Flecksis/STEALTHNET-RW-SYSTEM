@@ -468,6 +468,8 @@ struct CheckoutBody {
     cart: CartRequest,
     provider: String,
     #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
     return_url: Option<String>,
 }
 
@@ -481,6 +483,7 @@ async fn checkout(
     let request = CheckoutRequest {
         cart: body.cart,
         provider: body.provider,
+        method: body.method,
         channel: channel(&client),
         return_url: body.return_url,
     };
@@ -513,6 +516,8 @@ struct ItemCheckoutBody {
     item: ItemRequest,
     provider: String,
     #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
     return_url: Option<String>,
 }
 
@@ -525,6 +530,7 @@ async fn item_checkout(
     let request = ItemCheckoutRequest {
         item: body.item,
         provider: body.provider,
+        method: body.method,
         channel: channel(&client),
         return_url: body.return_url,
     };
@@ -541,6 +547,8 @@ async fn item_checkout(
 struct TopUpBody {
     amount: String,
     provider: String,
+    #[serde(default)]
+    method: Option<String>,
     #[serde(default)]
     return_url: Option<String>,
 }
@@ -591,6 +599,7 @@ async fn topup(
                 client.0.client_id,
                 amount,
                 body.provider.trim(),
+                body.method.as_deref(),
                 channel(&client),
                 body.return_url,
             )

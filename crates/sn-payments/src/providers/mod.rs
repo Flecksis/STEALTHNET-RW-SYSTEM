@@ -103,6 +103,7 @@ mod tests {
                         enabled: true,
                         config: filled(p.id()),
                         channels: sn_domain::payment::PaymentChannels::ALL,
+                        methods: Vec::new(),
                     },
                 )
             })

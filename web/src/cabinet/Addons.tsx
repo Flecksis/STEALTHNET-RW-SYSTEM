@@ -8,6 +8,7 @@ import { stars } from './model';
 import { finished, type PaymentProgress } from './payments';
 import { SubSwitch, useSubs } from './SubSwitch';
 import { subName } from './subs';
+import { methodKey } from '../lib/methods';
 
 const ADDON_KEY = 'sn.cabinet.addon';
 
@@ -146,7 +147,7 @@ export function AddonsPage() {
   }, [subscriptionId, choiceKey]);
 
   const methods = quote?.methods ?? [];
-  const chosen = methods.find((m) => m.provider === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
+  const chosen = methods.find((m) => methodKey(m) === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
@@ -161,7 +162,7 @@ export function AddonsPage() {
     try {
       const res = await api<PayResult>('/api/client/items/checkout', {
         method: 'POST',
-        body: { item: addonItem(subscriptionId, choice), provider: chosen.provider, return_url: `${window.location.origin}/cabinet/addons` },
+        body: { item: addonItem(subscriptionId, choice), provider: chosen.provider, method: chosen.method ?? undefined, return_url: `${window.location.origin}/cabinet/addons` },
       });
       if (res.type === 'redirect') {
         try {
@@ -373,13 +374,13 @@ export function AddonsPage() {
                         : m.hint;
                 return (
                   <button
-                    key={m.provider}
+                    key={methodKey(m)}
                     type="button"
                     role="radio"
-                    aria-checked={chosen?.provider === m.provider}
+                    aria-checked={chosen === m}
                     aria-disabled={off ? true : undefined}
                     className={off ? 'cb-method off' : 'cb-method'}
-                    onClick={() => !off && setMethod(m.provider)}
+                    onClick={() => !off && setMethod(methodKey(m))}
                   >
                     <span className="cb-radio" aria-hidden="true" />
                     <span className="cb-method-text">

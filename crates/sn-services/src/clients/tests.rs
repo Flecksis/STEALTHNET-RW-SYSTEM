@@ -33,6 +33,7 @@ async fn open_invoice(kit: &Kit, subscription: &Subscription) -> (Order, Payment
             &CheckoutRequest {
                 cart: cart(&tariff, 30, None),
                 provider: TEST_PAY.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },

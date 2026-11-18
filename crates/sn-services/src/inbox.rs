@@ -180,6 +180,8 @@ pub struct RefundCommand {
     pub subscription_action: RefundSubscriptionAction,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub key: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1700,7 +1702,7 @@ impl<'a> PaymentInbox<'a> {
                             provider_txid: txid,
                             amount,
                             reason: command.reason.clone(),
-                            key: Uuid::new_v4(),
+                            key: command.key.unwrap_or_else(Uuid::new_v4),
                             email,
                             description: Some(description),
                         },

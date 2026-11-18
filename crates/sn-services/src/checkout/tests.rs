@@ -14,6 +14,7 @@ fn request(cart: CartRequest, provider: &str) -> CheckoutRequest {
     CheckoutRequest {
         cart,
         provider: provider.into(),
+        method: None,
         channel: Channel::Cabinet,
         return_url: Some(format!("{PUBLIC_URL}/cabinet/pay")),
     }
@@ -252,7 +253,7 @@ async fn пополнение_только_через_платёжные_сис�
     let amount = Money::new(1_000, Currency::Usd);
     assert_eq!(
         checkout
-            .topup(client_id, amount, providers::BALANCE, Channel::Bot)
+            .topup(client_id, amount, providers::BALANCE, None, Channel::Bot)
             .await
             .unwrap_err()
             .code(),
@@ -260,7 +261,7 @@ async fn пополнение_только_через_платёжные_сис�
     );
     assert_eq!(
         checkout
-            .topup(client_id, amount, providers::STARS, Channel::Bot)
+            .topup(client_id, amount, providers::STARS, None, Channel::Bot)
             .await
             .unwrap_err()
             .code(),
@@ -272,6 +273,7 @@ async fn пополнение_только_через_платёжные_сис�
                 client_id,
                 Money::new(1_000, Currency::Rub),
                 TEST_PAY,
+                None,
                 Channel::Bot
             )
             .await
@@ -285,6 +287,7 @@ async fn пополнение_только_через_платёжные_сис�
                 client_id,
                 Money::new(50, Currency::Usd),
                 TEST_PAY,
+                None,
                 Channel::Bot
             )
             .await
@@ -293,7 +296,7 @@ async fn пополнение_только_через_платёжные_сис�
         "balance.topup_out_of_range"
     );
     let result = checkout
-        .topup(client_id, amount, TEST_PAY, Channel::Bot)
+        .topup(client_id, amount, TEST_PAY, None, Channel::Bot)
         .await
         .unwrap();
     let CheckoutResult::Redirect { order_id, .. } = result else {
@@ -466,6 +469,7 @@ async fn товар_модуля_продаётся_и_выдаётся_моду
             &ItemCheckoutRequest {
                 item,
                 provider: providers::BALANCE.into(),
+                method: None,
                 channel: Channel::Miniapp,
                 return_url: None,
             },

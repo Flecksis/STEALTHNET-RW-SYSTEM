@@ -414,10 +414,13 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
                     c,
                     "buy.btn.method",
                     &[
-                        ("method", Text(method.title)),
+                        ("method", Text(&method.title)),
                         ("amount", Text(&text::amount(amount))),
                     ],
-                    format!("pay:{}", method.provider),
+                    format!(
+                        "pay:{}",
+                        pay_target(method.provider, method.method.as_deref())
+                    ),
                 ));
             }
             (Some(Unavailable::InsufficientBalance { balance, missing }), _) => {
@@ -527,7 +530,23 @@ pub(crate) async fn send_gram_widget(
     }
 }
 
-pub async fn pay(turn: &mut Turn<'_>, client: &Client, provider: &str) -> Result<Screen, BotError> {
+pub(crate) fn pay_target(provider: &str, method: Option<&str>) -> String {
+    match method {
+        Some(code) => format!("{provider}:{code}"),
+        None => provider.to_string(),
+    }
+}
+
+pub(crate) fn split_target(target: &str) -> (&str, Option<&str>) {
+    match target.split_once(':') {
+        Some((provider, code)) if !code.is_empty() => (provider, Some(code)),
+        Some((provider, _)) => (provider, None),
+        None => (target, None),
+    }
+}
+
+pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<Screen, BotError> {
+    let (provider, method) = split_target(target);
     let Some(cart) = turn.session.cart.clone() else {
         return start(turn, client, "").await;
     };
@@ -544,6 +563,7 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, provider: &str) -> Result
             &CheckoutRequest {
                 cart: cart_request,
                 provider: provider.to_string(),
+                method: method.map(str::to_string),
                 channel: Channel::Bot,
                 return_url: None,
             },

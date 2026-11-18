@@ -96,6 +96,7 @@ fn gram_request(tariff: &sn_domain::tariff::Tariff) -> CheckoutRequest {
     CheckoutRequest {
         cart: cart(tariff, 90, None),
         provider: providers::GRAM.into(),
+        method: None,
         channel: Channel::Bot,
         return_url: None,
     }

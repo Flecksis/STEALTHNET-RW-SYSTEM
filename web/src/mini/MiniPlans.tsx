@@ -5,6 +5,7 @@ import { gb, resetPlan, stars, transitionText, type Catalog, type Quote, type Ta
 import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
+import { methodKey } from '../lib/methods';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -125,7 +126,7 @@ export function MiniPlans() {
   }, [offer, periodOffer, devices, included, subscriptionId, promo]);
 
   const methods = quote?.methods ?? [];
-  const chosen = methods.find((m) => m.provider === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
+  const chosen = methods.find((m) => methodKey(m) === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
   const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
   const balanceShort = methods.find((m) => m.kind === 'balance' && m.unavailable?.type === 'insufficient_balance');
@@ -155,6 +156,7 @@ export function MiniPlans() {
         body: {
           cart: { tariff_id: offer.tariff.id, period_id: periodOffer.period_id, extra_devices: Math.max(0, devices - included), subscription_id: subscriptionId, promo_code: promo },
           provider: chosen.provider,
+          method: chosen.method ?? undefined,
         },
       });
       if (res.type === 'redirect') {
@@ -338,7 +340,7 @@ export function MiniPlans() {
         ) : null}
         <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
           {methods.map((m) => (
-            <button key={m.provider} type="button" role="radio" aria-checked={chosen?.provider === m.provider} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(m.provider)}>
+            <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
               {m.title}
             </button>
           ))}

@@ -5,6 +5,7 @@ import { money } from '../lib/format';
 import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from '../cabinet/payments';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
+import { methodKey } from '../lib/methods';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -103,7 +104,7 @@ export function MiniTopUp() {
           : null
       : null;
   const methods = options?.methods ?? [];
-  const chosen = methods.find((m) => m.provider === method) ?? methods[0] ?? null;
+  const chosen = methods.find((m) => methodKey(m) === method) ?? methods[0] ?? null;
   const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
   const sum = amount !== null && inRange ? money({ minor: amount, currency }) : null;
 
@@ -118,7 +119,7 @@ export function MiniTopUp() {
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/topup', {
         method: 'POST',
-        body: { amount: wireAmount(amount, currency), provider: chosen.provider },
+        body: { amount: wireAmount(amount, currency), provider: chosen.provider, method: chosen.method ?? undefined },
       });
       if (res.type !== 'redirect') {
         await reload();
@@ -219,7 +220,7 @@ export function MiniTopUp() {
           ) : null}
           <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
             {methods.map((m) => (
-              <button key={m.provider} type="button" role="radio" aria-checked={chosen?.provider === m.provider} className="mn-chip press" onClick={() => setMethod(m.provider)}>
+              <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" onClick={() => setMethod(methodKey(m))}>
                 {m.title}
               </button>
             ))}

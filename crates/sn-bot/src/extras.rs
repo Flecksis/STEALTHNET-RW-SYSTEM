@@ -733,10 +733,13 @@ async fn addon_summary(
                     c,
                     "buy.btn.method",
                     &[
-                        ("method", Text(method.title)),
+                        ("method", Text(&method.title)),
                         ("amount", Text(&text::amount(amount))),
                     ],
-                    format!("op:{subscription_id}:{code}:{}", method.provider),
+                    format!(
+                        "op:{subscription_id}:{code}:{}",
+                        crate::buy::pay_target(method.provider, method.method.as_deref())
+                    ),
                 ));
             }
             (Some(Unavailable::InsufficientBalance { balance, missing }), _) => {
@@ -818,7 +821,7 @@ pub async fn options_pay(
         (Some(kind), Some(arg)) => Addon::parse(kind, arg),
         _ => None,
     };
-    let provider = parts.next().unwrap_or("");
+    let (provider, method) = crate::buy::split_target(parts.next().unwrap_or(""));
     let (Some(sub), Some(addon)) = (sub, addon) else {
         return options_start(turn, client).await;
     };
@@ -834,6 +837,7 @@ pub async fn options_pay(
             &ItemCheckoutRequest {
                 item: addon.item(sub),
                 provider: provider.to_string(),
+                method: method.map(str::to_string),
                 channel: Channel::Bot,
                 return_url: None,
             },

@@ -12,6 +12,7 @@ async fn paid_not_delivered(kit: &Kit, telegram_id: i64) -> (Payment, Order) {
             &CheckoutRequest {
                 cart: cart(&tariff, 90, None),
                 provider: KASSA.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },

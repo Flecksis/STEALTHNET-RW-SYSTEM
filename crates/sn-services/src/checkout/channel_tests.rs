@@ -67,6 +67,7 @@ async fn способ_оплаты_выключенный_в_канале_нел
     let request = |channel: Channel| CheckoutRequest {
         cart: cart.clone(),
         provider: TEST_PAY.into(),
+        method: None,
         channel,
         return_url: None,
     };
@@ -107,7 +108,7 @@ async fn способ_оплаты_выключенный_в_канале_нел
     assert_eq!(
         code(
             checkout
-                .topup(client_id, amount, TEST_PAY, Channel::Bot)
+                .topup(client_id, amount, TEST_PAY, None, Channel::Bot)
                 .await
                 .unwrap_err()
         ),
@@ -115,7 +116,7 @@ async fn способ_оплаты_выключенный_в_канале_нел
     );
     assert!(
         checkout
-            .topup(client_id, amount, TEST_PAY, Channel::Cabinet)
+            .topup(client_id, amount, TEST_PAY, None, Channel::Cabinet)
             .await
             .is_ok()
     );

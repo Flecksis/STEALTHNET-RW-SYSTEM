@@ -39,6 +39,8 @@ mod channel_tests;
 #[cfg(test)]
 mod gram_tests;
 #[cfg(test)]
+mod method_tests;
+#[cfg(test)]
 mod pool_tests;
 #[cfg(test)]
 mod promo_tests;
@@ -91,6 +93,8 @@ impl Channel {
 pub struct CheckoutRequest {
     pub cart: CartRequest,
     pub provider: String,
+    #[serde(default)]
+    pub method: Option<String>,
     pub channel: Channel,
     #[serde(default)]
     pub return_url: Option<String>,
@@ -171,6 +175,8 @@ pub struct ItemRequest {
 pub struct ItemCheckoutRequest {
     pub item: ItemRequest,
     pub provider: String,
+    #[serde(default)]
+    pub method: Option<String>,
     pub channel: Channel,
     #[serde(default)]
     pub return_url: Option<String>,
@@ -182,9 +188,15 @@ pub struct ItemQuoteView {
     pub methods: Vec<CheckoutMethod>,
 }
 
+struct PayWith {
+    provider: Arc<dyn PaymentProvider>,
+    method: Option<String>,
+}
+
 struct Sale<'s> {
     order: &'s NewOrder,
     provider: &'s str,
+    method: Option<String>,
     kind: ProviderKind,
     amount: Amount,
     description: String,
@@ -416,11 +428,13 @@ pub const GRAM_WIDGET_TEMPLATE: &str = "gram.widget";
 fn pick_method(
     methods: &[CheckoutMethod],
     provider: &str,
+    code: Option<&str>,
     balance_on: bool,
-) -> ServiceResult<(ProviderKind, Amount)> {
+) -> ServiceResult<(ProviderKind, Amount, Option<String>)> {
+    let code = code.map(str::trim).filter(|c| !c.is_empty());
     let method = methods
         .iter()
-        .find(|m| m.provider == provider)
+        .find(|m| m.provider == provider && (code.is_none() || m.method.as_deref() == code))
         .ok_or_else(|| {
             if provider == providers::BALANCE && !balance_on {
                 ServiceError::rejected(
@@ -451,7 +465,7 @@ fn pick_method(
             "Этот способ оплаты сейчас недоступен",
         )
     })?;
-    Ok((method.kind, amount))
+    Ok((method.kind, amount, method.method.clone()))
 }
 
 fn trusted_return_url(url: &str, public_url: Option<&str>) -> bool {
@@ -807,9 +821,10 @@ impl<'a> Checkout<'a> {
                 request.channel.client(),
             )
             .await?;
-        let (kind, amount) = pick_method(
+        let (kind, amount, method) = pick_method(
             &prepared.methods,
             &request.provider,
+            request.method.as_deref(),
             self.services.payments().balance_enabled(),
         )?;
         let period = prepared
@@ -836,6 +851,7 @@ impl<'a> Checkout<'a> {
             Sale {
                 order: &order,
                 provider: &request.provider,
+                method,
                 kind,
                 amount,
                 description,
@@ -931,6 +947,7 @@ impl<'a> Checkout<'a> {
         client_id: ClientId,
         amount: Money,
         provider: &str,
+        method: Option<&str>,
         channel: Channel,
         return_url: Option<String>,
     ) -> ServiceResult<CheckoutResult> {
@@ -951,15 +968,24 @@ impl<'a> Checkout<'a> {
             return Err(ServiceError::Forbidden);
         }
         let registry = self.services.payments();
-        let provider = registry
-            .get(provider)
-            .filter(|p| {
-                p.kind() == ProviderKind::External
-                    && registry.is_available(p.id(), amount.currency)
-                    && channel
-                        .client()
-                        .is_none_or(|channel| registry.allowed_in(p.id(), channel))
+        let code = method.map(str::trim).filter(|c| !c.is_empty());
+        let chosen = registry
+            .checkout_methods(&MethodsContext {
+                currency: amount.currency,
+                total: amount,
+                stars_total: None,
+                balance: None,
+                channel: channel.client(),
             })
+            .into_iter()
+            .find(|m| {
+                m.kind == ProviderKind::External
+                    && m.unavailable.is_none()
+                    && m.provider == provider
+                    && (code.is_none() || m.method.as_deref() == code)
+            });
+        let (provider, method) = chosen
+            .and_then(|m| registry.get(m.provider).map(|p| (p, m.method)))
             .ok_or_else(|| {
                 ServiceError::rejected(
                     "checkout.method_unavailable",
@@ -978,7 +1004,7 @@ impl<'a> Checkout<'a> {
         self.invoice(
             &client,
             &order,
-            provider,
+            PayWith { provider, method },
             amount.into(),
             description,
             return_url,
@@ -1146,9 +1172,10 @@ impl<'a> Checkout<'a> {
         let (client, quote, methods) = self
             .prepare_item(client_id, &request.item, request.channel.client())
             .await?;
-        let (kind, amount) = pick_method(
+        let (kind, amount, method) = pick_method(
             &methods,
             &request.provider,
+            request.method.as_deref(),
             self.services.payments().balance_enabled(),
         )?;
         let order = NewOrder {
@@ -1169,6 +1196,7 @@ impl<'a> Checkout<'a> {
             Sale {
                 order: &order,
                 provider: &request.provider,
+                method,
                 kind,
                 amount,
                 description,
@@ -1228,7 +1256,10 @@ impl<'a> Checkout<'a> {
                 self.invoice(
                     client,
                     sale.order,
-                    provider,
+                    PayWith {
+                        provider,
+                        method: sale.method,
+                    },
                     sale.amount,
                     sale.description,
                     sale.return_url,
@@ -1242,11 +1273,12 @@ impl<'a> Checkout<'a> {
         &self,
         client: &Client,
         order: &NewOrder,
-        provider: Arc<dyn PaymentProvider>,
+        pay_with: PayWith,
         amount: Amount,
         description: String,
         return_url: Option<String>,
     ) -> ServiceResult<CheckoutResult> {
+        let PayWith { provider, method } = pay_with;
         let settings = self.services.settings();
         let public_url = settings
             .public_url
@@ -1283,6 +1315,9 @@ impl<'a> Checkout<'a> {
                 expires_at: Some(now + ttl),
             })
             .await?;
+        if let Some(code) = method.as_deref() {
+            tx.payments().set_pay_method(payment.id, code).await?;
+        }
         modules
             .order_created(&ctx, &mut tx, &created, &payment)
             .await?;
@@ -1322,7 +1357,7 @@ impl<'a> Checkout<'a> {
                     created.kind,
                     OrderKind::New | OrderKind::Renewal | OrderKind::Change
                 ),
-            method: None,
+            method,
         };
         let config = self.services.payments().config(provider.id());
         match provider.create_invoice(&config, &request).await {

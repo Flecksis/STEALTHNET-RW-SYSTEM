@@ -26,6 +26,15 @@ const fn shown() -> bool {
     true
 }
 
+pub const METHOD_TITLE_MAX: usize = 40;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodChoice {
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PaymentChannels {
     #[serde(default = "shown")]
@@ -172,6 +181,7 @@ pub struct Payment {
     pub client_id: ClientId,
     pub provider: ProviderId,
     pub method: Option<String>,
+    pub pay_method: Option<String>,
     pub amount: Amount,
     pub status: PaymentStatus,
     pub provider_txid: Option<String>,

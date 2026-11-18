@@ -277,6 +277,7 @@ fn refund_command(
         method: RefundMethod::Provider,
         subscription_action: action,
         reason: reason.map(str::to_string),
+        key: None,
     }
 }
 
@@ -293,6 +294,7 @@ async fn kassa_topup(kit: &Kit, client_id: ClientId, minor: i64) -> Payment {
             client_id,
             Money::new(minor, Currency::Usd),
             KASSA,
+            None,
             Channel::Cabinet,
         )
         .await
@@ -513,6 +515,7 @@ async fn invoice(kit: &Kit, client_id: ClientId, tariff: &Tariff) -> Payment {
             &CheckoutRequest {
                 cart: cart(tariff, 90, None),
                 provider: TEST_PAY.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -534,6 +537,7 @@ async fn topup(kit: &Kit, client_id: ClientId, minor: i64) -> Payment {
             client_id,
             Money::new(minor, Currency::Usd),
             TEST_PAY,
+            None,
             Channel::Bot,
         )
         .await
@@ -948,6 +952,7 @@ async fn админ_возвращает_покупку_на_баланс_или
         method: RefundMethod::Balance,
         subscription_action: RefundSubscriptionAction::Keep,
         reason: Some("Клиент передумал".into()),
+        key: None,
     };
     let refunded = inbox
         .refund(balance_payment.id, &to_balance, admin)
@@ -981,6 +986,7 @@ async fn админ_возвращает_покупку_на_баланс_или
                 method: RefundMethod::Provider,
                 subscription_action: RefundSubscriptionAction::Keep,
                 reason: None,
+                key: None,
             },
             admin,
         )
@@ -1408,6 +1414,7 @@ async fn возврат_без_подтверждения_кассы_ждёт_и
         method: RefundMethod::Provider,
         subscription_action: RefundSubscriptionAction::Keep,
         reason: Some("Клиент передумал".into()),
+        key: None,
     };
     let requested = inbox.refund(topped.id, &command, admin).await.unwrap();
     assert_eq!(kassa.refunds.lock().unwrap().len(), 1);
@@ -1559,6 +1566,7 @@ async fn оплата_счёта_выставленного_до_выключе�
             &CheckoutRequest {
                 cart: cart(&tariff, 90, None),
                 provider: providers::CRYPTOPAY.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -1616,6 +1624,7 @@ async fn подтверждение_возврата_после_выключен
                 client_id,
                 Money::new(500, Currency::Usd),
                 KASSA,
+                None,
                 Channel::Cabinet,
             )
             .await
@@ -2052,6 +2061,7 @@ async fn отключение_подписки_при_возврате_ждёт_
             &CheckoutRequest {
                 cart: cart(&tariff, 90, None),
                 provider: KASSA.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -2145,6 +2155,7 @@ async fn возврат_с_отключением_уже_отключённой_
             &CheckoutRequest {
                 cart: cart(&tariff, 30, None),
                 provider: KASSA.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -2334,6 +2345,7 @@ async fn возврат_повторной_оплаты_сторнирует_б�
         method: RefundMethod::Balance,
         subscription_action: RefundSubscriptionAction::Keep,
         reason: None,
+        key: None,
     };
     assert_eq!(
         inbox

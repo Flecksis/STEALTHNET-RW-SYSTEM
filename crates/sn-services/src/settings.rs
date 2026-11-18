@@ -10,7 +10,7 @@ use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
-use sn_domain::payment::{PaymentChannels, providers};
+use sn_domain::payment::{METHOD_TITLE_MAX, MethodChoice, PaymentChannels, providers};
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
     ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, SupportMode,
@@ -19,7 +19,8 @@ use sn_domain::settings::{
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
 use sn_payments::{
-    ProviderConfig, ProviderKind, ProviderRegistry, ProviderState, ProviderView, RegistrySnapshot,
+    PaymentProvider, ProviderConfig, ProviderKind, ProviderRegistry, ProviderState, ProviderView,
+    RegistrySnapshot,
 };
 use sn_remnawave::{
     CustomRemarks, HwidSettings, RemnaConfig, RemnawaveApi, RemnawaveClient, SubscriptionSettings,
@@ -42,6 +43,8 @@ pub struct ProviderSettings {
     pub config: serde_json::Map<String, Value>,
     #[serde(default)]
     pub channels: PaymentChannels,
+    #[serde(default)]
+    pub methods: Vec<MethodChoice>,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(key: &str, value: Value) -> Option<T> {
@@ -225,6 +228,47 @@ pub async fn remna_connection(
     })
 }
 
+pub fn clean_methods(
+    provider: &dyn PaymentProvider,
+    methods: &[MethodChoice],
+    currency: Currency,
+) -> ServiceResult<Vec<MethodChoice>> {
+    let available = provider.methods(currency);
+    let mut cleaned: Vec<MethodChoice> = Vec::new();
+    for choice in methods {
+        let code = choice.code.trim();
+        if !available.iter().any(|m| m.code == code) {
+            return Err(ServiceError::rejected(
+                "settings.method_unknown",
+                format!("У {} нет способа оплаты «{code}»", provider.title()),
+            ));
+        }
+        if cleaned.iter().any(|c| c.code == code) {
+            continue;
+        }
+        let title = choice
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        if title
+            .as_deref()
+            .is_some_and(|t| t.chars().count() > METHOD_TITLE_MAX)
+        {
+            return Err(ServiceError::rejected(
+                "settings.method_title",
+                format!("Название способа оплаты — не длиннее {METHOD_TITLE_MAX} символов"),
+            ));
+        }
+        cleaned.push(MethodChoice {
+            code: code.to_string(),
+            title,
+        });
+    }
+    Ok(cleaned)
+}
+
 pub async fn registry_snapshot(
     db: &mut impl Db,
     secrets: Option<&SecretBox>,
@@ -262,6 +306,7 @@ pub async fn registry_snapshot(
                     .unwrap_or_else(|| provider.enabled_by_default()),
                 config,
                 channels: stored.channels,
+                methods: stored.methods,
             },
         );
     }
@@ -530,6 +575,8 @@ pub struct ProviderUpdate {
     pub clear: Vec<String>,
     #[serde(default)]
     pub channels: Option<PaymentChannels>,
+    #[serde(default)]
+    pub methods: Option<Vec<MethodChoice>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1284,6 +1331,13 @@ impl<'a> SettingsOps<'a> {
         if let Some(channels) = update.channels {
             stored.channels = channels;
         }
+        if let Some(methods) = &update.methods {
+            stored.methods = clean_methods(
+                provider.as_ref(),
+                methods,
+                self.services.settings().currency,
+            )?;
+        }
         let secrets = self.services.secrets();
         let mut merged = stored.config.clone();
         for field in schema.iter().filter(|f| f.is_secret()) {
@@ -1370,6 +1424,7 @@ impl<'a> SettingsOps<'a> {
                     "provider": id,
                     "enabled": stored.enabled,
                     "channels": update.channels,
+                    "methods": update.methods,
                     "fields": update.config.keys().collect::<Vec<_>>(),
                     "secrets": changed_secrets,
                 }),

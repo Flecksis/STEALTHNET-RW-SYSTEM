@@ -18,9 +18,9 @@ use sn_domain::traffic::TrafficPolicy;
 use sn_modules::{BalanceChange, CoreApi, Module, ModuleRegistry};
 use sn_payments::providers::{Balance, CryptoPay};
 use sn_payments::{
-    ClientLabel, Invoice, InvoiceRequest, PaymentError, PaymentProvider, PaymentRef, PaymentResult,
-    ProviderConfig, ProviderRegistry, ProviderStatus, RefundOutcome, RefundRequest, WebhookOutcome,
-    WebhookReply, WebhookRequest,
+    ClientLabel, Invoice, InvoiceRequest, PayMethod, PaymentError, PaymentProvider, PaymentRef,
+    PaymentResult, ProviderConfig, ProviderRegistry, ProviderStatus, RefundOutcome, RefundRequest,
+    WebhookOutcome, WebhookReply, WebhookRequest,
 };
 use sn_remnawave::fake::FakeRemnawave;
 use sn_remnawave::{InternalSquad, RemnaUser, SquadInfo};
@@ -70,6 +70,14 @@ impl PaymentProvider for TestPay {
             title: "Банковская карта",
             hint: "Тестовая касса",
         }
+    }
+
+    fn methods(&self, _currency: Currency) -> Vec<PayMethod> {
+        vec![
+            PayMethod::new("sbp", "СБП", "Через приложение банка"),
+            PayMethod::new("card", "Карта", "Visa, Mastercard, МИР"),
+            PayMethod::new("loan", "Рассрочка", "От 30 долларов").min_minor(3_000),
+        ]
     }
 
     fn enabled_by_default(&self) -> bool {
@@ -393,6 +401,7 @@ pub(crate) async fn buy_with_balance(
             &CheckoutRequest {
                 cart,
                 provider: providers::BALANCE.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },

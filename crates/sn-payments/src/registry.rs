@@ -1,8 +1,8 @@
-use crate::provider::{PaymentProvider, ProviderConfig, ProviderIssue, ProviderKind};
+use crate::provider::{PayMethod, PaymentProvider, ProviderConfig, ProviderIssue, ProviderKind};
 use serde::Serialize;
 use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
-use sn_domain::payment::PaymentChannels;
+use sn_domain::payment::{MethodChoice, PaymentChannels};
 use sn_domain::pricing::{BalanceCheck, balance_check};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -12,6 +12,7 @@ pub struct ProviderState {
     pub enabled: bool,
     pub config: ProviderConfig,
     pub channels: PaymentChannels,
+    pub methods: Vec<MethodChoice>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -40,11 +41,64 @@ pub enum Unavailable {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CheckoutMethod {
     pub provider: &'static str,
+    pub method: Option<String>,
     pub kind: ProviderKind,
-    pub title: &'static str,
-    pub hint: &'static str,
+    pub title: String,
+    pub hint: String,
     pub amount: Option<Amount>,
     pub unavailable: Option<Unavailable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MethodView {
+    pub code: &'static str,
+    pub title: &'static str,
+    pub hint: &'static str,
+    pub min_minor: Option<i64>,
+    pub enabled: bool,
+    pub custom_title: Option<String>,
+}
+
+fn chosen_methods(
+    provider: &dyn PaymentProvider,
+    choices: &[MethodChoice],
+    currency: Currency,
+) -> Vec<(PayMethod, Option<String>)> {
+    let available = provider.methods(currency);
+    choices
+        .iter()
+        .filter_map(|choice| {
+            available
+                .iter()
+                .find(|m| m.code == choice.code)
+                .map(|m| (*m, choice.title.clone()))
+        })
+        .collect()
+}
+
+fn method_views(
+    provider: &dyn PaymentProvider,
+    choices: &[MethodChoice],
+    currency: Currency,
+) -> Vec<MethodView> {
+    let view = |m: &PayMethod, enabled: bool, custom_title: Option<String>| MethodView {
+        code: m.code,
+        title: m.title,
+        hint: m.hint,
+        min_minor: m.min_minor,
+        enabled,
+        custom_title,
+    };
+    let mut views: Vec<MethodView> = chosen_methods(provider, choices, currency)
+        .iter()
+        .map(|(m, title)| view(m, true, title.clone()))
+        .collect();
+    for m in provider.methods(currency) {
+        if !views.iter().any(|v| v.code == m.code) {
+            views.push(view(&m, false, None));
+        }
+    }
+    views
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -60,6 +114,7 @@ pub struct ProviderView {
     pub channels: PaymentChannels,
     pub settings: serde_json::Map<String, serde_json::Value>,
     pub issue: Option<ProviderIssue>,
+    pub methods: Vec<MethodView>,
 }
 
 pub struct ProviderRegistry {
@@ -78,6 +133,7 @@ impl ProviderRegistry {
                         enabled: p.enabled_by_default(),
                         config: ProviderConfig::default(),
                         channels: PaymentChannels::ALL,
+                        methods: Vec::new(),
                     },
                 )
             })
@@ -193,6 +249,7 @@ impl ProviderRegistry {
                     channels: state.channels,
                     settings: state.config.public_view(&p.settings_schema()),
                     issue: p.issue(),
+                    methods: method_views(p.as_ref(), &state.methods, snapshot.currency),
                 }
             })
             .collect()
@@ -232,7 +289,33 @@ impl ProviderRegistry {
             }
             let label = provider.client_label(ctx.currency);
             let (amount, unavailable) = match provider.kind() {
-                ProviderKind::External => (Some(ctx.total.into()), None),
+                ProviderKind::External => {
+                    let choices = snapshot
+                        .states
+                        .get(id)
+                        .map(|state| state.methods.as_slice())
+                        .unwrap_or_default();
+                    let chosen = chosen_methods(provider.as_ref(), choices, ctx.currency);
+                    if chosen.is_empty() {
+                        (Some(ctx.total.into()), None)
+                    } else {
+                        for (method, title) in chosen {
+                            if method.min_minor.is_some_and(|min| ctx.total.minor < min) {
+                                continue;
+                            }
+                            methods.push(CheckoutMethod {
+                                provider: provider.id(),
+                                method: Some(method.code.to_string()),
+                                kind: ProviderKind::External,
+                                title: title.unwrap_or_else(|| method.title.to_string()),
+                                hint: method.hint.to_string(),
+                                amount: Some(ctx.total.into()),
+                                unavailable: None,
+                            });
+                        }
+                        continue;
+                    }
+                }
                 ProviderKind::Stars => match ctx.stars_total {
                     Some(stars) => (Some(stars.into()), None),
                     None => (None, Some(Unavailable::NoStarsPrice)),
@@ -251,9 +334,10 @@ impl ProviderRegistry {
                     };
                     balance_method = Some(CheckoutMethod {
                         provider: provider.id(),
+                        method: None,
                         kind: ProviderKind::Balance,
-                        title: label.title,
-                        hint: label.hint,
+                        title: label.title.to_string(),
+                        hint: label.hint.to_string(),
                         amount: Some(ctx.total.into()),
                         unavailable,
                     });
@@ -262,9 +346,10 @@ impl ProviderRegistry {
             };
             methods.push(CheckoutMethod {
                 provider: provider.id(),
+                method: None,
                 kind: provider.kind(),
-                title: label.title,
-                hint: label.hint,
+                title: label.title.to_string(),
+                hint: label.hint.to_string(),
                 amount,
                 unavailable,
             });
@@ -313,6 +398,17 @@ mod tests {
             ClientLabel {
                 title: self.id,
                 hint: "",
+            }
+        }
+
+        fn methods(&self, currency: Currency) -> Vec<PayMethod> {
+            if self.id == providers::PLATEGA && currency == Currency::Rub {
+                vec![
+                    PayMethod::new("sbp", "СБП", "Через приложение банка"),
+                    PayMethod::new("card", "Карта", "От 1000 рублей").min_minor(100_000),
+                ]
+            } else {
+                Vec::new()
             }
         }
 
@@ -413,6 +509,7 @@ mod tests {
                         enabled,
                         config: ProviderConfig::default(),
                         channels: sn_domain::payment::PaymentChannels::ALL,
+                        methods: Vec::new(),
                     },
                 )
             })
@@ -423,6 +520,79 @@ mod tests {
             order: PaymentOrder::default().for_currency(currency).to_vec(),
         });
         registry
+    }
+
+    #[test]
+    fn способы_платёжки_становятся_кнопками_а_чужие_коды_возвращают_одну_кнопку() {
+        let registry = registry(Currency::Rub);
+        let mut snapshot = (*registry.snapshot()).clone();
+        let choose = |snapshot: &mut RegistrySnapshot, methods: Vec<MethodChoice>| {
+            if let Some(state) = snapshot.states.get_mut(providers::PLATEGA) {
+                state.methods = methods;
+            }
+        };
+        choose(
+            &mut snapshot,
+            vec![
+                MethodChoice {
+                    code: "card".into(),
+                    title: Some("Карта МИР".into()),
+                },
+                MethodChoice {
+                    code: "sbp".into(),
+                    title: None,
+                },
+            ],
+        );
+        registry.apply(snapshot.clone());
+        let platega = |minor: i64| -> Vec<(Option<String>, String)> {
+            registry
+                .checkout_methods(&MethodsContext {
+                    currency: Currency::Rub,
+                    total: Money::new(minor, Currency::Rub),
+                    stars_total: None,
+                    balance: None,
+                    channel: None,
+                })
+                .into_iter()
+                .filter(|m| m.provider == providers::PLATEGA)
+                .map(|m| (m.method, m.title))
+                .collect()
+        };
+        assert_eq!(
+            platega(150_000),
+            vec![
+                (Some("card".to_string()), "Карта МИР".to_string()),
+                (Some("sbp".to_string()), "СБП".to_string())
+            ]
+        );
+        assert_eq!(
+            platega(50_000),
+            vec![(Some("sbp".to_string()), "СБП".to_string())]
+        );
+        let view = registry
+            .views()
+            .into_iter()
+            .find(|v| v.id == providers::PLATEGA)
+            .unwrap();
+        let listed: Vec<(&str, bool, Option<&str>)> = view
+            .methods
+            .iter()
+            .map(|m| (m.code, m.enabled, m.custom_title.as_deref()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("card", true, Some("Карта МИР")), ("sbp", true, None)]
+        );
+        choose(
+            &mut snapshot,
+            vec![MethodChoice {
+                code: "paypal".into(),
+                title: None,
+            }],
+        );
+        registry.apply(snapshot);
+        assert_eq!(platega(150_000), vec![(None, "platega".to_string())]);
     }
 
     #[test]
@@ -642,6 +812,7 @@ mod tests {
                                 enabled: enabled.contains(&p.id()),
                                 config: configured(p.id()),
                                 channels: sn_domain::payment::PaymentChannels::ALL,
+                                methods: Vec::new(),
                             },
                         )
                     })

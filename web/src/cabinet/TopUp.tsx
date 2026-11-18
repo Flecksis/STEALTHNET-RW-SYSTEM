@@ -5,6 +5,7 @@ import { money } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { Card, useCabinet } from './CabinetApp';
 import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from './payments';
+import { methodKey } from '../lib/methods';
 
 const TOPUP_KEY = 'sn.cabinet.topup';
 
@@ -119,7 +120,7 @@ export function TopUpPage() {
           : null
       : null;
   const methods = useMemo(() => options?.methods ?? [], [options]);
-  const chosen = methods.find((m) => m.provider === method) ?? methods[0] ?? null;
+  const chosen = methods.find((m) => methodKey(m) === method) ?? methods[0] ?? null;
   const sum = amount !== null && inRange ? money({ minor: amount, currency }) : null;
   const after = amount !== null && inRange ? money({ minor: me.balance.minor + amount, currency }) : null;
 
@@ -132,7 +133,7 @@ export function TopUpPage() {
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/topup', {
         method: 'POST',
-        body: { amount: wireAmount(amount, currency), provider: chosen.provider, return_url: `${window.location.origin}/cabinet/topup` },
+        body: { amount: wireAmount(amount, currency), provider: chosen.provider, method: chosen.method ?? undefined, return_url: `${window.location.origin}/cabinet/topup` },
       });
       if (res.type === 'redirect') {
         try {
@@ -282,7 +283,7 @@ export function TopUpPage() {
             {methods.length === 0 ? <p className="cb-muted">Способов пополнения пока нет. Напишите в поддержку — подскажем, как пополнить баланс.</p> : null}
             <div role="radiogroup" aria-label="Способ оплаты" className="cb-method-grid">
               {methods.map((m) => (
-                <button key={m.provider} type="button" role="radio" aria-checked={chosen?.provider === m.provider} className="cb-method" onClick={() => setMethod(m.provider)}>
+                <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="cb-method" onClick={() => setMethod(methodKey(m))}>
                   <span className="cb-radio" aria-hidden="true" />
                   <span className="cb-method-text">
                     <strong>{m.title}</strong>

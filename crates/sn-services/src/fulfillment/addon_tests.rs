@@ -111,6 +111,7 @@ async fn buy_item(kit: &Kit, client_id: ClientId, item: ItemRequest) -> Order {
             &ItemCheckoutRequest {
                 item,
                 provider: providers::BALANCE.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },

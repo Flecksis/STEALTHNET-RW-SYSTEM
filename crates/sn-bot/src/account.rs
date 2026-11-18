@@ -509,14 +509,25 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
     turn.session.topup_minor = Some(minor);
     let mut keyboard = Keyboard::new();
     for method in methods {
-        let data = format!("tp:{}", method.provider);
+        let data = format!(
+            "tp:{}",
+            crate::buy::pay_target(method.provider, method.method.as_deref())
+        );
         keyboard = keyboard.push(if method.hint.is_empty() {
-            ui::button(c, "bal.btn.method", &[("method", Text(method.title))], data)
+            ui::button(
+                c,
+                "bal.btn.method",
+                &[("method", Text(&method.title))],
+                data,
+            )
         } else {
             ui::button(
                 c,
                 "bal.btn.method_hint",
-                &[("method", Text(method.title)), ("hint", Text(method.hint))],
+                &[
+                    ("method", Text(&method.title)),
+                    ("hint", Text(&method.hint)),
+                ],
                 data,
             )
         });
@@ -571,8 +582,9 @@ pub async fn topup_entered(turn: &mut Turn<'_>, raw: &str) -> Result<Screen, Bot
 pub async fn topup_start(
     turn: &mut Turn<'_>,
     client: &Client,
-    provider: &str,
+    target: &str,
 ) -> Result<Screen, BotError> {
+    let (provider, method) = crate::buy::split_target(target);
     let Some(minor) = turn.session.topup_minor else {
         return balance(turn, client).await;
     };
@@ -581,7 +593,7 @@ pub async fn topup_start(
     let amount = Money::new(minor, services.settings().currency);
     match services
         .checkout()
-        .topup(client.id, amount, provider, Channel::Bot)
+        .topup(client.id, amount, provider, method, Channel::Bot)
         .await
     {
         Ok(result) => {

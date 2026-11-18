@@ -13,6 +13,22 @@ import { SettingsLayout } from './SettingsLayout';
 
 type Channels = { cabinet: boolean; bot: boolean; miniapp: boolean };
 
+type MethodView = { code: string; title: string; hint: string; min_minor: number | null; enabled: boolean; custom_title: string | null };
+
+type MethodRow = { code: string; title: string; hint: string; min_minor: number | null; on: boolean; custom: string };
+
+function methodRows(views: MethodView[] | undefined): MethodRow[] {
+  return (views ?? []).map((m) => ({ code: m.code, title: m.title, hint: m.hint, min_minor: m.min_minor, on: m.enabled, custom: m.custom_title ?? '' }));
+}
+
+function chosenMethods(rows: MethodRow[]): Array<{ code: string; title: string | null }> {
+  return rows.filter((r) => r.on).map((r) => ({ code: r.code, title: r.custom.trim() || null }));
+}
+
+function settle(rows: MethodRow[]): MethodRow[] {
+  return [...rows.filter((r) => r.on), ...rows.filter((r) => !r.on)];
+}
+
 type Provider = {
   id: string;
   title: string;
@@ -25,6 +41,7 @@ type Provider = {
   channels?: Channels;
   settings: Record<string, unknown>;
   issue?: { at: string; message: string } | null;
+  methods?: MethodView[];
 };
 
 function issueTime(iso: string): string {
@@ -280,6 +297,11 @@ export function SettingsPayments() {
     );
   };
 
+  const methodLine = (p: Provider) => {
+    const on = (p.methods ?? []).filter((m) => m.enabled);
+    return on.length ? <p className="pay-mline muted">Кнопки у клиента: {on.map((m) => m.custom_title || m.title).join(' · ')}</p> : null;
+  };
+
   const balance = providers.find((p) => p.kind === 'balance');
   const balanceOn = balance ? work.shown[balance.id] === true : true;
 
@@ -337,13 +359,14 @@ export function SettingsPayments() {
                 </button>
               </div>
               {channelLine(p.id, p.title)}
+              {methodLine(p)}
               {p.issue ? (
                 <p className="pay-issue" role="status">
                   <span className="pay-issue-at">Проверка оплат, {issueTime(p.issue.at)}</span>
                   {p.issue.message}
                 </p>
               ) : null}
-              {setup === p.id ? <ProviderSetup provider={p} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
+              {setup === p.id ? <ProviderSetup provider={p} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
             </Fragment>
           );
         })}
@@ -509,9 +532,9 @@ export function SettingsPayments() {
   );
 }
 
-type SetupProps = { provider: Provider; publicUrl: string | null; onClose: () => void; onSaved: (provider: Provider) => void };
+type SetupProps = { provider: Provider; currency: Currency; publicUrl: string | null; onClose: () => void; onSaved: (provider: Provider) => void };
 
-function ProviderSetup({ provider, publicUrl, onClose, onSaved }: SetupProps) {
+function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: SetupProps) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [values, setValues] = useState<FieldValues>({});
@@ -519,6 +542,8 @@ function ProviderSetup({ provider, publicUrl, onClose, onSaved }: SetupProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [rows, setRows] = useState<MethodRow[]>([]);
+  const [savedRows, setSavedRows] = useState('[]');
 
   useEffect(() => {
     api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
@@ -526,6 +551,9 @@ function ProviderSetup({ provider, publicUrl, onClose, onSaved }: SetupProps) {
         setSchema(d.schema);
         setConfig(d.provider.settings);
         setValues(initialValues(d.schema, d.provider.settings));
+        const loaded = settle(methodRows(d.provider.methods));
+        setRows(loaded);
+        setSavedRows(JSON.stringify(chosenMethods(loaded)));
       })
       .catch((err) => setError(failText(err, 'Настройки системы не загрузились')));
   }, [provider.id]);
@@ -545,6 +573,24 @@ function ProviderSetup({ provider, publicUrl, onClose, onSaved }: SetupProps) {
     }
   };
 
+  const toggle = (code: string) => setRows((list) => settle(list.map((r) => (r.code === code ? { ...r, on: !r.on } : r))));
+
+  const rename = (code: string, custom: string) => setRows((list) => list.map((r) => (r.code === code ? { ...r, custom } : r)));
+
+  const raise = (code: string) =>
+    setRows((list) => {
+      const i = list.findIndex((r) => r.code === code);
+      const above = list[i - 1];
+      const row = list[i];
+      if (i <= 0 || !above || !row) {
+        return list;
+      }
+      const next = [...list];
+      next[i - 1] = row;
+      next[i] = above;
+      return next;
+    });
+
   const save = async () => {
     if (!schema) {
       return;
@@ -559,7 +605,11 @@ function ProviderSetup({ provider, publicUrl, onClose, onSaved }: SetupProps) {
     try {
       const saved = await api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`, {
         method: 'PUT',
-        body: { config: changedConfig(schema, config, values), clear: secrets.clear },
+        body: {
+          config: changedConfig(schema, config, values),
+          clear: secrets.clear,
+          ...(JSON.stringify(chosenMethods(rows)) !== savedRows ? { methods: chosenMethods(rows) } : {}),
+        },
       });
       onSaved(saved.provider);
       onClose();
@@ -581,6 +631,44 @@ function ProviderSetup({ provider, publicUrl, onClose, onSaved }: SetupProps) {
       ) : null}
       {schema && schema.length > 0 ? (
         <SchemaFields schema={schema} config={config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`pay-${provider.id}`} />
+      ) : null}
+      {rows.length ? (
+        <div className="sf-field" style={{ maxWidth: 'none' }} role="group" aria-labelledby={`pay-m-${provider.id}`}>
+          <span className="sf-label" id={`pay-m-${provider.id}`}>
+            Способы оплаты
+          </span>
+          <span className="cap">
+            Отмеченные способы станут отдельными кнопками у клиента, в этом порядке. Если ничего не отмечено, у клиента одна кнопка {provider.title}, как раньше.
+          </span>
+          {rows.map((r, i) => (
+            <div key={r.code} className="pay-mrow">
+              <label className="pay-check pay-mname">
+                <input type="checkbox" checked={r.on} onChange={() => toggle(r.code)} disabled={busy} />
+                {r.title}
+              </label>
+              <span className="pay-mhint muted">
+                {r.hint}
+                {r.min_minor ? ` · от ${money({ minor: r.min_minor, currency })}` : ''}
+              </span>
+              {r.on ? (
+                <span className="pay-mtools">
+                  <input
+                    className="field pay-mtitle"
+                    value={r.custom}
+                    placeholder={r.title}
+                    maxLength={40}
+                    aria-label={`Название кнопки вместо «${r.title}»`}
+                    onChange={(e) => rename(r.code, e.target.value)}
+                    disabled={busy}
+                  />
+                  <button type="button" className="pay-arrow" aria-label={`Выше: ${r.title}`} aria-disabled={i === 0} onClick={() => raise(r.code)} disabled={busy}>
+                    <Icon name="arrow-up" size={18} />
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
       ) : null}
       {hooks.length ? (
         <div className="sf-field" style={{ maxWidth: 'none' }}>

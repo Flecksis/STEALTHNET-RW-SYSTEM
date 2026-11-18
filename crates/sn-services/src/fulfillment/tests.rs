@@ -29,6 +29,7 @@ async fn invoice(kit: &Kit, client_id: ClientId, cart: CartRequest) -> (Order, U
             &CheckoutRequest {
                 cart,
                 provider: TEST_PAY.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -573,6 +574,7 @@ async fn неоплаченный_заказ_не_выдаётся_а_выдан
             &crate::checkout::CheckoutRequest {
                 cart: cart(&tariff, 30, None),
                 provider: TEST_PAY.into(),
+                method: None,
                 channel: crate::checkout::Channel::Bot,
                 return_url: None,
             },

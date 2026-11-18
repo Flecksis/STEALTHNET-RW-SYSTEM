@@ -349,6 +349,7 @@ async fn счёт_gram_из_мини_приложения_приходит_ви�
                     promo_code: None,
                 },
                 provider: providers::GRAM.into(),
+                method: None,
                 channel: Channel::Miniapp,
                 return_url: None,
             },

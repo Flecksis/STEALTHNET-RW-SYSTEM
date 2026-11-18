@@ -6,6 +6,7 @@ import { stars } from '../cabinet/model';
 import { addonItem, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from '../cabinet/extras';
 import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
+import { methodKey } from '../lib/methods';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -85,7 +86,7 @@ export function MiniAddons() {
   }, [subscriptionId, choiceKey]);
 
   const methods = quote?.methods ?? [];
-  const chosen = methods.find((m) => m.provider === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
+  const chosen = methods.find((m) => methodKey(m) === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
   const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
   const balanceShort = methods.find((m) => m.kind === 'balance' && m.unavailable?.type === 'insufficient_balance');
@@ -103,7 +104,7 @@ export function MiniAddons() {
     try {
       const res = await api<PayResult>('/api/client/items/checkout', {
         method: 'POST',
-        body: { item: addonItem(subscriptionId, choice), provider: chosen.provider },
+        body: { item: addonItem(subscriptionId, choice), provider: chosen.provider, method: chosen.method ?? undefined },
       });
       if (res.type === 'redirect') {
         if (inTelegramWallet) {
@@ -255,7 +256,7 @@ export function MiniAddons() {
         {q && methods.length === 0 ? <p className="mn-muted small">В мини-приложении оплатить сейчас нельзя. Докупить можно в боте или в кабинете на сайте.</p> : null}
         <div role="radiogroup" aria-label="Способ оплаты" className="mn-chips">
           {methods.map((m) => (
-            <button key={m.provider} type="button" role="radio" aria-checked={chosen?.provider === m.provider} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(m.provider)}>
+            <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
               {m.title}
             </button>
           ))}

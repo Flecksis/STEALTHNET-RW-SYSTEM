@@ -1062,6 +1062,7 @@ async fn секреты_платёжной_системы_только_на_за
         .unwrap(),
         clear: Vec::new(),
         channels: None,
+        methods: None,
     };
     let details = ops
         .update_provider(providers::CRYPTOPAY, &with_token, admin)
@@ -1809,6 +1810,7 @@ async fn ручная_отметка_оплаты_ставит_выдачу_и_�
                 method: sn_domain::payment::RefundMethod::Balance,
                 subscription_action: sn_domain::payment::RefundSubscriptionAction::Keep,
                 reason: None,
+                key: None,
             },
             admin,
         )

@@ -51,6 +51,7 @@ async fn выключенный_баланс_не_пополняется_а_ос
     let pay_from_balance = CheckoutRequest {
         cart: cart.clone(),
         provider: providers::BALANCE.into(),
+        method: None,
         channel: Channel::Cabinet,
         return_url: None,
     };
@@ -77,6 +78,7 @@ async fn выключенный_баланс_не_пополняется_а_ос
                         client_id,
                         Money::new(1_000, Currency::Usd),
                         TEST_PAY,
+                        None,
                         channel
                     )
                     .await
@@ -91,6 +93,7 @@ async fn выключенный_баланс_не_пополняется_а_ос
                 client_id,
                 &CheckoutRequest {
                     provider: TEST_PAY.into(),
+                    method: None,
                     ..pay_from_balance.clone()
                 }
             )

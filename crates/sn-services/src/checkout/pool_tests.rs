@@ -197,6 +197,7 @@ async fn расчёт_и_оформление_обходятся_одним_со
             &CheckoutRequest {
                 cart: cart.clone(),
                 provider: TEST_PAY.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -213,6 +214,7 @@ async fn расчёт_и_оформление_обходятся_одним_со
             &CheckoutRequest {
                 cart,
                 provider: providers::BALANCE.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },
@@ -229,6 +231,7 @@ async fn расчёт_и_оформление_обходятся_одним_со
             &ItemCheckoutRequest {
                 item,
                 provider: providers::BALANCE.into(),
+                method: None,
                 channel: Channel::Cabinet,
                 return_url: None,
             },

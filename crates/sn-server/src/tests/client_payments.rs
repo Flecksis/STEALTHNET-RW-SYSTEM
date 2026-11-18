@@ -262,7 +262,7 @@ async fn пополнение_отдаёт_суммы_и_способы_свое
     assert_eq!(presets, [1_000, 2_000]);
     assert_eq!(
         options["methods"],
-        json!([{"provider": "cryptopay", "title": "Криптовалюта", "hint": "USDT, TON, BTC"}])
+        json!([{"provider": "cryptopay", "method": null, "title": "Криптовалюта", "hint": "USDT, TON, BTC"}])
     );
 
     let (status, options) = h.get("/api/client/topup", &mini).await;

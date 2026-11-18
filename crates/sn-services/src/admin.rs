@@ -191,6 +191,8 @@ pub struct RefundRequest {
     pub subscription_action: RefundSubscriptionAction,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub key: Option<Uuid>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -209,6 +211,7 @@ struct PaymentRow {
     expires_at: Option<DateTime<Utc>>,
     paid_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    pay_method: Option<String>,
 }
 
 impl TryFrom<PaymentRow> for Payment {
@@ -222,6 +225,7 @@ impl TryFrom<PaymentRow> for Payment {
             client_id: ClientId(row.client_id),
             provider: ProviderId(row.provider),
             method: row.method,
+            pay_method: row.pay_method,
             amount: Amount::new(row.amount_minor, PayCurrency::parse(&row.currency)?),
             status: PaymentStatus::parse(&row.status)?,
             provider_txid: row.provider_txid,
@@ -840,7 +844,7 @@ impl<'a> AdminOps<'a> {
         let mut conn = self.services.store().conn().await?;
         let rows: Vec<PaymentRow> = sqlx::query_as(
             "SELECT id, public_id, order_id, client_id, provider, method, amount_minor, currency, status, \
-             provider_txid, pay_url, expires_at, paid_at, created_at FROM payments \
+             provider_txid, pay_url, expires_at, paid_at, created_at, pay_method FROM payments \
              WHERE ($1::text IS NULL OR status = $1) AND ($2::text IS NULL OR provider = $2) \
              AND ($3::bigint IS NULL OR client_id = $3) AND ($4::bigint IS NULL OR id < $4) \
              ORDER BY id DESC LIMIT $5",
@@ -990,6 +994,7 @@ impl<'a> AdminOps<'a> {
             method: request.method,
             subscription_action: request.subscription_action,
             reason: request.reason.clone(),
+            key: request.key,
         };
         self.services.inbox().refund(id, &command, admin).await
     }

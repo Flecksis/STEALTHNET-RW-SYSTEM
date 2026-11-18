@@ -303,10 +303,11 @@ struct PaymentRow {
     expires_at: Option<DateTime<Utc>>,
     paid_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    pay_method: Option<String>,
 }
 
 const COLUMNS: &str = "id, public_id, order_id, client_id, provider, method, amount_minor, currency, status, \
-                       provider_txid, pay_url, expires_at, paid_at, created_at";
+                       provider_txid, pay_url, expires_at, paid_at, created_at, pay_method";
 
 pub(crate) const TRANSITION_ATTEMPTS: usize = 4;
 
@@ -326,6 +327,7 @@ impl TryFrom<PaymentRow> for Payment {
             client_id: ClientId(row.client_id),
             provider: ProviderId(row.provider),
             method: row.method,
+            pay_method: row.pay_method,
             amount: Amount::new(row.amount_minor, PayCurrency::parse(&row.currency)?),
             status: PaymentStatus::parse(&row.status)?,
             provider_txid: row.provider_txid,
@@ -344,6 +346,15 @@ pub struct PaymentsRepo<'c> {
 impl<'c> PaymentsRepo<'c> {
     pub fn new(conn: &'c mut PgConnection) -> Self {
         PaymentsRepo { conn }
+    }
+
+    pub async fn set_pay_method(&mut self, id: PaymentId, method: &str) -> StoreResult<()> {
+        sqlx::query("UPDATE payments SET pay_method = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(method)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
     }
 
     pub async fn create(&mut self, payment: &NewPayment) -> StoreResult<Payment> {
