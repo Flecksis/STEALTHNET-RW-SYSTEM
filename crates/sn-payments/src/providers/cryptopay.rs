@@ -10,11 +10,12 @@ use sha2::{Digest, Sha256};
 use sn_domain::money::{Amount, Currency, PayCurrency, parse_units};
 use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
-use uuid::Uuid;
 
 const MAINNET: &str = "https://pay.crypt.bot";
 const TESTNET: &str = "https://testnet-pay.crypt.bot";
 const SIGNATURE_HEADER: &str = "crypto-pay-api-signature";
+const ASSETS: [&str; 8] = ["USDT", "TON", "BTC", "ETH", "LTC", "BNB", "TRX", "USDC"];
+const TESTNET_ASSET: &str = "JET";
 
 pub struct CryptoPay {
     http: reqwest::Client,
@@ -120,6 +121,44 @@ fn verify(token: &str, body: &[u8], header: Option<&str>) -> bool {
     mac.verify_slice(&expected).is_ok()
 }
 
+fn accepted_assets(config: &ProviderConfig) -> PaymentResult<Option<String>> {
+    let Some(raw) = config.get("accepted_assets") else {
+        return Ok(None);
+    };
+    let testnet = config.flag("testnet");
+    let mut assets: Vec<String> = Vec::new();
+    for part in raw
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .filter(|part| !part.is_empty())
+    {
+        let code = part.to_ascii_uppercase();
+        if code == TESTNET_ASSET && !testnet {
+            return Err(PaymentError::NotConfigured(
+                "монета JET есть только в тестовой сети Crypto Pay".into(),
+            ));
+        }
+        if code != TESTNET_ASSET && !ASSETS.contains(&code.as_str()) {
+            return Err(PaymentError::NotConfigured(format!(
+                "Crypto Pay не принимает монету «{}», можно: {}",
+                util::clip(part, 16),
+                ASSETS.join(", ")
+            )));
+        }
+        if !assets.contains(&code) {
+            assets.push(code);
+        }
+    }
+    Ok((!assets.is_empty()).then(|| assets.join(",")))
+}
+
+fn paid_button_url(request: &InvoiceRequest) -> Option<&str> {
+    request
+        .return_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| util::is_https(url))
+}
+
 #[async_trait]
 impl PaymentProvider for CryptoPay {
     fn id(&self) -> &'static str {
@@ -131,7 +170,7 @@ impl PaymentProvider for CryptoPay {
     }
 
     fn currencies(&self) -> &'static [Currency] {
-        &[Currency::Usd]
+        &[Currency::Usd, Currency::Rub]
     }
 
     fn client_label(&self, _currency: Currency) -> ClientLabel {
@@ -146,14 +185,25 @@ impl PaymentProvider for CryptoPay {
             SettingField::secret(
                 "api_token",
                 "API-токен",
-                "Создаётся в @CryptoBot: Crypto Pay → Create App",
+                "Создаётся в @CryptoBot: Crypto Pay → Create App. Для тестовой сети — в @CryptoTestnetBot",
             ),
             SettingField::flag(
                 "testnet",
                 "Тестовая сеть",
-                "Только для проверки, деньги не настоящие",
+                "Только для проверки, деньги не настоящие. Нужен токен из @CryptoTestnetBot",
             ),
+            SettingField::text(
+                "accepted_assets",
+                "Какие монеты принимать",
+                "Через запятую, например USDT,TON. Можно: USDT, TON, BTC, ETH, LTC, BNB, TRX, USDC. Пусто — все монеты",
+            )
+            .optional(),
         ]
+    }
+
+    fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
+        util::require_fields(&self.settings_schema(), config)?;
+        accepted_assets(config).map(|_| ())
     }
 
     fn enabled_by_default(&self) -> bool {
@@ -170,15 +220,20 @@ impl PaymentProvider for CryptoPay {
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
         let token = config.require("api_token")?;
-        if request.amount.currency != PayCurrency::Usd {
+        if !matches!(request.amount.currency, PayCurrency::Usd | PayCurrency::Rub) {
             return Err(PaymentError::UnsupportedCurrency(
                 request.amount.currency.code().into(),
             ));
         }
+        if request.method.is_some() {
+            return Err(PaymentError::Rejected(
+                "этот способ оплаты недоступен".into(),
+            ));
+        }
         let description: String = request.description.chars().take(1024).collect();
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "currency_type": "fiat",
-            "fiat": "USD",
+            "fiat": request.amount.currency.code(),
             "amount": request.amount.units(),
             "description": description,
             "payload": request.payment_public_id.to_string(),
@@ -186,6 +241,13 @@ impl PaymentProvider for CryptoPay {
             "allow_comments": false,
             "allow_anonymous": false,
         });
+        if let Some(assets) = accepted_assets(config)? {
+            body["accepted_assets"] = serde_json::Value::from(assets);
+        }
+        if let Some(url) = paid_button_url(request) {
+            body["paid_btn_name"] = serde_json::Value::from("callback");
+            body["paid_btn_url"] = serde_json::Value::from(url);
+        }
         let response = self
             .http
             .post(format!("{}/api/createInvoice", self.base(config)))
@@ -252,11 +314,8 @@ impl PaymentProvider for CryptoPay {
                 reply: WebhookReply::ok(),
             });
         }
-        let payment = invoice
-            .payload
-            .as_deref()
-            .and_then(|p| Uuid::parse_str(p).ok())
-            .map(PaymentRef::PublicId);
+        let payment = util::public_ref(invoice.payload.as_deref())
+            .or_else(|| Some(PaymentRef::ProviderTxid(invoice.invoice_id.to_string())));
         let amount = match (
             invoice.currency_type.as_deref(),
             invoice.fiat.as_deref(),
@@ -355,6 +414,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use sn_domain::ids::{ClientId, PaymentId};
+    use uuid::Uuid;
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -362,6 +422,58 @@ mod tests {
         let mut config = ProviderConfig::default();
         config.set("api_token", serde_json::json!("1234:AAA"));
         config
+    }
+
+    fn with_assets(assets: &str, testnet: bool) -> ProviderConfig {
+        let mut config = config();
+        config.set("accepted_assets", serde_json::json!(assets));
+        config.set("testnet", serde_json::json!(testnet));
+        config
+    }
+
+    fn usd_request() -> InvoiceRequest {
+        InvoiceRequest {
+            payment_id: PaymentId(1),
+            payment_public_id: Uuid::from_u128(1),
+            order_public_id: Uuid::from_u128(2),
+            amount: Amount::new(699, PayCurrency::Usd),
+            description: "Стандарт · 90 дней".into(),
+            client: ClientRef {
+                client_id: ClientId(1),
+                public_id: Uuid::from_u128(3),
+                telegram_id: None,
+                email: None,
+            },
+            return_url: None,
+            webhook_url: "https://panel.example.com/api/webhooks/pay/cryptopay".into(),
+            expires_in: chrono::Duration::hours(1),
+            save_payment_method: false,
+            method: None,
+        }
+    }
+
+    async fn invoice_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/createInvoice"))
+            .and(header("Crypto-Pay-API-Token", "1234:AAA"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {"invoice_id": 77, "bot_invoice_url": "https://t.me/CryptoBot?start=IV77"}
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn sent_bodies(server: &MockServer) -> Vec<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
     }
 
     fn hook(body: &str, signature: Option<String>) -> WebhookRequest {
@@ -415,47 +527,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn оплата_с_чужим_payload_ищется_по_номеру_счёта() {
+        let provider = CryptoPay::new();
+        for payload in [serde_json::json!("order-17"), serde_json::Value::Null] {
+            let body = serde_json::json!({
+                "update_id": 2, "update_type": "invoice_paid", "request_date": "2026-11-18T10:00:00.000Z",
+                "payload": {
+                    "invoice_id": 528891, "status": "paid", "currency_type": "fiat", "fiat": "RUB",
+                    "amount": "499.00", "payload": payload
+                }
+            })
+            .to_string();
+            let outcome = provider
+                .parse_webhook(
+                    &config(),
+                    &hook(&body, Some(signature("1234:AAA", body.as_bytes()))),
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.status, ProviderStatus::Paid);
+            assert_eq!(
+                outcome.payment,
+                Some(PaymentRef::ProviderTxid("528891".into()))
+            );
+            assert_eq!(outcome.amount, Some(Amount::new(49_900, PayCurrency::Rub)));
+        }
+    }
+
+    #[tokio::test]
     async fn счёт_создаётся_в_долларах() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/createInvoice"))
-            .and(header("Crypto-Pay-API-Token", "1234:AAA"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "ok": true,
-                "result": {"invoice_id": 77, "bot_invoice_url": "https://t.me/CryptoBot?start=IV77"}
-            })))
-            .mount(&server)
-            .await;
+        let server = invoice_server().await;
         let provider = CryptoPay::with_api_base(server.uri());
-        let request = InvoiceRequest {
-            payment_id: PaymentId(1),
-            payment_public_id: Uuid::from_u128(1),
-            order_public_id: Uuid::from_u128(2),
-            amount: Amount::new(699, PayCurrency::Usd),
-            description: "Стандарт · 90 дней".into(),
-            client: ClientRef {
-                client_id: ClientId(1),
-                public_id: Uuid::from_u128(3),
-                telegram_id: None,
-                email: None,
-            },
-            return_url: None,
-            webhook_url: "https://panel.example.com/api/webhooks/pay/cryptopay".into(),
-            expires_in: chrono::Duration::hours(1),
-            save_payment_method: false,
-            method: None,
-        };
+        let request = usd_request();
         let invoice = provider.create_invoice(&config(), &request).await.unwrap();
         assert_eq!(invoice.external_id.as_deref(), Some("77"));
         assert!(invoice.pay_url.starts_with("https://t.me/"));
-        let rub = InvoiceRequest {
-            amount: Amount::new(49_900, PayCurrency::Rub),
-            ..request
+        let body = &sent_bodies(&server).await[0];
+        assert_eq!(body["currency_type"], "fiat");
+        assert_eq!(body["fiat"], "USD");
+        assert_eq!(body["amount"], "6.99");
+        assert_eq!(body["payload"], Uuid::from_u128(1).to_string());
+        for absent in ["accepted_assets", "paid_btn_name", "paid_btn_url"] {
+            assert!(body.get(absent).is_none(), "{absent}");
+        }
+        let stars = InvoiceRequest {
+            amount: Amount::new(350, PayCurrency::Xtr),
+            ..request.clone()
         };
         assert!(matches!(
-            provider.create_invoice(&config(), &rub).await,
+            provider.create_invoice(&config(), &stars).await,
             Err(PaymentError::UnsupportedCurrency(_))
         ));
+        let chosen = InvoiceRequest {
+            method: Some("usdt".into()),
+            ..request
+        };
+        assert_eq!(
+            provider.create_invoice(&config(), &chosen).await,
+            Err(PaymentError::Rejected(
+                "этот способ оплаты недоступен".into()
+            ))
+        );
+        assert_eq!(sent_bodies(&server).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn счёт_в_рублях_с_выбранными_монетами_и_кнопкой_возврата() {
+        let server = invoice_server().await;
+        let provider = CryptoPay::with_api_base(server.uri());
+        assert!(provider.currencies().contains(&Currency::Rub));
+        assert!(provider.methods(Currency::Rub).is_empty());
+        let request = InvoiceRequest {
+            amount: Amount::new(49_900, PayCurrency::Rub),
+            return_url: Some("https://panel.example.com/cabinet/payment-wait".into()),
+            ..usd_request()
+        };
+        provider
+            .create_invoice(&with_assets("usdt, ton,USDT", false), &request)
+            .await
+            .unwrap();
+        let body = &sent_bodies(&server).await[0];
+        assert_eq!(body["fiat"], "RUB");
+        assert_eq!(body["amount"], "499.00");
+        assert_eq!(body["accepted_assets"], "USDT,TON");
+        assert_eq!(body["paid_btn_name"], "callback");
+        assert_eq!(
+            body["paid_btn_url"],
+            "https://panel.example.com/cabinet/payment-wait"
+        );
+        let invalid = with_assets("USDT,DOGE", false);
+        assert!(matches!(
+            provider.create_invoice(&invalid, &request).await,
+            Err(PaymentError::NotConfigured(_))
+        ));
+        assert_eq!(sent_bodies(&server).await.len(), 1);
+    }
+
+    #[test]
+    fn монеты_сверяются_со_списком_crypto_pay() {
+        let provider = CryptoPay::new();
+        assert_eq!(accepted_assets(&config()), Ok(None));
+        assert_eq!(accepted_assets(&with_assets(" , ", false)), Ok(None));
+        assert_eq!(
+            accepted_assets(&with_assets(" usdt; TON  btc,usdt ", false)),
+            Ok(Some("USDT,TON,BTC".into()))
+        );
+        assert!(
+            provider
+                .validate_settings(&with_assets("USDT,TON", false))
+                .is_ok()
+        );
+        assert!(matches!(
+            provider.validate_settings(&with_assets("USDT,DOGE", false)),
+            Err(PaymentError::NotConfigured(message)) if message.contains("DOGE")
+        ));
+        assert!(
+            provider
+                .validate_settings(&with_assets("jet", false))
+                .is_err()
+        );
+        assert_eq!(
+            accepted_assets(&with_assets("jet,usdt", true)),
+            Ok(Some("JET,USDT".into()))
+        );
+        assert!(
+            provider
+                .validate_settings(&ProviderConfig::default())
+                .is_err()
+        );
+        assert!(provider.is_configured(&config()));
     }
 
     #[tokio::test]

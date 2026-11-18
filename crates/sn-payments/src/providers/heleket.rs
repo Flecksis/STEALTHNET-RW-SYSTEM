@@ -14,6 +14,51 @@ use uuid::Uuid;
 
 const API: &str = "https://api.heleket.hk";
 
+const PAGE: PayMethod = PayMethod::new(
+    "page",
+    "Любая монета",
+    "Монету и сеть выбирают на странице Heleket",
+);
+
+struct Coin {
+    method: PayMethod,
+    currency: &'static str,
+    network: &'static str,
+}
+
+const COINS: [Coin; 6] = [
+    Coin {
+        method: PayMethod::new("usdt_trc20", "USDT TRC-20", "USDT в сети Tron"),
+        currency: "USDT",
+        network: "tron",
+    },
+    Coin {
+        method: PayMethod::new("usdt_ton", "USDT TON", "USDT в сети TON"),
+        currency: "USDT",
+        network: "ton",
+    },
+    Coin {
+        method: PayMethod::new("usdt_bep20", "USDT BEP-20", "USDT в сети BNB Smart Chain"),
+        currency: "USDT",
+        network: "bsc",
+    },
+    Coin {
+        method: PayMethod::new("btc", "Bitcoin", "BTC в сети Bitcoin"),
+        currency: "BTC",
+        network: "btc",
+    },
+    Coin {
+        method: PayMethod::new("ton", "TON", "Gram, бывший Toncoin, в сети TON"),
+        currency: "GRAM",
+        network: "ton",
+    },
+    Coin {
+        method: PayMethod::new("ltc", "Litecoin", "LTC в сети Litecoin"),
+        currency: "LTC",
+        network: "ltc",
+    },
+];
+
 pub struct Heleket {
     http: reqwest::Client,
     api_base: Option<String>,
@@ -141,10 +186,21 @@ fn verify(api_key: &str, raw: &[u8]) -> bool {
             .any(|variant| util::secret_eq(&signature(variant, api_key), &received))
 }
 
+fn coin(code: &str) -> PaymentResult<Option<&'static Coin>> {
+    if code == PAGE.code {
+        return Ok(None);
+    }
+    COINS
+        .iter()
+        .find(|coin| coin.method.code == code)
+        .map(Some)
+        .ok_or_else(|| PaymentError::Rejected("этот способ оплаты недоступен".into()))
+}
+
 fn map_status(status: &str) -> ProviderStatus {
     match status {
         "paid" | "paid_over" => ProviderStatus::Paid,
-        "wrong_amount" | "fail" | "system_fail" => ProviderStatus::Failed,
+        "wrong_amount" | "fail" | "system_fail" | "locked" => ProviderStatus::Failed,
         "cancel" => ProviderStatus::Canceled,
         "refund_paid" => ProviderStatus::Refunded,
         _ => ProviderStatus::Pending,
@@ -197,6 +253,15 @@ impl PaymentProvider for Heleket {
         ClientLabel {
             title: "Криптовалюта",
             hint: "USDT и другие монеты",
+        }
+    }
+
+    fn methods(&self, currency: Currency) -> Vec<PayMethod> {
+        match currency {
+            Currency::Usd => std::iter::once(PAGE)
+                .chain(COINS.iter().map(|coin| coin.method))
+                .collect(),
+            Currency::Rub => Vec::new(),
         }
     }
 
@@ -253,6 +318,10 @@ impl PaymentProvider for Heleket {
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
         util::require_currency(request.amount, PayCurrency::Usd)?;
+        let coin = match request.method.as_deref() {
+            Some(code) => coin(code)?,
+            None => None,
+        };
         let mut body = Json::object([
             ("amount", Json::from(request.amount.units())),
             ("currency", Json::from("USD")),
@@ -270,6 +339,15 @@ impl PaymentProvider for Heleket {
         if let Some(url) = util::return_url(request) {
             body.push("url_return", Json::from(url.clone()));
             body.push("url_success", Json::from(url));
+        }
+        if let Some(coin) = coin {
+            body.push(
+                "currencies",
+                Json::Array(vec![Json::object([
+                    ("currency", Json::from(coin.currency)),
+                    ("network", Json::from(coin.network)),
+                ])]),
+            );
         }
         let result = self.call(config, "/v1/payment", &body).await?;
         let uuid = result
@@ -422,7 +500,8 @@ mod tests {
             ("check", ProviderStatus::Pending),
             ("confirm_check", ProviderStatus::Pending),
             ("wrong_amount_waiting", ProviderStatus::Pending),
-            ("locked", ProviderStatus::Pending),
+            ("locked", ProviderStatus::Failed),
+            ("refund_process", ProviderStatus::Pending),
         ] {
             let outcome = parse(signed(&data(status, "6.99", "USD"), KEY))
                 .await
@@ -483,6 +562,11 @@ mod tests {
             parse(signed(&data("paid", "6.999", "USD"), KEY)).await,
             Err(PaymentError::BadPayload(_))
         ));
+    }
+
+    async fn last_body(server: &MockServer) -> serde_json::Value {
+        let sent = server.received_requests().await.unwrap();
+        serde_json::from_slice(&sent.last().unwrap().body).unwrap()
     }
 
     struct SignedBody;
@@ -547,6 +631,108 @@ mod tests {
                 .await,
             Err(PaymentError::UnsupportedCurrency(_))
         ));
+    }
+
+    #[test]
+    fn способы_оплаты_heleket() {
+        let heleket = Heleket::new();
+        let methods = heleket.methods(Currency::Usd);
+        let codes: Vec<&str> = methods.iter().map(|m| m.code).collect();
+        assert_eq!(
+            codes,
+            [
+                "page",
+                "usdt_trc20",
+                "usdt_ton",
+                "usdt_bep20",
+                "btc",
+                "ton",
+                "ltc"
+            ]
+        );
+        for method in &methods {
+            assert!(
+                method.code.len() <= 20
+                    && method
+                        .code
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{}",
+                method.code
+            );
+            assert!(!method.title.is_empty() && !method.hint.is_empty());
+        }
+        assert_eq!(
+            heleket.method(Currency::Usd, "btc").map(|m| m.title),
+            Some("Bitcoin")
+        );
+        assert!(heleket.methods(Currency::Rub).is_empty());
+        assert_eq!(heleket.method(Currency::Rub, "btc"), None);
+    }
+
+    #[tokio::test]
+    async fn выбранная_монета_уходит_в_список_currencies() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment"))
+            .and(header("merchant", MERCHANT))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {"uuid": "5d1a7c2e", "url": "https://pay.heleket.hk/pay/5d1a7c2e"}
+            })))
+            .mount(&server)
+            .await;
+        let provider = Heleket::with_api_base(server.uri());
+        for (code, currency, network) in [
+            ("usdt_trc20", "USDT", "tron"),
+            ("usdt_ton", "USDT", "ton"),
+            ("usdt_bep20", "USDT", "bsc"),
+            ("btc", "BTC", "btc"),
+            ("ton", "GRAM", "ton"),
+            ("ltc", "LTC", "ltc"),
+        ] {
+            let request = InvoiceRequest {
+                method: Some(code.into()),
+                ..invoice(usd(699), None)
+            };
+            provider
+                .create_invoice(&settings(), &request)
+                .await
+                .unwrap();
+            let body = last_body(&server).await;
+            assert_eq!(
+                body["currencies"],
+                json!([{"currency": currency, "network": network}]),
+                "{code}"
+            );
+            assert_eq!(body["currency"], "USD");
+            assert_eq!(body["amount"], "6.99");
+            assert!(body.get("to_currency").is_none());
+        }
+        for code in [None, Some("page")] {
+            let request = InvoiceRequest {
+                method: code.map(str::to_string),
+                ..invoice(usd(699), None)
+            };
+            provider
+                .create_invoice(&settings(), &request)
+                .await
+                .unwrap();
+            assert!(last_body(&server).await.get("currencies").is_none());
+        }
+        let sent = server.received_requests().await.unwrap().len();
+        let unknown = InvoiceRequest {
+            method: Some("doge".into()),
+            ..invoice(usd(699), None)
+        };
+        assert_eq!(
+            provider.create_invoice(&settings(), &unknown).await,
+            Err(PaymentError::Rejected(
+                "этот способ оплаты недоступен".into()
+            ))
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), sent);
     }
 
     #[tokio::test]
