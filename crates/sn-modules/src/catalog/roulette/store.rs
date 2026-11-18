@@ -121,20 +121,26 @@ pub async fn last_free(
     .await?)
 }
 
+const TICKET_USABLE: &str = "t.used_at IS NULL AND t.revoked_at IS NULL \
+     AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.id = t.order_id AND o.status IN ('refunded', 'canceled')) \
+     AND NOT EXISTS (SELECT 1 FROM provider_refunds r JOIN payments p ON p.id = r.payment_id \
+         WHERE p.order_id = t.order_id AND r.status = 'pending' \
+         AND NOT EXISTS (SELECT 1 FROM payment_repeats x WHERE x.payment_id = p.id))";
+
 pub async fn open_tickets(db: &mut impl Db, client_id: ClientId) -> StoreResult<i64> {
-    Ok(sqlx::query_scalar(
-        "SELECT count(*) FROM roulette_tickets WHERE client_id = $1 AND used_at IS NULL AND revoked_at IS NULL",
-    )
+    Ok(sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM roulette_tickets t WHERE t.client_id = $1 AND {TICKET_USABLE}"
+    ))
     .bind(client_id.0)
     .fetch_one(db.conn())
     .await?)
 }
 
 pub async fn take_ticket(db: &mut impl Db, client_id: ClientId) -> StoreResult<Option<i64>> {
-    Ok(sqlx::query_scalar(
-        "SELECT id FROM roulette_tickets WHERE client_id = $1 AND used_at IS NULL AND revoked_at IS NULL \
-         ORDER BY id LIMIT 1 FOR UPDATE",
-    )
+    Ok(sqlx::query_scalar(&format!(
+        "SELECT t.id FROM roulette_tickets t WHERE t.client_id = $1 AND {TICKET_USABLE} \
+         ORDER BY t.id LIMIT 1 FOR UPDATE OF t"
+    ))
     .bind(client_id.0)
     .fetch_optional(db.conn())
     .await?)

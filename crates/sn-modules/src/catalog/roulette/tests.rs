@@ -863,3 +863,40 @@ async fn кнопка_я_не_робот_в_рулетке_через_маршр
     assert_eq!(balance(&db.store, player).await, 100);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn вращение_за_покупку_ждёт_решения_по_возврату() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let buyer = client(&db.store).await;
+    let mut draft = config(vec![
+        sector(PrizeDraft::Balance { amount: "1".into() }, 1),
+        sector(PrizeDraft::Balance { amount: "2".into() }, 1),
+    ]);
+    draft.free_every_days = None;
+    save(&ctx, &draft, None).await.unwrap();
+    let bought = paid(&ctx, buyer, usd(500)).await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO provider_refunds (payment_id, amount_minor, currency, subscription_action) \
+             SELECT id, amount_minor, currency, 'keep' FROM payments WHERE order_id = $1",
+        )
+        .bind(bought.id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    assert!(spin(&ctx, buyer, Uuid::new_v4(), None).await.is_err());
+    let mut conn = db.store.conn().await.unwrap();
+    let balance = conn
+        .ledger()
+        .balance(buyer, Wallet::Main, Currency::Usd)
+        .await
+        .unwrap();
+    assert_eq!(balance.minor, 0);
+    db.cleanup().await;
+}
