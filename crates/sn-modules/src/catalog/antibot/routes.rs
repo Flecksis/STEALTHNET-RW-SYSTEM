@@ -59,7 +59,7 @@ async fn journal(
     let filter = JournalFilter::parse(query.kind.as_deref()).ok_or_else(|| {
         WebError::rejected(
             "validation.invalid_value",
-            "kind: all, signup, trial, promo, referral или cleared",
+            "kind: all, signup, trial, promo, referral, roulette, contest или cleared",
         )
     })?;
     let mut conn = ctx.store.conn().await?;

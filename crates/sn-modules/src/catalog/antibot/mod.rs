@@ -19,12 +19,12 @@ use sn_domain::ids::{AdminId, ClientId, PaymentId};
 use sn_domain::module::ModuleId;
 use sn_domain::settings::SettingField;
 use sn_store::{Db, StoreError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use store::{Action, ChallengeCheck, NewEvent};
+use store::{ChallengeCheck, NewEvent};
 use uuid::Uuid;
 
-pub use store::{JournalFilter, JournalItem, Mark, MarkItem, Summary};
+pub use store::{Action, JournalFilter, JournalItem, Mark, MarkItem, Summary};
 
 pub const CONFIRM_CODE: &str = "antibot.confirm";
 pub const DENIED_CODE: &str = "antibot.denied";
@@ -70,6 +70,8 @@ pub struct AntibotSettings {
     pub extra_domains: Vec<String>,
     pub referral_guard: bool,
     pub mass_invites: u32,
+    pub roulette_guard: bool,
+    pub contest_guard: bool,
 }
 
 impl Default for AntibotSettings {
@@ -83,6 +85,8 @@ impl Default for AntibotSettings {
             extra_domains: Vec::new(),
             referral_guard: true,
             mass_invites: 5,
+            roulette_guard: true,
+            contest_guard: true,
         }
     }
 }
@@ -119,6 +123,9 @@ impl AntibotSettings {
             referral_guard: config_flag(config, "referral_guard")
                 .unwrap_or(defaults.referral_guard),
             mass_invites: whole(config, "mass_invites", defaults.mass_invites, 1000)?,
+            roulette_guard: config_flag(config, "roulette_guard")
+                .unwrap_or(defaults.roulette_guard),
+            contest_guard: config_flag(config, "contest_guard").unwrap_or(defaults.contest_guard),
         })
     }
 
@@ -322,13 +329,21 @@ pub async fn verdict(db: &mut impl Db, client_id: ClientId) -> Result<Option<Ver
     let Some(settings) = active(db).await? else {
         return Ok(None);
     };
+    judge(db, client_id, settings).await.map(Some)
+}
+
+async fn judge(
+    db: &mut impl Db,
+    client_id: ClientId,
+    settings: AntibotSettings,
+) -> Result<Verdict, StoreError> {
     let mark = store::mark_of(db, client_id).await?;
     if mark.as_ref().is_some_and(|m| m.cleared_at.is_some()) {
-        return Ok(Some(Verdict {
+        return Ok(Verdict {
             settings,
             mark,
             signals: Vec::new(),
-        }));
+        });
     }
     let now = db_now(db).await?;
     let assessment = assess(db, client_id, &settings, now).await?;
@@ -343,11 +358,222 @@ pub async fn verdict(db: &mut impl Db, client_id: ClientId) -> Result<Option<Ver
     }
     let mark = store::mark_of(db, client_id).await?;
     let signals = mark.as_ref().map(|m| m.reasons.clone()).unwrap_or_default();
-    Ok(Some(Verdict {
+    Ok(Verdict {
         settings,
         mark,
         signals,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Target {
+    Roulette,
+    Contest,
+}
+
+impl Target {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Target::Roulette => "roulette",
+            Target::Contest => "contest",
+        }
+    }
+
+    pub const fn guarded(self, settings: &AntibotSettings) -> bool {
+        match self {
+            Target::Roulette => settings.roulette_guard,
+            Target::Contest => settings.contest_guard,
+        }
+    }
+}
+
+pub async fn guarding(
+    db: &mut impl Db,
+    target: Target,
+) -> Result<Option<AntibotSettings>, StoreError> {
+    Ok(active(db).await?.filter(|s| target.guarded(s)))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guard {
+    pub gate: Gate,
+    pub reasons: Vec<Signal>,
+}
+
+impl Guard {
+    pub fn denied(guard: Option<&Guard>) -> bool {
+        guard.is_some_and(|g| g.gate == Gate::Deny)
+    }
+
+    pub fn asks(guard: Option<&Guard>) -> bool {
+        guard.is_some_and(|g| g.gate == Gate::Confirm)
+    }
+
+    pub fn noted(guard: Option<&Guard>) -> bool {
+        guard.is_some_and(|g| g.gate == Gate::Allow)
+    }
+}
+
+pub async fn guard(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    target: Target,
+) -> Result<Option<Guard>, ModuleError> {
+    let mut conn = ctx.store.conn().await?;
+    let Some(settings) = guarding(&mut conn, target).await? else {
+        return Ok(None);
+    };
+    let verdict = judge(&mut conn, client_id, settings).await?;
+    if !verdict.flagged() {
+        return Ok(None);
+    }
+    let gate = match verdict.settings.mode {
+        Mode::Mark => Gate::Allow,
+        Mode::Confirm if verdict.confirmed() => return Ok(None),
+        Mode::Confirm => Gate::Confirm,
+        Mode::Block => Gate::Deny,
+    };
+    Ok(Some(Guard {
+        gate,
+        reasons: verdict.signals,
     }))
+}
+
+pub async fn note(
+    db: &mut impl Db,
+    client_id: ClientId,
+    action: Action,
+    reasons: &[Signal],
+    details: serde_json::Value,
+    once: Option<i64>,
+) -> Result<(), StoreError> {
+    let scope = match once {
+        Some(id) => id.to_string(),
+        None => day_key(db_now(db).await?),
+    };
+    store::event(
+        db,
+        &NewEvent {
+            client_id,
+            action,
+            reasons,
+            details,
+            dedupe: Some(format!("{}:{client_id}:{scope}", action.as_str())),
+            admin: None,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn record(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    guard: Option<&Guard>,
+    action: Action,
+    details: serde_json::Value,
+    once: Option<i64>,
+) -> Result<(), ModuleError> {
+    let Some(guard) = guard else {
+        return Ok(());
+    };
+    let mut conn = ctx.store.conn().await?;
+    note(&mut conn, client_id, action, &guard.reasons, details, once).await?;
+    Ok(())
+}
+
+pub async fn blocked_among(
+    db: &mut impl Db,
+    target: Target,
+    ids: &[i64],
+) -> Result<HashMap<ClientId, Vec<Signal>>, StoreError> {
+    match guarding(db, target).await? {
+        Some(settings) if settings.mode == Mode::Block && !ids.is_empty() => {
+            store::open_marks_among(db, ids).await
+        }
+        _ => Ok(HashMap::new()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Invite {
+    pub referrer: ClientId,
+    pub invitee: ClientId,
+    pub linked_at: DateTime<Utc>,
+}
+
+pub async fn screen_invites(
+    db: &mut impl Db,
+    settings: &AntibotSettings,
+    invites: &[Invite],
+) -> Result<HashSet<ClientId>, StoreError> {
+    let mut out = HashSet::new();
+    if invites.is_empty() {
+        return Ok(out);
+    }
+    let ids: Vec<i64> = invites.iter().map(|i| i.invitee.0).collect();
+    let marks = store::marks_among(db, &ids).await?;
+    let now = db_now(db).await?;
+    let since = now - Duration::days(signals::SHARED_SESSIONS_DAYS);
+    let mut boundary = None;
+    let mut referrers: HashMap<ClientId, Traces> = HashMap::new();
+    for invite in invites {
+        let mark = marks.get(&invite.invitee);
+        if mark.is_some_and(|m| m.cleared_at.is_some()) {
+            continue;
+        }
+        if let Some(mark) = mark {
+            let invited_badly = mark
+                .reasons
+                .iter()
+                .any(|r| matches!(r, Signal::SelfInvite | Signal::MassInvites));
+            if invited_badly || settings.mode == Mode::Block {
+                out.insert(invite.invitee);
+                continue;
+            }
+        } else if settings.mode == Mode::Block
+            && assess(db, invite.invitee, settings, now)
+                .await?
+                .suspicious()
+        {
+            out.insert(invite.invitee);
+            continue;
+        }
+        if !settings.referral_guard {
+            continue;
+        }
+        let theirs = match referrers.get(&invite.referrer) {
+            Some(found) => found.clone(),
+            None => {
+                let found = Traces::of(db, invite.referrer, since).await?;
+                referrers.insert(invite.referrer, found.clone());
+                found
+            }
+        };
+        let mine = Traces::of(db, invite.invitee, since).await?;
+        if let Some(details) = mine.shared_with(&theirs) {
+            let details =
+                serde_json::json!({ "self_invite": details, "referrer_id": invite.referrer.0 });
+            remember(db, invite.invitee, &[Signal::SelfInvite], &details).await?;
+            out.insert(invite.invitee);
+            continue;
+        }
+        if let Some(count) = mass_invites(
+            db,
+            settings,
+            invite.referrer,
+            invite.linked_at,
+            now,
+            &mut boundary,
+        )
+        .await?
+        {
+            let details = serde_json::json!({ "invites": count, "referrer_id": invite.referrer.0 });
+            remember(db, invite.invitee, &[Signal::MassInvites], &details).await?;
+            out.insert(invite.invitee);
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +678,7 @@ pub async fn confirm(
     ctx: &ModuleContext,
     client_id: ClientId,
     token: &str,
+    target: &str,
 ) -> Result<Confirmation, ModuleError> {
     let token = token.trim();
     if token.is_empty() || token.len() > 64 {
@@ -478,7 +705,7 @@ pub async fn confirm(
                     client_id,
                     action: Action::Confirmed,
                     reasons: &reasons,
-                    details: serde_json::json!({}),
+                    details: serde_json::json!({ "target": target }),
                     dedupe: Some(format!("confirmed:{client_id}")),
                     admin: None,
                 },
@@ -534,6 +761,37 @@ fn shared(a: &[String], b: &[String]) -> Option<String> {
         .find(|n| mine.contains(n))
 }
 
+#[derive(Debug, Clone, Default)]
+struct Traces {
+    ips: Vec<String>,
+    email: Option<String>,
+}
+
+impl Traces {
+    async fn of(
+        db: &mut impl Db,
+        client_id: ClientId,
+        since: DateTime<Utc>,
+    ) -> Result<Self, StoreError> {
+        Ok(Traces {
+            ips: store::session_ips(db, client_id, since).await?,
+            email: store::email(db, client_id).await?,
+        })
+    }
+
+    fn shared_with(&self, other: &Traces) -> Option<serde_json::Value> {
+        if let Some(network) = shared(&self.ips, &other.ips) {
+            return Some(serde_json::json!({ "network": network }));
+        }
+        match (&self.email, &other.email) {
+            (Some(a), Some(b)) if signals::email_key(a) == signals::email_key(b) => {
+                Some(serde_json::json!({ "email": true }))
+            }
+            _ => None,
+        }
+    }
+}
+
 async fn self_invite(
     ctx: &ModuleContext,
     db: &mut impl Db,
@@ -542,17 +800,10 @@ async fn self_invite(
     now: DateTime<Utc>,
 ) -> Result<Option<serde_json::Value>, ModuleError> {
     let since = now - Duration::days(signals::SHARED_SESSIONS_DAYS);
-    let mine = store::session_ips(db, payer, since).await?;
-    let theirs = store::session_ips(db, referrer, since).await?;
-    if let Some(network) = shared(&mine, &theirs) {
-        return Ok(Some(serde_json::json!({ "network": network })));
-    }
-    if let (Some(a), Some(b)) = (
-        store::email(db, payer).await?,
-        store::email(db, referrer).await?,
-    ) && signals::email_key(&a) == signals::email_key(&b)
-    {
-        return Ok(Some(serde_json::json!({ "email": true })));
+    let mine = Traces::of(db, payer, since).await?;
+    let theirs = Traces::of(db, referrer, since).await?;
+    if let Some(found) = mine.shared_with(&theirs) {
+        return Ok(Some(found));
     }
     let devices = match (
         ctx.core.client_devices(payer).await,
@@ -573,6 +824,7 @@ async fn mass_invites(
     referrer: ClientId,
     linked_at: DateTime<Utc>,
     now: DateTime<Utc>,
+    known: &mut Option<Option<i64>>,
 ) -> Result<Option<usize>, StoreError> {
     if settings.mass_invites < 2 {
         return Ok(None);
@@ -583,7 +835,14 @@ async fn mass_invites(
     if around.len() < settings.mass_invites as usize {
         return Ok(None);
     }
-    let boundary = young_boundary(db, settings, now).await?;
+    let boundary = match *known {
+        Some(boundary) => boundary,
+        None => {
+            let boundary = young_boundary(db, settings, now).await?;
+            *known = Some(boundary);
+            boundary
+        }
+    };
     let fresh = around
         .iter()
         .filter(|i| i.marked || boundary.zip(i.telegram_id).is_some_and(|(b, id)| id > b))
@@ -613,7 +872,9 @@ pub async fn referral_gate(
             remember(&mut conn, payer, &[Signal::SelfInvite], &details).await?;
             return Ok(ReferralGate::NoDirect(Signal::SelfInvite));
         }
-        if let Some(count) = mass_invites(&mut conn, &settings, referrer, linked_at, now).await? {
+        if let Some(count) =
+            mass_invites(&mut conn, &settings, referrer, linked_at, now, &mut None).await?
+        {
             let details = serde_json::json!({ "invites": count, "referrer_id": referrer.0 });
             remember(&mut conn, payer, &[Signal::MassInvites], &details).await?;
             return Ok(ReferralGate::NoDirect(Signal::MassInvites));
@@ -702,7 +963,7 @@ impl Module for AntibotModule {
             SettingField::select(
                 "mode",
                 "Что делать с подозрительными",
-                "mark — только отмечать; confirm — просить нажать кнопку «Я не робот» перед пробным периодом; block — не давать пробный период, дни по промокодам, подписки по промо-ссылкам и бонусы",
+                "mark — только отмечать; confirm — просить нажать кнопку «Я не робот» перед пробным периодом, бесплатным вращением рулетки и участием в конкурсе; block — не давать пробный период, дни по промокодам, подписки по промо-ссылкам, бесплатные вращения рулетки, участие в конкурсах и бонусы",
                 MODE_OPTIONS,
             )
             .with_default("confirm"),
@@ -748,6 +1009,18 @@ impl Module for AntibotModule {
                 "Столько новых аккаунтов от одного клиента за сутки; 0 — не учитывать",
             )
             .with_default("5"),
+            SettingField::flag(
+                "roulette_guard",
+                "Защищать рулетку",
+                "Бесплатные вращения подозрительным — по режиму антибота; вращения за покупки не трогаются",
+            )
+            .with_default("true"),
+            SettingField::flag(
+                "contest_guard",
+                "Защищать конкурсы",
+                "Участие подозрительных — по режиму антибота; в условие «пригласить друзей» не идут самоприглашения, а в режиме block и отмеченные друзья",
+            )
+            .with_default("true"),
         ]
     }
 

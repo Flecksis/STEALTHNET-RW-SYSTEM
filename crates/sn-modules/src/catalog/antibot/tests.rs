@@ -337,3 +337,89 @@ async fn промо_ссылка_не_выдаётся_отмеченному_в
     assert!(free_allowed(&ctx, honest, "promo_link").await.unwrap());
     db.cleanup().await;
 }
+
+#[test]
+fn защита_рулетки_и_конкурсов_включена_по_умолчанию() {
+    let defaults = AntibotSettings::parse(&ModuleConfig::default()).unwrap();
+    assert!(defaults.roulette_guard && defaults.contest_guard);
+    assert!(Target::Roulette.guarded(&defaults) && Target::Contest.guarded(&defaults));
+    let off = AntibotSettings::parse(&ModuleConfig::from_value(&serde_json::json!({
+        "roulette_guard": "false",
+        "contest_guard": false
+    })))
+    .unwrap();
+    assert!(!Target::Roulette.guarded(&off) && !Target::Contest.guarded(&off));
+    let keys: Vec<String> = AntibotModule
+        .settings_schema()
+        .into_iter()
+        .map(|f| f.key.to_string())
+        .collect();
+    assert!(keys.contains(&"roulette_guard".to_string()));
+    assert!(keys.contains(&"contest_guard".to_string()));
+    assert_eq!(
+        JournalFilter::parse(Some("roulette")),
+        Some(JournalFilter::Roulette)
+    );
+    assert_eq!(
+        JournalFilter::parse(Some("contest")),
+        Some(JournalFilter::Contest)
+    );
+    for action in Action::ALL {
+        assert_eq!(Action::parse(action.as_str()), Some(action));
+    }
+}
+
+#[tokio::test]
+async fn журнал_принимает_все_виды_срабатываний() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let id = client(&db.store).await;
+    let mut conn = db.store.conn().await.unwrap();
+    for action in Action::ALL {
+        assert!(
+            store::event(
+                &mut conn,
+                &NewEvent {
+                    client_id: id,
+                    action,
+                    reasons: &[Signal::IpLimit],
+                    details: serde_json::json!({}),
+                    dedupe: None,
+                    admin: None,
+                },
+            )
+            .await
+            .unwrap()
+        );
+    }
+    let all = store::journal(
+        &mut conn,
+        JournalFilter::All,
+        Some(id),
+        sn_domain::paging::PageRequest::new(Some(50), None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.items.len(), Action::ALL.len());
+    let roulette = store::journal(
+        &mut conn,
+        JournalFilter::Roulette,
+        Some(id),
+        sn_domain::paging::PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(roulette.items.len(), 3);
+    let contest = store::journal(
+        &mut conn,
+        JournalFilter::Contest,
+        Some(id),
+        sn_domain::paging::PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(contest.items.len(), 4);
+    drop(conn);
+    db.cleanup().await;
+}

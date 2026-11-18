@@ -1,11 +1,12 @@
 use super::{AdminView, ClientState, ConfigDraft, RouletteError, SpinItem, SpinResult};
+use crate::catalog::antibot;
 use crate::catalog::web::{Admin, Customer, WebError};
 use crate::context::ModuleContext;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sn_domain::access::Permission;
 use sn_domain::ids::SubscriptionId;
 use sn_domain::paging::{Page, PageRequest};
@@ -87,21 +88,59 @@ struct SpinRequest {
     request_id: Uuid,
     #[serde(default)]
     subscription_id: Option<SubscriptionId>,
+    #[serde(default)]
+    confirm: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Prompt {
+    token: String,
+    text: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum SpinReply {
+    Spun(Box<SpinResult>),
+    Confirm { confirm: Prompt },
 }
 
 async fn spin(
     State(ctx): State<ModuleContext>,
     customer: Customer,
     Json(body): Json<SpinRequest>,
-) -> Result<Json<SpinResult>, WebError> {
+) -> Result<Json<SpinReply>, WebError> {
     customer.require_full()?;
-    Ok(Json(
-        super::spin(
-            &ctx,
-            customer.0.client_id,
-            body.request_id,
-            body.subscription_id,
-        )
-        .await?,
-    ))
+    let client_id = customer.0.client_id;
+    let token = body
+        .confirm
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let result = match token {
+        Some(token) => {
+            super::spin_confirmed(
+                &ctx,
+                client_id,
+                body.request_id,
+                body.subscription_id,
+                token,
+            )
+            .await
+        }
+        None => super::spin(&ctx, client_id, body.request_id, body.subscription_id).await,
+    };
+    match result {
+        Ok(spun) => Ok(Json(SpinReply::Spun(Box::new(spun)))),
+        Err(RouletteError::Rejected { code, .. }) if code == antibot::CONFIRM_CODE => {
+            let token = antibot::challenge(&ctx, client_id).await?;
+            Ok(Json(SpinReply::Confirm {
+                confirm: Prompt {
+                    token,
+                    text: super::CONFIRM_TEXT,
+                },
+            }))
+        }
+        Err(err) => Err(err.into()),
+    }
 }

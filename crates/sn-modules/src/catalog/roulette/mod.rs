@@ -3,6 +3,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+use crate::catalog::antibot::{self, Guard, Target};
 use crate::catalog::prize::{self, Prize, PrizeDraft};
 use crate::catalog::promo::PromoKind;
 use crate::catalog::{db_now, installation_currency};
@@ -35,6 +36,8 @@ pub const WEIGHT_MAX: u32 = 10_000;
 pub const FREE_EVERY_MAX: u32 = 365;
 pub const HISTORY: i64 = 10;
 pub const LABEL_MAX: usize = 24;
+pub const FREE_DENIED: &str = "Бесплатные вращения для этого аккаунта недоступны";
+pub const CONFIRM_TEXT: &str = "Перед бесплатным вращением подтвердите, что вы не робот.";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -582,14 +585,23 @@ fn history_item(row: store::SpinRow) -> HistoryItem {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Free {
+    ready: bool,
+    next_at: Option<DateTime<Utc>>,
+    blocked: Option<String>,
+    held: bool,
+}
+
 async fn free_status(
     db: &mut impl Db,
     config: &Config,
     client_id: ClientId,
     now: DateTime<Utc>,
-) -> Result<(bool, Option<DateTime<Utc>>, Option<String>), ModuleError> {
+    denied: bool,
+) -> Result<Free, ModuleError> {
     let Some(every) = config.free_every_days else {
-        return Ok((false, None, None));
+        return Ok(Free::default());
     };
     let allowed = match config.free_for {
         FreeFor::All => true,
@@ -597,32 +609,45 @@ async fn free_status(
         FreeFor::Paid => store::eligible_free(db, client_id, now, true).await?,
     };
     if !allowed {
-        return Ok((
-            false,
-            None,
-            Some(format!(
-                "Бесплатно крутить можно {}",
-                config.free_for.title()
-            )),
-        ));
+        return Ok(Free {
+            blocked: Some(if denied {
+                FREE_DENIED.to_string()
+            } else {
+                format!("Бесплатно крутить можно {}", config.free_for.title())
+            }),
+            ..Free::default()
+        });
     }
     let next = store::last_free(db, client_id)
         .await?
         .map(|last| last + Duration::days(i64::from(every)));
-    Ok((
-        next.is_none_or(|at| at <= now),
-        next.filter(|at| *at > now),
-        None,
-    ))
+    let ready = next.is_none_or(|at| at <= now);
+    if denied {
+        return Ok(Free {
+            blocked: Some(FREE_DENIED.to_string()),
+            held: ready,
+            ..Free::default()
+        });
+    }
+    Ok(Free {
+        ready,
+        next_at: next.filter(|at| *at > now),
+        blocked: None,
+        held: false,
+    })
 }
 
-async fn client_state(db: &mut impl Db, client_id: ClientId) -> Result<ClientState, ModuleError> {
+async fn client_state(
+    db: &mut impl Db,
+    client_id: ClientId,
+    denied: bool,
+) -> Result<(ClientState, bool), ModuleError> {
     let now = db_now(db).await?;
     let (config, version, saved, _) = load(db).await?;
-    let (free_ready, free_next_at, free_blocked) = if saved {
-        free_status(db, &config, client_id, now).await?
+    let free = if saved {
+        free_status(db, &config, client_id, now, denied).await?
     } else {
-        (false, None, None)
+        Free::default()
     };
     let purchase = if config.per_purchase || store::open_tickets(db, client_id).await? > 0 {
         store::open_tickets(db, client_id).await?
@@ -634,23 +659,24 @@ async fn client_state(db: &mut impl Db, client_id: ClientId) -> Result<ClientSta
         .into_iter()
         .map(history_item)
         .collect();
-    Ok(ClientState {
+    let state = ClientState {
         ready: saved,
         version,
         sectors: sector_views(&config),
         spins: Spins {
-            free_ready,
-            free_next_at,
-            free_blocked,
+            free_ready: free.ready,
+            free_next_at: free.next_at,
+            free_blocked: free.blocked,
             purchase,
-            total: purchase + i64::from(free_ready),
+            total: purchase + i64::from(free.ready),
         },
         free_every_days: config.free_every_days,
         free_for: config.free_for,
         per_purchase: config.per_purchase,
         purchase_min: config.purchase_min,
         history,
-    })
+    };
+    Ok((state, free.held))
 }
 
 pub async fn ready(ctx: &ModuleContext) -> Result<bool, ModuleError> {
@@ -658,9 +684,28 @@ pub async fn ready(ctx: &ModuleContext) -> Result<bool, ModuleError> {
     Ok(store::config(&mut conn).await?.is_some())
 }
 
+fn target() -> serde_json::Value {
+    serde_json::json!({ "target": Target::Roulette.as_str() })
+}
+
 pub async fn state(ctx: &ModuleContext, client_id: ClientId) -> Result<ClientState, ModuleError> {
-    let mut conn = ctx.store.conn().await?;
-    client_state(&mut conn, client_id).await
+    let guard = antibot::guard(ctx, client_id, Target::Roulette).await?;
+    let (state, held) = {
+        let mut conn = ctx.store.conn().await?;
+        client_state(&mut conn, client_id, Guard::denied(guard.as_ref())).await?
+    };
+    if held {
+        antibot::record(
+            ctx,
+            client_id,
+            guard.as_ref(),
+            antibot::Action::RouletteDenied,
+            target(),
+            None,
+        )
+        .await?;
+    }
+    Ok(state)
 }
 
 fn available(
@@ -709,16 +754,29 @@ pub fn pick(weights: &[(usize, u32)], roll: u64) -> Option<usize> {
     None
 }
 
+pub async fn spin_confirmed(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    request_id: Uuid,
+    prefer: Option<SubscriptionId>,
+    token: &str,
+) -> Result<SpinResult, RouletteError> {
+    antibot::confirm(ctx, client_id, token, Target::Roulette.as_str()).await?;
+    spin(ctx, client_id, request_id, prefer).await
+}
+
 pub async fn spin(
     ctx: &ModuleContext,
     client_id: ClientId,
     request_id: Uuid,
     prefer: Option<SubscriptionId>,
 ) -> Result<SpinResult, RouletteError> {
+    let guard = antibot::guard(ctx, client_id, Target::Roulette).await?;
+    let denied = Guard::denied(guard.as_ref());
     let mut tx = ctx.store.begin().await?;
     tx.lock(LockSpace::Client, client_id.0).await?;
     if let Some(found) = store::spin_by_request(&mut tx, client_id, request_id).await? {
-        let state = client_state(&mut tx, client_id).await?;
+        let (state, _) = client_state(&mut tx, client_id, denied).await?;
         tx.commit().await?;
         return Ok(SpinResult {
             spin: history_item(found),
@@ -737,8 +795,32 @@ pub async fn spin(
             "Рулетка ещё не настроена. Загляните позже",
         ));
     }
-    let (free_ready, _, _) = free_status(&mut tx, &config, client_id, now).await?;
-    let (source, ticket) = if free_ready {
+    let free = free_status(&mut tx, &config, client_id, now, denied).await?;
+    if free.held {
+        antibot::record(
+            ctx,
+            client_id,
+            guard.as_ref(),
+            antibot::Action::RouletteDenied,
+            target(),
+            None,
+        )
+        .await?;
+    }
+    if free.ready && Guard::asks(guard.as_ref()) {
+        tx.rollback().await?;
+        antibot::record(
+            ctx,
+            client_id,
+            guard.as_ref(),
+            antibot::Action::RouletteAsked,
+            target(),
+            None,
+        )
+        .await?;
+        return Err(rejected(antibot::CONFIRM_CODE, CONFIRM_TEXT));
+    }
+    let (source, ticket) = if free.ready {
         ("free", None)
     } else {
         match store::take_ticket(&mut tx, client_id).await? {
@@ -838,11 +920,26 @@ pub async fn spin(
             }
         }
     }
+    if source == "free" && Guard::noted(guard.as_ref()) {
+        antibot::record(
+            ctx,
+            client_id,
+            guard.as_ref(),
+            antibot::Action::RouletteNoted,
+            serde_json::json!({
+                "target": Target::Roulette.as_str(),
+                "spin_id": spin_id,
+                "prize": label,
+            }),
+            Some(spin_id),
+        )
+        .await?;
+    }
     let mut conn = ctx.store.conn().await?;
     let row = store::spin(&mut conn, spin_id)
         .await?
         .ok_or(ModuleError::NotFound("вращение"))?;
-    let state = client_state(&mut conn, client_id).await?;
+    let (state, _) = client_state(&mut conn, client_id, denied).await?;
     Ok(SpinResult {
         spin: history_item(row),
         state,

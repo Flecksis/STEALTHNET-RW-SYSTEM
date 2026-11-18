@@ -357,3 +357,47 @@ pub async fn paid_payment(
 pub fn usd(minor: i64) -> Money {
     Money::new(minor, Currency::Usd)
 }
+
+pub async fn antibot(store: &Store, config: serde_json::Value) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO module_states (module, enabled, config) VALUES ('antibot', true, $1) \
+         ON CONFLICT (module) DO UPDATE SET enabled = true, config = EXCLUDED.config",
+    )
+    .bind(config)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+pub async fn suspect(store: &Store, client_id: ClientId) {
+    let mut conn = store.conn().await.unwrap();
+    crate::catalog::antibot::store::save_mark(
+        &mut conn,
+        client_id,
+        &[crate::catalog::antibot::signals::Signal::DisposableEmail],
+        &serde_json::json!({ "domain": "mailinator.com" }),
+    )
+    .await
+    .unwrap();
+}
+
+pub async fn age_challenge(store: &Store, client_id: ClientId) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+    )
+    .bind(client_id.0)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+pub async fn antibot_actions(store: &Store, client_id: ClientId) -> Vec<String> {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar("SELECT action FROM antibot_events WHERE client_id = $1 ORDER BY id")
+        .bind(client_id.0)
+        .fetch_all(conn.conn())
+        .await
+        .unwrap()
+}

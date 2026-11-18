@@ -1,4 +1,5 @@
 use super::{Audience, Content, EntryFilter, ListFilter, MessageContent};
+use crate::catalog::antibot::Invite;
 use chrono::{DateTime, Utc};
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::paging::{Page, PageRequest};
@@ -388,6 +389,37 @@ pub async fn facts(
     .bind(query.friends_paid)
     .fetch_all(db.conn())
     .await?)
+}
+
+pub async fn invites(
+    db: &mut impl Db,
+    ids: &[i64],
+    query: &FactsQuery,
+) -> StoreResult<Vec<Invite>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let friend_paid = PAID_ORDER.replace("o.", "f.");
+    let rows: Vec<(i64, i64, DateTime<Utc>)> = sqlx::query_as(&format!(
+        "SELECT l.referrer_id, l.client_id, l.created_at FROM referral_links l \
+         WHERE l.referrer_id = ANY($1) AND l.created_at >= $2 AND l.created_at < $3 \
+           AND (NOT $4 OR EXISTS (SELECT 1 FROM orders f WHERE f.client_id = l.client_id AND {friend_paid})) \
+         ORDER BY l.referrer_id, l.created_at, l.client_id"
+    ))
+    .bind(ids)
+    .bind(query.friends_from)
+    .bind(query.friends_until)
+    .bind(query.friends_paid)
+    .fetch_all(db.conn())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(referrer, invitee, linked_at)| Invite {
+            referrer: ClientId(referrer),
+            invitee: ClientId(invitee),
+            linked_at,
+        })
+        .collect())
 }
 
 pub async fn insert_entry(

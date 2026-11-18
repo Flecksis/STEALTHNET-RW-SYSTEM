@@ -1129,7 +1129,7 @@ impl<'a> Checkout<'a> {
     }
 
     pub async fn confirm_trial(&self, client_id: ClientId, token: &str) -> ServiceResult<OrderId> {
-        match antibot::confirm(&self.services.module_context(), client_id, token).await? {
+        match antibot::confirm(&self.services.module_context(), client_id, token, "trial").await? {
             antibot::Confirmation::Confirmed => self.start_trial(client_id).await,
             antibot::Confirmation::TooFast => Err(ServiceError::rejected(
                 "antibot.too_fast",

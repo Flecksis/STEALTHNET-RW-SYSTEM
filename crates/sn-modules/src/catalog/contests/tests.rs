@@ -1,5 +1,7 @@
 use super::*;
-use crate::catalog::testing::{TestCore, client, context};
+use crate::catalog::testing::{
+    TestCore, age_challenge, antibot, antibot_actions, client, context, suspect,
+};
 use sn_domain::client::{IdentityKind, NewIdentity};
 use sn_domain::ids::{RemnaUserId, SubscriptionId};
 use sn_domain::subscription::{AutoRenewState, RemnaLink, SubscriptionKind};
@@ -817,5 +819,373 @@ async fn маршруты_конкурсов_под_модулем_и_право
         .await
         .unwrap();
     assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+    db.cleanup().await;
+}
+
+fn guarded(mode: &str) -> serde_json::Value {
+    serde_json::json!({ "mode": mode, "burst_count": 0, "check_username": false })
+}
+
+async fn invite(store: &Store, friend: ClientId, host: ClientId) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query("INSERT INTO referral_links (client_id, referrer_id) VALUES ($1, $2)")
+        .bind(friend.0)
+        .bind(host.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+}
+
+async fn session(store: &Store, owner: ClientId, ip: &str) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO client_sessions (client_id, token_hash, channel, ip, expires_at) \
+         VALUES ($1, $2, 'miniapp', $3, now() + interval '1 day')",
+    )
+    .bind(owner.0)
+    .bind(format!("s-{}-{ip}", owner.0).into_bytes())
+    .bind(ip)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn антибот_не_пускает_в_конкурс_в_режиме_запрета_а_снятая_отметка_пускает_сразу() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    antibot(&db.store, guarded("block")).await;
+    let bot = tg_client(&db.store, 9301).await;
+    let honest = tg_client(&db.store, 9302).await;
+    suspect(&db.store, bot).await;
+    let created = create(
+        &ctx,
+        &draft(PrizeDraft::Balance { amount: "1".into() }, 1),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        join(&ctx, created.id, bot).await.unwrap(),
+        JoinOutcome::Denied
+    );
+    assert_eq!(
+        join(&ctx, created.id, bot).await.unwrap(),
+        JoinOutcome::Denied
+    );
+    assert!(
+        !client_view(&ctx, created.id, bot)
+            .await
+            .unwrap()
+            .unwrap()
+            .joined
+    );
+    assert_eq!(
+        join(&ctx, created.id, honest).await.unwrap(),
+        JoinOutcome::Joined
+    );
+    assert_eq!(antibot_actions(&db.store, bot).await, ["contest_denied"]);
+    assert!(antibot_actions(&db.store, honest).await.is_empty());
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        let journal = crate::catalog::antibot::store::journal(
+            &mut conn,
+            crate::catalog::antibot::JournalFilter::Contest,
+            None,
+            PageRequest::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(journal.items.len(), 1);
+        assert_eq!(journal.items[0].title, "Участие в конкурсе не принято");
+        assert_eq!(journal.items[0].details["contest_id"], created.id);
+        assert_eq!(journal.items[0].details["title"], "Новогодний розыгрыш");
+    }
+
+    crate::catalog::antibot::clear(&ctx, bot, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        join(&ctx, created.id, bot).await.unwrap(),
+        JoinOutcome::Joined
+    );
+
+    let other = tg_client(&db.store, 9303).await;
+    suspect(&db.store, other).await;
+    assert_eq!(
+        join(&ctx, created.id, other).await.unwrap(),
+        JoinOutcome::Denied
+    );
+    let mut off = guarded("block");
+    off["contest_guard"] = serde_json::json!(false);
+    antibot(&db.store, off).await;
+    assert_eq!(
+        join(&ctx, created.id, other).await.unwrap(),
+        JoinOutcome::Joined
+    );
+
+    antibot(&db.store, guarded("mark")).await;
+    let watched = client(&db.store).await;
+    suspect(&db.store, watched).await;
+    assert_eq!(
+        join(&ctx, created.id, watched).await.unwrap(),
+        JoinOutcome::Joined
+    );
+    assert_eq!(antibot_actions(&db.store, watched).await, ["contest_noted"]);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn антибот_просит_подтвердить_участие_в_конкурсе_кнопкой() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    antibot(&db.store, guarded("confirm")).await;
+    let player = tg_client(&db.store, 9311).await;
+    suspect(&db.store, player).await;
+    let created = create(
+        &ctx,
+        &draft(PrizeDraft::Balance { amount: "1".into() }, 1),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        join(&ctx, created.id, player).await.unwrap(),
+        JoinOutcome::Confirm
+    );
+    let token = crate::catalog::antibot::challenge(&ctx, player)
+        .await
+        .unwrap();
+    assert_eq!(
+        join_confirmed(&ctx, created.id, player, &token)
+            .await
+            .unwrap(),
+        JoinOutcome::Confirm
+    );
+    age_challenge(&db.store, player).await;
+    assert_eq!(
+        join_confirmed(&ctx, created.id, player, "не-тот-код")
+            .await
+            .unwrap(),
+        JoinOutcome::Confirm
+    );
+    assert_eq!(
+        join_confirmed(&ctx, created.id, player, &token)
+            .await
+            .unwrap(),
+        JoinOutcome::Joined
+    );
+    assert_eq!(
+        antibot_actions(&db.store, player).await,
+        ["contest_asked", "confirmed"]
+    );
+    let second = create(
+        &ctx,
+        &draft(PrizeDraft::Balance { amount: "1".into() }, 1),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        join(&ctx, second.id, player).await.unwrap(),
+        JoinOutcome::Joined
+    );
+    let picky = tg_client(&db.store, 9312).await;
+    suspect(&db.store, picky).await;
+    let mut strict = draft(PrizeDraft::Balance { amount: "1".into() }, 1);
+    strict.conditions.subscription = true;
+    let strict = create(&ctx, &strict, None).await.unwrap();
+    assert_eq!(
+        join(&ctx, strict.id, picky).await.unwrap(),
+        JoinOutcome::NotEligible
+    );
+    assert!(antibot_actions(&db.store, picky).await.is_empty());
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отметка_посреди_конкурса_исключает_участника_на_жеребьёвке() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    antibot(&db.store, guarded("block")).await;
+    let caught = tg_client(&db.store, 9321).await;
+    let forgiven = tg_client(&db.store, 9322).await;
+    let honest = tg_client(&db.store, 9323).await;
+    let created = create(
+        &ctx,
+        &draft(PrizeDraft::Balance { amount: "2".into() }, 3),
+        None,
+    )
+    .await
+    .unwrap();
+    for player in [caught, forgiven, honest] {
+        assert_eq!(
+            join(&ctx, created.id, player).await.unwrap(),
+            JoinOutcome::Joined
+        );
+    }
+    suspect(&db.store, caught).await;
+    suspect(&db.store, forgiven).await;
+    crate::catalog::antibot::clear(&ctx, forgiven, None)
+        .await
+        .unwrap();
+    finish_now(&db.store, created.id).await;
+    let report = run(&ctx).await.unwrap();
+    assert_eq!(report.drawn, 1);
+    let done = contest(&ctx, created.id).await.unwrap();
+    assert_eq!(done.entries_drawn, Some(2));
+    assert_eq!(done.counts.excluded, 1);
+    let mut winners: Vec<ClientId> = done.winners_list.iter().map(|w| w.client_id).collect();
+    winners.sort();
+    assert_eq!(winners, [forgiven, honest]);
+    assert_eq!(balance(&db.store, caught).await, 0);
+    assert_eq!(balance(&db.store, forgiven).await, 200);
+    let out = entries(
+        &ctx,
+        created.id,
+        EntryFilter::Excluded,
+        PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.items.len(), 1);
+    assert_eq!(out.items[0].client_id, caught);
+    assert_eq!(out.items[0].excluded.as_deref(), Some(ANTIBOT_EXCLUDED));
+    assert!(done.log.iter().any(|l| l.kind == "antibot"
+        && l.text == format!("Не прошли проверку антибота — 1: клиент #{}", caught.0)));
+    assert!(
+        done.log
+            .iter()
+            .any(|l| l.kind == "draw" && l.text.contains("не прошли проверку — 1"))
+    );
+    let seen = client_view(&ctx, created.id, caught)
+        .await
+        .unwrap()
+        .unwrap();
+    let result = seen.result.unwrap();
+    assert!(!result.won);
+    assert_eq!(result.excluded.as_deref(), Some(UNAVAILABLE));
+    assert_eq!(
+        antibot_actions(&db.store, caught).await,
+        ["contest_excluded"]
+    );
+    assert_eq!(antibot_actions(&db.store, forgiven).await, ["cleared"]);
+
+    antibot(&db.store, guarded("confirm")).await;
+    let late = tg_client(&db.store, 9324).await;
+    let calm = create(
+        &ctx,
+        &draft(PrizeDraft::Balance { amount: "1".into() }, 1),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        join(&ctx, calm.id, late).await.unwrap(),
+        JoinOutcome::Joined
+    );
+    suspect(&db.store, late).await;
+    finish_now(&db.store, calm.id).await;
+    run(&ctx).await.unwrap();
+    let calm = contest(&ctx, calm.id).await.unwrap();
+    assert_eq!(calm.entries_drawn, Some(1));
+    assert_eq!(calm.counts.excluded, 0);
+    assert_eq!(calm.winners_list[0].client_id, late);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_зачёт_друзей_не_идут_отмеченные_и_самоприглашённые() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    antibot(&db.store, guarded("block")).await;
+    let host = tg_client(&db.store, 9331).await;
+    let friend = tg_client(&db.store, 9332).await;
+    let marked = tg_client(&db.store, 9333).await;
+    let twin = tg_client(&db.store, 9334).await;
+    let mut new = draft(PrizeDraft::Balance { amount: "1".into() }, 1);
+    new.conditions.friends = 3;
+    let created = create(&ctx, &new, None).await.unwrap();
+    for guest in [friend, marked, twin] {
+        invite(&db.store, guest, host).await;
+    }
+    suspect(&db.store, marked).await;
+    session(&db.store, host, "198.51.100.20").await;
+    session(&db.store, twin, "198.51.100.20").await;
+    session(&db.store, friend, "203.0.113.5").await;
+    let line = |c: &ClientContest| c.checks[0].text.clone();
+    let blocked = client_view(&ctx, created.id, host).await.unwrap().unwrap();
+    assert_eq!(
+        line(&blocked),
+        "Пригласить 3 друзей за время конкурса: 1 из 3"
+    );
+    assert_eq!(
+        join(&ctx, created.id, host).await.unwrap(),
+        JoinOutcome::NotEligible
+    );
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        let mark = crate::catalog::antibot::store::mark_of(&mut conn, twin)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mark.reasons,
+            [crate::catalog::antibot::signals::Signal::SelfInvite]
+        );
+        assert_eq!(mark.details["referrer_id"], host.0);
+        assert!(
+            crate::catalog::antibot::store::mark_of(&mut conn, friend)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    antibot(&db.store, guarded("confirm")).await;
+    let soft = client_view(&ctx, created.id, host).await.unwrap().unwrap();
+    assert_eq!(line(&soft), "Пригласить 3 друзей за время конкурса: 2 из 3");
+
+    let mut off = guarded("block");
+    off["contest_guard"] = serde_json::json!(false);
+    antibot(&db.store, off).await;
+    let open = client_view(&ctx, created.id, host).await.unwrap().unwrap();
+    assert_eq!(line(&open), "Пригласить 3 друзей за время конкурса: 3 из 3");
+
+    antibot(&db.store, guarded("confirm")).await;
+    crate::catalog::antibot::clear(&ctx, twin, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        join(&ctx, created.id, host).await.unwrap(),
+        JoinOutcome::Joined
+    );
+    finish_now(&db.store, created.id).await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query(
+            "UPDATE referral_links SET created_at = now() - interval '30 minutes' WHERE referrer_id = $1",
+        )
+        .bind(host.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    run(&ctx).await.unwrap();
+    let done = contest(&ctx, created.id).await.unwrap();
+    assert_eq!(done.entries_drawn, Some(1));
+    assert_eq!(done.winners_list[0].client_id, host);
     db.cleanup().await;
 }

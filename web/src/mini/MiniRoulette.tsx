@@ -28,6 +28,10 @@ type RouletteState = {
 
 type SpinResult = { spin: HistoryItem; state: RouletteState };
 
+type Check = { token: string; text: string };
+
+type SpinReply = SpinResult | { confirm: Check };
+
 const TILE = 96;
 const GAP = 10;
 const EDGE = 10;
@@ -187,6 +191,7 @@ export function MiniRoulette() {
   const [busy, setBusy] = useState(false);
   const [lit, setLit] = useState<number | null>(null);
   const [won, setWon] = useState<HistoryItem | null>(null);
+  const [check, setCheck] = useState<Check | null>(null);
   const [fast] = useState(reduced);
   const timer = useRef(0);
 
@@ -220,7 +225,7 @@ export function MiniRoulette() {
     [reload],
   );
 
-  const spin = async () => {
+  const spin = async (confirm?: string) => {
     if (!state || busy) {
       return;
     }
@@ -229,10 +234,17 @@ export function MiniRoulette() {
     setLit(null);
     setBusy(true);
     try {
-      const result = await api<SpinResult>('/api/client/m/roulette/spin', {
+      const reply = await api<SpinReply>('/api/client/m/roulette/spin', {
         method: 'POST',
-        body: { request_id: requestId(), subscription_id: view?.subscription.id ?? null },
+        body: { request_id: requestId(), subscription_id: view?.subscription.id ?? null, ...(confirm ? { confirm } : {}) },
       });
+      if ('confirm' in reply) {
+        setCheck(reply.confirm);
+        setBusy(false);
+        return;
+      }
+      setCheck(null);
+      const result = reply;
       const sectors = result.state.sectors.length ? result.state.sectors : state.sectors;
       const n = Math.max(sectors.length, 1);
       setState((s) => (s ? { ...s, sectors } : s));
@@ -248,6 +260,7 @@ export function MiniRoulette() {
       timer.current = window.setTimeout(() => land(result, target), fast ? 700 : SPIN_MS + 150);
     } catch (err) {
       setBusy(false);
+      setCheck(null);
       setError(errorText(err));
       try {
         setState(await api<RouletteState>('/api/client/m/roulette/state'));
@@ -318,9 +331,20 @@ export function MiniRoulette() {
 
       {error ? <p className="mn-error">{error}</p> : null}
 
-      <button type="button" className="mn-main press" disabled={busy || total < 1} onClick={() => void spin()}>
-        {busy ? 'Крутится…' : won && total > 0 ? 'Крутить ещё' : 'Крутить'}
-      </button>
+      {check ? (
+        <>
+          <p className="mr-human" aria-live="polite">
+            {check.text}
+          </p>
+          <button type="button" className="mn-main press" disabled={busy} onClick={() => void spin(check.token)}>
+            {busy ? 'Проверяем…' : 'Я не робот'}
+          </button>
+        </>
+      ) : (
+        <button type="button" className="mn-main press" disabled={busy || total < 1} onClick={() => void spin()}>
+          {busy ? 'Крутится…' : won && total > 0 ? 'Крутить ещё' : 'Крутить'}
+        </button>
+      )}
 
       <div className="mr-rules">
         {rules(state).map((r) => (

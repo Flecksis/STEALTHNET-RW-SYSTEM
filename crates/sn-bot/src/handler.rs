@@ -520,6 +520,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "ref" => extras::referral_action(turn, client, rest).await?,
         contests::OPEN => contests::open(turn, client, rest).await?,
         contests::JOIN => contests::join(turn, client, rest).await?,
+        contests::CONFIRM => contests::confirmed(turn, client, rest).await?,
         "opt" => extras::options_action(turn, client, rest).await?,
         "op" => extras::options_pay(turn, client, rest).await?,
         "gb" => gifts::tariffs(turn, client).await?,

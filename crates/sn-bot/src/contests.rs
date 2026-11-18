@@ -8,12 +8,13 @@ use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::module::ModuleId;
 use sn_modules::catalog::contests::{self, ClientContest, JoinOutcome, Status};
-use sn_modules::catalog::referral;
+use sn_modules::catalog::{antibot, referral};
 use sn_services::Services;
 use sn_services::bot_content::BotContent;
 
 pub const OPEN: &str = "ct";
 pub const JOIN: &str = "cj";
+pub const CONFIRM: &str = "cjr";
 
 fn card_text(c: &BotContent, contest: &ClientContest, offset: FixedOffset) -> String {
     let mut lines = Lines::new();
@@ -207,6 +208,63 @@ pub async fn join(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<Sc
     };
     let ctx = turn.services().module_context();
     let outcome = contests::join(&ctx, id, client.id).await?;
+    joined(turn, client, id, outcome).await
+}
+
+pub async fn confirmed(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    rest: &str,
+) -> Result<Screen, BotError> {
+    if !turn.services().modules().is_enabled(ModuleId::Contests) {
+        return main_menu(turn.ctx, client).await;
+    }
+    let Some((id, token)) = rest.split_once(':') else {
+        return entry(turn, client).await;
+    };
+    let Some(id) = id_arg(id) else {
+        return entry(turn, client).await;
+    };
+    let ctx = turn.services().module_context();
+    let outcome = contests::join_confirmed(&ctx, id, client.id, token).await?;
+    joined(turn, client, id, outcome).await
+}
+
+async fn human_check(turn: &Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
+    let services = turn.services();
+    let token = antibot::challenge(&services.module_context(), client.id).await?;
+    let content = services.bot_content();
+    let c = &*content;
+    Ok(Screen::new(ui::text(c, "contest.confirm", &[]))
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(
+                    c,
+                    "contest.btn.confirm",
+                    &[],
+                    format!("{CONFIRM}:{id}:{token}"),
+                ))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Contests))
+}
+
+async fn joined(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    id: i64,
+    outcome: JoinOutcome,
+) -> Result<Screen, BotError> {
+    match outcome {
+        JoinOutcome::Confirm => return human_check(turn, client, id).await,
+        JoinOutcome::Denied => {
+            let content = turn.services().bot_content();
+            return Ok(Screen::notice(ui::text(&content, "contest.denied", &[]))
+                .section(Section::Contests));
+        }
+        _ => {}
+    }
+    let ctx = turn.services().module_context();
     let all = contests::visible_for(&ctx, client.id).await?;
     let Some(found) = all.iter().find(|c| c.id == id) else {
         let content = turn.services().bot_content();
@@ -236,7 +294,10 @@ pub async fn join(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<Sc
         JoinOutcome::Blocked => {
             return Ok(Screen::new(ui::text(&content, "common.blocked", &[])));
         }
-        JoinOutcome::Already | JoinOutcome::NotEligible => {}
+        JoinOutcome::Already
+        | JoinOutcome::NotEligible
+        | JoinOutcome::Confirm
+        | JoinOutcome::Denied => {}
     }
     Ok(screen)
 }

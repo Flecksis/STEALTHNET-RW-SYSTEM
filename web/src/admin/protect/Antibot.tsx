@@ -157,6 +157,8 @@ type FormState = {
   extra_domains: string;
   referral_guard: boolean;
   mass_invites: string;
+  roulette_guard: boolean;
+  contest_guard: boolean;
 };
 
 function formOf(summary: AntibotSummary): FormState {
@@ -170,8 +172,19 @@ function formOf(summary: AntibotSummary): FormState {
     extra_domains: s.extra_domains.join(', '),
     referral_guard: s.referral_guard,
     mass_invites: String(s.mass_invites),
+    roulette_guard: s.roulette_guard,
+    contest_guard: s.contest_guard,
   };
 }
+
+const GUARDS: Array<['roulette_guard' | 'contest_guard', string, string]> = [
+  ['roulette_guard', 'Защищать рулетку', 'Бесплатные вращения подозрительным — по выбранному режиму. Вращения за покупки не трогаются.'],
+  [
+    'contest_guard',
+    'Защищать конкурсы',
+    'Участие подозрительных — по выбранному режиму. В условие «пригласить друзей» не идут самоприглашения, а в режиме запрета и отмеченные друзья.',
+  ],
+];
 
 const NUMBERS: Array<[keyof FormState, string, string]> = [
   ['young_days', 'Новый аккаунт Telegram, дней', 'Аккаунт новее всех, кто пришёл к вам раньше этого срока, считается новым. 0 — не учитывать.'],
@@ -191,6 +204,8 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
       mode: form.mode,
       check_username: form.check_username,
       referral_guard: form.referral_guard,
+      roulette_guard: form.roulette_guard,
+      contest_guard: form.contest_guard,
       extra_domains: form.extra_domains.trim() || null,
     };
     for (const [key, label] of NUMBERS) {
@@ -266,6 +281,15 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
         </span>
         <Switch on={form.referral_guard} onToggle={() => set('referral_guard', !form.referral_guard)} label="Не начислять за самоприглашение" disabled={busy} />
       </div>
+      {GUARDS.map(([key, label, hint]) => (
+        <div key={key} className="sf-flag">
+          <span className="sf-text">
+            <span className="sf-label">{label}</span>
+            <span className="cap">{hint}</span>
+          </span>
+          <Switch on={form[key]} onToggle={() => set(key, !form[key])} label={label} disabled={busy} />
+        </div>
+      ))}
       {error ? (
         <p className="err" role="alert">
           {error}
@@ -308,7 +332,7 @@ function AntibotDesk({ data }: { data: Data }) {
     try {
       await data.clear(m);
       setAsking(null);
-      setDone(`Отметка с клиента ${personName(m.client, m.client_id)} снята: пробный период и бонусы ему доступны как всем.`);
+      setDone(`Отметка с клиента ${personName(m.client, m.client_id)} снята: пробный период, бонусы, рулетка и конкурсы снова доступны как всем.`);
     } catch (err) {
       setAskError(failText(err, 'Отметка не снялась'));
     }
@@ -394,7 +418,7 @@ function AntibotDesk({ data }: { data: Data }) {
                       <div role="row" className="pr-ask-row">
                         <div role="cell" className="pr-ask">
                           <span>
-                            <b>Снять отметку с клиента {personName(m.client, m.client_id)}?</b> Антибот перестанет его проверять: пробный период, дни по промокодам и бонусы пригласившему станут доступны.
+                            <b>Снять отметку с клиента {personName(m.client, m.client_id)}?</b> Антибот перестанет проверять этот аккаунт: пробный период, дни по промокодам, бонусы пригласившему, бесплатные вращения рулетки и конкурсы станут доступны.
                           </span>
                           <span className="pr-ask-btns">
                             <button type="button" className="b34 on-surface hov" disabled={data.busy !== null} onClick={() => void clear(m)}>
@@ -548,7 +572,7 @@ function AntibotPhone({ data }: { data: Data }) {
                       asking === m.client_id ? (
                         <div className="np-ask">
                           <p>
-                            <strong>Снять отметку?</strong> Пробный период и бонусы станут доступны.
+                            <strong>Снять отметку?</strong> Пробный период, бонусы, рулетка и конкурсы станут доступны.
                           </p>
                           <div className="np-ask-btns">
                             <button type="button" className="np-ok press" disabled={data.busy !== null} onClick={() => void clear(m)}>

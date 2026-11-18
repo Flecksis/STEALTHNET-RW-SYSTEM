@@ -1,5 +1,8 @@
 use super::*;
-use crate::catalog::testing::{TestCore, client, context, order, paid_payment, pooled, usd};
+use crate::catalog::testing::{
+    TestCore, age_challenge, antibot, antibot_actions, client, context, order, paid_payment,
+    pooled, suspect, usd,
+};
 use sn_domain::ids::{PeriodId, RemnaUserId, TariffId};
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Amount, PayCurrency};
@@ -615,5 +618,248 @@ async fn рулетка_настраивается_и_крутится_чере�
     assert_eq!(empty.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json_of(empty).await["error"]["code"], "roulette.no_spins");
     assert_eq!(balance(&db.store, player).await, 125);
+    db.cleanup().await;
+}
+
+async fn sources(store: &Store, owner: ClientId) -> Vec<String> {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar("SELECT source FROM roulette_spins WHERE client_id = $1 ORDER BY id")
+        .bind(owner.0)
+        .fetch_all(conn.conn())
+        .await
+        .unwrap()
+}
+
+fn wheel() -> ConfigDraft {
+    config(vec![
+        sector(PrizeDraft::Balance { amount: "1".into() }, 1),
+        sector(PrizeDraft::Empty, 0),
+    ])
+}
+
+#[tokio::test]
+async fn антибот_в_режиме_запрета_не_даёт_бесплатных_вращений_а_покупные_остаются() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    save(&ctx, &wheel(), None).await.unwrap();
+    antibot(&db.store, serde_json::json!({ "mode": "block" })).await;
+    let bot = client(&db.store).await;
+    let honest = client(&db.store).await;
+    suspect(&db.store, bot).await;
+    let seen = state(&ctx, bot).await.unwrap();
+    assert!(!seen.spins.free_ready);
+    assert_eq!(seen.spins.total, 0);
+    assert_eq!(seen.spins.free_next_at, None);
+    assert_eq!(seen.spins.free_blocked.as_deref(), Some(FREE_DENIED));
+    let refused = spin(&ctx, bot, Uuid::new_v4(), None).await.unwrap_err();
+    assert!(matches!(
+        refused,
+        RouletteError::Rejected {
+            code: "roulette.no_spins",
+            ..
+        }
+    ));
+    assert!(state(&ctx, honest).await.unwrap().spins.free_ready);
+    paid(&ctx, bot, usd(500)).await;
+    let bought = state(&ctx, bot).await.unwrap();
+    assert_eq!(bought.spins.purchase, 1);
+    assert_eq!(bought.spins.total, 1);
+    let spun = spin(&ctx, bot, Uuid::new_v4(), None).await.unwrap();
+    assert_eq!(spun.state.spins.total, 0);
+    assert_eq!(sources(&db.store, bot).await, ["purchase"]);
+    assert_eq!(balance(&db.store, bot).await, 100);
+    assert_eq!(antibot_actions(&db.store, bot).await, ["roulette_denied"]);
+
+    crate::catalog::antibot::clear(&ctx, bot, None)
+        .await
+        .unwrap();
+    let cleared = state(&ctx, bot).await.unwrap();
+    assert!(cleared.spins.free_ready);
+    assert_eq!(cleared.spins.free_blocked, None);
+    spin(&ctx, bot, Uuid::new_v4(), None).await.unwrap();
+    assert_eq!(sources(&db.store, bot).await, ["purchase", "free"]);
+    assert_eq!(
+        antibot_actions(&db.store, bot).await,
+        ["roulette_denied", "cleared"]
+    );
+
+    let other = client(&db.store).await;
+    suspect(&db.store, other).await;
+    assert!(!state(&ctx, other).await.unwrap().spins.free_ready);
+    antibot(
+        &db.store,
+        serde_json::json!({ "mode": "block", "roulette_guard": false }),
+    )
+    .await;
+    assert!(state(&ctx, other).await.unwrap().spins.free_ready);
+    spin(&ctx, other, Uuid::new_v4(), None).await.unwrap();
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn антибот_просит_подтвердить_перед_бесплатным_вращением() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    save(&ctx, &wheel(), None).await.unwrap();
+    antibot(&db.store, serde_json::json!({ "mode": "confirm" })).await;
+    let player = client(&db.store).await;
+    suspect(&db.store, player).await;
+    assert!(state(&ctx, player).await.unwrap().spins.free_ready);
+    let asked = spin(&ctx, player, Uuid::new_v4(), None).await.unwrap_err();
+    assert!(matches!(
+        asked,
+        RouletteError::Rejected {
+            code: crate::catalog::antibot::CONFIRM_CODE,
+            ..
+        }
+    ));
+    assert_eq!(balance(&db.store, player).await, 0);
+    let token = crate::catalog::antibot::challenge(&ctx, player)
+        .await
+        .unwrap();
+    let hurried = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &token)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        hurried,
+        RouletteError::Rejected {
+            code: crate::catalog::antibot::CONFIRM_CODE,
+            ..
+        }
+    ));
+    age_challenge(&db.store, player).await;
+    let won = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &token)
+        .await
+        .unwrap();
+    assert_eq!(won.spin.state, "issued");
+    assert_eq!(balance(&db.store, player).await, 100);
+    assert_eq!(
+        antibot_actions(&db.store, player).await,
+        ["roulette_asked", "confirmed"]
+    );
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        let target: Option<String> = sqlx::query_scalar(
+            "SELECT details->>'target' FROM antibot_events WHERE client_id = $1 AND action = 'confirmed'",
+        )
+        .bind(player.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        assert_eq!(target.as_deref(), Some("roulette"));
+        sqlx::query(
+            "UPDATE roulette_spins SET created_at = now() - interval '8 days' WHERE client_id = $1",
+        )
+        .bind(player.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    spin(&ctx, player, Uuid::new_v4(), None).await.unwrap();
+    assert_eq!(balance(&db.store, player).await, 200);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn антибот_в_режиме_отметки_пускает_и_пишет_бесплатное_вращение_в_журнал() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    save(&ctx, &wheel(), None).await.unwrap();
+    antibot(&db.store, serde_json::json!({ "mode": "mark" })).await;
+    let player = client(&db.store).await;
+    suspect(&db.store, player).await;
+    let free = spin(&ctx, player, Uuid::new_v4(), None).await.unwrap();
+    paid(&ctx, player, usd(500)).await;
+    spin(&ctx, player, Uuid::new_v4(), None).await.unwrap();
+    assert_eq!(sources(&db.store, player).await, ["free", "purchase"]);
+    assert_eq!(balance(&db.store, player).await, 200);
+    let mut conn = db.store.conn().await.unwrap();
+    let journal = crate::catalog::antibot::store::journal(
+        &mut conn,
+        crate::catalog::antibot::JournalFilter::Roulette,
+        Some(player),
+        PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(journal.items.len(), 1);
+    assert_eq!(
+        journal.items[0].action,
+        crate::catalog::antibot::Action::RouletteNoted
+    );
+    assert_eq!(journal.items[0].details["spin_id"], free.spin.id);
+    assert_eq!(
+        journal.items[0].reasons[0].code,
+        crate::catalog::antibot::signals::Signal::DisposableEmail
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn кнопка_я_не_робот_в_рулетке_через_маршрут() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sn_domain::access::{ClientChannel, ClientPrincipal};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let registry = Arc::new(crate::registry::ModuleRegistry::new(crate::catalog::all()).unwrap());
+    registry
+        .set_enabled(&db.store, ModuleId::Roulette, true, None)
+        .await
+        .unwrap();
+    save(&ctx, &wheel(), None).await.unwrap();
+    antibot(&db.store, serde_json::json!({ "mode": "confirm" })).await;
+    let player = client(&db.store).await;
+    suspect(&db.store, player).await;
+    let router = registry.client_router(ctx);
+    let call = |body: serde_json::Value| {
+        Request::post("/roulette/spin")
+            .header("content-type", "application/json")
+            .extension(ClientPrincipal {
+                client_id: player,
+                channel: ClientChannel::Miniapp,
+                full_access: true,
+                session_id: Some(1),
+            })
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let first = router
+        .clone()
+        .oneshot(call(serde_json::json!({ "request_id": Uuid::new_v4() })))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = json_of(first).await;
+    assert_eq!(first["confirm"]["text"], CONFIRM_TEXT);
+    let token = first["confirm"]["token"].as_str().unwrap().to_string();
+    assert!(first.get("spin").is_none());
+    age_challenge(&db.store, player).await;
+    let spun = router
+        .oneshot(call(
+            serde_json::json!({ "request_id": Uuid::new_v4(), "confirm": token }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(spun.status(), StatusCode::OK);
+    let spun = json_of(spun).await;
+    assert_eq!(spun["spin"]["sector"], 0);
+    assert_eq!(spun["state"]["spins"]["total"], 0);
+    assert_eq!(balance(&db.store, player).await, 100);
     db.cleanup().await;
 }

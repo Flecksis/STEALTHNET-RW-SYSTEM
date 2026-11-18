@@ -214,3 +214,124 @@ async fn кнопка_рулетки_открывает_ленту_призов_
     );
     db.cleanup().await;
 }
+
+async fn antibot_mode(services: &Services, mode: &str) {
+    services
+        .modules()
+        .set_enabled(services.store(), ModuleId::Antibot, true, None)
+        .await
+        .unwrap();
+    services
+        .modules()
+        .set_config(
+            services.store(),
+            ModuleId::Antibot,
+            sn_modules::ModuleConfig::from_value(&serde_json::json!({
+                "mode": mode,
+                "burst_count": 0,
+                "check_username": false
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn антибот_просит_кнопку_перед_конкурсом_и_не_пускает_в_режиме_запрета() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    services
+        .modules()
+        .set_enabled(services.store(), ModuleId::Contests, true, None)
+        .await
+        .unwrap();
+    antibot_mode(&services, "confirm").await;
+    handle_update(&ctx, text_update(1, 611, "/start")).await;
+    let client = client_of(&services, 611).await.unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sn_modules::catalog::antibot::store::save_mark(
+            &mut conn,
+            client.id,
+            &[sn_modules::catalog::antibot::signals::Signal::DisposableEmail],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    }
+    let module = services.module_context();
+    let open = contests::create(&module, &draft("Розыгрыш с проверкой", false), None)
+        .await
+        .unwrap();
+    handle_update(&ctx, callback_update(2, 611, &format!("cj:{}", open.id))).await;
+    let asked = last_text(&server).await;
+    assert!(asked.contains("подтвердите, что вы не робот"), "{asked}");
+    assert!(
+        last_labels(&server)
+            .await
+            .contains(&"Я не робот".to_string())
+    );
+    let button = last_buttons(&server)
+        .await
+        .into_iter()
+        .find(|b| b.starts_with(&format!("cjr:{}:", open.id)))
+        .unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+        )
+        .bind(client.id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    handle_update(&ctx, callback_update(3, 611, &button)).await;
+    let joined = last_text(&server).await;
+    assert!(
+        joined.starts_with("Готово, вы участвуете в конкурсе «Розыгрыш с проверкой»"),
+        "{joined}"
+    );
+    assert!(
+        contests::client_view(&module, open.id, client.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .joined
+    );
+
+    antibot_mode(&services, "block").await;
+    handle_update(&ctx, text_update(4, 612, "/start")).await;
+    let other = client_of(&services, 612).await.unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sn_modules::catalog::antibot::store::save_mark(
+            &mut conn,
+            other.id,
+            &[sn_modules::catalog::antibot::signals::Signal::DisposableEmail],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    }
+    handle_update(&ctx, callback_update(5, 612, &format!("cj:{}", open.id))).await;
+    let denied = last_text(&server).await;
+    assert!(
+        denied.contains("Участие в конкурсах для этого аккаунта недоступно"),
+        "{denied}"
+    );
+    assert!(
+        !denied.contains("антибот") && !denied.contains("подозр"),
+        "{denied}"
+    );
+    assert!(
+        !contests::client_view(&module, open.id, other.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .joined
+    );
+    db.cleanup().await;
+}

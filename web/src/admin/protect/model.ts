@@ -24,7 +24,21 @@ export type JournalItem = {
   at: string;
   client_id: number;
   client: Person | null;
-  action: 'marked' | 'asked' | 'confirmed' | 'trial_denied' | 'promo_denied' | 'no_bonus' | 'cleared';
+  action:
+    | 'marked'
+    | 'asked'
+    | 'confirmed'
+    | 'trial_denied'
+    | 'promo_denied'
+    | 'no_bonus'
+    | 'cleared'
+    | 'roulette_asked'
+    | 'roulette_denied'
+    | 'roulette_noted'
+    | 'contest_asked'
+    | 'contest_denied'
+    | 'contest_noted'
+    | 'contest_excluded';
   title: string;
   reasons: Reason[];
   details: Record<string, unknown>;
@@ -49,6 +63,8 @@ export type AntibotSettings = {
   extra_domains: string[];
   referral_guard: boolean;
   mass_invites: number;
+  roulette_guard: boolean;
+  contest_guard: boolean;
 };
 
 export type AntibotSummary = {
@@ -73,17 +89,17 @@ export const MODES: Array<{ id: Mode; title: string; text: string }> = [
   {
     id: 'mark',
     title: 'Только отмечать',
-    text: 'Подозрительные аккаунты попадают в журнал, пробный период и бонусы выдаются как обычно.',
+    text: 'Подозрительные аккаунты попадают в журнал, пробный период, бонусы, рулетка и конкурсы работают как обычно.',
   },
   {
     id: 'confirm',
     title: 'Просить подтвердить',
-    text: 'Перед пробным периодом подозрительный клиент нажимает кнопку «Я не робот» в боте или кабинете.',
+    text: 'Перед пробным периодом, бесплатным вращением рулетки и участием в конкурсе подозрительный клиент нажимает кнопку «Я не робот».',
   },
   {
     id: 'block',
     title: 'Не давать пробник и бонусы',
-    text: 'Подозрительным не выдаются пробный период, дни по промокодам и подписки по промо-ссылкам, пригласившим не начисляется процент с их оплат.',
+    text: 'Подозрительным не выдаются пробный период, дни по промокодам, подписки по промо-ссылкам и бесплатные вращения рулетки, в конкурсы их не принимают, пригласившим не начисляется процент с их оплат.',
   },
 ];
 
@@ -93,6 +109,8 @@ export const JOURNAL_FILTERS: Array<[string, string]> = [
   ['trial', 'Пробный период'],
   ['promo', 'Промокоды'],
   ['referral', 'Рефералы'],
+  ['roulette', 'Рулетка'],
+  ['contest', 'Конкурсы'],
   ['cleared', 'Снятые'],
 ];
 
@@ -116,7 +134,7 @@ export function antibotLead(summary: AntibotSummary): string {
     week.push(`${summary.confirmed_week} ${plural(summary.confirmed_week, 'подтвердил', 'подтвердили', 'подтвердили')} кнопкой`);
   }
   if (summary.denied_week > 0) {
-    week.push(`${summary.denied_week} ${plural(summary.denied_week, 'отказ', 'отказа', 'отказов')} в пробнике или промокоде`);
+    week.push(`${summary.denied_week} ${plural(summary.denied_week, 'отказ', 'отказа', 'отказов')} в пробнике, промокодах, рулетке или конкурсах`);
   }
   if (summary.no_bonus_week > 0) {
     week.push(`${summary.no_bonus_week} без бонуса пригласившему`);
@@ -146,6 +164,12 @@ export function journalNote(item: JournalItem): string | null {
   }
   if (d.target === 'promo') {
     return 'промокод на дни';
+  }
+  if (d.target === 'contest') {
+    return typeof d.title === 'string' ? `конкурс «${d.title}»` : 'конкурс';
+  }
+  if (d.target === 'roulette') {
+    return typeof d.prize === 'string' ? `рулетка, приз: ${d.prize}` : 'рулетка';
   }
   if (typeof d.network === 'string') {
     return `адрес ${d.network}`;

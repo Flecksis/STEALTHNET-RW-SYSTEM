@@ -4,6 +4,7 @@ use serde::Serialize;
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_store::{ClientPerson, Db, StoreResult};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Mark {
@@ -56,6 +57,34 @@ pub async fn mark_of(db: &mut impl Db, client_id: ClientId) -> StoreResult<Optio
     .fetch_optional(db.conn())
     .await?;
     Ok(row.map(Mark::from))
+}
+
+pub async fn marks_among(db: &mut impl Db, ids: &[i64]) -> StoreResult<HashMap<ClientId, Mark>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<MarkRow> = sqlx::query_as(&format!(
+        "SELECT {MARK_COLUMNS} FROM antibot_marks WHERE client_id = ANY($1)"
+    ))
+    .bind(ids)
+    .fetch_all(db.conn())
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (ClientId(row.client_id), Mark::from(row)))
+        .collect())
+}
+
+pub async fn open_marks_among(
+    db: &mut impl Db,
+    ids: &[i64],
+) -> StoreResult<HashMap<ClientId, Vec<Signal>>> {
+    Ok(marks_among(db, ids)
+        .await?
+        .into_iter()
+        .filter(|(_, m)| m.cleared_at.is_none())
+        .map(|(id, m)| (id, m.reasons))
+        .collect())
 }
 
 pub async fn save_mark(
@@ -169,10 +198,17 @@ pub enum Action {
     PromoDenied,
     NoBonus,
     Cleared,
+    RouletteAsked,
+    RouletteDenied,
+    RouletteNoted,
+    ContestAsked,
+    ContestDenied,
+    ContestNoted,
+    ContestExcluded,
 }
 
 impl Action {
-    pub const ALL: [Action; 7] = [
+    pub const ALL: [Action; 14] = [
         Action::Marked,
         Action::Asked,
         Action::Confirmed,
@@ -180,6 +216,13 @@ impl Action {
         Action::PromoDenied,
         Action::NoBonus,
         Action::Cleared,
+        Action::RouletteAsked,
+        Action::RouletteDenied,
+        Action::RouletteNoted,
+        Action::ContestAsked,
+        Action::ContestDenied,
+        Action::ContestNoted,
+        Action::ContestExcluded,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -191,6 +234,13 @@ impl Action {
             Action::PromoDenied => "promo_denied",
             Action::NoBonus => "no_bonus",
             Action::Cleared => "cleared",
+            Action::RouletteAsked => "roulette_asked",
+            Action::RouletteDenied => "roulette_denied",
+            Action::RouletteNoted => "roulette_noted",
+            Action::ContestAsked => "contest_asked",
+            Action::ContestDenied => "contest_denied",
+            Action::ContestNoted => "contest_noted",
+            Action::ContestExcluded => "contest_excluded",
         }
     }
 
@@ -207,6 +257,13 @@ impl Action {
             Action::PromoDenied => "Бесплатные дни не выданы",
             Action::NoBonus => "Бонус пригласившему не начислен",
             Action::Cleared => "Отметку сняли",
+            Action::RouletteAsked => "Попросили подтвердить перед вращением рулетки",
+            Action::RouletteDenied => "Бесплатное вращение рулетки не выдано",
+            Action::RouletteNoted => "Бесплатное вращение у отмеченного клиента",
+            Action::ContestAsked => "Попросили подтвердить перед участием в конкурсе",
+            Action::ContestDenied => "Участие в конкурсе не принято",
+            Action::ContestNoted => "Отмеченный клиент участвует в конкурсе",
+            Action::ContestExcluded => "Не прошли проверку на жеребьёвке конкурса",
         }
     }
 }
@@ -243,6 +300,8 @@ pub enum JournalFilter {
     Trial,
     Promo,
     Referral,
+    Roulette,
+    Contest,
     Cleared,
 }
 
@@ -254,6 +313,8 @@ impl JournalFilter {
             "trial" => Some(JournalFilter::Trial),
             "promo" => Some(JournalFilter::Promo),
             "referral" => Some(JournalFilter::Referral),
+            "roulette" => Some(JournalFilter::Roulette),
+            "contest" => Some(JournalFilter::Contest),
             "cleared" => Some(JournalFilter::Cleared),
             _ => None,
         }
@@ -266,6 +327,17 @@ impl JournalFilter {
             JournalFilter::Trial => &[Action::Asked, Action::Confirmed, Action::TrialDenied],
             JournalFilter::Promo => &[Action::PromoDenied],
             JournalFilter::Referral => &[Action::NoBonus],
+            JournalFilter::Roulette => &[
+                Action::RouletteAsked,
+                Action::RouletteDenied,
+                Action::RouletteNoted,
+            ],
+            JournalFilter::Contest => &[
+                Action::ContestAsked,
+                Action::ContestDenied,
+                Action::ContestNoted,
+                Action::ContestExcluded,
+            ],
             JournalFilter::Cleared => &[Action::Cleared],
         };
         list.iter().map(|a| a.as_str()).collect()
@@ -435,9 +507,10 @@ pub async fn summary(db: &mut impl Db) -> StoreResult<Summary> {
     ) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM antibot_marks WHERE cleared_at IS NULL), \
                 count(*) FILTER (WHERE action = 'marked'), \
-                count(*) FILTER (WHERE action = 'asked'), \
+                count(*) FILTER (WHERE action IN ('asked', 'roulette_asked', 'contest_asked')), \
                 count(*) FILTER (WHERE action = 'confirmed'), \
-                count(*) FILTER (WHERE action IN ('trial_denied', 'promo_denied')), \
+                count(*) FILTER (WHERE action IN ('trial_denied', 'promo_denied', 'roulette_denied', \
+                                                  'contest_denied', 'contest_excluded')), \
                 count(*) FILTER (WHERE action = 'no_bonus') \
          FROM antibot_events WHERE created_at >= now() - interval '7 days'",
     )

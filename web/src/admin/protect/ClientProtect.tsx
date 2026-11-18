@@ -76,7 +76,7 @@ export function ClientProtect({ clientId, phone, onChanged }: Props) {
               asking === 'mark' ? (
                 <div className="pr-ask">
                   <span>
-                    <b>Снять отметку?</b> Пробный период, дни по промокодам и бонусы пригласившему станут доступны.
+                    <b>Снять отметку?</b> Пробный период, дни по промокодам, бонусы пригласившему, бесплатные вращения рулетки и конкурсы станут доступны.
                   </span>
                   <span className="pr-ask-btns">
                     <button type="button" className="b34 on-surface hov" disabled={busy} onClick={() => void act(() => api(`${ANTIBOT}/marks/${clientId}/clear`, { method: 'POST', body: {} }))}>

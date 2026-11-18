@@ -1394,6 +1394,17 @@
   color: var(--ink);
 }
 
+.mr-human {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 .mr-rules {
   display: flex;
   flex-direction: column;

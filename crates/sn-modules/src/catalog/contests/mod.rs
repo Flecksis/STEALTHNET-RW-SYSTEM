@@ -4,6 +4,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+use crate::catalog::antibot::{self, Guard, Target};
 use crate::catalog::broadcast::{self, BotSection, ButtonSpec, Progress, clean_text};
 use crate::catalog::prize::{self, Prize, PrizeDraft};
 use crate::catalog::promo::PromoKind;
@@ -42,6 +43,9 @@ pub const CATCH_UP_HOURS: i64 = 12;
 pub const RECENT_DAYS: i64 = 7;
 pub const TEMPLATE_WON: &str = "contest_won";
 pub const TEMPLATE_WAITING: &str = "contest_waiting";
+pub const ANTIBOT_EXCLUDED: &str = "Антибот: подозрительный аккаунт";
+pub const UNAVAILABLE: &str = "Участие для этого аккаунта недоступно";
+const NAMED_MAX: usize = 20;
 const PRIZES_BATCH: i64 = 50;
 const FACTS_CHUNK: usize = 2000;
 const LOG_LIMIT: i64 = 100;
@@ -467,6 +471,8 @@ pub enum JoinOutcome {
     Closed,
     Blocked,
     NotEligible,
+    Confirm,
+    Denied,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -532,6 +538,23 @@ pub fn when(at: DateTime<Utc>, offset: FixedOffset) -> String {
         local.hour(),
         local.minute()
     )
+}
+
+fn named(ids: &[i64]) -> String {
+    let shown: Vec<String> = ids
+        .iter()
+        .take(NAMED_MAX)
+        .map(|id| format!("#{id}"))
+        .collect();
+    let word = if ids.len() == 1 {
+        "клиент"
+    } else {
+        "клиенты"
+    };
+    match ids.len().saturating_sub(NAMED_MAX) {
+        0 => format!("{word} {}", shown.join(", ")),
+        rest => format!("{word} {} и ещё {rest}", shown.join(", ")),
+    }
 }
 
 fn escape(text: &str) -> String {
@@ -702,6 +725,20 @@ async fn facts_for(
     for chunk in ids.chunks(FACTS_CHUNK) {
         for row in store::facts(db, chunk, &query).await? {
             out.insert(row.id, row);
+        }
+    }
+    if conditions.friends.is_some()
+        && let Some(settings) = antibot::guarding(db, Target::Contest).await?
+    {
+        let mut invites = Vec::new();
+        for chunk in ids.chunks(FACTS_CHUNK) {
+            invites.extend(store::invites(db, chunk, &query).await?);
+        }
+        let excluded = antibot::screen_invites(db, &settings, &invites).await?;
+        for invite in invites.iter().filter(|i| excluded.contains(&i.invitee)) {
+            if let Some(row) = out.get_mut(&invite.referrer.0) {
+                row.friends = (row.friends - 1).max(0);
+            }
         }
     }
     Ok(out)
@@ -1432,7 +1469,13 @@ fn client_contest(
     let result = match (status, entry) {
         (Status::Finished, Some(entry)) => Some(ClientResult {
             won: entry.place.is_some(),
-            excluded: entry.excluded.clone(),
+            excluded: entry.excluded.as_deref().map(|reason| {
+                if reason == ANTIBOT_EXCLUDED {
+                    UNAVAILABLE.to_string()
+                } else {
+                    reason.to_string()
+                }
+            }),
             prize_state: entry.prize_state.clone(),
             prize_note: entry.prize_note.clone(),
             prize_code: entry.prize_code.clone(),
@@ -1525,11 +1568,22 @@ pub async fn has_running(ctx: &ModuleContext) -> Result<bool, ModuleError> {
     Ok(store::running_count(&mut conn, now).await? > 0)
 }
 
+pub async fn join_confirmed(
+    ctx: &ModuleContext,
+    id: i64,
+    client_id: ClientId,
+    token: &str,
+) -> Result<JoinOutcome, ModuleError> {
+    antibot::confirm(ctx, client_id, token, Target::Contest.as_str()).await?;
+    join(ctx, id, client_id).await
+}
+
 pub async fn join(
     ctx: &ModuleContext,
     id: i64,
     client_id: ClientId,
 ) -> Result<JoinOutcome, ModuleError> {
+    let guard = antibot::guard(ctx, client_id, Target::Contest).await?;
     let mut tx = ctx.store.begin().await?;
     let now = db_now(&mut tx).await?;
     let row = match store::share(&mut tx, id).await {
@@ -1549,21 +1603,49 @@ pub async fn join(
     if facts.blocked {
         return Ok(JoinOutcome::Blocked);
     }
+    let details = serde_json::json!({
+        "target": Target::Contest.as_str(),
+        "contest_id": id,
+        "title": row.title,
+    });
+    let after = |action| {
+        antibot::record(
+            ctx,
+            client_id,
+            guard.as_ref(),
+            action,
+            details.clone(),
+            Some(id),
+        )
+    };
+    if Guard::denied(guard.as_ref()) {
+        tx.commit().await?;
+        after(antibot::Action::ContestDenied).await?;
+        return Ok(JoinOutcome::Denied);
+    }
     let conditions = parse_conditions(&row)?;
     let offset = offset(&mut tx).await?;
     if !checks(&conditions, &facts, row.starts_at, row.ends_at, offset)
         .iter()
         .all(|c| c.ok)
     {
+        tx.commit().await?;
         return Ok(JoinOutcome::NotEligible);
+    }
+    if Guard::asks(guard.as_ref()) {
+        tx.commit().await?;
+        after(antibot::Action::ContestAsked).await?;
+        return Ok(JoinOutcome::Confirm);
     }
     let added = store::insert_entry(&mut tx, id, client_id).await?;
     tx.commit().await?;
-    Ok(if added {
-        JoinOutcome::Joined
-    } else {
-        JoinOutcome::Already
-    })
+    if !added {
+        return Ok(JoinOutcome::Already);
+    }
+    if Guard::noted(guard.as_ref()) {
+        after(antibot::Action::ContestNoted).await?;
+    }
+    Ok(JoinOutcome::Joined)
 }
 
 pub async fn run(ctx: &ModuleContext) -> Result<RunReport, ModuleError> {
@@ -1606,12 +1688,18 @@ async fn draw_one(ctx: &ModuleContext, id: i64) -> Result<bool, ModuleError> {
         &ids,
     )
     .await?;
+    let suspects = antibot::blocked_among(&mut tx, Target::Contest, &ids).await?;
     let mut excluded: Vec<(i64, String)> = Vec::new();
     let mut eligible: Vec<i64> = Vec::new();
+    let mut caught: Vec<i64> = Vec::new();
     for client in &ids {
         match facts.get(client) {
             None => excluded.push((*client, "Клиент удалён".into())),
             Some(f) if f.blocked => excluded.push((*client, "Клиент заблокирован".into())),
+            Some(_) if suspects.contains_key(&ClientId(*client)) => {
+                excluded.push((*client, ANTIBOT_EXCLUDED.into()));
+                caught.push(*client);
+            }
             Some(f) => {
                 let failed: Vec<String> =
                     checks(&conditions, f, row.starts_at, row.ends_at, offset)
@@ -1628,6 +1716,38 @@ async fn draw_one(ctx: &ModuleContext, id: i64) -> Result<bool, ModuleError> {
         }
     }
     store::exclude(&mut tx, id, &excluded).await?;
+    if !caught.is_empty() {
+        for client in &caught {
+            antibot::note(
+                &mut tx,
+                ClientId(*client),
+                antibot::Action::ContestExcluded,
+                suspects
+                    .get(&ClientId(*client))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                serde_json::json!({
+                    "target": Target::Contest.as_str(),
+                    "contest_id": id,
+                    "title": row.title,
+                }),
+                Some(id),
+            )
+            .await?;
+        }
+        store::log(
+            &mut tx,
+            id,
+            "antibot",
+            &format!(
+                "Не прошли проверку антибота — {}: {}",
+                caught.len(),
+                named(&caught)
+            ),
+            serde_json::json!({ "clients": caught }),
+        )
+        .await?;
+    }
     let drawn = draw::tickets(&row.seed, &eligible);
     let places = (winners_of(&row) as usize).min(drawn.len());
     let rows: Vec<(i64, String, Option<i32>)> = drawn
@@ -2130,9 +2250,11 @@ async fn queue_one(ctx: &ModuleContext, message_id: i64) -> Result<bool, ModuleE
         let conditions = parse_conditions(&row)?;
         let ids: Vec<i64> = chats.iter().map(|(c, _)| c.0).collect();
         let facts = facts_for(&mut tx, &conditions, row.starts_at, row.ends_at, now, &ids).await?;
+        let suspects = antibot::blocked_among(&mut tx, Target::Contest, &ids).await?;
         chats.retain(|(client, _)| {
             facts.get(&client.0).is_some_and(|f| {
                 !f.blocked
+                    && !suspects.contains_key(client)
                     && checks(&conditions, f, row.starts_at, row.ends_at, offset)
                         .iter()
                         .all(|c| c.ok)
