@@ -454,7 +454,7 @@ impl PaymentProvider for Lava {
         &[Currency::Usd, Currency::Rub]
     }
 
-    fn client_label(&self, currency: Currency) -> ClientLabel {
+    fn client_label(&self, currency: Currency, _config: &ProviderConfig) -> ClientLabel {
         ClientLabel {
             title: "Банковская карта",
             hint: match currency {
@@ -978,7 +978,8 @@ mod tests {
         assert!(body.get("paymentMethod").is_none(), "{body}");
         assert!(lava.currencies().contains(&Currency::Rub));
         assert_eq!(
-            lava.client_label(Currency::Rub).hint,
+            lava.client_label(Currency::Rub, &ProviderConfig::default())
+                .hint,
             "Карты российских банков"
         );
     }

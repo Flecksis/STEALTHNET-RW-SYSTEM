@@ -439,7 +439,7 @@ impl PaymentProvider for YooKassa {
         &[Currency::Rub]
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
+    fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
         ClientLabel {
             title: "Банковская карта",
             hint: "Карты российских банков и СБП",

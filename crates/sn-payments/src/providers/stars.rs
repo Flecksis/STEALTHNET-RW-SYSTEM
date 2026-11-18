@@ -328,7 +328,7 @@ impl PaymentProvider for TelegramStars {
         &Currency::ALL
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
+    fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
         ClientLabel {
             title: "Звёзды Telegram",
             hint: "Оплата в Telegram",

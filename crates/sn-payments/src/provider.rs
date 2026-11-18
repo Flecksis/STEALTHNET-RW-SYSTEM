@@ -262,7 +262,7 @@ pub trait PaymentProvider: Send + Sync + 'static {
 
     fn currencies(&self) -> &'static [Currency];
 
-    fn client_label(&self, currency: Currency) -> ClientLabel;
+    fn client_label(&self, currency: Currency, config: &ProviderConfig) -> ClientLabel;
 
     fn methods(&self, _currency: Currency) -> Vec<PayMethod> {
         Vec::new()

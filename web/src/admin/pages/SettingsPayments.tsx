@@ -76,14 +76,14 @@ type Work = {
 
 const ACCEPTS: Record<string, string> = {
   cryptopay: 'USDT, TON, BTC',
-  heleket: 'Криптовалюта',
-  lava: 'Карты: российские в рублях, Visa и Mastercard в долларах',
+  heleket: 'USDT, BTC, TON и другие монеты',
+  lava: 'Карты и СБП в рублях, карты и PayPal в долларах',
   stars: 'Своя цена в звёздах, задаётся в тарифе',
   gram: 'GRAM переводом на кошелёк TON',
-  yookassa: 'Карты, СБП, автопродление',
-  platega: 'СБП',
-  yoomoney: 'Карты через форму ЮMoney',
-  cloudpayments: 'Карты',
+  yookassa: 'Карты, СБП, SberPay, T-Pay, автопродление',
+  platega: 'СБП, карты, SberPay, криптовалюта',
+  yoomoney: 'Карта или кошелёк ЮMoney',
+  cloudpayments: 'Карты и СБП',
   overpay: 'Карты и СБП',
 };
 
@@ -483,7 +483,11 @@ export function SettingsPayments() {
             <div className="pay-renew pay-toggle">
               <span className="sf-text">
                 <span className="pay-lbl">Списывать с сохранённой карты через ЮKassa</span>
-                {yookassaOn ? <span className="cap">Если на балансе не хватает</span> : <span className="warn-line">Работает, когда ЮKassa включена</span>}
+                {yookassaOn ? (
+                  <span className="cap">Если на балансе не хватает. Карты сохраняются, только когда в настройках ЮKassa включены «Автоплатежи»</span>
+                ) : (
+                  <span className="warn-line">Работает, когда ЮKassa включена</span>
+                )}
               </span>
               <span className={yookassaOn ? 'pay-switch' : 'pay-switch off'}>
                 <Switch on={yookassaOn && work.savedCard} onToggle={() => yookassaOn && edit({ savedCard: !work.savedCard })} label="Списывать с сохранённой карты через ЮKassa" disabled={!yookassaOn || busy} />

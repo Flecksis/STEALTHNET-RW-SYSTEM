@@ -7,7 +7,6 @@ use chrono::{Duration, Utc};
 use sn_domain::money::{Amount, Currency, PayCurrency};
 use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
-use std::sync::atomic::{AtomicI64, Ordering};
 use uuid::Uuid;
 
 const API: &str = "https://app.platega.io";
@@ -41,7 +40,6 @@ const IN_PROGRESS: &str = "возврат по этому платежу уже 
 pub struct Platega {
     http: reqwest::Client,
     api_base: String,
-    configured: AtomicI64,
 }
 
 impl Default for Platega {
@@ -59,7 +57,6 @@ impl Platega {
         Platega {
             http: http_client(),
             api_base: api_base.into().trim_end_matches('/').to_string(),
-            configured: AtomicI64::new(DEFAULT_METHOD),
         }
     }
 
@@ -305,8 +302,8 @@ impl PaymentProvider for Platega {
         &[Currency::Rub]
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
-        label(self.configured.load(Ordering::Relaxed))
+    fn client_label(&self, _currency: Currency, config: &ProviderConfig) -> ClientLabel {
+        label(legacy_method(config).unwrap_or(DEFAULT_METHOD))
     }
 
     fn methods(&self, currency: Currency) -> Vec<PayMethod> {
@@ -335,16 +332,9 @@ impl PaymentProvider for Platega {
     }
 
     fn is_configured(&self, config: &ProviderConfig) -> bool {
-        match self
-            .validate_settings(config)
+        self.validate_settings(config)
             .and_then(|()| legacy_method(config))
-        {
-            Ok(method) => {
-                self.configured.store(method, Ordering::Relaxed);
-                true
-            }
-            Err(_) => false,
-        }
+            .is_ok()
     }
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
@@ -1173,7 +1163,10 @@ mod tests {
     #[test]
     fn подпись_кнопки_по_настроенному_способу() {
         let platega = Platega::new();
-        assert_eq!(platega.client_label(Currency::Rub).title, "СБП");
+        assert_eq!(
+            platega.client_label(Currency::Rub, &settings()).title,
+            "СБП"
+        );
         for (stored, title) in [
             (json!("2"), "СБП"),
             (json!(3), "ЕРИП"),
@@ -1185,12 +1178,12 @@ mod tests {
             let mut legacy = settings();
             legacy.set("method", stored);
             assert!(platega.is_configured(&legacy));
-            assert_eq!(platega.client_label(Currency::Rub).title, title);
+            assert_eq!(platega.client_label(Currency::Rub, &legacy).title, title);
         }
         let mut broken = settings();
         broken.set("method", json!("99"));
         assert!(!platega.is_configured(&broken));
-        assert_eq!(platega.client_label(Currency::Rub).title, "Карта");
+        assert_eq!(platega.client_label(Currency::Rub, &broken).title, "СБП");
     }
 
     #[test]

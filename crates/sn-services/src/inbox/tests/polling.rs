@@ -19,7 +19,7 @@ impl PaymentProvider for Mute {
         &Currency::ALL
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
+    fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
         ClientLabel {
             title: "СБП",
             hint: "Тестовая касса",

@@ -287,7 +287,14 @@ impl ProviderRegistry {
             {
                 continue;
             }
-            let label = provider.client_label(ctx.currency);
+            let empty = ProviderConfig::default();
+            let label = provider.client_label(
+                ctx.currency,
+                snapshot
+                    .states
+                    .get(id)
+                    .map_or(&empty, |state| &state.config),
+            );
             let (amount, unavailable) = match provider.kind() {
                 ProviderKind::External => {
                     let choices = snapshot
@@ -394,7 +401,7 @@ mod tests {
             self.currencies
         }
 
-        fn client_label(&self, _currency: Currency) -> ClientLabel {
+        fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
             ClientLabel {
                 title: self.id,
                 hint: "",

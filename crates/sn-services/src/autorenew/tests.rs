@@ -61,7 +61,7 @@ impl PaymentProvider for FlakyPay {
         &Currency::ALL
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
+    fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
         ClientLabel {
             title: "Банковская карта",
             hint: "Касса с обрывами",

@@ -65,10 +65,16 @@ impl PaymentProvider for YooMoney {
         &[Currency::Rub]
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
-        ClientLabel {
-            title: "ЮMoney",
-            hint: "Оплата на странице ЮMoney",
+    fn client_label(&self, _currency: Currency, config: &ProviderConfig) -> ClientLabel {
+        match config.get("payment_type") {
+            Some("PC") => ClientLabel {
+                title: "ЮMoney",
+                hint: "Из кошелька ЮMoney",
+            },
+            _ => ClientLabel {
+                title: "Карта",
+                hint: "Через ЮMoney",
+            },
         }
     }
 
@@ -508,11 +514,13 @@ mod tests {
     }
 
     #[test]
-    fn подпись_кнопки_не_обещает_только_карты() {
-        let label = YooMoney.client_label(Currency::Rub);
-        assert_eq!(label.title, "ЮMoney");
-        assert!(!label.hint.to_lowercase().contains("карт"));
-        assert!(!label.hint.to_lowercase().contains("кошел"));
+    fn подпись_кнопки_по_настроенному_типу_оплаты() {
+        let card = YooMoney.client_label(Currency::Rub, &settings());
+        assert_eq!((card.title, card.hint), ("Карта", "Через ЮMoney"));
+        let mut wallet = settings();
+        wallet.set("payment_type", json!("PC"));
+        let label = YooMoney.client_label(Currency::Rub, &wallet);
+        assert_eq!((label.title, label.hint), ("ЮMoney", "Из кошелька ЮMoney"));
     }
 
     #[test]

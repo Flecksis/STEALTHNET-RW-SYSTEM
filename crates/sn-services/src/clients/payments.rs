@@ -77,7 +77,10 @@ fn method_title(registry: &ProviderRegistry, currency: Currency, payment: &Payme
     }
     let provider = payment.provider.as_str();
     let base = match registry.get(provider) {
-        Some(found) => found.client_label(currency).title.to_string(),
+        Some(found) => found
+            .client_label(currency, &registry.config(provider))
+            .title
+            .to_string(),
         None if provider == providers::MANUAL && payment.amount.minor == 0 => "Бесплатно".into(),
         None if provider == providers::MANUAL => "Вручную".into(),
         None => "Другой способ".into(),

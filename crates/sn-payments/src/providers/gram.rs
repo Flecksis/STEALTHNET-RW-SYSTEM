@@ -790,7 +790,7 @@ impl PaymentProvider for Gram {
         &[Currency::Usd, Currency::Rub]
     }
 
-    fn client_label(&self, _currency: Currency) -> ClientLabel {
+    fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
         ClientLabel {
             title: "GRAM",
             hint: "криптовалюта TON",
