@@ -19,7 +19,6 @@ import {
   stamp,
   systemName,
   titleFrom,
-  type Fact,
 } from './text';
 import '../form.css';
 import './report.css';
@@ -131,19 +130,19 @@ export function BugReport() {
   const back = from ?? '/admin';
   const page = from ? pagePath(from) : null;
   const layout = phone ? 'телефонная версия' : narrow || me.appearance.admin !== 'side' ? 'меню сверху' : 'меню слева';
-  const facts: Fact[] = [
-    ['Панель', panel],
-    ['Remnawave', remna],
-    ['Страница', page ?? 'не указана'],
-    ['Браузер', `${browserName(navigator.userAgent)}, ${systemName(navigator.userAgent)}`],
-    ['Экран', screenLine()],
-    ['Язык', navigator.language || 'не указан'],
-    ['Время', stamp(opened)],
-    ['Админка', `${layout}, ${theme === 'dark' ? 'тёмная' : 'светлая'} тема, роль «${ROLE_LABEL[me.admin.role]}»`],
-  ];
+  const ua = navigator.userAgent;
+  const browser = [
+    `${browserName(ua)}, ${systemName(ua)}`,
+    `экран ${screenLine()}`,
+    `язык ${navigator.language || 'не указан'}`,
+    `время ${stamp(opened)}`,
+    `админка: ${layout}, ${theme === 'dark' ? 'тёмная' : 'светлая'} тема, роль «${ROLE_LABEL[me.admin.role]}»`,
+  ].join('; ');
   const errors = caughtLines(caught);
   const attach = withErrors && errors.length > 0;
-  const body = text ?? composeBody({ what, steps, expected, facts, errors: attach ? errors : null });
+  const body =
+    text ??
+    composeBody({ what, steps, expected, errors: attach ? errors : null, version: panel, remnawave: remna, page: page ?? 'не указана', browser });
   const subject = title ?? titleFrom(what);
   const link = fitIssueUrl({ repo: ISSUES_REPO, form: ISSUE_FORM }, clean(subject).trim() || NO_TITLE, clean(body));
   const empty = !what.trim();

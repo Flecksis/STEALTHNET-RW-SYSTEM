@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   CUT_NOTE,
   HIDDEN,
+  ISSUE_FORM,
   ISSUES_REPO,
   MAX_URL,
   NO_TITLE,
+  SECTIONS,
   browserName,
   clean,
   composeBody,
@@ -19,10 +21,15 @@ import {
 
 const plain = { repo: ISSUES_REPO, form: null };
 const form = { repo: ISSUES_REPO, form: 'bug.yml' };
-const facts = [
-  ['Панель', 'v0.1.160 от 18.11.2026, a2a5cf8'],
-  ['Страница', '/admin/tariffs'],
-];
+const env = {
+  version: '0.1.164 от 18.11.2026, a2a5cf8',
+  remnawave: '3.4.11',
+  page: '/admin/tariffs',
+  browser: 'Chrome 131, macOS; экран 1440×900; язык ru-RU',
+};
+const report = (fields) => ({ what: '', steps: '', expected: '', errors: null, ...env, ...fields });
+const ENV_TAIL =
+  '### Версия панели\n\n0.1.164 от 18.11.2026, a2a5cf8\n\n### Версия Remnawave\n\n3.4.11\n\n### Страница\n\n/admin/tariffs\n\n### Браузер и система\n\nChrome 131, macOS; экран 1440×900; язык ru-RU';
 
 test('почты заменяются на [скрыто]', () => {
   assert.equal(clean('пишет ivan.petrov+vpn@mail.ru и admin@почта.рф'), `пишет ${HIDDEN} и ${HIDDEN}`);
@@ -113,22 +120,28 @@ test('заголовок берётся из первой строки, чист
   assert.ok(!long.includes('  '));
 });
 
+
+test('разделы совпадают с полями формы в репозитории ошибок', () => {
+  assert.equal(ISSUES_REPO, 'STEALTHNET-APP/stealthnet-issues');
+  assert.equal(ISSUE_FORM, 'bug.yml');
+  assert.deepEqual(Object.keys(SECTIONS), ['what', 'steps', 'expected', 'version', 'remnawave', 'page', 'browser']);
+});
+
 test('текст собирается по разделам, пустые разделы пропускаются', () => {
-  const body = composeBody({ what: 'Не сохраняется тариф', steps: '', expected: 'Сохранится', facts, errors: null });
+  const body = composeBody(report({ what: 'Не сохраняется тариф', expected: 'Сохранится' }));
+  assert.equal(body, `### Что случилось\n\nНе сохраняется тариф\n\n### Что ожидали\n\nСохранится\n\n${ENV_TAIL}`);
+});
+
+test('ошибки интерфейса дописываются в «Что случилось» блоком кода и только когда приложены', () => {
+  assert.ok(!composeBody(report({ what: 'x', errors: [] })).includes('Ошибки интерфейса'));
+  const body = composeBody(report({ what: 'x', errors: ['15:40:12 TypeError: ```boom``` у a@b.ru\n  at Xe (/assets/index-B3kd9fLq.js:12:3456)'] }));
   assert.equal(
     body,
-    '### Что случилось\n\nНе сохраняется тариф\n\n### Что ожидали\n\nСохранится\n\n### Сведения о панели\n\n- Панель: v0.1.160 от 18.11.2026, a2a5cf8\n- Страница: /admin/tariffs',
+    `### Что случилось\n\nx\n\nОшибки интерфейса:\n\n\`\`\`text\n15:40:12 TypeError: '''boom''' у ${HIDDEN}\n  at Xe (/assets/index-B3kd9fLq.js:12:3456)\n\`\`\`\n\n${ENV_TAIL}`,
   );
 });
 
-test('ошибки интерфейса попадают в текст блоком кода и только когда приложены', () => {
-  const without = composeBody({ what: 'x', steps: '', expected: '', facts, errors: [] });
-  assert.ok(!without.includes('Ошибки интерфейса'));
-  const body = composeBody({ what: 'x', steps: '', expected: '', facts, errors: ['15:40:12 TypeError: ```boom``` у a@b.ru\n  at Xe (/assets/index-B3kd9fLq.js:12:3456)'] });
-  assert.ok(body.endsWith(`### Ошибки интерфейса\n\n\`\`\`text\n15:40:12 TypeError: '''boom''' у ${HIDDEN}\n  at Xe (/assets/index-B3kd9fLq.js:12:3456)\n\`\`\``));
-});
-
-test('ссылка ведёт на новую задачу с заголовком и текстом', () => {
+test('без шаблона ссылка ведёт на новую задачу с заголовком и текстом', () => {
   const url = new URL(issueUrl(plain, 'Заголовок', 'Текст & ещё'));
   assert.equal(`${url.origin}${url.pathname}`, `https://github.com/${ISSUES_REPO}/issues/new`);
   assert.equal(url.searchParams.get('title'), 'Заголовок');
@@ -137,55 +150,72 @@ test('ссылка ведёт на новую задачу с заголовко
 });
 
 test('с шаблоном текст раскладывается по полям формы', () => {
-  const body = composeBody({ what: 'Не сохраняется', steps: '1. Открыть\n2. Нажать', expected: '', facts, errors: ['15:40:12 TypeError: boom'] });
+  const body = composeBody(report({ what: 'Не сохраняется', steps: '1. Открыть\n2. Нажать', errors: ['15:40:12 TypeError: boom'] }));
   const url = new URL(issueUrl(form, 'Заголовок', body));
+  assert.equal(`${url.origin}${url.pathname}`, `https://github.com/${ISSUES_REPO}/issues/new`);
+  assert.deepEqual([...url.searchParams.keys()], ['template', 'title', 'what', 'steps', 'version', 'remnawave', 'page', 'browser']);
   assert.equal(url.searchParams.get('template'), 'bug.yml');
-  assert.equal(url.searchParams.get('body'), null);
-  assert.equal(url.searchParams.get('what'), 'Не сохраняется');
+  assert.equal(url.searchParams.get('title'), 'Заголовок');
+  assert.equal(url.searchParams.get('what'), 'Не сохраняется\n\nОшибки интерфейса:\n\n```text\n15:40:12 TypeError: boom\n```');
   assert.equal(url.searchParams.get('steps'), '1. Открыть\n2. Нажать');
-  assert.equal(url.searchParams.get('expected'), null);
-  assert.equal(url.searchParams.get('panel'), '- Панель: v0.1.160 от 18.11.2026, a2a5cf8\n- Страница: /admin/tariffs');
-  assert.equal(url.searchParams.get('errors'), '```text\n15:40:12 TypeError: boom\n```');
-  assert.deepEqual(formFields('без заголовков'), [['what', 'без заголовков']]);
+  assert.equal(url.searchParams.get('version'), env.version);
+  assert.equal(url.searchParams.get('remnawave'), env.remnawave);
+  assert.equal(url.searchParams.get('page'), env.page);
+  assert.equal(url.searchParams.get('browser'), env.browser);
+});
+
+test('однострочные поля формы собираются в одну строку, текст без заголовков идёт в «Что случилось»', () => {
+  const url = new URL(issueUrl(form, 'T', '### Что случилось\n\nx\n\n### Страница\n\n/admin/clients\n\n/admin/tariffs'));
+  assert.equal(url.searchParams.get('page'), '/admin/clients; /admin/tariffs');
+  assert.deepEqual(formFields('без заголовков\n#### Своё\nещё'), [['what', 'без заголовков\n#### Своё\nещё']]);
 });
 
 test('короткий отчёт уходит целиком', () => {
-  const body = composeBody({ what: 'Не сохраняется тариф', steps: '', expected: '', facts, errors: null });
-  const fit = fitIssueUrl(plain, 'Заголовок', body);
-  assert.equal(fit.cut, false);
-  assert.equal(fit.url, issueUrl(plain, 'Заголовок', body));
+  const body = composeBody(report({ what: 'Не сохраняется тариф' }));
+  for (const target of [plain, form]) {
+    const fit = fitIssueUrl(target, 'Заголовок', body);
+    assert.equal(fit.cut, false);
+    assert.equal(fit.url, issueUrl(target, 'Заголовок', body));
+  }
 });
 
-test('длинный отчёт обрезается до предела адреса с пометкой', () => {
-  const body = composeBody({
-    what: 'Очень длинное описание ошибки. '.repeat(500),
-    steps: '',
-    expected: '',
-    facts,
-    errors: ['TypeError: boom'],
-  });
+test('длинный отчёт обрезается до предела адреса, сведения о панели остаются целыми', () => {
+  const body = composeBody(report({ what: 'Очень длинное описание ошибки. '.repeat(500), errors: ['TypeError: boom'] }));
   for (const target of [plain, form]) {
     const fit = fitIssueUrl(target, 'Заголовок', body);
     assert.equal(fit.cut, true);
     assert.ok(fit.url.length <= MAX_URL);
     assert.ok(fit.url.length > MAX_URL - 200);
-    const text = new URL(fit.url).searchParams.get(target.form ? 'what' : 'body');
-    assert.ok(text.endsWith(`\n\n${CUT_NOTE}`));
-    const head = text.slice(0, -(CUT_NOTE.length + 2));
-    const at = body.indexOf(head);
-    assert.ok(at >= 0);
-    assert.match(body.charAt(at + head.length), /\s/);
+    const params = new URL(fit.url).searchParams;
+    const fields = Object.fromEntries(target.form ? params : formFields(params.get('body')));
+    assert.ok(fields.what.endsWith(`\n\n${CUT_NOTE}`));
+    const head = fields.what.slice(0, -(CUT_NOTE.length + 2));
+    assert.ok(body.includes(head));
+    assert.match(body.charAt(body.indexOf(head) + head.length), /\s/);
+    assert.equal(fields.version, env.version);
+    assert.equal(fields.remnawave, env.remnawave);
+    assert.equal(fields.page, env.page);
+    assert.equal(fields.browser, env.browser);
   }
 });
 
+test('обрезается самое длинное поле, короткие остаются', () => {
+  const body = composeBody(report({ what: 'Коротко', steps: 'Шаг. '.repeat(2000) }));
+  const fields = Object.fromEntries(new URL(fitIssueUrl(form, 'Заголовок', body).url).searchParams);
+  assert.equal(fields.what, 'Коротко');
+  assert.ok(fields.steps.startsWith('Шаг. Шаг.'));
+  assert.ok(fields.steps.endsWith(CUT_NOTE));
+  assert.equal(fields.version, env.version);
+});
+
 test('обрезка не рвёт символы и закрывает блок кода', () => {
-  const body = composeBody({ what: '\u{1F600}'.repeat(3000), steps: '', expected: '', facts, errors: null });
+  const body = composeBody(report({ what: '\u{1F600}'.repeat(3000) }));
   const fit = fitIssueUrl(plain, 'Заголовок', body);
-  const text = new URL(fit.url).searchParams.get('body');
   assert.equal(fit.cut, true);
-  assert.ok(!text.includes('�'));
-  const log = composeBody({ what: 'x', steps: '', expected: '', facts, errors: ['TypeError: boom\n  at Xe (/assets/index.js:1:2)\n'.repeat(400)] });
-  const cut = new URL(fitIssueUrl(plain, 'Заголовок', log).url).searchParams.get('body');
-  assert.equal((cut.match(/^```/gm) ?? []).length % 2, 0);
-  assert.ok(cut.endsWith(`\`\`\`\n\n${CUT_NOTE}`));
+  assert.ok(!new URL(fit.url).searchParams.get('body').includes('�'));
+  const log = composeBody(report({ what: 'x', errors: ['TypeError: boom\n  at Xe (/assets/index.js:1:2)\n'.repeat(400)] }));
+  const what = new URL(fitIssueUrl(form, 'Заголовок', log).url).searchParams.get('what');
+  assert.ok(what.startsWith('x\n\nОшибки интерфейса:\n\n```text\n'));
+  assert.equal((what.match(/^```/gm) ?? []).length % 2, 0);
+  assert.ok(what.endsWith(`\`\`\`\n\n${CUT_NOTE}`));
 });

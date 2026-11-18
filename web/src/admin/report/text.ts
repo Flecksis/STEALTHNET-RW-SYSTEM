@@ -1,23 +1,28 @@
 export const REPORT_PATH = '/admin/bug-report';
 export const ISSUES_REPO = 'STEALTHNET-APP/stealthnet-issues';
-export const ISSUE_FORM: string | null = null;
+export const ISSUE_FORM: string | null = 'bug.yml';
 export const MAX_URL = 8000;
 export const HIDDEN = '[скрыто]';
 export const CUT_NOTE = '> Текст обрезан: в ссылку на GitHub больше не поместилось.';
 export const NO_TITLE = 'Ошибка в админке';
+export const ERRORS_TITLE = 'Ошибки интерфейса';
 
 export const SECTIONS = {
   what: 'Что случилось',
   steps: 'Как повторить',
   expected: 'Что ожидали',
-  panel: 'Сведения о панели',
-  errors: 'Ошибки интерфейса',
+  version: 'Версия панели',
+  remnawave: 'Версия Remnawave',
+  page: 'Страница',
+  browser: 'Браузер и система',
 } as const;
 
 export type SectionId = keyof typeof SECTIONS;
-export type Fact = [string, string];
 export type Target = { repo: string; form: string | null };
-export type Report = { what: string; steps: string; expected: string; facts: Fact[]; errors: string[] | null };
+export type Report = Record<SectionId, string> & { errors: string[] | null };
+
+const IDS = Object.keys(SECTIONS) as SectionId[];
+const SINGLE_LINE: SectionId[] = ['version', 'remnawave', 'page', 'browser'];
 
 const URL_RE = /\b[a-z][a-z0-9+.-]{1,20}:\/\/[^\s<>"'`]+/gi;
 const EMAIL_RE = /(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu;
@@ -203,29 +208,38 @@ function section(id: SectionId, text: string): string {
   return `### ${SECTIONS[id]}\n\n${text}`;
 }
 
+function oneLine(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('; ');
+}
+
+function errorsBlock(errors: string[]): string {
+  const log = errors.map((entry) => clean(entry).replace(/`{3,}/g, "'''")).join('\n\n');
+  return `${ERRORS_TITLE}:\n\n\`\`\`text\n${log}\n\`\`\``;
+}
+
 export function composeBody(report: Report): string {
-  const parts = [section('what', clean(report.what.trim()))];
-  if (report.steps.trim()) {
-    parts.push(section('steps', clean(report.steps.trim())));
-  }
-  if (report.expected.trim()) {
-    parts.push(section('expected', clean(report.expected.trim())));
-  }
-  parts.push(section('panel', report.facts.map(([name, value]) => `- ${name}: ${clean(value)}`).join('\n')));
-  if (report.errors && report.errors.length > 0) {
-    const log = report.errors.map((entry) => clean(entry).replace(/`{3,}/g, "'''")).join('\n\n');
-    parts.push(section('errors', `\`\`\`text\n${log}\n\`\`\``));
+  const what = clean(report.what.trim());
+  const errors = report.errors && report.errors.length > 0 ? errorsBlock(report.errors) : '';
+  const parts = [section('what', [what, errors].filter(Boolean).join('\n\n'))];
+  for (const id of IDS.slice(1)) {
+    const text = SINGLE_LINE.includes(id) ? oneLine(clean(report[id])) : clean(report[id].trim());
+    if (text) {
+      parts.push(section(id, text));
+    }
   }
   return parts.join('\n\n');
 }
 
 export function formFields(body: string): Array<[SectionId, string]> {
-  const ids = Object.keys(SECTIONS) as SectionId[];
   const found = new Map<SectionId, string[]>();
   let current: SectionId = 'what';
   for (const line of body.split('\n')) {
     const heading = /^#{1,6}\s+(.+?)\s*$/.exec(line);
-    const id = heading ? ids.find((key) => SECTIONS[key] === heading[1]) : undefined;
+    const id = heading ? IDS.find((key) => SECTIONS[key] === heading[1]) : undefined;
     if (id) {
       current = id;
       continue;
@@ -234,7 +248,13 @@ export function formFields(body: string): Array<[SectionId, string]> {
     lines.push(line);
     found.set(current, lines);
   }
-  return ids.map((id): [SectionId, string] => [id, (found.get(id) ?? []).join('\n').trim()]).filter(([, value]) => value !== '');
+  return IDS.map((id): [SectionId, string] => [id, (found.get(id) ?? []).join('\n').trim()]).filter(([, value]) => value !== '');
+}
+
+function bodyOf(parts: Map<SectionId, string>): string {
+  return IDS.filter((id) => parts.get(id))
+    .map((id) => section(id, parts.get(id) ?? ''))
+    .join('\n\n');
 }
 
 export function issueUrl(target: Target, title: string, body: string): string {
@@ -243,7 +263,7 @@ export function issueUrl(target: Target, title: string, body: string): string {
     params.set('template', target.form);
     params.set('title', title);
     for (const [id, value] of formFields(body)) {
-      params.set(id, value);
+      params.set(id, SINGLE_LINE.includes(id) ? oneLine(value) : value);
     }
   } else {
     params.set('title', title);
@@ -252,10 +272,25 @@ export function issueUrl(target: Target, title: string, body: string): string {
   return `https://github.com/${target.repo}/issues/new?${params.toString()}`;
 }
 
-function withNote(head: string): string {
+function boundary(head: string): string {
+  const lineEnd = head.lastIndexOf('\n');
+  if (lineEnd > 0 && head.length - lineEnd < 400) {
+    return head.slice(0, lineEnd);
+  }
+  const wordEnd = head.lastIndexOf(' ');
+  if (wordEnd > 0 && head.length - wordEnd < 100) {
+    return head.slice(0, wordEnd);
+  }
+  return head;
+}
+
+function shortened(head: string, single: boolean): string {
   const text = head.trimEnd();
+  if (single) {
+    return `${text}…`;
+  }
   const open = (text.match(/^```/gm) ?? []).length % 2 === 1;
-  return `${text}${open ? '\n```' : ''}\n\n${CUT_NOTE}`;
+  return `${text}${open ? '\n```' : ''}\n\n${CUT_NOTE}`.trimStart();
 }
 
 export function fitIssueUrl(target: Target, title: string, body: string, max = MAX_URL): { url: string; cut: boolean } {
@@ -263,25 +298,32 @@ export function fitIssueUrl(target: Target, title: string, body: string, max = M
   if (full.length <= max) {
     return { url: full, cut: false };
   }
-  const chars = Array.from(body);
-  const build = (count: number) => issueUrl(target, title, withNote(chars.slice(0, count).join('')));
-  let low = 0;
-  let high = chars.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (build(middle).length <= max) {
-      low = middle;
-    } else {
-      high = middle - 1;
+  const parts = new Map(formFields(body));
+  const build = () => issueUrl(target, title, bodyOf(parts));
+  const cost = (id: SectionId) => encodeURIComponent(parts.get(id) ?? '').length;
+  const order = [...parts.keys()].sort((a, b) => cost(b) - cost(a));
+  for (const id of order) {
+    const chars = Array.from(parts.get(id) ?? '');
+    const single = SINGLE_LINE.includes(id);
+    const fits = (count: number) => {
+      parts.set(id, shortened(chars.slice(0, count).join(''), single));
+      return build().length <= max;
+    };
+    if (!fits(0)) {
+      continue;
     }
+    let low = 0;
+    let high = chars.length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (fits(middle)) {
+        low = middle;
+      } else {
+        high = middle - 1;
+      }
+    }
+    parts.set(id, shortened(boundary(chars.slice(0, low).join('')), single));
+    break;
   }
-  let head = chars.slice(0, low).join('');
-  const lineEnd = head.lastIndexOf('\n');
-  const wordEnd = head.lastIndexOf(' ');
-  if (lineEnd > 0 && head.length - lineEnd < 400) {
-    head = head.slice(0, lineEnd);
-  } else if (wordEnd > 0 && head.length - wordEnd < 100) {
-    head = head.slice(0, wordEnd);
-  }
-  return { url: issueUrl(target, title, withNote(head)), cut: true };
+  return { url: build(), cut: true };
 }
