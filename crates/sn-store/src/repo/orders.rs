@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use sn_domain::ids::{ClientId, JobId, OrderId, SubscriptionId};
 use sn_domain::jobs::{JobPayload, JobStatus};
 use sn_domain::money::{Currency, Money, Stars};
-use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
+use sn_domain::order::{NewOrder, Order, OrderChannel, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::plan::FulfillmentPlan;
 use sn_domain::pricing::Quote;
@@ -339,6 +339,28 @@ impl<'c> OrdersRepo<'c> {
         stored
             .map(|p| p.0)
             .ok_or_else(|| StoreError::Decode("план выдачи не сохранился".into()))
+    }
+
+    pub async fn set_channel(&mut self, id: OrderId, channel: OrderChannel) -> StoreResult<()> {
+        let done = sqlx::query("UPDATE orders SET channel = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(channel.as_str())
+            .execute(&mut *self.conn)
+            .await?;
+        if done.rows_affected() == 0 {
+            return Err(StoreError::NotFound("заказ"));
+        }
+        Ok(())
+    }
+
+    pub async fn channel(&mut self, id: OrderId) -> StoreResult<Option<OrderChannel>> {
+        let channel: Option<String> =
+            sqlx::query_scalar("SELECT channel FROM orders WHERE id = $1")
+                .bind(id.0)
+                .fetch_optional(&mut *self.conn)
+                .await?
+                .ok_or(StoreError::NotFound("заказ"))?;
+        Ok(channel.as_deref().map(OrderChannel::parse).transpose()?)
     }
 
     pub async fn set_subscription(

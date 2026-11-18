@@ -132,6 +132,43 @@ impl OrderStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderChannel {
+    Bot,
+    Miniapp,
+    Cabinet,
+    Admin,
+    Autorenew,
+}
+
+impl OrderChannel {
+    pub const ALL: [OrderChannel; 5] = [
+        OrderChannel::Bot,
+        OrderChannel::Miniapp,
+        OrderChannel::Cabinet,
+        OrderChannel::Admin,
+        OrderChannel::Autorenew,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            OrderChannel::Bot => "bot",
+            OrderChannel::Miniapp => "miniapp",
+            OrderChannel::Cabinet => "cabinet",
+            OrderChannel::Admin => "admin",
+            OrderChannel::Autorenew => "autorenew",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        OrderChannel::ALL
+            .into_iter()
+            .find(|c| c.as_str() == value)
+            .ok_or_else(|| DomainError::unknown("order_channel", value))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PurchaseIntent {
@@ -260,5 +297,17 @@ mod tests {
                 .transition(OrderStatus::Review)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn канал_покупки_пишется_и_читается_одним_словом() {
+        for channel in OrderChannel::ALL {
+            assert_eq!(OrderChannel::parse(channel.as_str()), Ok(channel));
+            assert_eq!(
+                serde_json::to_value(channel).unwrap(),
+                serde_json::json!(channel.as_str())
+            );
+        }
+        assert!(OrderChannel::parse("site").is_err());
     }
 }

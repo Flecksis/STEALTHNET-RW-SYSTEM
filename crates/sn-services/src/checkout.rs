@@ -15,7 +15,7 @@ use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency};
-use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
+use sn_domain::order::{NewOrder, Order, OrderChannel, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId, providers};
 use sn_domain::plan::{
     CurrentTariff, HeldSubscription, PlanKind, classify, new_expire_at, single_target,
@@ -48,6 +48,8 @@ mod gram_tests;
 mod limit_tests;
 #[cfg(test)]
 mod method_tests;
+#[cfg(test)]
+mod order_channel_tests;
 #[cfg(test)]
 mod pool_tests;
 #[cfg(test)]
@@ -94,6 +96,15 @@ impl Channel {
             Channel::Miniapp => Some(ClientChannel::Miniapp),
             Channel::Cabinet => Some(ClientChannel::Cabinet),
             Channel::Admin => None,
+        }
+    }
+
+    pub const fn order(self) -> OrderChannel {
+        match self {
+            Channel::Bot => OrderChannel::Bot,
+            Channel::Miniapp => OrderChannel::Miniapp,
+            Channel::Cabinet => OrderChannel::Cabinet,
+            Channel::Admin => OrderChannel::Admin,
         }
     }
 }
@@ -204,6 +215,7 @@ struct PayWith {
 
 struct Sale<'s> {
     order: &'s NewOrder,
+    channel: OrderChannel,
     provider: &'s str,
     method: Option<String>,
     kind: ProviderKind,
@@ -571,17 +583,20 @@ pub(crate) async fn cancel_at_providers(services: &Services, payments: &[Payment
 pub(crate) async fn record_paid_order(
     tx: &mut Tx,
     order: &NewOrder,
+    channel: OrderChannel,
     provider: &str,
     method: Option<&str>,
     amount: Amount,
     debit: Option<LedgerKind>,
 ) -> ServiceResult<PaidOrder> {
-    record_paid(tx, order, provider, method, amount, debit, None).await
+    record_paid(tx, order, channel, provider, method, amount, debit, None).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_paid(
     tx: &mut Tx,
     order: &NewOrder,
+    channel: OrderChannel,
     provider: &str,
     method: Option<&str>,
     amount: Amount,
@@ -595,6 +610,7 @@ async fn record_paid(
         ));
     }
     let created = tx.orders().create(order).await?;
+    tx.orders().set_channel(created.id, channel).await?;
     let payment = tx
         .payments()
         .create(&NewPayment {
@@ -1161,6 +1177,7 @@ impl<'a> Checkout<'a> {
             &prepared.client,
             Sale {
                 order: &order,
+                channel: request.channel.order(),
                 provider: &request.provider,
                 method,
                 kind,
@@ -1326,6 +1343,7 @@ impl<'a> Checkout<'a> {
         self.invoice(
             &client,
             &order,
+            channel.order(),
             PayWith { provider, method },
             amount.into(),
             description,
@@ -1606,6 +1624,7 @@ impl<'a> Checkout<'a> {
             &client,
             Sale {
                 order: &order,
+                channel: request.channel.order(),
                 provider: &request.provider,
                 method,
                 kind,
@@ -1628,6 +1647,7 @@ impl<'a> Checkout<'a> {
             let paid = record_paid(
                 &mut tx,
                 sale.order,
+                sale.channel,
                 providers::MANUAL,
                 Some("free"),
                 sale.amount,
@@ -1647,6 +1667,7 @@ impl<'a> Checkout<'a> {
                 let paid = record_paid(
                     &mut tx,
                     sale.order,
+                    sale.channel,
                     providers::BALANCE,
                     None,
                     sale.amount,
@@ -1669,6 +1690,7 @@ impl<'a> Checkout<'a> {
                 self.invoice(
                     client,
                     sale.order,
+                    sale.channel,
                     PayWith {
                         provider,
                         method: sale.method,
@@ -1682,10 +1704,12 @@ impl<'a> Checkout<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn invoice(
         &self,
         client: &Client,
         order: &NewOrder,
+        channel: OrderChannel,
         pay_with: PayWith,
         amount: Amount,
         description: String,
@@ -1717,6 +1741,7 @@ impl<'a> Checkout<'a> {
         let modules = self.services.modules();
         let mut tx = self.services.store().begin().await?;
         let created = tx.orders().create(order).await?;
+        tx.orders().set_channel(created.id, channel).await?;
         let payment = tx
             .payments()
             .create(&NewPayment {

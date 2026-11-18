@@ -12,7 +12,7 @@ use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, Wallet};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
-use sn_domain::order::{NewOrder, Order, OrderStatus, PurchaseIntent};
+use sn_domain::order::{NewOrder, Order, OrderChannel, OrderStatus, PurchaseIntent};
 use sn_domain::paging::PageRequest;
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId, providers};
 use sn_domain::plan::{CurrentTariff, classify};
@@ -429,6 +429,7 @@ impl<'a> AutoRenew<'a> {
             let paid = record_paid_order(
                 &mut tx,
                 &order,
+                OrderChannel::Autorenew,
                 provider,
                 Some(AUTORENEW_METHOD),
                 total.into(),
@@ -767,6 +768,9 @@ impl<'a> AutoRenew<'a> {
         let subscription = slot.subscription;
         let now = self.services.now();
         let created = tx.orders().create(&order).await?;
+        tx.orders()
+            .set_channel(created.id, OrderChannel::Autorenew)
+            .await?;
         let payment = tx
             .payments()
             .create(&NewPayment {

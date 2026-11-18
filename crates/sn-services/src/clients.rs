@@ -15,7 +15,7 @@ use sn_domain::ids::{
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Amount, Money};
-use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
+use sn_domain::order::{NewOrder, Order, OrderChannel, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{PaymentStatus, ProviderId};
 use sn_domain::plan::{CurrentTariff, PlanKind, classify};
@@ -603,6 +603,9 @@ impl<'a> ClientOps<'a> {
                 },
                 snapshot: Some(snapshot),
             })
+            .await?;
+        tx.orders()
+            .set_channel(order.id, OrderChannel::Admin)
             .await?;
         tx.orders().transition(order.id, OrderStatus::Paid).await?;
         tx.jobs()
