@@ -62,6 +62,23 @@ impl<'c> SavedMethodsRepo<'c> {
         .await?)
     }
 
+    pub async fn kept_since(
+        &mut self,
+        client_id: ClientId,
+        provider: &str,
+        since: DateTime<Utc>,
+    ) -> StoreResult<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM saved_payment_methods WHERE client_id = $1 AND provider = $2 \
+             AND (revoked_at IS NULL OR created_at >= $3))",
+        )
+        .bind(client_id.0)
+        .bind(provider)
+        .bind(since)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn active(
         &mut self,
         client_id: ClientId,

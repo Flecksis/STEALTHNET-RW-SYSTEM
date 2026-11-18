@@ -795,3 +795,67 @@ async fn поиск_не_заглядывает_в_тела_сохранённы
     assert!(all_ids(&kit).await.contains(&legacy));
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn карта_сохраняется_по_повтору_кассы_после_ручной_обработки() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8601).await;
+    let tariff = standard(&kit.services).await;
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let with_card = WebhookOutcome {
+        saved_method: Some(SavedMethod {
+            token: "pm-retry-1".into(),
+            title: Some("Visa *4242".into()),
+        }),
+        ..paid_by(&payment, "kt-card")
+    };
+    let id = failed_row(&kit, "kt-card", &with_card).await;
+    kit.services.inbox().retry_webhook(id, admin).await.unwrap();
+    let mut conn = kit.services.store().conn().await.unwrap();
+    assert_eq!(
+        conn.payments().get(payment.id).await.unwrap().status,
+        PaymentStatus::Paid
+    );
+    assert!(
+        conn.saved_methods()
+            .active(client_id, KASSA)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(conn);
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &with_card)
+        .await
+        .unwrap();
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let saved = conn
+        .saved_methods()
+        .active(client_id, KASSA)
+        .await
+        .unwrap()
+        .expect("карта сохранена по повтору кассы");
+    assert_eq!(saved.title.as_deref(), Some("Visa *4242"));
+    conn.saved_methods().revoke(saved.id).await.unwrap();
+    drop(conn);
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &with_card)
+        .await
+        .unwrap();
+    let mut conn = kit.services.store().conn().await.unwrap();
+    assert!(
+        conn.saved_methods()
+            .active(client_id, KASSA)
+            .await
+            .unwrap()
+            .is_none(),
+        "удалённая клиентом карта не возвращается"
+    );
+    drop(conn);
+    kit.db.cleanup().await;
+}

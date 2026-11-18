@@ -1566,6 +1566,18 @@ impl<'a> PaymentInbox<'a> {
             Err(err) => return Err(err.into()),
         };
         let StatusChange::Applied(paid) = change else {
+            if let Some(method) = saved.filter(|m| !m.token.trim().is_empty())
+                && !tx
+                    .saved_methods()
+                    .kept_since(
+                        payment.client_id,
+                        payment.provider.as_str(),
+                        payment.paid_at.unwrap_or_else(|| self.services.now()),
+                    )
+                    .await?
+            {
+                self.save_method(tx, &payment, method).await?;
+            }
             return Ok(AcceptResult::AlreadyApplied {
                 payment_id: payment.id,
             });
