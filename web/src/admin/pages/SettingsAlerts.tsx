@@ -5,7 +5,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes';
+type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales';
 
 type KindView = { kind: Kind; title: string; default_topic: string; on: boolean; topic: string | null };
 
@@ -29,6 +29,8 @@ const ABOUT: Record<Kind, string> = {
   payments: 'Спор или чарджбэк, возврат без привязки к оплате, деньги для ручного зачисления',
   traffic: 'Клиент превысил порог трафика за сутки или за неделю',
   nodes: 'Нода не отвечает дольше двух минут. Когда она снова в сети, придёт ещё одно сообщение',
+  clients: 'Клиент зарегистрировался в боте, кабинете или мини-приложении. Новые за минуту приходят одним сообщением',
+  sales: 'Оплачена покупка, продление, смена тарифа, дополнение или пополнение баланса. Новые за минуту приходят одним сообщением',
 };
 
 function failText(err: unknown, fallback: string): string {

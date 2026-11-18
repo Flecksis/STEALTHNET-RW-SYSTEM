@@ -72,7 +72,11 @@ fn chosen_title(
     })
 }
 
-fn method_title(registry: &ProviderRegistry, currency: Currency, payment: &Payment) -> String {
+pub(crate) fn method_title(
+    registry: &ProviderRegistry,
+    currency: Currency,
+    payment: &Payment,
+) -> String {
     if let Some(title) = chosen_title(registry, currency, payment) {
         return title;
     }

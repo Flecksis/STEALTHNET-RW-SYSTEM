@@ -35,6 +35,7 @@ mod payments;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use payments::method_title;
 pub use payments::{ClientPayment, ClientPayments, Purchase};
 
 pub const MAX_BLOCK_REASON: usize = 500;

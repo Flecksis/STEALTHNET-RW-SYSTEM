@@ -16,10 +16,12 @@ pub enum AlertKind {
     Payments,
     Traffic,
     Nodes,
+    Clients,
+    Sales,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 8] = [
+    pub const ALL: [AlertKind; 10] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
@@ -28,6 +30,8 @@ impl AlertKind {
         AlertKind::Payments,
         AlertKind::Traffic,
         AlertKind::Nodes,
+        AlertKind::Clients,
+        AlertKind::Sales,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -40,6 +44,8 @@ impl AlertKind {
             AlertKind::Payments => "payments",
             AlertKind::Traffic => "traffic",
             AlertKind::Nodes => "nodes",
+            AlertKind::Clients => "clients",
+            AlertKind::Sales => "sales",
         }
     }
 
@@ -53,6 +59,8 @@ impl AlertKind {
             AlertKind::Payments => "Споры и возвраты в платёжных системах",
             AlertKind::Traffic => "Превышения трафика",
             AlertKind::Nodes => "Ноды",
+            AlertKind::Clients => "Новые клиенты",
+            AlertKind::Sales => "Новые оплаты",
         }
     }
 
@@ -66,6 +74,8 @@ impl AlertKind {
             AlertKind::Payments => "Платежи",
             AlertKind::Traffic => "Трафик",
             AlertKind::Nodes => "Ноды",
+            AlertKind::Clients => "Клиенты",
+            AlertKind::Sales => "Оплаты",
         }
     }
 }
@@ -173,5 +183,17 @@ mod tests {
         .unwrap();
         assert!(saved.route(AlertKind::Nodes).on);
         assert!(!saved.route(AlertKind::Support).on);
+        for kind in [AlertKind::Clients, AlertKind::Sales] {
+            assert!(saved.route(kind).on);
+        }
+        assert_eq!(
+            saved.topic_for(AlertKind::Clients).as_deref(),
+            Some("Клиенты")
+        );
+        assert_eq!(saved.topic_for(AlertKind::Sales).as_deref(), Some("Оплаты"));
+        assert_eq!(
+            serde_json::to_value(AlertKind::Sales).unwrap(),
+            serde_json::json!("sales")
+        );
     }
 }

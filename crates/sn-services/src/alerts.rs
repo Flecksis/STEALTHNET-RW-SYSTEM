@@ -17,6 +17,10 @@ use sn_domain::settings::keys;
 use sn_store::Db;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod digest;
+
+pub use digest::BATCH_LINES;
+
 pub const LINK_TTL_MINUTES: i64 = 30;
 pub const PER_KIND: usize = 3;
 const LINK_KEY: &str = "alerts.link";
@@ -247,6 +251,20 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
                 format::plural_ru(n, "нода не отвечает", "ноды не отвечают", "нод не отвечают")
             ),
             NODES_PATH,
+        ),
+        AlertKind::Clients => (
+            format!(
+                "Ещё {rest} {}",
+                format::plural_ru(n, "новый клиент", "новых клиента", "новых клиентов")
+            ),
+            "/admin/clients",
+        ),
+        AlertKind::Sales => (
+            format!(
+                "Ещё {rest} {}",
+                format::plural_ru(n, "оплата", "оплаты", "оплат")
+            ),
+            "/admin/money",
         ),
     };
     Alert {
@@ -618,6 +636,8 @@ impl<'a> AlertsOps<'a> {
         out.extend(self.auto_refunds(&config).await?);
         out.extend(self.traffic(&config).await?);
         out.extend(self.nodes(&config).await?);
+        out.extend(self.new_clients(&config).await?);
+        out.extend(self.new_sales(&config).await?);
         Ok(out)
     }
 
@@ -1180,7 +1200,12 @@ impl<'a> AlertsOps<'a> {
                     });
                 }
             }
-            AlertKind::Support | AlertKind::Payments | AlertKind::Traffic | AlertKind::Nodes => {}
+            AlertKind::Support
+            | AlertKind::Payments
+            | AlertKind::Traffic
+            | AlertKind::Nodes
+            | AlertKind::Clients
+            | AlertKind::Sales => {}
         }
         Ok(items)
     }
