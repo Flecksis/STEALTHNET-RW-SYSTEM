@@ -17,6 +17,7 @@ pub const BLOCKED_REFUND_REASON: &str = "клиент заблокирован: 
 pub const BLOCKED_REFUND_AUDIT: &str = "payment.refund_blocked";
 pub const BLOCKED_REFUND_REQUESTED_AUDIT: &str = "payment.refund_blocked_requested";
 pub const BLOCKED_REFUND_TEMPLATE: &str = "payment.refunded_blocked";
+pub const BLOCKED_REFUND_UNCONFIRMED_AUDIT: &str = "payment.refund_blocked_unconfirmed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockedRefund {
@@ -72,6 +73,22 @@ async fn client_state(tx: &mut Tx, order: &Order) -> ServiceResult<(bool, Option
     Ok((status == ClientStatus::Blocked.as_str(), blocked_at))
 }
 
+pub(crate) async fn unconfirmed(db: &mut impl Db, order_id: OrderId) -> ServiceResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM audit_log a JOIN payments p ON p.id = a.entity_id \
+         WHERE a.entity_kind = $2 AND a.action = $3 AND p.order_id = $1 \
+         AND NOT EXISTS (SELECT 1 FROM provider_refunds r WHERE r.payment_id = p.id AND r.status <> 'declined') \
+         AND NOT EXISTS (SELECT 1 FROM audit_log b WHERE b.entity_kind = $4 AND b.entity_id = $1 \
+             AND b.action = 'order.redeliver' AND b.actor_kind = 'admin' AND b.id > a.id))",
+    )
+    .bind(order_id.0)
+    .bind(audit_entity::PAYMENT)
+    .bind(BLOCKED_REFUND_UNCONFIRMED_AUDIT)
+    .bind(audit_entity::ORDER)
+    .fetch_one(db.conn())
+    .await?)
+}
+
 async fn paid_payments(tx: &mut Tx, order: &Order) -> ServiceResult<Vec<Payment>> {
     let mut paid = Vec::new();
     for payment in tx.payments().for_order(order.id).await? {
@@ -86,6 +103,20 @@ async fn paid_payments(tx: &mut Tx, order: &Order) -> ServiceResult<Vec<Payment>
 }
 
 impl PaymentInbox<'_> {
+    async fn note_attempt(&self, payment: &Payment, error: &str) -> ServiceResult<()> {
+        let mut tx = self.services.store().begin().await?;
+        tx.audit()
+            .record(&Actor::System.audit(
+                BLOCKED_REFUND_UNCONFIRMED_AUDIT,
+                audit_entity::PAYMENT,
+                Some(payment.id.0),
+                serde_json::json!({ "error": error, "key": refund_key(payment) }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn refund_blocked(&self, order_id: OrderId) -> ServiceResult<BlockedRefund> {
         let mut tx = self.services.store().begin().await?;
         let order = tx.orders().get(order_id).await?;
@@ -95,6 +126,11 @@ impl PaymentInbox<'_> {
             return Ok(BlockedRefund::NothingPaid);
         };
         if !blocked {
+            if unconfirmed(&mut tx, order_id).await? {
+                return Ok(BlockedRefund::Kept(
+                    "клиента разблокировали, но касса не ответила на автоматический возврат: проверьте в кабинете кассы, вернулись ли деньги, и тогда выдайте заказ или отметьте возврат".into(),
+                ));
+            }
             return Ok(BlockedRefund::Unblocked);
         }
         if paid.len() > 1 {
@@ -139,6 +175,8 @@ impl PaymentInbox<'_> {
             Ok(step) => step,
             Err(ServiceError::Payment(err)) if crate::autorenew::transient(&err) => {
                 tracing::warn!(order = %order.id, payment = %payment.id, error = %err, "возврат оплаты заблокированного клиента отложен");
+                drop(tx);
+                self.note_attempt(&payment, &err.to_string()).await?;
                 return Ok(BlockedRefund::Retry(format!(
                     "клиент заблокирован, возврат оплаты отложен: {err}"
                 )));

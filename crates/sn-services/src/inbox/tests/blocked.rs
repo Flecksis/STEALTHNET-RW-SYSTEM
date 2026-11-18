@@ -382,3 +382,47 @@ async fn после_отказа_кассы_в_автоматическом_во
     assert!(notifications(&jobs(&kit.services).await, client_id).is_empty());
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn разблокировка_после_потерянного_ответа_кассы_не_выдаёт_заказ_сама() {
+    let kassa = Arc::new(Kassa::default());
+    *kassa.refund_completed.lock().unwrap() = true;
+    *kassa.refund_lost.lock().unwrap() = true;
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let (client_id, invoice) = paid_after_block(&kit, 7710).await;
+    let fulfillment = kit.services.fulfillment();
+    let first = fulfillment.run(invoice.order_id).await.unwrap();
+    assert!(
+        matches!(first, FulfillmentOutcome::Retry { .. }),
+        "{first:?}"
+    );
+    assert_eq!(kassa.refunds.lock().unwrap().len(), 1);
+    kit.services
+        .clients()
+        .unblock(client_id, ADMIN)
+        .await
+        .unwrap();
+    *kassa.refund_lost.lock().unwrap() = false;
+    let second = fulfillment.run(invoice.order_id).await.unwrap();
+    assert!(
+        matches!(&second, FulfillmentOutcome::Review { reason } if reason.contains("касса не ответила")),
+        "{second:?}"
+    );
+    assert_eq!(kassa.refunds.lock().unwrap().len(), 1);
+    assert_eq!(
+        order(&kit.services, invoice.order_id).await.status,
+        OrderStatus::Review
+    );
+    fulfillment
+        .redeliver(invoice.order_id, ADMIN)
+        .await
+        .unwrap();
+    let third = fulfillment.run(invoice.order_id).await.unwrap();
+    assert!(
+        matches!(third, FulfillmentOutcome::Done { .. }),
+        "{third:?}"
+    );
+    kit.db.cleanup().await;
+}

@@ -30,7 +30,7 @@ use sn_store::{
 use std::net::IpAddr;
 use uuid::Uuid;
 
-mod blocked_refund;
+pub(crate) mod blocked_refund;
 mod buyer;
 mod journal;
 mod masking;

@@ -41,6 +41,7 @@ const KASSA_SECRET: &str = "kassa-secret";
 struct Kassa {
     refund_completed: Mutex<bool>,
     refund_fails: Mutex<bool>,
+    refund_lost: Mutex<bool>,
     refund_keys: Mutex<Vec<Uuid>>,
     refunds: Mutex<Vec<RefundRequest>>,
     status: Mutex<Option<WebhookOutcome>>,
@@ -168,6 +169,9 @@ impl PaymentProvider for Kassa {
         }
         let mut refunds = self.refunds.lock().unwrap();
         refunds.push(request.clone());
+        if *self.refund_lost.lock().unwrap() {
+            return Err(PaymentError::Transport("ответ кассы потерян".into()));
+        }
         Ok(RefundOutcome {
             provider_refund_id: Some(format!("kr-{}", refunds.len())),
             completed: *self.refund_completed.lock().unwrap(),

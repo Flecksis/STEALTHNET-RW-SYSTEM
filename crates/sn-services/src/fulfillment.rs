@@ -92,6 +92,7 @@ pub struct Resumed {
 }
 
 pub const BLOCKED_HOLD: &str = "клиент заблокирован: заказ";
+pub const REFUND_UNCONFIRMED_REASON: &str = "касса не ответила на автоматический возврат, пока клиент был заблокирован: проверьте в кабинете кассы, вернулись ли деньги, затем отметьте возврат или нажмите «Повторить выдачу»";
 pub const UNBLOCKED_CAUSE: &str = "клиента разблокировали";
 const FULFILLED_TEMPLATE: &str = "order.fulfilled";
 
@@ -1399,6 +1400,9 @@ impl<'a> Fulfillment<'a> {
         let mut conn = self.services.store().conn().await?;
         if conn.orders().refund_pending_settled(order_id).await? {
             return Err(Halt::Retry(REFUND_PENDING_REASON.into()));
+        }
+        if crate::inbox::blocked_refund::unconfirmed(&mut conn, order_id).await? {
+            return Err(Halt::Review(REFUND_UNCONFIRMED_REASON.into()));
         }
         Ok(())
     }
