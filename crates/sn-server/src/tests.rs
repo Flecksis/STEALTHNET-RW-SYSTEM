@@ -34,6 +34,7 @@ mod channels;
 mod client_access;
 mod client_payments;
 mod config_warnings;
+mod cryptomus;
 mod gram;
 mod hosts;
 mod import;

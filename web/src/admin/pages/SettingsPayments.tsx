@@ -185,6 +185,7 @@ type Work = {
 const ACCEPTS: Record<string, string> = {
   cryptopay: 'USDT, TON, BTC',
   heleket: 'USDT, BTC, TON и другие монеты',
+  cryptomus: 'USDT, BTC, TON и другие монеты',
   lava: 'Карты и СБП в рублях, карты и PayPal в долларах',
   stars: 'Своя цена в звёздах, задаётся в тарифе',
   gram: 'GRAM переводом на кошелёк TON',
@@ -199,6 +200,7 @@ const ACCEPTS: Record<string, string> = {
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'] };
 
 const OWN_HOOKS: Record<string, string> = {
+  cryptomus: 'Панель передаёт Cryptomus адрес для уведомлений вместе с каждым счётом, в кабинете Cryptomus его указывать не нужно.',
   overpay: 'Панель передаёт Overpay адрес для уведомлений вместе с каждым счётом, в кабинете Overpay его указывать не нужно.',
 };
 

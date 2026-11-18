@@ -1,9 +1,11 @@
 mod balance;
 mod cloudpayments;
+mod cryptomus;
 mod cryptopay;
 mod gram;
 mod heleket;
 mod lava;
+mod merchant;
 mod overpay;
 mod platega;
 mod rollypay;
@@ -13,6 +15,7 @@ mod yoomoney;
 
 pub use balance::Balance;
 pub use cloudpayments::{CloudPayments, signature as cloudpayments_signature};
+pub use cryptomus::{Cryptomus, signature as cryptomus_signature};
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
 pub use gram::{Gram, GramInvoice, comment_payload, format_grams, friendly_address};
 pub use heleket::{Heleket, signature as heleket_signature};
@@ -35,6 +38,7 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(CryptoPay::new()),
         Arc::new(Gram::new()),
         Arc::new(Heleket::new()),
+        Arc::new(Cryptomus::new()),
         Arc::new(Lava::new()),
         Arc::new(YooKassa::new()),
         Arc::new(Platega::new()),
@@ -61,6 +65,10 @@ mod tests {
         match id {
             providers::CRYPTOPAY => config(&[("api_token", json!("1:AAA"))]),
             providers::HELEKET => config(&[
+                ("merchant_id", json!("8b03432e-385b-4670-8d06-064591096795")),
+                ("api_key", json!("k")),
+            ]),
+            providers::CRYPTOMUS => config(&[
                 ("merchant_id", json!("8b03432e-385b-4670-8d06-064591096795")),
                 ("api_key", json!("k")),
             ]),
@@ -124,6 +132,7 @@ mod tests {
                     providers::HELEKET,
                     providers::LAVA,
                     providers::STARS,
+                    providers::CRYPTOMUS,
                     providers::BALANCE,
                 ],
             ),
@@ -137,6 +146,7 @@ mod tests {
                     providers::CLOUDPAYMENTS,
                     providers::OVERPAY,
                     providers::CRYPTOPAY,
+                    providers::CRYPTOMUS,
                     providers::LAVA,
                     providers::ROLLYPAY,
                     providers::BALANCE,
@@ -162,6 +172,9 @@ mod tests {
             assert!(registry.is_available(providers::ROLLYPAY, Currency::Rub));
             assert!(!registry.is_available(providers::ROLLYPAY, Currency::Usd));
             assert!(registry.accepts_webhooks(providers::ROLLYPAY));
+            assert!(registry.is_available(providers::CRYPTOMUS, Currency::Rub));
+            assert!(registry.is_available(providers::CRYPTOMUS, Currency::Usd));
+            assert!(registry.accepts_webhooks(providers::CRYPTOMUS));
         }
     }
 
@@ -176,6 +189,7 @@ mod tests {
         for id in [
             providers::CRYPTOPAY,
             providers::HELEKET,
+            providers::CRYPTOMUS,
             providers::LAVA,
             providers::YOOKASSA,
             providers::PLATEGA,

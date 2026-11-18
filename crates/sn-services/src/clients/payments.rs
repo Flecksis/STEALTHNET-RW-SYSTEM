@@ -114,8 +114,10 @@ pub(crate) fn method_title(
         "bank_card" | "card" => lang::pick("Банковская карта", "Bank card").into(),
         "yoo_money" => lang::pick("ЮMoney", "YooMoney").into(),
         "sberbank" | "sber_pay" => "SberPay".into(),
-        _ if matches!(provider, providers::CRYPTOPAY | providers::HELEKET)
-            && detail.len() <= 12
+        _ if matches!(
+            provider,
+            providers::CRYPTOPAY | providers::HELEKET | providers::CRYPTOMUS
+        ) && detail.len() <= 12
             && detail.bytes().all(|b| b.is_ascii_alphanumeric()) =>
         {
             format!("{base}, {}", detail.to_ascii_uppercase())

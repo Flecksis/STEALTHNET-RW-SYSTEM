@@ -25,6 +25,9 @@ pub fn text(russian: &str) -> Option<&'static str> {
         "Кошелёк ЮMoney" => "YooMoney wallet",
         "Криптовалюта" => "Crypto",
         "Любая монета" => "Any coin",
+        "Монету и сеть выбирают на странице Cryptomus" => {
+            "Pick the coin and network on the Cryptomus page"
+        }
         "Монету и сеть выбирают на странице Heleket" => {
             "Pick the coin and network on the Heleket page"
         }
