@@ -751,6 +751,7 @@ impl<'a> AutoRenew<'a> {
                 .unwrap_or_default(),
             expires_in: Duration::minutes(i64::from(settings.invoice_ttl_minutes)),
             save_payment_method: false,
+            method: None,
         }
     }
 

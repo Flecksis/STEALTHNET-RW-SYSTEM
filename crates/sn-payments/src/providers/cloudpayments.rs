@@ -704,6 +704,7 @@ mod tests {
                     provider_txid: "1504".into(),
                     amount: rub(10_000),
                     reason: None,
+                    key: Uuid::from_u128(5),
                 },
             )
             .await

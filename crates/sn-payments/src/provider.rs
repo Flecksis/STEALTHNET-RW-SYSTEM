@@ -86,6 +86,30 @@ pub struct ClientLabel {
     pub hint: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PayMethod {
+    pub code: &'static str,
+    pub title: &'static str,
+    pub hint: &'static str,
+    pub min_minor: Option<i64>,
+}
+
+impl PayMethod {
+    pub const fn new(code: &'static str, title: &'static str, hint: &'static str) -> Self {
+        PayMethod {
+            code,
+            title,
+            hint,
+            min_minor: None,
+        }
+    }
+
+    pub const fn min_minor(mut self, minor: i64) -> Self {
+        self.min_minor = Some(minor);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProviderIssue {
     pub at: DateTime<Utc>,
@@ -112,6 +136,8 @@ pub struct InvoiceRequest {
     pub webhook_url: String,
     pub expires_in: Duration,
     pub save_payment_method: bool,
+    #[serde(default)]
+    pub method: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -213,6 +239,7 @@ pub struct RefundRequest {
     pub provider_txid: String,
     pub amount: Amount,
     pub reason: Option<String>,
+    pub key: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +261,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
     fn currencies(&self) -> &'static [Currency];
 
     fn client_label(&self, currency: Currency) -> ClientLabel;
+
+    fn methods(&self, _currency: Currency) -> Vec<PayMethod> {
+        Vec::new()
+    }
+
+    fn method(&self, currency: Currency, code: &str) -> Option<PayMethod> {
+        self.methods(currency).into_iter().find(|m| m.code == code)
+    }
 
     fn settings_schema(&self) -> Vec<SettingField> {
         Vec::new()

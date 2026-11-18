@@ -1140,6 +1140,7 @@ mod tests {
                     provider_txid: ID.into(),
                     amount: rub(10_000),
                     reason: Some("Не подошёл тариф".into()),
+                    key: uuid::Uuid::from_u128(5),
                 },
             )
             .await

@@ -1691,6 +1691,7 @@ impl<'a> PaymentInbox<'a> {
                             provider_txid: txid,
                             amount,
                             reason: command.reason.clone(),
+                            key: Uuid::new_v4(),
                         },
                     )
                     .await?;

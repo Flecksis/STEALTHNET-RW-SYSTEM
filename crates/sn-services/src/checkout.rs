@@ -1322,6 +1322,7 @@ impl<'a> Checkout<'a> {
                     created.kind,
                     OrderKind::New | OrderKind::Renewal | OrderKind::Change
                 ),
+            method: None,
         };
         let config = self.services.payments().config(provider.id());
         match provider.create_invoice(&config, &request).await {

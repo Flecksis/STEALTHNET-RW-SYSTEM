@@ -443,6 +443,7 @@ mod tests {
             webhook_url: "https://panel.example.com/api/webhooks/pay/cryptopay".into(),
             expires_in: chrono::Duration::hours(1),
             save_payment_method: false,
+            method: None,
         };
         let invoice = provider.create_invoice(&config(), &request).await.unwrap();
         assert_eq!(invoice.external_id.as_deref(), Some("77"));

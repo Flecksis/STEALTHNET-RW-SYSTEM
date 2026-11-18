@@ -581,6 +581,7 @@ mod tests {
             provider_txid: charge.into(),
             amount: Amount::new(stars, PayCurrency::Xtr),
             reason: None,
+            key: Uuid::from_u128(5),
         }
     }
 

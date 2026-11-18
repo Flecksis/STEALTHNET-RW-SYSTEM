@@ -40,6 +40,7 @@ pub(crate) fn invoice(amount: Amount, email: Option<&str>) -> InvoiceRequest {
         webhook_url: "https://panel.example.com/api/webhooks/pay/test".into(),
         expires_in: chrono::Duration::hours(1),
         save_payment_method: false,
+        method: None,
     }
 }
 
