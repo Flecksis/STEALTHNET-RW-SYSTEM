@@ -5,6 +5,7 @@ import { count, dateLong, groupDigits, money, type Money } from '../../lib/forma
 import { Icon } from '../../lib/icons';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { PhoneHeader } from '../phone';
+import { ATTENTION_LINK, attentionCount, attentionNote, attentionTitle } from '../money/journal';
 import { useSession } from '../session';
 import { useOverview } from './Home';
 import { PanelServer } from './PanelServer';
@@ -102,6 +103,18 @@ export function HomePhone() {
       label: `Открыть ${bill.provider.name}, чтобы оплатить ${nodeName}`,
       href: bill.provider.loginUrl ?? undefined,
       to: bill.provider.loginUrl ? undefined : '/admin/infra/billing',
+    });
+  }
+  const attention = dashboard?.webhooks ?? null;
+  if (attention && attentionCount(attention) > 0) {
+    todos.push({
+      key: 'webhooks',
+      title: attentionTitle(attention),
+      note: attentionNote(attention),
+      tone: 'bad',
+      action: 'Открыть',
+      label: 'Открыть журнал уведомлений платёжек',
+      to: ATTENTION_LINK,
     });
   }
   if (waiting > 0) {

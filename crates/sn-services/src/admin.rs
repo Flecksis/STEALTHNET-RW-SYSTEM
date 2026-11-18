@@ -92,6 +92,7 @@ pub struct DashboardView {
     pub stars_review: i64,
     pub refund_actions_failed: i64,
     pub charges_review: i64,
+    pub webhooks: Option<crate::inbox::WebhookAttention>,
     pub remna: Option<RemnaOverview>,
     pub remna_error: Option<String>,
     pub server: crate::server_load::ServerLoad,
@@ -168,6 +169,8 @@ pub struct PaymentFilter {
     pub provider: Option<String>,
     #[serde(default)]
     pub client_id: Option<ClientId>,
+    #[serde(default)]
+    pub id: Option<PaymentId>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -566,6 +569,11 @@ impl<'a> AdminOps<'a> {
                 .await
                 .ok();
         drop(conn);
+        let webhooks = if include_money {
+            Some(self.services.inbox().webhook_attention().await?)
+        } else {
+            None
+        };
         let mut server = crate::server_load::probe().sample().await;
         server.database_bytes = database_bytes.and_then(|b| u64::try_from(b).ok());
         let (remna, remna_error) = match self.remna_overview().await {
@@ -583,6 +591,7 @@ impl<'a> AdminOps<'a> {
             stars_review,
             refund_actions_failed,
             charges_review,
+            webhooks,
             remna,
             remna_error,
             server,
@@ -853,6 +862,7 @@ impl<'a> AdminOps<'a> {
              provider_txid, pay_url, expires_at, paid_at, created_at, pay_method FROM payments \
              WHERE ($1::text IS NULL OR status = $1) AND ($2::text IS NULL OR provider = $2) \
              AND ($3::bigint IS NULL OR client_id = $3) AND ($4::bigint IS NULL OR id < $4) \
+             AND ($6::bigint IS NULL OR id = $6) \
              ORDER BY id DESC LIMIT $5",
         )
         .bind(filter.status.map(PaymentStatus::as_str))
@@ -860,6 +870,7 @@ impl<'a> AdminOps<'a> {
         .bind(filter.client_id.map(|c| c.0))
         .bind(page.after)
         .bind(page.fetch_limit())
+        .bind(filter.id.map(|p| p.0))
         .fetch_all(conn.conn())
         .await?;
         let items = rows

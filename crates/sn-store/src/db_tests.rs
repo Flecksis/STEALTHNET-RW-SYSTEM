@@ -421,11 +421,13 @@ async fn повтор_вебхука_и_события_remnawave_отсекаю�
         remote_ip: Some("203.0.113.7".into()),
         headers: serde_json::json!({}),
         body: Some(b"{}".to_vec()),
+        parsed: None,
+        event: None,
     };
     let first = conn.webhooks().record(&hook).await.unwrap();
     assert!(!first.duplicate);
     conn.webhooks()
-        .finish(first.id, InboxOutcome::Accepted, None, None)
+        .finish(first.id, InboxOutcome::Accepted, None, None, None)
         .await
         .unwrap();
     let second = conn.webhooks().record(&hook).await.unwrap();

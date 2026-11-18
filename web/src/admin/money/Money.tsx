@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, Navigate, Route, Routes, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
+import { usePhone } from '../../lib/media';
 import { Avatar } from '../Avatar';
 import { ConfirmDialog } from '../client/dialogs';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { RefundDialog } from '../client/RefundDialog';
 import { agoLong, orderLine, personName, type PaymentItem } from '../home/model';
+import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { StarsReview } from './StarsReview';
+import { MoneyTabs } from './MoneyTabs';
+import { WebhookCard } from './WebhookCard';
+import { Webhooks } from './Webhooks';
+import '../promo/promo.css';
 import './money.css';
 
 type Filter = 'pending' | 'canceled' | 'paid' | 'all';
@@ -48,7 +54,27 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function Money() {
+  return (
+    <Routes>
+      <Route index element={<Payments />} />
+      <Route path="webhooks" element={<Webhooks />} />
+      <Route path="webhooks/:id" element={<WebhookCard />} />
+      <Route path="*" element={<Navigate to="/admin/money" replace />} />
+    </Routes>
+  );
+}
+
+function onePayment(params: URLSearchParams): number | null {
+  const raw = params.get('payment');
+  const id = raw && /^\d{1,15}$/.test(raw) ? Number(raw) : null;
+  return id && id > 0 ? id : null;
+}
+
+function Payments() {
   const { can } = useSession();
+  const phone = usePhone();
+  const [params, setParams] = useSearchParams();
+  const single = onePayment(params);
   const refunds = can('refunds');
   const [refund, setRefund] = useState<PaymentItem | null>(null);
   const [filter, setFilter] = useState<Filter>('pending');
@@ -61,16 +87,18 @@ export function Money() {
 
   const query = useCallback(
     (after: number | null) => {
-      const params = new URLSearchParams({ limit: '30' });
-      if (filter !== 'all') {
-        params.set('status', filter);
+      const query = new URLSearchParams({ limit: '30' });
+      if (single !== null) {
+        query.set('id', String(single));
+      } else if (filter !== 'all') {
+        query.set('status', filter);
       }
       if (after !== null) {
-        params.set('after', String(after));
+        query.set('after', String(after));
       }
-      return api<PageData>(`/api/admin/payments?${params.toString()}`);
+      return api<PageData>(`/api/admin/payments?${query.toString()}`);
     },
-    [filter],
+    [filter, single],
   );
 
   const load = useCallback(async () => {
@@ -108,21 +136,34 @@ export function Money() {
   };
 
   return (
-    <>
-      <h1 className="page-title">Деньги</h1>
+    <div className="pr-page">
+      {phone ? (
+        <PhoneHeader title="Деньги" />
+      ) : (
+        <div className="pr-head">
+          <h1 className="page-title tight">Деньги</h1>
+        </div>
+      )}
+      <MoneyTabs />
       <StarsReview onChanged={() => void load()} />
       <section className="card mn-money" aria-labelledby="mo-h">
         <div className="mo-head">
           <h2 id="mo-h" className="section-title">
-            Платежи
+            {single !== null ? `Платёж №${single}` : 'Платежи'}
           </h2>
-          <div role="group" aria-label="Какие платежи показать" className="segs">
-            {FILTERS.map(([key, label]) => (
-              <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>
-                {label}
-              </button>
-            ))}
-          </div>
+          {single !== null ? (
+            <button type="button" className="btn-line hov" onClick={() => setParams(new URLSearchParams(), { replace: true })}>
+              Все платежи
+            </button>
+          ) : (
+            <div role="group" aria-label="Какие платежи показать" className="segs">
+              {FILTERS.map(([key, label]) => (
+                <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {done ? (
           <p className="mo-done" role="status">
@@ -135,7 +176,9 @@ export function Money() {
           </p>
         ) : null}
         {items === null ? <p className="muted mo-pad">Загружаем платежи…</p> : null}
-        {items !== null && items.length === 0 && !error ? <p className="muted mo-pad">Здесь пока пусто</p> : null}
+        {items !== null && items.length === 0 && !error ? (
+          <p className="muted mo-pad">{single !== null ? 'Такого платежа нет' : 'Здесь пока пусто'}</p>
+        ) : null}
         {items?.map((p) => {
           const name = personName(p.client, p.client_id);
           const state = stateOf(p);
@@ -207,6 +250,6 @@ export function Money() {
           onClose={() => setConfirm(null)}
         />
       ) : null}
-    </>
+    </div>
   );
 }

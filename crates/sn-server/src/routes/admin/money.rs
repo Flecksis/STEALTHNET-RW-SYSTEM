@@ -4,13 +4,17 @@ use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::PaymentStatus;
 use sn_services::admin::{MarkPaidRequest, MarkPaidResult, PaymentFilter, RefundRequest};
-use sn_services::inbox::{PendingRefundRequest, RefundActionReview, RefundOptions};
+use sn_services::inbox::{
+    JournalCard, JournalPage, JournalQuery, OutcomeGroup, PendingRefundRequest, RefundActionReview,
+    RefundOptions,
+};
 
 const REFUND_LIST_LIMIT: i64 = 100;
 
@@ -25,6 +29,9 @@ pub fn routes() -> Router<AppState> {
         .route("/refunds/{id}/confirm", post(confirm_refund_request))
         .route("/refunds/{id}/action/retry", post(retry_refund_action))
         .route("/refunds/{id}/action/close", post(close_refund_action))
+        .route("/webhooks", get(webhooks))
+        .route("/webhooks/{id}", get(webhook))
+        .route("/webhooks/{id}/retry", post(retry_webhook))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -54,6 +61,26 @@ struct ListQuery {
     #[serde(default)]
     client_id: Option<i64>,
     #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    after: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct WebhookListQuery {
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    outcome: Option<OutcomeGroup>,
+    #[serde(default)]
+    from: Option<DateTime<Utc>>,
+    #[serde(default)]
+    to: Option<DateTime<Utc>>,
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
     limit: Option<u32>,
     #[serde(default)]
     after: Option<i64>,
@@ -80,6 +107,7 @@ async fn list(
         status,
         provider: query.provider,
         client_id: query.client_id.map(ClientId),
+        id: query.id.map(PaymentId),
     };
     Ok(Json(
         state
@@ -227,4 +255,50 @@ async fn close_refund_action(
         .close_refund_action(id, admin.0.admin_id, &note)
         .await?;
     Ok(Json(serde_json::json!({ "ok": true, "request_id": id })))
+}
+
+async fn webhooks(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<WebhookListQuery>,
+) -> ApiResult<Json<JournalPage>> {
+    admin.require(Permission::Money)?;
+    let filter = JournalQuery {
+        provider: query.provider,
+        outcome: query.outcome,
+        from: query.from,
+        to: query.to,
+        q: query.q,
+    };
+    Ok(Json(
+        state
+            .services
+            .inbox()
+            .journal(&filter, PageRequest::new(query.limit, query.after))
+            .await?,
+    ))
+}
+
+async fn webhook(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<JournalCard>> {
+    admin.require(Permission::Money)?;
+    Ok(Json(state.services.inbox().journal_card(id).await?))
+}
+
+async fn retry_webhook(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<JournalCard>> {
+    admin.require(Permission::Money)?;
+    Ok(Json(
+        state
+            .services
+            .inbox()
+            .retry_webhook(id, admin.0.admin_id)
+            .await?,
+    ))
 }

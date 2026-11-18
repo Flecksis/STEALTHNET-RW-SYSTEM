@@ -92,6 +92,15 @@
   padding: 0 24px;
 }
 
+.hm-alert {
+  align-self: flex-start;
+  color: var(--bad);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 .hm-stat {
   flex: 1 1 170px;
   display: flex;

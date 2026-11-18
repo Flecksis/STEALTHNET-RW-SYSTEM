@@ -9,6 +9,7 @@ import { HomePhone } from './HomePhone';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { PickClient } from '../clients/Clients';
 import { useSession } from '../session';
+import { ATTENTION_LINK, attentionCount, attentionTitle } from '../money/journal';
 import {
   agoLong,
   countryName,
@@ -272,6 +273,7 @@ function MainBoard() {
   const delta =
     revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
   const summary = nodesSummary(nodes);
+  const attention = attentionCount(dashboard?.webhooks) > 0 ? (dashboard?.webhooks ?? null) : null;
 
   return (
     <div className="hm">
@@ -318,6 +320,11 @@ function MainBoard() {
               ) : null}
               за месяц {money(revenue.month, true)}
             </span>
+            {attention ? (
+              <Link to={ATTENTION_LINK} className="hm-alert">
+                {attentionTitle(attention)} за сутки
+              </Link>
+            ) : null}
           </div>
         ) : null}
         <div className="hm-stat">
@@ -410,6 +417,7 @@ function Daylight() {
   const subs = dashboard?.subscriptions ?? null;
   const online = dashboard?.remna?.online_now ?? null;
   const flagged = nodes.find((n) => n.state === 'down') ?? nodes.find((n) => n.state === 'connecting') ?? null;
+  const attention = attentionCount(dashboard?.webhooks) > 0 ? (dashboard?.webhooks ?? null) : null;
   const modules = new Set(me.menu.map((m) => m.module));
   const quick: Array<{ label: string; to?: string; run?: () => void }> = [];
   if (can('clients_write')) {
@@ -480,6 +488,15 @@ function Daylight() {
             </>
           ) : dashboard ? (
             ' Remnawave сейчас не отвечает.'
+          ) : null}
+          {attention ? (
+            <>
+              {' '}
+              <Link to={ATTENTION_LINK} className="hm-flag bad">
+                {attentionTitle(attention)}
+              </Link>{' '}
+              за сутки.
+            </>
           ) : null}
         </p>
         <p className="muted">

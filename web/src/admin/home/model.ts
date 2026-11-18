@@ -1,6 +1,7 @@
 import { count, dateLong, money, NBSP, plural, timeHM, type Money } from '../../lib/format';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import type { Amount, OrderBrief } from '../client/types';
+import type { Attention } from '../money/journal';
 import { termText } from '../tariffs/model';
 
 export type NodeState = 'online' | 'connecting' | 'down' | 'disabled';
@@ -25,6 +26,7 @@ export type Dashboard = {
   today: { payments: number; new_clients: number; new_clients_paid: number } | null;
   revenue: { today: Money; yesterday: Money; week: Money; month: Money; today_stars: number; by_day: Array<{ day: string; amount: Money }> } | null;
   support_waiting: number;
+  webhooks?: Attention | null;
   remna: { online_now: number; users_total: number; nodes_total: number; nodes_online: number; nodes: NodeBrief[] } | null;
   remna_error: string | null;
   server?: ServerLoad;

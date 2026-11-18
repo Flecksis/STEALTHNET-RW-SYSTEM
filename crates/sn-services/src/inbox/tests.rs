@@ -28,6 +28,7 @@ mod actions;
 mod blocked;
 mod gate;
 mod holds;
+mod journal;
 mod notices;
 mod polling;
 mod resume;

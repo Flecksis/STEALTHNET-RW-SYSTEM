@@ -43,6 +43,7 @@ mod mail;
 mod multi_subscriptions;
 mod oauth;
 mod password_reset;
+mod payment_journal;
 mod photos;
 mod provider_check;
 mod robots;

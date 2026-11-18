@@ -1843,6 +1843,7 @@ async fn ручная_отметка_оплаты_ставит_выдачу_и_�
                 status: Some(PaymentStatus::Pending),
                 provider: Some(providers::CRYPTOPAY.into()),
                 client_id: Some(client),
+                id: None,
             },
             sn_domain::paging::PageRequest::new(Some(10), None),
         )

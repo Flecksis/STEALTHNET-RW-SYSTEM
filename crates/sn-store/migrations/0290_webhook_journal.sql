@@ -1,0 +1,10 @@
+ALTER TABLE webhook_inbox ADD COLUMN parsed jsonb;
+ALTER TABLE webhook_inbox ADD COLUMN event text;
+ALTER TABLE webhook_inbox ADD COLUMN trail jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE webhook_inbox ADD COLUMN deliveries integer NOT NULL DEFAULT 1;
+ALTER TABLE webhook_inbox ADD COLUMN claimed_at timestamptz;
+ALTER TABLE webhook_inbox DROP CONSTRAINT webhook_inbox_outcome_check;
+ALTER TABLE webhook_inbox ADD CONSTRAINT webhook_inbox_outcome_check CHECK (outcome IN ('received', 'accepted', 'duplicate', 'ignored', 'rejected_signature', 'rejected_payload', 'rejected_business', 'not_accepted', 'payment_not_found', 'amount_mismatch', 'error'));
+CREATE INDEX webhook_inbox_source_idx ON webhook_inbox (source, id DESC);
+CREATE INDEX webhook_inbox_payment_idx ON webhook_inbox (payment_id) WHERE payment_id IS NOT NULL;
+CREATE INDEX webhook_inbox_attention_idx ON webhook_inbox (received_at) WHERE outcome IN ('received', 'rejected_signature', 'rejected_payload', 'rejected_business', 'not_accepted', 'amount_mismatch', 'error');

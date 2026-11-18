@@ -31,6 +31,8 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 mod blocked_refund;
+mod journal;
+mod masking;
 mod refund_action;
 mod refund_requests;
 #[cfg(test)]
@@ -40,6 +42,12 @@ pub use blocked_refund::{
     BLOCKED_REFUND_AUDIT, BLOCKED_REFUND_REASON, BLOCKED_REFUND_REQUESTED_AUDIT,
     BLOCKED_REFUND_TEMPLATE, BlockedRefund,
 };
+pub use journal::{
+    ATTENTION_HOURS, BodyView, Fact, JournalCard, JournalItem, JournalPage, JournalPaymentView,
+    JournalQuery, OutcomeGroup, ProviderOption, RETRY_STALE_MINUTES, Retention, RetryState,
+    StepView, Tone, WebhookAttention, event_label, exact,
+};
+pub use masking::{MaskedBody, mask_body};
 pub use refund_action::{
     REFUND_ACTION_ATTEMPTS, REFUND_ACTION_FAILED, RefundActionOutcome, RefundActionReview,
 };
@@ -123,6 +131,57 @@ fn rejection_outcome(code: &str) -> InboxOutcome {
     } else {
         InboxOutcome::RejectedBusiness
     }
+}
+
+struct Settled {
+    outcome: InboxOutcome,
+    payment_id: Option<PaymentId>,
+    error: Option<String>,
+    failed: bool,
+}
+
+impl From<ServiceResult<AcceptResult>> for Settled {
+    fn from(result: ServiceResult<AcceptResult>) -> Self {
+        let settled = |outcome, payment_id, error| Settled {
+            outcome,
+            payment_id,
+            error,
+            failed: false,
+        };
+        match result {
+            Ok(AcceptResult::Accepted { payment_id, .. })
+            | Ok(AcceptResult::StatusChanged { payment_id, .. }) => {
+                settled(InboxOutcome::Accepted, Some(payment_id), None)
+            }
+            Ok(AcceptResult::AlreadyApplied { payment_id }) => {
+                settled(InboxOutcome::Duplicate, Some(payment_id), None)
+            }
+            Ok(AcceptResult::Ignored { reason }) => {
+                settled(InboxOutcome::Ignored, None, Some(reason))
+            }
+            Err(ServiceError::NotFound(_))
+            | Err(ServiceError::Store(sn_store::StoreError::NotFound(_))) => {
+                settled(InboxOutcome::PaymentNotFound, None, None)
+            }
+            Err(ServiceError::Rejected { code, message }) => {
+                settled(rejection_outcome(code), None, Some(message))
+            }
+            Err(err) => Settled {
+                outcome: InboxOutcome::Error,
+                payment_id: None,
+                error: Some(err.to_string()),
+                failed: true,
+            },
+        }
+    }
+}
+
+fn stored_outcome(outcome: &WebhookOutcome) -> Option<serde_json::Value> {
+    let mut copy = outcome.clone();
+    if let Some(method) = copy.saved_method.as_mut() {
+        method.token.clear();
+    }
+    serde_json::to_value(&copy).ok()
 }
 
 fn stored_headers(request: &WebhookRequest) -> serde_json::Value {
@@ -642,6 +701,7 @@ impl<'a> PaymentInbox<'a> {
             }
             _ => parsed,
         };
+        let prepared = masking::prepare(&hook.request.body, hook.request.route_suffix.as_deref());
         let record = {
             let mut conn = self.services.store().conn().await?;
             conn.webhooks()
@@ -650,7 +710,9 @@ impl<'a> PaymentInbox<'a> {
                     dedupe_key,
                     remote_ip: hook.request.remote_ip.map(|ip| ip.to_string()),
                     headers: stored_headers(&hook.request),
-                    body: Some(hook.request.body.to_vec()),
+                    body: Some(prepared.body),
+                    parsed: stored_outcome(&parsed),
+                    event: prepared.event,
                 })
                 .await?
         };
@@ -664,55 +726,40 @@ impl<'a> PaymentInbox<'a> {
         {
             tracing::warn!(error = %err, "старые записи вебхуков не удалены");
         }
-        let (outcome, payment_id, error, response) =
-            match self.apply_outcome(provider.id(), &parsed).await {
-                Ok(AcceptResult::Accepted { payment_id, .. })
-                | Ok(AcceptResult::AlreadyApplied { payment_id })
-                | Ok(AcceptResult::StatusChanged { payment_id, .. }) => (
-                    InboxOutcome::Accepted,
-                    Some(payment_id),
-                    None,
-                    WebhookResponse {
-                        reply: parsed.reply,
-                    },
-                ),
-                Ok(AcceptResult::Ignored { reason }) => (
-                    InboxOutcome::Ignored,
-                    None,
-                    Some(reason),
-                    WebhookResponse {
-                        reply: parsed.reply,
-                    },
-                ),
-                Err(ServiceError::NotFound(_))
-                | Err(ServiceError::Store(sn_store::StoreError::NotFound(_))) => (
-                    InboxOutcome::PaymentNotFound,
-                    None,
-                    None,
-                    WebhookResponse {
-                        reply: parsed.reply,
-                    },
-                ),
-                Err(ServiceError::Rejected { code, message }) => (
-                    rejection_outcome(code),
-                    None,
-                    Some(message),
-                    WebhookResponse {
-                        reply: parsed.reply,
-                    },
-                ),
-                Err(err) => (
-                    InboxOutcome::Error,
-                    None,
-                    Some(err.to_string()),
-                    WebhookResponse::status(503),
-                ),
-            };
+        let mut settled = Settled::from(self.apply_outcome(provider.id(), &parsed).await);
+        if settled.payment_id.is_none() && settled.outcome != InboxOutcome::PaymentNotFound {
+            settled.payment_id = self.linked_payment(provider.id(), &parsed).await;
+        }
+        let response = if settled.failed {
+            WebhookResponse::status(503)
+        } else {
+            WebhookResponse {
+                reply: parsed.reply,
+            }
+        };
         let mut conn = self.services.store().conn().await?;
         conn.webhooks()
-            .finish(record.id, outcome, payment_id, error.as_deref())
+            .finish(
+                record.id,
+                settled.outcome,
+                settled.payment_id,
+                settled.error.as_deref(),
+                None,
+            )
             .await?;
         Ok(response)
+    }
+
+    async fn linked_payment(&self, provider: &str, outcome: &WebhookOutcome) -> Option<PaymentId> {
+        let reference = outcome.payment.as_ref()?;
+        let mut conn = self.services.store().conn().await.ok()?;
+        match lookup(&mut conn, provider, reference).await {
+            Ok(found) => found.map(|p| p.id),
+            Err(err) => {
+                tracing::debug!(provider, error = %err, "платёж из уведомления не найден для журнала");
+                None
+            }
+        }
     }
 
     async fn lookup_gate(
@@ -791,6 +838,8 @@ impl<'a> PaymentInbox<'a> {
             remote_ip: ip,
             headers: stored_headers(request),
             body: None,
+            parsed: None,
+            event: masking::route_event(request.route_suffix.as_deref()),
         };
         let stored = match self.services.store().conn().await {
             Ok(mut conn) => conn

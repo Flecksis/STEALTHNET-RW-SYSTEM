@@ -1,12 +1,27 @@
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
-use sn_domain::ids::PaymentId;
+use serde::{Deserialize, Serialize};
+use sn_domain::ids::{AdminId, ClientId, PaymentId};
+use sn_domain::money::{Amount, PayCurrency};
+use sn_domain::payment::PaymentStatus;
 use sqlx::PgConnection;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const FINAL: &str = "'accepted', 'duplicate', 'ignored', 'payment_not_found', 'amount_mismatch'";
+const TRAIL: &str = "(CASE WHEN jsonb_array_length(webhook_inbox.trail) >= 30 \
+     THEN webhook_inbox.trail - 0 ELSE webhook_inbox.trail END)";
+const COLUMNS: &str = "w.id, w.source, w.outcome, w.payment_id, p.client_id, w.error, w.remote_ip, \
+     w.received_at, w.processed_at, w.claimed_at, w.deliveries, w.parsed, w.event, w.body IS NOT NULL AS has_body, \
+     p.public_id AS payment_public_id, p.amount_minor, p.currency, p.status AS payment_status, \
+     o.public_id AS order_public_id";
+const BODY_SEARCH_MIN: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InboxOutcome {
     Received,
     Accepted,
+    Duplicate,
     Ignored,
     RejectedSignature,
     RejectedPayload,
@@ -18,10 +33,25 @@ pub enum InboxOutcome {
 }
 
 impl InboxOutcome {
+    pub const ALL: [InboxOutcome; 11] = [
+        InboxOutcome::Received,
+        InboxOutcome::Accepted,
+        InboxOutcome::Duplicate,
+        InboxOutcome::Ignored,
+        InboxOutcome::RejectedSignature,
+        InboxOutcome::RejectedPayload,
+        InboxOutcome::RejectedBusiness,
+        InboxOutcome::NotAccepted,
+        InboxOutcome::PaymentNotFound,
+        InboxOutcome::AmountMismatch,
+        InboxOutcome::Error,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             InboxOutcome::Received => "received",
             InboxOutcome::Accepted => "accepted",
+            InboxOutcome::Duplicate => "duplicate",
             InboxOutcome::Ignored => "ignored",
             InboxOutcome::RejectedSignature => "rejected_signature",
             InboxOutcome::RejectedPayload => "rejected_payload",
@@ -37,6 +67,7 @@ impl InboxOutcome {
         Ok(match value {
             "received" => InboxOutcome::Received,
             "accepted" => InboxOutcome::Accepted,
+            "duplicate" => InboxOutcome::Duplicate,
             "ignored" => InboxOutcome::Ignored,
             "rejected_signature" => InboxOutcome::RejectedSignature,
             "rejected_payload" => InboxOutcome::RejectedPayload,
@@ -53,6 +84,7 @@ impl InboxOutcome {
         matches!(
             self,
             InboxOutcome::Accepted
+                | InboxOutcome::Duplicate
                 | InboxOutcome::Ignored
                 | InboxOutcome::PaymentNotFound
                 | InboxOutcome::AmountMismatch
@@ -77,6 +109,8 @@ pub struct NewInboundWebhook {
     pub remote_ip: Option<String>,
     pub headers: serde_json::Value,
     pub body: Option<Vec<u8>>,
+    pub parsed: Option<serde_json::Value>,
+    pub event: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +144,151 @@ struct InboxEntryRow {
     received_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetryClaim {
+    pub source: String,
+    pub parsed: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JournalFilter {
+    pub source: Option<String>,
+    pub outcomes: Vec<InboxOutcome>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalPayment {
+    pub public_id: Uuid,
+    pub amount: Amount,
+    pub status: PaymentStatus,
+    pub order_public_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalRow {
+    pub id: i64,
+    pub source: String,
+    pub outcome: InboxOutcome,
+    pub payment_id: Option<PaymentId>,
+    pub client_id: Option<ClientId>,
+    pub error: Option<String>,
+    pub remote_ip: Option<String>,
+    pub received_at: DateTime<Utc>,
+    pub processed_at: Option<DateTime<Utc>>,
+    pub claimed_at: Option<DateTime<Utc>>,
+    pub deliveries: i32,
+    pub parsed: Option<serde_json::Value>,
+    pub event: Option<String>,
+    pub has_body: bool,
+    pub payment: Option<JournalPayment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrailKind {
+    Delivery,
+    Processed,
+    Retry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrailStep {
+    pub at: DateTime<Utc>,
+    pub step: TrailKind,
+    #[serde(default)]
+    pub outcome: Option<InboxOutcome>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub admin_id: Option<AdminId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JournalEntry {
+    pub row: JournalRow,
+    pub headers: serde_json::Value,
+    pub body: Option<Vec<u8>>,
+    pub trail: Vec<TrailStep>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct InboxAttention {
+    pub rejected: i64,
+    pub failed: i64,
+    pub sources: Vec<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct JournalRowData {
+    id: i64,
+    source: String,
+    outcome: String,
+    payment_id: Option<i64>,
+    client_id: Option<i64>,
+    error: Option<String>,
+    remote_ip: Option<String>,
+    received_at: DateTime<Utc>,
+    processed_at: Option<DateTime<Utc>>,
+    claimed_at: Option<DateTime<Utc>>,
+    deliveries: i32,
+    parsed: Option<serde_json::Value>,
+    event: Option<String>,
+    has_body: bool,
+    payment_public_id: Option<Uuid>,
+    amount_minor: Option<i64>,
+    currency: Option<String>,
+    payment_status: Option<String>,
+    order_public_id: Option<Uuid>,
+}
+
+impl JournalRowData {
+    fn into_row(self) -> StoreResult<JournalRow> {
+        let payment = match (
+            self.payment_public_id,
+            self.amount_minor,
+            self.currency.as_deref(),
+            self.payment_status.as_deref(),
+        ) {
+            (Some(public_id), Some(minor), Some(currency), Some(status)) => Some(JournalPayment {
+                public_id,
+                amount: Amount::new(minor, PayCurrency::parse(currency)?),
+                status: PaymentStatus::parse(status)?,
+                order_public_id: self.order_public_id,
+            }),
+            _ => None,
+        };
+        Ok(JournalRow {
+            id: self.id,
+            source: self.source,
+            outcome: InboxOutcome::parse(&self.outcome)?,
+            payment_id: self.payment_id.map(PaymentId),
+            client_id: self.client_id.map(ClientId),
+            error: self.error,
+            remote_ip: self.remote_ip,
+            received_at: self.received_at,
+            processed_at: self.processed_at,
+            claimed_at: self.claimed_at,
+            deliveries: self.deliveries,
+            parsed: self.parsed,
+            event: self.event,
+            has_body: self.has_body,
+            payment,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct JournalEntryData {
+    #[sqlx(flatten)]
+    row: JournalRowData,
+    headers: serde_json::Value,
+    body: Option<Vec<u8>>,
+    trail: serde_json::Value,
+}
+
 pub struct WebhooksRepo<'c> {
     conn: &'c mut PgConnection,
 }
@@ -120,34 +299,28 @@ impl<'c> WebhooksRepo<'c> {
     }
 
     pub async fn record(&mut self, hook: &NewInboundWebhook) -> StoreResult<InboxRecord> {
-        let inserted: Option<i64> = sqlx::query_scalar(
-            "INSERT INTO webhook_inbox (source, dedupe_key, remote_ip, headers, body) VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (source, dedupe_key) DO NOTHING RETURNING id",
-        )
+        let (id, outcome, deliveries): (i64, String, i32) = sqlx::query_as(&format!(
+            "INSERT INTO webhook_inbox (source, dedupe_key, remote_ip, headers, body, parsed, event) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (source, dedupe_key) DO UPDATE SET deliveries = webhook_inbox.deliveries + 1, \
+             event = COALESCE(webhook_inbox.event, EXCLUDED.event), \
+             parsed = CASE WHEN webhook_inbox.outcome IN ({FINAL}) OR EXCLUDED.parsed IS NULL \
+             THEN webhook_inbox.parsed ELSE EXCLUDED.parsed END, \
+             trail = {TRAIL} || jsonb_build_array(jsonb_build_object('at', now(), 'step', 'delivery')) \
+             RETURNING id, outcome, deliveries"
+        ))
         .bind(&hook.source)
         .bind(&hook.dedupe_key)
         .bind(&hook.remote_ip)
         .bind(&hook.headers)
         .bind(&hook.body)
-        .fetch_optional(&mut *self.conn)
-        .await?;
-        if let Some(id) = inserted {
-            return Ok(InboxRecord {
-                id,
-                duplicate: false,
-                outcome: InboxOutcome::Received,
-            });
-        }
-        let (id, outcome): (i64, String) = sqlx::query_as(
-            "SELECT id, outcome FROM webhook_inbox WHERE source = $1 AND dedupe_key = $2",
-        )
-        .bind(&hook.source)
-        .bind(&hook.dedupe_key)
+        .bind(&hook.parsed)
+        .bind(&hook.event)
         .fetch_one(&mut *self.conn)
         .await?;
         Ok(InboxRecord {
             id,
-            duplicate: true,
+            duplicate: deliveries > 1,
             outcome: InboxOutcome::parse(&outcome)?,
         })
     }
@@ -158,15 +331,23 @@ impl<'c> WebhooksRepo<'c> {
         outcome: InboxOutcome,
         payment_id: Option<PaymentId>,
         error: Option<&str>,
+        admin: Option<AdminId>,
     ) -> StoreResult<()> {
-        sqlx::query(
-            "UPDATE webhook_inbox SET outcome = $2, payment_id = COALESCE($3, payment_id), error = $4, processed_at = now() \
-             WHERE id = $1",
-        )
+        sqlx::query(&format!(
+            "UPDATE webhook_inbox SET \
+             outcome = CASE WHEN outcome = 'accepted' THEN outcome ELSE $2 END, \
+             payment_id = COALESCE($3, payment_id), \
+             error = CASE WHEN outcome = 'accepted' THEN error ELSE $4 END, \
+             processed_at = now(), claimed_at = NULL, \
+             trail = {TRAIL} || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(\
+             'at', now(), 'step', 'processed', 'outcome', $2::text, 'note', $4::text, 'admin_id', $5::bigint))) \
+             WHERE id = $1"
+        ))
         .bind(id)
         .bind(outcome.as_str())
         .bind(payment_id.map(|p| p.0))
         .bind(error)
+        .bind(admin.map(|a| a.0))
         .execute(&mut *self.conn)
         .await?;
         Ok(())
@@ -185,8 +366,10 @@ impl<'c> WebhooksRepo<'c> {
             )));
         }
         let inserted: Option<i64> = sqlx::query_scalar(
-            "INSERT INTO webhook_inbox (source, dedupe_key, remote_ip, headers, body, outcome, error, processed_at) \
-             VALUES ($1, $2, $3, $4, NULL, $5, $6, now()) ON CONFLICT (source, dedupe_key) DO NOTHING RETURNING id",
+            "INSERT INTO webhook_inbox (source, dedupe_key, remote_ip, headers, body, outcome, error, processed_at, event, trail) \
+             VALUES ($1, $2, $3, $4, NULL, $5, $6, now(), $7, jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(\
+             'at', now(), 'step', 'processed', 'outcome', $5::text, 'note', $6::text)))) \
+             ON CONFLICT (source, dedupe_key) DO NOTHING RETURNING id",
         )
         .bind(&hook.source)
         .bind(&hook.dedupe_key)
@@ -194,6 +377,7 @@ impl<'c> WebhooksRepo<'c> {
         .bind(&hook.headers)
         .bind(outcome.as_str())
         .bind(error)
+        .bind(&hook.event)
         .fetch_optional(&mut *self.conn)
         .await?;
         Ok(inserted.is_some())
@@ -206,7 +390,7 @@ impl<'c> WebhooksRepo<'c> {
     ) -> StoreResult<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
         Ok(sqlx::query_as(
             "SELECT \
-                 max(received_at) FILTER (WHERE outcome IN ('accepted', 'ignored', 'payment_not_found', 'amount_mismatch', 'rejected_business')), \
+                 max(received_at) FILTER (WHERE outcome IN ('accepted', 'duplicate', 'ignored', 'payment_not_found', 'amount_mismatch', 'rejected_business')), \
                  max(received_at) FILTER (WHERE outcome = 'rejected_signature') \
              FROM webhook_inbox WHERE source = $1 AND received_at >= $2",
         )
@@ -214,6 +398,120 @@ impl<'c> WebhooksRepo<'c> {
         .bind(since)
         .fetch_one(&mut *self.conn)
         .await?)
+    }
+
+    pub async fn claim_retry(
+        &mut self,
+        id: i64,
+        admin: AdminId,
+        stale_before: DateTime<Utc>,
+    ) -> StoreResult<Option<RetryClaim>> {
+        let row: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(&format!(
+            "UPDATE webhook_inbox SET outcome = 'received', claimed_at = now(), \
+             trail = {TRAIL} || jsonb_build_array(jsonb_build_object('at', now(), 'step', 'retry', 'admin_id', $2::bigint)) \
+             WHERE id = $1 AND parsed IS NOT NULL AND (outcome = 'error' OR \
+             (outcome = 'received' AND COALESCE(claimed_at, received_at) < $3)) \
+             RETURNING source, parsed"
+        ))
+        .bind(id)
+        .bind(admin.0)
+        .bind(stale_before)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(row.and_then(|(source, parsed)| parsed.map(|parsed| RetryClaim { source, parsed })))
+    }
+
+    pub async fn journal(
+        &mut self,
+        filter: &JournalFilter,
+        after: Option<i64>,
+        limit: i64,
+    ) -> StoreResult<Vec<JournalRow>> {
+        let search = filter
+            .search
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty());
+        let number = search.and_then(|q| q.parse::<i64>().ok());
+        let public = search.and_then(|q| Uuid::parse_str(q).ok());
+        let wide = search.filter(|q| q.chars().count() >= BODY_SEARCH_MIN);
+        let outcomes: Option<Vec<&str>> = (!filter.outcomes.is_empty())
+            .then(|| filter.outcomes.iter().map(|o| o.as_str()).collect());
+        let rows: Vec<JournalRowData> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS} FROM webhook_inbox w \
+             LEFT JOIN payments p ON p.id = w.payment_id \
+             LEFT JOIN orders o ON o.id = p.order_id \
+             WHERE ($1::text IS NULL OR w.source = $1) \
+             AND ($2::text[] IS NULL OR w.outcome = ANY($2)) \
+             AND ($3::timestamptz IS NULL OR w.received_at >= $3) \
+             AND ($4::timestamptz IS NULL OR w.received_at < $4) \
+             AND ($5::bigint IS NULL OR w.id < $5) \
+             AND ($6::text IS NULL OR w.payment_id = $7 OR p.public_id = $8 OR o.public_id = $8 \
+             OR p.provider_txid = $6 OR w.parsed->>'provider_txid' = $6 OR w.parsed->>'event_key' = $6 \
+             OR w.parsed->'payment'->>'value' = $6 \
+             OR ($10::text IS NOT NULL AND position(convert_to($10, 'UTF8') in w.body) > 0)) \
+             ORDER BY w.id DESC LIMIT $9"
+        ))
+        .bind(filter.source.as_deref())
+        .bind(outcomes)
+        .bind(filter.since)
+        .bind(filter.until)
+        .bind(after)
+        .bind(search)
+        .bind(number)
+        .bind(public)
+        .bind(limit)
+        .bind(wide)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter().map(JournalRowData::into_row).collect()
+    }
+
+    pub async fn journal_entry(&mut self, id: i64) -> StoreResult<Option<JournalEntry>> {
+        let row: Option<JournalEntryData> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS}, w.headers, w.body, w.trail FROM webhook_inbox w \
+             LEFT JOIN payments p ON p.id = w.payment_id \
+             LEFT JOIN orders o ON o.id = p.order_id \
+             WHERE w.id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.map(|data| {
+            Ok(JournalEntry {
+                row: data.row.into_row()?,
+                headers: data.headers,
+                body: data.body,
+                trail: serde_json::from_value(data.trail).unwrap_or_default(),
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn attention(
+        &mut self,
+        since: DateTime<Utc>,
+        stale_before: DateTime<Utc>,
+    ) -> StoreResult<InboxAttention> {
+        let (rejected, failed, sources): (i64, i64, Vec<String>) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE outcome IN ('rejected_signature', 'rejected_payload', \
+             'rejected_business', 'not_accepted', 'amount_mismatch')), \
+             count(*) FILTER (WHERE outcome = 'error' OR (outcome = 'received' AND \
+             COALESCE(claimed_at, received_at) < $2)), \
+             COALESCE(array_agg(DISTINCT source) FILTER (WHERE outcome <> 'received' OR \
+             COALESCE(claimed_at, received_at) < $2), '{}') \
+             FROM webhook_inbox WHERE received_at >= $1 AND outcome IN ('received', 'rejected_signature', \
+             'rejected_payload', 'rejected_business', 'not_accepted', 'amount_mismatch', 'error')",
+        )
+        .bind(since)
+        .bind(stale_before)
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok(InboxAttention {
+            rejected,
+            failed,
+            sources,
+        })
     }
 
     pub async fn recent(&mut self, limit: i64) -> StoreResult<Vec<InboxEntry>> {
@@ -283,6 +581,8 @@ mod tests {
             remote_ip: Some("203.0.113.7".into()),
             headers: serde_json::json!({}),
             body: body.map(<[u8]>::to_vec),
+            parsed: None,
+            event: None,
         }
     }
 
@@ -334,6 +634,126 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stored, None);
+        drop(conn);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn засчитанное_уведомление_не_теряет_итог_а_ход_обработки_копится() {
+        let Some(db) = test_store().await else { return };
+        let mut conn = db.store.conn().await.unwrap();
+        let mut first = hook("paid:1", Some(b"{}"));
+        first.parsed = Some(serde_json::json!({ "status": { "type": "paid" } }));
+        first.event = Some("invoice_paid".into());
+        let record = conn.webhooks().record(&first).await.unwrap();
+        assert!(!record.duplicate);
+        conn.webhooks()
+            .finish(record.id, InboxOutcome::Accepted, None, None, None)
+            .await
+            .unwrap();
+        conn.webhooks()
+            .finish(record.id, InboxOutcome::Error, None, Some("сбой"), None)
+            .await
+            .unwrap();
+        conn.webhooks()
+            .finish(record.id, InboxOutcome::Duplicate, None, None, None)
+            .await
+            .unwrap();
+        for _ in 0..40 {
+            let again = conn.webhooks().record(&first).await.unwrap();
+            assert!(again.duplicate);
+            assert_eq!(again.outcome, InboxOutcome::Accepted);
+        }
+        let entry = conn
+            .webhooks()
+            .journal_entry(record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.row.outcome, InboxOutcome::Accepted);
+        assert_eq!(entry.row.error, None);
+        assert_eq!(entry.row.deliveries, 41);
+        assert_eq!(entry.row.event.as_deref(), Some("invoice_paid"));
+        assert_eq!(entry.trail.len(), 30);
+        assert!(
+            entry
+                .trail
+                .iter()
+                .all(|step| step.step == TrailKind::Delivery)
+        );
+
+        let second = conn
+            .webhooks()
+            .record(&hook("paid:2", Some(b"{}")))
+            .await
+            .unwrap();
+        conn.webhooks()
+            .finish(second.id, InboxOutcome::Error, None, Some("сбой"), None)
+            .await
+            .unwrap();
+        assert!(
+            conn.webhooks()
+                .claim_retry(second.id, AdminId(1), Utc::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut third = hook("paid:3", Some(b"{}"));
+        third.parsed = Some(serde_json::json!({ "status": { "type": "paid" } }));
+        let third = conn.webhooks().record(&third).await.unwrap();
+        conn.webhooks()
+            .finish(third.id, InboxOutcome::Error, None, Some("сбой"), None)
+            .await
+            .unwrap();
+        let claim = conn
+            .webhooks()
+            .claim_retry(third.id, AdminId(1), Utc::now())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.source, "cryptopay");
+        assert!(
+            conn.webhooks()
+                .claim_retry(third.id, AdminId(1), Utc::now() - Duration::minutes(10))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        conn.webhooks()
+            .finish(
+                third.id,
+                InboxOutcome::Duplicate,
+                None,
+                None,
+                Some(AdminId(1)),
+            )
+            .await
+            .unwrap();
+        let entry = conn
+            .webhooks()
+            .journal_entry(third.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.row.outcome, InboxOutcome::Duplicate);
+        assert_eq!(entry.row.claimed_at, None);
+        let kinds: Vec<(TrailKind, Option<InboxOutcome>, Option<AdminId>)> = entry
+            .trail
+            .iter()
+            .map(|step| (step.step, step.outcome, step.admin_id))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (TrailKind::Processed, Some(InboxOutcome::Error), None),
+                (TrailKind::Retry, None, Some(AdminId(1))),
+                (
+                    TrailKind::Processed,
+                    Some(InboxOutcome::Duplicate),
+                    Some(AdminId(1))
+                ),
+            ]
+        );
         drop(conn);
         db.cleanup().await;
     }
