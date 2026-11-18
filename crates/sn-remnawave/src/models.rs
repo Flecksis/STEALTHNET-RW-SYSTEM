@@ -95,6 +95,66 @@ pub struct RemnaUser {
     pub active_internal_squads: Vec<SquadRef>,
     #[serde(default, deserialize_with = "nullable")]
     pub user_traffic: UserTraffic,
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub vless_uuid: Option<Secret>,
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub trojan_password: Option<Secret>,
+    #[serde(default, deserialize_with = "nullable", skip_serializing)]
+    pub ss_password: Option<Secret>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Secret(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct UserKeys {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vless_uuid: Option<Secret>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trojan_password: Option<Secret>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ss_password: Option<Secret>,
+}
+
+pub const PASSWORD_MIN: usize = 8;
+pub const PASSWORD_MAX: usize = 32;
+
+fn password_fits(value: &Secret) -> bool {
+    (PASSWORD_MIN..=PASSWORD_MAX).contains(&value.expose().chars().count())
+}
+
+impl UserKeys {
+    pub fn is_empty(&self) -> bool {
+        self.vless_uuid.is_none() && self.trojan_password.is_none() && self.ss_password.is_none()
+    }
+
+    pub fn usable(&self) -> UserKeys {
+        UserKeys {
+            vless_uuid: self
+                .vless_uuid
+                .clone()
+                .filter(|v| Uuid::parse_str(v.expose()).is_ok()),
+            trojan_password: self.trojan_password.clone().filter(password_fits),
+            ss_password: self.ss_password.clone().filter(password_fits),
+        }
+    }
 }
 
 fn to_u64(value: i64) -> u64 {
@@ -122,6 +182,14 @@ impl RemnaUser {
         }
     }
 
+    pub fn keys(&self) -> UserKeys {
+        UserKeys {
+            vless_uuid: self.vless_uuid.clone(),
+            trojan_password: self.trojan_password.clone(),
+            ss_password: self.ss_password.clone(),
+        }
+    }
+
     pub fn mirror(&self, devices_count: Option<u32>, synced_at: DateTime<Utc>) -> RemnaMirror {
         RemnaMirror {
             status: Some(self.status.into()),
@@ -140,13 +208,25 @@ impl RemnaUser {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateUserRequest {
     pub username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<UserStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vless_uuid: Option<Secret>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trojan_password: Option<Secret>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ss_password: Option<Secret>,
     pub expire_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_traffic_reset_at: Option<DateTime<Utc>>,
     pub traffic_limit_bytes: i64,
     pub traffic_limit_strategy: TrafficStrategy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2117,6 +2197,11 @@ mod tests {
         let user: RemnaUser = serde_json::from_value(raw).unwrap();
         assert_eq!(user.state().status, SubscriptionStatus::Limited);
         assert!(user.active_internal_squads.is_empty());
+        assert_eq!(
+            user.keys().trojan_password.as_ref().map(Secret::expose),
+            Some("secret")
+        );
+        assert!(!format!("{user:?}").contains("secret"));
         let back = serde_json::to_string(&user).unwrap();
         assert!(!back.contains("secret"));
         assert!(!back.contains("vlessUuid"));

@@ -46,6 +46,7 @@ pub mod templates {
     pub const AUTORENEW_AFTER_OFF: &str = sn_services::autorenew::CHARGED_AFTER_OFF_TEMPLATE;
     pub const PAYMENT_CREDITED: &str = sn_services::inbox::PAYMENT_CREDITED_TEMPLATE;
     pub const PAYMENT_REVIEW: &str = sn_services::inbox::PAYMENT_REVIEW_TEMPLATE;
+    pub const SUBSCRIPTION_LINK: &str = sn_services::remna_transfer::LINK_TEMPLATE;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +328,10 @@ pub fn render(
                 None,
             )
         }
+        templates::SUBSCRIPTION_LINK => (
+            t("sub.reissued", &[("url", Text(&raw(params, "url")?))]),
+            Some(("notify.btn.subscription", "subs")),
+        ),
         templates::SUPPORT_REPLY => (
             t(
                 "notify.support_reply",

@@ -12,7 +12,8 @@
 8. [Страница подключения](connect-page.md)
 9. [Уведомления в Telegram](telegram-alerts.md)
 10. [Администраторы, права и API-ключи](admins.md)
-11. [Частые вопросы](faq.md)
+11. [Синхронизация с Remnawave](remna-sync.md)
+12. [Частые вопросы](faq.md)
 
 Для разработчиков: [архитектура](../ARCHITECTURE.md) и [внешние модули](../MODULES.md).
 

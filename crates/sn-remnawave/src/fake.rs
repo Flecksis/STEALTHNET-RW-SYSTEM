@@ -148,6 +148,25 @@ pub fn sample_user(id: i64, username: &str) -> RemnaUser {
         subscription_url: format!("https://sub.example.com/short{id}"),
         active_internal_squads: Vec::new(),
         user_traffic: UserTraffic::default(),
+        vless_uuid: Some(Secret::new(
+            Uuid::from_u128(0x5eed_0000_0000_4000_8000_0000_0000_0000 + id as u128).to_string(),
+        )),
+        trojan_password: Some(Secret::new(format!("trojan-pass-{id:04}"))),
+        ss_password: Some(Secret::new(format!("ss-pass-{id:04}"))),
+    }
+}
+
+fn bad_request(code: &str, message: &str) -> RemnaError {
+    RemnaError::BadRequest {
+        code: Some(code.into()),
+        message: message.into(),
+    }
+}
+
+fn validation(field: &str) -> RemnaError {
+    RemnaError::BadRequest {
+        code: None,
+        message: format!("Validation failed: {field}"),
     }
 }
 
@@ -414,14 +433,65 @@ impl FakeRemnawave {
     }
 
     fn create_user_now(state: &mut State, request: &CreateUserRequest) -> RemnaResult<RemnaUser> {
+        if matches!(
+            request.status,
+            Some(UserStatus::Limited | UserStatus::Expired)
+        ) {
+            return Err(bad_request(
+                "A089",
+                "LIMITED and EXPIRED statuses are not allowed to be set manually.",
+            ));
+        }
+        if let Some(vless) = &request.vless_uuid
+            && Uuid::parse_str(vless.expose()).is_err()
+        {
+            return Err(validation("vlessUuid"));
+        }
+        for (field, value) in [
+            ("trojanPassword", &request.trojan_password),
+            ("ssPassword", &request.ss_password),
+        ] {
+            if let Some(value) = value
+                && !(PASSWORD_MIN..=PASSWORD_MAX).contains(&value.expose().chars().count())
+            {
+                return Err(validation(field));
+            }
+        }
         if state.users.values().any(|u| u.username == request.username) {
-            return Err(RemnaError::BadRequest {
-                code: Some("A019".into()),
-                message: "User username already exists".into(),
-            });
+            return Err(bad_request("A019", "User username already exists"));
+        }
+        if let Some(short) = &request.short_uuid
+            && state.users.values().any(|u| &u.short_uuid == short)
+        {
+            return Err(bad_request("A020", "User short UUID already exists"));
+        }
+        if let Some(vless) = &request.vless_uuid
+            && state
+                .users
+                .values()
+                .any(|u| u.vless_uuid.as_ref() == Some(vless))
+        {
+            return Err(bad_request("A021", "User subscription UUID already exists"));
         }
         state.next_id += 1;
         let mut user = sample_user(state.next_id, &request.username);
+        if let Some(short) = &request.short_uuid {
+            user.short_uuid = short.clone();
+            user.subscription_url = format!("https://sub.example.com/{short}");
+        }
+        if request.vless_uuid.is_some() {
+            user.vless_uuid = request.vless_uuid.clone();
+        }
+        if request.trojan_password.is_some() {
+            user.trojan_password = request.trojan_password.clone();
+        }
+        if request.ss_password.is_some() {
+            user.ss_password = request.ss_password.clone();
+        }
+        if let Some(at) = request.created_at {
+            user.created_at = panel_time(at);
+        }
+        user.last_traffic_reset_at = request.last_traffic_reset_at.map(panel_time);
         user.status = request.status.unwrap_or(UserStatus::Active);
         user.expire_at = panel_time(request.expire_at);
         user.traffic_limit_bytes = request.traffic_limit_bytes;
@@ -720,6 +790,9 @@ impl RemnawaveApi for FakeRemnawave {
                     user.short_uuid = request.short_uuid.clone().unwrap_or_else(new_short_uuid);
                     user.subscription_url = format!("https://sub.example.com/{}", user.short_uuid);
                 }
+                user.vless_uuid = Some(Secret::new(Uuid::new_v4().to_string()));
+                user.trojan_password = Some(Secret::new(new_short_uuid()));
+                user.ss_password = Some(Secret::new(new_short_uuid()));
                 user.sub_revoked_at = Some(Utc::now());
                 Ok(user.clone())
             },
@@ -1831,6 +1904,7 @@ mod tests {
             hwid_device_limit: Some(3),
             active_internal_squads: vec![Uuid::nil()],
             external_squad_uuid: None,
+            ..Default::default()
         }
     }
 

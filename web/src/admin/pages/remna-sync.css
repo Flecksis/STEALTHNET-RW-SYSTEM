@@ -1,0 +1,87 @@
+.rs-examples summary {
+  cursor: pointer;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.rs-examples[open] summary {
+  margin-bottom: 8px;
+}
+
+.rs-examples ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  line-height: 1.5;
+}
+
+.rs-line {
+  display: block;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.rs-squads {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.rs-squad {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.rs-squad-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rs-squad .field {
+  width: min(260px, 100%);
+}
+
+.rs-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.rs-history {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.rs-history li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 10px 0;
+}
+
+.rs-history li + li {
+  border-top: 1px solid var(--line);
+}
+
+.rs-history .muted {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+@media (max-width: 600px) {
+  .rs-squad .field {
+    width: 100%;
+  }
+}

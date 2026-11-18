@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use sn_domain::access::AdminRole;
+use sn_domain::access::{AdminRole, Permission, is_allowed};
 use sn_domain::ids::AdminId;
 use sn_store::{AdminRecord, Db, NewAdmin};
 use std::collections::HashMap;
@@ -25,6 +25,7 @@ pub struct AdminView {
     pub must_change_password: bool,
     pub created_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
+    pub remna_sync: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -86,6 +87,7 @@ fn view(admin: AdminRecord, logins: &HashMap<AdminId, DateTime<Utc>>) -> AdminVi
         disabled: admin.disabled_at.is_some(),
         must_change_password: admin.must_change_password,
         created_at: admin.created_at,
+        remna_sync: is_allowed(admin.role, &admin.permissions, Permission::RemnaSync),
     }
 }
 
@@ -207,6 +209,49 @@ impl<'a> AdminsOps<'a> {
                     "admin",
                     Some(id.0),
                     serde_json::json!({ "from": admin.role.as_str(), "to": role.as_str() }),
+                ))
+                .await?;
+        }
+        tx.commit().await?;
+        self.find(id).await
+    }
+
+    pub async fn set_remna_sync(
+        &self,
+        actor: AdminId,
+        id: AdminId,
+        on: bool,
+    ) -> ServiceResult<AdminView> {
+        not_self(actor, id, "Свои права поменять нельзя")?;
+        let mut tx = self.services.store().begin().await?;
+        if Self::actor_role(&mut tx, actor).await? != AdminRole::Owner {
+            return Err(owners_only());
+        }
+        let admin = tx.admins().get(id).await?;
+        if admin.role == AdminRole::Owner {
+            return Err(ServiceError::rejected(
+                "admins.owner_has_all",
+                "У владельца это право есть всегда",
+            ));
+        }
+        let had = admin.permissions.contains(&Permission::RemnaSync);
+        if had != on {
+            let mut permissions: Vec<Permission> = admin
+                .permissions
+                .iter()
+                .copied()
+                .filter(|p| *p != Permission::RemnaSync)
+                .collect();
+            if on {
+                permissions.push(Permission::RemnaSync);
+            }
+            tx.admins().set_role(id, admin.role, &permissions).await?;
+            tx.audit()
+                .record(&Actor::Admin(actor).audit(
+                    "admin.permission_changed",
+                    "admin",
+                    Some(id.0),
+                    serde_json::json!({ "permission": Permission::RemnaSync.as_str(), "on": on }),
                 ))
                 .await?;
         }

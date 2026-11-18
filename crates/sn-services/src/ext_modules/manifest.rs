@@ -161,6 +161,7 @@ pub const fn permission_title(permission: Permission) -> &'static str {
         Permission::Settings => "Настройки",
         Permission::Admins => "Администраторы",
         Permission::ClientsLogin => "Вход за клиента",
+        Permission::RemnaSync => "Синхронизация с Remnawave",
     }
 }
 
@@ -184,6 +185,7 @@ pub const fn permission_about(permission: Permission) -> &'static str {
         Permission::ClientsLogin => {
             "выдавать клиенту пароль для сайта и снимать ему вход по коду из приложения"
         }
+        Permission::RemnaSync => "переносить клиентов и подписки между панелью и Remnawave",
     }
 }
 
@@ -404,12 +406,20 @@ fn permission(raw: &str) -> Result<Permission, String> {
     match Permission::parse(raw) {
         Ok(Permission::Admins) => Err("право «Администраторы» модулю дать нельзя".into()),
         Ok(Permission::ClientsLogin) => Err("право «Вход за клиента» модулю дать нельзя".into()),
+        Ok(Permission::RemnaSync) => {
+            Err("право «Синхронизация с Remnawave» модулю дать нельзя".into())
+        }
         Ok(permission) => Ok(permission),
         Err(_) => Err(format!(
             "неизвестное право «{raw}». Есть: {}",
             Permission::ALL
                 .iter()
-                .filter(|p| !matches!(p, Permission::Admins | Permission::ClientsLogin))
+                .filter(|p| {
+                    !matches!(
+                        p,
+                        Permission::Admins | Permission::ClientsLogin | Permission::RemnaSync
+                    )
+                })
                 .map(|p| p.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")

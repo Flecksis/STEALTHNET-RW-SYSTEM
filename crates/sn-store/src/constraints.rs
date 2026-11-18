@@ -47,6 +47,8 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("roulette_spins_ticket_key", None),
     ("import_runs_public_id_key", None),
     ("import_runs_running_key", None),
+    ("remna_transfers_public_id_key", None),
+    ("remna_transfers_busy_key", None),
     ("legacy_invoices_old_key", None),
     ("gifts_public_id_key", None),
     ("gifts_code_key", None),

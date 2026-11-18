@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod legacy;
+mod remna;
 mod updates;
 mod watch;
 
@@ -131,6 +132,9 @@ async fn serve(config: Config, store: Store) -> Result<()> {
     services.set_update_config(Some(config.updates.clone()));
     if let Err(err) = services.legacy().recover().await {
         tracing::warn!(error = %err, "состояние переноса из старого бота не восстановлено");
+    }
+    if let Err(err) = services.remna_transfer().recover().await {
+        tracing::warn!(error = %err, "состояние синхронизации с Remnawave не восстановлено");
     }
     match broadcast::seed_presets(&services.module_context()).await {
         Ok(seeded) if !seeded.created.is_empty() || !seeded.covered.is_empty() => {
@@ -289,6 +293,17 @@ async fn run(command: Command) -> Result<()> {
                 file.as_deref(),
             )
             .await
+        }
+        Command::Remna { pull, dry_run, fix } => {
+            if store.pending_migrations().await? > 0 {
+                bail!("в базе не применены миграции: выполните `stealthnet migrate`");
+            }
+            let services = build_services(&config, store)?;
+            services
+                .reload()
+                .await
+                .context("настройки из базы не загрузились")?;
+            remna::run(&services, pull, dry_run, fix).await
         }
         Command::GenSecretKey | Command::Version | Command::Help => Ok(()),
     }

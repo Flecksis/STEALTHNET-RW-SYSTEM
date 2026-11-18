@@ -29,6 +29,7 @@ import { Money } from './money/Money';
 import { SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
 import { SettingsRemna } from './pages/SettingsRemna';
+import { SettingsRemnaSync } from './pages/SettingsRemnaSync';
 import { SettingsPayments } from './pages/SettingsPayments';
 import { SettingsGeneral } from './pages/SettingsGeneral';
 import { SettingsBot } from './pages/SettingsBot';
@@ -257,6 +258,7 @@ export function AdminApp() {
           <Route path="m/:module/*" element={<ModuleScreen />} />
           <Route path="settings/look" element={<SettingsLook />} />
           <Route path="settings/remnawave" element={<SettingsRemna />} />
+          <Route path="settings/remnawave/sync" element={<SettingsRemnaSync />} />
           <Route path="settings/payments" element={<SettingsPayments />} />
           <Route path="settings/general" element={<SettingsGeneral />} />
           <Route path="settings/bot" element={<SettingsBot />} />

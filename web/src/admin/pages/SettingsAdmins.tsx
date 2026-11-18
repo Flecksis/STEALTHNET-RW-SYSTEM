@@ -4,6 +4,7 @@ import { api, ApiError } from '../../lib/api';
 import { dateTime } from '../../lib/format';
 import type { AdminRole } from '../../lib/types';
 import { ROLE_LABEL, useSession } from '../session';
+import { Switch } from '../ui';
 import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
@@ -17,6 +18,7 @@ type AdminItem = {
   must_change_password: boolean;
   created_at: string;
   last_login_at: string | null;
+  remna_sync: boolean;
 };
 
 type Issued = { admin: AdminItem; password: string };
@@ -27,7 +29,7 @@ const ROLES: AdminRole[] = ['owner', 'admin', 'support', 'read_only'];
 
 const ROLE_NOTE: Record<AdminRole, string> = {
   owner: 'всё, включая администраторов',
-  admin: 'всё, кроме администраторов',
+  admin: 'всё, кроме администраторов; синхронизацию с Remnawave владелец включает отдельно',
   support: 'клиенты и обращения, без выдачи пароля клиенту',
   read_only: 'только просмотр клиентов',
 };
@@ -243,6 +245,17 @@ export function SettingsAdmins() {
                   )}
                 </span>
               </div>
+              {item.role === 'admin' && !self && !item.disabled ? (
+                <div className="row adm-grant">
+                  <span className="cap">Синхронизация с Remnawave: перенос клиентов и подписок в Remnawave и обратно</span>
+                  <Switch
+                    on={item.remna_sync}
+                    onToggle={() => void act(item.id, 'remna-sync', { on: !item.remna_sync })}
+                    label={`Синхронизация с Remnawave для ${item.email}`}
+                    disabled={busy !== null}
+                  />
+                </div>
+              ) : null}
               {open ? (
                 <div className="row adm-ask">
                   <span className="cap">{ASK_TEXT[open.kind].text}</span>

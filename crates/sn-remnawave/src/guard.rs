@@ -1118,6 +1118,7 @@ mod tests {
                 hwid_device_limit: None,
                 active_internal_squads: Vec::new(),
                 external_squad_uuid: None,
+                ..Default::default()
             })
             .await;
         assert!(created.is_ok());

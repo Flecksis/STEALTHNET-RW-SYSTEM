@@ -45,7 +45,8 @@ export type Permission =
   | 'modules'
   | 'settings'
   | 'admins'
-  | 'clients_login';
+  | 'clients_login'
+  | 'remna_sync';
 
 export type AdminRole = 'owner' | 'admin' | 'support' | 'read_only';
 

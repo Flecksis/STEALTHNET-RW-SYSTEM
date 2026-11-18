@@ -13,6 +13,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admins", get(list).post(create))
         .route("/admins/{id}/role", post(set_role))
+        .route("/admins/{id}/remna-sync", post(set_remna_sync))
         .route("/admins/{id}/disable", post(disable))
         .route("/admins/{id}/enable", post(enable))
         .route("/admins/{id}/password", post(reset_password))
@@ -22,6 +23,11 @@ pub fn routes() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 struct RoleBody {
     role: AdminRole,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantBody {
+    on: bool,
 }
 
 async fn list(
@@ -59,6 +65,23 @@ async fn set_role(
             .services
             .admins()
             .set_role(admin.0.admin_id, AdminId(id), body.role)
+            .await?,
+    ))
+}
+
+async fn set_remna_sync(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<GrantBody>,
+) -> ApiResult<Json<AdminView>> {
+    admin.require(Permission::Admins)?;
+    admin.require_session()?;
+    Ok(Json(
+        state
+            .services
+            .admins()
+            .set_remna_sync(admin.0.admin_id, AdminId(id), body.on)
             .await?,
     ))
 }

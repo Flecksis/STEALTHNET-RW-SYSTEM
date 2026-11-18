@@ -253,3 +253,13 @@
     max-width: none;
   }
 }
+
+.adm-grant {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.adm-grant .cap {
+  flex: 1 1 260px;
+  min-width: 0;
+}

@@ -2058,6 +2058,7 @@ impl<'a> Fulfillment<'a> {
                     hwid_device_limit: target.hwid_device_limit.map(i64::from),
                     active_internal_squads: target.squads.iter().map(|s| s.0).collect(),
                     external_squad_uuid: target.external_squad.map(|s| s.0),
+                    ..Default::default()
                 };
                 match remna.create_user(&request).await {
                     Ok(user) => Ok(user),

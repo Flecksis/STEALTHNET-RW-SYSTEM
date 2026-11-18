@@ -17,6 +17,11 @@ pub enum Command {
         dry_run: bool,
         file: Option<String>,
     },
+    Remna {
+        pull: bool,
+        dry_run: bool,
+        fix: bool,
+    },
     GenSecretKey,
     Version,
     Help,
@@ -39,6 +44,15 @@ pub const USAGE: &str = "stealthnet — панель продажи VPN пове
                                 файл резервной копии старой панели или бота;
                                 без файла — база STEALTHNET 7.x из LEGACY_DATABASE_URL;
                                 пароль zip-архива — из LEGACY_ARCHIVE_PASSWORD
+  remna push [--dry-run] [--fix]
+                                перенести клиентов и подписки панели в подключённую
+                                Remnawave: создать недостающих пользователей с прежней
+                                ссылкой и ключами; с --fix ещё и поправить расхождения
+                                (срок только продлевается); ничего не удаляет
+  remna pull [--dry-run]        забрать из Remnawave пользователей, которых нет в панели:
+                                найти клиента по Telegram ID, почте или имени, иначе
+                                создать клиента и подписку; тариф подбирается по сквадам
+                                и лимитам; --dry-run только показывает, что будет сделано
   gen-secret-key                напечатать новый ключ для SN_SECRET_KEY
   version                       показать версию
   help                          эта справка";
@@ -97,6 +111,24 @@ pub fn parse(args: &[String]) -> Result<Command> {
                 }
             }
             Command::ImportLegacy { dry_run, file }
+        }
+        "remna" => {
+            let pull = match rest.next().map(String::as_str) {
+                Some("push") => false,
+                Some("pull") => true,
+                Some(other) => bail!("после remna нужно push или pull, а не {other}"),
+                None => bail!("после remna нужно push или pull"),
+            };
+            let mut dry_run = false;
+            let mut fix = false;
+            for arg in rest.by_ref() {
+                match arg.as_str() {
+                    "--dry-run" => dry_run = true,
+                    "--fix" if !pull => fix = true,
+                    other => bail!("неизвестный аргумент: {other}"),
+                }
+            }
+            Command::Remna { pull, dry_run, fix }
         }
         "create-admin" => {
             let mut found = None;
@@ -181,6 +213,37 @@ mod tests {
             .chain(list.iter().copied())
             .map(String::from)
             .collect()
+    }
+
+    #[test]
+    fn команды_синхронизации_с_remnawave_разбираются() {
+        assert_eq!(
+            parse(&args(&["remna", "push", "--dry-run"])).unwrap(),
+            Command::Remna {
+                pull: false,
+                dry_run: true,
+                fix: false
+            }
+        );
+        assert_eq!(
+            parse(&args(&["remna", "push", "--fix"])).unwrap(),
+            Command::Remna {
+                pull: false,
+                dry_run: false,
+                fix: true
+            }
+        );
+        assert_eq!(
+            parse(&args(&["remna", "pull"])).unwrap(),
+            Command::Remna {
+                pull: true,
+                dry_run: false,
+                fix: false
+            }
+        );
+        assert!(parse(&args(&["remna", "pull", "--fix"])).is_err());
+        assert!(parse(&args(&["remna"])).is_err());
+        assert!(parse(&args(&["remna", "sideways"])).is_err());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::error::{ServiceError, ServiceResult};
+use crate::remna_transfer::snapshot;
 use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use sn_domain::events::DomainEvent;
 use sn_domain::ids::{RemnaUserId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::subscription::{RemnaLink, RemnaMirror, Subscription, remna_description};
-use sn_remnawave::webhook::{WebhookError, events, scopes, verify_and_parse};
+use sn_remnawave::webhook::{RemnaEvent, WebhookError, events, scopes, verify_and_parse};
 use sn_remnawave::{RemnaError, RemnaUser};
 use sn_store::{Db, NewRemnaEvent, RemnaEventRecord, Tx};
 use std::collections::HashSet;
@@ -73,6 +74,14 @@ fn mirror_changed(old: &RemnaMirror, new: &RemnaMirror) -> bool {
         || old.last_node != new.last_node
 }
 
+pub(crate) fn same_user(link: &RemnaLink, user: &RemnaUser) -> bool {
+    link.username == user.username
+        || link
+            .short_uuid
+            .as_deref()
+            .is_some_and(|short| !short.is_empty() && short == user.short_uuid)
+}
+
 pub(crate) async fn store_user(
     tx: &mut Tx,
     subscription_id: SubscriptionId,
@@ -81,6 +90,16 @@ pub(crate) async fn store_user(
     now: DateTime<Utc>,
 ) -> ServiceResult<Stored> {
     let current = tx.subscriptions().lock(subscription_id).await?;
+    if let Some(link) = &current.remna
+        && !same_user(link, user)
+    {
+        tracing::warn!(
+            subscription = subscription_id.0,
+            remna_user = user.id.0,
+            "под номером пользователя Remnawave теперь другой пользователь, данные не записаны"
+        );
+        return Ok(Stored::default());
+    }
     let mirror = user.mirror(devices, now);
     let applied = tx
         .subscriptions()
@@ -191,6 +210,12 @@ impl<'a> RemnaSync<'a> {
             .enqueue(&JobPayload::ProcessRemnaEvent { event_id }, None)
             .await?;
         tx.commit().await?;
+        if let RemnaEvent::User { user, .. } = &parsed.payload
+            && let Err(err) =
+                snapshot::capture(self.services.store(), self.services.secrets(), user).await
+        {
+            tracing::warn!(remna_user = user.id.0, error = %err, "снимок пользователя Remnawave не сохранён");
+        }
         Ok(RemnaWebhookResult::Accepted { event_id })
     }
 
@@ -342,7 +367,14 @@ impl<'a> RemnaSync<'a> {
         };
         let remna = self.services.remna()?;
         let user = match remna.get_user(link.user_id).await {
-            Ok(user) => user,
+            Ok(user) if same_user(link, &user) => user,
+            Ok(_) => {
+                let mut conn = self.services.store().conn().await?;
+                conn.subscriptions()
+                    .mark_missing(subscription.id, true)
+                    .await?;
+                return Ok(Refreshed::Missing);
+            }
             Err(err) if err.is_not_found() => {
                 let mut conn = self.services.store().conn().await?;
                 conn.subscriptions()
@@ -366,6 +398,9 @@ impl<'a> RemnaSync<'a> {
             self.services.now(),
         )
         .await?;
+        if stored.applied {
+            snapshot::save(&mut tx, self.services.secrets(), subscription.id, &user).await?;
+        }
         tx.commit().await?;
         Ok(if stored.changed {
             Refreshed::Changed
@@ -759,6 +794,7 @@ mod tests {
             hwid_device_limit: Some(3),
             active_internal_squads: Vec::new(),
             external_squad_uuid: None,
+            ..Default::default()
         };
         let created = env.fake.create_user(&request).await.unwrap();
         let stored = env.subscription(subscription.id).await;

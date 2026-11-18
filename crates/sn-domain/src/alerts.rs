@@ -19,10 +19,11 @@ pub enum AlertKind {
     Clients,
     Sales,
     Security,
+    Sync,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 11] = [
+    pub const ALL: [AlertKind; 12] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
@@ -34,6 +35,7 @@ impl AlertKind {
         AlertKind::Clients,
         AlertKind::Sales,
         AlertKind::Security,
+        AlertKind::Sync,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -49,6 +51,7 @@ impl AlertKind {
             AlertKind::Clients => "clients",
             AlertKind::Sales => "sales",
             AlertKind::Security => "security",
+            AlertKind::Sync => "sync",
         }
     }
 
@@ -65,6 +68,7 @@ impl AlertKind {
             AlertKind::Clients => "Новые клиенты",
             AlertKind::Sales => "Новые оплаты",
             AlertKind::Security => "Безопасность входа",
+            AlertKind::Sync => "Перенос в Remnawave и обратно",
         }
     }
 
@@ -81,6 +85,7 @@ impl AlertKind {
             AlertKind::Clients => "Клиенты",
             AlertKind::Sales => "Оплаты",
             AlertKind::Security => "Безопасность",
+            AlertKind::Sync => "Remnawave",
         }
     }
 }

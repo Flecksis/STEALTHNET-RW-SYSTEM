@@ -5,6 +5,9 @@ import '../form.css';
 import { Switch } from '../ui';
 import { ConnectAppsEditor, appsProblem, fullApps, sameApps, type Apps, type AppsView } from './ConnectApps';
 import { SettingsLayout } from './SettingsLayout';
+import { SYNC_PATH } from './SettingsRemnaSync';
+import { Link } from 'react-router';
+import { useSession } from '../session';
 
 type Guard = 'none' | 'cookie' | 'tinyauth' | 'portal';
 
@@ -192,6 +195,7 @@ function maskEnv(env: string): string {
 }
 
 export function SettingsRemna() {
+  const { can } = useSession();
   const [data, setData] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [work, setWork] = useState<Work | null>(null);
@@ -731,6 +735,25 @@ export function SettingsRemna() {
           </div>
         </div>
       </section>
+
+      {can('remna_sync') ? (
+        <section aria-labelledby="sync-h" className="sec">
+          <div className="sec-head">
+            <h2 id="sync-h" className="section-title">
+              Синхронизация
+            </h2>
+            <span className="muted">
+              Перенести клиентов и подписки панели в Remnawave с прежними ссылками или забрать в панель пользователей Remnawave, которых в ней
+              нет. Пригодится после восстановления из копии или переезда на новую Remnawave
+            </span>
+          </div>
+          <div className="row">
+            <Link to={SYNC_PATH} className="btn-line hov">
+              Открыть синхронизацию
+            </Link>
+          </div>
+        </section>
+      ) : null}
 
       <section id="devices" aria-labelledby="dv-h" className="sec">
         <div className="sec-head">

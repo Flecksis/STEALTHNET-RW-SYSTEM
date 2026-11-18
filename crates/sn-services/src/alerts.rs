@@ -150,6 +150,16 @@ struct LockRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct SyncRow {
+    id: i64,
+    direction: String,
+    state: String,
+    outcome: Option<serde_json::Value>,
+    progress: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
 struct RefundRow {
     id: i64,
     amount_minor: i64,
@@ -290,6 +300,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
                 format::plural_ru(n, "блокировка", "блокировки", "блокировок")
             ),
             ADMINS_PATH,
+        ),
+        AlertKind::Sync => (
+            format!(
+                "Ещё {rest} {} с Remnawave",
+                format::plural_ru(n, "синхронизация", "синхронизации", "синхронизаций")
+            ),
+            crate::remna_transfer::SYNC_PATH,
         ),
     };
     Alert {
@@ -725,6 +742,7 @@ impl<'a> AlertsOps<'a> {
             AlertKind::Refunds,
             AlertKind::Withdrawals,
             AlertKind::Security,
+            AlertKind::Sync,
         ] {
             out.extend(self.watched(kind, &config).await?);
         }
@@ -1410,6 +1428,37 @@ impl<'a> AlertsOps<'a> {
                         id: row.id,
                         html: lock_text(&row),
                         path: ADMINS_PATH.to_string(),
+                    });
+                }
+            }
+            AlertKind::Sync => {
+                let rows: Vec<SyncRow> = sqlx::query_as(
+                    "SELECT id, direction, state, outcome, progress, error FROM remna_transfers \
+                     WHERE state IN ('done', 'failed') AND started_at IS NOT NULL \
+                       AND finished_at > now() - make_interval(days => $1) \
+                     ORDER BY id DESC LIMIT $2",
+                )
+                .bind(SECURITY_DAYS)
+                .bind(SCAN_LIMIT)
+                .fetch_all(conn.conn())
+                .await?;
+                for row in rows.into_iter().rev() {
+                    let direction =
+                        crate::remna_transfer::Direction::parse(&row.direction).unwrap_or_default();
+                    let state = crate::remna_transfer::TransferState::parse(&row.state);
+                    let numbers: Option<crate::remna_transfer::Progress> = row
+                        .outcome
+                        .or(row.progress)
+                        .and_then(|v| serde_json::from_value(v).ok());
+                    items.push(Item {
+                        id: row.id,
+                        html: crate::remna_transfer::alert_text(
+                            direction,
+                            state,
+                            numbers.as_ref(),
+                            row.error.as_deref(),
+                        ),
+                        path: crate::remna_transfer::SYNC_PATH.to_string(),
                     });
                 }
             }
