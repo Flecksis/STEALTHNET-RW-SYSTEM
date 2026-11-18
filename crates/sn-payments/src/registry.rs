@@ -186,6 +186,10 @@ impl ProviderRegistry {
         Self::new(crate::providers::builtin())
     }
 
+    pub fn with_telegram_api(telegram_api: &str) -> Self {
+        Self::new(crate::providers::with_telegram_api(telegram_api))
+    }
+
     pub fn providers(&self) -> &[Arc<dyn PaymentProvider>] {
         &self.providers
     }

@@ -62,6 +62,10 @@ use crate::provider::PaymentProvider;
 use std::sync::Arc;
 
 pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
+    with_telegram_api(stars::TELEGRAM_API)
+}
+
+pub fn with_telegram_api(telegram_api: &str) -> Vec<Arc<dyn PaymentProvider>> {
     vec![
         Arc::new(CryptoPay::new()),
         Arc::new(Gram::new()),
@@ -84,7 +88,7 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(Robokassa::new()),
         Arc::new(CisPay::new()),
         Arc::new(ParityPay::new()),
-        Arc::new(TelegramStars::new()),
+        Arc::new(TelegramStars::with_api_base(telegram_api)),
         Arc::new(Balance),
     ]
 }
@@ -424,6 +428,34 @@ mod tests {
                 providers::ROBOKASSA
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn звёзды_выставляют_счёт_через_адрес_bot_api_из_настроек() {
+        use sn_domain::money::{Amount, PayCurrency};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/bot1:AAA/createInvoiceLink"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "result": "https://t.me/$invoice"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let registry = ProviderRegistry::with_telegram_api(&format!("{}/", server.uri()));
+        let invoice = registry
+            .get(providers::STARS)
+            .unwrap()
+            .create_invoice(
+                &config(&[(STARS_TOKEN_FIELD, json!("1:AAA"))]),
+                &crate::test_support::invoice(Amount::new(250, PayCurrency::Xtr), None),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invoice.pay_url, "https://t.me/$invoice");
     }
 
     #[test]

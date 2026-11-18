@@ -85,7 +85,7 @@ fn build_services(config: &Config, store: Store) -> Result<Services> {
     }
     Ok(Services::new(ServiceDeps {
         store,
-        payments: Arc::new(ProviderRegistry::builtin()),
+        payments: Arc::new(ProviderRegistry::with_telegram_api(&config.telegram_api)),
         modules: Arc::new(module_registry()?),
         secrets,
         clock: Arc::new(SystemClock),
