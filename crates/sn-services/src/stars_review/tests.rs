@@ -686,6 +686,50 @@ async fn недоступный_telegram_оставляет_событие_на_
 }
 
 #[tokio::test]
+async fn возврат_звёзд_идёт_через_адрес_bot_api_из_настроек() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/bot{TOKEN}/refundStarPayment")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"ok": true, "result": true})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let services = Services::new(ServiceDeps {
+        store: db.store.clone(),
+        payments: Arc::new(ProviderRegistry::with_telegram_api(&server.uri())),
+        modules: Arc::new(ModuleRegistry::catalog_only()),
+        secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
+        clock: Arc::new(FixedClock::new(moment())),
+        env: EnvFallbacks {
+            bot_token: Some(TOKEN.to_string()),
+            ..EnvFallbacks::default()
+        },
+    });
+    services.reload().await.unwrap();
+    let (admin, _) = services
+        .auth()
+        .upsert_owner("owner@example.com", PASSWORD)
+        .await
+        .unwrap();
+    let payment = stars_invoice(&services, 851, 350).await;
+    let id = underpaid(&services, &payment, "stx-851", 851).await;
+    StarsReview::new(&services)
+        .refund(id, Some("клиент попросил вернуть"), admin)
+        .await
+        .unwrap();
+    assert_eq!(stored(&services, id).await.status, STATUS_REFUNDED);
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn ручная_отметка_оплаты_звёздами_остаётся_запрещённой() {
     let Some((db, services, admin)) = setup().await else {
         return;

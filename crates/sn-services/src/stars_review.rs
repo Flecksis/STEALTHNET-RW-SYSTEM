@@ -701,7 +701,7 @@ impl<'a> StarsReview<'a> {
         let telegram = match self.telegram {
             Some(telegram) => telegram,
             None => {
-                own = TelegramStars::new();
+                own = TelegramStars::with_api_base(self.services.payments().telegram_api());
                 &own
             }
         };

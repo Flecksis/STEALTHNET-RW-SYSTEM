@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 pub const STARS_TOKEN_FIELD: &str = "bot_token";
 
-pub(crate) const TELEGRAM_API: &str = "https://api.telegram.org";
+pub const TELEGRAM_API: &str = "https://api.telegram.org";
 const PAGE: u32 = 100;
 const MAX_REFUND_PAGES: u32 = 50;
 

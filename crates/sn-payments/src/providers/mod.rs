@@ -49,7 +49,7 @@ pub use robokassa::{
 pub use rollypay::{RollyPay, signature as rollypay_signature};
 pub use stars::{
     STARS_TOKEN_FIELD, StarDirection, StarTransaction, StarsPayment, StarsPaymentEvent,
-    StarsPreCheckout, TelegramStars,
+    StarsPreCheckout, TELEGRAM_API, TelegramStars,
 };
 pub use tribute::{
     PLANS as TRIBUTE_PLANS, PRODUCTS as TRIBUTE_PRODUCTS, Tribute, signature as tribute_signature,
@@ -62,7 +62,7 @@ use crate::provider::PaymentProvider;
 use std::sync::Arc;
 
 pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
-    with_telegram_api(stars::TELEGRAM_API)
+    with_telegram_api(TELEGRAM_API)
 }
 
 pub fn with_telegram_api(telegram_api: &str) -> Vec<Arc<dyn PaymentProvider>> {

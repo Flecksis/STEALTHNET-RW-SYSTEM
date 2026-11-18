@@ -152,6 +152,7 @@ pub struct ProviderRegistry {
     providers: Vec<Arc<dyn PaymentProvider>>,
     snapshot: RwLock<Arc<RegistrySnapshot>>,
     checks: RwLock<HashMap<String, CheckRecord>>,
+    telegram_api: String,
 }
 
 impl ProviderRegistry {
@@ -179,6 +180,7 @@ impl ProviderRegistry {
                 order: Vec::new(),
             })),
             checks: RwLock::new(HashMap::new()),
+            telegram_api: crate::providers::TELEGRAM_API.to_string(),
         }
     }
 
@@ -187,7 +189,13 @@ impl ProviderRegistry {
     }
 
     pub fn with_telegram_api(telegram_api: &str) -> Self {
-        Self::new(crate::providers::with_telegram_api(telegram_api))
+        let mut registry = Self::new(crate::providers::with_telegram_api(telegram_api));
+        registry.telegram_api = telegram_api.trim_end_matches('/').to_string();
+        registry
+    }
+
+    pub fn telegram_api(&self) -> &str {
+        &self.telegram_api
     }
 
     pub fn providers(&self) -> &[Arc<dyn PaymentProvider>] {
