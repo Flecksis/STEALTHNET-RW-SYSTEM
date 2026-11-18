@@ -419,6 +419,10 @@ impl Services {
         crate::landing::LandingOps::new(self)
     }
 
+    pub fn connect_apps(&self) -> crate::connect_apps::ConnectAppsOps<'_> {
+        crate::connect_apps::ConnectAppsOps::new(self)
+    }
+
     pub fn bot_content(&self) -> Arc<crate::bot_content::BotContent> {
         self.read(|r| r.bot_content.clone())
     }

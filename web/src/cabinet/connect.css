@@ -1,0 +1,141 @@
+.cb-apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cb-apps button {
+  height: 44px;
+  padding: 0 14px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cb-apps button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.cb-app-ico {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #0b0b0c;
+  color: #fafafa;
+  box-shadow: inset 0 0 0 1px var(--ring);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.cb-app-ico img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.cb-step-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cb-pre {
+  white-space: pre-line;
+}
+
+.cb-sub-plats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cb-sub-plats button {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cb-sub-plats button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.cb-short {
+  display: none;
+}
+
+.cb-phone .cb-plats.seg.four button {
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.cb-phone .cb-apps {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  margin-right: -16px;
+  padding-right: 16px;
+  scrollbar-width: none;
+}
+
+.cb-phone .cb-apps::-webkit-scrollbar {
+  display: none;
+}
+
+.cb-phone .cb-apps button {
+  flex: 0 0 auto;
+  border: 2px solid transparent;
+  background: var(--fill);
+}
+
+.cb-phone .cb-apps button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--fill);
+}
+
+.cb-phone .cb-step-btns .cb-second {
+  flex: 1 1 auto;
+  width: auto;
+  height: 44px;
+  padding: 0 14px;
+}
+
+.cb-phone .cb-sub-plats button {
+  border: 0;
+  background: var(--fill);
+}
+
+.cb-phone .cb-sub-plats button[aria-pressed='true'] {
+  background: var(--seg-on);
+  box-shadow: inset 0 0 0 2px var(--fill-2);
+}
+
+@media (max-width: 359px) {
+  .cb-phone .cb-plats.seg.four .cb-long {
+    display: none;
+  }
+
+  .cb-phone .cb-plats.seg.four .cb-short {
+    display: inline;
+  }
+}

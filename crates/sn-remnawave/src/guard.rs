@@ -533,6 +533,11 @@ impl<T: RemnawaveApi> RemnawaveApi for GuardedRemnawave<T> {
         self.read(|| self.inner.subscription_page_configs()).await
     }
 
+    async fn subscription_page_config(&self, uuid: Uuid) -> RemnaResult<SubpageConfig> {
+        self.read(|| self.inner.subscription_page_config(uuid))
+            .await
+    }
+
     async fn subpage_access(&self, short_uuid: &str) -> RemnaResult<SubpageAccess> {
         self.read(|| self.inner.subpage_access(short_uuid)).await
     }
@@ -1042,6 +1047,10 @@ mod tests {
                 "page_configs",
                 unsupported(g.subscription_page_configs().await),
             ),
+            (
+                "page_config",
+                unsupported(g.subscription_page_config(node).await),
+            ),
             ("subpage", unsupported(g.subpage_access("short1").await)),
             (
                 "node_conn_job",
@@ -1094,7 +1103,7 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert!(missing.is_empty(), "не проброшены: {missing:?}");
-        assert_eq!(checks.len(), 81);
+        assert_eq!(checks.len(), 82);
         let created = g
             .create_user(&CreateUserRequest {
                 username: "sn_new".into(),

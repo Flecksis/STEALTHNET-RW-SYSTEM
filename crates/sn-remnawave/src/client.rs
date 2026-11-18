@@ -839,6 +839,11 @@ impl RemnawaveApi for RemnawaveClient {
         self.get("/api/subscription-page-configs").await
     }
 
+    async fn subscription_page_config(&self, uuid: Uuid) -> RemnaResult<SubpageConfig> {
+        self.get(&format!("/api/subscription-page-configs/{uuid}"))
+            .await
+    }
+
     async fn subpage_access(&self, short_uuid: &str) -> RemnaResult<SubpageAccess> {
         self.get(&format!(
             "/api/subscriptions/subpage-config/{}",
@@ -2006,10 +2011,22 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/subscription-page-configs/{PROFILE}")))
+            .respond_with(wrapped(serde_json::json!({
+                "uuid": PROFILE, "viewPosition": 0, "name": "Основное", "tags": [],
+                "config": { "version": "1", "platforms": { "ios": { "apps": [] } } }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
         let api = client(&server);
         let configs = api.subscription_page_configs().await.unwrap();
         let names: Vec<&str> = configs.configs.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["Основное", "Для белых списков"]);
+        let full = api.subscription_page_config(uuid(PROFILE)).await.unwrap();
+        assert_eq!(full.name, "Основное");
+        assert_eq!(full.config.unwrap()["version"], "1");
         let access = api.subpage_access("abc/def").await.unwrap();
         assert!(access.webpage_allowed);
         assert_eq!(access.subpage_config_uuid, Some(uuid(PROFILE)));

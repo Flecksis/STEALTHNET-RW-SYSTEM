@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod bot_content;
 pub mod bot_content_en;
 pub mod client;
+pub mod connect;
 pub mod error;
 pub mod errors_en;
 pub mod events;

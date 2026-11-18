@@ -9,9 +9,10 @@ import { QrCode } from '../lib/qr';
 import { siteInviteLink } from '../lib/referral';
 import { supportLink, supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
+import { ConnectSteps } from './ConnectSteps';
 import { DevicesCard } from './DevicesCard';
 import { SubSwitch, useSubDetail, useSubs } from './SubSwitch';
-import { APPS, explanation, guessPlatform, heldBalance, periodTitle, statusWord, trafficLine, type Catalog, type Platform, type Referral } from './model';
+import { explanation, heldBalance, periodTitle, statusWord, trafficLine, type Catalog, type Referral } from './model';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -32,10 +33,6 @@ export function SubscriptionPage() {
   const [ask, setAsk] = useState<string>('');
   const [reissued, setReissued] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [plat, setPlat] = useState<Platform>(() => {
-    const guess = guessPlatform();
-    return phone ? (guess === 'ios' || guess === 'android' ? guess : 'pc') : guess;
-  });
   const [copied, setCopied] = useState<string | null>(null);
   const [qr, setQr] = useState(false);
   const [trialBusy, setTrialBusy] = useState(false);
@@ -150,7 +147,6 @@ export function SubscriptionPage() {
   const share = expired || !total ? 0 : Math.min(1, left / total);
   const mode = site.connect?.mode ?? 'ours';
   const url = view?.subscription_url ?? null;
-  const app = APPS[plat];
   const offer = view && catalog ? catalog.tariffs.find((t) => t.tariff.id === view.subscription.tariff_id) : null;
   const renewPeriod = offer?.periods.find((p) => p.period_id === view?.subscription.autorenew.period_id) ?? offer?.periods.find((p) => p.days === view?.subscription.period_days) ?? null;
   const renewPrice: Money | null = renewPeriod?.price ?? null;
@@ -191,20 +187,6 @@ export function SubscriptionPage() {
               : balanceOff
                 ? t('Спишем перед окончанием')
                 : t('Спишем с баланса перед окончанием');
-
-  const platforms: Array<[Platform, string]> = phone
-    ? [
-        ['ios', 'iPhone'],
-        ['android', 'Android'],
-        ['pc', t('Компьютер')],
-      ]
-    : [
-        ['ios', 'iPhone'],
-        ['android', 'Android'],
-        ['win', 'Windows'],
-        ['mac', 'macOS'],
-        ['linux', 'Linux'],
-      ];
 
   const mayReissue = site.client_access?.reissue !== false;
   const reissueBlock = !mayReissue ? null : reissued ? (
@@ -365,68 +347,17 @@ export function SubscriptionPage() {
           {reissueBlock}
         </>
       ) : (
-        <>
-          <div role="group" aria-label={t('Устройство')} className={phone ? 'cb-plats seg' : 'cb-plats'}>
-            {platforms.map(([key, label]) => (
-              <button key={key} type="button" aria-pressed={plat === key} onClick={() => setPlat(key)}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <ol className="cb-steps">
-            <li>
-              <span className="cb-num">1</span>
-              <span className="cb-step">
-                <span className="cb-step-row">
-                  <span className="cb-step-text">
-                    <strong>{t('Установите {app}', { app: app.app })}</strong>
-                    <span className="cb-muted">{phone ? (plat === 'pc' ? t(app.store) : t('Бесплатно')) : t(app.store)}</span>
-                  </span>
-                  <a className="cb-second sm" href={app.download} target="_blank" rel="noreferrer">
-                    {phone ? t(app.storeShort) : t('Скачать')}
-                  </a>
-                </span>
-              </span>
-            </li>
-            <li>
-              <span className="cb-num">2</span>
-              <span className="cb-step">
-                <span className="cb-step-text">
-                  <strong>{t('Добавьте подписку')}</strong>
-                  {phone ? null : <span className="cb-muted">{t('Одна кнопка, ссылка откроется в приложении')}</span>}
-                </span>
-                <span className={phone ? 'cb-btns col' : 'cb-btns'}>
-                  <a className={url ? 'cb-main sm' : 'cb-main sm off'} href={url ? app.add(url) : undefined} aria-disabled={url ? undefined : true}>
-                    {t('Добавить в {app}', { app: app.app })}
-                  </a>
-                  <button type="button" className="cb-second sm" onClick={() => url && void copy(url, 'url')} disabled={!url}>
-                    {copied === 'url' ? t('Скопировано') : t('Скопировать')}
-                  </button>
-                  {!phone ? (
-                    <button type="button" className="cb-second sm" aria-expanded={qr} onClick={() => setQr(!qr)} disabled={!url}>
-                      {t('QR-код')}
-                    </button>
-                  ) : null}
-                </span>
-                {qr && url ? <QrCode text={url} size={200} label={t('QR-код ссылки подписки')} /> : null}
-                {phone ? reissueBlock : null}
-              </span>
-            </li>
-            <li>
-              <span className="cb-num">3</span>
-              <span className="cb-step-text">
-                <strong>{t('Включите VPN')}</strong>
-                <span className="cb-muted">{phone ? t('Сервер выберется сам') : t('Нажмите кнопку подключения в {app}, сервер выберется сам', { app: app.app })}</span>
-              </span>
-            </li>
-          </ol>
-          {!phone ? (
-            <>
-              <p className="cb-muted">{t('Другие приложения: {apps}', { apps: app.others })}</p>
-              {reissueBlock}
-            </>
-          ) : null}
-        </>
+        <ConnectSteps
+          url={url}
+          phone={phone}
+          brand={site.brand_name}
+          copied={copied === 'url'}
+          onCopy={() => url && void copy(url, 'url')}
+          qr={qr}
+          onQr={() => setQr(!qr)}
+          reissue={reissueBlock}
+          waiting={detail.ready ? t('ссылка появится, когда подписка заработает') : t('загружаем ссылку…')}
+        />
       )}
     </Card>
   ) : null;

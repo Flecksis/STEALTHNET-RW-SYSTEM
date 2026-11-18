@@ -5,8 +5,9 @@ import { dateLong } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
-import { APPS, appName, deviceIcon, guessPlatform, type Device, type Platform } from '../cabinet/model';
+import { appName, deviceIcon, type Device } from '../cabinet/model';
 import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
+import { MiniSteps } from './MiniSteps';
 import { openExternal } from './telegram';
 
 function failText(err: unknown, fallback: string): string {
@@ -15,10 +16,6 @@ function failText(err: unknown, fallback: string): string {
 
 export function MiniConnect() {
   const { site, view, ready, setView, devices, setDevices } = useMini();
-  const [plat, setPlat] = useState<Platform>(() => {
-    const g = guessPlatform();
-    return g === 'ios' || g === 'android' ? g : 'pc';
-  });
   const [ask, setAsk] = useState('');
   const [reissued, setReissued] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -37,7 +34,6 @@ export function MiniConnect() {
 
   const url = view?.subscription_url ?? null;
   const mode = site.connect?.mode ?? 'ours';
-  const app = APPS[plat];
   const limit = view?.subscription.mirror.hwid_limit ?? view?.tariff?.devices.included ?? null;
 
   const copy = async () => {
@@ -152,60 +148,16 @@ export function MiniConnect() {
           {reissueBlock}
         </div>
       ) : (
-        <div className="mn-steps">
-          <div role="group" aria-label={t('Устройство')} className="mn-seg three">
-            {(
-              [
-                ['ios', 'iPhone'],
-                ['android', 'Android'],
-                ['pc', t('Компьютер')],
-              ] as Array<[Platform, string]>
-            ).map(([key, label]) => (
-              <button key={key} type="button" aria-pressed={plat === key} onClick={() => setPlat(key)}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="mn-card mn-step">
-            <span className="mn-num">1</span>
-            <span className="mn-step-text">
-              <strong>{t('Установите {app}', { app: app.app })}</strong>
-              <span>{t(app.store)}</span>
-            </span>
-            <button type="button" className="mn-btn2 press" onClick={() => openExternal(app.download)}>
-              {t(app.storeShort)}
-            </button>
-          </div>
-          <div className="mn-card mn-step col">
-            <span className="mn-step-row">
-              <span className="mn-num">2</span>
-              <span className="mn-step-text">
-                <strong>{t('Добавьте подписку')}</strong>
-                <span>{t('Ссылка сама откроется в приложении')}</span>
-              </span>
-            </span>
-            <button type="button" className="mn-main sm press" onClick={() => url && openExternal(app.add(url))} disabled={!url}>
-              {t('Добавить в {app}', { app: app.app })}
-            </button>
-            <span className="mn-two">
-              <button type="button" className="mn-btn2 press" onClick={() => void copy()} disabled={!url}>
-                {copied ? t('Скопировано') : t('Скопировать')}
-              </button>
-              <button type="button" className="mn-btn2 press" aria-expanded={qr} onClick={() => setQr(!qr)} disabled={!url}>
-                {t('QR-код')}
-              </button>
-            </span>
-            {qr && url ? <QrCode text={url} size={200} label={t('QR-код ссылки подписки')} /> : null}
-            {reissueBlock}
-          </div>
-          <div className="mn-card mn-step">
-            <span className="mn-num">3</span>
-            <span className="mn-step-text">
-              <strong>{t('Включите VPN')}</strong>
-              <span>{t('Кнопка подключения в {app}, сервер выберется сам', { app: app.app })}</span>
-            </span>
-          </div>
-        </div>
+        <MiniSteps
+          url={url}
+          brand={site.brand_name}
+          copied={copied}
+          onCopy={() => void copy()}
+          qr={qr}
+          onQr={() => setQr(!qr)}
+          reissue={reissueBlock}
+          waiting={ready ? t('ссылка появится, когда подписка заработает') : t('загружаем ссылку…')}
+        />
       )}
       {error ? <p className="mn-error">{error}</p> : null}
       <section aria-label={t('Устройства')} className="mn-devsec">

@@ -1663,6 +1663,17 @@ pub struct SubpageConfigRef {
     pub view_position: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubpageConfig {
+    pub uuid: Uuid,
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub view_position: i64,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubpageConfigs {

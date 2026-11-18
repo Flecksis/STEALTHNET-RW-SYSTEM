@@ -445,6 +445,8 @@ pub struct CoreSettings {
     #[serde(default)]
     pub connect: ConnectSettings,
     #[serde(default)]
+    pub connect_apps: Option<crate::connect::ConnectApps>,
+    #[serde(default)]
     pub site: SiteSettings,
     #[serde(default)]
     pub logo: Option<ImageMeta>,
@@ -531,6 +533,7 @@ impl Default for CoreSettings {
             invoice_ttl_minutes: 60,
             appearance: Appearance::default(),
             connect: ConnectSettings::default(),
+            connect_apps: None,
             site: SiteSettings::default(),
             logo: None,
             favicon: None,
@@ -609,6 +612,7 @@ pub mod keys {
     pub const CLIENT_ACCESS: &str = "core.client_access";
     pub const APPEARANCE: &str = "core.appearance";
     pub const CONNECT: &str = "core.connect";
+    pub const CONNECT_APPS: &str = "core.connect_apps";
     pub const BOT_USERNAME: &str = "bot.username";
     pub const SITE: &str = "core.site";
     pub const LOGO: &str = "core.logo";

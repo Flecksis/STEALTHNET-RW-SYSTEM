@@ -3,6 +3,7 @@ import { api, ApiError } from '../../lib/api';
 import { NBSP, timeHM } from '../../lib/format';
 import '../form.css';
 import { Switch } from '../ui';
+import { ConnectAppsEditor, appsProblem, fullApps, sameApps, type Apps, type AppsView } from './ConnectApps';
 import { SettingsLayout } from './SettingsLayout';
 
 type Guard = 'none' | 'cookie' | 'tinyauth' | 'portal';
@@ -91,6 +92,7 @@ type Work = {
   rem: Record<RemKey, string>;
   mode: Connect['mode'];
   look: string;
+  apps: Apps;
 };
 
 type Loaded = {
@@ -99,6 +101,7 @@ type Loaded = {
   sub: SubSettings | null;
   connect: Connect;
   configs: PageConfig[];
+  apps: AppsView | null;
 };
 
 function workFrom(data: Loaded): Work {
@@ -122,6 +125,7 @@ function workFrom(data: Loaded): Work {
     rem,
     mode: data.connect.mode,
     look: data.connect.page_config ?? data.configs[0]?.uuid ?? '',
+    apps: fullApps(data.apps?.apps),
   };
 }
 
@@ -199,6 +203,7 @@ export function SettingsRemna() {
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loads, setLoads] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -206,14 +211,16 @@ export function SettingsRemna() {
         api<RemnaView>('/api/admin/settings/remnawave'),
         api<Connect>('/api/admin/settings/connect'),
       ]);
-      const [check, sub, configs] = await Promise.all([
+      const [check, sub, configs, apps] = await Promise.all([
         remna.url ? api<Check>('/api/admin/settings/remnawave/check', { method: 'POST' }).catch(() => null) : Promise.resolve(null),
         api<SubSettings>('/api/admin/settings/subscription').catch(() => null),
         api<PageConfig[]>('/api/admin/settings/remnawave/page-configs').catch(() => [] as PageConfig[]),
+        api<AppsView>('/api/admin/settings/connect-apps').catch(() => null),
       ]);
-      const loaded = { remna, check, sub, connect, configs };
+      const loaded = { remna, check, sub, connect, configs, apps };
       setData(loaded);
       setWork(workFrom(loaded));
+      setLoads((n) => n + 1);
       setTokenEdit(false);
       setGuardEdit(false);
       setTried(false);
@@ -258,11 +265,13 @@ export function SettingsRemna() {
   const guardBad = guardChanged && !guardKeep && !guardFilled(work);
   const linkChanged = work.addr.trim() !== base.addr.trim() || (work.token !== null && work.token.trim() !== '') || guardChanged;
   const connectChanged = work.mode !== base.mode || (work.mode === 'remnawave' && work.look !== base.look);
-  const dirty = remChanged || devChanged || linkChanged || connectChanged;
+  const appsChanged = !!data.apps && !sameApps(work.apps, base.apps);
+  const appsIssue = appsChanged ? appsProblem(work.apps) : null;
+  const dirty = remChanged || devChanged || linkChanged || connectChanged || appsChanged;
   const addrBad = noAddr;
   const remBad = work.remOn && REMARKS.some(([key]) => !work.rem[key].trim());
   const limBad = work.devOn && limitBad(work.devLimit);
-  const invalid = addrBad || remBad || limBad || guardBad;
+  const invalid = addrBad || remBad || limBad || guardBad || !!appsIssue;
   const blocked = (!linkOk || subMissing) && (remChanged || devChanged) && !linkChanged;
 
   let statusText: string;
@@ -360,6 +369,12 @@ export function SettingsRemna() {
           }
         }
         await api('/api/admin/settings/subscription', { method: 'PUT', body });
+      }
+      if (appsChanged && data.apps) {
+        await api('/api/admin/settings/connect-apps', {
+          method: 'PUT',
+          body: { apps: sameApps(work.apps, data.apps.defaults) ? null : work.apps },
+        });
       }
       if (connectChanged) {
         await api('/api/admin/settings/connect', {
@@ -459,7 +474,9 @@ export function SettingsRemna() {
     : invalid
       ? addrBad || remBad || guardBad || (work.devOn && !work.devLimit)
         ? 'Заполните пустые поля'
-        : 'Исправьте лимит устройств'
+        : appsIssue
+          ? appsIssue
+          : 'Исправьте лимит устройств'
       : saveError
         ? saveError
         : dirty
@@ -857,6 +874,15 @@ export function SettingsRemna() {
               : 'Кабинет и мини-приложение показывают кнопку «Открыть страницу подключения», она ведёт на страницу подписки Remnawave'}
           </span>
         </div>
+        {work.mode === 'ours' ? (
+          data.apps ? (
+            <ConnectAppsEditor apps={work.apps} defaults={fullApps(data.apps.defaults)} limits={data.apps.limits} configs={data.configs} canImport={linkOk} look={work.look} version={loads} onChange={(apps) => edit({ apps })} />
+          ) : (
+            <p className="cap" style={{ padding: '0 20px 16px' }}>
+              Список приложений не загрузился. Обновите страницу
+            </p>
+          )
+        ) : null}
         {work.mode === 'remnawave' ? (
           <div className="row">
             <label htmlFor="cp-look" className="rl">

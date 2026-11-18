@@ -5,6 +5,7 @@ mod auth;
 mod bot_content;
 mod catalog;
 mod clients;
+mod connect_apps;
 #[cfg(test)]
 mod decisions_tests;
 mod delivery;
@@ -49,6 +50,7 @@ pub fn routes() -> Router<AppState> {
         .merge(support::routes())
         .merge(settings::routes())
         .merge(landing::routes())
+        .merge(connect_apps::routes())
         .merge(system::routes())
         .merge(bot_content::routes())
         .merge(import::routes())

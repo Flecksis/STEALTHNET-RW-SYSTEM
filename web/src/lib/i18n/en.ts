@@ -2,10 +2,11 @@ import { ACCOUNT } from './en-account';
 import { CABINET } from './en-cabinet';
 import { CABINET2 } from './en-cabinet2';
 import { COMMON } from './en-common';
+import { CONNECT } from './en-connect';
 import { MINI } from './en-mini';
 import { SITE } from './en-site';
 
-export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT };
+export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT };
 
 export const PLURALS: Record<string, [string, string]> = {
   день: ['day', 'days'],

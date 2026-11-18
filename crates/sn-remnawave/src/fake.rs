@@ -66,6 +66,7 @@ struct State {
     history: Vec<BillingRecord>,
     metadata: BTreeMap<Uuid, NodeMetadata>,
     subpage_configs: Vec<SubpageConfigRef>,
+    subpage_contents: BTreeMap<Uuid, Value>,
     settings: Option<SubscriptionSettings>,
     torrent_reports: Vec<TorrentReport>,
     unblocked_ips: Vec<String>,
@@ -354,6 +355,10 @@ impl FakeRemnawave {
 
     pub fn set_subpage_configs(&self, configs: Vec<SubpageConfigRef>) {
         self.lock().subpage_configs = configs;
+    }
+
+    pub fn set_subpage_content(&self, uuid: Uuid, config: Value) {
+        self.lock().subpage_contents.insert(uuid, config);
     }
 
     pub fn add_torrent_report(&self, report: TorrentReport) {
@@ -1611,6 +1616,26 @@ impl RemnawaveApi for FakeRemnawave {
                 configs: state.subpage_configs.clone(),
             })
         })
+    }
+
+    async fn subscription_page_config(&self, uuid: Uuid) -> RemnaResult<SubpageConfig> {
+        self.run(
+            "subscription_page_config",
+            json!({ "uuid": uuid }),
+            |state| {
+                let found = state
+                    .subpage_configs
+                    .iter()
+                    .find(|config| config.uuid == uuid)
+                    .ok_or_else(|| not_found("SubscriptionPageConfig"))?;
+                Ok(SubpageConfig {
+                    uuid,
+                    name: found.name.clone(),
+                    view_position: found.view_position,
+                    config: state.subpage_contents.get(&uuid).cloned(),
+                })
+            },
+        )
     }
 
     async fn subpage_access(&self, short_uuid: &str) -> RemnaResult<SubpageAccess> {

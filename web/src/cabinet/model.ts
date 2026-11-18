@@ -1,6 +1,6 @@
 import type { Subscription } from '../admin/clients/types';
 import { count, dateLong, days, NBSP, type Money } from '../lib/format';
-import { lang, msg, t } from '../lib/i18n';
+import { lang, t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 
 export type TrafficReset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
@@ -314,39 +314,6 @@ export function explanation(view: SubscriptionView | null, blocked: boolean): st
     return t('VPN не работает, пока подписка не продлена. После оплаты обновите подписку в приложении — ссылка останется прежней.');
   }
   return null;
-}
-
-export type Platform = 'ios' | 'android' | 'win' | 'mac' | 'linux' | 'pc';
-
-export type AppInfo = { app: string; store: string; storeShort: string; download: string; others: string; add: (url: string) => string };
-
-const HAPP_ADD = (url: string) => `happ://add/${url}`;
-const HIDDIFY_ADD = (url: string) => `hiddify://import/${url}`;
-
-export const APPS: Record<Platform, AppInfo> = {
-  ios: { app: 'Happ', store: msg('App Store, бесплатно'), storeShort: 'App Store', download: 'https://apps.apple.com/app/happ-proxy-utility/id6504287215', others: 'Streisand, v2rayTun', add: HAPP_ADD },
-  android: { app: 'Happ', store: msg('Google Play или файл APK'), storeShort: 'Google Play', download: 'https://play.google.com/store/apps/details?id=com.happproxy', others: 'v2rayTun, Hiddify, NekoBox', add: HAPP_ADD },
-  win: { app: 'Hiddify', store: msg('Установщик для Windows 10 и 11'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, v2rayN', add: HIDDIFY_ADD },
-  mac: { app: 'Hiddify', store: msg('Установщик .dmg для macOS'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Happ, v2rayTun', add: HIDDIFY_ADD },
-  linux: { app: 'Hiddify', store: msg('Пакеты .deb и AppImage'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, NekoBox', add: HIDDIFY_ADD },
-  pc: { app: 'Hiddify', store: msg('Windows, macOS и Linux'), storeShort: msg('Скачать'), download: 'https://github.com/hiddify/hiddify-app/releases', others: 'Clash Verge, v2rayN', add: HIDDIFY_ADD },
-};
-
-export function guessPlatform(): Platform {
-  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-  if (/iPhone|iPad|iPod/i.test(ua)) {
-    return 'ios';
-  }
-  if (/Android/i.test(ua)) {
-    return 'android';
-  }
-  if (/Mac OS X|Macintosh/i.test(ua)) {
-    return 'mac';
-  }
-  if (/Linux/i.test(ua)) {
-    return 'linux';
-  }
-  return 'win';
 }
 
 export function deviceIcon(device: Device): 'phone' | 'laptop' {

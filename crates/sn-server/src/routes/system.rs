@@ -14,6 +14,7 @@ const IMAGE_CACHE: &str = "public, max-age=31536000, immutable";
 const ICON_CACHE: &str = "public, max-age=300";
 const TAB_ICON_CACHE: &str = "public, max-age=3600";
 const IMAGE_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
+const ICON_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 const LANDING_CACHE: &str = "no-cache";
 
 pub fn routes() -> Router<AppState> {
@@ -26,6 +27,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/favicon/{file}", get(favicon))
         .route("/api/public/landing", get(landing))
         .route("/api/public/landing/{file}", get(landing_image))
+        .route("/api/public/connect-apps", get(connect_apps))
+        .route("/api/public/app-icon/{file}", get(app_icon))
         .route("/api/public/icon.svg", get(icon))
         .route("/favicon.ico", get(favicon_ico))
         .route("/robots.txt", get(robots))
@@ -184,6 +187,51 @@ async fn landing_image(State(state): State<AppState>, Path(file): Path<String>) 
         )
             .into_response(),
         Ok(_) => ApiError::not_found().into_response(),
+        Err(err) => ApiError::from(err).into_response(),
+    }
+}
+
+async fn connect_apps(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let public = state.services.connect_apps().public();
+    let etag = format!("\"{}\"", public.version);
+    let Ok(tag) = HeaderValue::from_str(&etag) else {
+        return ApiError::not_found().into_response();
+    };
+    let cache = HeaderValue::from_static(LANDING_CACHE);
+    if etag_matches(&headers, &etag) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, tag), (header::CACHE_CONTROL, cache)],
+        )
+            .into_response();
+    }
+    (
+        [(header::ETAG, tag), (header::CACHE_CONTROL, cache)],
+        Json(public),
+    )
+        .into_response()
+}
+
+async fn app_icon(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let Some((tag, extension)) = file.split_once('.') else {
+        return ApiError::not_found().into_response();
+    };
+    match state
+        .services
+        .connect_apps()
+        .icon_file(tag, extension)
+        .await
+    {
+        Ok(Some((kind, bytes))) => (
+            [
+                (header::CONTENT_TYPE, kind.content_type()),
+                (header::CACHE_CONTROL, IMAGE_CACHE),
+                (header::CONTENT_SECURITY_POLICY, ICON_POLICY),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(None) => ApiError::not_found().into_response(),
         Err(err) => ApiError::from(err).into_response(),
     }
 }

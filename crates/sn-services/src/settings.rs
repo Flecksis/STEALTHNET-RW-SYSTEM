@@ -124,6 +124,16 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                     settings.connect = v;
                 }
             }
+            keys::CONNECT_APPS => {
+                settings.connect_apps = parse::<sn_domain::connect::ConnectApps>(&key, value)
+                    .and_then(|apps| match apps.checked() {
+                        Ok(apps) => Some(apps),
+                        Err(err) => {
+                            tracing::warn!(key, error = %err, "приложения для подключения не прошли проверку, взяты по умолчанию");
+                            None
+                        }
+                    });
+            }
             keys::SITE => {
                 if let Some(v) = parse::<SiteSettings>(&key, value) {
                     settings.site = v;

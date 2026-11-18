@@ -1,0 +1,112 @@
+.mn-seg.four {
+  grid-template-columns: repeat(4, auto);
+}
+
+.mn-seg.four button {
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.mn-seg.small {
+  border-radius: 12px;
+}
+
+.mn-seg.small button {
+  height: 38px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.mn-short {
+  display: none;
+}
+
+.mn-apps {
+  display: flex;
+  gap: 8px;
+  margin: 0 -16px;
+  padding: 0 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mn-apps::-webkit-scrollbar {
+  display: none;
+}
+
+.mn-apps button {
+  flex: 0 0 auto;
+  height: 46px;
+  padding: 0 14px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  border: 2px solid transparent;
+  border-radius: 14px;
+  background: var(--surface-2);
+  background-clip: padding-box;
+  color: var(--ink-2);
+  font: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mn-apps button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.mn-app-ico {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #0b0b0c;
+  color: #fafafa;
+  box-shadow: inset 0 0 0 1px var(--ring);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.mn-app-ico img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mn-step-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mn-step-btns .mn-btn2 {
+  flex: 1 1 auto;
+}
+
+.mn-pre {
+  white-space: pre-line;
+}
+
+.mn-hint {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+@media (max-width: 359px) {
+  .mn-seg.four .mn-long {
+    display: none;
+  }
+
+  .mn-seg.four .mn-short {
+    display: inline;
+  }
+}
+
+.mn-steps .mn-step:not(.col) {
+  align-items: flex-start;
+}

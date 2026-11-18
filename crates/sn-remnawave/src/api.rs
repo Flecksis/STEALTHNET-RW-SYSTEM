@@ -229,6 +229,10 @@ pub trait RemnawaveApi: Send + Sync {
         Err(RemnaError::Unsupported("subscription_page_configs"))
     }
 
+    async fn subscription_page_config(&self, _uuid: Uuid) -> RemnaResult<SubpageConfig> {
+        Err(RemnaError::Unsupported("subscription_page_config"))
+    }
+
     async fn subpage_access(&self, _short_uuid: &str) -> RemnaResult<SubpageAccess> {
         Err(RemnaError::Unsupported("subscriptions.subpage_config"))
     }
