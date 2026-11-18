@@ -17,7 +17,7 @@
 [data-design="b"][data-theme="dark"]{--btn:#EDEEF0;--btn-ink:#0F1013}
 [data-theme="dark"]{--accent-ink:color-mix(in srgb,var(--accent) 66%,#fff);--accent-soft:color-mix(in srgb,var(--accent) 16%,transparent)}
 [data-theme="light"]{--accent-ink:color-mix(in srgb,var(--accent) 70%,#000);--accent-soft:color-mix(in srgb,var(--accent) 9%,#fff)}
-[data-surface="admin"][data-theme="dark"]{--sel:color-mix(in srgb,var(--accent) 10%,transparent)}
-[data-surface="admin"][data-theme="light"]{--sel:var(--accent-soft)}
+[data-surface="admin"][data-theme="dark"],[data-surface="admin-phone"][data-theme="dark"]{--sel:color-mix(in srgb,var(--accent) 10%,transparent)}
+[data-surface="admin"][data-theme="light"],[data-surface="admin-phone"][data-theme="light"]{--sel:var(--accent-soft)}
 [data-surface="admin"][data-design="a"]{font-size:14px}
 [data-surface="admin"][data-design="b"]{font-size:14.5px}

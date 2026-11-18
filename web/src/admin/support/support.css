@@ -77,6 +77,7 @@
 }
 
 .sp-item {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -94,7 +95,24 @@
 }
 
 .sp-item[aria-pressed='true'] {
-  background: var(--sel);
+  background: var(--accent-soft);
+}
+
+.sp-item + .sp-item::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 64px;
+  right: 12px;
+  height: 1px;
+  background: var(--line);
+}
+
+.sp-item:hover::before,
+.sp-item:hover + .sp-item::before,
+.sp-item[aria-pressed='true']::before,
+.sp-item[aria-pressed='true'] + .sp-item::before {
+  background: transparent;
 }
 
 .sp-ava {
