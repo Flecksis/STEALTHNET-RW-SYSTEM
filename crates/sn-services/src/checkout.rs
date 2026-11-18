@@ -422,17 +422,46 @@ fn describe_for(brand: &str, quote: &Quote, provider: &str) -> String {
 pub use sn_domain::payment::REPLACED_REASON;
 pub const ORDER_REPLACED: &str = "order.replaced";
 
+async fn detach_unpaid(
+    modules: &ModuleRegistry,
+    tx: &mut Tx,
+    created: &Order,
+) -> ServiceResult<Vec<OrderId>> {
+    if !modules.is_enabled(ModuleId::Promo) {
+        return Ok(Vec::new());
+    }
+    for order_id in promo::replacement_candidates(tx, created).await? {
+        for payment in tx.payments().for_order(order_id).await? {
+            if payment.status == PaymentStatus::Pending {
+                tx.payments().lock(payment.id).await?;
+            }
+        }
+        tx.orders().lock(order_id).await?;
+    }
+    let replaced = promo::superseded(tx, created).await?;
+    promo::release_held(tx, &replaced).await?;
+    Ok(replaced)
+}
+
 async fn replace_unpaid(
     modules: &ModuleRegistry,
     ctx: &ModuleContext,
     tx: &mut Tx,
     created: &Order,
 ) -> ServiceResult<()> {
-    if !modules.is_enabled(ModuleId::Promo) {
-        return Ok(());
-    }
+    let replaced = detach_unpaid(modules, tx, created).await?;
+    cancel_replaced(modules, ctx, tx, created, &replaced).await
+}
+
+async fn cancel_replaced(
+    modules: &ModuleRegistry,
+    ctx: &ModuleContext,
+    tx: &mut Tx,
+    created: &Order,
+    replaced: &[OrderId],
+) -> ServiceResult<()> {
     let code = promo::promo_in_quote(&created.quote).map(|(_, code)| code);
-    for order_id in promo::superseded(tx, created).await? {
+    for &order_id in replaced {
         let mut payments = Vec::new();
         for payment in tx.payments().for_order(order_id).await? {
             if payment.status != PaymentStatus::Pending {
@@ -1639,7 +1668,7 @@ impl<'a> Checkout<'a> {
         if let Some(code) = method.as_deref() {
             tx.payments().set_pay_method(payment.id, code).await?;
         }
-        replace_unpaid(modules, &ctx, &mut tx, &created).await?;
+        let replaced = detach_unpaid(modules, &mut tx, &created).await?;
         modules
             .order_created(&ctx, &mut tx, &created, &payment)
             .await?;
@@ -1696,6 +1725,8 @@ impl<'a> Checkout<'a> {
                         },
                     )
                     .await?;
+                drop(conn);
+                self.finish_replaced(&created, &replaced).await;
                 let pay_url = match &public_url {
                     Some(base) => format!("{base}/api/pay/{}", payment.public_id),
                     None => invoice.pay_url,
@@ -1729,9 +1760,27 @@ impl<'a> Checkout<'a> {
                     Ok(_) | Err(StoreError::Invalid(_)) => {}
                     Err(other) => return Err(other.into()),
                 }
+                promo::restore_held(&mut tx, &replaced).await?;
                 tx.commit().await?;
                 Err(err.into())
             }
+        }
+    }
+
+    async fn finish_replaced(&self, created: &Order, replaced: &[OrderId]) {
+        if replaced.is_empty() {
+            return;
+        }
+        let ctx = self.services.module_context();
+        let finished = async {
+            let mut tx = self.services.store().begin().await?;
+            cancel_replaced(self.services.modules(), &ctx, &mut tx, created, replaced).await?;
+            tx.commit().await?;
+            Ok::<_, ServiceError>(())
+        }
+        .await;
+        if let Err(err) = finished {
+            tracing::warn!(order = %created.id, error = %err, "старый счёт не отменён после выставления нового");
         }
     }
 }

@@ -364,6 +364,18 @@ fn stale_reason(saved: Option<String>) -> String {
     }
 }
 
+const UNBLOCKED_DELIVERY: &str = "клиента разблокировали: заказ выдаётся";
+
+fn halted(halt: Halt) -> ServiceError {
+    match halt {
+        Halt::Failed(err) => err,
+        Halt::Retry(reason)
+        | Halt::Review(reason)
+        | Halt::Stale(reason)
+        | Halt::Blocked(reason) => ServiceError::Internal(reason),
+    }
+}
+
 fn blocked_halt(order: &Order) -> Halt {
     Halt::Blocked(format!(
         "{BLOCKED_HOLD} {} не выдаётся, после разблокировки он выдастся сам",
@@ -537,6 +549,32 @@ impl<'a> Fulfillment<'a> {
         Ok(FulfillmentOutcome::Review { reason })
     }
 
+    async fn hold_blocked(
+        &self,
+        order: &Order,
+        reason: String,
+    ) -> ServiceResult<FulfillmentOutcome> {
+        let mut tx = self.services.store().begin().await?;
+        let held = client_blocked(&mut tx, order.client_id)
+            .await
+            .map_err(halted)?;
+        if held {
+            match tx.orders().mark_review(order.id, &reason).await {
+                Ok(()) | Err(StoreError::Invalid(_)) => {}
+                Err(err) => return Err(err.into()),
+            }
+            tx.commit().await?;
+        } else {
+            drop(tx);
+        }
+        if held && self.blocked(order).await.map_err(halted)? {
+            tracing::warn!(order = %order.id, %reason, "выдача ждёт разблокировки клиента");
+            return Ok(FulfillmentOutcome::Review { reason });
+        }
+        tracing::info!(order = %order.id, "клиента разблокировали, пока заказ откладывался: заказ выдаётся");
+        Ok(FulfillmentOutcome::retry(MIN_RETRY, UNBLOCKED_DELIVERY))
+    }
+
     async fn blocked_order(
         &self,
         order: &Order,
@@ -554,7 +592,7 @@ impl<'a> Fulfillment<'a> {
                 tracing::info!(order = %order.id, reason = %why, "выдача отложена");
                 Ok(FulfillmentOutcome::retry(MIN_RETRY, why))
             }
-            BlockedRefund::NothingPaid => self.hold(order, reason).await,
+            BlockedRefund::NothingPaid => self.hold_blocked(order, reason).await,
             BlockedRefund::Kept(why) => {
                 self.hold(
                     order,

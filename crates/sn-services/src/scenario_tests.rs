@@ -1300,6 +1300,287 @@ async fn подключение_remnawave_и_секрет_вебхуков() {
     env.db.cleanup().await;
 }
 
+fn provider_config(value: serde_json::Value) -> ProviderUpdate {
+    ProviderUpdate {
+        config: serde_json::from_value(value).unwrap(),
+        ..ProviderUpdate::default()
+    }
+}
+
+#[tokio::test]
+async fn смена_адреса_кассы_требует_ключи_заново() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let ops = services.settings_ops();
+    ops.update_provider(
+        providers::HELEKET,
+        &provider_config(serde_json::json!({ "merchant_id": "m-1", "api_key": "hk-old" })),
+        admin,
+    )
+    .await
+    .unwrap();
+    let moved = ops
+        .update_provider(
+            providers::HELEKET,
+            &provider_config(serde_json::json!({ "api_url": "https://collector.example.org" })),
+            admin,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(moved.code(), crate::settings::SECRETS_AGAIN);
+    assert!(
+        moved.to_string().contains("«Платёжный API-ключ»"),
+        "{moved}"
+    );
+    assert_eq!(
+        services
+            .payments()
+            .config(providers::HELEKET)
+            .get("api_url"),
+        None
+    );
+    ops.update_provider(
+        providers::HELEKET,
+        &provider_config(serde_json::json!({ "merchant_id": "m-2" })),
+        admin,
+    )
+    .await
+    .unwrap();
+    ops.update_provider(
+        providers::HELEKET,
+        &provider_config(serde_json::json!({
+            "api_url": "https://collector.example.org", "api_key": "hk-new"
+        })),
+        admin,
+    )
+    .await
+    .unwrap();
+    let config = services.payments().config(providers::HELEKET);
+    assert_eq!(config.get("api_url"), Some("https://collector.example.org"));
+    assert_eq!(config.get("api_key"), Some("hk-new"));
+    ops.update_provider(
+        providers::HELEKET,
+        &provider_config(serde_json::json!({ "api_url": "https://collector.example.org/" })),
+        admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        code(
+            ops.update_provider(
+                providers::HELEKET,
+                &ProviderUpdate {
+                    clear: vec!["api_url".into()],
+                    ..ProviderUpdate::default()
+                },
+                admin
+            )
+            .await
+        ),
+        crate::settings::SECRETS_AGAIN
+    );
+    ops.update_provider(
+        providers::HELEKET,
+        &ProviderUpdate {
+            clear: vec!["api_url".into(), "api_key".into()],
+            ..ProviderUpdate::default()
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        services
+            .payments()
+            .config(providers::HELEKET)
+            .get("api_key"),
+        None
+    );
+
+    let pasted = include_str!("../../sn-payments/src/providers/overpay/testdata/merchant.pem")
+        .replace(['\n', '\r'], "");
+    ops.update_provider(
+        providers::OVERPAY,
+        &provider_config(serde_json::json!({
+            "project_id": "1017", "login": "shop", "password": "secret", "certificate": pasted
+        })),
+        admin,
+    )
+    .await
+    .unwrap();
+    let moved = ops
+        .update_provider(
+            providers::OVERPAY,
+            &provider_config(serde_json::json!({ "api_url": "https://collector.example.org" })),
+            admin,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        moved
+            .to_string()
+            .contains("«Адрес API» вставьте заново «Пароль» и «Сертификат клиента»"),
+        "{moved}"
+    );
+    let half = ops
+        .update_provider(
+            providers::OVERPAY,
+            &provider_config(serde_json::json!({
+                "api_url": "https://collector.example.org", "password": "secret"
+            })),
+            admin,
+        )
+        .await
+        .unwrap_err();
+    assert!(half.to_string().contains("«Сертификат клиента»"), "{half}");
+    assert!(!half.to_string().contains("«Пароль»"), "{half}");
+    assert_ne!(
+        services
+            .payments()
+            .config(providers::OVERPAY)
+            .get("api_url"),
+        Some("https://collector.example.org")
+    );
+    ops.update_provider(
+        providers::OVERPAY,
+        &provider_config(serde_json::json!({
+            "api_url": "https://collector.example.org", "password": "secret", "certificate": pasted
+        })),
+        admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        services
+            .payments()
+            .config(providers::OVERPAY)
+            .get("api_url"),
+        Some("https://collector.example.org")
+    );
+    env.db.cleanup().await;
+}
+
+async fn sent_secrets(server: &wiremock::MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|request| {
+            request
+                .headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {}", value.to_str().unwrap_or_default()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn смена_адреса_remnawave_не_отправляет_сохранённый_токен() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let ops = services.settings_ops();
+    let old = wiremock::MockServer::start().await;
+    let new = wiremock::MockServer::start().await;
+    ops.update_remnawave(
+        &crate::settings::RemnaUpdate {
+            url: Some(old.uri()),
+            token: Some("tok-old".into()),
+            cookie: Some("caddy:cookie-old".into()),
+            ..Default::default()
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    let probe = ops
+        .check_remnawave(&crate::settings::RemnaCheckRequest {
+            url: Some(new.uri()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!probe.ok);
+    assert_eq!(
+        probe.error.as_deref(),
+        Some(
+            "При смене адреса панели вставьте заново API-токен и куку: панель не отправляет сохранённые ключи на новый адрес"
+        )
+    );
+    let probe = ops
+        .check_remnawave(&crate::settings::RemnaCheckRequest {
+            url: Some(new.uri()),
+            token: Some("tok-new".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(probe.error.unwrap_or_default().contains("куку"));
+    assert!(sent_secrets(&new).await.is_empty());
+    ops.check_remnawave(&crate::settings::RemnaCheckRequest {
+        url: Some(new.uri()),
+        token: Some("tok-new".into()),
+        cookie: Some("caddy:cookie-new".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let sent = sent_secrets(&new).await;
+    assert!(
+        sent.iter().any(|header| header.contains("tok-new")),
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter()
+            .all(|header| !header.contains("tok-old") && !header.contains("cookie-old")),
+        "{sent:?}"
+    );
+    let moved = ops
+        .update_remnawave(
+            &crate::settings::RemnaUpdate {
+                url: Some(new.uri()),
+                token: Some("tok-new".into()),
+                ..Default::default()
+            },
+            admin,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(moved.code(), crate::settings::SECRETS_AGAIN);
+    assert!(moved.to_string().contains("куку"), "{moved}");
+    assert_eq!(
+        ops.remnawave().await.unwrap().url.as_deref(),
+        Some(old.uri().as_str())
+    );
+    ops.update_remnawave(
+        &crate::settings::RemnaUpdate {
+            url: Some(format!("{}/", old.uri())),
+            ..Default::default()
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    let saved = ops
+        .update_remnawave(
+            &crate::settings::RemnaUpdate {
+                url: Some(new.uri()),
+                token: Some("tok-new".into()),
+                guard: Some(crate::settings::GuardUpdate::Off),
+                ..Default::default()
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.url.as_deref(), Some(new.uri().as_str()));
+    assert!(saved.token_set && !saved.cookie_set);
+    env.db.cleanup().await;
+}
+
 struct SecretModule;
 
 #[async_trait]

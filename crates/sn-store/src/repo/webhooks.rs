@@ -448,6 +448,43 @@ impl<'c> WebhooksRepo<'c> {
         Ok(row.and_then(|(source, parsed)| parsed.map(|parsed| RetryClaim { source, parsed })))
     }
 
+    pub async fn claim(&mut self, id: i64, stale_before: DateTime<Utc>) -> StoreResult<bool> {
+        let claimed: Option<i64> = sqlx::query_scalar(
+            "UPDATE webhook_inbox SET outcome = 'received', claimed_at = now() \
+             WHERE id = $1 AND (outcome IN ('error', 'rejected_business') OR \
+             (outcome = 'received' AND COALESCE(claimed_at, received_at) < $2)) \
+             RETURNING id",
+        )
+        .bind(id)
+        .bind(stale_before)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(claimed.is_some())
+    }
+
+    pub async fn reversal(
+        &mut self,
+        id: i64,
+        source: &str,
+        payment_id: PaymentId,
+        txid: Option<&str>,
+    ) -> StoreResult<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT parsed->'status'->>'type' FROM webhook_inbox \
+             WHERE source = $1 AND payment_id = $2 AND id <> $3 AND parsed IS NOT NULL \
+             AND (parsed->'status'->>'type' IN ('refunded', 'partially_refunded') \
+             OR (id > $3 AND parsed->'status'->>'type' IN ('canceled', 'failed') \
+             AND ($4::text IS NULL OR parsed->>'provider_txid' IS NULL OR parsed->>'provider_txid' = $4))) \
+             ORDER BY id LIMIT 1",
+        )
+        .bind(source)
+        .bind(payment_id.0)
+        .bind(id)
+        .bind(txid)
+        .fetch_optional(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn journal(
         &mut self,
         filter: &JournalFilter,

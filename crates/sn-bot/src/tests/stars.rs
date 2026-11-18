@@ -340,6 +340,52 @@ async fn сбой_базы_при_проведении_оплаты_звёзда
     db.cleanup().await;
 }
 
+#[tokio::test]
+async fn сбой_чтения_статуса_не_проводит_оплату_вопреки_решению_админа() {
+    let Some((db, services, _server, _ctx)) = setup().await else {
+        return;
+    };
+    let payment = stars_invoice(&db, &services, 731).await;
+    let event = stars_event(paid_update(71, 731, &payment, "stx-731"));
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO bot_star_events (charge_id, event, payload, source, next_attempt_at, status, resolved_at) \
+             VALUES ($1, 'successful_payment', $2, 'update', now(), 'refunded', now())",
+        )
+        .bind("stx-731")
+        .bind(serde_json::to_value(&event).unwrap())
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    arm_faults(&db, &["bot_star_events"]).await;
+    fault(&db, "bot_star_events", true).await;
+    let settled = ledger::settle(&services, &event).await;
+    assert!(
+        matches!(settled, ledger::Settled::Waiting(_)),
+        "{settled:?}"
+    );
+    fault(&db, "bot_star_events", false).await;
+    assert_eq!(
+        payment_of(&db, payment.id).await.status,
+        PaymentStatus::Pending
+    );
+    let retried = ledger::retry_due(&services, Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert_eq!(retried.applied, 0);
+    assert_eq!(
+        payment_of(&db, payment.id).await.status,
+        PaymentStatus::Pending
+    );
+    assert_eq!(
+        ledger::status(&services, &event).await.unwrap(),
+        Some(ledger::Status::Refunded)
+    );
+    db.cleanup().await;
+}
+
 pub(super) fn stars_event(update: serde_json::Value) -> sn_payments::providers::StarsPayment {
     let update: Update = serde_json::from_value(update).unwrap();
     ledger::from_updates(std::slice::from_ref(&update))

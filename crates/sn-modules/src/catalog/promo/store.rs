@@ -376,6 +376,17 @@ pub async fn release_order(
     Ok(done.rows_affected())
 }
 
+pub async fn restore_order(db: &mut impl Db, order_id: OrderId) -> StoreResult<u64> {
+    let done = sqlx::query(
+        "UPDATE promo_redemptions SET status = 'reserved', released_at = NULL \
+         WHERE order_id = $1 AND status = 'released'",
+    )
+    .bind(order_id.0)
+    .execute(db.conn())
+    .await?;
+    Ok(done.rows_affected())
+}
+
 pub async fn tariffs_exist(db: &mut impl Db, ids: &[TariffId]) -> StoreResult<bool> {
     if ids.is_empty() {
         return Ok(true);

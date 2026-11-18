@@ -508,6 +508,31 @@ pub async fn superseded(tx: &mut Tx, order: &Order) -> Result<Vec<OrderId>, Modu
     Ok(Vec::new())
 }
 
+pub async fn replacement_candidates(
+    tx: &mut Tx,
+    order: &Order,
+) -> Result<Vec<OrderId>, ModuleError> {
+    let Some((promo_id, _)) = promo_in_quote(&order.quote) else {
+        return Ok(Vec::new());
+    };
+    let now = db_now(tx).await?;
+    Ok(store::unpaid_holds(tx, promo_id, order.client_id, now, Some(order.id)).await?)
+}
+
+pub async fn release_held(tx: &mut Tx, orders: &[OrderId]) -> Result<(), ModuleError> {
+    for order in orders {
+        store::release_order(tx, *order, store::RedemptionStatus::Reserved).await?;
+    }
+    Ok(())
+}
+
+pub async fn restore_held(tx: &mut Tx, orders: &[OrderId]) -> Result<(), ModuleError> {
+    for order in orders {
+        store::restore_order(tx, *order).await?;
+    }
+    Ok(())
+}
+
 pub async fn check(
     ctx: &ModuleContext,
     client_id: ClientId,

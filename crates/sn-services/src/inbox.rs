@@ -45,8 +45,8 @@ pub use blocked_refund::{
 };
 pub use journal::{
     ATTENTION_HOURS, BodyView, Fact, JournalCard, JournalItem, JournalPage, JournalPaymentView,
-    JournalQuery, OutcomeGroup, ProviderOption, RETRY_STALE_MINUTES, Retention, RetryState,
-    StepView, Tone, WebhookAttention, event_label, exact,
+    JournalQuery, OutcomeGroup, ProviderOption, RETRY_REVERSED, RETRY_STALE_MINUTES,
+    RETRY_UNCONFIRMED, Retention, RetryState, StepView, Tone, WebhookAttention, event_label, exact,
 };
 pub use masking::{MaskedBody, mask_body};
 pub use refund_action::{
@@ -789,6 +789,23 @@ impl<'a> PaymentInbox<'a> {
             return Ok(WebhookResponse {
                 reply: parsed.reply,
             });
+        }
+        if record.duplicate {
+            let stale_before = self.services.now() - Duration::minutes(RETRY_STALE_MINUTES);
+            let claimed = {
+                let mut conn = self.services.store().conn().await?;
+                conn.webhooks().claim(record.id, stale_before).await?
+            };
+            if !claimed {
+                tracing::info!(
+                    provider = provider.id(),
+                    webhook = record.id,
+                    "уведомление уже обрабатывается, платёжка пришлёт его ещё раз"
+                );
+                self.mark_legacy(provider.id(), &record_key, legacy_path, None)
+                    .await;
+                return Ok(WebhookResponse::status(503));
+            }
         }
         if !record.duplicate
             && let Err(err) = self.purge_batch(PURGE_BATCH).await
@@ -1684,6 +1701,9 @@ impl<'a> PaymentInbox<'a> {
                 if let Some(reason) = self.modules_reject(tx, &order, &paid).await? {
                     self.hold_for_review(tx, &order, &paid, &reason).await?;
                     order
+                } else if let Some(reason) = self.paid_hold(tx, &paid).await? {
+                    self.review_paid(tx, &order, &paid, &reason).await?;
+                    order
                 } else if order.kind == OrderKind::TopUp {
                     credit_topup(tx, &order, &paid).await?;
                     let (fulfilled, changed) = tx
@@ -1751,6 +1771,77 @@ impl<'a> PaymentInbox<'a> {
             Err(ModuleError::Invalid(reason)) => Ok(Some(reason)),
             Err(err) => Err(err.into()),
         }
+    }
+
+    async fn paid_hold(&self, tx: &mut Tx, paid: &Payment) -> ServiceResult<Option<String>> {
+        let underpaid = format!("{}:payment:{}", Received::Underpaid.key(), paid.id);
+        if let Some(credited) = tx.ledger().credited_by_key(&underpaid).await? {
+            return Ok(Some(format!(
+                "оплата пришла полностью после недоплаты, а полученные раньше {} уже зачислены клиенту на баланс. \
+                 Спишите их с баланса и выдайте заказ или верните оплату",
+                amount_text(credited.into())
+            )));
+        }
+        let reversed = tx
+            .payment_notices()
+            .for_payment(paid.id)
+            .await?
+            .iter()
+            .any(|notice| {
+                matches!(
+                    notice.kind,
+                    NoticeKind::RefundReported | NoticeKind::Chargeback
+                )
+            });
+        Ok(reversed.then(|| {
+            "платёжная система раньше сообщала о возврате по этому платежу. \
+             Сверьте платёж в её кабинете, прежде чем выдавать заказ"
+                .to_string()
+        }))
+    }
+
+    async fn review_paid(
+        &self,
+        tx: &mut Tx,
+        order: &Order,
+        paid: &Payment,
+        reason: &str,
+    ) -> ServiceResult<()> {
+        tracing::warn!(order = %order.id, payment = %paid.id, %reason, "оплаченный заказ ждёт ручной проверки");
+        tx.orders().mark_review(order.id, reason).await?;
+        tx.audit()
+            .record(&AuditEntry {
+                actor_kind: ActorKind::System,
+                actor_id: None,
+                action: "order.review".into(),
+                entity_kind: Some(audit_entity::ORDER.into()),
+                entity_id: Some(order.id.0),
+                details: serde_json::json!({
+                    "payment_id": paid.id,
+                    "amount": paid.amount,
+                    "reason": reason,
+                }),
+                ip: None,
+            })
+            .await?;
+        self.notify(
+            tx,
+            paid.client_id,
+            PAYMENT_REVIEW_TEMPLATE,
+            (
+                format!(
+                    "Оплата {} получена. Заказ ждёт ручной проверки, мы свяжемся с вами.",
+                    amount_text(paid.amount)
+                ),
+                format!(
+                    "Payment of {} received. Your order is waiting for a manual review, we'll get in touch.",
+                    amount_en(paid.amount)
+                ),
+            ),
+            paid,
+            order,
+        )
+        .await
     }
 
     async fn hold_for_review(
@@ -1990,6 +2081,9 @@ impl<'a> PaymentInbox<'a> {
         )
         .await?;
         if !payment.status.is_paid_like() {
+            self.note_unpaid_refund(&mut tx, provider, &payment, outcome, partial)
+                .await?;
+            tx.commit().await?;
             return Ok(AcceptResult::Ignored {
                 reason: format!("возврат по платежу в статусе {}", payment.status.as_str()),
             });
@@ -2065,6 +2159,47 @@ impl<'a> PaymentInbox<'a> {
             payment_id: payment.id,
             status: recorded.status,
         })
+    }
+
+    async fn note_unpaid_refund(
+        &self,
+        tx: &mut Tx,
+        provider: &str,
+        payment: &Payment,
+        outcome: &WebhookOutcome,
+        partial: Option<Amount>,
+    ) -> ServiceResult<()> {
+        let reported = partial.or(outcome.amount).unwrap_or(payment.amount);
+        let underpaid = format!("{}:payment:{}", Received::Underpaid.key(), payment.id);
+        let credited = tx.ledger().credited_by_key(&underpaid).await?;
+        let mut text = format!(
+            "Платёжная система сообщила о возврате {} по платежу, который не засчитан как оплаченный. \
+             Если она потом пришлёт оплату по этому счёту, заказ не выдастся сам и будет ждать проверки. \
+             Сверьте платёж в кабинете платёжной системы",
+            amount_text(reported)
+        );
+        if let Some(credited) = credited {
+            text.push_str(&format!(
+                ". Из этой оплаты клиенту уже зачислено на баланс {}: если деньги вернулись покупателю, спишите их с баланса",
+                amount_text(credited.into())
+            ));
+        }
+        let recorded = tx
+            .payment_notices()
+            .record(&NewPaymentNotice {
+                provider: provider.to_string(),
+                event_key: outcome.event_key.clone(),
+                kind: NoticeKind::RefundReported,
+                payment_id: Some(payment.id),
+                client_id: Some(payment.client_id),
+                amount: Some(reported),
+                text: clip(&text, NOTICE_TEXT_LIMIT),
+            })
+            .await?;
+        if recorded.is_some() {
+            tracing::warn!(provider, payment = %payment.id, status = payment.status.as_str(), "платёжная система сообщила о возврате по неоплаченному платежу");
+        }
+        Ok(())
     }
 
     async fn confirm_request(

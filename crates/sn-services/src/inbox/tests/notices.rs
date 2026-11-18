@@ -963,6 +963,72 @@ async fn счёт_с_зачисленной_недоплатой_нельзя_о
 }
 
 #[tokio::test]
+async fn полная_оплата_после_зачисленной_недоплаты_ждёт_проверки() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let client_id = client(&kit.services, 8123).await;
+    let tariff = standard(&kit.services).await;
+    let inbox = kit.services.inbox();
+    let mut credited = 0;
+    for (n, late, surplus) in [
+        (1, ProviderStatus::Paid, 0),
+        (
+            2,
+            ProviderStatus::Overpaid {
+                received: usd(1_100),
+            },
+            100,
+        ),
+    ] {
+        let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+        inbox
+            .apply_outcome(
+                KASSA,
+                &with(
+                    &payment,
+                    ProviderStatus::Underpaid { received: usd(950) },
+                    &format!("u-{n}:wrong_amount"),
+                ),
+            )
+            .await
+            .unwrap();
+        credited += 950;
+        assert_eq!(balance(&kit.services, client_id).await, credited);
+        jobs(&kit.services).await;
+        inbox
+            .apply_outcome(KASSA, &with(&payment, late, &format!("u-{n}:paid")))
+            .await
+            .unwrap();
+        credited += surplus;
+        assert_eq!(reload(&kit, &payment).await.status, PaymentStatus::Paid);
+        assert_eq!(
+            order(&kit.services, payment.order_id).await.status,
+            OrderStatus::Review
+        );
+        let reason = {
+            let mut conn = kit.services.store().conn().await.unwrap();
+            conn.orders()
+                .review_reason(payment.order_id)
+                .await
+                .unwrap()
+                .unwrap_or_default()
+        };
+        assert!(reason.contains("$9.50"), "{reason}");
+        assert_eq!(balance(&kit.services, client_id).await, credited);
+        let queued = jobs(&kit.services).await;
+        assert!(!queued.contains(&JobPayload::FulfillOrder {
+            order_id: payment.order_id
+        }));
+        assert!(
+            notifications(&queued, client_id).contains(&PAYMENT_REVIEW_TEMPLATE.to_string()),
+            "{queued:?}"
+        );
+    }
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn токен_из_пути_уведомления_не_попадает_в_ключ_дублей() {
     let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
         return;

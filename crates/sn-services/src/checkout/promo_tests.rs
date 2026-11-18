@@ -621,3 +621,95 @@ async fn расчёт_и_оформление_считают_неудачные_
     ));
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn сбой_кассы_при_замене_оставляет_прежний_счёт() {
+    let Some(kit) = promo_kit().await else { return };
+    create_promo(&kit, percent("KEEP50", 50, Some(1))).await;
+    let client_id = client(&kit.services, 612).await;
+    let tariff = standard(&kit.services).await;
+    let cart = with_code(cart(&tariff, 30, None), "keep50");
+    let first = invoice_with(&kit, client_id, &cart).await;
+    assert_eq!(counts(&kit).await, (0, 1));
+    *kit.pay.fail_invoice.lock().unwrap() = true;
+    let err = kit
+        .services
+        .checkout()
+        .start(client_id, &request(cart.clone(), TEST_PAY))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ServiceError::Payment(_)), "{err:?}");
+    let kept = payment(&kit, first.public_id).await;
+    assert_eq!(kept.status, PaymentStatus::Pending);
+    assert_eq!(
+        order(&kit.services, first.order_id).await.status,
+        OrderStatus::Pending
+    );
+    assert_eq!(
+        counts(&kit).await,
+        (0, 1),
+        "бронь промокода вернулась старому счёту"
+    );
+    assert!(replaced_audit(&kit, first.order_id).await.is_empty());
+    *kit.pay.fail_invoice.lock().unwrap() = false;
+    let second = invoice_with(&kit, client_id, &cart).await;
+    let replaced = payment(&kit, first.public_id).await;
+    assert_eq!(replaced.status, PaymentStatus::Canceled);
+    assert_eq!(
+        failure_reason(&kit, &replaced).await.as_deref(),
+        Some(REPLACED_REASON)
+    );
+    assert_eq!(replaced_audit(&kit, first.order_id).await.len(), 1);
+    assert_eq!(counts(&kit).await, (0, 1));
+    report(&kit, &second, ProviderStatus::Paid).await;
+    assert_eq!(counts(&kit).await, (1, 0));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn замена_счёта_ждёт_старый_платёж_не_держа_промокод() {
+    let Some(kit) = promo_kit().await else { return };
+    create_promo(&kit, percent("LOCK50", 50, Some(1))).await;
+    let client_id = client(&kit.services, 613).await;
+    let tariff = standard(&kit.services).await;
+    let cart = with_code(cart(&tariff, 30, None), "lock50");
+    let first = invoice_with(&kit, client_id, &cart).await;
+    let mut webhook = kit.services.store().begin().await.unwrap();
+    webhook.payments().lock(first.id).await.unwrap();
+    let services = kit.services.clone();
+    let replacing = tokio::spawn(async move {
+        services
+            .checkout()
+            .start(client_id, &request(cart, TEST_PAY))
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !replacing.is_finished(),
+        "замена должна ждать старый платёж"
+    );
+    let mut probe = kit.services.store().begin().await.unwrap();
+    let promo_free =
+        sqlx::query("SELECT id FROM promo_codes WHERE code = 'LOCK50' FOR UPDATE NOWAIT")
+            .fetch_optional(probe.conn())
+            .await;
+    let client_free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(sn_store::LockSpace::Client.key(client_id.0))
+        .fetch_one(probe.conn())
+        .await
+        .unwrap();
+    drop(probe);
+    drop(webhook);
+    let started = replacing.await.unwrap().unwrap();
+    assert!(
+        promo_free.is_ok(),
+        "промокод заблокирован, пока замена ждёт платёж"
+    );
+    assert!(client_free, "клиент заблокирован, пока замена ждёт платёж");
+    assert!(matches!(started, CheckoutResult::Redirect { .. }));
+    assert_eq!(
+        payment(&kit, first.public_id).await.status,
+        PaymentStatus::Canceled
+    );
+    kit.db.cleanup().await;
+}

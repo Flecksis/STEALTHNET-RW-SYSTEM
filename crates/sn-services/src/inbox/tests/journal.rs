@@ -861,3 +861,325 @@ async fn карта_сохраняется_по_повтору_кассы_пос
     drop(conn);
     kit.db.cleanup().await;
 }
+
+async fn payment_now(kit: &Kit, payment: &Payment) -> Payment {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.payments().get(payment.id).await.unwrap()
+}
+
+async fn later_row(kit: &Kit, key: &str, outcome: &WebhookOutcome, payment: &Payment) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let record = conn
+        .webhooks()
+        .record(&NewInboundWebhook {
+            source: KASSA.into(),
+            dedupe_key: key.into(),
+            remote_ip: Some("203.0.113.9".into()),
+            headers: serde_json::json!({}),
+            body: Some(b"{}".to_vec()),
+            parsed: stored_outcome(outcome),
+            event: None,
+        })
+        .await
+        .unwrap();
+    conn.webhooks()
+        .finish(
+            record.id,
+            InboxOutcome::Ignored,
+            Some(payment.id),
+            Some("платёж уже failed"),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn повтор_не_проводит_оплату_после_возврата() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8602).await;
+    let tariff = standard(&kit.services).await;
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let paid = paid_by(&payment, "kt-late");
+    let id = failed_row(&kit, "kt-late", &paid).await;
+    let refunded = WebhookOutcome {
+        event_key: "refund:kt-late".into(),
+        status: ProviderStatus::Refunded,
+        ..paid_by(&payment, "kt-late")
+    };
+    let answer = kit
+        .services
+        .inbox()
+        .apply_outcome(KASSA, &refunded)
+        .await
+        .unwrap();
+    assert!(matches!(answer, AcceptResult::Ignored { .. }), "{answer:?}");
+    let refused = kit
+        .services
+        .inbox()
+        .retry_webhook(id, admin)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), RETRY_REVERSED);
+    assert!(refused.to_string().contains("о возврате"), "{refused}");
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Pending
+    );
+    let card = kit.services.inbox().journal_card(id).await.unwrap();
+    assert_eq!(card.item.outcome, InboxOutcome::Error);
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let noticed = conn
+        .payment_notices()
+        .for_payment(payment.id)
+        .await
+        .unwrap();
+    assert_eq!(noticed.len(), 1, "{noticed:?}");
+    assert_eq!(noticed[0].kind, NoticeKind::RefundReported);
+    assert_eq!(noticed[0].amount, Some(usd(1_000)));
+    drop(conn);
+    kit.services
+        .inbox()
+        .apply_outcome(KASSA, &paid)
+        .await
+        .unwrap();
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Paid
+    );
+    assert_eq!(
+        order(&kit.services, payment.order_id).await.status,
+        OrderStatus::Review,
+        "оплата после сообщения о возврате не выдаётся сама"
+    );
+    assert!(
+        !jobs(&kit.services)
+            .await
+            .contains(&JobPayload::FulfillOrder {
+                order_id: payment.order_id
+            })
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn повтор_сверяет_статус_у_кассы() {
+    let kassa = Arc::new(Kassa::default());
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8603).await;
+    let tariff = standard(&kit.services).await;
+    let mut cases = Vec::new();
+    for (n, now) in [
+        ProviderStatus::Canceled,
+        ProviderStatus::Refunded,
+        ProviderStatus::Pending,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+        let txid = format!("kt-check-{n}");
+        let id = failed_row(&kit, &txid, &paid_by(&payment, &txid)).await;
+        *kassa.status.lock().unwrap() = Some(WebhookOutcome {
+            status: now,
+            ..paid_by(&payment, &txid)
+        });
+        let refused = kit
+            .services
+            .inbox()
+            .retry_webhook(id, admin)
+            .await
+            .unwrap_err();
+        cases.push(refused.code());
+        assert_eq!(
+            payment_now(&kit, &payment).await.status,
+            PaymentStatus::Pending
+        );
+        assert!(kassa.lookups.lock().unwrap().contains(&txid));
+    }
+    assert_eq!(cases, [RETRY_REVERSED, RETRY_REVERSED, RETRY_UNCONFIRMED]);
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let id = failed_row(&kit, "kt-check-ok", &paid_by(&payment, "kt-check-ok")).await;
+    *kassa.status.lock().unwrap() = Some(paid_by(&payment, "kt-check-ok"));
+    let card = kit.services.inbox().retry_webhook(id, admin).await.unwrap();
+    assert_eq!(card.item.outcome, InboxOutcome::Accepted);
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Paid
+    );
+    let silent = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let id = failed_row(&kit, "kt-check-none", &paid_by(&silent, "kt-check-none")).await;
+    *kassa.status.lock().unwrap() = None;
+    kit.services.inbox().retry_webhook(id, admin).await.unwrap();
+    assert_eq!(payment_now(&kit, &silent).await.status, PaymentStatus::Paid);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn повтор_запрещён_после_отмены_той_же_транзакции() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8604).await;
+    let tariff = standard(&kit.services).await;
+    let cancel = |payment: &Payment, txid: &str| WebhookOutcome {
+        event_key: format!("cancel:{txid}"),
+        status: ProviderStatus::Canceled,
+        ..paid_by(payment, txid)
+    };
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let id = failed_row(&kit, "kt-a", &paid_by(&payment, "kt-a")).await;
+    later_row(&kit, "cancel-a", &cancel(&payment, "kt-a"), &payment).await;
+    let refused = kit
+        .services
+        .inbox()
+        .retry_webhook(id, admin)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), RETRY_REVERSED);
+    assert!(refused.to_string().contains("отменён"), "{refused}");
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Pending
+    );
+    let other = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    later_row(&kit, "cancel-c", &cancel(&other, "kt-c"), &other).await;
+    let other_id = failed_row(&kit, "kt-c", &paid_by(&other, "kt-c")).await;
+    later_row(&kit, "cancel-d", &cancel(&other, "kt-d"), &other).await;
+    kit.services
+        .inbox()
+        .retry_webhook(other_id, admin)
+        .await
+        .unwrap();
+    assert_eq!(payment_now(&kit, &other).await.status, PaymentStatus::Paid);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn приём_уведомления_не_обрабатывает_строку_пока_её_повторяют() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8605).await;
+    let payment = kassa_topup(&kit, client_id, 1_500).await;
+    let txid = payment.provider_txid.clone().unwrap();
+    let body = kassa_body("e-claim", Some(payment.public_id), Some(&txid), 1_500);
+    let hook = kassa_hook(KASSA_SECRET, &body);
+    let key = dedupe_key(&hook.request);
+    let parsed = kit
+        .services
+        .payments()
+        .get(KASSA)
+        .unwrap()
+        .parse_webhook(&kit.services.payments().config(KASSA), &hook.request)
+        .await
+        .unwrap();
+    let id = failed_row(&kit, &key, &parsed).await;
+    let fresh = Utc::now() - Duration::minutes(RETRY_STALE_MINUTES);
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        assert!(
+            conn.webhooks()
+                .claim_retry(id, admin, fresh)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    let busy = kit.services.inbox().handle(hook.clone()).await.unwrap();
+    assert_eq!(busy.reply.status(), 503);
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Pending
+    );
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.webhooks()
+            .finish(id, InboxOutcome::Error, None, Some("сбой"), Some(admin))
+            .await
+            .unwrap();
+        assert!(conn.webhooks().claim(id, fresh).await.unwrap());
+    }
+    let taken = kit
+        .services
+        .inbox()
+        .retry_webhook(id, admin)
+        .await
+        .unwrap_err();
+    assert_eq!(taken.code(), "webhook.retry_unavailable");
+    assert!(taken.to_string().contains("обрабатывается"), "{taken}");
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.webhooks()
+            .finish(id, InboxOutcome::Error, None, Some("сбой"), None)
+            .await
+            .unwrap();
+    }
+    let done = kit.services.inbox().handle(hook).await.unwrap();
+    assert_eq!(done.reply, kassa_reply());
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Paid
+    );
+    let card = kit.services.inbox().journal_card(id).await.unwrap();
+    assert_eq!(card.item.outcome, InboxOutcome::Accepted);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn аудит_повтора_пишется_до_зачисления() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8606).await;
+    let tariff = standard(&kit.services).await;
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let id = failed_row(&kit, "kt-crash", &paid_by(&payment, "kt-crash")).await;
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query(
+            "CREATE FUNCTION finish_breaks() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+             IF NEW.processed_at IS DISTINCT FROM OLD.processed_at THEN \
+             RAISE EXCEPTION 'итог не записан'; END IF; RETURN NEW; END $$",
+        )
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER finish_breaks BEFORE UPDATE ON webhook_inbox \
+             FOR EACH ROW EXECUTE FUNCTION finish_breaks()",
+        )
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    assert!(kit.services.inbox().retry_webhook(id, admin).await.is_err());
+    assert_eq!(
+        payment_now(&kit, &payment).await.status,
+        PaymentStatus::Paid
+    );
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let started: Vec<(String, Option<i64>, serde_json::Value)> = sqlx::query_as(
+        "SELECT actor_kind, actor_id, details FROM audit_log \
+         WHERE action = 'payment.webhook_retry_started' AND entity_id = $1",
+    )
+    .bind(id)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert_eq!(started[0].0, "admin");
+    assert_eq!(started[0].1, Some(admin.0));
+    assert_eq!(started[0].2["provider"], KASSA);
+    drop(conn);
+    kit.db.cleanup().await;
+}

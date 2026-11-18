@@ -253,8 +253,9 @@ pub async fn settle(services: &Services, event: &StarsPayment) -> Settled {
                 tracing::warn!(
                     charge = %event.telegram_payment_charge_id,
                     error = %err,
-                    "оплата звёздами не записана перед проведением"
+                    "статус оплаты звёздами не прочитан, проведём её при следующей проверке"
                 );
+                return Settled::Waiting(format!("статус оплаты не прочитан: {err}"));
             }
         }
     }

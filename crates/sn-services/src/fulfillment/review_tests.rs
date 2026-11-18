@@ -374,6 +374,59 @@ async fn разблокировка_до_автоматического_возв
 }
 
 #[tokio::test]
+async fn заказ_без_оплаты_после_разблокировки_не_застревает_на_проверке() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 319).await;
+    let tariff = standard(&kit.services).await;
+    credit(&kit.services, client_id, 1_000).await;
+    let free = buy_with_balance(&kit.services, client_id, cart(&tariff, 30, None)).await;
+    sqlx::query("UPDATE payments SET amount_minor = 0 WHERE order_id = $1")
+        .bind(free.id.0)
+        .execute(kit.services.store().pool())
+        .await
+        .unwrap();
+    let fulfillment = kit.services.fulfillment();
+    let outcome = fulfillment
+        .blocked_order(&free, format!("{BLOCKED_HOLD} {}", free.public_id))
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, FulfillmentOutcome::Retry { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        self::order(&kit.services, free.id).await.status,
+        OrderStatus::Paid
+    );
+    kit.services
+        .clients()
+        .block(client_id, Some("проверка"), ADMIN)
+        .await
+        .unwrap();
+    let held = fulfillment.run(free.id).await.unwrap();
+    assert!(
+        matches!(&held, FulfillmentOutcome::Review { reason }
+            if reason.starts_with(BLOCKED_HOLD) && reason.contains("выдастся сам")),
+        "{held:?}"
+    );
+    assert!(
+        review_reason(&kit, free.id)
+            .await
+            .is_some_and(|reason| reason.starts_with(BLOCKED_HOLD))
+    );
+    jobs(&kit.services).await;
+    kit.services
+        .clients()
+        .unblock(client_id, ADMIN)
+        .await
+        .unwrap();
+    assert_eq!(order_audit(&kit, free.id, "order.redeliver").await.len(), 1);
+    let done = fulfillment.run(free.id).await.unwrap();
+    assert!(matches!(done, FulfillmentOutcome::Done { .. }), "{done:?}");
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn отметить_выданным_подтягивает_срок_и_тариф_из_панели_и_пишет_клиенту() {
     let Some(kit) = kit().await else { return };
     let client_id = client(&kit.services, 318).await;

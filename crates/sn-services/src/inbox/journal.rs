@@ -7,8 +7,10 @@ use sn_domain::format;
 use sn_domain::ids::{AdminId, ClientId, PaymentId};
 use sn_domain::money::{Amount, Currency};
 use sn_domain::paging::{Page, PageRequest};
-use sn_domain::payment::PaymentStatus;
-use sn_payments::{OutcomeSignal, PaymentRef, ProviderKind, ProviderStatus, WebhookOutcome};
+use sn_domain::payment::{NoticeKind, Payment, PaymentStatus};
+use sn_payments::{
+    OutcomeSignal, PaymentError, PaymentRef, ProviderKind, ProviderStatus, WebhookOutcome,
+};
 use sn_store::{
     ActorKind, AuditEntry, ClientPerson, Db, InboxAttention, InboxOutcome, JournalEntry,
     JournalFilter, JournalRow, TrailKind, TrailStep,
@@ -18,8 +20,53 @@ use uuid::Uuid;
 
 pub const RETRY_STALE_MINUTES: i64 = 10;
 pub const ATTENTION_HOURS: i64 = 24;
+pub const RETRY_REVERSED: &str = "webhook.retry_reversed";
+pub const RETRY_UNCONFIRMED: &str = "webhook.retry_unconfirmed";
 const WEBHOOK_RETRIED_AUDIT: &str = "payment.webhook_retried";
+const WEBHOOK_RETRY_STARTED_AUDIT: &str = "payment.webhook_retry_started";
+const RETRY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const SEARCH_LIMIT: usize = 200;
+
+fn credits(outcome: &WebhookOutcome) -> bool {
+    matches!(
+        outcome.status,
+        ProviderStatus::Paid
+            | ProviderStatus::Overpaid { .. }
+            | ProviderStatus::Underpaid { .. }
+            | ProviderStatus::Held
+    )
+}
+
+fn reversed(refund: bool) -> ServiceError {
+    ServiceError::rejected(
+        RETRY_REVERSED,
+        if refund {
+            "Повторить нельзя: платёжка сообщила о возврате по этому платежу. Сверьте платёж в её \
+             кабинете. Если деньги всё же пришли, отметьте счёт оплаченным вручную."
+        } else {
+            "Повторить нельзя: после этого уведомления платёжка сообщила, что платёж отменён или не \
+             прошёл. Сверьте платёж в её кабинете. Если деньги всё же пришли, отметьте счёт \
+             оплаченным вручную."
+        },
+    )
+}
+
+fn unavailable(row: &JournalRow, now: DateTime<Utc>) -> ServiceError {
+    let state = retry_state(row, now);
+    let busy = row.outcome == InboxOutcome::Received;
+    ServiceError::rejected(
+        "webhook.retry_unavailable",
+        state.note.unwrap_or_else(|| {
+            if busy {
+                "Уведомление сейчас обрабатывается, подождите несколько секунд.".to_string()
+            } else {
+                "Повторная обработка нужна только уведомлениям, которые упали с ошибкой. \
+                 Это уведомление уже обработано."
+                    .to_string()
+            }
+        }),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -598,35 +645,182 @@ impl PaymentInbox<'_> {
         }
     }
 
+    async fn retry_entry(&self, id: i64) -> ServiceResult<JournalEntry> {
+        let mut conn = self.services.store().conn().await?;
+        conn.webhooks()
+            .journal_entry(id)
+            .await?
+            .ok_or(ServiceError::NotFound("уведомление"))
+    }
+
+    async fn retry_guard(&self, row: &JournalRow, outcome: &WebhookOutcome) -> ServiceResult<()> {
+        let mut conn = self.services.store().conn().await?;
+        let payment = match &outcome.payment {
+            Some(reference) => super::lookup(&mut conn, &row.source, reference).await?,
+            None => None,
+        };
+        if let Some(payment) = &payment {
+            let txid = outcome
+                .provider_txid
+                .as_deref()
+                .or(payment.provider_txid.as_deref());
+            if let Some(kind) = conn
+                .webhooks()
+                .reversal(row.id, &row.source, payment.id, txid)
+                .await?
+            {
+                return Err(reversed(matches!(
+                    kind.as_str(),
+                    "refunded" | "partially_refunded"
+                )));
+            }
+            if conn
+                .payment_notices()
+                .for_payment(payment.id)
+                .await?
+                .iter()
+                .any(|notice| {
+                    matches!(
+                        notice.kind,
+                        NoticeKind::RefundReported | NoticeKind::Chargeback
+                    )
+                })
+            {
+                return Err(reversed(true));
+            }
+        }
+        drop(conn);
+        self.recheck(&row.source, outcome, payment.as_ref()).await
+    }
+
+    async fn recheck(
+        &self,
+        source: &str,
+        outcome: &WebhookOutcome,
+        payment: Option<&Payment>,
+    ) -> ServiceResult<()> {
+        let Some(provider) = self
+            .services
+            .payments()
+            .get(source)
+            .filter(|p| p.kind() == ProviderKind::External)
+        else {
+            return Ok(());
+        };
+        let external = outcome
+            .provider_txid
+            .clone()
+            .or_else(|| payment.and_then(|p| p.provider_txid.clone()))
+            .filter(|txid| !txid.trim().is_empty())
+            .or_else(|| {
+                payment
+                    .filter(|_| provider.polls_by_payment_id())
+                    .map(|p| p.public_id.to_string())
+            });
+        let Some(external) = external else {
+            return Ok(());
+        };
+        let config = self.services.payments().config(provider.id());
+        let fresh = match tokio::time::timeout(
+            RETRY_CHECK_TIMEOUT,
+            provider.fetch_status(&config, &external),
+        )
+        .await
+        {
+            Ok(Ok(Some(fresh))) => fresh,
+            Ok(Ok(None))
+            | Ok(Err(PaymentError::NotImplemented(_)))
+            | Ok(Err(PaymentError::Unsupported(_)))
+            | Ok(Err(PaymentError::NotConfigured(_))) => return Ok(()),
+            Ok(Err(err)) => {
+                return Err(ServiceError::rejected(
+                    RETRY_UNCONFIRMED,
+                    format!(
+                        "Не удалось спросить у {} статус платежа: {err}. Попробуйте позже.",
+                        provider.title()
+                    ),
+                ));
+            }
+            Err(_) => {
+                return Err(ServiceError::rejected(
+                    RETRY_UNCONFIRMED,
+                    format!(
+                        "{} не ответила на запрос статуса платежа. Попробуйте позже.",
+                        provider.title()
+                    ),
+                ));
+            }
+        };
+        match fresh.status {
+            ProviderStatus::Paid
+            | ProviderStatus::Overpaid { .. }
+            | ProviderStatus::Held
+            | ProviderStatus::RefundDeclined => Ok(()),
+            ProviderStatus::Underpaid { .. }
+                if matches!(outcome.status, ProviderStatus::Underpaid { .. }) =>
+            {
+                Ok(())
+            }
+            ProviderStatus::Refunded | ProviderStatus::PartiallyRefunded { .. } => {
+                Err(reversed(true))
+            }
+            ProviderStatus::Canceled | ProviderStatus::Failed => Err(reversed(false)),
+            ProviderStatus::Pending | ProviderStatus::Underpaid { .. } => {
+                Err(ServiceError::rejected(
+                    RETRY_UNCONFIRMED,
+                    format!(
+                        "Повторить пока нельзя: {} сейчас не подтверждает эту оплату. \
+                         Сверьте платёж в её кабинете.",
+                        provider.title()
+                    ),
+                ))
+            }
+        }
+    }
+
     pub async fn retry_webhook(&self, id: i64, admin: AdminId) -> ServiceResult<JournalCard> {
         let now = self.services.now();
+        let entry = self.retry_entry(id).await?;
+        if !retry_state(&entry.row, now).available {
+            return Err(unavailable(&entry.row, now));
+        }
+        if let Some(outcome) = entry
+            .row
+            .parsed
+            .clone()
+            .and_then(|parsed| serde_json::from_value::<WebhookOutcome>(parsed).ok())
+            .filter(credits)
+        {
+            self.retry_guard(&entry.row, &outcome).await?;
+        }
         let claim = {
-            let mut conn = self.services.store().conn().await?;
-            conn.webhooks()
+            let mut tx = self.services.store().begin().await?;
+            let claim = tx
+                .webhooks()
                 .claim_retry(id, admin, now - Duration::minutes(RETRY_STALE_MINUTES))
-                .await?
+                .await?;
+            if let Some(claim) = &claim {
+                tx.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::Admin,
+                        actor_id: Some(admin.0),
+                        action: WEBHOOK_RETRY_STARTED_AUDIT.into(),
+                        entity_kind: Some("webhook".into()),
+                        entity_id: Some(id),
+                        details: serde_json::json!({
+                            "provider": claim.source,
+                            "payment_id": entry.row.payment_id,
+                        }),
+                        ip: None,
+                    })
+                    .await?;
+            }
+            tx.commit().await?;
+            claim
         };
         let Some(claim) = claim else {
-            let mut conn = self.services.store().conn().await?;
-            let entry = conn
-                .webhooks()
-                .journal_entry(id)
-                .await?
-                .ok_or(ServiceError::NotFound("уведомление"))?;
-            let state = retry_state(&entry.row, now);
-            let busy = entry.row.outcome == InboxOutcome::Received;
-            return Err(ServiceError::rejected(
-                "webhook.retry_unavailable",
-                state.note.unwrap_or_else(|| {
-                    if busy {
-                        "Уведомление сейчас обрабатывается, подождите несколько секунд.".to_string()
-                    } else {
-                        "Повторная обработка нужна только уведомлениям, которые упали с ошибкой. \
-                         Это уведомление уже обработано."
-                            .to_string()
-                    }
-                }),
-            ));
+            let entry = self.retry_entry(id).await?;
+            return Err(unavailable(&entry.row, now));
         };
         let settled = match serde_json::from_value::<WebhookOutcome>(claim.parsed) {
             Ok(mut outcome) => {

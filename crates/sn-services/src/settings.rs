@@ -42,6 +42,7 @@ pub const MAX_LARGE_FIELD: usize = 20_000;
 pub const MAX_REMARK_CHARS: usize = 200;
 pub const PROVIDER_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 pub const CHECK_UNCONFIGURED: &str = "settings.provider_check_unconfigured";
+pub const SECRETS_AGAIN: &str = "settings.secrets_again";
 pub const INBOX_TRACE_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -378,6 +379,99 @@ impl GuardSecret {
 struct GuardChange {
     cookie: GuardSecret,
     api_key: GuardSecret,
+}
+
+const TOKEN_NAME: &str = "API-токен";
+const COOKIE_NAME: &str = "куку";
+
+const fn key_name(mode: PanelGuard) -> &'static str {
+    match mode {
+        PanelGuard::Tinyauth => "логин и пароль TinyAuth",
+        _ => "ключ портала",
+    }
+}
+
+impl GuardChange {
+    fn kept(&self, current: &StoredGuard) -> Vec<&'static str> {
+        let mut kept = Vec::new();
+        if matches!(self.cookie, GuardSecret::Keep) && current.cookie.is_some() {
+            kept.push(COOKIE_NAME);
+        }
+        if matches!(self.api_key, GuardSecret::Keep) && current.api_key.is_some() {
+            kept.push(key_name(current.mode));
+        }
+        kept
+    }
+}
+
+fn joined<T: AsRef<str>>(names: &[T]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.as_ref().to_string(),
+        [rest @ .., last] => {
+            let rest: Vec<&str> = rest.iter().map(AsRef::as_ref).collect();
+            format!("{} и {}", rest.join(", "), last.as_ref())
+        }
+    }
+}
+
+fn panel_moved(before: &str, after: &str) -> bool {
+    let after = after.trim().trim_end_matches('/');
+    !after.is_empty() && before.trim().trim_end_matches('/') != after
+}
+
+fn panel_secrets_again(kept: &[&str]) -> String {
+    format!(
+        "При смене адреса панели вставьте заново {}: панель не отправляет сохранённые ключи на новый адрес",
+        joined(kept)
+    )
+}
+
+fn address<'a>(field: &'a SettingField, config: &'a Map<String, Value>) -> &'a str {
+    config
+        .get(field.key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or(field.default)
+        .unwrap_or_default()
+        .trim_end_matches('/')
+}
+
+pub fn secrets_again(
+    schema: &[SettingField],
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+    saved: &[&str],
+    changes: &[SecretChange],
+) -> ServiceResult<()> {
+    let Some(moved) = schema
+        .iter()
+        .find(|f| f.kind == FieldKind::Url && address(f, before) != address(f, after))
+    else {
+        return Ok(());
+    };
+    let stale: Vec<String> = schema
+        .iter()
+        .filter(|f| f.is_secret() && saved.contains(&f.key))
+        .filter(|f| {
+            !changes.iter().any(|change| {
+                matches!(change, SecretChange::Set(key, _) | SecretChange::Delete(key) if key.as_str() == f.key)
+            })
+        })
+        .map(|f| format!("«{}»", f.label))
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    Err(ServiceError::rejected(
+        SECRETS_AGAIN,
+        format!(
+            "При смене поля «{}» вставьте заново {}: панель не отправляет сохранённые ключи на новый адрес",
+            moved.label,
+            joined(&stale)
+        ),
+    ))
 }
 
 fn guard_change(update: &GuardUpdate, current: &StoredGuard) -> ServiceResult<GuardChange> {
@@ -1769,6 +1863,7 @@ impl<'a> SettingsOps<'a> {
         let schema = provider.settings_schema();
         let mut tx = self.services.store().begin().await?;
         let mut stored = self.stored_provider(&mut tx, id).await?;
+        let before = stored.config.clone();
         let changes = apply_fields(&schema, &update.config, &update.clear, &mut stored.config)?;
         if let Some(enabled) = update.enabled {
             stored.enabled = Some(enabled);
@@ -1788,13 +1883,16 @@ impl<'a> SettingsOps<'a> {
         }
         let secrets = self.services.secrets();
         let mut merged = stored.config.clone();
+        let mut saved = Vec::new();
         for field in schema.iter().filter(|f| f.is_secret()) {
             if let Some(value) =
                 read_secret(&mut tx, secrets, &secret_keys::provider(id, field.key)).await?
             {
+                saved.push(field.key);
                 merged.insert(field.key.to_string(), Value::String(value));
             }
         }
+        secrets_again(&schema, &before, &stored.config, &saved, &changes)?;
         for change in &changes {
             match change {
                 SecretChange::Set(key, value) => {
@@ -2077,12 +2175,61 @@ impl<'a> SettingsOps<'a> {
         admin: AdminId,
     ) -> ServiceResult<RemnaSettingsView> {
         let secrets = self.services.secrets();
+        let env = self.services.env().remna.clone().unwrap_or_default();
         let mut tx = self.services.store().begin().await?;
+        let before = remna_connection(&mut tx, secrets, self.services.env()).await?;
+        let current = stored_guard(&mut tx, secrets, &env).await?;
+        let new_url = match &update.url {
+            Some(url) => Some(match optional_text(Some(url)) {
+                Some(url) => Some(remna_url(&url)?),
+                None => None,
+            }),
+            None => None,
+        };
+        let token = optional_text(update.token.as_deref());
+        let guard = match (&update.guard, optional_text(update.cookie.as_deref())) {
+            (Some(guard), _) => Some(guard.clone()),
+            (None, Some(cookie)) => Some(GuardUpdate::Cookie {
+                cookie: Some(cookie),
+            }),
+            (None, None) => None,
+        };
+        let change = guard
+            .as_ref()
+            .map(|guard| guard_change(guard, &current))
+            .transpose()?;
+        let after_url = match &new_url {
+            Some(Some(url)) => url.clone(),
+            Some(None) => env.url.clone(),
+            None => before.url.clone(),
+        };
+        if panel_moved(&before.url, &after_url) {
+            let mut kept = Vec::new();
+            if token.is_none() && !before.token.trim().is_empty() {
+                kept.push(TOKEN_NAME);
+            }
+            match &change {
+                Some(change) => kept.extend(change.kept(&current)),
+                None => {
+                    if !update.clear_cookie && current.cookie.is_some() {
+                        kept.push(COOKIE_NAME);
+                    }
+                    if current.api_key.is_some() {
+                        kept.push(key_name(current.mode));
+                    }
+                }
+            }
+            if !kept.is_empty() {
+                return Err(ServiceError::rejected(
+                    SECRETS_AGAIN,
+                    panel_secrets_again(&kept),
+                ));
+            }
+        }
         let mut changed = Vec::new();
-        if let Some(url) = &update.url {
-            match optional_text(Some(url)) {
+        if let Some(url) = new_url {
+            match url {
                 Some(url) => {
-                    let url = remna_url(&url)?;
                     tx.settings()
                         .set_as(keys::REMNA_URL, &url, Some(admin))
                         .await?;
@@ -2093,7 +2240,7 @@ impl<'a> SettingsOps<'a> {
             }
             changed.push("url");
         }
-        if let Some(token) = optional_text(update.token.as_deref()) {
+        if let Some(token) = token {
             if token.contains(char::is_whitespace) {
                 return Err(field_error("token", "токен без пробелов"));
             }
@@ -2107,17 +2254,7 @@ impl<'a> SettingsOps<'a> {
             .await?;
             changed.push("token");
         }
-        let guard = match (&update.guard, optional_text(update.cookie.as_deref())) {
-            (Some(guard), _) => Some(guard.clone()),
-            (None, Some(cookie)) => Some(GuardUpdate::Cookie {
-                cookie: Some(cookie),
-            }),
-            (None, None) => None,
-        };
-        if let Some(guard) = guard {
-            let env = self.services.env().remna.clone().unwrap_or_default();
-            let current = stored_guard(&mut tx, secrets, &env).await?;
-            let change = guard_change(&guard, &current)?;
+        if let (Some(guard), Some(change)) = (guard, change) {
             write_change(
                 &mut tx,
                 secrets,
@@ -2211,19 +2348,36 @@ impl<'a> SettingsOps<'a> {
             || request.token.is_some()
             || request.cookie.is_some()
             || request.guard.is_some();
+        let saved_url = target.url.clone();
+        let mut kept = Vec::new();
         if let Some(url) = optional_text(request.url.as_deref()) {
             target.url = remna_url(&url)?;
         }
-        if let Some(token) = optional_text(request.token.as_deref()) {
-            target.token = token;
+        match optional_text(request.token.as_deref()) {
+            Some(token) => target.token = token,
+            None if !target.token.trim().is_empty() => kept.push(TOKEN_NAME),
+            None => {}
         }
-        if let Some(cookie) = optional_text(request.cookie.as_deref()) {
-            target.cookie = Some(cookie);
+        match &request.guard {
+            Some(guard) => {
+                let change = guard_change(guard, &current)?;
+                kept.extend(change.kept(&current));
+                target.cookie = change.cookie.apply(current.cookie.clone());
+                target.api_key = change.api_key.apply(current.api_key.clone());
+            }
+            None => {
+                match optional_text(request.cookie.as_deref()) {
+                    Some(cookie) => target.cookie = Some(cookie),
+                    None if target.cookie.is_some() => kept.push(COOKIE_NAME),
+                    None => {}
+                }
+                if target.api_key.is_some() {
+                    kept.push(key_name(current.mode));
+                }
+            }
         }
-        if let Some(guard) = &request.guard {
-            let change = guard_change(guard, &current)?;
-            target.cookie = change.cookie.apply(current.cookie.clone());
-            target.api_key = change.api_key.apply(current.api_key.clone());
+        if panel_moved(&saved_url, &target.url) && !kept.is_empty() {
+            return Ok(self.failed_check(panel_secrets_again(&kept), None));
         }
         let api: Arc<dyn RemnawaveApi> = if custom {
             match RemnawaveClient::new(target.client_config()) {
