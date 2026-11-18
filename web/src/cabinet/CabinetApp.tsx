@@ -349,7 +349,7 @@ function ThemeButton({ className }: { className: string }) {
 function Brand({ small }: { small?: boolean }) {
   const { site } = useCabinet();
   return (
-    <Link to="/" className={small ? 'cb-brand small' : 'cb-brand'} aria-label={t('{brand}, на главную', { brand: site.brand_name })}>
+    <Link to="/cabinet" className={small ? 'cb-brand small' : 'cb-brand'} aria-label={t('{brand}, на главную', { brand: site.brand_name })}>
       <BrandMark name={site.brand_name} logo={site.logo_url} className="cb-mark" />
       <span className="cb-brand-name">{site.brand_name.toUpperCase()}</span>
     </Link>

@@ -35,10 +35,10 @@ export function DevicesCard({
 
   if (!view) {
     return (
-      <Card id="devices" className="cb-devices" label={t('Устройства')}>
+      <Card id="devices" label={t('Устройства')}>
         <h2 className="cb-h2">{t('Устройства')}</h2>
         <p className="cb-ink2">{t('Подключить телефон или компьютер можно сразу после покупки подписки.')}</p>
-        <div className="cb-btns">
+        <div className={phone ? 'cb-btns col' : 'cb-btns'}>
           <Link to="/cabinet/pay" className="cb-second">
             {t('Выбрать тариф')}
           </Link>
