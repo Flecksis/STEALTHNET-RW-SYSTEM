@@ -51,7 +51,8 @@ export function OauthSetup() {
       </h2>
       {https ? null : (
         <p className="md-oauth-warn">
-          Нужен адрес сайта с https: Google и Apple возвращают клиента только на него. Укажите адрес в{' '}
+          Нужен адрес сайта с https: Google и Apple возвращают клиента только на него. Адрес задаётся на сервере командой{' '}
+          <code className="mono">stealthnet domain</code>, текущий виден в{' '}
           <Link className="link" to="/admin/settings/general">
             «Общих»
           </Link>

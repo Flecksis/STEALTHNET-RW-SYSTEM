@@ -123,7 +123,7 @@ export function SettingsClientAccess() {
           {access.miniapp && !httpsReady ? (
             <div className="row">
               <span className="cap">
-                Укажите адрес сайта в{' '}
+                Адрес сайта задаётся на сервере командой <code className="mono">stealthnet domain</code>, текущий виден в{' '}
                 <Link className="link" to="/admin/settings/general">
                   «Общих»
                 </Link>

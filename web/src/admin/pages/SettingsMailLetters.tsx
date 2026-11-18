@@ -493,7 +493,11 @@ export function SettingsMailLetters() {
         <span className="cap">{previewError ? null : 'Собираем письмо…'}</span>
       )}
       {previewError ? <span className="err">{previewError}</span> : null}
-      {view.site ? null : <span className="cap">В «Общих» не указан адрес сайта, поэтому в письмах нет кнопок и логотипа.</span>}
+      {view.site ? null : (
+        <span className="cap">
+          У панели нет адреса сайта, поэтому в письмах нет кнопок и логотипа. Адрес задаётся на сервере командой <code className="mono">stealthnet domain</code>.
+        </span>
+      )}
       <form className="ml-test" onSubmit={(event) => void sendTest(event)}>
         <label className="ml-label" htmlFor="ml-test-to">
           Проверка

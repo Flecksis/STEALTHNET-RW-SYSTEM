@@ -268,7 +268,7 @@ export function SettingsRemna() {
   const guardChanged = work.guard !== data.remna.guard || (!guardKeep && guardTouched(work));
   const guardBad = guardChanged && !guardKeep && !guardFilled(work);
   const linkChanged = work.addr.trim() !== base.addr.trim() || (work.token !== null && work.token.trim() !== '') || guardChanged;
-  const connectChanged = work.mode !== base.mode || (work.mode === 'remnawave' && work.look !== base.look);
+  const connectChanged = work.mode !== base.mode;
   const appsChanged = !!data.apps && !sameApps(work.apps, base.apps);
   const appsIssue = appsChanged ? appsProblem(work.apps) : null;
   const dirty = remChanged || devChanged || linkChanged || connectChanged || appsChanged;
@@ -383,7 +383,7 @@ export function SettingsRemna() {
       if (connectChanged) {
         await api('/api/admin/settings/connect', {
           method: 'PUT',
-          body: { mode: work.mode, page_config: work.mode === 'remnawave' ? work.look || null : data.connect.page_config },
+          body: { mode: work.mode, page_config: data.connect.page_config },
         });
       }
       await load();
@@ -894,7 +894,7 @@ export function SettingsRemna() {
           <span id="cp-d" className="muted" style={{ textWrap: 'pretty' }}>
             {work.mode === 'ours'
               ? 'Кабинет и мини-приложение показывают пошаговую инструкцию: приложение для устройства клиента и кнопку добавления подписки'
-              : 'Кабинет и мини-приложение показывают кнопку «Открыть страницу подключения», она ведёт на страницу подписки Remnawave'}
+              : 'Кабинет и мини-приложение показывают кнопку «Открыть страницу подключения», она ведёт на страницу подписки Remnawave. Её оформление выбирается в самой Remnawave'}
           </span>
         </div>
         {work.mode === 'ours' ? (
@@ -905,28 +905,6 @@ export function SettingsRemna() {
               Список приложений не загрузился. Обновите страницу
             </p>
           )
-        ) : null}
-        {work.mode === 'remnawave' ? (
-          <div className="row">
-            <label htmlFor="cp-look" className="rl">
-              Оформление страницы
-            </label>
-            <div className="rc">
-              {data.configs.length > 0 ? (
-                <select id="cp-look" className="field" value={work.look} onChange={(e) => edit({ look: e.target.value })} style={{ maxWidth: 280 }}>
-                  {data.configs.map((config) => (
-                    <option key={config.uuid} value={config.uuid}>
-                      {config.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <span className="cap" style={{ paddingTop: 10 }}>
-                  {linkOk ? 'В Remnawave нет оформлений страницы подписки' : 'Список оформлений появится, когда будет связь с панелью'}
-                </span>
-              )}
-            </div>
-          </div>
         ) : null}
       </section>
 
