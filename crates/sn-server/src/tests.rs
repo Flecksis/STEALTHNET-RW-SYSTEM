@@ -1787,6 +1787,33 @@ async fn интерфейс_раздаётся_сервером_с_возвра�
 }
 
 #[tokio::test]
+async fn служебный_скрипт_старой_панели_снимается_вместо_index() {
+    let (state, dir) = web_state().await;
+    for path in ["/sw.js", "/service-worker.js"] {
+        let (status, headers, body) = fetch(&state, Method::GET, path).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/javascript")
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert!(body.contains("skipWaiting"));
+        assert!(body.contains("caches.delete"));
+        assert!(body.contains("registration.unregister()"));
+        assert!(!body.contains("STEALTHNET"));
+    }
+    std::fs::write(dir.join("sw.js"), "own()").unwrap();
+    let (status, _, body) = fetch(&state, Method::GET, "/sw.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "own()");
+    let (_, _, body) = fetch(&state, Method::GET, "/other.js").await;
+    assert!(body.contains("STEALTHNET"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn выключенный_лендинг_ведёт_с_главной_в_кабинет() {
     let (state, dir) = web_state().await;
     let landing = |enabled: bool| sn_store::ModuleStateRow {

@@ -13,6 +13,7 @@ use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+const RETIRED_WORKER: &str = include_str!("retired_worker.js");
 const PREVIEW_BOTS: [&str; 9] = [
     "TelegramBot",
     "Twitterbot",
@@ -71,6 +72,25 @@ fn frame_option(path: &str) -> Option<&'static str> {
     } else {
         Some("DENY")
     }
+}
+
+fn retired_worker(dir: &Path, path: &str) -> bool {
+    matches!(path, "/sw.js" | "/service-worker.js")
+        && !dir.join(path.trim_start_matches('/')).is_file()
+}
+
+fn retired_worker_script() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/javascript; charset=utf-8"),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        RETIRED_WORKER,
+    )
+        .into_response()
 }
 
 fn hashed_asset(path: &str) -> bool {
@@ -261,6 +281,9 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
     };
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if retired_worker(&dir, &path) {
+        return retired_worker_script();
     }
     if renders_page(&path) {
         if Page::of(&path) == Page::Landing
