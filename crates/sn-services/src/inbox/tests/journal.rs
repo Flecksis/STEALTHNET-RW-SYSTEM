@@ -745,3 +745,53 @@ fn точная_сумма_не_округляет_копейки() {
     assert_eq!(exact(Amount::new(50_000, PayCurrency::Rub)), "500\u{a0}₽");
     assert_eq!(exact(usd(1_999)), "$19.99");
 }
+
+#[tokio::test]
+async fn поиск_не_заглядывает_в_тела_сохранённые_до_маскирования() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let row = |key: &'static str, body: &'static [u8]| NewInboundWebhook {
+        source: KASSA.into(),
+        dedupe_key: key.into(),
+        remote_ip: Some("203.0.113.9".into()),
+        headers: serde_json::json!({}),
+        body: Some(body.to_vec()),
+        parsed: None,
+        event: None,
+    };
+    let legacy = conn
+        .webhooks()
+        .record(&row(
+            "legacy-1",
+            b"TransactionId=777&Token=tk_secret_123456&Email=ivan.petrov@example.com",
+        ))
+        .await
+        .unwrap()
+        .id;
+    sqlx::query(
+        "UPDATE webhook_inbox SET received_at = (SELECT installed_on FROM _sqlx_migrations WHERE version = 290) \
+         - interval '1 day' WHERE id = $1",
+    )
+    .bind(legacy)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    let fresh = conn
+        .webhooks()
+        .record(&row("fresh-1", b"{\"comment\":\"order-for-summer\"}"))
+        .await
+        .unwrap()
+        .id;
+    drop(conn);
+    let query = |q: &str| JournalQuery {
+        q: Some(q.into()),
+        ..JournalQuery::default()
+    };
+    assert!(search(&kit, query("tk_secret_1")).await.is_empty());
+    assert!(search(&kit, query("ivan.petrov")).await.is_empty());
+    assert_eq!(search(&kit, query("order-for-summer")).await, vec![fresh]);
+    assert!(all_ids(&kit).await.contains(&legacy));
+    kit.db.cleanup().await;
+}

@@ -15,6 +15,7 @@ const COLUMNS: &str = "w.id, w.source, w.outcome, w.payment_id, p.client_id, w.e
      p.public_id AS payment_public_id, p.amount_minor, p.currency, p.status AS payment_status, \
      o.public_id AS order_public_id";
 const BODY_SEARCH_MIN: usize = 6;
+const MASKED_SINCE: &str = "COALESCE((SELECT m.installed_on FROM _sqlx_migrations m WHERE m.version = 290 AND m.success), '-infinity'::timestamptz)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -449,7 +450,8 @@ impl<'c> WebhooksRepo<'c> {
              AND ($6::text IS NULL OR w.payment_id = $7 OR p.public_id = $8 OR o.public_id = $8 \
              OR p.provider_txid = $6 OR w.parsed->>'provider_txid' = $6 OR w.parsed->>'event_key' = $6 \
              OR w.parsed->'payment'->>'value' = $6 \
-             OR ($10::text IS NOT NULL AND position(convert_to($10, 'UTF8') in w.body) > 0)) \
+             OR ($10::text IS NOT NULL AND w.received_at >= {MASKED_SINCE} \
+             AND position(convert_to($10, 'UTF8') in w.body) > 0)) \
              ORDER BY w.id DESC LIMIT $9"
         ))
         .bind(filter.source.as_deref())
