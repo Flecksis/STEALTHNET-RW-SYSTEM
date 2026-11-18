@@ -1395,3 +1395,300 @@ async fn архив_с_паролем_открывается_только_с_в�
     assert_eq!(read_file(&inner, None).unwrap().0.clients.len(), 3);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn quirks_dump() -> Vec<u8> {
+    let mut sql = String::from("-- Created at: 2026-11-17T09:00:00.000Z\n\n");
+    sql += &copy(
+        "system_settings",
+        &["id", "key", "value"],
+        &[&[Some("ss1"), Some("default_currency"), Some("rub")]],
+    );
+    sql += &copy(
+        "tariff_categories",
+        &["id", "name", "sort_order"],
+        &[&[Some("cat1"), Some("Все"), Some("0")]],
+    );
+    sql += &copy(
+        "tariffs",
+        &[
+            "id",
+            "category_id",
+            "name",
+            "duration_days",
+            "price",
+            "currency",
+        ],
+        &[&[
+            Some("t1"),
+            Some("cat1"),
+            Some("Месяц"),
+            Some("30"),
+            Some("300"),
+            Some("rub"),
+        ]],
+    );
+    sql += &copy(
+        "tariff_price_options",
+        &["id", "tariff_id", "duration_days", "price", "sort_order"],
+        &[&[Some("o1"), Some("t1"), Some("30"), Some("300"), Some("0")]],
+    );
+    sql += &copy(
+        "clients",
+        &[
+            "id",
+            "email",
+            "role",
+            "balance",
+            "telegram_id",
+            "telegram_username",
+            "referrer_id",
+        ],
+        &[
+            &[
+                Some("k1"),
+                None,
+                Some("CLIENT"),
+                Some("120"),
+                Some("2001"),
+                Some("Lena"),
+                Some("k3"),
+            ],
+            &[
+                Some("k2"),
+                None,
+                Some("CLIENT"),
+                Some("50000"),
+                Some("2002"),
+                None,
+                None,
+            ],
+            &[
+                Some("k3"),
+                None,
+                Some("CLIENT"),
+                Some("0"),
+                Some("2003"),
+                Some("Oleg"),
+                Some("k1"),
+            ],
+            &[
+                Some("k4"),
+                Some("Mila@Example.com"),
+                Some("CLIENT"),
+                Some("0"),
+                None,
+                None,
+                Some("gone"),
+            ],
+            &[
+                Some("k5"),
+                Some("mila@example.com"),
+                Some("CLIENT"),
+                Some("0"),
+                None,
+                None,
+                None,
+            ],
+            &[
+                Some("k6"),
+                Some("not-an-email"),
+                Some("CLIENT"),
+                Some("0"),
+                Some("2006"),
+                None,
+                None,
+            ],
+        ],
+    );
+    let u = |n: u32| format!("6f1c2f3e-0000-4000-8000-00000000000{n}");
+    let (u1, u2, u3, u4, u5, u6, u7) = (u(1), u(2), u(3), u(4), u(5), u(6), u(7));
+    let sub = |id: &'static str,
+               owner: &'static str,
+               uuid: &str,
+               index: &'static str,
+               expire: &'static str,
+               hidden: Option<&'static str>| {
+        [
+            Some(id.to_string()),
+            Some(owner.to_string()),
+            Some(uuid.to_string()),
+            Some(index.to_string()),
+            Some("t1".to_string()),
+            Some(expire.to_string()),
+            hidden.map(str::to_string),
+        ]
+    };
+    let rows = [
+        sub("a0", "k1", &u1, "0", "2026-12-30 00:00:00", None),
+        sub("a1", "k1", &u2, "1", "2026-12-30 00:00:00", None),
+        sub("a2", "k1", &u3, "2", "2026-12-30 00:00:00", None),
+        sub("b0", "k2", &u4, "0", "2026-12-25 00:00:00", None),
+        sub("c0", "k3", &u4, "0", "2026-12-25 00:00:00", None),
+        sub(
+            "h0",
+            "k3",
+            &u5,
+            "1",
+            "2026-01-01 00:00:00",
+            Some("2026-02-01 00:00:00"),
+        ),
+        sub("m0", "k4", &u6, "0", "2026-12-28 00:00:00", None),
+        sub("n0", "k5", &u7, "0", "2026-12-28 00:00:00", None),
+    ];
+    let cells: Vec<Vec<Option<&str>>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| c.as_deref()).collect())
+        .collect();
+    let refs: Vec<&[Option<&str>]> = cells.iter().map(Vec::as_slice).collect();
+    sql += &copy(
+        "subscriptions",
+        &[
+            "id",
+            "owner_id",
+            "remnawave_uuid",
+            "subscription_index",
+            "tariff_id",
+            "expire_at",
+            "hidden_at",
+        ],
+        &refs,
+    );
+    sql.into_bytes()
+}
+
+async fn remna_user_of(services: &Services, old_id: &str) -> i64 {
+    scalar(
+        services,
+        &format!(
+            "SELECT s.remna_user_id FROM legacy_ids l JOIN subscriptions s ON s.id = l.new_id \
+             WHERE l.entity = 'stealthnet:subscription' AND l.old_id = '{old_id}'"
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn особые_случаи_старой_панели_переносятся_и_объясняются() {
+    let Some(env) = env().await else { return };
+    let expire = |day: u32| Utc.with_ymd_and_hms(2026, 12, day, 0, 0, 0).unwrap();
+    let add = |id: i64, name: &str, tg: Option<i64>, email: Option<&str>, day: u32| {
+        let mut u = user(id, &format!("short{id}"), name, tg, email);
+        u.expire_at = expire(day);
+        env.remna.insert_user(u);
+    };
+    add(11, "Lena_2", Some(2001), None, 30);
+    add(12, "Lena", Some(2001), None, 30);
+    add(13, "Lena_1", Some(2001), None, 30);
+    add(14, "Oleg", Some(2003), None, 25);
+    add(15, "x15", None, Some("mila@example.com"), 28);
+    add(16, "x16", None, Some("Mila@Example.com"), 28);
+    let admin = owner(&env.services).await;
+    let (preview, outcome) = import(&env, &quirks_dump(), Some(admin)).await;
+
+    assert_eq!(preview.counts.subscriptions, 7);
+    assert_eq!(preview.remna.found, 6);
+    assert_eq!(preview.remna.shared, 1);
+    assert_eq!(preview.remna.missing + preview.remna.ambiguous, 0);
+    assert_eq!(preview.balances.large_clients, 1);
+    assert_eq!(preview.balances.large_total_minor, 5_000_000);
+    assert_eq!(preview.balances.large_from_minor, Some(300_000));
+    assert!(preview.balances.large_by_tariff);
+    let skip = |code: &str| {
+        preview
+            .skipped
+            .iter()
+            .find(|s| s.code == code)
+            .map(|s| s.count)
+    };
+    assert_eq!(skip("subscription_hidden"), Some(1));
+    assert_eq!(skip("subscription_shared"), Some(1));
+
+    let s = &env.services;
+    assert_eq!(remna_user_of(s, "a0").await, 12);
+    assert_eq!(remna_user_of(s, "a1").await, 13);
+    assert_eq!(remna_user_of(s, "a2").await, 11);
+    assert_eq!(remna_user_of(s, "c0").await, 14);
+    assert_eq!(remna_user_of(s, "m0").await, 16);
+    assert_eq!(remna_user_of(s, "n0").await, 15);
+    assert_eq!(outcome.counts.subscriptions, 6);
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM legacy_ids WHERE entity = 'stealthnet:subscription' AND old_id IN ('b0', 'h0')").await,
+        0
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT COALESCE(sum(amount_minor), 0)::bigint FROM client_balances"
+        )
+        .await,
+        5_012_000
+    );
+
+    let run = scalar(s, "SELECT max(id) FROM import_runs").await;
+    let mut conn = s.store().conn().await.unwrap();
+    let issues = runs::issues(&mut conn, run).await.unwrap();
+    assert_eq!(issues[0].code, "balance_large", "деньги — первыми в отчёте");
+    let shared = issues
+        .iter()
+        .find(|i| i.code == "subscription_shared")
+        .expect("общая подписка в отчёте");
+    assert_eq!(shared.old_id.as_deref(), Some("b0"));
+    assert!(shared.details.contains("Oleg"), "{}", shared.details);
+    let large = issues
+        .iter()
+        .find(|i| i.code == "balance_large")
+        .expect("крупный баланс в отчёте");
+    assert_eq!(large.old_id.as_deref(), Some("k2"));
+    assert_eq!(
+        issues
+            .iter()
+            .filter(|i| i.code.starts_with("subscription_"))
+            .count(),
+        1,
+        "{issues:?}"
+    );
+    let bad_email = issues
+        .iter()
+        .find(|i| i.code == "email_invalid")
+        .expect("ошибка в почте в отчёте");
+    assert_eq!(bad_email.old_id.as_deref(), Some("k6"));
+    let skipped: Vec<&str> = issues
+        .iter()
+        .filter(|i| i.code == "referral_skipped")
+        .filter_map(|i| i.old_id.as_deref())
+        .collect();
+    assert_eq!(skipped, ["k3", "k4"], "{issues:?}");
+    assert_eq!(outcome.counts.referrals, 1);
+    let calls = env.remna.calls();
+    assert!(
+        calls
+            .iter()
+            .all(|c| matches!(c.as_str(), "stream_users" | "internal_squads")),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn пустая_или_чужая_remnawave_даёт_понятное_предупреждение() {
+    let Some(env) = env().await else { return };
+    let dump = archive::open_bytes(&stealthnet_dump(false), &wanted).unwrap();
+    let legacy = map_dump(&dump).unwrap();
+    let check = || async {
+        let remna = check::fetch_remna(&env.services).await;
+        check::preview(&env.services, &legacy, remna)
+            .await
+            .unwrap()
+            .preview
+    };
+    let empty = check().await;
+    assert_eq!(empty.remna.users, 0);
+    let text = wrong_panel(&empty).expect("предупреждение о пустой панели");
+    assert!(text.contains("нет ни одного пользователя"), "{text}");
+    env.remna
+        .insert_user(user(900, "zzzz900", "stranger900", Some(424_242), None));
+    let foreign = check().await;
+    let text = wrong_panel(&foreign).expect("предупреждение о чужой панели");
+    assert!(text.contains("пользователей в ней: 1"), "{text}");
+    seed_stealthnet_remna(&env.remna);
+    assert_eq!(wrong_panel(&check().await), None);
+}

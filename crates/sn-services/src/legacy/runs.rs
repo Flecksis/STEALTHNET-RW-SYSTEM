@@ -68,6 +68,14 @@ pub struct Balances {
     pub clients: u64,
     pub total_minor: i64,
     pub currency: Currency,
+    #[serde(default)]
+    pub large_clients: u64,
+    #[serde(default)]
+    pub large_total_minor: i64,
+    #[serde(default)]
+    pub large_from_minor: Option<i64>,
+    #[serde(default)]
+    pub large_by_tariff: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +94,8 @@ pub struct RemnaPlan {
     pub found: u64,
     pub missing: u64,
     pub ambiguous: u64,
+    #[serde(default)]
+    pub shared: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,7 +477,7 @@ type IssueRaw = (
 pub async fn issues(db: &mut impl Db, id: i64) -> ServiceResult<Vec<IssueRow>> {
     let rows: Vec<IssueRaw> = sqlx::query_as(
         "SELECT stage, code, entity, old_id, who, details FROM import_issues WHERE run_id = $1 \
-         ORDER BY CASE stage WHEN 'apply' THEN 0 ELSE 1 END, id",
+         ORDER BY CASE WHEN code LIKE 'balance%' THEN 0 WHEN stage = 'apply' THEN 1 ELSE 2 END, id",
     )
     .bind(id)
     .fetch_all(db.conn())

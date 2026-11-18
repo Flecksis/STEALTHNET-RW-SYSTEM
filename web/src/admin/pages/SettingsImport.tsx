@@ -224,7 +224,7 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
   if (!p) {
     return null;
   }
-  const total = p.remna.found + p.remna.missing + p.remna.ambiguous;
+  const total = p.remna.found + p.remna.missing + p.remna.ambiguous + (p.remna.shared ?? 0);
   return (
     <div className="imp-check">
       {p.detected !== ctx.source && ctx.source ? (
@@ -262,7 +262,24 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
             ? `На балансах ${money({ minor: p.balances.total_minor, currency: p.balances.currency })} у ${count(p.balances.clients, 'клиента', 'клиентов', 'клиентов')}. Перенесутся одной записью на каждого клиента.`
             : 'Денег на балансах нет.'}
         </li>
-        {p.remna.connected ? (
+        {p.balances.large_clients && p.balances.large_from_minor ? (
+          <li className="imp-warn-line">
+            Проверьте до запуска: у {count(p.balances.large_clients, 'клиента', 'клиентов', 'клиентов')} баланс больше{' '}
+            {money({ minor: p.balances.large_from_minor, currency: p.balances.currency })} —{' '}
+            {p.balances.large_by_tariff ? 'в десять раз дороже самого дорогого тарифа' : 'в десять раз больше, чем у 99% клиентов'}, всего{' '}
+            {money({ minor: p.balances.large_total_minor ?? 0, currency: p.balances.currency })}. Если это ошибка, исправьте балансы в старой панели
+            и загрузите копию заново, иначе они перенесутся как есть. Список — в отчёте.
+          </li>
+        ) : null}
+        {p.remna.connected && p.remna.found === 0 && total > 0 ? (
+          <li className="imp-warn-line">
+            {p.remna.users === 0
+              ? 'В подключённой Remnawave нет ни одного пользователя'
+              : `Ни одна подписка не нашлась в подключённой Remnawave (пользователей в ней: ${groupDigits(p.remna.users)})`}{' '}
+            — похоже, это не та панель, что у старого бота. Проверьте <Link to="/admin/settings/remnawave">«Настройки → Remnawave»</Link>: если
+            перенести сейчас, клиенты перейдут без подписок.
+          </li>
+        ) : p.remna.connected ? (
           <li>
             Подписки привязываются к пользователям Remnawave, которые уже есть: нашлись {groupDigits(p.remna.found)} из {groupDigits(total)}. Ссылки у
             клиентов не меняются.

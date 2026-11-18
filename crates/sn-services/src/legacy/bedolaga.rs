@@ -117,6 +117,7 @@ fn clients(
             first_name: row.string("first_name"),
             last_name: row.string("last_name"),
             email: clean_email(row.text("email")),
+            email_raw: clean_email(row.text("email")).and(row.string("email")),
             email_verified: row.flag("email_verified"),
             password_hash: password_hash(row.text("password_hash")),
             google_id: row.string("google_id"),
@@ -150,6 +151,7 @@ fn clients(
         }
         kept.insert(old_id);
         legacy.clients.push(client);
+        bad_email(legacy, row.text("email"));
     }
     legacy.skip(
         "users_deleted",
@@ -453,6 +455,7 @@ fn subscriptions(
                 autorenew_days: u32_of(&row, "autopay_period_days"),
                 autorenew_period_old_id: None,
                 ordinal: *ordinal - 1,
+                gifted: false,
                 created_at: row.time("created_at").or_else(|| row.time("start_date")),
                 old_id,
             },

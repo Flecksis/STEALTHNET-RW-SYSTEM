@@ -1,11 +1,15 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use std::collections::{BTreeMap, HashMap};
 
+const NULL: u32 = 1 << 31;
+
 #[derive(Debug, Default)]
 pub struct Table {
     columns: Vec<String>,
     index: HashMap<String, usize>,
-    rows: Vec<Vec<Option<Box<str>>>>,
+    text: String,
+    cells: Vec<u32>,
+    rows: Vec<(usize, usize)>,
 }
 
 impl Table {
@@ -18,7 +22,7 @@ impl Table {
         Table {
             columns,
             index,
-            rows: Vec::new(),
+            ..Table::default()
         }
     }
 
@@ -30,12 +34,25 @@ impl Table {
         self.index.contains_key(column)
     }
 
-    pub fn push(&mut self, values: Vec<Option<Box<str>>>) {
-        self.rows.push(values);
+    pub fn push<'v>(&mut self, values: impl IntoIterator<Item = Option<&'v str>>) {
+        let text_start = self.text.len();
+        let cell_start = self.cells.len();
+        for value in values.into_iter().take(self.columns.len()) {
+            let used = self.text.len() - text_start;
+            let end = match value {
+                Some(v) if used + v.len() < NULL as usize => {
+                    self.text.push_str(v);
+                    (used + v.len()) as u32
+                }
+                _ => used as u32 | NULL,
+            };
+            self.cells.push(end);
+        }
+        self.rows.push((text_start, cell_start));
     }
 
     pub fn push_named(&mut self, values: impl IntoIterator<Item = (String, Option<String>)>) {
-        let mut row = vec![None; self.columns.len()];
+        let mut row: Vec<Option<String>> = vec![None; self.columns.len()];
         for (name, value) in values {
             let key = name.to_ascii_lowercase();
             let at = match self.index.get(&key) {
@@ -43,16 +60,13 @@ impl Table {
                 None => {
                     self.columns.push(name);
                     self.index.insert(key, self.columns.len() - 1);
-                    for old in &mut self.rows {
-                        old.push(None);
-                    }
                     row.push(None);
                     self.columns.len() - 1
                 }
             };
-            row[at] = value.map(String::into_boxed_str);
+            row[at] = value;
         }
-        self.rows.push(row);
+        self.push(row.iter().map(Option::as_deref));
     }
 
     pub fn len(&self) -> usize {
@@ -64,9 +78,18 @@ impl Table {
     }
 
     pub fn rows(&self) -> impl Iterator<Item = Row<'_>> {
-        self.rows.iter().map(move |values| Row {
-            table: self,
-            values,
+        (0..self.rows.len()).map(move |at| {
+            let (text_start, cell_start) = self.rows[at];
+            let (text_end, cell_end) = self
+                .rows
+                .get(at + 1)
+                .copied()
+                .unwrap_or((self.text.len(), self.cells.len()));
+            Row {
+                table: self,
+                text: &self.text[text_start..text_end],
+                cells: &self.cells[cell_start..cell_end],
+            }
         })
     }
 }
@@ -95,7 +118,8 @@ impl Dump {
 #[derive(Clone, Copy)]
 pub struct Row<'a> {
     table: &'a Table,
-    values: &'a [Option<Box<str>>],
+    text: &'a str,
+    cells: &'a [u32],
 }
 
 impl<'a> Row<'a> {
@@ -104,7 +128,14 @@ impl<'a> Row<'a> {
             Some(at) => *at,
             None => *self.table.index.get(&column.to_ascii_lowercase())?,
         };
-        self.values.get(at)?.as_deref()
+        let end = *self.cells.get(at)?;
+        if end & NULL != 0 {
+            return None;
+        }
+        let start = at
+            .checked_sub(1)
+            .map_or(0, |prev| (self.cells[prev] & !NULL) as usize);
+        self.text.get(start..end as usize)
     }
 
     pub fn text(&self, column: &str) -> Option<&'a str> {
@@ -264,11 +295,7 @@ mod tests {
 
     fn table() -> Table {
         let mut table = Table::new(vec!["a".into(), "b".into(), "c".into()]);
-        table.push(vec![
-            Some("t".into()),
-            Some("{abc,\"d,e\",NULL}".into()),
-            None,
-        ]);
+        table.push([Some("t"), Some("{abc,\"d,e\",NULL}"), None]);
         table.push_named([("d".to_string(), Some("[\"x\",\"y\"]".to_string()))]);
         table
     }
@@ -282,6 +309,25 @@ mod tests {
         assert_eq!(rows[0].text("c"), None);
         assert_eq!(rows[1].list("d"), ["x", "y"]);
         assert_eq!(rows[0].text("d"), None);
+    }
+
+    #[test]
+    fn ячейки_хранятся_одним_буфером_без_потерь() {
+        let mut table = Table::new(vec!["a".into(), "b".into(), "c".into(), "d".into()]);
+        table.push([Some("при"), None, Some(""), Some("вет")]);
+        table.push([Some("x")]);
+        table.push([None, Some("y"), None, None, Some("лишнее")]);
+        let rows: Vec<Row<'_>> = table.rows().collect();
+        assert_eq!(table.len(), 3);
+        assert_eq!(rows[0].raw("a"), Some("при"));
+        assert_eq!(rows[0].raw("b"), None);
+        assert_eq!(rows[0].raw("c"), Some(""));
+        assert_eq!(rows[0].raw("d"), Some("вет"));
+        assert_eq!(rows[1].raw("a"), Some("x"));
+        assert_eq!(rows[1].raw("d"), None);
+        assert_eq!(rows[2].raw("a"), None);
+        assert_eq!(rows[2].raw("b"), Some("y"));
+        assert_eq!(rows[2].raw("d"), None);
     }
 
     #[test]

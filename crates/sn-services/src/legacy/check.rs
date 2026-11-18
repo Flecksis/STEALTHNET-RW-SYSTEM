@@ -1,5 +1,5 @@
 use super::matcher::{Matched, Method, RemnaIndex, match_all};
-use super::model::{Legacy, Source};
+use super::model::{LClient, Legacy, Source};
 use super::runs::{Balances, Counts, CurrencyPlan, Existing, IssueRow, Preview, RemnaPlan};
 use crate::Services;
 use crate::error::ServiceResult;
@@ -184,54 +184,94 @@ pub fn problem_issues(legacy: &Legacy) -> Vec<IssueRow> {
     issues
 }
 
-pub fn subscription_issue(legacy: &Legacy, at: usize, matched: &Matched) -> Option<IssueRow> {
-    let sub = &legacy.subscriptions[at];
-    let who = legacy
-        .clients
-        .iter()
-        .find(|c| c.old_id == sub.client_old_id)
-        .map(super::model::LClient::who);
-    let details = match matched {
-        Matched::Found(..) => return None,
-        Matched::Missing => {
-            let mut hints = Vec::new();
-            if let Some(id) = sub.remna_id {
-                hints.push(format!("номер {id}"));
+pub struct SubIssues<'a> {
+    legacy: &'a Legacy,
+    index: &'a RemnaIndex,
+    clients: HashMap<&'a str, &'a LClient>,
+}
+
+impl<'a> SubIssues<'a> {
+    pub fn new(legacy: &'a Legacy, index: &'a RemnaIndex) -> Self {
+        SubIssues {
+            legacy,
+            index,
+            clients: legacy
+                .clients
+                .iter()
+                .map(|c| (c.old_id.as_str(), c))
+                .collect(),
+        }
+    }
+
+    fn who(&self, old_id: &str) -> Option<String> {
+        self.clients.get(old_id).map(|c| c.who())
+    }
+
+    pub fn issue(&self, at: usize, matched: &Matched) -> Option<IssueRow> {
+        let sub = &self.legacy.subscriptions[at];
+        let (code, details) = match matched {
+            Matched::Found(..) => return None,
+            Matched::Missing => {
+                let mut hints = Vec::new();
+                if let Some(id) = sub.remna_id {
+                    hints.push(format!("номер {id}"));
+                }
+                if let Some(short) = &sub.short_uuid {
+                    hints.push(format!("ссылка …/{short}"));
+                }
+                if let Some(uuid) = &sub.remna_uuid {
+                    hints.push(format!("uuid {uuid}"));
+                }
+                let expired = sub
+                    .expire_at
+                    .map(|at| format!(", срок до {}", at.format("%d.%m.%Y")))
+                    .unwrap_or_default();
+                let details = if hints.is_empty() {
+                    format!("Пользователь Remnawave не найден{expired}")
+                } else {
+                    format!(
+                        "Пользователь Remnawave не найден ({}){expired}",
+                        hints.join(", ")
+                    )
+                };
+                ("subscription_missing", details)
             }
-            if let Some(short) = &sub.short_uuid {
-                hints.push(format!("ссылка …/{short}"));
-            }
-            if let Some(uuid) = &sub.remna_uuid {
-                hints.push(format!("uuid {uuid}"));
-            }
-            let expired = sub
-                .expire_at
-                .map(|at| format!(", срок до {}", at.format("%d.%m.%Y")))
-                .unwrap_or_default();
-            if hints.is_empty() {
-                format!("Пользователь Remnawave не найден{expired}")
-            } else {
+            Matched::Ambiguous(1) => (
+                "subscription_ambiguous",
+                "Подходящий пользователь Remnawave подходит и другой подписке — выберите вручную в карточке клиента".to_string(),
+            ),
+            Matched::Ambiguous(n) => (
+                "subscription_ambiguous",
                 format!(
-                    "Пользователь Remnawave не найден ({}){expired}",
-                    hints.join(", ")
-                )
+                    "Подходят сразу несколько пользователей Remnawave ({n}) — выберите вручную в карточке клиента"
+                ),
+            ),
+            Matched::Shared(i, other) => {
+                let name = &self.index.users[*i].username;
+                let other = &self.legacy.subscriptions[*other];
+                let details = if other.client_old_id == sub.client_old_id {
+                    format!(
+                        "В старой панели две подписки клиента вели к одному пользователю Remnawave {name} — перенесена одна"
+                    )
+                } else {
+                    format!(
+                        "В старой панели пользователь Remnawave {name} был общим с клиентом {}. Подписка перенесена тому клиенту, этому — нет",
+                        self.who(&other.client_old_id)
+                            .unwrap_or_else(|| "из той же выгрузки".into())
+                    )
+                };
+                ("subscription_shared", details)
             }
-        }
-        Matched::Ambiguous(n) => {
-            format!("Подходят {n} пользователя Remnawave — выберите вручную в карточке клиента")
-        }
-    };
-    Some(IssueRow {
-        stage: "check",
-        code: match matched {
-            Matched::Ambiguous(_) => "subscription_ambiguous".into(),
-            _ => "subscription_missing".into(),
-        },
-        entity: "subscription".into(),
-        old_id: Some(sub.old_id.clone()),
-        who,
-        details,
-    })
+        };
+        Some(IssueRow {
+            stage: "check",
+            code: code.into(),
+            entity: "subscription".into(),
+            old_id: Some(sub.old_id.clone()),
+            who: self.who(&sub.client_old_id),
+            details,
+        })
+    }
 }
 
 pub async fn preview(
@@ -277,6 +317,7 @@ pub async fn preview(
             plan.connected = true;
             plan.users = index.len() as u64;
             let matched = match_all(legacy, &index, &HashSet::new());
+            let sub_issues = SubIssues::new(legacy, &index);
             let user_ids: Vec<i64> = matched
                 .iter()
                 .filter_map(|m| match m {
@@ -326,11 +367,15 @@ pub async fn preview(
                         if sub.expire_at.is_none_or(|at| at < now) {
                             expired_missing += 1;
                         }
-                        issues.extend(subscription_issue(legacy, at, m));
+                        issues.extend(sub_issues.issue(at, m));
                     }
                     Matched::Ambiguous(_) => {
                         plan.ambiguous += 1;
-                        issues.extend(subscription_issue(legacy, at, m));
+                        issues.extend(sub_issues.issue(at, m));
+                    }
+                    Matched::Shared(..) => {
+                        plan.shared += 1;
+                        issues.extend(sub_issues.issue(at, m));
                     }
                 }
             }
@@ -354,7 +399,14 @@ pub async fn preview(
                 skipped.push(super::model::Skip {
                     code: "subscription_ambiguous".into(),
                     count: plan.ambiguous,
-                    text: "подписок подходят сразу к нескольким пользователям Remnawave. Их не привязываем — список в отчёте.".into(),
+                    text: "подписок нельзя однозначно сопоставить с пользователями Remnawave. Их не привязываем: выберите вручную в карточке клиента, список в отчёте.".into(),
+                });
+            }
+            if plan.shared > 0 {
+                skipped.push(super::model::Skip {
+                    code: "subscription_shared".into(),
+                    count: plan.shared,
+                    text: "подписок в старой панели вели к тому же пользователю Remnawave, что и подписка другого клиента или вторая подписка того же клиента. Один пользователь Remnawave — одна подписка: переносим её один раз, список в отчёте.".into(),
                 });
             }
             if conflicts > 0 {
@@ -380,12 +432,33 @@ pub async fn preview(
         Err(err) => plan.error = Some(err),
     }
     let currency = currency_plan(services, legacy.currency).await?;
-    let positive: Vec<i64> = legacy
+    let mut positive: Vec<i64> = legacy
         .clients
         .iter()
         .map(|c| c.balance_minor)
         .filter(|b| *b > 0)
         .collect();
+    let (large_from, by_tariff) = large_balance_from(legacy, &mut positive).unzip();
+    let mut large = (0u64, 0i64);
+    if let Some(from) = large_from {
+        for client in legacy.clients.iter().filter(|c| c.balance_minor > from) {
+            large.0 += 1;
+            large.1 = large.1.saturating_add(client.balance_minor);
+            issues.push(IssueRow {
+                stage: "check",
+                code: "balance_large".into(),
+                entity: "client".into(),
+                old_id: Some(client.old_id.clone()),
+                who: Some(client.who()),
+                details: format!(
+                    "Баланс {} {} — подозрительно большой, порог {}. Если это ошибка, исправьте баланс в старой панели и перенесите заново, иначе он перенесётся как есть",
+                    super::stealthnet::format_minor(client.balance_minor),
+                    legacy.currency.code(),
+                    super::stealthnet::format_minor(from)
+                ),
+            });
+        }
+    }
     let preview = Preview {
         detected: legacy.source,
         dumped_at: legacy.dumped_at,
@@ -402,6 +475,10 @@ pub async fn preview(
             clients: positive.len() as u64,
             total_minor: positive.iter().sum(),
             currency: legacy.currency,
+            large_clients: large.0,
+            large_total_minor: large.1,
+            large_from_minor: large_from.filter(|_| large.0 > 0),
+            large_by_tariff: by_tariff.unwrap_or(false),
         },
         currency,
         remna: plan,
@@ -410,4 +487,40 @@ pub async fn preview(
         skipped,
     };
     Ok(Checked { preview, issues })
+}
+
+fn large_balance_from(legacy: &Legacy, positive: &mut [i64]) -> Option<(i64, bool)> {
+    let priciest = legacy
+        .tariffs
+        .iter()
+        .filter(|t| t.currency == legacy.currency)
+        .flat_map(|t| t.periods.iter().filter_map(|p| p.price_minor))
+        .filter(|p| *p > 0)
+        .max();
+    if let Some(price) = priciest {
+        return Some((price.saturating_mul(10), true));
+    }
+    if positive.len() < 100 {
+        return None;
+    }
+    positive.sort_unstable();
+    let usual = positive[positive.len() * 99 / 100];
+    Some((usual.saturating_mul(10), false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn порог_крупного_баланса_без_цен_берётся_из_самих_балансов() {
+        let legacy = Legacy::new(Source::Bedolaga, Currency::Rub);
+        let mut few: Vec<i64> = vec![100; 99];
+        assert_eq!(large_balance_from(&legacy, &mut few), None);
+        let mut many: Vec<i64> = (1..=200).rev().map(|v| v * 100).collect();
+        assert_eq!(
+            large_balance_from(&legacy, &mut many),
+            Some((199_000, false))
+        );
+    }
 }

@@ -29,9 +29,17 @@ export type Preview = {
   detected: Source;
   dumped_at: string | null;
   counts: Counts;
-  balances: { clients: number; total_minor: number; currency: Currency };
+  balances: {
+    clients: number;
+    total_minor: number;
+    currency: Currency;
+    large_clients?: number;
+    large_total_minor?: number;
+    large_from_minor?: number | null;
+    large_by_tariff?: boolean;
+  };
   currency: { source: Currency; install: Currency; switch: boolean; blocked: string | null };
-  remna: { connected: boolean; error: string | null; users: number; found: number; missing: number; ambiguous: number };
+  remna: { connected: boolean; error: string | null; users: number; found: number; missing: number; ambiguous: number; shared?: number };
   existing: { clients: number; matched: number; again: number };
   tariff_mode: 'tariffs' | 'classic';
   skipped: Skip[];

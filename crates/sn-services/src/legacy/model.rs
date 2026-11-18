@@ -65,6 +65,7 @@ pub struct LClient {
     pub first_name: Option<String>,
     pub last_name: Option<String>,
     pub email: Option<String>,
+    pub email_raw: Option<String>,
     pub email_verified: bool,
     pub password_hash: Option<String>,
     pub google_id: Option<String>,
@@ -148,7 +149,14 @@ pub struct LSubscription {
     pub autorenew_days: Option<u32>,
     pub autorenew_period_old_id: Option<String>,
     pub ordinal: u32,
+    pub gifted: bool,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+impl LSubscription {
+    pub fn from_client_card(&self) -> bool {
+        self.old_id.starts_with("client:")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -339,6 +347,24 @@ pub fn gb_to_bytes(gb: i64) -> Option<u64> {
         .ok()
         .filter(|g| *g > 0)
         .and_then(|g| g.checked_mul(1024 * 1024 * 1024))
+}
+
+pub fn bad_email(legacy: &mut Legacy, raw: Option<&str>) {
+    let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) else {
+        return;
+    };
+    if clean_email(Some(raw)).is_some() {
+        return;
+    }
+    let client = legacy.clients.last();
+    let (old_id, who) = (client.map(|c| c.old_id.clone()), client.map(LClient::who));
+    legacy.problem(
+        "email_invalid",
+        "client",
+        old_id,
+        who,
+        format!("Почта «{raw}» записана с ошибкой — вход по почте не перенесён, клиент перенесён без неё"),
+    );
 }
 
 pub fn clean_email(raw: Option<&str>) -> Option<String> {

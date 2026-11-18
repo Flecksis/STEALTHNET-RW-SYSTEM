@@ -1,11 +1,11 @@
-use super::check::{identity_owners, legacy_map, links, subscription_issue};
+use super::check::{SubIssues, identity_owners, legacy_map, links};
 use super::matcher::{Matched, RemnaIndex};
 use super::model::*;
 use super::runs::{self, IssueRow, Outcome, Progress, Stage};
 use crate::Services;
 use crate::error::{ServiceError, ServiceResult};
 use chrono::{DateTime, Utc};
-use sn_domain::client::{IdentityKind, NewIdentity};
+use sn_domain::client::{IdentityKind, NewIdentity, RegistrationSource};
 use sn_domain::ids::{AdminId, ClientId, SquadId, SubscriptionId};
 use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Currency, Money, Stars};
@@ -205,7 +205,7 @@ impl<'a> Applier<'a> {
             let mut conn = self.services.store().conn().await?;
             sqlx::query(
                 "DELETE FROM import_issues WHERE run_id = $1 AND (stage = 'apply' \
-                 OR code IN ('subscription_missing', 'subscription_ambiguous', 'subscription_taken'))",
+                 OR code IN ('subscription_missing', 'subscription_ambiguous', 'subscription_taken', 'subscription_shared'))",
             )
             .bind(self.run_id)
             .execute(conn.conn())
@@ -591,9 +591,11 @@ impl<'a> Applier<'a> {
             let owner = tx
                 .clients()
                 .find_by_identity(identity.kind, &identity.value)
-                .await?
-                .map(|c| c.id.0);
-            if owner == Some(id) {
+                .await?;
+            let migrated = owner
+                .as_ref()
+                .is_some_and(|c| c.registration_source == RegistrationSource::Migration);
+            if owner.map(|c| c.id.0) == Some(id) {
                 has_email |= identity.kind == IdentityKind::Email;
                 if identity.kind == IdentityKind::Telegram {
                     let meta = merged_meta(tx, &identity).await?;
@@ -607,15 +609,24 @@ impl<'a> Applier<'a> {
                     "client",
                     Some(&client.old_id),
                     Some(client.who()),
-                    format!(
-                        "{} {} уже у другого клиента этой установки — не добавлен",
-                        if identity.kind == IdentityKind::Telegram {
-                            "Telegram"
-                        } else {
-                            "Почта"
-                        },
-                        identity.value
-                    ),
+                    match (identity.kind, migrated) {
+                        (IdentityKind::Email, true) => format!(
+                            "Почта {} уже у другого перенесённого клиента: в старой системе с ней два аккаунта, например с разным регистром букв. Этому клиенту вход по почте не добавлен",
+                            identity.value
+                        ),
+                        (IdentityKind::Email, false) => format!(
+                            "Почта {} уже у другого клиента этой установки — этому клиенту не добавлена",
+                            identity.value
+                        ),
+                        (_, true) => format!(
+                            "Telegram {} уже у другого перенесённого клиента — этому клиенту не добавлен",
+                            identity.value
+                        ),
+                        _ => format!(
+                            "Telegram {} уже у другого клиента этой установки — этому клиенту не добавлен",
+                            identity.value
+                        ),
+                    },
                 );
             }
         }
@@ -810,6 +821,7 @@ impl<'a> Applier<'a> {
         let total = self.legacy.subscriptions.len();
         let now = self.services.now();
         let legacy = self.legacy;
+        let sub_issues = SubIssues::new(legacy, self.index);
         let matched = std::mem::take(&mut self.matched);
         for (batch_no, chunk) in legacy.subscriptions.chunks(BATCH).enumerate() {
             let mut tx = self.services.store().begin().await?;
@@ -818,7 +830,7 @@ impl<'a> Applier<'a> {
                 let at = batch_no * BATCH + offset;
                 let m = &matched[at];
                 let Matched::Found(i, _) = m else {
-                    if let Some(mut issue) = subscription_issue(legacy, at, m) {
+                    if let Some(mut issue) = sub_issues.issue(at, m) {
                         issue.stage = "apply";
                         self.issues.push(issue);
                     }
@@ -1245,15 +1257,27 @@ impl<'a> Applier<'a> {
                         }
                     }
                 }
-                let Some(referrer) = client
-                    .referrer_old_id
-                    .as_ref()
-                    .and_then(|r| self.clients.get(r))
-                    .copied()
-                else {
+                let Some(referrer_old) = client.referrer_old_id.as_ref() else {
+                    continue;
+                };
+                let Some(referrer) = self.clients.get(referrer_old).copied() else {
+                    self.issue(
+                        "referral_skipped",
+                        "client",
+                        Some(&client.old_id),
+                        Some(client.who()),
+                        "Пригласившего нет среди перенесённых клиентов — связь не перенесена",
+                    );
                     continue;
                 };
                 if referrer == id {
+                    self.issue(
+                        "referral_skipped",
+                        "client",
+                        Some(&client.old_id),
+                        Some(client.who()),
+                        "Клиент указан пригласившим сам себя — связь не перенесена",
+                    );
                     continue;
                 }
                 let loops: bool = sqlx::query_scalar(
@@ -1266,6 +1290,13 @@ impl<'a> Applier<'a> {
                 .fetch_one(tx.conn())
                 .await?;
                 if loops {
+                    self.issue(
+                        "referral_skipped",
+                        "client",
+                        Some(&client.old_id),
+                        Some(client.who()),
+                        "Клиент по цепочке приглашений сам пригласил своего пригласившего — связь не перенесена, чтобы не замкнуть круг",
+                    );
                     continue;
                 }
                 let linked = sqlx::query(
@@ -1425,7 +1456,8 @@ impl<'a> Applier<'a> {
                 ip: None,
             })
             .await?;
-        Ok(())
+        drop(conn);
+        self.progress(Stage::Finish, 1, 1).await
     }
 }
 

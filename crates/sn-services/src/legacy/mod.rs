@@ -575,6 +575,21 @@ fn csv_cell(value: &str) -> String {
     }
 }
 
+pub fn wrong_panel(preview: &runs::Preview) -> Option<String> {
+    let remna = &preview.remna;
+    if !remna.connected || remna.found > 0 || preview.counts.subscriptions == 0 {
+        return None;
+    }
+    Some(if remna.users == 0 {
+        "В подключённой Remnawave нет ни одного пользователя — похоже, это не та панель, что у старого бота. Проверьте «Настройки → Remnawave»: если перенести сейчас, клиенты перейдут без подписок.".to_string()
+    } else {
+        format!(
+            "Ни одна подписка не нашлась в подключённой Remnawave (пользователей в ней: {}) — похоже, это не та панель, что у старого бота. Проверьте «Настройки → Remnawave»: если перенести сейчас, клиенты перейдут без подписок.",
+            remna.users
+        )
+    })
+}
+
 fn print_preview(preview: &runs::Preview, out: &dyn Fn(&str)) {
     let c = &preview.counts;
     out(&format!(
@@ -594,11 +609,27 @@ fn print_preview(preview: &runs::Preview, out: &dyn Fn(&str)) {
         preview.balances.clients,
         preview.balances.currency.code()
     ));
+    if let Some(from) = preview.balances.large_from_minor {
+        out(&format!(
+            "Проверьте до запуска: у {} клиентов баланс больше {} — {}, всего {}. Если это ошибка, исправьте балансы в старой панели и перенесите заново, иначе они перенесутся как есть. Список — в отчёте.",
+            preview.balances.large_clients,
+            stealthnet::format_minor(from),
+            if preview.balances.large_by_tariff {
+                "в десять раз дороже самого дорогого тарифа"
+            } else {
+                "в десять раз больше, чем у 99% клиентов"
+            },
+            stealthnet::format_minor(preview.balances.large_total_minor)
+        ));
+    }
     if preview.remna.connected {
         out(&format!(
             "Remnawave: нашлись {} подписок из {}.",
             preview.remna.found, c.subscriptions
         ));
+        if let Some(text) = wrong_panel(preview) {
+            out(&text);
+        }
     } else {
         out("Remnawave не подключена — подписки не проверены.");
     }

@@ -80,8 +80,18 @@ pub async fn import(
             (legacy, "база STEALTHNET 7.x".to_string(), None)
         }
     };
-    let notify: sn_services::legacy::Notify = Arc::new(|progress: &Progress| {
-        if progress.total > 0 && (progress.done == progress.total || progress.done == 0) {
+    let shown = std::sync::Mutex::new((None::<Stage>, 0u64));
+    let notify: sn_services::legacy::Notify = Arc::new(move |progress: &Progress| {
+        if progress.total == 0 || progress.done == 0 {
+            return;
+        }
+        let quarter = progress.done.saturating_mul(4) / progress.total;
+        let mut last = shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let step = last.0 != Some(progress.stage) || quarter > last.1;
+        if progress.done == progress.total || (progress.total >= 20_000 && step) {
+            *last = (Some(progress.stage), quarter);
             println!(
                 "  {}: {} из {}",
                 stage_word(progress.stage),

@@ -1,4 +1,5 @@
 use super::table::{Dump, Table, parse_time};
+use std::borrow::Cow;
 use std::io::BufRead;
 
 pub struct CopyHeader {
@@ -73,12 +74,12 @@ fn split_qualified(qualified: &str) -> String {
     parts.pop().unwrap_or_default()
 }
 
-pub fn decode_field(raw: &str) -> Option<Box<str>> {
+pub fn decode_field(raw: &str) -> Option<Cow<'_, str>> {
     if raw == "\\N" {
         return None;
     }
     if !raw.contains('\\') {
-        return Some(raw.into());
+        return Some(Cow::Borrowed(raw));
     }
     let bytes = raw.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -126,7 +127,7 @@ pub fn decode_field(raw: &str) -> Option<Box<str>> {
             other => out.push(other),
         }
     }
-    Some(String::from_utf8_lossy(&out).into_owned().into_boxed_str())
+    Some(Cow::Owned(String::from_utf8_lossy(&out).into_owned()))
 }
 
 fn created_at(line: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -176,11 +177,9 @@ pub fn read(
             }
             if let Some(table) = table.as_mut() {
                 let line = String::from_utf8_lossy(&buffer);
-                let width = table.columns().len();
-                let mut values: Vec<Option<Box<str>>> =
+                let values: Vec<Option<Cow<'_, str>>> =
                     line.split('\t').map(decode_field).collect();
-                values.resize(width, None);
-                table.push(values);
+                table.push(values.iter().map(|v| v.as_deref()));
             }
             continue;
         }

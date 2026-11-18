@@ -176,6 +176,7 @@ fn clients(dump: &Dump, legacy: &mut Legacy, mixed: &HashSet<String>) {
             first_name: None,
             last_name: None,
             email: clean_email(row.text("email")),
+            email_raw: clean_email(row.text("email")).and(row.string("email")),
             email_verified: true,
             password_hash: password_hash(row.text("password_hash")),
             google_id: row.string("google_id"),
@@ -194,6 +195,7 @@ fn clients(dump: &Dump, legacy: &mut Legacy, mixed: &HashSet<String>) {
             created_at: row.time("created_at"),
             old_id,
         });
+        bad_email(legacy, row.text("email"));
         if is_mixed {
             let last = legacy.clients.last().map(LClient::who);
             legacy.problem(
@@ -338,6 +340,8 @@ fn tariffs(dump: &Dump, legacy: &mut Legacy) -> HashMap<String, u32> {
 
 fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
     let mut gifts = 0u64;
+    let mut hidden = 0u64;
+    let now = legacy.dumped_at.unwrap_or_else(chrono::Utc::now);
     let mut with_sub: HashSet<String> = HashSet::new();
     for row in dump.rows("subscriptions") {
         let (Some(old_id), Some(owner)) = (row.string("id"), row.string("owner_id")) else {
@@ -353,6 +357,10 @@ fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
             continue;
         }
         with_sub.insert(owner.clone());
+        if row.text("hidden_at").is_some() && row.time("expire_at").is_none_or(|at| at < now) {
+            hidden += 1;
+            continue;
+        }
         let raw_remna = row.string("remnawave_uuid");
         let remna_id = raw_remna.as_deref().and_then(|v| v.parse::<i64>().ok());
         let kind = if row.text("trial_id").is_some() {
@@ -385,6 +393,9 @@ fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
                 .i64("subscription_index")
                 .and_then(|v| u32::try_from(v).ok())
                 .unwrap_or(0),
+            gifted: row
+                .text("gift_status")
+                .is_some_and(|s| s.eq_ignore_ascii_case("GIFTED")),
             created_at: row.time("created_at"),
             old_id,
         });
@@ -412,6 +423,7 @@ fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
             autorenew_days: None,
             autorenew_period_old_id: row.string("auto_renew_price_option_id"),
             ordinal: 0,
+            gifted: false,
             created_at: row.time("created_at"),
         });
     }
@@ -419,6 +431,11 @@ fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
         "gift_unclaimed",
         gifts,
         "подарочных подписок ещё не активировали. Их нет у получателей — после переключения выдайте вручную.",
+    );
+    legacy.skip(
+        "subscription_hidden",
+        hidden,
+        "давно истёкших подписок старая панель уже скрыла от клиентов. Не переносим.",
     );
 }
 
