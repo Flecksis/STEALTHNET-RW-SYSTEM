@@ -134,7 +134,7 @@ async fn старые_адреса_уведомлений_и_счета_стар
     for path in [
         "/api/webhooks/unknownpay",
         "/api/webhooks/lava",
-        "/api/webhooks/paritypay",
+        "/api/webhooks/nalog",
     ] {
         assert_eq!(
             post(state, path, None, "{}").await,

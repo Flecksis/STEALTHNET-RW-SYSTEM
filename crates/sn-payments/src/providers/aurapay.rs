@@ -1,10 +1,9 @@
+use super::sorted_hmac::{self, Style};
 use crate::error::{PaymentError, PaymentResult};
 use crate::json::Json;
 use crate::provider::*;
 use crate::util;
 use async_trait::async_trait;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use sn_domain::money::{Currency, PayCurrency};
 use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
@@ -29,48 +28,12 @@ const LABEL: ClientLabel = ClientLabel {
     hint: "Способ выбирается на странице оплаты",
 };
 
-fn value_text(value: &Json) -> String {
-    match value {
-        Json::Null => String::new(),
-        Json::String(text) | Json::Number(text) => text.clone(),
-        other => String::from_utf8(other.to_bytes()).unwrap_or_default(),
-    }
-}
-
-fn signed_text(body: &Json) -> Option<String> {
-    let Json::Object(members) = body else {
-        return None;
-    };
-    let mut sorted: Vec<&(String, Json)> = members.iter().collect();
-    sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-    Some(sorted.iter().map(|(_, value)| value_text(value)).collect())
-}
-
 pub fn signature(secret: &str, body: &[u8]) -> String {
-    Json::parse(body)
-        .as_ref()
-        .and_then(signed_text)
-        .and_then(|text| {
-            let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
-            mac.update(text.as_bytes());
-            Some(hex::encode(mac.finalize().into_bytes()))
-        })
-        .unwrap_or_default()
+    sorted_hmac::signature(secret, body, Style::Raw)
 }
 
 fn verify(secret: &str, body: &Json, header: &str) -> bool {
-    let Ok(expected) = hex::decode(header.trim()) else {
-        return false;
-    };
-    let Some(text) = signed_text(body) else {
-        return false;
-    };
-    Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .map(|mut mac| {
-            mac.update(text.as_bytes());
-            mac.verify_slice(&expected).is_ok()
-        })
-        .unwrap_or(false)
+    sorted_hmac::verify(secret, body, header, Style::Raw)
 }
 
 fn text<'a>(object: &'a Json, key: &str) -> Option<&'a str> {

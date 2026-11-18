@@ -32,6 +32,8 @@ pub mod providers {
     pub const WATA: &str = "wata";
     pub const FREEKASSA: &str = "freekassa";
     pub const ROBOKASSA: &str = "robokassa";
+    pub const CISPAY: &str = "cispay";
+    pub const PARITYPAY: &str = "paritypay";
 }
 
 const fn shown() -> bool {

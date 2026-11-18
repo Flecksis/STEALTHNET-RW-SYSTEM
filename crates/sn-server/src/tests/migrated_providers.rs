@@ -2,8 +2,8 @@ use super::*;
 use sn_domain::payment::PaymentStatus;
 use sn_payments::PaymentProvider;
 use sn_payments::providers::{
-    AuraPay, Balance, KassaAi, MulenPay, PayPalych, aurapay_signature, kassaai_notice_signature,
-    paypalych_signature,
+    AuraPay, Balance, CisPay, KassaAi, MulenPay, ParityPay, PayPalych, aurapay_signature,
+    cispay_signature, kassaai_notice_signature, paritypay_signature, paypalych_signature,
 };
 use sn_store::InboxOutcome;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -526,5 +526,254 @@ async fn aurapay_счёт_уведомление_повтор_чужая_сум�
     );
     let page = journal_page(&h, &owner, "aurapay", "AuraPay").await;
     assert!(!page.to_string().contains("203.0.113.5"));
+    h.db.cleanup().await;
+}
+
+async fn journal_paths(h: &Http) -> Vec<(String, bool)> {
+    let mut conn = h.services().store().conn().await.unwrap();
+    sqlx::query_as("SELECT outcome, legacy_path FROM webhook_inbox ORDER BY id")
+        .fetch_all(conn.conn())
+        .await
+        .unwrap()
+}
+
+fn echo_body(request: &wiremock::Request) -> Value {
+    serde_json::from_slice(&request.body).unwrap_or_default()
+}
+
+const CIS_SHOP: &str = "0193a1b2-7c3d-7e4f-8a9b-0c1d2e3f4a5b";
+const CIS_KEY: &str = "cis_sec_e2e_key_7731";
+
+fn cis_id(n: i64) -> String {
+    format!("0193a1b2-7c3d-7e4f-8a9b-{n:012}")
+}
+
+async fn cis_payment(api: &MockServer, id: &str, public: Uuid, amount: i64) {
+    Mock::given(method("GET"))
+        .and(path("/payments/status"))
+        .and(query_param("id", id))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": id, "order_id": public.to_string(), "status": "PAID", "amount": amount,
+            "charged_amount": amount, "currency": "RUB", "payment_method": "SBP",
+            "is_sandbox": false, "block_reason": null, "store_name": "VPN",
+            "created_at": "2026-11-16T14:52:00+00:00", "expires_in_seconds": 0
+        })))
+        .mount(api)
+        .await;
+}
+
+fn cis_hook(id: &str, public: Uuid, amount: i64, stamp: &str) -> String {
+    json!({
+        "id": id, "store_id": CIS_SHOP, "order_id": public.to_string(), "payment_method": "SBP",
+        "status": "PAID", "amount": amount, "currency": "RUB", "charged_amount": amount,
+        "merchant_revenue": amount - 1_000, "is_sandbox": false, "description": null,
+        "subscription_id": null, "paid_at": "2026-11-16T15:00:00+00:00", "timestamp": stamp
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn cispay_платёж_уведомление_повтор_чужая_сумма_старый_адрес_и_журнал() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/payments"))
+        .respond_with(Counter(AtomicI64::new(1), |n, request| {
+            let body = echo_body(request);
+            ResponseTemplate::new(201).set_body_json(json!({
+                "id": cis_id(n), "order_id": body["order_id"], "status": "PENDING",
+                "amount": body["amount"], "charged_amount": body["amount"],
+                "payment_url": format!("https://cispay.app/pay/{}", cis_id(n)),
+                "created_at": "2026-11-16T14:52:00+00:00"
+            }))
+        }))
+        .mount(&api)
+        .await;
+    let Some((h, owner)) = stand(
+        Arc::new(CisPay::with_api_base(api.uri())),
+        json!({"shop_id": CIS_SHOP, "api_key": CIS_KEY}),
+    )
+    .await
+    else {
+        return;
+    };
+    let (_, list) = h.get("/api/admin/payments/providers", &owner).await;
+    no_secrets(&list, &[CIS_KEY]);
+    let client = h.client(5_093_118_705).await;
+    let token = h.client_token(client).await;
+    let first = top_up(&h, &token, "cispay", "500").await;
+    let second = top_up(&h, &token, "cispay", "700").await;
+    let third = top_up(&h, &token, "cispay", "300").await;
+    assert_eq!(txid_of(&h, first).await, Some(cis_id(1)));
+    cis_payment(&api, &cis_id(1), first, 50_000).await;
+    cis_payment(&api, &cis_id(2), second, 69_900).await;
+    cis_payment(&api, &cis_id(3), third, 30_000).await;
+    let uri = "/api/webhooks/pay/cispay";
+    let json = "application/json";
+    let paid = cis_hook(&cis_id(1), first, 50_000, "2026-11-16T15:00:01+00:00");
+    let forged = cispay_signature("cis_sec_guess", paid.as_bytes());
+    let (status, _) = notify(
+        &h,
+        uri,
+        json,
+        &[("X-Signature", forged.as_str())],
+        paid.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let again = cis_hook(&cis_id(1), first, 50_000, "2026-11-16T15:01:01+00:00");
+    for body in [paid.clone(), paid, again] {
+        let sign = cispay_signature(CIS_KEY, body.as_bytes());
+        let (status, _) = notify(&h, uri, json, &[("X-Signature", sign.as_str())], body).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(balance(&h, &token).await, 50_000);
+    let short = cis_hook(&cis_id(2), second, 70_000, "2026-11-16T15:02:01+00:00");
+    let sign = cispay_signature(CIS_KEY, short.as_bytes());
+    let (status, _) = notify(&h, uri, json, &[("X-Signature", sign.as_str())], short).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(balance(&h, &token).await, 50_000);
+    let old = cis_hook(&cis_id(3), third, 30_000, "2026-11-16T15:03:01+00:00");
+    let sign = cispay_signature(CIS_KEY, old.as_bytes());
+    let (status, _) = notify(
+        &h,
+        "/api/webhooks/cispay",
+        json,
+        &[("X-Signature", sign.as_str())],
+        old,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "старый адрес старой панели");
+    assert_eq!(balance(&h, &token).await, 80_000);
+    assert_eq!(status_of(&h, first).await, PaymentStatus::Paid);
+    assert_eq!(status_of(&h, second).await, PaymentStatus::Pending);
+    assert_eq!(
+        journal_paths(&h).await,
+        vec![
+            ("rejected_signature".to_string(), false),
+            ("accepted".to_string(), false),
+            ("duplicate".to_string(), false),
+            ("amount_mismatch".to_string(), false),
+            ("accepted".to_string(), true),
+        ]
+    );
+    journal_page(&h, &owner, "cispay", "CisPay").await;
+    h.db.cleanup().await;
+}
+
+const PARITY_SHOP: &str = "874dfb1e-dbdb-4747-a1c0-005969725b74";
+const PARITY_ONE: &str = "pp_e2e_secret_one";
+const PARITY_TWO: &str = "pp_e2e_secret_two";
+
+fn parity_id(n: i64) -> String {
+    format!("9beea835-0937-4b5c-8f5a-{n:012}")
+}
+
+async fn parity_invoice(api: &MockServer, id: &str, public: Uuid, amount: f64) {
+    Mock::given(method("GET"))
+        .and(path("/v2/invoice/status"))
+        .and(query_param("id", id))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": id, "order_id": public.to_string(), "shop_id": PARITY_SHOP, "amount": amount,
+            "comment": "Пополнение", "service": "sbp", "custom_fields": null,
+            "expires": "2026-11-16 15:52:00", "created": "2026-11-16 14:52:00", "status": "PAID",
+            "link": format!("https://pay.paritypay.net/{id}")
+        })))
+        .mount(api)
+        .await;
+}
+
+fn parity_hook(id: &str, public: Uuid, amount: &str, credited: f64) -> String {
+    json!({
+        "id": id, "order_id": public.to_string(), "shop_id": PARITY_SHOP, "amount": amount,
+        "credited": credited, "comment": "Пополнение", "service": "sbp", "custom_fields": null,
+        "expires": "2026-11-16 15:52:00", "created": "2026-11-16 14:52:00", "status": "PAID"
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn paritypay_счёт_уведомление_повтор_чужая_сумма_старый_адрес_и_журнал() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v2/invoice/create"))
+        .respond_with(Counter(AtomicI64::new(1), |n, request| {
+            let body = echo_body(request);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": parity_id(n), "order_id": body["order_id"], "shop_id": PARITY_SHOP,
+                "amount": body["amount"], "comment": body["comment"], "service": null,
+                "custom_fields": null, "expires": "2026-11-16 15:52:00",
+                "created": "2026-11-16 14:52:00", "status": "NEW",
+                "link": format!("https://pay.paritypay.net/{}", parity_id(n))
+            }))
+        }))
+        .mount(&api)
+        .await;
+    let Some((h, owner)) = stand(
+        Arc::new(ParityPay::with_api_base(api.uri())),
+        json!({"shop_id": PARITY_SHOP, "secret_key": PARITY_ONE, "callback_secret": PARITY_TWO}),
+    )
+    .await
+    else {
+        return;
+    };
+    let (_, list) = h.get("/api/admin/payments/providers", &owner).await;
+    no_secrets(&list, &[PARITY_ONE, PARITY_TWO]);
+    let client = h.client(5_093_118_706).await;
+    let token = h.client_token(client).await;
+    let first = top_up(&h, &token, "paritypay", "500").await;
+    let second = top_up(&h, &token, "paritypay", "700").await;
+    let third = top_up(&h, &token, "paritypay", "300").await;
+    assert_eq!(txid_of(&h, first).await, Some(parity_id(1)));
+    parity_invoice(&api, &parity_id(1), first, 500.0).await;
+    parity_invoice(&api, &parity_id(2), second, 699.0).await;
+    parity_invoice(&api, &parity_id(3), third, 300.0).await;
+    let uri = "/api/webhooks/pay/paritypay";
+    let json = "application/json";
+    let paid = parity_hook(&parity_id(1), first, "500.00", 483.5);
+    let forged = paritypay_signature(PARITY_ONE, paid.as_bytes());
+    let (status, _) = notify(
+        &h,
+        uri,
+        json,
+        &[("X-SIGNATURE", forged.as_str())],
+        paid.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let again = format!("{paid}\n");
+    for body in [paid.clone(), paid, again] {
+        let sign = paritypay_signature(PARITY_TWO, body.as_bytes());
+        let (status, _) = notify(&h, uri, json, &[("X-SIGNATURE", sign.as_str())], body).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(balance(&h, &token).await, 50_000);
+    let short = parity_hook(&parity_id(2), second, "700.00", 676.0);
+    let sign = paritypay_signature(PARITY_TWO, short.as_bytes());
+    let (status, _) = notify(&h, uri, json, &[("X-SIGNATURE", sign.as_str())], short).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(balance(&h, &token).await, 50_000);
+    let old = parity_hook(&parity_id(3), third, "300.00", 290.1);
+    let sign = paritypay_signature(PARITY_TWO, old.as_bytes());
+    let (status, _) = notify(
+        &h,
+        "/api/webhooks/paritypay",
+        json,
+        &[("X-SIGNATURE", sign.as_str())],
+        old,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "старый адрес старой панели");
+    assert_eq!(balance(&h, &token).await, 80_000);
+    assert_eq!(
+        journal_paths(&h).await,
+        vec![
+            ("rejected_signature".to_string(), false),
+            ("accepted".to_string(), false),
+            ("duplicate".to_string(), false),
+            ("amount_mismatch".to_string(), false),
+            ("accepted".to_string(), true),
+        ]
+    );
+    journal_page(&h, &owner, "paritypay", "ParityPay").await;
     h.db.cleanup().await;
 }

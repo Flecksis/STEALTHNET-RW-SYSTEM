@@ -40,6 +40,8 @@ fn paths(provider: &str) -> &'static [&'static str] {
         "yoomoney" => &["/label", "/operation_id"],
         "cloudpayments" => &["/InvoiceId", "/TransactionId"],
         "overpay" => &["/merchantTransactionId", "/merchant_order_id", "/id"],
+        "cispay" => &["/order_id", "/id", "/payment_id"],
+        "paritypay" => &["/order_id", "/id"],
         _ => &[],
     }
 }
@@ -404,5 +406,36 @@ mod tests {
         );
         assert_eq!(refs, ["new-charge", "old-order"]);
         assert!(references("unknown", &outcome(None, None), &request("{}")).is_empty());
+        let refs = references(
+            "cispay",
+            &outcome(None, None),
+            &request(
+                r#"{"id":"0b9d77aa-1c2d-4e3f-8a4b-5c6d7e8f9012","order_id":"ord-old-7","status":"PAID"}"#,
+            ),
+        );
+        assert_eq!(refs, ["ord-old-7", "0b9d77aa-1c2d-4e3f-8a4b-5c6d7e8f9012"]);
+        let refs = references(
+            "paritypay",
+            &outcome(None, None),
+            &request(
+                r#"{"id":"9beea835-0937-4b5c-8f5a-c3a0d0e60346","order_id":"ord-old-8","status":"PAID"}"#,
+            ),
+        );
+        assert_eq!(refs, ["ord-old-8", "9beea835-0937-4b5c-8f5a-c3a0d0e60346"]);
+    }
+
+    #[test]
+    fn старые_имена_cispay_и_paritypay_ведут_к_новым_платёжкам() {
+        use crate::legacy::stealthnet::old_provider;
+        for (old, new) in [
+            ("cispay", "cispay"),
+            ("CisPay", "cispay"),
+            ("cis_pay", "cispay"),
+            ("paritypay", "paritypay"),
+            ("ParityPay", "paritypay"),
+            ("parity_pay", "paritypay"),
+        ] {
+            assert_eq!(old_provider(old), Some(new), "{old}");
+        }
     }
 }

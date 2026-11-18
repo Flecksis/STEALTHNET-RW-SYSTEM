@@ -1197,6 +1197,16 @@ impl<'a> Extras<'a> {
                 ],
                 false,
             ),
+            (
+                "paritypay",
+                "ParityPay",
+                vec![
+                    ("shop_id", text("paritypay_shop_id"), true),
+                    ("secret_key", text("paritypay_api_key"), true),
+                    ("callback_secret", text("paritypay_signing_secret"), true),
+                ],
+                true,
+            ),
         ];
         let registry = services.payments();
         let present = self.present().await.unwrap_or_default();

@@ -23,7 +23,7 @@
 ### Продажа и оплата
 
 - Тарифы и категории создаёте вы: сроки и цены, устройства и доп. устройства, лимит и сброс трафика, сквады. У категории можно ограничить число подписок на клиента, у тарифа — дать скидку за доп. устройства.
-- Платёжные системы: Crypto Pay, Heleket, Cryptomus, Lava, ЮKassa, Platega, ЮMoney, CloudPayments, Overpay, RollyPay, MulenPay, PayPalych, Kassa.ai, AuraPay, Tribute, WATA, Freekassa и Robokassa. Если платёжка принимает несколько способов (СБП, карта, SberPay), каждый можно сделать отдельной кнопкой.
+- Платёжные системы: Crypto Pay, Heleket, Cryptomus, Lava, ЮKassa, Platega, ЮMoney, CloudPayments, Overpay, RollyPay, MulenPay, PayPalych, Kassa.ai, AuraPay, Tribute, WATA, Freekassa, Robokassa, CisPay и ParityPay. Если платёжка принимает несколько способов (СБП, карта, SberPay), каждый можно сделать отдельной кнопкой.
 - Звёзды Telegram со своей ценой в тарифе и GRAM — оплата в TON прямо на ваш кошелёк.
 - Баланс клиента: пополнение и оплата с баланса.
 - Пробный период, автопродление с баланса или сохранённой карты, возвраты через платёжку или на баланс.

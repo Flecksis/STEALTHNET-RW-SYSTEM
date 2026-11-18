@@ -204,6 +204,8 @@ const ACCEPTS: Record<string, string> = {
   wata: 'Карты и СБП',
   freekassa: 'СБП, карты, SberPay и другие способы',
   robokassa: 'Карты, СБП, SberPay, T-Pay',
+  cispay: 'СБП, карты, криптовалюта',
+  paritypay: 'Карты и СБП',
 };
 
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'], pal24: ['', 'refund', 'chargeback'] };
@@ -234,6 +236,10 @@ const HOOK_HINTS: Record<string, string> = {
     'У Freekassa это «URL оповещения» в настройках магазина, метод POST. Там же укажите адрес возврата клиента после оплаты, например кабинет. Тестовый режим тоже включается в настройках магазина.',
   robokassa:
     'У Robokassa это Result URL в технических настройках магазина, метод POST. В Success URL и Fail URL укажите, куда вернуть клиента после оплаты, например кабинет.',
+  cispay:
+    'У CisPay это адрес для вебхуков в «Настройках магазина». Каждое уведомление панель сверяет запросом статуса к CisPay. Платежи из «Песочницы» засчитываются, только если включено «Засчитывать тестовые платежи». Оплату криптовалютой CisPay не возвращает.',
+  paritypay:
+    'Панель передаёт этот адрес с каждым счётом. Если в настройках кассы ParityPay стоит адрес старого бота, замените его этим. Возвратов через API у ParityPay нет: деньги возвращает её поддержка, а в панели возврат отмечается вручную.',
 };
 
 function failText(err: unknown, fallback: string): string {

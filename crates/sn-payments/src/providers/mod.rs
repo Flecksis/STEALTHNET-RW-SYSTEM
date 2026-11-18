@@ -1,5 +1,6 @@
 mod aurapay;
 mod balance;
+mod cispay;
 mod cloudpayments;
 mod cryptomus;
 mod cryptopay;
@@ -11,10 +12,12 @@ mod lava;
 mod merchant;
 mod mulenpay;
 mod overpay;
+mod paritypay;
 mod paypalych;
 mod platega;
 mod robokassa;
 mod rollypay;
+mod sorted_hmac;
 mod stars;
 mod tribute;
 mod wata;
@@ -23,6 +26,7 @@ mod yoomoney;
 
 pub use aurapay::{AuraPay, signature as aurapay_signature};
 pub use balance::Balance;
+pub use cispay::{CisPay, signature as cispay_signature};
 pub use cloudpayments::{CloudPayments, signature as cloudpayments_signature};
 pub use cryptomus::{Cryptomus, signature as cryptomus_signature};
 pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
@@ -36,6 +40,7 @@ pub use kassaai::{KassaAi, notice_signature as kassaai_notice_signature};
 pub use lava::Lava;
 pub use mulenpay::MulenPay;
 pub use overpay::{Overpay, hook_token as overpay_hook_token};
+pub use paritypay::{ParityPay, signature as paritypay_signature};
 pub use paypalych::{PayPalych, signature as paypalych_signature};
 pub use platega::Platega;
 pub use robokassa::{
@@ -77,6 +82,8 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(Wata::new()),
         Arc::new(Freekassa::new()),
         Arc::new(Robokassa::new()),
+        Arc::new(CisPay::new()),
+        Arc::new(ParityPay::new()),
         Arc::new(TelegramStars::new()),
         Arc::new(Balance),
     ]
@@ -161,6 +168,15 @@ mod tests {
                 ("password1", json!("p1")),
                 ("password2", json!("p2")),
             ]),
+            providers::CISPAY => config(&[
+                ("shop_id", json!("0193a1b2-7c3d-7e4f-8a9b-0c1d2e3f4a5b")),
+                ("api_key", json!("cis_sec_k")),
+            ]),
+            providers::PARITYPAY => config(&[
+                ("shop_id", json!("874dfb1e-dbdb-4747-a1c0-005969725b74")),
+                ("secret_key", json!("k1")),
+                ("callback_secret", json!("k2")),
+            ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
             providers::TRIBUTE => config(&[
                 ("api_key", json!("k")),
@@ -206,6 +222,7 @@ mod tests {
                     providers::CRYPTOMUS,
                     providers::TRIBUTE,
                     providers::WATA,
+                    providers::CISPAY,
                     providers::BALANCE,
                 ],
             ),
@@ -230,6 +247,8 @@ mod tests {
                     providers::WATA,
                     providers::FREEKASSA,
                     providers::ROBOKASSA,
+                    providers::CISPAY,
+                    providers::PARITYPAY,
                     providers::BALANCE,
                 ],
             ),
@@ -273,6 +292,13 @@ mod tests {
             assert!(registry.is_available(providers::WATA, Currency::Usd));
             assert!(!registry.is_available(providers::FREEKASSA, Currency::Usd));
             assert!(!registry.is_available(providers::ROBOKASSA, Currency::Usd));
+            assert!(registry.is_available(providers::CISPAY, Currency::Rub));
+            assert!(registry.is_available(providers::CISPAY, Currency::Usd));
+            assert!(registry.is_available(providers::PARITYPAY, Currency::Rub));
+            assert!(!registry.is_available(providers::PARITYPAY, Currency::Usd));
+            for id in [providers::CISPAY, providers::PARITYPAY] {
+                assert!(registry.accepts_webhooks(id), "{id}");
+            }
         }
     }
 
@@ -303,6 +329,8 @@ mod tests {
             providers::WATA,
             providers::FREEKASSA,
             providers::ROBOKASSA,
+            providers::CISPAY,
+            providers::PARITYPAY,
             providers::STARS,
             providers::BALANCE,
         ] {
@@ -360,6 +388,7 @@ mod tests {
                 providers::WATA,
                 providers::FREEKASSA,
                 providers::ROBOKASSA,
+                providers::CISPAY,
                 providers::STARS
             ]
         );

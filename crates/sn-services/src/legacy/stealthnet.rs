@@ -77,6 +77,8 @@ pub fn old_provider(raw: &str) -> Option<&'static str> {
         "telegram_stars" | "stars" => Some("stars"),
         "cloudpayments" => Some("cloudpayments"),
         "overpay" => Some("overpay"),
+        "cispay" | "cis_pay" | "cis-pay" => Some("cispay"),
+        "paritypay" | "parity_pay" | "parity-pay" => Some("paritypay"),
         _ => None,
     }
 }

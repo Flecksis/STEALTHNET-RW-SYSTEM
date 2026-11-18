@@ -1762,6 +1762,22 @@ fn extras_dump(approved: bool) -> Vec<u8> {
             Some("gift_subscriptions_enabled"),
             Some("true"),
         ],
+        [Some("s22"), Some("paritypay_enabled"), Some("true")],
+        [
+            Some("s23"),
+            Some("paritypay_shop_id"),
+            Some("9bee9309-2585-4332-b63d-e1d897f7ce84"),
+        ],
+        [
+            Some("s24"),
+            Some("paritypay_api_key"),
+            Some("pp_secret_one"),
+        ],
+        [
+            Some("s25"),
+            Some("paritypay_signing_secret"),
+            Some("pp_secret_two"),
+        ],
     ];
     let settings: Vec<&[Option<&str>]> = settings.iter().map(|r| r.as_slice()).collect();
     sql += &copy("system_settings", &["id", "key", "value"], &settings);
@@ -1990,7 +2006,7 @@ async fn настройки_админы_подарки_выводы_и_авто
     assert_eq!(outcome.counts.gifts, 2);
     assert_eq!(outcome.counts.withdrawals, 2);
     assert_eq!(outcome.counts.auto_rules, 1);
-    assert_eq!(outcome.providers, ["Crypto Pay"]);
+    assert_eq!(outcome.providers, ["Crypto Pay", "ParityPay"]);
 
     let s = &env.services;
     let core = s.settings();
@@ -2024,6 +2040,13 @@ async fn настройки_админы_подарки_выводы_и_авто
         "Crypto Pay включена"
     );
     assert!(setting("payments.yookassa").await["enabled"] == false);
+    let parity = setting("payments.paritypay").await;
+    assert!(parity["enabled"] == true, "{parity}");
+    assert_eq!(
+        parity["config"]["shop_id"], "9bee9309-2585-4332-b63d-e1d897f7ce84",
+        "{parity}"
+    );
+    assert!(!parity.to_string().contains("pp_secret_one"), "{parity}");
     assert_eq!(
         scalar(
             s,
