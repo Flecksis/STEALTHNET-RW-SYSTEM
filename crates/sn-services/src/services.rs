@@ -375,6 +375,10 @@ impl Services {
         AdminOps::new(self)
     }
 
+    pub fn decisions(&self) -> crate::decisions::DecisionsOps<'_> {
+        crate::decisions::DecisionsOps::new(self)
+    }
+
     pub fn tariffs(&self) -> TariffAdmin<'_> {
         TariffAdmin::new(self)
     }

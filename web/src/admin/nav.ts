@@ -9,6 +9,7 @@ export type NavItem = {
   to: string;
   group: 'core' | 'module' | 'system';
   badge?: number;
+  badgeLabel?: string;
   dot?: boolean;
 };
 
@@ -21,14 +22,21 @@ const CORE: Array<{ key: string; label: string; icon: IconName; to: string; need
   { key: 'infra', label: 'Инфраструктура', icon: 'server', to: '/admin/infra', need: 'infrastructure' },
 ];
 
-export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?: number, updateDot?: boolean): NavItem[] {
+const BADGE_LABEL: Record<string, string> = {
+  support: 'без ответа',
+  money: 'ждут решения',
+};
+
+export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?: number, updateDot?: boolean, moneyBadge?: number): NavItem[] {
+  const badges: Record<string, number | undefined> = { support: supportBadge, money: moneyBadge };
   const items: NavItem[] = CORE.filter((item) => !item.need || can(item.need)).map((item) => ({
     key: item.key,
     label: item.label,
     icon: item.icon,
     to: item.to,
     group: 'core',
-    badge: item.key === 'support' && supportBadge ? supportBadge : undefined,
+    badge: badges[item.key] || undefined,
+    badgeLabel: BADGE_LABEL[item.key],
   }));
   for (const entry of [...me.menu].sort((a, b) => a.order - b.order)) {
     items.push({

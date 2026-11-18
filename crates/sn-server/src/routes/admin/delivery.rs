@@ -11,7 +11,8 @@ use sn_domain::ids::{EventId, JobId, OrderId};
 use sn_domain::module::ModuleId;
 use sn_domain::order::OrderStatus;
 use sn_services::ServiceError;
-use sn_services::fulfillment::{REVIEW_ORDERS_LIMIT, ReviewItem};
+use sn_services::decisions::OrderReview;
+use sn_services::fulfillment::REVIEW_ORDERS_LIMIT;
 use sn_store::{Db, Delivery, PlanStage};
 
 const REVIEW_LIMIT: i64 = 50;
@@ -130,12 +131,10 @@ async fn orders_review(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<ReviewQuery>,
-) -> ApiResult<Json<Vec<ReviewItem>>> {
+) -> ApiResult<Json<Vec<OrderReview>>> {
     admin.require(Permission::Money)?;
     let limit = query.limit.unwrap_or(REVIEW_ORDERS_LIMIT);
-    Ok(Json(
-        state.services.fulfillment().review_orders(limit).await?,
-    ))
+    Ok(Json(state.services.decisions().orders(limit).await?))
 }
 
 async fn redeliver(

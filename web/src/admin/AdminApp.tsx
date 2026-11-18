@@ -86,7 +86,9 @@ export function AdminApp() {
   }, [load]);
 
   const [supportBadge, setSupportBadge] = useState(0);
+  const [moneyBadge, setMoneyBadge] = useState(0);
   const [build, setBuild] = useState<BuildSummary | null>(null);
+  const [badgeTick, setBadgeTick] = useState(0);
   const signedIn = state.kind === 'in';
   useEffect(() => {
     if (!signedIn) {
@@ -94,8 +96,13 @@ export function AdminApp() {
     }
     let alive = true;
     const tick = () =>
-      api<{ support: number }>('/api/admin/badges')
-        .then((b) => alive && setSupportBadge(b.support))
+      api<{ support: number; money?: number }>('/api/admin/badges')
+        .then((b) => {
+          if (alive) {
+            setSupportBadge(b.support);
+            setMoneyBadge(b.money ?? 0);
+          }
+        })
         .catch(() => undefined);
     const onShow = () => {
       if (document.visibilityState === 'visible') {
@@ -112,7 +119,9 @@ export function AdminApp() {
       window.removeEventListener('focus', onShow);
       document.removeEventListener('visibilitychange', onShow);
     };
-  }, [signedIn]);
+  }, [signedIn, badgeTick]);
+
+  const refreshBadges = useCallback(() => setBadgeTick((n) => n + 1), []);
 
   const canSupport = state.kind === 'in' && state.me.permissions.includes('support');
   const supportWaiting = useCallback(
@@ -190,8 +199,9 @@ export function AdminApp() {
       theme,
       flipTheme: () => void flipTheme(),
       supportWaiting,
+      refreshBadges,
     };
-  }, [state, load, setAppearance, theme, flipTheme, supportWaiting]);
+  }, [state, load, setAppearance, theme, flipTheme, supportWaiting, refreshBadges]);
 
   if (state.kind === 'loading') {
     return <div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />;
@@ -220,7 +230,7 @@ export function AdminApp() {
 
   return (
     <SessionContext.Provider value={session}>
-      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge} build={build}>
+      <Shell theme={theme} onFlipTheme={() => void flipTheme()} supportBadge={supportBadge} moneyBadge={moneyBadge} build={build}>
         <Routes>
           <Route index element={<Home />} />
           <Route path="clients" element={<Clients />} />

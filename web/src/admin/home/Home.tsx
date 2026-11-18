@@ -9,18 +9,15 @@ import { HomePhone } from './HomePhone';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { PickClient } from '../clients/Clients';
 import { useSession } from '../session';
-import { ATTENTION_LINK, attentionCount, attentionTitle } from '../money/journal';
 import {
   agoLong,
   countryName,
   feedLine,
-  minutesSince,
   nodesHeader,
   nodeStateText,
   nodesSummary,
   orderLine,
   personName,
-  spanText,
   trafficAlert,
   weekdayLine,
   type BillingNode,
@@ -32,6 +29,7 @@ import {
   type PaymentItem,
   type TicketItem,
 } from './model';
+import { desktopTodos, type Waiting, type Withdrawal } from './todo';
 import './home.css';
 import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
@@ -98,6 +96,73 @@ export function useOverview() {
   );
 
   return { dashboard, error, nodes, restart, restarting, billing, canRestart: can('infrastructure') };
+}
+
+function useTodoSources() {
+  const { can, me } = useSession();
+  const support = can('support');
+  const referral = can('money') && me.menu.some((m) => m.module === 'referral');
+  const [waiting, setWaiting] = useState<Waiting | null>(null);
+  const [withdrawals, setWithdrawals] = useState<Withdrawal[] | null>(null);
+
+  useEffect(() => {
+    if (!support) {
+      setWaiting(null);
+      return;
+    }
+    api<{ items: TicketItem[]; counts: { waiting: number } }>('/api/admin/support/tickets?filter=waiting&limit=1')
+      .then((page) => setWaiting({ count: page.counts.waiting, oldest: page.items[0] ?? null }))
+      .catch(() => setWaiting({ count: 0, oldest: null }));
+  }, [support]);
+
+  useEffect(() => {
+    if (!referral) {
+      setWithdrawals([]);
+      return;
+    }
+    api<{ items: Withdrawal[] }>('/api/admin/m/referral/withdrawals?status=pending&limit=100')
+      .then((page) => setWithdrawals(page.items))
+      .catch(() => setWithdrawals([]));
+  }, [referral]);
+
+  return { waiting, withdrawals: withdrawals ?? [], ready: (!support || waiting !== null) && withdrawals !== null };
+}
+
+function TodoPane({ dashboard, variant }: { dashboard: Dashboard | null; variant: 'day' | 'main' }) {
+  const { waiting, withdrawals, ready } = useTodoSources();
+  const rows = desktopTodos(dashboard?.decisions, dashboard?.webhooks, waiting, withdrawals);
+  const day = variant === 'day';
+  return (
+    <section aria-labelledby="todo-h" className={day ? 'hm-sec hm-pane' : 'hm-sec hm-nodes hm-todos'}>
+      <div className={day ? 'hm-panehead' : 'hm-feedhead'}>
+        <h2 id="todo-h" className={day ? 'hm-h2b' : 'hm-h2'}>
+          Нужно сделать {rows.length ? <span className="muted">{rows.length}</span> : null}
+        </h2>
+      </div>
+      {dashboard && ready && rows.length === 0 ? (
+        <p className="hm-empty muted" style={day ? { padding: '12px' } : undefined}>
+          Срочных дел нет
+        </p>
+      ) : null}
+      {rows.map((todo) => (
+        <div key={todo.key} className="hm-todo">
+          <span className="hm-text">
+            <span className="hm-todo-title">{todo.title}</span>
+            {todo.note ? (
+              <span className={`hm-note ${todo.tone}`} title={todo.note}>
+                {todo.note}
+              </span>
+            ) : null}
+          </span>
+          {todo.to ? (
+            <Link to={todo.to} className="btn-line hov" aria-label={todo.label}>
+              {todo.action}
+            </Link>
+          ) : null}
+        </div>
+      ))}
+    </section>
+  );
 }
 
 export function Home() {
@@ -273,7 +338,6 @@ function MainBoard() {
   const delta =
     revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
   const summary = nodesSummary(nodes);
-  const attention = attentionCount(dashboard?.webhooks) > 0 ? (dashboard?.webhooks ?? null) : null;
 
   return (
     <div className="hm">
@@ -320,11 +384,6 @@ function MainBoard() {
               ) : null}
               за месяц {money(revenue.month, true)}
             </span>
-            {attention ? (
-              <Link to={ATTENTION_LINK} className="hm-alert">
-                {attentionTitle(attention)} за сутки
-              </Link>
-            ) : null}
           </div>
         ) : null}
         <div className="hm-stat">
@@ -350,6 +409,7 @@ function MainBoard() {
         <Feed nodes={nodes} restart={restart} restarting={restarting} canRestart={canRestart} variant="main" />
 
         <div className="hm-side">
+        <TodoPane dashboard={dashboard} variant="main" />
         <section aria-labelledby="nodes-h" className="hm-sec hm-nodes">
           <div className="hm-feedhead">
             <h2 id="nodes-h" className="hm-h2">
@@ -395,16 +455,10 @@ function MainBoard() {
 function Daylight() {
   const { can, me } = useSession();
   const { dashboard, nodes, restart, restarting, billing, canRestart } = useOverview();
-  const [tickets, setTickets] = useState<{ items: TicketItem[]; counts: { waiting: number } } | null>(null);
   const [payments, setPayments] = useState<PaymentItem[] | null>(null);
   const [picking, setPicking] = useState(false);
 
   useEffect(() => {
-    if (can('support')) {
-      api<{ items: TicketItem[]; counts: { waiting: number } }>('/api/admin/support/tickets?filter=waiting&limit=3')
-        .then(setTickets)
-        .catch(() => setTickets({ items: [], counts: { waiting: 0 } }));
-    }
     if (can('money')) {
       api<{ items: PaymentItem[] }>('/api/admin/payments?limit=5')
         .then((page) => setPayments(page.items))
@@ -417,7 +471,6 @@ function Daylight() {
   const subs = dashboard?.subscriptions ?? null;
   const online = dashboard?.remna?.online_now ?? null;
   const flagged = nodes.find((n) => n.state === 'down') ?? nodes.find((n) => n.state === 'connecting') ?? null;
-  const attention = attentionCount(dashboard?.webhooks) > 0 ? (dashboard?.webhooks ?? null) : null;
   const modules = new Set(me.menu.map((m) => m.module));
   const quick: Array<{ label: string; to?: string; run?: () => void }> = [];
   if (can('clients_write')) {
@@ -489,15 +542,6 @@ function Daylight() {
           ) : dashboard ? (
             ' Remnawave сейчас не отвечает.'
           ) : null}
-          {attention ? (
-            <>
-              {' '}
-              <Link to={ATTENTION_LINK} className="hm-flag bad">
-                {attentionTitle(attention)}
-              </Link>{' '}
-              за сутки.
-            </>
-          ) : null}
         </p>
         <p className="muted">
           {[
@@ -519,38 +563,7 @@ function Daylight() {
       </section>
 
       <div className="hm-cols">
-        {tickets ? (
-          <section aria-labelledby="wait-h" className="hm-sec hm-pane">
-            <div className="hm-panehead">
-              <h2 id="wait-h" className="hm-h2b">
-                Ждут ответа <span className="muted">{tickets.counts.waiting}</span>
-              </h2>
-              <Link to="/admin/support" className="hm-link">
-                Все обращения
-              </Link>
-            </div>
-            {tickets.items.length === 0 ? <p className="hm-empty muted" style={{ padding: '12px' }}>Все ответы отправлены</p> : null}
-            {tickets.items.map((t) => {
-              const name = t.client_name ?? (t.telegram_username ? `@${t.telegram_username}` : (t.email ?? `Клиент ${t.ticket.client_id}`));
-              const minutes = minutesSince(t.waiting_since) ?? 0;
-              const tone = minutes >= 120 ? 'var(--bad)' : minutes >= 30 ? 'var(--warn)' : 'var(--muted)';
-              return (
-                <Link key={t.ticket.id} to={`/admin/support?ticket=${t.ticket.id}`} className="hm-link-row">
-                  <Avatar id={t.ticket.client_id} name={name} className="hm-ava big" />
-                  <span className="hm-text">
-                    <span style={{ fontWeight: 600 }}>{name}</span>
-                    <span className="hm-note" style={{ color: 'var(--ink-2)', fontSize: 15 }}>
-                      {t.preview ?? t.ticket.subject ?? ''}
-                    </span>
-                  </span>
-                  <span className="num hm-wait" style={{ color: tone }}>
-                    {spanText(minutes)}
-                  </span>
-                </Link>
-              );
-            })}
-          </section>
-        ) : null}
+        {dashboard ? <TodoPane dashboard={dashboard} variant="day" /> : null}
         {payments ? (
           <section aria-labelledby="pay-h" className="hm-sec hm-pane">
             <div className="hm-panehead">

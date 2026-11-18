@@ -104,6 +104,21 @@ pub struct RefundAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChargeReview {
+    pub payment: Payment,
+    pub reason: Option<String>,
+    pub review_since: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ChargeReviewRow {
+    #[sqlx(flatten)]
+    payment: PaymentRow,
+    reason: Option<String>,
+    review_since: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedRefundAction {
     pub request: ProviderRefund,
     pub order_id: OrderId,
@@ -312,7 +327,7 @@ const COLUMNS: &str = "id, public_id, order_id, client_id, provider, method, amo
 
 pub(crate) const TRANSITION_ATTEMPTS: usize = 4;
 
-fn poll_key_prefix() -> String {
+pub fn poll_key_prefix() -> String {
     let probe = JobPayload::PollPayment {
         payment_id: PaymentId(0),
     }
@@ -510,6 +525,29 @@ impl<'c> PaymentsRepo<'c> {
         ))
         .fetch_one(&mut *self.conn)
         .await?)
+    }
+
+    pub async fn charges_review_list(&mut self, limit: i64) -> StoreResult<Vec<ChargeReview>> {
+        let rows: Vec<ChargeReviewRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS}, j.last_error AS reason, j.updated_at AS review_since \
+             FROM payments p LEFT JOIN LATERAL (SELECT last_error, updated_at FROM jobs \
+                 WHERE dedupe_key = '{}' || p.id::text ORDER BY id DESC LIMIT 1) j ON true \
+             WHERE {} ORDER BY p.id DESC LIMIT $1",
+            poll_key_prefix(),
+            charge_review_filter("p")
+        ))
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ChargeReview {
+                    payment: row.payment.try_into()?,
+                    reason: row.reason,
+                    review_since: row.review_since,
+                })
+            })
+            .collect()
     }
 
     pub async fn charge_reviews(

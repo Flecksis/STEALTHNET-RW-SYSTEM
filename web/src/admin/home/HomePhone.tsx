@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api } from '../../lib/api';
-import { count, dateLong, groupDigits, money, type Money } from '../../lib/format';
+import { count, dateLong, groupDigits, money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import { PhoneHeader } from '../phone';
@@ -10,18 +10,15 @@ import { useSession } from '../session';
 import { useOverview } from './Home';
 import { PanelServer } from './PanelServer';
 import { agoLong, minutesSince, orderLine, personName, spanText, type PaymentItem, type TicketItem } from './model';
+import { moneyTodos, refundTodo, type Todo, type Withdrawal } from './todo';
 import './phone.css';
 import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
 import { ConfigWarnings } from './ConfigWarnings';
 
-type Withdrawal = { id: number; amount: Money; status: string; created_at: string };
-
 function longSpan(minutes: number): string {
   return minutes < 60 ? count(Math.max(1, minutes), 'минуту', 'минуты', 'минут') : spanText(minutes);
 }
-
-type Todo = { key: string; title: string; note: string; tone: 'bad' | 'warn' | 'muted'; action: string; label: string; to?: string; href?: string; run?: () => void; busy?: boolean };
 
 export function HomePhone() {
   const { can, me } = useSession();
@@ -92,6 +89,11 @@ export function HomePhone() {
       busy: busy || !canRestart,
     });
   }
+  const refund = refundTodo(dashboard?.decisions?.refund_actions);
+  if (refund) {
+    todos.push(refund);
+  }
+  todos.push(...moneyTodos(dashboard?.decisions));
   for (const bill of billing) {
     const nodeName = bill.node?.name ?? bill.name ?? 'сервер';
     todos.push({

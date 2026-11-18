@@ -5,6 +5,8 @@ mod auth;
 mod bot_content;
 mod catalog;
 mod clients;
+#[cfg(test)]
+mod decisions_tests;
 mod delivery;
 mod import;
 mod infra;

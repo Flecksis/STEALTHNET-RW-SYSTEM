@@ -24,6 +24,38 @@
   font-weight: 600;
 }
 
+.mo-done.warn {
+  color: var(--warn);
+}
+
+.mo-todo[hidden] {
+  display: none;
+}
+
+.mo-group {
+  display: flex;
+  flex-direction: column;
+  scroll-margin-top: 84px;
+}
+
+.mo-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 20px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.mo-sub .muted {
+  max-width: 680px;
+}
+
+.mo-h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
 .mo-row {
   display: flex;
   flex-wrap: wrap;
@@ -87,11 +119,6 @@
   white-space: nowrap;
 }
 
-.mo-lead {
-  margin: -8px 20px 14px;
-  max-width: 640px;
-}
-
 .mo-acts {
   flex-wrap: wrap;
   gap: 8px;
@@ -116,6 +143,7 @@
   }
 
   .mo-acts {
+    flex: 1 1 100%;
     min-width: 0;
     justify-content: flex-start;
   }

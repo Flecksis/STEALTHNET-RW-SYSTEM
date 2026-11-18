@@ -3,6 +3,7 @@ import { amountText, lowerFirst, methodText } from '../client/history';
 import type { Amount, OrderBrief } from '../client/types';
 import type { Attention } from '../money/journal';
 import { termText } from '../tariffs/model';
+import type { Decisions } from './todo';
 
 export type NodeState = 'online' | 'connecting' | 'down' | 'disabled';
 
@@ -28,6 +29,7 @@ export type Dashboard = {
   revenue: { today: Money; yesterday: Money; week: Money; month: Money; today_stars: number; by_day: Array<{ day: string; amount: Money }> } | null;
   support_waiting: number;
   webhooks?: Attention | null;
+  decisions?: Decisions;
   remna: { online_now: number; users_total: number; nodes_total: number; nodes_online: number; nodes: NodeBrief[] } | null;
   remna_error: string | null;
   server?: ServerLoad;

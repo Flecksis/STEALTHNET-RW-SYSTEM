@@ -92,15 +92,6 @@
   padding: 0 24px;
 }
 
-.hm-alert {
-  align-self: flex-start;
-  color: var(--bad);
-  font-weight: 600;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
-}
-
 .hm-stat {
   flex: 1 1 170px;
   display: flex;
@@ -244,12 +235,6 @@
 .hm-ava.icon {
   background: transparent;
   color: var(--ink-2);
-}
-
-.hm-ava.big {
-  flex-basis: 42px;
-  width: 42px;
-  height: 42px;
 }
 
 .hm-ava.mid {
@@ -402,10 +387,54 @@
   background: var(--surface-2);
 }
 
-.hm-wait {
-  font-size: 13px;
+.hm-todo {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  border-radius: 6px;
+}
+
+.hm-todo .hm-text {
+  gap: 2px;
+}
+
+.hm-todo-title {
   font-weight: 600;
-  white-space: nowrap;
+  color: var(--ink);
+}
+
+.hm-todo .hm-note {
+  font-size: 14px;
+}
+
+.hm-todo .hm-note.bad {
+  color: var(--bad);
+}
+
+.hm-todo .hm-note.warn {
+  color: var(--warn);
+}
+
+.hm-todo .hm-note.muted {
+  color: var(--muted);
+}
+
+.hm-todo .btn-line {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 16px;
+  font-size: 14px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.hm-todos .hm-todo {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
 }
 
 .hm-sum {

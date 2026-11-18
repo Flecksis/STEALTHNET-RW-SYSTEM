@@ -11,10 +11,10 @@ use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::PaymentStatus;
 use sn_services::admin::{MarkPaidRequest, MarkPaidResult, PaymentFilter, RefundRequest};
-use sn_services::inbox::{
-    JournalCard, JournalPage, JournalQuery, OutcomeGroup, PendingRefundRequest, RefundActionReview,
-    RefundOptions,
+use sn_services::decisions::{
+    CHARGES_LIMIT, ChargeReviewItem, RefundActionView, RefundRequestView,
 };
+use sn_services::inbox::{JournalCard, JournalPage, JournalQuery, OutcomeGroup, RefundOptions};
 
 const REFUND_LIST_LIMIT: i64 = 100;
 
@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/payments", get(list))
         .route("/payments/{id}/mark-paid", post(mark_paid))
         .route("/payments/{id}/refund", get(refund_options).post(refund))
+        .route("/charges/review", get(charges_review))
         .route("/refunds/pending", get(pending_refunds))
         .route("/refunds/actions", get(refund_actions))
         .route("/refunds/{id}/cancel", post(cancel_refund_request))
@@ -38,6 +39,14 @@ pub fn routes() -> Router<AppState> {
 struct LimitQuery {
     #[serde(default)]
     limit: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PendingQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    stuck: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -161,17 +170,32 @@ async fn refund(
     Ok(Json(serde_json::json!({ "ok": true, "refund": refund })))
 }
 
-async fn pending_refunds(
+async fn charges_review(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<LimitQuery>,
-) -> ApiResult<Json<Vec<PendingRefundRequest>>> {
+) -> ApiResult<Json<Vec<ChargeReviewItem>>> {
+    admin.require(Permission::Money)?;
+    Ok(Json(
+        state
+            .services
+            .decisions()
+            .charges(query.limit.unwrap_or(CHARGES_LIMIT))
+            .await?,
+    ))
+}
+
+async fn pending_refunds(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<PendingQuery>,
+) -> ApiResult<Json<Vec<RefundRequestView>>> {
     admin.require(Permission::Refunds)?;
     Ok(Json(
         state
             .services
-            .inbox()
-            .pending_refund_requests(query.limit.unwrap_or(REFUND_LIST_LIMIT))
+            .decisions()
+            .refund_requests(query.limit.unwrap_or(REFUND_LIST_LIMIT), query.stuck)
             .await?,
     ))
 }
@@ -180,13 +204,13 @@ async fn refund_actions(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     ApiQuery(query): ApiQuery<LimitQuery>,
-) -> ApiResult<Json<Vec<RefundActionReview>>> {
+) -> ApiResult<Json<Vec<RefundActionView>>> {
     admin.require(Permission::Refunds)?;
     Ok(Json(
         state
             .services
-            .inbox()
-            .refund_actions_review(query.limit.unwrap_or(REFUND_LIST_LIMIT))
+            .decisions()
+            .refund_actions(query.limit.unwrap_or(REFUND_LIST_LIMIT))
             .await?,
     ))
 }

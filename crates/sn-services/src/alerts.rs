@@ -37,6 +37,11 @@ const NOTICE_MAX: usize = 600;
 const SCAN_LIMIT: i64 = 500;
 const NODES_PATH: &str = "/admin/infra";
 const ADMINS_PATH: &str = "/admin/settings/admins";
+const ORDERS_PATH: &str = "/admin/money#todo-orders";
+const CHARGES_PATH: &str = "/admin/money#todo-charges";
+const STARS_PATH: &str = "/admin/money#todo-stars";
+const REFUNDS_PATH: &str = "/admin/money#todo-refunds";
+const CHARGES_SEEN: &str = "alerts.seen.orders.charges";
 const SECURITY_DAYS: i32 = 2;
 
 fn seen_key(kind: AlertKind) -> String {
@@ -219,21 +224,21 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
                 "Ещё {rest} {} ждут ручной проверки",
                 format::plural_ru(n, "заказ", "заказа", "заказов")
             ),
-            "/admin/money",
+            ORDERS_PATH,
         ),
         AlertKind::Stars => (
             format!(
                 "Ещё {rest} {} звёздами на разборе",
                 format::plural_ru(n, "оплата", "оплаты", "оплат")
             ),
-            "/admin/money",
+            STARS_PATH,
         ),
         AlertKind::Refunds => (
             format!(
                 "Ещё {rest} {} не завершены",
                 format::plural_ru(n, "возврат", "возврата", "возвратов")
             ),
-            "/admin/money",
+            REFUNDS_PATH,
         ),
         AlertKind::Withdrawals => (
             format!(
@@ -289,6 +294,22 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
         kind,
         html: text,
         path: path.to_string(),
+    }
+}
+
+fn charges_summary(rest: usize) -> Alert {
+    Alert {
+        kind: AlertKind::Orders,
+        html: format!(
+            "Ещё {rest} {}",
+            format::plural_ru(
+                rest as u64,
+                "списание с карты ждёт ручной проверки",
+                "списания с карты ждут ручной проверки",
+                "списаний с карты ждут ручной проверки"
+            )
+        ),
+        path: CHARGES_PATH.to_string(),
     }
 }
 
@@ -705,6 +726,7 @@ impl<'a> AlertsOps<'a> {
         ] {
             out.extend(self.watched(kind, &config).await?);
         }
+        out.extend(self.charges(&config).await?);
         out.extend(self.auto_refunds(&config).await?);
         out.extend(self.traffic(&config).await?);
         out.extend(self.nodes(&config).await?);
@@ -1182,7 +1204,7 @@ impl<'a> AlertsOps<'a> {
                     items.push(Item {
                         id,
                         html: lines.join("\n"),
-                        path: "/admin/money".to_string(),
+                        path: ORDERS_PATH.to_string(),
                     });
                 }
             }
@@ -1211,7 +1233,7 @@ impl<'a> AlertsOps<'a> {
                     items.push(Item {
                         id,
                         html: lines.join("\n"),
-                        path: "/admin/money".to_string(),
+                        path: STARS_PATH.to_string(),
                     });
                 }
             }
@@ -1248,7 +1270,7 @@ impl<'a> AlertsOps<'a> {
                     items.push(Item {
                         id,
                         html: lines.join("\n"),
-                        path: "/admin/money".to_string(),
+                        path: REFUNDS_PATH.to_string(),
                     });
                 }
             }
@@ -1309,15 +1331,70 @@ impl<'a> AlertsOps<'a> {
         Ok(items)
     }
 
+    async fn charge_items(&self) -> ServiceResult<Vec<Item>> {
+        let mut conn = self.services.store().conn().await?;
+        let mut charges = conn.payments().charges_review_list(SCAN_LIMIT).await?;
+        charges.reverse();
+        let mut items = Vec::new();
+        for charge in charges {
+            let payment = &charge.payment;
+            let mut lines = vec![
+                format!(
+                    "<b>Списание с карты №{} ждёт ручной проверки</b>",
+                    payment.id.0
+                ),
+                format!(
+                    "Клиент: {}",
+                    escape(&client_label(&mut conn, payment.client_id.0).await)
+                ),
+                format!("Сумма: {}", escape(&amount_text(payment.amount))),
+            ];
+            if let Some(reason) = charge.reason.as_deref().filter(|r| !r.trim().is_empty()) {
+                lines.push(format!("Причина: {}", escape(&cut(reason, BODY_MAX))));
+            }
+            items.push(Item {
+                id: payment.id.0,
+                html: lines.join("\n"),
+                path: CHARGES_PATH.to_string(),
+            });
+        }
+        Ok(items)
+    }
+
+    async fn charges(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let items = self.charge_items().await?;
+        self.unseen(
+            AlertKind::Orders,
+            CHARGES_SEEN,
+            items,
+            config,
+            charges_summary,
+        )
+        .await
+    }
+
     async fn watched(&self, kind: AlertKind, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
         let items = self.items(kind).await?;
+        self.unseen(kind, &seen_key(kind), items, config, |rest| {
+            summary(kind, rest)
+        })
+        .await
+    }
+
+    async fn unseen(
+        &self,
+        kind: AlertKind,
+        key: &str,
+        items: Vec<Item>,
+        config: &AlertsConfig,
+        more: impl Fn(usize) -> Alert,
+    ) -> ServiceResult<Vec<Alert>> {
         let current: BTreeSet<i64> = items.iter().map(|i| i.id).collect();
-        let key = seen_key(kind);
         let seen: Option<BTreeSet<i64>> = self
-            .state(&key)
+            .state(key)
             .await?
             .and_then(|v| serde_json::from_value(v).ok());
-        self.put_state(&key, &serde_json::json!(current)).await?;
+        self.put_state(key, &serde_json::json!(current)).await?;
         let Some(seen) = seen else {
             return Ok(Vec::new());
         };
@@ -1339,7 +1416,7 @@ impl<'a> AlertsOps<'a> {
             })
             .collect();
         if rest > 0 {
-            out.push(summary(kind, rest));
+            out.push(more(rest));
         }
         Ok(out)
     }

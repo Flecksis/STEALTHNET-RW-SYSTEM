@@ -11,6 +11,7 @@ pub mod checkout;
 pub mod clients;
 pub mod clock;
 pub mod core_api;
+pub mod decisions;
 pub mod error;
 pub mod events;
 pub mod fulfillment;

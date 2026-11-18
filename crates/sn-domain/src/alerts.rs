@@ -55,7 +55,7 @@ impl AlertKind {
     pub const fn title_ru(self) -> &'static str {
         match self {
             AlertKind::Support => "Обращения в поддержку",
-            AlertKind::Orders => "Заказы на ручной проверке",
+            AlertKind::Orders => "Заказы и списания с карты на ручной проверке",
             AlertKind::Stars => "Оплаты звёздами на разборе",
             AlertKind::Refunds => "Возвраты: автоматические и незавершённые",
             AlertKind::Withdrawals => "Заявки на вывод",

@@ -11,6 +11,7 @@ export type Session = {
   theme: Theme;
   flipTheme: () => void;
   supportWaiting: (count: number) => void;
+  refreshBadges: () => void;
 };
 
 export const SessionContext = createContext<Session | null>(null);

@@ -8,6 +8,7 @@ import type { Amount } from '../client/types';
 import { amountText } from '../client/history';
 import { agoLong, personName } from '../home/model';
 import { useSession } from '../session';
+import { GroupFrame, type Outcome } from './group';
 
 type ReviewItem = {
   id: number;
@@ -53,15 +54,18 @@ function whatText(item: ReviewItem): string {
   return `${what} ${starsText(item)}${invoice}`;
 }
 
-function retriedText(result: Retried): string {
+function retriedText(result: Retried): Outcome {
   if (result.outcome === 'done') {
-    return 'Оплата проведена';
+    return { text: 'Оплата проведена', tone: 'ok' };
   }
   const reason = result.reason ? `: ${result.reason}` : '';
-  return result.outcome === 'review' ? `Провести не получилось${reason}` : `Сразу не получилось, система повторит сама${reason}`;
+  return {
+    text: result.outcome === 'review' ? `Провести не получилось, оплата снова на разборе${reason}` : `Сразу не получилось, система повторит сама${reason}`,
+    tone: 'warn',
+  };
 }
 
-function ActionDialog({ action, onClose, onDone }: { action: Action; onClose: () => void; onDone: (text: string) => void }) {
+function ActionDialog({ action, onClose, onDone }: { action: Action; onClose: () => void; onDone: (outcome: Outcome) => void }) {
   const { item, kind } = action;
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -77,7 +81,10 @@ function ActionDialog({ action, onClose, onDone }: { action: Action; onClose: ()
         onDone(retriedText(await api<Retried>(path, { method: 'POST' })));
       } else {
         await api(path, { method: 'POST', body: comment.trim() ? { comment: comment.trim() } : {} });
-        onDone(kind === 'refund' ? `Звёзды вернули: ${starsText(item)}` : notice ? 'Уведомление о возврате закрыто' : 'Событие закрыто без возврата');
+        onDone({
+          text: kind === 'refund' ? `Звёзды вернули: ${starsText(item)}` : notice ? 'Уведомление о возврате закрыто' : 'Событие закрыто без возврата',
+          tone: 'ok',
+        });
       }
     } catch (err) {
       setError(failText(err, 'Не получилось'));
@@ -134,14 +141,16 @@ function ActionDialog({ action, onClose, onDone }: { action: Action; onClose: ()
   );
 }
 
-export function StarsReview({ onChanged }: { onChanged: () => void }) {
+type Props = { id: string; onChanged: () => void; onState: (visible: boolean, count: number) => void; round: number };
+
+export function StarsReview({ id, onChanged, onState, round }: Props) {
   const { can } = useSession();
   const refunds = can('refunds');
   const [items, setItems] = useState<ReviewItem[] | null>(null);
   const [next, setNext] = useState<number | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const [done, setDone] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
   const [action, setAction] = useState<Action | null>(null);
 
@@ -168,7 +177,15 @@ export function StarsReview({ onChanged }: { onChanged: () => void }) {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, round]);
+
+  const loaded = items !== null;
+  const visible = loaded && (items.length > 0 || error !== null || done !== null);
+  useEffect(() => {
+    if (loaded) {
+      onState(visible, total);
+    }
+  }, [onState, loaded, visible, total]);
 
   const more = async () => {
     if (next === null) {
@@ -187,29 +204,19 @@ export function StarsReview({ onChanged }: { onChanged: () => void }) {
     }
   };
 
-  if (items === null || (items.length === 0 && !error && !done)) {
+  if (items === null || !visible) {
     return null;
   }
 
   return (
-    <section className="card mn-money mo-stars" aria-labelledby="ms-h">
-      <div className="mo-head">
-        <h2 id="ms-h" className="section-title">
-          Оплаты звёздами на разборе{total > 0 ? ` · ${total}` : ''}
-        </h2>
-      </div>
-      <p className="muted mo-lead">Звёзды, которые не получилось провести автоматически. Здесь их можно провести снова, вернуть клиенту или закрыть с пояснением.</p>
-      {done ? (
-        <p className="mo-done" role="status">
-          {done}
-        </p>
-      ) : null}
-      {error ? (
-        <p className="err mo-pad" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {items.length === 0 && !error ? <p className="muted mo-pad">Разбирать больше нечего</p> : null}
+    <GroupFrame
+      id={id}
+      title="Оплаты звёздами на разборе"
+      total={total}
+      lead="Звёзды, которые не получилось провести автоматически. Здесь их можно провести снова, вернуть клиенту или закрыть с пояснением."
+      outcome={done}
+      error={error}
+    >
       {items.map((item) => {
         const clientId = item.payer_client_id ?? item.payment?.client_id ?? null;
         const name = item.payer_name ?? (clientId ? personName(null, clientId) : item.telegram_user_id ? `Telegram ${item.telegram_user_id}` : 'Плательщик неизвестен');
@@ -265,14 +272,13 @@ export function StarsReview({ onChanged }: { onChanged: () => void }) {
         <ActionDialog
           action={action}
           onClose={() => setAction(null)}
-          onDone={(text) => {
+          onDone={(outcome) => {
             setAction(null);
-            setDone(text);
-            void load();
+            setDone(outcome);
             onChanged();
           }}
         />
       ) : null}
-    </section>
+    </GroupFrame>
   );
 }

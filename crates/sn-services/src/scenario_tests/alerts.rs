@@ -499,3 +499,123 @@ async fn блокировка_входа_по_коду_приходит_адми
     assert_eq!(got[3].path, "/admin/settings/admins");
     env.db.cleanup().await;
 }
+
+async fn charge_on_review(services: &Services, client: ClientId, minor: i64, reason: &str) -> i64 {
+    let mut conn = services.store().conn().await.unwrap();
+    let order: i64 = sqlx::query_scalar(
+        "INSERT INTO orders (client_id, kind, status, intent, quote, currency, total_minor) \
+         VALUES ($1, 'renewal', 'pending', '{}', '{}', 'USD', $2) RETURNING id",
+    )
+    .bind(client.0)
+    .bind(minor)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    let payment: i64 = sqlx::query_scalar(
+        "INSERT INTO payments (order_id, client_id, provider, method, amount_minor, currency, expires_at) \
+         VALUES ($1, $2, 'yookassa', 'autorenew', $3, 'USD', now() + interval '1 day') RETURNING id",
+    )
+    .bind(order)
+    .bind(client.0)
+    .bind(minor)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO jobs (kind, dedupe_key, payload, status, last_error) \
+         VALUES ('poll_payment', $1, $2, 'review', $3)",
+    )
+    .bind(format!("poll:{payment}"))
+    .bind(serde_json::json!({ "kind": "poll_payment", "payment_id": payment }))
+    .bind(reason)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    payment
+}
+
+fn orders_route(on: bool) -> AlertsUpdate {
+    AlertsUpdate {
+        routes: vec![RouteInput {
+            kind: AlertKind::Orders,
+            on,
+            topic: None,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn списания_с_карты_на_проверке_приходят_в_тему_заказов_один_раз() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let client = telegram_client(services, 7_320).await;
+    charge_on_review(services, client, 299, "старое списание").await;
+    assert!(services.alerts().collect().await.unwrap().is_empty());
+    let fresh = charge_on_review(
+        services,
+        client,
+        499,
+        "исход автосписания так и не выяснен: проверьте платёж в кабинете кассы",
+    )
+    .await;
+    let got = services.alerts().collect().await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].kind, AlertKind::Orders);
+    assert!(
+        got[0].html.starts_with(&format!(
+            "<b>Списание с карты №{fresh} ждёт ручной проверки</b>\nКлиент: Алексей (@morozov_a)\nСумма: $4.99\n"
+        )),
+        "{}",
+        got[0].html
+    );
+    assert!(
+        got[0].html.ends_with(
+            "Причина: исход автосписания так и не выяснен: проверьте платёж в кабинете кассы"
+        ),
+        "{}",
+        got[0].html
+    );
+    assert_eq!(got[0].path, "/admin/money#todo-charges");
+    assert!(services.alerts().collect().await.unwrap().is_empty());
+
+    for minor in [100, 200, 300, 400] {
+        charge_on_review(services, client, minor, "касса не отдаёт статус").await;
+    }
+    let got = services.alerts().collect().await.unwrap();
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert!(got.iter().all(|a| a.kind == AlertKind::Orders));
+    assert!(got[0].html.contains("Сумма: $1.00"), "{}", got[0].html);
+    assert_eq!(got[3].html, "Ещё 1 списание с карты ждёт ручной проверки");
+    assert_eq!(got[3].path, "/admin/money#todo-charges");
+
+    services
+        .alerts()
+        .update(&orders_route(false), admin)
+        .await
+        .unwrap();
+    charge_on_review(services, client, 700, "касса не отдаёт статус").await;
+    assert!(services.alerts().collect().await.unwrap().is_empty());
+    services
+        .alerts()
+        .update(&orders_route(true), admin)
+        .await
+        .unwrap();
+    assert!(services.alerts().collect().await.unwrap().is_empty());
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO orders (client_id, kind, status, intent, quote, currency, total_minor, review_reason) \
+             VALUES ($1, 'renewal', 'review', '{}', '{}', 'USD', 299, 'Remnawave не ответила')",
+        )
+        .bind(client.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let got = services.alerts().collect().await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].html.contains("ждёт ручной проверки"));
+    assert_eq!(got[0].path, "/admin/money#todo-orders");
+    env.db.cleanup().await;
+}

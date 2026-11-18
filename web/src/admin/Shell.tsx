@@ -15,6 +15,7 @@ type Props = {
   theme: Theme;
   onFlipTheme: () => void;
   supportBadge?: number;
+  moneyBadge?: number;
   build?: BuildSummary | null;
   children: ReactNode;
 };
@@ -322,7 +323,7 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
             to={item.to}
             className="pnav-tab press"
             aria-current={isCurrent(item, path) ? 'page' : undefined}
-            aria-label={item.badge ? `${item.label}, ${item.badge} без ответа` : undefined}
+            aria-label={item.badge ? `${item.label}, ${item.badge} ${item.badgeLabel ?? ''}`.trim() : undefined}
           >
             <span className="pnav-icon">
               <Icon name={item.icon} size={22} />
@@ -349,13 +350,13 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
   );
 }
 
-export function Shell({ theme, onFlipTheme, supportBadge, build = null, children }: Props) {
+export function Shell({ theme, onFlipTheme, supportBadge, moneyBadge, build = null, children }: Props) {
   const { me, can } = useSession();
   const location = useLocation();
   const narrow = useMedia('(max-width: 760px)');
   const phone = usePhone();
   const layout = narrow ? 'top' : me.appearance.admin;
-  const items = navItems(me, can, supportBadge, !!build?.update);
+  const items = navItems(me, can, supportBadge, !!build?.update, moneyBadge);
   if (phone) {
     return (
       <div className="adm" data-layout="phone">

@@ -9,7 +9,7 @@ import { RefundDialog } from '../client/RefundDialog';
 import { agoLong, orderLine, personName, type PaymentItem } from '../home/model';
 import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
-import { StarsReview } from './StarsReview';
+import { Decisions } from './Decisions';
 import { MoneyTabs } from './MoneyTabs';
 import { WebhookCard } from './WebhookCard';
 import { Webhooks } from './Webhooks';
@@ -119,6 +119,8 @@ function Payments() {
     void load();
   }, [load]);
 
+  const reload = useCallback(() => void load(), [load]);
+
   const more = async () => {
     if (next === null) {
       return;
@@ -145,7 +147,7 @@ function Payments() {
         </div>
       )}
       <MoneyTabs />
-      <StarsReview onChanged={() => void load()} />
+      <Decisions onChanged={reload} />
       <section className="card mn-money" aria-labelledby="mo-h">
         <div className="mo-head">
           <h2 id="mo-h" className="section-title">
