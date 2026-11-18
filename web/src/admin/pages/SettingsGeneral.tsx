@@ -414,7 +414,7 @@ export function SettingsGeneral() {
           <h2 id="tz-h" className="section-title">
             Часовой пояс Remnawave
           </h2>
-          <span className="muted">По нему считаются сутки в статистике трафика и подключений, которые отдаёт панель</span>
+          <span className="muted">По нему считаются сутки в статистике трафика и подключений, которые отдаёт панель, и дни в «Аналитике»</span>
         </div>
         <div className="row">
           <label htmlFor="gen-tz" className="rl">

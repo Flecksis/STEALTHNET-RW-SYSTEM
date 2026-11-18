@@ -322,3 +322,33 @@ pub fn filtered(query: TabQuery, f: impl FnOnce(&mut TabQuery)) -> TabQuery {
     f(&mut q);
     q
 }
+
+#[test]
+fn конец_периода_позже_сегодняшнего_дня_панели_подрезается_а_не_отклоняется() {
+    let ahead = TabQuery {
+        from: Some(day(2026, 4, 1)),
+        to: Some(day(2026, 4, 16)),
+        ..TabQuery::default()
+    };
+    let r = range(&ahead, msk(), now()).unwrap();
+    assert_eq!(
+        (r.dates.from, r.dates.to),
+        (day(2026, 4, 1), day(2026, 4, 15))
+    );
+    let tomorrow = TabQuery {
+        from: Some(day(2026, 4, 16)),
+        to: Some(day(2026, 4, 16)),
+        ..TabQuery::default()
+    };
+    let r = range(&tomorrow, msk(), now()).unwrap();
+    assert_eq!(
+        (r.dates.from, r.dates.to),
+        (day(2026, 4, 15), day(2026, 4, 15))
+    );
+    let inverted = TabQuery {
+        from: Some(day(2026, 4, 10)),
+        to: Some(day(2026, 4, 5)),
+        ..TabQuery::default()
+    };
+    assert!(range(&inverted, msk(), now()).is_err());
+}

@@ -118,11 +118,11 @@ impl TabQuery {
 pub fn range(query: &TabQuery, offset: FixedOffset, now: DateTime<Utc>) -> Result<Range, WebError> {
     let bad = |text: &str| WebError::rejected("analytics.period", text.to_string());
     let today = local_day(now, offset);
-    let to = query.to.unwrap_or(today);
-    let from = query.from.unwrap_or_else(|| to.with_day(1).unwrap_or(to));
-    if to > today {
-        return Err(bad("Период не может заканчиваться в будущем"));
-    }
+    let to = query.to.unwrap_or(today).min(today);
+    let from = query
+        .from
+        .unwrap_or_else(|| to.with_day(1).unwrap_or(to))
+        .min(today);
     if from > to {
         return Err(bad("Начало периода позже конца"));
     }
