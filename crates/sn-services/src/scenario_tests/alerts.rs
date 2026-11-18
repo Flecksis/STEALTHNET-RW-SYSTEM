@@ -363,3 +363,139 @@ async fn споры_и_возвраты_платёжек_приходят_отд
     assert_eq!(payments.default_topic, "Платежи");
     env.db.cleanup().await;
 }
+
+fn security_alerts(got: &[crate::alerts::Alert]) -> Vec<crate::alerts::Alert> {
+    got.iter()
+        .filter(|a| a.kind == AlertKind::Security)
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn блокировка_входа_по_коду_приходит_админам_в_telegram() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let alerts = services.alerts();
+    let auth = services.auth();
+    let admin = owner(services).await;
+    let setup = auth.admin_totp_setup(admin).await.unwrap();
+    let now = services.now();
+    auth.admin_totp_enable(
+        admin,
+        &setup.secret,
+        &totp_code(&setup.secret, now),
+        PASSWORD,
+    )
+    .await
+    .unwrap();
+    assert!(alerts.collect().await.unwrap().is_empty());
+    let wrong = (0..10u32)
+        .map(|d| d.to_string().repeat(6))
+        .find(|c| {
+            [now, now + Duration::minutes(31)]
+                .iter()
+                .all(|at| totp::verify(&setup.secret, c, at.timestamp()).is_none())
+        })
+        .unwrap();
+    let guess = |ip: &'static str| {
+        let wrong = wrong.clone();
+        async move {
+            for _ in 0..rules::ADMIN_TOTP_FAILURES.limit {
+                assert_eq!(
+                    code(
+                        services
+                            .auth()
+                            .admin_login("owner@example.com", PASSWORD, Some(&wrong), &meta(ip))
+                            .await
+                    ),
+                    TOTP_INVALID
+                );
+            }
+        }
+    };
+    guess("198.51.100.7").await;
+    let got = security_alerts(&alerts.collect().await.unwrap());
+    assert_eq!(got.len(), 1, "{got:?}");
+    let html = &got[0].html;
+    assert!(
+        html.starts_with(
+            "<b>Вход по коду из приложения закрыт</b>\nАдминистратор: owner@example.com\n"
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains("5 неверных кодов за 15 минут, пароль при этом ввели верно"),
+        "{html}"
+    );
+    assert!(html.contains("Адрес: 198.51.100.7"), "{html}");
+    assert!(html.contains("смените его"), "{html}");
+    assert_eq!(got[0].path, "/admin/settings/admins");
+    assert!(security_alerts(&alerts.collect().await.unwrap()).is_empty());
+
+    alerts
+        .update(
+            &AlertsUpdate {
+                routes: vec![RouteInput {
+                    kind: AlertKind::Security,
+                    on: false,
+                    topic: None,
+                }],
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    env.clock.set(now + Duration::minutes(31));
+    guess("198.51.100.8").await;
+    assert!(security_alerts(&alerts.collect().await.unwrap()).is_empty());
+    alerts
+        .update(
+            &AlertsUpdate {
+                routes: vec![RouteInput {
+                    kind: AlertKind::Security,
+                    on: true,
+                    topic: None,
+                }],
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(security_alerts(&alerts.collect().await.unwrap()).is_empty());
+
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        for _ in 0..4 {
+            sqlx::query(
+                "INSERT INTO audit_log (actor_kind, action, entity_kind, entity_id, details) \
+                 VALUES ('system', $1, 'admin', $2, $3)",
+            )
+            .bind(crate::auth::TOTP_LOCKED_AUDIT)
+            .bind(9_999_i64)
+            .bind(serde_json::json!({
+                "failures": 20,
+                "rule": "admin_totp_failures_day",
+                "window_seconds": 86_400,
+            }))
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        }
+    }
+    let got = security_alerts(&alerts.collect().await.unwrap());
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert!(
+        got[0].html.contains("Администратор: администратор №9999"),
+        "{}",
+        got[0].html
+    );
+    assert!(
+        got[0].html.contains("20 неверных кодов за сутки"),
+        "{}",
+        got[0].html
+    );
+    assert!(!got[0].html.contains("Адрес:"), "{}", got[0].html);
+    assert_eq!(got[3].html, "Ещё 1 блокировка входа по коду");
+    assert_eq!(got[3].path, "/admin/settings/admins");
+    env.db.cleanup().await;
+}

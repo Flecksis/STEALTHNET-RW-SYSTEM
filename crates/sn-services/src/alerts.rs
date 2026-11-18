@@ -1,4 +1,4 @@
-use crate::auth::token_hash;
+use crate::auth::{TOTP_LOCKED_AUDIT, token_hash};
 use crate::error::{ServiceError, ServiceResult};
 use crate::inbox::{BLOCKED_REFUND_AUDIT, BLOCKED_REFUND_REQUESTED_AUDIT};
 use crate::node_watch::NodeNotice;
@@ -36,6 +36,8 @@ const BODY_MAX: usize = 300;
 const NOTICE_MAX: usize = 600;
 const SCAN_LIMIT: i64 = 500;
 const NODES_PATH: &str = "/admin/infra";
+const ADMINS_PATH: &str = "/admin/settings/admins";
+const SECURITY_DAYS: i32 = 2;
 
 fn seen_key(kind: AlertKind) -> String {
     format!("alerts.seen.{}", kind.as_str())
@@ -129,6 +131,15 @@ struct HandoffRow {
     error: Option<String>,
     subject: Option<String>,
     body: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct LockRow {
+    id: i64,
+    admin_id: Option<i64>,
+    email: Option<String>,
+    details: serde_json::Value,
+    ip: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -266,12 +277,72 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
             ),
             "/admin/money",
         ),
+        AlertKind::Security => (
+            format!(
+                "Ещё {rest} {} входа по коду",
+                format::plural_ru(n, "блокировка", "блокировки", "блокировок")
+            ),
+            ADMINS_PATH,
+        ),
     };
     Alert {
         kind,
         html: text,
         path: path.to_string(),
     }
+}
+
+fn window_text(seconds: i64) -> String {
+    if seconds == 86_400 {
+        return "сутки".to_string();
+    }
+    if seconds % 3_600 == 0 {
+        let hours = seconds / 3_600;
+        return format!(
+            "{hours} {}",
+            format::plural_ru(hours.unsigned_abs(), "час", "часа", "часов")
+        );
+    }
+    let minutes = (seconds / 60).max(1);
+    format!(
+        "{minutes} {}",
+        format::plural_ru(minutes.unsigned_abs(), "минуту", "минуты", "минут")
+    )
+}
+
+fn lock_text(row: &LockRow) -> String {
+    let admin = match (row.email.as_deref(), row.admin_id) {
+        (Some(email), _) => escape(email),
+        (None, Some(id)) => format!("администратор №{id}"),
+        (None, None) => "администратор".to_string(),
+    };
+    let mut lines = vec![
+        "<b>Вход по коду из приложения закрыт</b>".to_string(),
+        format!("Администратор: {admin}"),
+    ];
+    let failures = row
+        .details
+        .get("failures")
+        .and_then(serde_json::Value::as_u64);
+    let window = row
+        .details
+        .get("window_seconds")
+        .and_then(serde_json::Value::as_i64);
+    if let (Some(failures), Some(window)) = (failures, window) {
+        lines.push(format!(
+            "{failures} {} за {}, пароль при этом ввели верно",
+            format::plural_ru(failures, "неверный код", "неверных кода", "неверных кодов"),
+            window_text(window)
+        ));
+    }
+    if let Some(ip) = row.ip.as_deref().map(str::trim).filter(|ip| !ip.is_empty()) {
+        lines.push(format!("Адрес: {}", escape(ip)));
+    }
+    lines.push(
+        "Вход по коду откроется сам. Если коды вводили не вы, пароль знает кто-то ещё: смените его"
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 fn clock_text(at: DateTime<Utc>, offset: FixedOffset, now: DateTime<Utc>) -> String {
@@ -630,6 +701,7 @@ impl<'a> AlertsOps<'a> {
             AlertKind::Stars,
             AlertKind::Refunds,
             AlertKind::Withdrawals,
+            AlertKind::Security,
         ] {
             out.extend(self.watched(kind, &config).await?);
         }
@@ -1197,6 +1269,28 @@ impl<'a> AlertsOps<'a> {
                         id,
                         html: lines.join("\n"),
                         path: "/admin/m/referral".to_string(),
+                    });
+                }
+            }
+            AlertKind::Security => {
+                let mut rows: Vec<LockRow> = sqlx::query_as(
+                    "SELECT l.id, l.entity_id AS admin_id, a.email, l.details, l.ip \
+                     FROM audit_log l LEFT JOIN admins a ON a.id = l.entity_id \
+                     WHERE l.entity_kind = 'admin' AND l.action = $1 \
+                       AND l.created_at > now() - make_interval(days => $2) \
+                     ORDER BY l.id DESC LIMIT $3",
+                )
+                .bind(TOTP_LOCKED_AUDIT)
+                .bind(SECURITY_DAYS)
+                .bind(SCAN_LIMIT)
+                .fetch_all(conn.conn())
+                .await?;
+                rows.reverse();
+                for row in rows {
+                    items.push(Item {
+                        id: row.id,
+                        html: lock_text(&row),
+                        path: ADMINS_PATH.to_string(),
                     });
                 }
             }

@@ -18,10 +18,11 @@ pub enum AlertKind {
     Nodes,
     Clients,
     Sales,
+    Security,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 10] = [
+    pub const ALL: [AlertKind; 11] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
@@ -32,6 +33,7 @@ impl AlertKind {
         AlertKind::Nodes,
         AlertKind::Clients,
         AlertKind::Sales,
+        AlertKind::Security,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -46,6 +48,7 @@ impl AlertKind {
             AlertKind::Nodes => "nodes",
             AlertKind::Clients => "clients",
             AlertKind::Sales => "sales",
+            AlertKind::Security => "security",
         }
     }
 
@@ -61,6 +64,7 @@ impl AlertKind {
             AlertKind::Nodes => "Ноды",
             AlertKind::Clients => "Новые клиенты",
             AlertKind::Sales => "Новые оплаты",
+            AlertKind::Security => "Безопасность входа",
         }
     }
 
@@ -76,6 +80,7 @@ impl AlertKind {
             AlertKind::Nodes => "Ноды",
             AlertKind::Clients => "Клиенты",
             AlertKind::Sales => "Оплаты",
+            AlertKind::Security => "Безопасность",
         }
     }
 }
@@ -195,5 +200,26 @@ mod tests {
             serde_json::to_value(AlertKind::Sales).unwrap(),
             serde_json::json!("sales")
         );
+    }
+
+    #[test]
+    fn безопасность_входа_включена_по_умолчанию_и_идёт_в_свою_тему() {
+        let saved: AlertsConfig = serde_json::from_value(serde_json::json!({
+            "chat_id": -100_500,
+            "forum": true,
+            "routes": {"support": {"on": true, "topic": "Поддержка"}}
+        }))
+        .unwrap();
+        assert!(saved.route(AlertKind::Security).on);
+        assert_eq!(
+            saved.topic_for(AlertKind::Security).as_deref(),
+            Some("Безопасность")
+        );
+        assert_eq!(AlertKind::Security.title_ru(), "Безопасность входа");
+        assert_eq!(
+            serde_json::to_value(AlertKind::Security).unwrap(),
+            serde_json::json!("security")
+        );
+        assert!(AlertKind::ALL.contains(&AlertKind::Security));
     }
 }

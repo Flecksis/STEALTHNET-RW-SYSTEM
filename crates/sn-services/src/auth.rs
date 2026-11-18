@@ -24,6 +24,7 @@ pub const MAX_PASSWORD_LEN: usize = 256;
 pub const KNOWN_ADDRESS_DAYS: i64 = 30;
 pub const TOTP_REQUIRED: &str = "auth.totp_required";
 pub const TOTP_INVALID: &str = "auth.totp_invalid";
+pub const TOTP_LOCKED_AUDIT: &str = "admin.totp_locked";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestMeta {
@@ -524,7 +525,7 @@ impl<'a> Auth<'a> {
                 "вход администратора по коду временно закрыт: серия неверных кодов при верном пароле"
             );
             let mut entry = crate::Actor::System.audit(
-                "admin.totp_locked",
+                TOTP_LOCKED_AUDIT,
                 "admin",
                 Some(admin_id.0),
                 serde_json::json!({

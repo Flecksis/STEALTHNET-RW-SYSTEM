@@ -5,7 +5,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales';
+type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales' | 'security';
 
 type KindView = { kind: Kind; title: string; default_topic: string; on: boolean; topic: string | null };
 
@@ -31,6 +31,7 @@ const ABOUT: Record<Kind, string> = {
   nodes: 'Нода не отвечает дольше двух минут. Когда она снова в сети, придёт ещё одно сообщение',
   clients: 'Клиент зарегистрировался в боте, кабинете или мини-приложении. Новые за минуту приходят одним сообщением',
   sales: 'Оплачена покупка, продление, смена тарифа, дополнение или пополнение баланса. Новые за минуту приходят одним сообщением',
+  security: 'Вход администратора по коду из приложения закрылся после неверных кодов: 5 за 15 минут или 20 за сутки. Пароль при этом ввели верно',
 };
 
 function failText(err: unknown, fallback: string): string {
