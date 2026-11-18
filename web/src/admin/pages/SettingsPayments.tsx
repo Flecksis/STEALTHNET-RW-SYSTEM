@@ -89,6 +89,10 @@ const ACCEPTS: Record<string, string> = {
 
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'] };
 
+const OWN_HOOKS: Record<string, string> = {
+  overpay: 'Панель передаёт Overpay адрес для уведомлений вместе с каждым счётом, в кабинете Overpay его указывать не нужно.',
+};
+
 const HOOK_HINTS: Record<string, string> = {
   cloudpayments:
     'В кабинете CloudPayments в настройках сайта включите уведомления Check, Pay, Fail и Refund, каждое на свой адрес из списка выше. Метод GET или POST, кодировка UTF-8, формат CloudPayments.',
@@ -568,9 +572,11 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
   }, [provider.id]);
 
   const origin = (publicUrl ?? window.location.origin).replace(/\/+$/, '');
-  const hooks = provider.accepts_http_webhooks
-    ? (HOOK_KINDS[provider.id] ?? ['']).map((kind) => ({ kind, url: `${origin}/api/webhooks/pay/${provider.id}${kind ? `/${kind}` : ''}` }))
-    : [];
+  const ownHooks = OWN_HOOKS[provider.id];
+  const hooks =
+    provider.accepts_http_webhooks && !ownHooks
+      ? (HOOK_KINDS[provider.id] ?? ['']).map((kind) => ({ kind, url: `${origin}/api/webhooks/pay/${provider.id}${kind ? `/${kind}` : ''}` }))
+      : [];
 
   const copy = async (url: string) => {
     try {
@@ -693,6 +699,12 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
           ))}
           <span className="cap">Укажите в кабинете {provider.title}, чтобы оплаты засчитывались сразу</span>
           {HOOK_HINTS[provider.id] ? <span className="cap">{HOOK_HINTS[provider.id]}</span> : null}
+        </div>
+      ) : null}
+      {ownHooks ? (
+        <div className="sf-field" style={{ maxWidth: 'none' }}>
+          <span className="sf-label">Уведомления</span>
+          <span className="cap">{ownHooks}</span>
         </div>
       ) : null}
       {error ? (

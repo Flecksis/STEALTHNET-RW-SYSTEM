@@ -27,6 +27,7 @@ pub struct SettingField {
     pub kind: FieldKind,
     pub required: bool,
     pub default: Option<&'static str>,
+    pub large: bool,
 }
 
 impl SettingField {
@@ -44,6 +45,7 @@ impl SettingField {
             kind,
             required,
             default: None,
+            large: false,
         }
     }
 
@@ -83,6 +85,11 @@ impl SettingField {
 
     pub const fn with_default(mut self, value: &'static str) -> Self {
         self.default = Some(value);
+        self
+    }
+
+    pub const fn large(mut self) -> Self {
+        self.large = true;
         self
     }
 

@@ -197,7 +197,7 @@ async fn kassa_kit_with(
         Arc::new(CryptoPay::new()),
         pay.clone(),
         kassa,
-        Arc::new(Overpay),
+        Arc::new(Overpay::new()),
         Arc::new(Balance),
     ];
     providers.extend(extra);

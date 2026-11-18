@@ -1135,6 +1135,101 @@ async fn секреты_платёжной_системы_только_на_за
 }
 
 #[tokio::test]
+async fn overpay_включается_с_сертификатом_из_p12() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let ops = services.settings_ops();
+    ops.update_core(
+        &CoreUpdate {
+            currency: Some(Currency::Rub),
+            ..CoreUpdate::default()
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    let pasted = include_str!("../../sn-payments/src/providers/overpay/testdata/merchant.pem")
+        .replace(['\n', '\r'], "");
+    assert!(pasted.chars().count() > 2_000);
+    let update = |certificate: &str| ProviderUpdate {
+        enabled: Some(true),
+        config: serde_json::from_value(serde_json::json!({
+            "project_id": "1017",
+            "login": "shop",
+            "password": "secret",
+            "certificate": certificate
+        }))
+        .unwrap(),
+        methods: Some(vec![
+            sn_domain::payment::MethodChoice {
+                code: "sbp".into(),
+                title: None,
+            },
+            sn_domain::payment::MethodChoice {
+                code: "card".into(),
+                title: Some("Картой".into()),
+            },
+        ]),
+        ..ProviderUpdate::default()
+    };
+    assert_eq!(
+        code(
+            ops.update_provider(
+                providers::OVERPAY,
+                &update("-----BEGIN CERTIFICATE-----"),
+                admin
+            )
+            .await
+        ),
+        "settings.provider_invalid"
+    );
+    let details = ops
+        .update_provider(providers::OVERPAY, &update(&pasted), admin)
+        .await
+        .unwrap();
+    assert!(details.provider.enabled && details.provider.configured);
+    assert_eq!(
+        details.provider.settings["certificate"],
+        serde_json::json!({ "filled": true })
+    );
+    assert!(
+        !serde_json::to_string(&details)
+            .unwrap()
+            .contains("PRIVATE KEY")
+    );
+    assert!(
+        details
+            .schema
+            .iter()
+            .any(|f| f.key == "certificate" && f.large)
+    );
+    let chosen: Vec<&str> = details
+        .provider
+        .methods
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| m.code)
+        .collect();
+    assert_eq!(chosen, ["sbp", "card"]);
+    assert!(
+        services
+            .payments()
+            .is_available(providers::OVERPAY, Currency::Rub)
+    );
+    let mut conn = services.store().conn().await.unwrap();
+    let stored = conn
+        .settings()
+        .get(&keys::provider(providers::OVERPAY))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!stored.to_string().contains("PRIVATE"));
+    drop(conn);
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn подключение_remnawave_и_секрет_вебхуков() {
     let Some(env) = env().await else { return };
     let services = &env.services;

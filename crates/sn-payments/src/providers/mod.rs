@@ -16,7 +16,7 @@ pub use cryptopay::{CryptoPay, signature as cryptopay_signature};
 pub use gram::{Gram, GramInvoice, comment_payload, format_grams, friendly_address};
 pub use heleket::{Heleket, signature as heleket_signature};
 pub use lava::Lava;
-pub use overpay::Overpay;
+pub use overpay::{Overpay, hook_token as overpay_hook_token};
 pub use platega::Platega;
 pub use stars::{
     STARS_TOKEN_FIELD, StarDirection, StarTransaction, StarsPayment, StarsPaymentEvent,
@@ -38,7 +38,7 @@ pub fn builtin() -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(Platega::new()),
         Arc::new(YooMoney),
         Arc::new(CloudPayments::new()),
-        Arc::new(Overpay),
+        Arc::new(Overpay::new()),
         Arc::new(TelegramStars::new()),
         Arc::new(Balance),
     ]
@@ -80,10 +80,10 @@ mod tests {
                 config(&[("public_id", json!("pk_1")), ("api_secret", json!("s"))])
             }
             providers::OVERPAY => config(&[
-                ("api_url", json!("https://api.overpay.io")),
                 ("project_id", json!("1")),
                 ("login", json!("l")),
                 ("password", json!("p")),
+                ("certificate", json!(overpay::tests::MERCHANT)),
             ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
             _ => config(&[]),
@@ -91,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn настроенные_системы_предлагаются_в_своей_валюте_а_overpay_нет() {
+    fn настроенные_системы_предлагаются_в_своей_валюте() {
         let registry = ProviderRegistry::builtin();
         let states: std::collections::HashMap<String, ProviderState> = registry
             .providers()
@@ -127,6 +127,7 @@ mod tests {
                     providers::YOOMONEY,
                     providers::STARS,
                     providers::CLOUDPAYMENTS,
+                    providers::OVERPAY,
                     providers::CRYPTOPAY,
                     providers::LAVA,
                     providers::BALANCE,
@@ -147,7 +148,8 @@ mod tests {
             });
             let ids: Vec<&str> = methods.iter().map(|m| m.provider).collect();
             assert_eq!(ids, expected, "{currency}");
-            assert!(!registry.is_available(providers::OVERPAY, Currency::Rub));
+            assert!(registry.is_available(providers::OVERPAY, Currency::Rub));
+            assert!(!registry.is_available(providers::OVERPAY, Currency::Usd));
         }
     }
 
@@ -218,6 +220,7 @@ mod tests {
                 providers::YOOKASSA,
                 providers::PLATEGA,
                 providers::CLOUDPAYMENTS,
+                providers::OVERPAY,
                 providers::STARS
             ]
         );
@@ -245,7 +248,8 @@ mod tests {
             [
                 providers::YOOKASSA,
                 providers::PLATEGA,
-                providers::CLOUDPAYMENTS
+                providers::CLOUDPAYMENTS,
+                providers::OVERPAY
             ]
         );
     }

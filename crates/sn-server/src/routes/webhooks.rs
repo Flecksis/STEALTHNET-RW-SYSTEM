@@ -45,10 +45,11 @@ fn reply(reply: WebhookReply) -> Response {
 }
 
 fn payload(method: &Method, query: Option<&str>, body: Bytes) -> Bytes {
-    if method == Method::GET || method == Method::HEAD {
-        Bytes::from(query.unwrap_or_default().to_owned())
-    } else {
-        body
+    match query.filter(|q| !q.is_empty()) {
+        Some(query) if method == Method::GET || method == Method::HEAD => {
+            Bytes::from(query.to_owned())
+        }
+        _ => body,
     }
 }
 
@@ -226,7 +227,9 @@ mod tests {
     use sn_domain::settings::{keys, secret_keys};
     use sn_modules::ModuleRegistry;
     use sn_payments::ProviderRegistry;
-    use sn_payments::providers::{cloudpayments_signature, cryptopay_signature};
+    use sn_payments::providers::{
+        Overpay, cloudpayments_signature, cryptopay_signature, overpay_hook_token,
+    };
     use sn_services::{EnvFallbacks, ServiceDeps, Services, SystemClock};
     use sn_store::{InboxOutcome, NewClient, SecretBox, Store, StoreOptions};
     use std::sync::Arc;
@@ -309,6 +312,16 @@ mod tests {
             Bytes::from_static(b"x")
         );
         assert!(payload(&Method::GET, None, Bytes::new()).is_empty());
+        for query in [None, Some("")] {
+            assert_eq!(
+                payload(
+                    &Method::GET,
+                    query,
+                    Bytes::from_static(br#"{"id":"4815162342","status":"charged"}"#)
+                ),
+                Bytes::from_static(br#"{"id":"4815162342","status":"charged"}"#)
+            );
+        }
     }
 
     #[tokio::test]
@@ -460,6 +473,168 @@ mod tests {
                 (InboxOutcome::RejectedSignature, false),
             ]
         );
+        drop(conn);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn уведомление_overpay_методом_get_с_телом_засчитывает_оплату() {
+        let Some(db) = sn_store::testing::test_store().await else {
+            return;
+        };
+        let order_id = "4815162342";
+        let api = wiremock::MockServer::start().await;
+        let services = Services::new(ServiceDeps {
+            store: db.store.clone(),
+            payments: Arc::new(ProviderRegistry::new(vec![Arc::new(
+                Overpay::with_api_base(api.uri()),
+            )])),
+            modules: Arc::new(ModuleRegistry::catalog_only()),
+            secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
+            clock: Arc::new(SystemClock),
+            env: EnvFallbacks::default(),
+        });
+        let total = Money::new(49_900, Currency::Rub);
+        let payment = {
+            let mut conn = db.store.conn().await.unwrap();
+            conn.settings()
+                .set(
+                    &keys::provider(providers::OVERPAY),
+                    &serde_json::json!({
+                        "enabled": true,
+                        "config": { "project_id": "1017", "login": "shop" }
+                    }),
+                    None,
+                )
+                .await
+                .unwrap();
+            for (field, value) in [
+                ("password", "secret"),
+                (
+                    "certificate",
+                    include_str!(
+                        "../../../sn-payments/src/providers/overpay/testdata/merchant.pem"
+                    ),
+                ),
+            ] {
+                sn_services::settings::write_secret(
+                    &mut conn,
+                    services.secrets(),
+                    &secret_keys::provider(providers::OVERPAY, field),
+                    Some(value),
+                    None,
+                )
+                .await
+                .unwrap();
+            }
+            let client = conn
+                .clients()
+                .create(&NewClient {
+                    locale: Locale::Ru,
+                    registration_source: RegistrationSource::Bot,
+                    note: None,
+                })
+                .await
+                .unwrap()
+                .id;
+            let order = conn
+                .orders()
+                .create(&NewOrder {
+                    client_id: client,
+                    subscription_id: None,
+                    kind: OrderKind::TopUp,
+                    intent: PurchaseIntent::TopUp { amount: total },
+                    quote: Quote {
+                        currency: Currency::Rub,
+                        lines: Vec::new(),
+                        subtotal: total,
+                        discount: Money::zero(Currency::Rub),
+                        total,
+                        stars: None,
+                        days: 0,
+                        extra_devices: 0,
+                    },
+                    snapshot: None,
+                })
+                .await
+                .unwrap();
+            conn.payments()
+                .create(&NewPayment {
+                    order_id: order.id,
+                    client_id: client,
+                    provider: ProviderId::from(providers::OVERPAY),
+                    method: None,
+                    amount: total.into(),
+                    expires_at: None,
+                })
+                .await
+                .unwrap()
+        };
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!("/api/orders/{order_id}")))
+            .and(wiremock::matchers::basic_auth("shop", "secret"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "orders": [{
+                        "id": order_id, "status": "charged", "amount": "499.00",
+                        "amount_charged": "499.00", "amount_refunded": "0", "currency": "RUB",
+                        "merchant_order_id": payment.public_id.to_string(),
+                        "pan": "411111******1145", "operations": [],
+                        "created": "2026-11-18T10:00:00.000Z", "updated": "2026-11-18T10:01:00.000Z"
+                    }]
+                })),
+            )
+            .mount(&api)
+            .await;
+        services.reload().await.unwrap();
+        let token = overpay_hook_token(&services.payments().config(providers::OVERPAY)).unwrap();
+        let app = router(AppState::new(ServerConfig::default(), services.clone()));
+        let body = serde_json::json!({
+            "id": order_id,
+            "status": "charged",
+            "merchantTransactionId": payment.public_id,
+        })
+        .to_string();
+        let send = |method: Method, path: String| {
+            let app = app.clone();
+            let body = body.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        assert_eq!(
+            send(Method::GET, "/api/webhooks/pay/overpay".into()).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            send(
+                Method::GET,
+                format!("/api/webhooks/pay/overpay/{}", "0".repeat(32))
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(api.received_requests().await.unwrap().is_empty());
+        for method in [Method::GET, Method::POST] {
+            assert_eq!(
+                send(method, format!("/api/webhooks/pay/overpay/{token}")).await,
+                StatusCode::OK
+            );
+        }
+        let mut conn = db.store.conn().await.unwrap();
+        let paid = conn.payments().get(payment.id).await.unwrap();
+        assert_eq!(paid.status, PaymentStatus::Paid);
+        assert_eq!(paid.provider_txid.as_deref(), Some(order_id));
         drop(conn);
         db.cleanup().await;
     }

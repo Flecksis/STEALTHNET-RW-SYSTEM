@@ -33,6 +33,7 @@ use std::sync::Arc;
 pub const SETTINGS_CHANNEL: &str = "settings_changed";
 pub const REMNA_WEBHOOK_PATH: &str = "/api/remnawave/webhook";
 pub const MAX_TEXT_FIELD: usize = 2_000;
+pub const MAX_LARGE_FIELD: usize = 20_000;
 pub const MAX_REMARK_CHARS: usize = 200;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -416,7 +417,12 @@ fn checked_value(field: &SettingField, value: &Value) -> ServiceResult<Value> {
                 Value::Number(n) => n.to_string(),
                 _ => return Err(field_error(field.key, "ожидается текст")),
             };
-            if raw.chars().count() > MAX_TEXT_FIELD {
+            let limit = if field.large {
+                MAX_LARGE_FIELD
+            } else {
+                MAX_TEXT_FIELD
+            };
+            if raw.chars().count() > limit {
                 return Err(field_error(field.key, "слишком длинное значение"));
             }
             Ok(Value::String(raw))
@@ -1974,6 +1980,25 @@ mod tests {
         let changes =
             apply_fields(&schema(), &Map::new(), &["api_key".into()], &mut stored).unwrap();
         assert_eq!(changes, vec![SecretChange::Delete("api_key".into())]);
+    }
+
+    #[test]
+    fn длинный_секрет_принимается_только_в_поле_для_длинных_значений() {
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----",
+            "A".repeat(4_000)
+        );
+        let incoming: Map<String, Value> =
+            serde_json::from_value(serde_json::json!({ "api_key": pem.clone() })).unwrap();
+        assert!(apply_fields(&schema(), &incoming, &[], &mut Map::new()).is_err());
+        let large = vec![SettingField::secret("api_key", "Сертификат", "").large()];
+        let changes = apply_fields(&large, &incoming, &[], &mut Map::new()).unwrap();
+        assert_eq!(changes, vec![SecretChange::Set("api_key".into(), pem)]);
+        let huge: Map<String, Value> = serde_json::from_value(
+            serde_json::json!({ "api_key": "A".repeat(MAX_LARGE_FIELD + 1) }),
+        )
+        .unwrap();
+        assert!(apply_fields(&large, &huge, &[], &mut Map::new()).is_err());
     }
 
     #[test]
