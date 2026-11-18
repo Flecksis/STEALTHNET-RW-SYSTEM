@@ -14,14 +14,17 @@ use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
 use sn_domain::subscription::SubscriptionKind;
 use sn_modules::GrantTarget;
+use sn_modules::catalog::antibot;
 use sn_modules::catalog::gifts::{
     self, GiftError, GiftRejection, GiftRequest, GiftStatus, ITEM_GIFT, RedeemPreview,
 };
-use sn_modules::catalog::promolinks::{self, LinkError, LinkRejection};
+use sn_modules::catalog::promolinks::{self, Activated, LinkError, LinkRejection};
 use sn_payments::Unavailable;
 use sn_services::bot_content::BotContent;
 use sn_services::checkout::{Channel, CheckoutResult, ItemCheckoutRequest, ItemRequest};
 use sn_store::Db;
+
+pub const PROMO_CONFIRM: &str = "plr";
 
 fn enabled(turn: &Turn<'_>) -> bool {
     turn.services().modules().is_enabled(ModuleId::Gifts)
@@ -547,6 +550,8 @@ fn link_rejection(c: &BotContent, rejection: &LinkRejection) -> String {
         LinkRejection::Expired => "pl.expired",
         LinkRejection::Exhausted => "pl.exhausted",
         LinkRejection::AlreadyUsed => "pl.already_used",
+        LinkRejection::Confirm => "pl.again",
+        LinkRejection::Denied => "pl.denied",
         LinkRejection::Grant(refusal) if refusal.code == "grant.has_subscription" => {
             "pl.has_subscription"
         }
@@ -563,10 +568,66 @@ pub async fn promo_link(
     if !turn.services().modules().is_enabled(ModuleId::Promolinks) {
         return main_menu(turn.ctx, client).await;
     }
+    let ctx = turn.services().module_context();
+    let outcome = promolinks::activate(&ctx, client.id, code).await;
+    promo_link_outcome(turn, client, code, outcome).await
+}
+
+pub async fn promo_link_confirmed(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    token: &str,
+) -> Result<Screen, BotError> {
+    if !turn.services().modules().is_enabled(ModuleId::Promolinks) {
+        return main_menu(turn.ctx, client).await;
+    }
+    let Some(code) = turn.session.promo_link.take() else {
+        let content = turn.content();
+        return Ok(Screen::new(ui::text(&content, "pl.again", &[]))
+            .keyboard(Keyboard::new().push(ui::menu(&content)))
+            .section(Section::PromoLinks));
+    };
+    let ctx = turn.services().module_context();
+    let outcome = promolinks::activate_confirmed(&ctx, client.id, &code, token).await;
+    promo_link_outcome(turn, client, &code, outcome).await
+}
+
+async fn promo_link_check(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    code: &str,
+) -> Result<Screen, BotError> {
+    let token = antibot::challenge(&turn.services().module_context(), client.id).await?;
+    turn.session.promo_link = Some(code.to_string());
     let content = turn.content();
     let c = &*content;
-    let ctx = turn.services().module_context();
-    match promolinks::activate(&ctx, client.id, code).await {
+    Ok(Screen::new(ui::text(c, "pl.confirm", &[]))
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(
+                    c,
+                    "pl.btn.confirm",
+                    &[],
+                    format!("{PROMO_CONFIRM}:{token}"),
+                ))
+                .push(ui::menu(c)),
+        )
+        .section(Section::PromoLinks))
+}
+
+async fn promo_link_outcome(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    code: &str,
+    outcome: Result<Activated, LinkError>,
+) -> Result<Screen, BotError> {
+    if matches!(outcome, Err(LinkError::Rejected(LinkRejection::Confirm))) {
+        return promo_link_check(turn, client, code).await;
+    }
+    turn.session.promo_link = None;
+    let content = turn.content();
+    let c = &*content;
+    match outcome {
         Ok(done) => Ok(Screen::new(ui::text(
             c,
             "pl.done",

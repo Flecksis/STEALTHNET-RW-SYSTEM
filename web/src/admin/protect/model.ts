@@ -38,7 +38,9 @@ export type JournalItem = {
     | 'contest_asked'
     | 'contest_denied'
     | 'contest_noted'
-    | 'contest_excluded';
+    | 'contest_excluded'
+    | 'promo_link_asked'
+    | 'promo_link_denied';
   title: string;
   reasons: Reason[];
   details: Record<string, unknown>;
@@ -89,12 +91,12 @@ export const MODES: Array<{ id: Mode; title: string; text: string }> = [
   {
     id: 'mark',
     title: 'Только отмечать',
-    text: 'Подозрительные аккаунты попадают в журнал, пробный период, бонусы, рулетка и конкурсы работают как обычно.',
+    text: 'Подозрительные аккаунты попадают в журнал, пробный период, промо-ссылки, бонусы, рулетка и конкурсы работают как обычно.',
   },
   {
     id: 'confirm',
     title: 'Просить подтвердить',
-    text: 'Перед пробным периодом, бесплатным вращением рулетки и участием в конкурсе подозрительный клиент нажимает кнопку «Я не робот».',
+    text: 'Перед пробным периодом, подпиской по промо-ссылке, бесплатным вращением рулетки и участием в конкурсе подозрительный клиент нажимает кнопку «Я не робот».',
   },
   {
     id: 'block',
@@ -107,7 +109,7 @@ export const JOURNAL_FILTERS: Array<[string, string]> = [
   ['all', 'Все'],
   ['signup', 'Отметки'],
   ['trial', 'Пробный период'],
-  ['promo', 'Промокоды'],
+  ['promo', 'Промокоды и ссылки'],
   ['referral', 'Рефералы'],
   ['roulette', 'Рулетка'],
   ['contest', 'Конкурсы'],
@@ -134,7 +136,7 @@ export function antibotLead(summary: AntibotSummary): string {
     week.push(`${summary.confirmed_week} ${plural(summary.confirmed_week, 'подтвердил', 'подтвердили', 'подтвердили')} кнопкой`);
   }
   if (summary.denied_week > 0) {
-    week.push(`${summary.denied_week} ${plural(summary.denied_week, 'отказ', 'отказа', 'отказов')} в пробнике, промокодах, рулетке или конкурсах`);
+    week.push(`${summary.denied_week} ${plural(summary.denied_week, 'отказ', 'отказа', 'отказов')} в пробнике, промокодах, промо-ссылках, рулетке или конкурсах`);
   }
   if (summary.no_bonus_week > 0) {
     week.push(`${summary.no_bonus_week} без бонуса пригласившему`);
@@ -160,7 +162,7 @@ export function journalNote(item: JournalItem): string | null {
     return item.admin;
   }
   if (d.target === 'promo_link') {
-    return 'промо-ссылка';
+    return typeof d.name === 'string' ? `промо-ссылка «${d.name}»` : 'промо-ссылка';
   }
   if (d.target === 'promo') {
     return 'промокод на дни';

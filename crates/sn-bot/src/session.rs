@@ -62,6 +62,8 @@ pub struct Session {
     pub support_ticket: Option<i64>,
     #[serde(default)]
     pub gift_code: Option<String>,
+    #[serde(default)]
+    pub promo_link: Option<String>,
 }
 
 impl Session {

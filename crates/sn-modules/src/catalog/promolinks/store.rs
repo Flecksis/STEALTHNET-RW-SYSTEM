@@ -100,9 +100,21 @@ pub async fn get(db: &mut impl Db, id: i64) -> StoreResult<Option<PromoLink>> {
     row.map(TryInto::try_into).transpose()
 }
 
+pub async fn by_code(db: &mut impl Db, code: &str) -> StoreResult<Option<PromoLink>> {
+    select_by_code(db, code, "").await
+}
+
 pub async fn lock_by_code(db: &mut impl Db, code: &str) -> StoreResult<Option<PromoLink>> {
+    select_by_code(db, code, " FOR UPDATE").await
+}
+
+async fn select_by_code(
+    db: &mut impl Db,
+    code: &str,
+    lock: &str,
+) -> StoreResult<Option<PromoLink>> {
     let row: Option<LinkRow> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM promo_links l WHERE l.code = $1 FOR UPDATE"
+        "SELECT {COLUMNS} FROM promo_links l WHERE l.code = $1{lock}"
     ))
     .bind(code)
     .fetch_optional(db.conn())

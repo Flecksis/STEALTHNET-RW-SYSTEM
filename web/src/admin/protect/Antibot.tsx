@@ -332,7 +332,7 @@ function AntibotDesk({ data }: { data: Data }) {
     try {
       await data.clear(m);
       setAsking(null);
-      setDone(`Отметка с клиента ${personName(m.client, m.client_id)} снята: пробный период, бонусы, рулетка и конкурсы снова доступны как всем.`);
+      setDone(`Отметка с клиента ${personName(m.client, m.client_id)} снята: пробный период, промо-ссылки, бонусы, рулетка и конкурсы снова доступны как всем.`);
     } catch (err) {
       setAskError(failText(err, 'Отметка не снялась'));
     }
@@ -418,7 +418,7 @@ function AntibotDesk({ data }: { data: Data }) {
                       <div role="row" className="pr-ask-row">
                         <div role="cell" className="pr-ask">
                           <span>
-                            <b>Снять отметку с клиента {personName(m.client, m.client_id)}?</b> Антибот перестанет проверять этот аккаунт: пробный период, дни по промокодам, бонусы пригласившему, бесплатные вращения рулетки и конкурсы станут доступны.
+                            <b>Снять отметку с клиента {personName(m.client, m.client_id)}?</b> Антибот перестанет проверять этот аккаунт: пробный период, дни по промокодам, подписки по промо-ссылкам, бонусы пригласившему, бесплатные вращения рулетки и конкурсы станут доступны.
                           </span>
                           <span className="pr-ask-btns">
                             <button type="button" className="b34 on-surface hov" disabled={data.busy !== null} onClick={() => void clear(m)}>

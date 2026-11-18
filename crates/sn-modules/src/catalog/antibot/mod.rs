@@ -30,6 +30,7 @@ pub const CONFIRM_CODE: &str = "antibot.confirm";
 pub const DENIED_CODE: &str = "antibot.denied";
 pub const CONFIRM_MIN_SECONDS: i64 = 1;
 pub const CONFIRM_TTL_MINUTES: i64 = 15;
+pub const PROMO_LINK: &str = "promo_link";
 const MODE_OPTIONS: &[&str] = &["mark", "confirm", "block"];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,6 +600,36 @@ fn day_key(now: DateTime<Utc>) -> String {
 }
 
 pub async fn trial_gate(ctx: &ModuleContext, client_id: ClientId) -> Result<Gate, ModuleError> {
+    free_gate(
+        ctx,
+        client_id,
+        (Action::Asked, Action::TrialDenied),
+        serde_json::json!({ "target": "trial" }),
+    )
+    .await
+}
+
+pub async fn promo_link_gate(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    link_id: i64,
+    name: &str,
+) -> Result<Gate, ModuleError> {
+    free_gate(
+        ctx,
+        client_id,
+        (Action::PromoLinkAsked, Action::PromoLinkDenied),
+        serde_json::json!({ "target": PROMO_LINK, "link_id": link_id, "name": name }),
+    )
+    .await
+}
+
+async fn free_gate(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    (asked, denied): (Action, Action),
+    details: serde_json::Value,
+) -> Result<Gate, ModuleError> {
     let mut conn = ctx.store.conn().await?;
     let Some(verdict) = verdict(&mut conn, client_id).await? else {
         return Ok(Gate::Allow);
@@ -610,8 +641,8 @@ pub async fn trial_gate(ctx: &ModuleContext, client_id: ClientId) -> Result<Gate
     let (gate, action) = match verdict.settings.mode {
         Mode::Mark => return Ok(Gate::Allow),
         Mode::Confirm if verdict.confirmed() => return Ok(Gate::Allow),
-        Mode::Confirm => (Gate::Confirm, Action::Asked),
-        Mode::Block => (Gate::Deny, Action::TrialDenied),
+        Mode::Confirm => (Gate::Confirm, asked),
+        Mode::Block => (Gate::Deny, denied),
     };
     store::event(
         &mut conn,
@@ -619,7 +650,7 @@ pub async fn trial_gate(ctx: &ModuleContext, client_id: ClientId) -> Result<Gate
             client_id,
             action,
             reasons: &verdict.signals,
-            details: serde_json::json!({ "target": "trial" }),
+            details,
             dedupe: Some(format!("{}:{client_id}:{}", action.as_str(), day_key(now))),
             admin: None,
         },
@@ -974,7 +1005,7 @@ impl Module for AntibotModule {
             SettingField::select(
                 "mode",
                 "Что делать с подозрительными",
-                "mark — только отмечать; confirm — просить нажать кнопку «Я не робот» перед пробным периодом, бесплатным вращением рулетки и участием в конкурсе; block — не давать пробный период, дни по промокодам, подписки по промо-ссылкам, бесплатные вращения рулетки, участие в конкурсах и бонусы",
+                "mark — только отмечать; confirm — просить нажать кнопку «Я не робот» перед пробным периодом, подпиской по промо-ссылке, бесплатным вращением рулетки и участием в конкурсе; block — не давать пробный период, дни по промокодам, подписки по промо-ссылкам, бесплатные вращения рулетки, участие в конкурсах и бонусы",
                 MODE_OPTIONS,
             )
             .with_default("confirm"),

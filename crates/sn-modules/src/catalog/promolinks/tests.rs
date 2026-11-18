@@ -1,5 +1,9 @@
 use super::*;
-use crate::catalog::testing::{TestCore, client, context, order, usd};
+use crate::catalog::antibot::{JournalFilter, store as journal};
+use crate::catalog::testing::{
+    TestCore, age_challenge, antibot as guarded, antibot_actions, client, context, order, suspect,
+    usd,
+};
 use crate::context::GrantRefusal;
 use sn_domain::money::Currency;
 use sn_domain::order::{OrderKind, OrderStatus, PurchaseIntent};
@@ -332,5 +336,241 @@ async fn статистика_считает_купивших_после_акт�
         .unwrap();
     assert_eq!(listed.items[0].link.activations, 5);
     assert_eq!(listed.items[0].purchased, 2);
+    db.cleanup().await;
+}
+
+async fn mode(store: &Store, mode: &str) {
+    guarded(
+        store,
+        serde_json::json!({ "mode": mode, "burst_count": 0, "check_username": false }),
+    )
+    .await;
+}
+
+async fn kinds(store: &Store, client_id: ClientId, filter: JournalFilter) -> Vec<String> {
+    let mut conn = store.conn().await.unwrap();
+    journal::journal(&mut conn, filter, Some(client_id), PageRequest::default())
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|item| format!("{}:{}", item.action.as_str(), item.details["target"]))
+        .collect()
+}
+
+fn asks(outcome: Result<Activated, LinkError>) {
+    match outcome {
+        Err(LinkError::Rejected(rejection)) => {
+            assert_eq!(rejection, LinkRejection::Confirm);
+            assert_eq!(rejection.code(), antibot::CONFIRM_CODE);
+        }
+        other => panic!("ожидали просьбу подтвердить: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn отмеченный_получает_подписку_по_ссылке_только_после_кнопки() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    mode(&db.store, "confirm").await;
+    let link = create(&ctx, &sample("Блогер"), None).await.unwrap().link;
+    let second = create(&ctx, &sample("Второй блогер"), None)
+        .await
+        .unwrap()
+        .link;
+    let honest = client(&db.store).await;
+    let marked = client(&db.store).await;
+    suspect(&db.store, marked).await;
+
+    activate(&ctx, honest, &link.code).await.unwrap();
+    assert_eq!(core.grants().len(), 1);
+    assert!(antibot_actions(&db.store, honest).await.is_empty());
+
+    asks(activate(&ctx, marked, &link.code).await);
+    asks(activate(&ctx, marked, &link.code).await);
+    asks(activate_confirmed(&ctx, marked, &link.code, "чужой").await);
+    let token = antibot::challenge(&ctx, marked).await.unwrap();
+    asks(activate_confirmed(&ctx, marked, &link.code, &token).await);
+    assert_eq!(core.grants().len(), 1);
+    assert_eq!(
+        antibot_actions(&db.store, marked).await,
+        ["promo_link_asked"]
+    );
+
+    age_challenge(&db.store, marked).await;
+    let done = activate_confirmed(&ctx, marked, &link.code, &token)
+        .await
+        .unwrap();
+    assert_eq!(done.days, 7);
+    assert_eq!(core.grants().len(), 2);
+    assert_eq!(core.grants()[1].0.client_id, marked);
+    activate(&ctx, marked, &second.code).await.unwrap();
+    assert_eq!(core.grants().len(), 3);
+    assert_eq!(
+        antibot_actions(&db.store, marked).await,
+        ["promo_link_asked", "confirmed"]
+    );
+    assert_eq!(
+        kinds(&db.store, marked, JournalFilter::Promo).await,
+        [
+            "confirmed:\"promo_link\"",
+            "promo_link_asked:\"promo_link\""
+        ]
+    );
+    assert!(
+        kinds(&db.store, marked, JournalFilter::Trial)
+            .await
+            .is_empty()
+    );
+    let mut conn = db.store.conn().await.unwrap();
+    let page = journal::journal(
+        &mut conn,
+        JournalFilter::Promo,
+        Some(marked),
+        PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        page.items[1].title,
+        "Попросили подтвердить перед промо-ссылкой"
+    );
+    assert_eq!(page.items[1].details["name"], "Блогер");
+    assert_eq!(page.items[1].details["link_id"], link.id);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn ссылку_и_выдачу_проверяем_раньше_кнопки_антибота() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    mode(&db.store, "confirm").await;
+    let marked = client(&db.store).await;
+    suspect(&db.store, marked).await;
+    let off = create(&ctx, &sample("Выключенная"), None)
+        .await
+        .unwrap()
+        .link;
+    set_enabled(&ctx, off.id, false, None).await.unwrap();
+    let old = create(&ctx, &sample("Старая"), None).await.unwrap().link;
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query("UPDATE promo_links SET expires_at = now() - interval '1 minute' WHERE id = $1")
+        .bind(old.id)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    let fine = create(&ctx, &sample("Рабочая"), None).await.unwrap().link;
+    assert!(matches!(
+        activate(&ctx, marked, "nolink").await,
+        Err(LinkError::Rejected(LinkRejection::NotFound))
+    ));
+    assert!(matches!(
+        activate(&ctx, marked, &off.code).await,
+        Err(LinkError::Rejected(LinkRejection::Disabled))
+    ));
+    assert!(matches!(
+        activate(&ctx, marked, &old.code).await,
+        Err(LinkError::Rejected(LinkRejection::Expired))
+    ));
+    core.refuse(Some(GrantRefusal::new(
+        "grant.has_subscription",
+        "У вас уже есть действующая подписка",
+    )));
+    match activate(&ctx, marked, &fine.code).await {
+        Err(LinkError::Rejected(LinkRejection::Grant(refusal))) => {
+            assert_eq!(refusal.code, "grant.has_subscription");
+        }
+        other => panic!("ожидали отказ выдачи: {other:?}"),
+    }
+    assert!(antibot_actions(&db.store, marked).await.is_empty());
+    core.refuse(None);
+    asks(activate(&ctx, marked, &fine.code).await);
+    assert!(core.grants().is_empty());
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_режиме_запрета_подписки_по_ссылке_нет_пока_отметку_не_сняли() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    mode(&db.store, "block").await;
+    let link = create(&ctx, &sample("Блогер"), None).await.unwrap().link;
+    let honest = client(&db.store).await;
+    let marked = client(&db.store).await;
+    suspect(&db.store, marked).await;
+    for _ in 0..2 {
+        match activate(&ctx, marked, &link.code).await {
+            Err(LinkError::Rejected(rejection)) => {
+                assert_eq!(rejection, LinkRejection::Denied);
+                assert_eq!(rejection.code(), antibot::DENIED_CODE);
+                assert!(rejection.message().contains("недоступна"));
+            }
+            other => panic!("ожидали отказ антибота: {other:?}"),
+        }
+    }
+    assert!(core.grants().is_empty());
+    assert_eq!(
+        kinds(&db.store, marked, JournalFilter::Promo).await,
+        ["promo_link_denied:\"promo_link\""]
+    );
+    activate(&ctx, honest, &link.code).await.unwrap();
+    assert_eq!(core.grants().len(), 1);
+    assert!(antibot::clear(&ctx, marked, None).await.unwrap());
+    activate(&ctx, marked, &link.code).await.unwrap();
+    assert_eq!(core.grants().len(), 2);
+    assert_eq!(
+        antibot_actions(&db.store, marked).await,
+        ["promo_link_denied", "cleared"]
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_режиме_отметки_и_без_антибота_ссылка_выдаётся_сразу() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let link = create(&ctx, &sample("Блогер"), None).await.unwrap().link;
+    let first = client(&db.store).await;
+    let second = client(&db.store).await;
+    let third = client(&db.store).await;
+    for who in [first, second, third] {
+        suspect(&db.store, who).await;
+    }
+    mode(&db.store, "mark").await;
+    activate(&ctx, first, &link.code).await.unwrap();
+    mode(&db.store, "block").await;
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query("UPDATE module_states SET enabled = false WHERE module = 'antibot'")
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    activate(&ctx, second, &link.code).await.unwrap();
+    mode(&db.store, "confirm").await;
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query("UPDATE antibot_marks SET confirmed_at = now() WHERE client_id = $1")
+        .bind(third.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    activate(&ctx, third, &link.code).await.unwrap();
+    assert_eq!(core.grants().len(), 3);
+    for who in [first, second, third] {
+        assert!(antibot_actions(&db.store, who).await.is_empty());
+    }
     db.cleanup().await;
 }

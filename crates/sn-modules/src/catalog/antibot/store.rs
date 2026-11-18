@@ -205,10 +205,12 @@ pub enum Action {
     ContestDenied,
     ContestNoted,
     ContestExcluded,
+    PromoLinkAsked,
+    PromoLinkDenied,
 }
 
 impl Action {
-    pub const ALL: [Action; 14] = [
+    pub const ALL: [Action; 16] = [
         Action::Marked,
         Action::Asked,
         Action::Confirmed,
@@ -223,6 +225,8 @@ impl Action {
         Action::ContestDenied,
         Action::ContestNoted,
         Action::ContestExcluded,
+        Action::PromoLinkAsked,
+        Action::PromoLinkDenied,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -241,6 +245,8 @@ impl Action {
             Action::ContestDenied => "contest_denied",
             Action::ContestNoted => "contest_noted",
             Action::ContestExcluded => "contest_excluded",
+            Action::PromoLinkAsked => "promo_link_asked",
+            Action::PromoLinkDenied => "promo_link_denied",
         }
     }
 
@@ -264,6 +270,8 @@ impl Action {
             Action::ContestDenied => "Участие в конкурсе не принято",
             Action::ContestNoted => "Отмеченный клиент участвует в конкурсе",
             Action::ContestExcluded => "Не прошли проверку на жеребьёвке конкурса",
+            Action::PromoLinkAsked => "Попросили подтвердить перед промо-ссылкой",
+            Action::PromoLinkDenied => "Подписка по промо-ссылке не выдана",
         }
     }
 }
@@ -324,8 +332,12 @@ impl JournalFilter {
         let list: &[Action] = match self {
             JournalFilter::All => &Action::ALL,
             JournalFilter::Signup => &[Action::Marked],
-            JournalFilter::Trial => &[Action::Asked, Action::Confirmed, Action::TrialDenied],
-            JournalFilter::Promo => &[Action::PromoDenied],
+            JournalFilter::Trial => &[Action::Asked, Action::TrialDenied],
+            JournalFilter::Promo => &[
+                Action::PromoDenied,
+                Action::PromoLinkAsked,
+                Action::PromoLinkDenied,
+            ],
             JournalFilter::Referral => &[Action::NoBonus],
             JournalFilter::Roulette => &[
                 Action::RouletteAsked,
@@ -341,6 +353,19 @@ impl JournalFilter {
             JournalFilter::Cleared => &[Action::Cleared],
         };
         list.iter().map(|a| a.as_str()).collect()
+    }
+
+    fn confirmed_for(self) -> &'static [&'static str] {
+        match self {
+            JournalFilter::Trial => &["trial"],
+            JournalFilter::Promo => &["promo_link"],
+            JournalFilter::Roulette => &["roulette"],
+            JournalFilter::Contest => &["contest"],
+            JournalFilter::All
+            | JournalFilter::Signup
+            | JournalFilter::Referral
+            | JournalFilter::Cleared => &[],
+        }
     }
 }
 
@@ -393,7 +418,9 @@ pub async fn journal(
     let rows: Vec<EventRow> = sqlx::query_as(
         "SELECT e.id, e.client_id, e.action, e.reasons, e.details, e.created_at, a.email AS admin_email \
          FROM antibot_events e LEFT JOIN admins a ON a.id = e.admin_id \
-         WHERE e.action = ANY($1) AND ($2::bigint IS NULL OR e.client_id = $2) \
+         WHERE (e.action = ANY($1) \
+                OR (e.action = 'confirmed' AND COALESCE(e.details->>'target', 'trial') = ANY($5))) \
+           AND ($2::bigint IS NULL OR e.client_id = $2) \
            AND ($3::bigint IS NULL OR e.id < $3) \
          ORDER BY e.id DESC LIMIT $4",
     )
@@ -401,6 +428,7 @@ pub async fn journal(
     .bind(client.map(|c| c.0))
     .bind(page.after)
     .bind(page.fetch_limit())
+    .bind(filter.confirmed_for())
     .fetch_all(db.conn())
     .await?;
     let items: Vec<JournalItem> = rows
@@ -507,10 +535,12 @@ pub async fn summary(db: &mut impl Db) -> StoreResult<Summary> {
     ) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM antibot_marks WHERE cleared_at IS NULL), \
                 count(*) FILTER (WHERE action = 'marked'), \
-                count(*) FILTER (WHERE action IN ('asked', 'roulette_asked', 'contest_asked')), \
+                count(*) FILTER (WHERE action IN ('asked', 'roulette_asked', 'contest_asked', \
+                                                  'promo_link_asked')), \
                 count(*) FILTER (WHERE action = 'confirmed'), \
                 count(*) FILTER (WHERE action IN ('trial_denied', 'promo_denied', 'roulette_denied', \
-                                                  'contest_denied', 'contest_excluded')), \
+                                                  'contest_denied', 'contest_excluded', \
+                                                  'promo_link_denied')), \
                 count(*) FILTER (WHERE action = 'no_bonus') \
          FROM antibot_events WHERE created_at >= now() - interval '7 days'",
     )

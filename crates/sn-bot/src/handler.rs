@@ -572,6 +572,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "gl" => gifts::mine(turn, client).await?,
         "ga" => gifts::ask_code(turn),
         "gr" => gifts::redeem(turn, client, rest).await?,
+        gifts::PROMO_CONFIRM => gifts::promo_link_confirmed(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
         "docs" => documents_screen(&turn.content()),
         "lang" if rest.is_empty() => language_screen(turn, client).await?,

@@ -185,6 +185,33 @@ async fn last_labels(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
+async fn antibot_mode(services: &Services, mode: &str) {
+    services
+        .modules()
+        .set_enabled(
+            services.store(),
+            sn_domain::module::ModuleId::Antibot,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    services
+        .modules()
+        .set_config(
+            services.store(),
+            sn_domain::module::ModuleId::Antibot,
+            sn_modules::ModuleConfig::from_value(&serde_json::json!({
+                "mode": mode,
+                "burst_count": 0,
+                "check_username": false
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
 async fn client_of(services: &Services, telegram_id: i64) -> Option<sn_domain::client::Client> {
     let mut conn = services.store().conn().await.unwrap();
     conn.clients()

@@ -3,6 +3,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
+use crate::catalog::antibot::{self, Gate};
 use crate::catalog::db_now;
 use crate::catalog::start_param;
 use crate::context::{GrantRefusal, GrantSpec, GrantTarget, ModuleContext, SubscriptionGrant};
@@ -153,6 +154,8 @@ pub enum LinkRejection {
     Expired,
     Exhausted,
     AlreadyUsed,
+    Confirm,
+    Denied,
     Grant(GrantRefusal),
 }
 
@@ -164,6 +167,8 @@ impl LinkRejection {
             LinkRejection::Expired => "promolinks.expired",
             LinkRejection::Exhausted => "promolinks.exhausted",
             LinkRejection::AlreadyUsed => "promolinks.already_used",
+            LinkRejection::Confirm => antibot::CONFIRM_CODE,
+            LinkRejection::Denied => antibot::DENIED_CODE,
             LinkRejection::Grant(refusal) => refusal.code,
         }
     }
@@ -178,6 +183,12 @@ impl LinkRejection {
             }
             LinkRejection::AlreadyUsed => {
                 "Вы уже получили подписку по этой ссылке. Одна ссылка срабатывает один раз.".into()
+            }
+            LinkRejection::Confirm => {
+                "Подтвердите, что вы не робот, и подписка по промо-ссылке оформится.".into()
+            }
+            LinkRejection::Denied => {
+                "Подписка по промо-ссылкам для этого аккаунта недоступна. Если это ошибка, напишите в поддержку.".into()
             }
             LinkRejection::Grant(refusal) => refusal.message.clone(),
         }
@@ -384,6 +395,56 @@ pub struct Activated {
     pub subscription_id: Option<sn_domain::ids::SubscriptionId>,
 }
 
+async fn refused(
+    db: &mut impl Db,
+    link: &PromoLink,
+    client_id: ClientId,
+    now: DateTime<Utc>,
+) -> Result<Option<LinkRejection>, StoreError> {
+    if store::activated_by(db, link.id, client_id).await? {
+        return Ok(Some(LinkRejection::AlreadyUsed));
+    }
+    Ok(match store::state(link, now) {
+        LinkState::Active => None,
+        LinkState::Disabled => Some(LinkRejection::Disabled),
+        LinkState::Expired => Some(LinkRejection::Expired),
+        LinkState::Exhausted => Some(LinkRejection::Exhausted),
+    })
+}
+
+async fn precheck(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    code: &str,
+) -> Result<Result<PromoLink, LinkRejection>, LinkError> {
+    let link = {
+        let mut conn = ctx.store.conn().await?;
+        let now = db_now(&mut conn).await?;
+        let Some(link) = store::by_code(&mut conn, code).await? else {
+            return Ok(Err(LinkRejection::NotFound));
+        };
+        if let Some(rejection) = refused(&mut conn, &link, client_id, now).await? {
+            return Ok(Err(rejection));
+        }
+        link
+    };
+    let preview = ctx.core.grant_preview(&link.grant(client_id)).await?;
+    Ok(match preview.refusal {
+        Some(refusal) => Err(LinkRejection::Grant(refusal)),
+        None => Ok(link),
+    })
+}
+
+pub async fn activate_confirmed(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    code: &str,
+    token: &str,
+) -> Result<Activated, LinkError> {
+    antibot::confirm(ctx, client_id, token, antibot::PROMO_LINK).await?;
+    activate(ctx, client_id, code).await
+}
+
 pub async fn activate(
     ctx: &ModuleContext,
     client_id: ClientId,
@@ -393,25 +454,22 @@ pub async fn activate(
     if !valid_code(code) {
         return rejected(LinkRejection::NotFound);
     }
-    if !crate::catalog::antibot::free_allowed(ctx, client_id, "promo_link").await? {
-        return rejected(LinkRejection::Grant(GrantRefusal::new(
-            crate::catalog::antibot::DENIED_CODE,
-            "Промо-ссылки недоступны для этого аккаунта. Если это ошибка, напишите в поддержку.",
-        )));
+    let checked = match precheck(ctx, client_id, code).await? {
+        Ok(link) => link,
+        Err(rejection) => return rejected(rejection),
+    };
+    match antibot::promo_link_gate(ctx, client_id, checked.id, &checked.name).await? {
+        Gate::Allow => {}
+        Gate::Confirm => return rejected(LinkRejection::Confirm),
+        Gate::Deny => return rejected(LinkRejection::Denied),
     }
     let mut tx = ctx.store.begin().await?;
     let now = db_now(&mut tx).await?;
     let Some(link) = store::lock_by_code(&mut tx, code).await? else {
         return rejected(LinkRejection::NotFound);
     };
-    if store::activated_by(&mut tx, link.id, client_id).await? {
-        return rejected(LinkRejection::AlreadyUsed);
-    }
-    match store::state(&link, now) {
-        LinkState::Active => {}
-        LinkState::Disabled => return rejected(LinkRejection::Disabled),
-        LinkState::Expired => return rejected(LinkRejection::Expired),
-        LinkState::Exhausted => return rejected(LinkRejection::Exhausted),
+    if let Some(rejection) = refused(&mut tx, &link, client_id, now).await? {
+        return rejected(rejection);
     }
     let granted = match ctx
         .core

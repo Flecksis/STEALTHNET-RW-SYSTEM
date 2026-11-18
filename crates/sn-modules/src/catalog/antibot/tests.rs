@@ -317,7 +317,7 @@ async fn промо_ссылка_не_выдаётся_отмеченному_в
     match crate::catalog::promolinks::activate(&ctx, suspect, &link.link.code).await {
         Err(crate::catalog::promolinks::LinkError::Rejected(rejection)) => {
             assert_eq!(rejection.code(), DENIED_CODE);
-            assert!(rejection.message().contains("недоступны"));
+            assert!(rejection.message().contains("недоступна"));
         }
         other => panic!("ожидался отказ антибота, получено {other:?}"),
     }
@@ -332,9 +332,15 @@ async fn промо_ссылка_не_выдаётся_отмеченному_в
     .unwrap();
     assert_eq!(journal.items.len(), 1);
     assert_eq!(journal.items[0].details["target"], "promo_link");
-    assert_eq!(journal.items[0].title, "Бесплатные дни не выданы");
+    assert_eq!(journal.items[0].title, "Подписка по промо-ссылке не выдана");
+    assert_eq!(journal.items[0].details["name"], "Блогер");
     drop(conn);
-    assert!(free_allowed(&ctx, honest, "promo_link").await.unwrap());
+    assert_eq!(
+        promo_link_gate(&ctx, honest, link.link.id, &link.link.name)
+            .await
+            .unwrap(),
+        Gate::Allow
+    );
     db.cleanup().await;
 }
 
@@ -420,6 +426,30 @@ async fn журнал_принимает_все_виды_срабатывани�
     .await
     .unwrap();
     assert_eq!(contest.items.len(), 4);
+    let titles = |page: sn_domain::paging::Page<JournalItem>| -> Vec<&'static str> {
+        page.items.iter().map(|i| i.action.as_str()).collect()
+    };
+    let trial = store::journal(
+        &mut conn,
+        JournalFilter::Trial,
+        Some(id),
+        sn_domain::paging::PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(titles(trial), ["trial_denied", "confirmed", "asked"]);
+    let promo = store::journal(
+        &mut conn,
+        JournalFilter::Promo,
+        Some(id),
+        sn_domain::paging::PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        titles(promo),
+        ["promo_link_denied", "promo_link_asked", "promo_denied"]
+    );
     drop(conn);
     db.cleanup().await;
 }

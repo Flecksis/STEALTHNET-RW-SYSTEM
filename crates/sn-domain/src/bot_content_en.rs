@@ -344,6 +344,14 @@ pub fn default(key: &str) -> Option<&'static str> {
         "pl.has_subscription" => {
             "You already have an active subscription, and this link gives a new one. You can use it once your subscription ends."
         }
+        "pl.confirm" => {
+            "To get the subscription from this promo link, confirm you're not a robot: tap the button below."
+        }
+        "pl.btn.confirm" => "I'm not a robot",
+        "pl.denied" => {
+            "Promo link subscriptions aren't available for this account. If this is a mistake, please contact support."
+        }
+        "pl.again" => "Open the promo link again to get the subscription.",
         "pay.what_devices" => "extra devices: +{count}",
         "pay.what_gift" => "gift: “{tariff}” for {term}",
         "pay.what_traffic" => "traffic: +{gb} GB",

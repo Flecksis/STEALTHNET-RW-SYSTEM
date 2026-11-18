@@ -574,3 +574,134 @@ async fn промо_ссылка_в_боте_выдаёт_подписку_од�
     );
     db.cleanup().await;
 }
+
+async fn mark(services: &Services, telegram_id: i64) -> ClientId {
+    let client = client_of(services, telegram_id).await.unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    sn_modules::catalog::antibot::store::save_mark(
+        &mut conn,
+        client.id,
+        &[sn_modules::catalog::antibot::signals::Signal::DisposableEmail],
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    client.id
+}
+
+#[tokio::test]
+async fn промо_ссылка_в_боте_просит_кнопку_у_отмеченного_и_не_выдаёт_при_запрете() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    enable(&services, ModuleId::Promolinks).await;
+    services.set_remna(Some(remnawave()));
+    antibot_mode(&services, "confirm").await;
+    let link = promolinks::create(
+        &services.module_context(),
+        &NewLink {
+            name: "Блогер".into(),
+            code: None,
+            squads: vec![SquadId(uuid::Uuid::from_u128(1))],
+            days: 7,
+            traffic_gb: None,
+            traffic_reset: TrafficReset::NoReset,
+            devices: 1,
+            max_activations: None,
+            expires_at: None,
+        },
+        None,
+    )
+    .await
+    .unwrap()
+    .link;
+    handle_update(&ctx, text_update(1, 761, "/start")).await;
+    let marked = mark(&services, 761).await;
+    handle_update(
+        &ctx,
+        text_update(2, 761, &format!("/start pl_{}", link.code)),
+    )
+    .await;
+    let asked = last_text(&server).await;
+    assert!(asked.contains("подтвердите, что вы не робот"), "{asked}");
+    assert!(
+        last_labels(&server)
+            .await
+            .contains(&"Я не робот".to_string())
+    );
+    let button = last_buttons(&server)
+        .await
+        .into_iter()
+        .find(|b| b.starts_with("plr:"))
+        .unwrap();
+    assert!(button.len() <= 64, "{button}");
+    assert!(!button.contains(&link.code));
+    assert!(
+        orders_of(&db, marked)
+            .await
+            .iter()
+            .all(|o| o.kind != OrderKind::ModuleGrant)
+    );
+    handle_update(&ctx, callback_update(3, 761, "plr:0123456789abcdef")).await;
+    assert!(
+        last_text(&server)
+            .await
+            .contains("подтвердите, что вы не робот")
+    );
+    let renewed = last_buttons(&server)
+        .await
+        .into_iter()
+        .find(|b| b.starts_with("plr:"))
+        .unwrap();
+    assert_ne!(renewed, button);
+    let button = renewed;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+        )
+        .bind(marked.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    handle_update(&ctx, callback_update(4, 761, &button)).await;
+    let done = last_text(&server).await;
+    assert!(
+        done.contains("Готово! Подписка на 7\u{a0}дней оформлена"),
+        "{done}"
+    );
+    assert!(
+        orders_of(&db, marked)
+            .await
+            .iter()
+            .any(|o| o.kind == OrderKind::ModuleGrant)
+    );
+    handle_update(&ctx, callback_update(5, 761, &button)).await;
+    assert!(
+        last_text(&server)
+            .await
+            .contains("Откройте промо-ссылку ещё раз")
+    );
+
+    antibot_mode(&services, "block").await;
+    handle_update(&ctx, text_update(6, 762, "/start")).await;
+    let blocked = mark(&services, 762).await;
+    handle_update(
+        &ctx,
+        text_update(7, 762, &format!("/start pl_{}", link.code)),
+    )
+    .await;
+    assert!(
+        last_text(&server)
+            .await
+            .contains("Подписка по промо-ссылкам для этого аккаунта недоступна")
+    );
+    assert!(
+        orders_of(&db, blocked)
+            .await
+            .iter()
+            .all(|o| o.kind != OrderKind::ModuleGrant)
+    );
+    db.cleanup().await;
+}

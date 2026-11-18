@@ -215,28 +215,6 @@ async fn кнопка_рулетки_открывает_ленту_призов_
     db.cleanup().await;
 }
 
-async fn antibot_mode(services: &Services, mode: &str) {
-    services
-        .modules()
-        .set_enabled(services.store(), ModuleId::Antibot, true, None)
-        .await
-        .unwrap();
-    services
-        .modules()
-        .set_config(
-            services.store(),
-            ModuleId::Antibot,
-            sn_modules::ModuleConfig::from_value(&serde_json::json!({
-                "mode": mode,
-                "burst_count": 0,
-                "check_username": false
-            })),
-            None,
-        )
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 async fn антибот_просит_кнопку_перед_конкурсом_и_не_пускает_в_режиме_запрета() {
     let Some((db, services, server, ctx)) = setup().await else {
