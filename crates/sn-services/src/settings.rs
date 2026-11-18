@@ -1969,6 +1969,11 @@ impl<'a> SettingsOps<'a> {
         let mut conn = self.services.store().conn().await?;
         let rows = module_secret_rows(&mut conn, self.services.secrets(), modules).await?;
         modules.apply_rows(&rows);
+        let view = modules
+            .views()
+            .into_iter()
+            .find(|v| v.info.id == id)
+            .unwrap_or(view);
         conn.audit()
             .record(&Actor::Admin(admin).audit(
                 "modules.toggle",

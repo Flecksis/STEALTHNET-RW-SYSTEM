@@ -105,6 +105,16 @@ pub mod rules {
         limit: 10,
         window_seconds: 900,
     };
+    pub const OAUTH_START_IP: RateRule = RateRule {
+        scope: "oauth_start_ip",
+        limit: 20,
+        window_seconds: 600,
+    };
+    pub const OAUTH_FINISH_IP: RateRule = RateRule {
+        scope: "oauth_finish_ip",
+        limit: 60,
+        window_seconds: 600,
+    };
 }
 
 pub fn ip_key(ip: IpAddr) -> String {

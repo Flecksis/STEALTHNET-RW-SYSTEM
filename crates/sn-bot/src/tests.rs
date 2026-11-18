@@ -844,6 +844,44 @@ fn уведомления_о_возврате_заблокированному_�
     assert_eq!(letter.subject, "Оплата возвращена");
 }
 
+#[test]
+fn уведомление_о_привязке_входа_через_google_или_apple() {
+    let utc = chrono::FixedOffset::east_opt(0).unwrap();
+    let content = sn_domain::bot_content::Content::default();
+    let linked = notify::render(
+        &content,
+        sn_modules::catalog::oauth::TEMPLATE_LINKED,
+        &serde_json::json!({"provider": "Google", "account": "anna@gmail.com"}),
+        utc,
+    )
+    .unwrap();
+    assert_eq!(
+        linked.text,
+        "К вашему аккаунту привязан вход через Google: anna@gmail.com. Если это сделали не вы, сразу напишите в поддержку."
+    );
+    assert_eq!(
+        linked.keyboard,
+        crate::telegram::Keyboard::new().button("Поддержка", "sup")
+    );
+    assert!(
+        notify::render(
+            &content,
+            sn_modules::catalog::oauth::TEMPLATE_LINKED,
+            &serde_json::json!({"provider": "Apple"}),
+            utc
+        )
+        .is_none()
+    );
+    let letter = notify::letter_head(
+        sn_modules::catalog::oauth::TEMPLATE_LINKED,
+        &serde_json::json!({"provider": "Apple", "account": "почта скрыта"}),
+    )
+    .unwrap();
+    assert_eq!(letter.kind, notify::LetterKind::Service);
+    assert_eq!(letter.subject, "Привязан вход через Apple");
+    assert_eq!(letter.path, "/cabinet/security");
+}
+
 #[tokio::test]
 async fn бот_читает_апдейты_и_хранит_смещение() {
     let Some((db, services, server, _ctx)) = setup().await else {

@@ -104,6 +104,10 @@ pub trait Module: Send + Sync + 'static {
         }
     }
 
+    fn config_warning(&self, _config: &ModuleConfig) -> Option<&'static str> {
+        None
+    }
+
     fn admin_routes(&self, _ctx: ModuleContext) -> Option<Router> {
         None
     }

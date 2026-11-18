@@ -58,6 +58,7 @@ struct Runtime {
     updates: Option<Arc<crate::updates::UpdateConfig>>,
     bot_content: Arc<crate::bot_content::BotContent>,
     bot_sender: Option<Arc<dyn BotSender>>,
+    oauth_endpoints: Arc<crate::oauth::OauthEndpoints>,
 }
 
 struct Inner {
@@ -94,6 +95,7 @@ impl Services {
             updates: None,
             bot_content: Arc::default(),
             bot_sender: None,
+            oauth_endpoints: Arc::default(),
         };
         Services {
             inner: Arc::new(Inner {
@@ -205,6 +207,14 @@ impl Services {
         &self.inner.bot
     }
 
+    pub fn oauth_endpoints(&self) -> Arc<crate::oauth::OauthEndpoints> {
+        self.read(|r| r.oauth_endpoints.clone())
+    }
+
+    pub fn set_oauth_endpoints(&self, endpoints: crate::oauth::OauthEndpoints) {
+        self.write(|r| r.oauth_endpoints = Arc::new(endpoints));
+    }
+
     pub fn module_context(&self) -> ModuleContext {
         ModuleContext {
             store: self.inner.store.clone(),
@@ -287,6 +297,10 @@ impl Services {
 
     pub fn api_keys(&self) -> crate::api_keys::ApiKeysOps<'_> {
         crate::api_keys::ApiKeysOps::new(self)
+    }
+
+    pub fn oauth(&self) -> crate::oauth::OauthOps<'_> {
+        crate::oauth::OauthOps::new(self)
     }
 
     pub fn mail(&self) -> crate::mail::MailOps<'_> {

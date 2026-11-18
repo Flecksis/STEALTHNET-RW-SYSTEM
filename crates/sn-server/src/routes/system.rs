@@ -90,6 +90,7 @@ async fn site(State(state): State<AppState>) -> Response {
         "documents": state.services.bot_content().documents,
         "email_auth": email_auth,
         "email_reset": email_reset,
+        "oauth": state.services.oauth().availability(),
         "client_access": {
             "miniapp": access.miniapp,
             "site_login": access.site_login,

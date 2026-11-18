@@ -37,6 +37,7 @@ export function SettingsClientAccess() {
   const [access, setAccess] = useState<Access | null>(null);
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [mailMode, setMailMode] = useState<string>('password');
+  const [oauthOn, setOauthOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -54,6 +55,7 @@ export function SettingsClientAccess() {
       const transport = String(mail?.config.transport ?? 'none');
       const login = mail?.config.login;
       setMailMode(mailOn && transport !== 'none' && login !== 'password' ? 'code' : 'password');
+      setOauthOn(modules?.modules.find((m) => m.info.id === 'oauth')?.active ?? false);
       setError(null);
     } catch (err) {
       setError(failText(err, 'Настройки не загрузились'));
@@ -152,6 +154,12 @@ export function SettingsClientAccess() {
                   По почте: {LOGIN_TEXT[mailMode] ?? LOGIN_TEXT.password}.{' '}
                   <Link className="link" to="/admin/settings/mail">
                     Изменить
+                  </Link>
+                </span>
+                <span className="cap">
+                  Через Google и Apple: {oauthOn ? 'включено' : 'выключено'}.{' '}
+                  <Link className="link" to="/admin/modules/oauth">
+                    {oauthOn ? 'Настроить' : 'Включить'}
                   </Link>
                 </span>
               </span>

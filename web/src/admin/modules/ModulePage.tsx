@@ -5,6 +5,7 @@ import { useSession } from '../session';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import { Switch } from '../ui';
 import type { ModuleConfig, ModulesData, ModuleView } from './model';
+import { OauthSetup } from './OauthSetup';
 import '../form.css';
 import './modules.css';
 
@@ -151,6 +152,7 @@ export function ModulePage() {
           Открыть раздел «{section}»
         </Link>
       ) : null}
+      {view.info.id === 'oauth' ? <OauthSetup /> : null}
       {cfg.schema.length === 0 ? (
         <section className="card card-pad">
           <p className="muted">{section ? `Настройки и список — в разделе «${section}».` : 'Своих настроек у модуля нет: он работает сам там, где указано выше.'}</p>

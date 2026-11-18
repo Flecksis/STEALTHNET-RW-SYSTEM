@@ -10,7 +10,7 @@ import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, M
 import { historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
-import { devicesWord, emailOf, liveSubscriptions, nextReset, personName, seenText, tariffOf, telegramOf } from './model';
+import { devicesWord, emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, tariffOf, telegramOf } from './model';
 import { planTitle } from './SubscriptionBlock';
 import { ClientProtect } from '../protect/ClientProtect';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
@@ -302,7 +302,7 @@ export function ClientPhone() {
   const reset = sub && limitBytes ? nextReset(sub, tariff) : '';
   const url = details?.subscription_url ?? null;
   const limit = mirror?.hwid_limit ?? null;
-  const subline = (tg ? [tg.meta?.username ? `@${tg.meta.username}` : null, tg.value] : [email?.value ?? null]).filter(Boolean).join(' · ');
+  const subline = (tg ? [tg.meta?.username ? `@${tg.meta.username}` : null, tg.value] : [email?.value ?? null, ...oauthLogins(card).map((l) => `вход через ${l.title}`)]).filter(Boolean).join(' · ');
   const seen = sub
     ? mirror?.online_at
       ? { text: `В сети ${seenText(mirror.online_at)}${details?.last_node ? ` через ${details.last_node}` : ''}`, warn: false }

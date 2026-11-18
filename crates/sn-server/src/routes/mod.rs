@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod client;
+mod client_oauth;
 mod client_photo;
 mod public_pay;
 pub mod system;
@@ -76,7 +77,9 @@ pub fn router(state: AppState) -> Router {
         .nest("/api/admin", admin::routes())
         .nest(
             "/api/client",
-            client::routes().merge(client_photo::routes()),
+            client::routes()
+                .merge(client_photo::routes())
+                .merge(client_oauth::routes()),
         )
         .nest_service("/api/admin/m", admin_modules)
         .nest_service("/api/client/m", client_modules)

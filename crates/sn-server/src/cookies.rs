@@ -40,6 +40,24 @@ pub fn session(
     .ok()
 }
 
+pub fn scoped(
+    state: &AppState,
+    name: &str,
+    value: &str,
+    path: &str,
+    max_age: i64,
+    same_site: SameSite,
+) -> Option<HeaderValue> {
+    let secure = state.config.secure_cookies() || same_site == SameSite::None;
+    let secure = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{name}={value}; Path={path}; HttpOnly; SameSite={}; Max-Age={}{secure}",
+        same_site.as_str(),
+        max_age.max(0)
+    ))
+    .ok()
+}
+
 pub fn with_cookie(cookie: Option<HeaderValue>, body: impl IntoResponse) -> Response {
     let mut response = body.into_response();
     if let Some(cookie) = cookie {

@@ -13,7 +13,7 @@ use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::money::Money;
 use sn_modules::MailSite;
 use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
-use sn_modules::catalog::{contests, gifts, limits, referral};
+use sn_modules::catalog::{contests, gifts, limits, oauth, referral};
 use sn_services::Services;
 use sn_services::mail::{RichLetter, Undelivered};
 use sn_store::{Db, StoreError};
@@ -289,6 +289,16 @@ pub fn render(
         limits::TEMPLATE_LIFTED => (
             t("notify.traffic_lifted", &[]),
             Some(("notify.btn.subscription", "subs")),
+        ),
+        oauth::TEMPLATE_LINKED => (
+            t(
+                "notify.oauth_linked",
+                &[
+                    ("provider", Text(params.get("provider")?.as_str()?)),
+                    ("account", Text(params.get("account")?.as_str()?)),
+                ],
+            ),
+            Some(("notify.btn.support", "sup")),
         ),
         contests::TEMPLATE_WON => {
             let mut text = t(
@@ -615,6 +625,18 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
             "Ограничение по трафику снято",
             "Открыть кабинет",
             "/cabinet",
+        ),
+        oauth::TEMPLATE_LINKED => head(
+            LetterKind::Service,
+            &format!(
+                "Привязан вход через {}",
+                params
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Google или Apple")
+            ),
+            "Безопасность",
+            "/cabinet/security",
         ),
         templates::SUPPORT_REPLY => LetterHead {
             kind: LetterKind::Support,

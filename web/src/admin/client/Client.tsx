@@ -12,7 +12,7 @@ import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog }
 import { eventsCount, historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
-import { emailOf, liveSubscriptions, nextReset, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
+import { emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
 import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
 import './client.css';
@@ -487,6 +487,12 @@ function ClientDesktop() {
               <span className="muted">Email</span>
               <span>{email ? email.value : 'нет'}</span>
             </div>
+            {oauthLogins(card).map((login) => (
+              <div className="cc-prof" key={login.title}>
+                <span className="muted">{login.title}</span>
+                <span>{login.account}</span>
+              </div>
+            ))}
             <div className="cc-prof">
               <span className="muted">Язык</span>
               <span>{locale}</span>

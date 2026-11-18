@@ -30,6 +30,15 @@ export function emailOf(card: ClientCard): Identity | undefined {
   return card.identities.find((i) => i.kind === 'email');
 }
 
+export function oauthLogins(card: ClientCard): Array<{ title: string; account: string }> {
+  return card.identities
+    .filter((i) => i.kind === 'google' || i.kind === 'apple')
+    .map((i) => ({
+      title: i.kind === 'google' ? 'Google' : 'Apple',
+      account: i.meta?.private_email ? 'почта скрыта' : (i.meta?.email ?? 'привязан'),
+    }));
+}
+
 export function personName(card: ClientCard): string {
   const tg = telegramOf(card);
   const full = [tg?.meta?.first_name, tg?.meta?.last_name]
@@ -41,6 +50,10 @@ export function personName(card: ClientCard): string {
   }
   if (tg) {
     return `id ${tg.value}`;
+  }
+  const oauthName = card.identities.find((i) => (i.kind === 'google' || i.kind === 'apple') && i.meta?.name?.trim())?.meta?.name?.trim();
+  if (oauthName) {
+    return oauthName;
   }
   return `Клиент ${card.client.id}`;
 }

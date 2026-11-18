@@ -91,6 +91,15 @@ fn account_label(identities: &[Identity], id: ClientId) -> String {
     if let Some(email) = identities.iter().find(|i| i.kind == IdentityKind::Email) {
         return email.value.clone();
     }
+    let provider_email = identities
+        .iter()
+        .filter(|i| matches!(i.kind, IdentityKind::Google | IdentityKind::Apple))
+        .find_map(|i| i.meta.get("email").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|e| !e.is_empty());
+    if let Some(email) = provider_email {
+        return email.to_string();
+    }
     match telegram {
         Some(identity) => format!("Telegram {}", identity.value),
         None => format!("клиент {}", id.0),

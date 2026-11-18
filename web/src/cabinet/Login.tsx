@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { QrCode } from '../lib/qr';
 import { useSurface, useSystemTheme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import { storedReferral } from '../lib/referral';
+import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, type OauthProvider } from './oauth';
 
 type Tg = { poll_token: string; link: string; expires_at: string };
 type Status = { status: 'pending' | 'confirmed' | 'rejected' | 'expired' | 'totp_required'; challenge?: string };
@@ -36,6 +38,48 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
   const emailAuth = site.email_auth === undefined ? 'code' : site.email_auth;
   const siteOpen = site.client_access?.site_login !== false;
   const timer = useRef<number | null>(null);
+  const navigate = useNavigate();
+  const [back] = useState<OauthProvider | null>(returnedProvider);
+  const [finishing, setFinishing] = useState(back !== null);
+  const [leaving, setLeaving] = useState<OauthProvider | null>(null);
+  const finished = useRef(false);
+  const providers = (['google', 'apple'] as const).filter((p) => site.oauth?.[p]);
+
+  useEffect(() => {
+    if (!back || finished.current) {
+      return;
+    }
+    finished.current = true;
+    void (async () => {
+      try {
+        const res = await finishOauth();
+        if (res.status === 'totp_required') {
+          setChallenge(res.challenge);
+          setTotp('');
+        } else {
+          navigate('/cabinet', { replace: true });
+          onDone();
+          return;
+        }
+      } catch (err) {
+        setError(failText(err, 'Вход не завершён. Нажмите кнопку входа ещё раз.'));
+      }
+      setFinishing(false);
+      navigate('/cabinet', { replace: true });
+    })();
+  }, [back, navigate, onDone]);
+
+  const startOauth = async (provider: OauthProvider) => {
+    setLeaving(provider);
+    setError(null);
+    try {
+      const referral = storedReferral();
+      await leaveFor(`/api/client/auth/oauth/${provider}`, referral ? { ref: referral } : {});
+    } catch (err) {
+      setError(failText(err, 'Вход не начался'));
+      setLeaving(null);
+    }
+  };
 
   useEffect(
     () => () => {
@@ -256,6 +300,11 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
             ) : null}
           </div>
         ) : null}
+        {siteOpen && finishing && back ? (
+          <div className="cb-login-wait" aria-busy="true">
+            <p>Завершаем вход через {PROVIDER_TITLE[back]}…</p>
+          </div>
+        ) : null}
         {siteOpen && challenge ? (
           <form className="cb-login-form" onSubmit={sendTotp}>
             <p>Вход защищён кодом. Откройте приложение-аутентификатор и введите код {site.brand_name}.</p>
@@ -284,7 +333,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
             {help}
           </form>
         ) : null}
-        {!siteOpen || challenge || emailAuth === null ? null : (
+        {!siteOpen || challenge || finishing || emailAuth === null ? null : (
         <div role="group" aria-label="Способ входа" className="cb-seg">
           <button type="button" aria-pressed={mode === 'telegram'} onClick={() => setMode('telegram')}>
             Telegram
@@ -294,7 +343,7 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
           </button>
         </div>
         )}
-        {!siteOpen || challenge ? null : mode === 'telegram' ? (
+        {!siteOpen || challenge || finishing ? null : mode === 'telegram' ? (
           tg && tgState === 'waiting' ? (
             <div className="cb-login-wait">
               <p>Откройте бота и подтвердите вход. Страница обновится сама.</p>
@@ -419,6 +468,17 @@ export function Login({ site, onDone }: { site: Site; onDone: () => void }) {
               Прислать код
             </button>
           </form>
+        )}
+        {!siteOpen || challenge || finishing || providers.length === 0 ? null : (
+          <div className="cb-oauth" role="group" aria-label="Другие способы входа">
+            <span className="cb-oauth-or">или</span>
+            {providers.map((p) => (
+              <button key={p} type="button" className="cb-second cb-oauth-btn" onClick={() => void startOauth(p)} disabled={busy || leaving !== null}>
+                <ProviderMark provider={p} />
+                {leaving === p ? 'Переходим…' : `Войти через ${PROVIDER_TITLE[p]}`}
+              </button>
+            ))}
+          </div>
         )}
         {error && !challenge ? (
           <p className="cb-error" role="alert">

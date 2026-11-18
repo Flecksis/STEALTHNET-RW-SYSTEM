@@ -5,6 +5,7 @@ pub mod contests;
 pub mod gifts;
 pub mod limits;
 pub mod mail;
+pub mod oauth;
 pub mod options;
 pub mod prize;
 pub mod promo;
@@ -41,6 +42,7 @@ pub fn all() -> Vec<Arc<dyn Module>> {
         Arc::new(contests::ContestsModule),
         Arc::new(roulette::RouletteModule),
         Arc::new(analytics::AnalyticsModule),
+        Arc::new(oauth::OauthModule),
     ]
 }
 
@@ -114,7 +116,8 @@ mod tests {
                 ModuleId::Limits,
                 ModuleId::Contests,
                 ModuleId::Roulette,
-                ModuleId::Analytics
+                ModuleId::Analytics,
+                ModuleId::Oauth
             ]
         );
         let registry = ModuleRegistry::new(modules).unwrap();

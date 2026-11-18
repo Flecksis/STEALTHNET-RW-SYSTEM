@@ -7,7 +7,14 @@ export type Identity = {
   kind: 'telegram' | 'email' | 'google' | 'apple';
   value: string;
   verified: boolean;
-  meta: { username?: string | null; first_name?: string | null; last_name?: string | null } | null;
+  meta: {
+    username?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    name?: string | null;
+    email?: string | null;
+    private_email?: boolean;
+  } | null;
 };
 
 export type TrafficReset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';

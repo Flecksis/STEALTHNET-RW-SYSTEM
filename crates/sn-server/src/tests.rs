@@ -39,6 +39,7 @@ mod import;
 mod landing;
 mod mail;
 mod multi_subscriptions;
+mod oauth;
 mod password_reset;
 mod photos;
 mod robots;

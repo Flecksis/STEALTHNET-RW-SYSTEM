@@ -2024,3 +2024,54 @@ a.cb-card[id] {
 .cb-phone .cb-gift-code-card .cb-promo-field input {
   width: 100%;
 }
+
+.cb-oauth {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cb-oauth-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.cb-oauth-or::before,
+.cb-oauth-or::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
+}
+
+.cb-oauth-btn {
+  gap: 10px;
+}
+
+.cb-oauth-mark {
+  flex: 0 0 auto;
+}
+
+.cb-logins {
+  gap: 6px;
+}
+
+.cb-logins .cb-note {
+  margin-bottom: 4px;
+}
+
+.cb-logins .cb-device:first-of-type {
+  border-top: 0;
+}
+
+.cb-logins .cb-btns {
+  margin-top: 8px;
+}
+
+.cb-logins .cb-result,
+.cb-logins .cb-error {
+  margin: 8px 0 0;
+}

@@ -156,10 +156,13 @@ impl ModuleRegistry {
                     let active = state.enabled && locked.is_none();
                     let module = &self.modules[id as usize];
                     let schema = module.settings_schema();
-                    let warning = (active
-                        && info.needs_api_key
-                        && module.validate_config(&state.config).is_err())
-                    .then_some(NEEDS_KEY);
+                    let warning = if !active {
+                        None
+                    } else if info.needs_api_key && module.validate_config(&state.config).is_err() {
+                        Some(NEEDS_KEY)
+                    } else {
+                        module.config_warning(&state.config)
+                    };
                     ModuleView {
                         info,
                         enabled: state.enabled,

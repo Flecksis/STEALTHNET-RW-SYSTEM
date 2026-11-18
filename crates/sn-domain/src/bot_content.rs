@@ -513,6 +513,14 @@ const PRIZE: Var = Var {
     name: "prize",
     hint: "приз",
 };
+const PROVIDER: Var = Var {
+    name: "provider",
+    hint: "Google или Apple",
+};
+const ACCOUNT: Var = Var {
+    name: "account",
+    hint: "почта аккаунта Google или Apple",
+};
 const WINNERS: Var = Var {
     name: "winners",
     hint: "число победителей",
@@ -2640,6 +2648,13 @@ pub static CATALOG: &[Entry] = &[
         "Ограничение по трафику снято",
         "Ограничение по трафику снято, VPN снова работает.",
         &[],
+    ),
+    text(
+        "notify.oauth_linked",
+        Notify,
+        "Привязан вход через Google или Apple",
+        "К вашему аккаунту привязан вход через {provider}: {account}. Если это сделали не вы, сразу напишите в поддержку.",
+        &[PROVIDER, ACCOUNT],
     ),
     hideable(
         "notify.btn.subscription",

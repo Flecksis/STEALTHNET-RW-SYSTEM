@@ -1,11 +1,13 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { Link } from 'react-router';
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong } from '../lib/format';
+import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import type { TwoFactor } from './model';
+import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, type OauthProvider } from './oauth';
 
 type Setup = { secret: string; uri: string };
 
@@ -130,6 +132,7 @@ export function SecurityPage() {
   return (
     <div className="cb-secure">
       <h1 className="cb-title">Безопасность</h1>
+      <LoginsCard />
       <PasswordCard />
       <Card label="Вход по коду из приложения">
         <div className="cb-row wrap">
@@ -303,6 +306,161 @@ function PasswordCard() {
           </button>
         </span>
       </form>
+    </Card>
+  );
+}
+
+type LoginKind = 'telegram' | 'email' | 'google' | 'apple';
+type LoginMethod = { kind: LoginKind; account: string; linked_at: string; removable: boolean };
+type Logins = { methods: LoginMethod[]; can_link: OauthProvider[] };
+
+const KIND_TITLE: Record<LoginKind, string> = { telegram: 'Telegram', email: 'Почта', google: 'Google', apple: 'Apple' };
+
+function isProvider(kind: LoginKind): kind is OauthProvider {
+  return kind === 'google' || kind === 'apple';
+}
+
+function KindMark({ kind }: { kind: LoginKind }) {
+  if (isProvider(kind)) {
+    return <ProviderMark provider={kind} />;
+  }
+  return <Icon name={kind === 'telegram' ? 'send' : 'mail'} size={20} />;
+}
+
+function LoginsCard() {
+  const { phone } = useCabinet();
+  const navigate = useNavigate();
+  const [data, setData] = useState<Logins | null>(null);
+  const [ask, setAsk] = useState<OauthProvider | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const finished = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api<Logins>('/api/client/security/logins'));
+    } catch (err) {
+      setError(failText(err, 'Способы входа не загрузились'));
+    }
+  }, []);
+
+  useEffect(() => {
+    const back = returnedProvider();
+    if (!back || finished.current) {
+      void load();
+      return;
+    }
+    finished.current = true;
+    finishOauth()
+      .then(
+        (res) => {
+          if (res.status === 'linked') {
+            setNotice(`Вход через ${PROVIDER_TITLE[res.provider]} привязан. Теперь им можно входить в кабинет.`);
+          }
+        },
+        (err) => setError(failText(err, 'Привязка не завершилась, попробуйте ещё раз')),
+      )
+      .finally(() => {
+        navigate('/cabinet/security', { replace: true });
+        void load();
+      });
+  }, [load, navigate]);
+
+  const link = async (provider: OauthProvider) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await leaveFor(`/api/client/security/logins/${provider}`);
+    } catch (err) {
+      setError(failText(err, 'Привязка не началась'));
+      setBusy(false);
+    }
+  };
+
+  const unlink = async (provider: OauthProvider) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setData(await api<Logins>(`/api/client/security/logins/${provider}`, { method: 'DELETE' }));
+      setAsk(null);
+      setNotice(`Вход через ${PROVIDER_TITLE[provider]} отвязан.`);
+    } catch (err) {
+      setError(failText(err, 'Не получилось отвязать'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const shown = data !== null && (data.can_link.length > 0 || data.methods.some((m) => isProvider(m.kind)));
+  if (!shown && !error) {
+    return null;
+  }
+
+  return (
+    <Card label="Способы входа" className="cb-logins">
+      <h2 className="cb-h2">Способы входа</h2>
+      <p className="cb-note">Войти в кабинет можно любым из них. Последний способ отвязать нельзя.</p>
+      {data?.methods.map((m) => (
+        <Fragment key={m.kind}>
+          <div className="cb-device">
+            <KindMark kind={m.kind} />
+            <span className="cb-device-text">
+              <strong>{KIND_TITLE[m.kind]}</strong>
+              <span className="cb-small cb-muted">{m.account}</span>
+            </span>
+            {isProvider(m.kind) && m.removable ? (
+              <button
+                type="button"
+                className={phone ? 'cb-text' : 'cb-second sm'}
+                aria-label={`Отвязать ${KIND_TITLE[m.kind]}`}
+                aria-expanded={ask === m.kind}
+                onClick={() => setAsk(ask === m.kind ? null : (m.kind as OauthProvider))}
+                disabled={busy}
+              >
+                Отвязать
+              </button>
+            ) : null}
+          </div>
+          {ask === m.kind ? (
+            <div className="cb-ask">
+              <p>
+                <strong>Отвязать вход через {PROVIDER_TITLE[ask]}?</strong> Входить через этот аккаунт {PROVIDER_TITLE[ask]} больше не получится. Привязать его можно снова.
+              </p>
+              <span className="cb-ask-btns">
+                <button type="button" className="cb-main sm" onClick={() => void unlink(ask)} disabled={busy}>
+                  Отвязать
+                </button>
+                <button type="button" className="cb-cancel" onClick={() => setAsk(null)} disabled={busy}>
+                  Отменить
+                </button>
+              </span>
+            </div>
+          ) : null}
+        </Fragment>
+      ))}
+      {data && data.can_link.length > 0 ? (
+        <span className="cb-btns">
+          {data.can_link.map((p) => (
+            <button key={p} type="button" className="cb-second cb-oauth-btn" onClick={() => void link(p)} disabled={busy}>
+              <ProviderMark provider={p} />
+              Привязать {PROVIDER_TITLE[p]}
+            </button>
+          ))}
+        </span>
+      ) : null}
+      {notice ? (
+        <p className="cb-result" role="status">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="cb-error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </Card>
   );
 }
