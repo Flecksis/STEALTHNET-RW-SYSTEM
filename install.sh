@@ -282,7 +282,7 @@ ask_domain() {
         if valid_domain "$domain"; then
             return 0
         fi
-        hint "Не похоже на домен. Нужен вид panel.example.com, без пробелов."
+        hint "Не похоже на домен. Нужен вид example.com, без пробелов."
     done
 }
 
@@ -296,7 +296,8 @@ prepare_domain() {
     if [ "${SN_DOMAIN+set}" = "set" ]; then
         domain=$(clean_domain "$SN_DOMAIN")
     elif can_ask; then
-        hint "Домен, по которому будет открываться панель, например panel.example.com."
+        hint "Основной домен сервиса, например example.com, а не поддомен: на нём откроется лендинг."
+        hint "Админка и кабинет будут на том же домене: example.com/admin и example.com/cabinet."
         ask_domain optional
     else
         domain=""
@@ -306,7 +307,7 @@ prepare_domain() {
         return 0
     fi
     if ! valid_domain "$domain"; then
-        die "«$domain» не похоже на домен" "Нужен вид panel.example.com."
+        die "«$domain» не похоже на домен" "Нужен вид example.com."
     fi
     set_env SN_PUBLIC_URL "https://$domain"
     done_line "https://$domain"
@@ -677,6 +678,10 @@ summary() {
     else
         printf '  Адрес панели:      %s\n' "$url"
     fi
+    if [ -n "$url" ]; then
+        printf '  Админка:           %s/admin\n' "$url"
+        printf '  Кабинет клиентов:  %s/cabinet\n' "$url"
+    fi
     printf '  Порт на сервере:   127.0.0.1:%s\n' "${port:-8080}"
     built=$(env_value SN_IMAGE)
     printf '  Версия:            %s\n' "$(image_name "${built:-stealthnet:local}")"
@@ -816,11 +821,12 @@ change_domain() {
     if [ "${SN_DOMAIN+set}" = "set" ]; then
         domain=$(clean_domain "$SN_DOMAIN")
     else
-        hint "Домен, по которому будет открываться панель, например panel.example.com."
+        hint "Основной домен сервиса, например example.com, а не поддомен: на нём откроется лендинг."
+        hint "Админка и кабинет будут на том же домене: example.com/admin и example.com/cabinet."
         ask_domain required
     fi
     if ! valid_domain "$domain"; then
-        die "«$domain» не похоже на домен" "Нужен вид panel.example.com."
+        die "«$domain» не похоже на домен" "Нужен вид example.com."
     fi
     set_env SN_PUBLIC_URL "https://$domain"
     done_line "https://$domain"
@@ -839,6 +845,8 @@ change_domain() {
     else
         printf '\n  Адрес панели:      https://%s\n' "$domain"
     fi
+    printf '  Админка:           https://%s/admin\n' "$domain"
+    printf '  Кабинет клиентов:  https://%s/cabinet\n' "$domain"
     if [ "$mode" = "manual" ]; then
         printf '\nЧтобы адрес заработал, добавьте в программу, которая держит порты 80 и 443,\n'
         printf 'блок из файла %s\n' "$SNIPPET_FILE"
