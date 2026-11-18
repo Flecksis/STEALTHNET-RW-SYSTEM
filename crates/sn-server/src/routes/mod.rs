@@ -8,7 +8,7 @@ pub mod support_files;
 pub mod system;
 pub mod webhooks;
 
-use crate::extract::{require_admin, require_client};
+use crate::extract::{require_admin, require_client, with_client_address};
 use crate::state::AppState;
 use axum::Router;
 use axum::body::Body;
@@ -108,7 +108,9 @@ pub fn router(state: AppState) -> Router {
     let client_modules = modules
         .client_router(ctx.clone())
         .layer(from_fn_with_state(state.clone(), require_client));
-    let public_modules = modules.public_router(ctx);
+    let public_modules = modules
+        .public_router(ctx)
+        .layer(from_fn_with_state(state.clone(), with_client_address));
     let request_id = HeaderName::from_static(REQUEST_ID);
     Router::new()
         .merge(system::routes())

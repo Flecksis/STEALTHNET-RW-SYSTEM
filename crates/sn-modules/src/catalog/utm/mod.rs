@@ -1,5 +1,6 @@
 pub mod clicks;
 pub mod links;
+pub mod visit;
 
 use crate::catalog::installation_currency;
 use crate::catalog::start_param::Utm;
@@ -255,6 +256,10 @@ impl Module for UtmModule {
                 .route("/links/{id}/archive", axum::routing::post(links::archive_route))
                 .with_state(ctx),
         )
+    }
+
+    fn public_routes(&self, ctx: ModuleContext) -> Option<Router> {
+        Some(visit::routes(ctx))
     }
 
     async fn on_event(&self, ctx: &ModuleContext, event: &DomainEvent) -> Result<(), ModuleError> {

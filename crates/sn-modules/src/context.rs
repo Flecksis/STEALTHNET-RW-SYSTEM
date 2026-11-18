@@ -183,6 +183,13 @@ pub struct HostingPayment {
     pub at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimit {
+    pub scope: &'static str,
+    pub limit: u32,
+    pub window_seconds: i64,
+}
+
 #[async_trait]
 pub trait CoreApi: Send + Sync {
     async fn change_balance(&self, change: BalanceChange) -> Result<Money, ModuleError>;
@@ -251,6 +258,10 @@ pub trait CoreApi: Send + Sync {
 
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
+    }
+
+    async fn within_rate_limit(&self, _limit: RateLimit, _key: &str) -> Result<bool, ModuleError> {
+        Ok(true)
     }
 
     async fn traffic_readings(&self) -> Result<Vec<TrafficReading>, ModuleError> {

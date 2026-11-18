@@ -8,6 +8,7 @@ use sn_domain::ids::AdminId;
 use sn_domain::settings::keys;
 use sn_modules::ModuleRegistry;
 use sn_modules::catalog::oauth::OauthModule;
+use sn_modules::catalog::utm::{UtmModule, for_client as origin_of};
 use sn_payments::ProviderRegistry;
 use sn_store::testing::{TestDb, test_store};
 use sn_store::{SecretBox, SessionChannel};
@@ -80,7 +81,9 @@ async fn harness() -> Option<Harness> {
     let services = Services::new(ServiceDeps {
         store: db.store.clone(),
         payments: Arc::new(ProviderRegistry::builtin()),
-        modules: Arc::new(ModuleRegistry::new(vec![Arc::new(OauthModule)]).unwrap()),
+        modules: Arc::new(
+            ModuleRegistry::new(vec![Arc::new(OauthModule), Arc::new(UtmModule)]).unwrap(),
+        ),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock: clock.clone(),
         env: EnvFallbacks {
@@ -1382,5 +1385,58 @@ async fn google_не_привязать_к_аккаунту_только_с_не
         OauthFinish::Linked {
             provider: Provider::Google
         }
+    );
+}
+
+#[tokio::test]
+async fn вход_через_google_сохраняет_метку_сайта_вместе_с_приглашением() {
+    let Some(h) = harness().await else { return };
+    let tags = Utm {
+        source: Some("tiktok".into()),
+        campaign: Some("osen".into()),
+        term: Some("bad value".into()),
+        ..Utm::default()
+    };
+    let flow = Harness::flow(
+        h.ops()
+            .start_login_with(Provider::Google, Some("friend42"), Some(&tags), &meta())
+            .await
+            .unwrap(),
+    );
+    h.reply(
+        Provider::Google,
+        &flow,
+        "2077",
+        serde_json::json!({ "email": "lena@gmail.com", "email_verified": true }),
+    )
+    .await;
+    h.back(Provider::Google, &flow, None).await;
+    let login = confirmed(h.finish(&flow).await);
+    assert!(login.created);
+    let plain = confirmed(
+        h.sign_in(
+            Provider::Google,
+            "2078",
+            serde_json::json!({ "email": "pavel@gmail.com", "email_verified": true }),
+            None,
+        )
+        .await,
+    );
+    assert!(plain.created);
+    h.services.events().dispatch_pending(50).await.unwrap();
+    let mut conn = h.services.store().conn().await.unwrap();
+    let origin = origin_of(&mut conn, login.principal.client_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.start_param, "ref_FRIEND42__s_tiktok__k_osen");
+    assert_eq!(origin.utm.source.as_deref(), Some("tiktok"));
+    assert_eq!(origin.utm.term, None);
+    assert_eq!(origin.registration_source, RegistrationSource::Web);
+    assert!(
+        origin_of(&mut conn, plain.principal.client_id)
+            .await
+            .unwrap()
+            .is_none()
     );
 }

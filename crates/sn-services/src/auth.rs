@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use sn_domain::access::{AdminPrincipal, AdminRole, ClientChannel, ClientPrincipal};
 use sn_domain::client::{RegistrationSource, TelegramProfile};
 use sn_domain::ids::{AdminId, ClientId};
+use sn_modules::catalog::utm::clicks::ClickChannel;
 use sn_store::{AdminRecord, Db, NewAdmin, NewSession, SealedSecret, SessionChannel, SessionScope};
 use std::net::IpAddr;
 
@@ -946,8 +947,13 @@ impl<'a> Auth<'a> {
         if client.is_blocked() {
             return Err(ServiceError::Forbidden);
         }
-        self.client_session_for(client.id, SessionChannel::Miniapp, meta, created)
-            .await
+        let login = self
+            .client_session_for(client.id, SessionChannel::Miniapp, meta, created)
+            .await?;
+        self.services
+            .count_utm_click(ClickChannel::Miniapp, data.start_param.as_deref())
+            .await;
+        Ok(login)
     }
 
     pub async fn client_session_for(

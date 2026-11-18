@@ -14,6 +14,7 @@ use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
 use sn_domain::settings::CoreSettings;
 use sn_domain::subscription::Subscription;
+use sn_modules::catalog::utm::clicks::ClickChannel;
 use sn_modules::catalog::{broadcast, gifts as gift_module, options, promo, promolinks, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
@@ -281,18 +282,23 @@ async fn run(
 }
 
 async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError> {
-    let action = match action {
+    let (action, replayed) = match action {
         Action::PaySupport => return Ok(paysupport(turn.ctx)),
         Action::Callback(data) if data == "terms:ok" => {
             accept_documents(turn).await?;
-            Action::Start(turn.session.pending_start.clone())
+            (Action::Start(turn.session.pending_start.clone()), true)
         }
-        other => other,
+        other => (other, false),
     };
     let start_param = match &action {
         Action::Start(param) => param.clone(),
         _ => None,
     };
+    if !replayed {
+        turn.services()
+            .count_utm_click(ClickChannel::Bot, start_param.as_deref())
+            .await;
+    }
     let client = match enter(turn, start_param.as_deref()).await? {
         Gate::Ready(client) => client,
         Gate::Stop(screen) => return Ok(screen),

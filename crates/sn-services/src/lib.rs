@@ -45,6 +45,7 @@ pub mod tariffs;
 pub mod totp;
 pub mod two_factor;
 pub mod updates;
+pub mod utm_tracking;
 
 pub use bot_runtime::{BotProblem, BotRuntime, BotState};
 pub use clock::{Clock, FixedClock, SystemClock};

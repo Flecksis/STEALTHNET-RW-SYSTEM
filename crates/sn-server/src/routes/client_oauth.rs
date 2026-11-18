@@ -20,6 +20,7 @@ use sn_services::oauth::{
     COOKIE, COOKIE_PATH, CallbackParams, LoginMethods, OauthFinish, OauthStart, Purpose,
     REQUEST_TTL_SECONDS,
 };
+use sn_services::utm_tracking::site_utm;
 
 const FIELD_MAX: usize = 4096;
 
@@ -74,6 +75,8 @@ fn same_origin(state: &AppState, method: &Method, headers: &HeaderMap) -> ApiRes
 struct StartBody {
     #[serde(default, rename = "ref")]
     referral: Option<String>,
+    #[serde(default)]
+    utm: Option<serde_json::Value>,
 }
 
 async fn start(
@@ -86,11 +89,12 @@ async fn start(
 ) -> ApiResult<Response> {
     same_origin(&state, &method, &headers)?;
     let provider = provider(&raw)?;
-    let referral = body.and_then(|b| b.0.referral);
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let utm = body.utm.as_ref().and_then(site_utm);
     let start = state
         .services
         .oauth()
-        .start_login(provider, referral.as_deref(), &meta)
+        .start_login_with(provider, body.referral.as_deref(), utm.as_ref(), &meta)
         .await?;
     Ok(started(&state, provider, &start))
 }

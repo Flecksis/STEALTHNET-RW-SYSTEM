@@ -502,3 +502,43 @@ async fn ответ_без_куки_и_выключенный_модуль_не_
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(refused.body["error"]["code"], "oauth.not_configured");
 }
+
+#[tokio::test]
+async fn старт_входа_через_google_запоминает_метку_сайта() {
+    let Some(h) = oauth_http().await else { return };
+    let started = h
+        .raw(
+            Method::POST,
+            "/api/client/auth/oauth/google",
+            &[("origin", PANEL.into())],
+            Some((
+                "application/json",
+                json!({ "ref": "FRIEND42", "utm": { "source": "tiktok", "campaign": "osen", "term": "bad value" } })
+                    .to_string(),
+            )),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let broken = h
+        .raw(
+            Method::POST,
+            "/api/client/auth/oauth/google",
+            &[("origin", PANEL.into())],
+            Some(("application/json", json!({ "utm": ["s_vk"] }).to_string())),
+        )
+        .await;
+    assert_eq!(broken.status, StatusCode::OK, "{}", broken.body);
+    let mut conn = h.http.services().store().conn().await.unwrap();
+    let saved: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT referral, utm FROM oauth_requests ORDER BY id")
+            .fetch_all(conn.conn())
+            .await
+            .unwrap();
+    assert_eq!(
+        saved,
+        vec![
+            (Some("FRIEND42".into()), Some("s_tiktok__k_osen".into())),
+            (None, None)
+        ]
+    );
+}

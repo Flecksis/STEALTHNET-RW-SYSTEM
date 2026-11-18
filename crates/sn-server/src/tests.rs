@@ -62,6 +62,7 @@ mod rollypay;
 mod support_files;
 mod support_mode;
 mod tribute;
+mod utm;
 mod wata;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";

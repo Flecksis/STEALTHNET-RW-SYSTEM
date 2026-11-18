@@ -11,6 +11,7 @@ use crate::limits::rules;
 use crate::login::referral_code;
 use crate::services::Services;
 use crate::two_factor::{CabinetLogin, cabinet_session};
+use crate::utm_tracking::site_param;
 use chrono::{DateTime, Duration, Utc};
 use protocol::{AppleName, AuthorizeRequest, Credentials};
 use rand::RngCore;
@@ -24,6 +25,7 @@ use sn_domain::ids::ClientId;
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
 use sn_modules::catalog::oauth::{OauthSettings, Provider, TEMPLATE_LINKED, TEMPLATE_UNLINKED};
+use sn_modules::catalog::start_param::{Utm, with_referral};
 use sn_store::{Db, NewClient, Tx};
 
 pub const COOKIE: &str = "sn_oauth";
@@ -238,6 +240,7 @@ struct RequestRow {
     client_id: Option<i64>,
     session_id: Option<i64>,
     referral: Option<String>,
+    utm: Option<String>,
     status: String,
     result_client_id: Option<i64>,
     created_client: bool,
@@ -247,7 +250,7 @@ struct RequestRow {
     finished_at: Option<DateTime<Utc>>,
 }
 
-const REQUEST_COLUMNS: &str = "id, provider, purpose, browser_hash, client_id, session_id, referral, status, \
+const REQUEST_COLUMNS: &str = "id, provider, purpose, browser_hash, client_id, session_id, referral, utm, status, \
      result_client_id, created_client, error_code, error_text, expires_at, finished_at";
 
 impl RequestRow {
@@ -475,6 +478,7 @@ impl<'a> OauthOps<'a> {
         purpose: Purpose,
         owner: Option<(ClientId, i64)>,
         referral: Option<String>,
+        utm: Option<String>,
         meta: &RequestMeta,
     ) -> ServiceResult<OauthStart> {
         if !self.availability().has(provider) {
@@ -507,8 +511,8 @@ impl<'a> OauthOps<'a> {
         let expires_at = now + Duration::seconds(REQUEST_TTL_SECONDS);
         let mut conn = self.services.store().conn().await?;
         sqlx::query(
-            "INSERT INTO oauth_requests (provider, purpose, state_hash, browser_hash, client_id, session_id, referral, ip, user_agent, created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            "INSERT INTO oauth_requests (provider, purpose, state_hash, browser_hash, client_id, session_id, referral, utm, ip, user_agent, created_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(provider.as_str())
         .bind(purpose.as_str())
@@ -517,6 +521,7 @@ impl<'a> OauthOps<'a> {
         .bind(owner.map(|(client, _)| client.0))
         .bind(owner.map(|(_, session)| session))
         .bind(referral)
+        .bind(utm)
         .bind(&meta.ip)
         .bind(&meta.user_agent)
         .bind(now)
@@ -540,6 +545,16 @@ impl<'a> OauthOps<'a> {
         referral: Option<&str>,
         meta: &RequestMeta,
     ) -> ServiceResult<OauthStart> {
+        self.start_login_with(provider, referral, None, meta).await
+    }
+
+    pub async fn start_login_with(
+        &self,
+        provider: Provider,
+        referral: Option<&str>,
+        utm: Option<&Utm>,
+        meta: &RequestMeta,
+    ) -> ServiceResult<OauthStart> {
         if !self.services.settings().client_access.site_login {
             return Err(ServiceError::rejected(
                 "auth.site_off",
@@ -551,6 +566,7 @@ impl<'a> OauthOps<'a> {
             Purpose::Login,
             None,
             referral.and_then(referral_code),
+            site_param(utm),
             meta,
         )
         .await
@@ -587,6 +603,7 @@ impl<'a> OauthOps<'a> {
             provider,
             Purpose::Link,
             Some((principal.client_id, session)),
+            None,
             None,
             meta,
         )
@@ -773,8 +790,14 @@ impl<'a> OauthOps<'a> {
         };
         match row.purpose() {
             Purpose::Login => {
-                self.login_with(tx, &claims, &name, row.referral.as_deref())
-                    .await
+                self.login_with(
+                    tx,
+                    &claims,
+                    &name,
+                    row.referral.as_deref(),
+                    row.utm.as_deref(),
+                )
+                .await
             }
             Purpose::Link => self.link_with(tx, row, &claims, &name, now).await,
         }
@@ -786,6 +809,7 @@ impl<'a> OauthOps<'a> {
         claims: &IdClaims,
         name: &AppleName,
         referral: Option<&str>,
+        utm: Option<&str>,
     ) -> ServiceResult<Result<Done, Refusal>> {
         let provider = claims.provider;
         let kind = provider.identity();
@@ -902,7 +926,7 @@ impl<'a> OauthOps<'a> {
             .push(&DomainEvent::ClientRegistered {
                 client_id: client.id,
                 source: RegistrationSource::Web,
-                start_param: referral.map(|code| format!("ref_{code}")),
+                start_param: with_referral(utm, referral),
             })
             .await?;
         tx.audit()

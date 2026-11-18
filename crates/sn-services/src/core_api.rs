@@ -1,4 +1,5 @@
 use crate::error::ServiceError;
+use crate::limits::{RATE_LIMITED, RateRule};
 use crate::services::Services;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -9,6 +10,7 @@ use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::settings::CoreSettings;
+use sn_modules::context::RateLimit;
 use sn_modules::{
     BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, HostingPayment,
     Lifted, MailSender, MethodTitle, ModuleConfig, ModuleError, NodeOnline, NodeTraffic,
@@ -222,6 +224,20 @@ impl CoreApi for Services {
 
     fn now(&self) -> DateTime<Utc> {
         Services::now(self)
+    }
+
+    async fn within_rate_limit(&self, limit: RateLimit, key: &str) -> Result<bool, ModuleError> {
+        let rule = RateRule {
+            scope: limit.scope,
+            limit: limit.limit,
+            window_seconds: limit.window_seconds,
+        };
+        match self.limits().hit(rule, key).await {
+            Ok(_) => Ok(true),
+            Err(err) if err.code() == RATE_LIMITED => Ok(false),
+            Err(ServiceError::Store(err)) => Err(ModuleError::Store(err)),
+            Err(err) => Err(ModuleError::Core(err.to_string())),
+        }
     }
 
     async fn traffic_readings(&self) -> Result<Vec<TrafficReading>, ModuleError> {

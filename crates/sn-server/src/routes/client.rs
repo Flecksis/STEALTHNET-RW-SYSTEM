@@ -20,6 +20,7 @@ use sn_services::checkout::{
 use sn_services::login::TelegramLoginStatus;
 use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
 use sn_services::two_factor::{CabinetLogin, TwoFactor};
+use sn_services::utm_tracking::site_utm;
 use uuid::Uuid;
 
 pub fn routes() -> Router<AppState> {
@@ -174,6 +175,8 @@ async fn email_start(
 struct EmailVerify {
     email: String,
     code: String,
+    #[serde(default)]
+    utm: Option<serde_json::Value>,
 }
 
 async fn email_verify(
@@ -181,10 +184,11 @@ async fn email_verify(
     Meta(meta): Meta,
     ApiJson(body): ApiJson<EmailVerify>,
 ) -> ApiResult<Response> {
+    let utm = body.utm.as_ref().and_then(site_utm);
     let login = state
         .services
         .auth()
-        .email_login_verify(&body.email, &body.code, &meta)
+        .email_login_verify_with(&body.email, &body.code, &meta, utm.as_ref())
         .await?;
     Ok(match &login {
         CabinetLogin::Session(session) => session_response(&state, session, &login),
@@ -196,6 +200,8 @@ async fn email_verify(
 struct EmailPassword {
     email: String,
     password: String,
+    #[serde(default)]
+    utm: Option<serde_json::Value>,
 }
 
 fn cabinet_response(state: &AppState, login: &CabinetLogin) -> Response {
@@ -210,10 +216,11 @@ async fn email_register(
     Meta(meta): Meta,
     ApiJson(body): ApiJson<EmailPassword>,
 ) -> ApiResult<Response> {
+    let utm = body.utm.as_ref().and_then(site_utm);
     let login = state
         .services
         .auth()
-        .email_register(&body.email, &body.password, &meta)
+        .email_register_with(&body.email, &body.password, &meta, utm.as_ref())
         .await?;
     Ok(cabinet_response(&state, &login))
 }

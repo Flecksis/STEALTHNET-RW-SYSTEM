@@ -6,6 +6,7 @@ use crate::auth::{
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::rules;
 use crate::two_factor::{CabinetLogin, cabinet_session, cabinet_session_for};
+use crate::utm_tracking::site_start_param;
 use chrono::{DateTime, Duration, Utc};
 use rand::{Rng, RngCore};
 use serde::Serialize;
@@ -20,6 +21,7 @@ use sn_domain::jobs::JobPayload;
 use sn_domain::lang;
 use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::settings::keys;
+use sn_modules::catalog::start_param::Utm;
 use sn_store::{Db, NewClient, NewSession, SessionChannel, SessionScope, Tx};
 
 pub const TELEGRAM_LOGIN_TTL_SECONDS: i64 = 300;
@@ -511,6 +513,16 @@ impl<'a> Auth<'a> {
         password: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<CabinetLogin> {
+        self.email_register_with(email, password, meta, None).await
+    }
+
+    pub async fn email_register_with(
+        &self,
+        email: &str,
+        password: &str,
+        meta: &RequestMeta,
+        utm: Option<&Utm>,
+    ) -> ServiceResult<CabinetLogin> {
         self.site_open()?;
         self.email_by_password()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
@@ -556,7 +568,7 @@ impl<'a> Auth<'a> {
             .push(&DomainEvent::ClientRegistered {
                 client_id: client.id,
                 source: RegistrationSource::Web,
-                start_param: None,
+                start_param: site_start_param(utm, None),
             })
             .await?;
         let login = cabinet_session(&mut tx, client.id, now, meta, true).await?;
@@ -668,6 +680,16 @@ impl<'a> Auth<'a> {
         code: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<CabinetLogin> {
+        self.email_login_verify_with(email, code, meta, None).await
+    }
+
+    pub async fn email_login_verify_with(
+        &self,
+        email: &str,
+        code: &str,
+        meta: &RequestMeta,
+        utm: Option<&Utm>,
+    ) -> ServiceResult<CabinetLogin> {
         self.site_open()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
@@ -731,7 +753,7 @@ impl<'a> Auth<'a> {
                     .push(&DomainEvent::ClientRegistered {
                         client_id: client.id,
                         source: RegistrationSource::Web,
-                        start_param: None,
+                        start_param: site_start_param(utm, None),
                     })
                     .await?;
                 (client.id, true)

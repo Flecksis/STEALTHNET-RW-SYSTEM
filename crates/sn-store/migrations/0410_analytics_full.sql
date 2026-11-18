@@ -96,3 +96,5 @@ CREATE TABLE utm_clicks (
     clicks integer NOT NULL DEFAULT 0 CHECK (clicks >= 0),
     PRIMARY KEY (at, channel, source, medium, campaign, content, term)
 );
+
+ALTER TABLE oauth_requests ADD COLUMN utm text CHECK (length(utm) <= 512);
