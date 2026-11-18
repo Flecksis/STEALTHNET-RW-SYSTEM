@@ -900,3 +900,46 @@ async fn вращение_за_покупку_ждёт_решения_по_во�
     assert_eq!(balance.minor, 0);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn оборванное_вращение_доводит_приз_днями_до_конца() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let player = client(&db.store).await;
+    let sub = live_sub(&db.store, player, SubscriptionKind::Paid).await;
+    let draft = config(vec![
+        sector(PrizeDraft::Days { days: 5 }, 1),
+        sector(PrizeDraft::Days { days: 7 }, 1),
+    ]);
+    save(&ctx, &draft, None).await.unwrap();
+    core.slow_days_ms
+        .store(400, std::sync::atomic::Ordering::SeqCst);
+    let dropped = tokio::time::timeout(
+        StdDuration::from_millis(150),
+        spin(&ctx, player, Uuid::new_v4(), None),
+    )
+    .await;
+    assert!(dropped.is_err());
+    core.slow_days_ms
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let mut state = String::new();
+    for _ in 0..100 {
+        let mut conn = db.store.conn().await.unwrap();
+        state = sqlx::query_scalar("SELECT state FROM roulette_spins WHERE client_id = $1")
+            .bind(player.0)
+            .fetch_one(conn.conn())
+            .await
+            .unwrap();
+        drop(conn);
+        if state != "issuing" {
+            break;
+        }
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+    }
+    assert_eq!(state, "issued");
+    assert!(core.days().iter().any(|(s, _, _)| *s == sub));
+    db.cleanup().await;
+}

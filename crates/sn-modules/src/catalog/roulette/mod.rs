@@ -25,6 +25,7 @@ use sn_domain::order::{Order, OrderKind};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::Payment;
 use sn_store::{ActorKind, AuditEntry, ClientPerson, Db, LockSpace, StoreError, Tx};
+use tracing::Instrument;
 use uuid::Uuid;
 
 pub use store::Tally;
@@ -829,6 +830,25 @@ pub async fn spin_confirmed(
 }
 
 pub async fn spin(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    request_id: Uuid,
+    prefer: Option<SubscriptionId>,
+) -> Result<SpinResult, RouletteError> {
+    let ctx = ctx.clone();
+    let work = async move { spin_now(&ctx, client_id, request_id, prefer).await };
+    match tokio::spawn(work.in_current_span()).await {
+        Ok(result) => result,
+        Err(err) => match err.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(err) => Err(RouletteError::Module(ModuleError::Core(format!(
+                "вращение прервано: {err}"
+            )))),
+        },
+    }
+}
+
+async fn spin_now(
     ctx: &ModuleContext,
     client_id: ClientId,
     request_id: Uuid,
