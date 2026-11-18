@@ -126,6 +126,14 @@ pub struct Preview {
     pub existing: Existing,
     pub tariff_mode: TariffMode,
     pub skipped: Vec<Skip>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<super::mail::MailPlan>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartOptions {
+    #[serde(default)]
+    pub replace_mail: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +169,8 @@ pub struct Outcome {
     pub balance_total_minor: i64,
     #[serde(default)]
     pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

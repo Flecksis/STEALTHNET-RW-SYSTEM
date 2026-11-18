@@ -466,6 +466,22 @@
   color: var(--warn);
 }
 
+.imp-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.imp-choice input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .imp-hint summary {
   cursor: pointer;
   color: var(--accent-ink);

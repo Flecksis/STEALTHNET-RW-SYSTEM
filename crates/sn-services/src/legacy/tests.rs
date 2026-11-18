@@ -27,6 +27,10 @@ pub(super) struct Env {
 }
 
 pub(super) async fn env() -> Option<Env> {
+    env_with(ModuleRegistry::catalog_only()).await
+}
+
+pub(super) async fn env_with(modules: ModuleRegistry) -> Option<Env> {
     let db = test_store().await?;
     let clock = Arc::new(FixedClock::new(
         Utc.with_ymd_and_hms(2026, 11, 17, 10, 0, 0).unwrap(),
@@ -34,7 +38,7 @@ pub(super) async fn env() -> Option<Env> {
     let services = Services::new(ServiceDeps {
         store: db.store.clone(),
         payments: Arc::new(ProviderRegistry::builtin()),
-        modules: Arc::new(ModuleRegistry::catalog_only()),
+        modules: Arc::new(modules),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock,
         env: EnvFallbacks::default(),
@@ -755,16 +759,26 @@ pub(super) async fn scalar(services: &Services, sql: &str) -> i64 {
 }
 
 pub(super) async fn import(env: &Env, bytes: &[u8], admin: Option<AdminId>) -> (Preview, Outcome) {
+    import_with(env, bytes, admin, runs::StartOptions::default()).await
+}
+
+pub(super) async fn import_with(
+    env: &Env,
+    bytes: &[u8],
+    admin: Option<AdminId>,
+    options: runs::StartOptions,
+) -> (Preview, Outcome) {
     let dump = archive::open_bytes(bytes, &wanted).unwrap();
     let legacy = map_dump(&dump).unwrap();
     let remna = check::fetch_remna(&env.services).await;
     let checked = check::preview(&env.services, &legacy, remna).await.unwrap();
     let mut conn = env.services.store().conn().await.unwrap();
     let (run_id, key): (i64, uuid::Uuid) = sqlx::query_as(
-        "INSERT INTO import_runs (source, state, file_name, file_size, started_at) VALUES ($1, 'running', 'test', 1, now()) \
-         RETURNING id, public_id",
+        "INSERT INTO import_runs (source, state, file_name, file_size, started_at, options) \
+         VALUES ($1, 'running', 'test', 1, now(), $2) RETURNING id, public_id",
     )
     .bind(legacy.source.as_str())
+    .bind(serde_json::to_value(options).unwrap())
     .fetch_one(sn_store::Db::conn(&mut conn))
     .await
     .unwrap();
@@ -2596,4 +2610,198 @@ async fn счёт_старой_панели_оплачивается_по_ста
     let late = crypto_paid("p5", "200.00", 7006);
     legacy_hook(&env, &late, &sign(&late)).await;
     assert_eq!(scalar(s, balance).await, 15_000);
+}
+
+fn mail_dump(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let mut sql = String::from("-- Created at: 2026-11-17T09:00:00.000Z\n\n");
+    let ids: Vec<String> = (0..pairs.len()).map(|i| format!("m{i}")).collect();
+    let rows: Vec<[Option<&str>; 3]> = pairs
+        .iter()
+        .zip(&ids)
+        .map(|((key, value), id)| [Some(id.as_str()), Some(*key), Some(*value)])
+        .collect();
+    let rows: Vec<&[Option<&str>]> = rows.iter().map(|r| r.as_slice()).collect();
+    sql += &copy("system_settings", &["id", "key", "value"], &rows);
+    sql += &copy(
+        "clients",
+        &["id", "role", "balance", "telegram_id", "telegram_username"],
+        &[&[
+            Some("k1"),
+            Some("CLIENT"),
+            Some("0"),
+            Some("4001"),
+            Some("payer"),
+        ]],
+    );
+    sql.into_bytes()
+}
+
+const OLD_SMTP: &[(&str, &str)] = &[
+    ("default_currency", "rub"),
+    ("mail_provider", "smtp"),
+    ("smtp_host", "smtp.example.com"),
+    ("smtp_port", "465"),
+    ("smtp_secure", "true"),
+    ("smtp_user", "robot@example.com"),
+    ("smtp_password", "app-pass-1"),
+    ("smtp_from_email", "robot@example.com"),
+    ("smtp_from_name", "Сервис"),
+];
+
+fn mail_config(services: &Services) -> (bool, sn_modules::ModuleConfig) {
+    let modules = services.modules();
+    (
+        modules.is_enabled(sn_domain::module::ModuleId::Mail),
+        modules.config(sn_domain::module::ModuleId::Mail),
+    )
+}
+
+async fn set_mail(env: &Env, admin: AdminId, pairs: &[(&str, &str)]) {
+    let config = pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+        .collect();
+    env.services
+        .settings_ops()
+        .update_module_config(
+            sn_domain::module::ModuleId::Mail,
+            &crate::settings::ModuleConfigUpdate {
+                config,
+                clear: Vec::new(),
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    env.services.set_remna(Some(env.remna.clone()));
+}
+
+#[tokio::test]
+async fn почта_старой_панели_переносится_и_не_затирает_настроенную() {
+    use super::mail::MailPlan;
+    let modules =
+        ModuleRegistry::new(vec![Arc::new(sn_modules::catalog::mail::MailModule)]).unwrap();
+    let Some(env) = env_with(modules).await else {
+        return;
+    };
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+
+    let (preview, outcome) = import(&env, &mail_dump(OLD_SMTP), Some(admin)).await;
+    assert!(
+        matches!(preview.mail, Some(MailPlan::Transfer { .. })),
+        "{:?}",
+        preview.mail
+    );
+    let issues = {
+        let run = scalar(s, "SELECT max(id) FROM import_runs").await;
+        let mut conn = s.store().conn().await.unwrap();
+        runs::issues(&mut conn, run).await.unwrap()
+    };
+    assert_eq!(
+        outcome.mail.as_deref(),
+        Some("SMTP smtp.example.com:465 (TLS), отправитель robot@example.com"),
+        "{issues:?}"
+    );
+    let (enabled, config) = mail_config(s);
+    assert!(enabled, "почта работала в старой панели — модуль включён");
+    assert_eq!(config.text("transport"), Some("smtp"));
+    assert_eq!(config.text("security"), Some("tls"));
+    assert_eq!(config.text("login"), Some("password"));
+    assert_eq!(config.text("from_name"), Some("Сервис"));
+    assert_eq!(config.text("password"), Some("app-pass-1"));
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM module_states WHERE module = 'mail' AND config ? 'password'"
+        )
+        .await,
+        0,
+        "пароль лежит только в зашифрованных секретах"
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM secrets WHERE key = 'modules.mail.password' \
+             AND position(convert_to('app-pass-1', 'UTF8') in ciphertext) = 0"
+        )
+        .await,
+        1
+    );
+
+    let (same, again) = import(&env, &mail_dump(OLD_SMTP), Some(admin)).await;
+    assert!(
+        matches!(same.mail, Some(MailPlan::Same { .. })),
+        "{:?}",
+        same.mail
+    );
+    assert_eq!(again.mail, None);
+
+    set_mail(&env, admin, &[("smtp_host", "mail.other.com")]).await;
+    let (differs, kept) = import(&env, &mail_dump(OLD_SMTP), Some(admin)).await;
+    match &differs.mail {
+        Some(MailPlan::Differs { current, incoming }) => {
+            assert!(current.contains("mail.other.com"), "{current}");
+            assert!(incoming.contains("smtp.example.com"), "{incoming}");
+        }
+        other => panic!("ожидался выбор оператора: {other:?}"),
+    }
+    assert_eq!(kept.mail, None);
+    assert_eq!(
+        mail_config(s).1.text("smtp_host"),
+        Some("mail.other.com"),
+        "без отметки настроенная почта не затирается"
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM import_issues WHERE code = 'mail_kept'"
+        )
+        .await,
+        1
+    );
+
+    let resend: Vec<(&str, &str)> = vec![
+        ("default_currency", "rub"),
+        ("mail_provider", "resend"),
+        ("resend_api_key", "re_test_1"),
+        ("resend_from_email", "news@example.com"),
+    ];
+    let (_, replaced) = import_with(
+        &env,
+        &mail_dump(&resend),
+        Some(admin),
+        runs::StartOptions { replace_mail: true },
+    )
+    .await;
+    assert_eq!(
+        replaced.mail.as_deref(),
+        Some("Resend, отправитель news@example.com")
+    );
+    let (enabled, config) = mail_config(s);
+    assert!(enabled);
+    assert_eq!(config.text("transport"), Some("resend"));
+    assert_eq!(config.text("resend_api_key"), Some("re_test_1"));
+    assert_eq!(config.text("smtp_host"), None, "поля SMTP убраны");
+    assert_eq!(config.text("password"), None);
+    assert_eq!(config.text("from_name"), None);
+    assert_eq!(
+        config.text("login"),
+        Some("password"),
+        "выбор входа не тронут"
+    );
+
+    set_mail(&env, admin, &[("transport", "none")]).await;
+    let (off, untouched) = import(&env, &mail_dump(&resend), Some(admin)).await;
+    assert!(
+        matches!(&off.mail, Some(MailPlan::Differs { current, .. }) if current == "отправка писем выключена"),
+        "{:?}",
+        off.mail
+    );
+    assert_eq!(untouched.mail, None);
+    assert_eq!(
+        mail_config(s).1.text("transport"),
+        Some("none"),
+        "выключенную после переноса почту повторный перенос не включает"
+    );
 }

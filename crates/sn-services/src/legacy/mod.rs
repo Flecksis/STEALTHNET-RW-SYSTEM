@@ -7,6 +7,7 @@ pub mod chill_file;
 pub mod extras;
 pub mod invoices;
 pub mod json_dump;
+pub mod mail;
 pub mod matcher;
 pub mod minishop;
 pub mod model;
@@ -341,6 +342,16 @@ impl LegacyOps<'_> {
     }
 
     pub async fn start(&self, id: Uuid, admin: Option<AdminId>) -> ServiceResult<RunView> {
+        self.start_with(id, admin, runs::StartOptions::default())
+            .await
+    }
+
+    pub async fn start_with(
+        &self,
+        id: Uuid,
+        admin: Option<AdminId>,
+        options: runs::StartOptions,
+    ) -> ServiceResult<RunView> {
         let mut conn = self.services.store().conn().await?;
         let (row, _) = runs::get(&mut conn, id).await?;
         let allowed = matches!(row.state, RunState::Ready | RunState::Interrupted)
@@ -358,10 +369,11 @@ impl LegacyOps<'_> {
             ));
         }
         let switched = sqlx::query(
-            "UPDATE import_runs SET state = 'running', error = NULL, started_at = now(), finished_at = NULL, progress = NULL \
-             WHERE id = $1 AND state IN ('ready', 'interrupted', 'failed')",
+            "UPDATE import_runs SET state = 'running', error = NULL, started_at = now(), finished_at = NULL, progress = NULL, \
+             options = $2 WHERE id = $1 AND state IN ('ready', 'interrupted', 'failed')",
         )
         .bind(row.id)
+        .bind(serde_json::to_value(options).map_err(|e| ServiceError::Internal(e.to_string()))?)
         .execute(sn_store::Db::conn(&mut conn))
         .await;
         match switched {
@@ -680,6 +692,20 @@ fn print_preview(preview: &runs::Preview, out: &dyn Fn(&str)) {
         }
         parts.extend(extras);
         out(&format!("Ещё перенесутся: {}.", parts.join(", ")));
+    }
+    match &preview.mail {
+        Some(mail::MailPlan::Transfer { incoming }) => out(&format!(
+            "Почта: перенесётся отправка писем — {incoming}, модуль «Почта» включится."
+        )),
+        Some(mail::MailPlan::Same { .. }) => out("Почта: в этой установке уже те же настройки."),
+        Some(mail::MailPlan::Differs { current, incoming }) => out(&format!(
+            "Почта: в этой установке уже настроена — {current}, в старой панели — {incoming}. Из командной строки почта не заменяется: \
+             чтобы взять старые настройки, перенесите через мастер в админке с отметкой «Заменить настройками старой панели»."
+        )),
+        Some(mail::MailPlan::Skipped { reason }) => {
+            out(&format!("Почта не перенесётся: {reason}."))
+        }
+        None => {}
     }
     if preview.currency.switch {
         out(&format!(

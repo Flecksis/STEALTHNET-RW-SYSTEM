@@ -1434,6 +1434,7 @@ impl<'a> Applier<'a> {
         counts.auto_rules = done.rules;
         counts.withdrawals = done.withdrawals;
         self.outcome.providers = done.providers;
+        self.outcome.mail = done.mail;
         self.progress(Stage::Extras, 1, 1).await
     }
 

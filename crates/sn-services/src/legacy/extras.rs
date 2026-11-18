@@ -1,3 +1,4 @@
+use super::mail::{self, MailPlan};
 use super::model::{
     InvoicePurpose, LAdmin, LAutoRule, LGift, LInvoice, LWithdrawal, Legacy, Source,
     WithdrawalState,
@@ -28,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 pub struct Done {
     pub settings: u64,
     pub providers: Vec<String>,
+    pub mail: Option<String>,
     pub admins: u64,
     pub withdrawals: u64,
     pub gifts: u64,
@@ -355,12 +357,123 @@ impl<'a> Extras<'a> {
                     "Настройки бота и платёжек уже переносились — повторный перенос их не трогает, чтобы не затереть ваши правки",
                 );
             }
+            self.mail().await?;
             self.admins().await?;
         }
         self.withdrawals().await?;
         self.gifts().await?;
         self.rules().await?;
         self.invoices().await?;
+        Ok(())
+    }
+
+    async fn replace_mail(&self) -> ServiceResult<bool> {
+        let mut conn = self.services.store().conn().await?;
+        let options: Option<Value> =
+            sqlx::query_scalar("SELECT options FROM import_runs WHERE id = $1")
+                .bind(self.run_id)
+                .fetch_optional(conn.conn())
+                .await?;
+        Ok(options
+            .and_then(|o| serde_json::from_value::<super::runs::StartOptions>(o).ok())
+            .is_some_and(|o| o.replace_mail))
+    }
+
+    fn mail_issue(&mut self, code: &str, details: String) {
+        self.issue(code, "setting", None, Some("Почта".into()), details);
+    }
+
+    async fn mail(&mut self) -> ServiceResult<()> {
+        let entity = self.entity("mail");
+        let Some(plan) = mail::plan(self.services, &entity, &self.legacy.settings).await? else {
+            return Ok(());
+        };
+        let replace = self.replace_mail().await?;
+        let fresh = match plan {
+            MailPlan::Same { .. } => return Ok(()),
+            MailPlan::Skipped { reason } => {
+                self.mail_issue(
+                    "mail_skipped",
+                    format!("Почта не перенесена: {reason}. Настройте её в «Настройки → Почта и уведомления»"),
+                );
+                return Ok(());
+            }
+            MailPlan::Differs { current, incoming } if !replace => {
+                let now = if current.starts_with("отправка") {
+                    "Почта не включена заново: после прошлого переноса отправку писем выключили"
+                        .to_string()
+                } else {
+                    format!("Почта не заменена: в этой установке уже настроена {current}")
+                };
+                self.mail_issue(
+                    "mail_kept",
+                    format!(
+                        "{now}. В старой панели — {incoming}. Чтобы взять старые настройки, \
+                         перенесите ещё раз с отметкой «Заменить настройками старой панели» \
+                         или задайте их в «Настройки → Почта и уведомления»"
+                    ),
+                );
+                return Ok(());
+            }
+            MailPlan::Differs { .. } => false,
+            MailPlan::Transfer { .. } => true,
+        };
+        let mail::Old::Ready(old) = mail::old_mail(&self.legacy.settings) else {
+            return Ok(());
+        };
+        let Some(actor) = self.actor().await? else {
+            self.mail_issue(
+                "mail_skipped",
+                "В установке нет владельца — почта не перенесена. Создайте владельца и перенесите снова".into(),
+            );
+            return Ok(());
+        };
+        let mut config = old.config.clone();
+        let mut clear: Vec<String> = Vec::new();
+        if fresh {
+            if !mail::has_login(self.services) {
+                config.insert("login".into(), Value::String("password".into()));
+            }
+        } else {
+            let unused = if old.resend {
+                mail::SMTP_FIELDS
+            } else {
+                mail::RESEND_FIELDS
+            };
+            clear.extend(unused.iter().map(|f| f.to_string()));
+            for field in ["username", "password", "from_name"] {
+                if !config.contains_key(field) && !clear.iter().any(|c| c == field) {
+                    clear.push(field.to_string());
+                }
+            }
+        }
+        let ops = self.services.settings_ops();
+        let update = ModuleConfigUpdate { config, clear };
+        let result = match ops
+            .update_module_config(ModuleId::Mail, &update, actor)
+            .await
+        {
+            Ok(_) => ops
+                .toggle_module(ModuleId::Mail, true, actor)
+                .await
+                .map(|_| ()),
+            Err(err) => Err(err),
+        };
+        match result {
+            Ok(()) => {
+                self.done.settings += 1;
+                self.done.mail = Some(old.summary.clone());
+                let mut conn = self.services.store().conn().await?;
+                self.remember(&mut conn, "mail", "applied", self.run_id)
+                    .await?;
+            }
+            Err(err) => self.mail_issue(
+                "mail_skipped",
+                format!(
+                    "Почта не перенесена: {err}. Настройте её в «Настройки → Почта и уведомления»"
+                ),
+            ),
+        }
         Ok(())
     }
 

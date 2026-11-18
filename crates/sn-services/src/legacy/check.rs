@@ -459,6 +459,11 @@ pub async fn preview(
             });
         }
     }
+    let mail = if legacy.source == Source::Stealthnet {
+        super::mail::plan(services, &legacy.source.entity("mail"), &legacy.settings).await?
+    } else {
+        None
+    };
     let preview = Preview {
         detected: legacy.source,
         dumped_at: legacy.dumped_at,
@@ -490,6 +495,7 @@ pub async fn preview(
         existing,
         tariff_mode: legacy.tariff_mode,
         skipped,
+        mail,
     };
     Ok(Checked { preview, issues })
 }

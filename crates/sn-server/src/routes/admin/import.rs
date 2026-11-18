@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_services::ServiceError;
-use sn_services::legacy::runs::RunView;
+use sn_services::legacy::runs::{RunView, StartOptions};
 use sn_services::legacy::{ImportView, MAX_UPLOAD, Source, import_dir};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -192,13 +192,24 @@ async fn start(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    body: axum::body::Bytes,
 ) -> ApiResult<Json<RunView>> {
     allowed(&admin)?;
+    let options: StartOptions = if body.iter().all(u8::is_ascii_whitespace) {
+        StartOptions::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|_| {
+            ApiError::from(ServiceError::rejected(
+                "import.options",
+                "Не удалось прочитать выбор для переноса",
+            ))
+        })?
+    };
     Ok(Json(
         state
             .services
             .legacy()
-            .start(id, Some(admin.0.admin_id))
+            .start_with(id, Some(admin.0.admin_id), options)
             .await
             .map_err(mapped)?,
     ))

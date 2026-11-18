@@ -5,7 +5,7 @@ import { count, dateTime, groupDigits, money, NBSP } from '../../lib/format';
 import { usePhone } from '../../lib/media';
 import '../form.css';
 import './import.css';
-import { ACCEPT, ACTIVE, FILES, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type Outcome, type Run, type Source } from './importModel';
+import { ACCEPT, ACTIVE, FILES, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type MailPlan, type Outcome, type Run, type Source } from './importModel';
 import { SettingsLayout } from './SettingsLayout';
 
 function size(bytes: number): string {
@@ -41,6 +41,8 @@ type Ctx = {
   cancelUpload: () => void;
   password: (value: string) => Promise<void>;
   start: () => Promise<void>;
+  replaceMail: boolean;
+  setReplaceMail: (value: boolean) => void;
   recheck: () => Promise<void>;
   discard: () => Promise<void>;
   again: () => void;
@@ -286,6 +288,44 @@ function PasswordForm({ ctx }: { ctx: Ctx }) {
   );
 }
 
+const MAIL_PAGE = '/admin/settings/mail';
+
+function MailFact({ plan }: { plan: MailPlan }) {
+  if (plan.action === 'transfer') {
+    return <li>Почта: перенесём отправку писем — {plan.incoming} — и включим модуль «Почта». Вход на сайт останется по паролю, как в старой панели.</li>;
+  }
+  if (plan.action === 'same') {
+    return <li>Почта в этой установке уже настроена так же, как в старой панели: {plan.incoming}. Менять нечего.</li>;
+  }
+  if (plan.action === 'skipped') {
+    return (
+      <li className="imp-warn-line">
+        Почта не перенесётся: {plan.reason}. Настройте её в <Link to={MAIL_PAGE}>«Настройки → Почта и уведомления»</Link>.
+      </li>
+    );
+  }
+  return null;
+}
+
+function MailChoice({ ctx, plan }: { ctx: Ctx; plan: MailPlan }) {
+  if (plan.action !== 'differs') {
+    return null;
+  }
+  return (
+    <div className="imp-block">
+      <span className="strong">Почта в этой установке уже настроена</span>
+      <span>
+        Сейчас: {plan.current}. В старой панели: {plan.incoming}. Без отметки оставим как есть — поменять можно и потом в{' '}
+        <Link to={MAIL_PAGE}>«Настройки → Почта и уведомления»</Link>.
+      </span>
+      <label className="imp-choice">
+        <input type="checkbox" checked={ctx.replaceMail} onChange={(e) => ctx.setReplaceMail(e.target.checked)} disabled={ctx.busy} />
+        Заменить настройками старой панели
+      </label>
+    </div>
+  );
+}
+
 function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
   const p = run.preview;
   if (!p) {
@@ -377,6 +417,7 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
             ключи платёжных систем — платёжки сразу включатся. Это только при первом переносе: повторный не затрёт ваши правки.
           </li>
         ) : null}
+        {p.mail ? <MailFact plan={p.mail} /> : null}
         {p.tariff_mode === 'classic' ? (
           <li>
             В старом боте продавали без тарифов. Подписки разложим по тарифам «серверы и трафик», они будут сняты с продажи — цены задайте сами в
@@ -384,6 +425,7 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
           </li>
         ) : null}
       </ul>
+      {p.mail ? <MailChoice ctx={ctx} plan={p.mail} /> : null}
       {p.skipped.length ? (
         <div className="imp-skips">
           <h3 className="strong">Что не перенесётся</h3>
@@ -498,6 +540,15 @@ function NextSteps({ ctx, outcome }: { ctx: Ctx; outcome: Outcome }) {
           </ul>
         </details>
       </li>
+      {outcome.mail ? (
+        <li>
+          <span className="strong">Проверьте почту.</span>
+          <span>
+            Перенесена отправка писем: {outcome.mail}. Модуль «Почта» включён. Отправьте проверочное письмо в{' '}
+            <Link to={MAIL_PAGE}>«Настройки → Почта и уведомления»</Link> и убедитесь, что оно дошло.
+          </span>
+        </li>
+      ) : null}
       {(outcome.counts.auto_rules ?? 0) > 0 ? (
         <li>
           <span className="strong">Включите авторассылки.</span>
@@ -765,6 +816,7 @@ export function SettingsImport() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fresh, setFresh] = useState(false);
+  const [replaceMail, setReplaceMail] = useState(false);
   const xhr = useRef<XMLHttpRequest | null>(null);
 
   const load = useCallback(async () => {
@@ -842,6 +894,7 @@ export function SettingsImport() {
       }
       if (request.status >= 200 && request.status < 300 && data) {
         setFresh(false);
+        setReplaceMail(false);
         setView((v) => (v ? { ...v, run: data as Run } : v));
         void load();
       } else {
@@ -881,18 +934,26 @@ export function SettingsImport() {
         cancelUpload: () => xhr.current?.abort(),
         password: (value) =>
           act(() => api<Run>(`/api/admin/import/${run?.id}/password`, { method: 'POST', body: { password: value } }), 'Пароль не отправился'),
-        start: () => act(() => api<Run>(`/api/admin/import/${run?.id}/start`, { method: 'POST', body: {} }), 'Перенос не запустился'),
+        start: () =>
+          act(
+            () => api<Run>(`/api/admin/import/${run?.id}/start`, { method: 'POST', body: { replace_mail: replaceMail && run?.preview?.mail?.action === 'differs' } }),
+            'Перенос не запустился',
+          ),
+        replaceMail,
+        setReplaceMail,
         recheck: () => act(() => api<Run>(`/api/admin/import/${run?.id}/check`, { method: 'POST', body: {} }), 'Проверка не запустилась'),
         discard: async () => {
           if (run && run.state !== 'done') {
             await act(() => api<void>(`/api/admin/import/${run.id}`, { method: 'DELETE' }), 'Файл не убрался');
           }
           setFresh(false);
+          setReplaceMail(false);
         },
         again: () => {
           setSource(view.run?.source ?? null);
           setPicked(true);
           setFresh(true);
+          setReplaceMail(false);
           setError(null);
         },
         busy,

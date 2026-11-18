@@ -30,6 +30,12 @@ export type Counts = {
 
 export type Skip = { code: string; count: number; text: string };
 
+export type MailPlan =
+  | { action: 'transfer'; incoming: string }
+  | { action: 'same'; incoming: string }
+  | { action: 'differs'; current: string; incoming: string }
+  | { action: 'skipped'; reason: string };
+
 export type Preview = {
   detected: Source;
   dumped_at: string | null;
@@ -48,6 +54,7 @@ export type Preview = {
   existing: { clients: number; matched: number; again: number };
   tariff_mode: 'tariffs' | 'classic';
   skipped: Skip[];
+  mail?: MailPlan | null;
 };
 
 export type Stage = 'read' | 'tariffs' | 'clients' | 'subscriptions' | 'payments' | 'promo' | 'referrals' | 'tickets' | 'extras' | 'finish';
@@ -63,6 +70,7 @@ export type Outcome = {
   currency_switched: boolean;
   balance_total_minor: number;
   providers?: string[];
+  mail?: string | null;
 };
 
 export type Run = {
