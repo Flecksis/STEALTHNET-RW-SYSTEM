@@ -3,7 +3,6 @@ use crate::provider::*;
 use crate::util::{self, field};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
-use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sn_domain::money::{Amount, Currency, PayCurrency};
 use sn_domain::payment::providers;
@@ -11,43 +10,45 @@ use sn_domain::settings::SettingField;
 
 const FORM: &str = "https://yoomoney.ru/quickpay/confirm";
 const PAYMENT_TYPES: &[&str] = &["AC", "PC"];
+const DEFAULT_PAYMENT_TYPE: &str = "AC";
 const RUBLE_CODE: &str = "643";
+const METHODS: [(PayMethod, &str); 2] = [
+    (
+        PayMethod::new("card", "Карта", "Банковская карта через ЮMoney"),
+        "AC",
+    ),
+    (PayMethod::new("wallet", "ЮMoney", "Кошелёк ЮMoney"), "PC"),
+];
 
 pub struct YooMoney;
 
 fn signature_valid(secret: &str, pairs: &[(String, String)]) -> bool {
-    if let Some(sign) = field(pairs, "sign") {
-        let mut signed: Vec<&(String, String)> =
-            pairs.iter().filter(|(k, _)| k != "sign").collect();
-        signed.sort_by(|a, b| a.0.cmp(&b.0));
-        let canonical = signed
-            .iter()
-            .map(|(k, v)| format!("{k}={}", util::rfc3986(v)))
-            .collect::<Vec<_>>()
-            .join("&");
-        let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
-            return false;
-        };
-        mac.update(canonical.as_bytes());
-        return util::hex_digest_eq(&mac.finalize().into_bytes(), sign);
-    }
-    if let Some(hash) = field(pairs, "sha1_hash") {
-        let value = |key: &str| field(pairs, key).unwrap_or_default();
-        let source = [
-            value("notification_type"),
-            value("operation_id"),
-            value("amount"),
-            value("currency"),
-            value("datetime"),
-            value("sender"),
-            value("codepro"),
-            secret,
-            value("label"),
-        ]
+    let Some(sign) = field(pairs, "sign") else {
+        return false;
+    };
+    let mut signed: Vec<&(String, String)> = pairs.iter().filter(|(k, _)| k != "sign").collect();
+    signed.sort_by(|a, b| a.0.cmp(&b.0));
+    let canonical = signed
+        .iter()
+        .map(|(k, v)| format!("{k}={}", util::rfc3986(v)))
+        .collect::<Vec<_>>()
         .join("&");
-        return util::hex_digest_eq(&Sha1::digest(source.as_bytes()), hash);
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(canonical.as_bytes());
+    util::hex_digest_eq(&mac.finalize().into_bytes(), sign)
+}
+
+fn payment_type<'a>(config: &'a ProviderConfig, method: Option<&str>) -> PaymentResult<&'a str> {
+    match method {
+        None => Ok(config.get("payment_type").unwrap_or(DEFAULT_PAYMENT_TYPE)),
+        Some(code) => METHODS
+            .iter()
+            .find(|(m, _)| m.code == code)
+            .map(|(_, kind)| *kind)
+            .ok_or_else(|| PaymentError::Rejected("этот способ оплаты недоступен".into())),
     }
-    false
 }
 
 #[async_trait]
@@ -67,7 +68,15 @@ impl PaymentProvider for YooMoney {
     fn client_label(&self, _currency: Currency) -> ClientLabel {
         ClientLabel {
             title: "ЮMoney",
-            hint: "Карты через форму ЮMoney",
+            hint: "Оплата на странице ЮMoney",
+        }
+    }
+
+    fn methods(&self, currency: Currency) -> Vec<PayMethod> {
+        if self.currencies().contains(&currency) {
+            METHODS.iter().map(|(method, _)| *method).collect()
+        } else {
+            Vec::new()
         }
     }
 
@@ -89,7 +98,7 @@ impl PaymentProvider for YooMoney {
                 "AC — банковская карта, PC — кошелёк ЮMoney",
                 PAYMENT_TYPES,
             )
-            .with_default("AC"),
+            .with_default(DEFAULT_PAYMENT_TYPE),
         ]
     }
 
@@ -129,6 +138,7 @@ impl PaymentProvider for YooMoney {
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
         util::require_currency(request.amount, PayCurrency::Rub)?;
+        let payment_type = payment_type(config, request.method.as_deref())?;
         let wallet = config.require("wallet")?;
         let label = request.payment_public_id.to_string();
         let mut url =
@@ -139,7 +149,7 @@ impl PaymentProvider for YooMoney {
                 .append_pair("receiver", wallet)
                 .append_pair("quickpay-form", "button")
                 .append_pair("sum", &request.amount.units())
-                .append_pair("paymentType", config.get("payment_type").unwrap_or("AC"))
+                .append_pair("paymentType", payment_type)
                 .append_pair("label", &label);
             if let Some(back) = util::return_url(request) {
                 query.append_pair("successURL", &back);
@@ -208,6 +218,7 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use serde_json::json;
+    use sha1::{Digest, Sha1};
     use sn_domain::payment::{AmountCheck, check_paid_amount};
 
     const SECRET: &str = "secret123";
@@ -326,7 +337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn устаревший_sha1_hash() {
+    async fn устаревший_sha1_hash_без_sign_не_принимается() {
         let mut fields = ours("485.03", "499.00");
         let value = |key: &str| {
             fields
@@ -349,12 +360,18 @@ mod tests {
         .join("&");
         let hash = hex::encode(Sha1::digest(source.as_bytes()));
         fields.push(("sha1_hash", hash));
-        let outcome = parse(form(&fields)).await.unwrap();
-        assert_eq!(outcome.payment, Some(PaymentRef::PublicId(PAYMENT)));
-        assert_eq!(outcome.amount, Some(rub(49_900)));
-        fields.retain(|(k, _)| *k != "sha1_hash");
-        fields.push(("sha1_hash", "0".repeat(40)));
         assert_eq!(parse(form(&fields)).await, Err(PaymentError::BadSignature));
+        for (key, value) in fields.iter_mut() {
+            if *key == "withdraw_amount" {
+                *value = "4990.00".into();
+            }
+        }
+        assert_eq!(parse(form(&fields)).await, Err(PaymentError::BadSignature));
+        let signed = parse(with_sign(ours("485.03", "499.00"), SECRET))
+            .await
+            .unwrap();
+        assert_eq!(signed.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        assert_eq!(signed.amount, Some(rub(49_900)));
     }
 
     #[tokio::test]
@@ -442,6 +459,60 @@ mod tests {
                 .await,
             Err(PaymentError::UnsupportedCurrency(_))
         ));
+    }
+
+    async fn payment_type_in_link(config: &ProviderConfig, method: Option<&str>) -> String {
+        let mut request = invoice(rub(49_900), None);
+        request.method = method.map(str::to_string);
+        let created = YooMoney.create_invoice(config, &request).await.unwrap();
+        reqwest::Url::parse(&created.pay_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "paymentType")
+            .map(|(_, v)| v.into_owned())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn способ_оплаты_задаёт_paymenttype() {
+        let methods = YooMoney.methods(Currency::Rub);
+        let shown: Vec<(&str, &str)> = methods.iter().map(|m| (m.code, m.title)).collect();
+        assert_eq!(shown, [("card", "Карта"), ("wallet", "ЮMoney")]);
+        assert!(
+            methods
+                .iter()
+                .all(|m| !m.hint.is_empty() && m.min_minor.is_none())
+        );
+        assert!(YooMoney.methods(Currency::Usd).is_empty());
+        assert_eq!(payment_type_in_link(&settings(), Some("card")).await, "AC");
+        assert_eq!(
+            payment_type_in_link(&settings(), Some("wallet")).await,
+            "PC"
+        );
+        assert_eq!(payment_type_in_link(&settings(), None).await, "AC");
+        let mut wallet = settings();
+        wallet.set("payment_type", json!("PC"));
+        assert_eq!(payment_type_in_link(&wallet, None).await, "PC");
+        assert_eq!(payment_type_in_link(&wallet, Some("card")).await, "AC");
+        for code in ["page", "sbp", "AC"] {
+            let mut request = invoice(rub(49_900), None);
+            request.method = Some(code.into());
+            assert_eq!(
+                YooMoney.create_invoice(&settings(), &request).await,
+                Err(PaymentError::Rejected(
+                    "этот способ оплаты недоступен".into()
+                )),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn подпись_кнопки_не_обещает_только_карты() {
+        let label = YooMoney.client_label(Currency::Rub);
+        assert_eq!(label.title, "ЮMoney");
+        assert!(!label.hint.to_lowercase().contains("карт"));
+        assert!(!label.hint.to_lowercase().contains("кошел"));
     }
 
     #[test]

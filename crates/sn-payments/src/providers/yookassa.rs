@@ -3,7 +3,8 @@ use crate::json::Json;
 use crate::provider::*;
 use crate::util;
 use async_trait::async_trait;
-use sn_domain::money::{Amount, Currency, PayCurrency};
+use sn_domain::format;
+use sn_domain::money::{Amount, Currency, Money, PayCurrency};
 use sn_domain::payment::providers;
 use sn_domain::settings::SettingField;
 use std::collections::HashMap;
@@ -16,6 +17,22 @@ const TAX_SYSTEMS: RangeInclusive<i64> = 1..=6;
 const VAT_CODES: RangeInclusive<i64> = 1..=12;
 const MISS_TTL: Duration = Duration::from_secs(60);
 const MISS_CAPACITY: usize = 4096;
+const PAGE: &str = "page";
+const SBER_LOAN: &str = "sber_loan";
+const METHODS: [PayMethod; 7] = [
+    PayMethod::new(PAGE, "Все способы", "Выбор способа на странице ЮKassa"),
+    PayMethod::new("bank_card", "Карта", "Карты российских банков"),
+    PayMethod::new("sbp", "СБП", "Через приложение банка"),
+    PayMethod::new("sberbank", "SberPay", "Через СберБанк Онлайн"),
+    PayMethod::new("tinkoff_bank", "T-Pay", "Через приложение Т-Банка"),
+    PayMethod::new("yoo_money", "ЮMoney", "Кошелёк ЮMoney"),
+    PayMethod::new(
+        SBER_LOAN,
+        "Кредит от Сбера",
+        "Кредит или рассрочка от СберБанка",
+    )
+    .min_minor(300_000),
+];
 
 #[derive(Default)]
 struct Misses {
@@ -224,6 +241,44 @@ impl YooKassa {
             reply: WebhookReply::ok(),
         })
     }
+
+    async fn refund_receipt(
+        &self,
+        config: &ProviderConfig,
+        payment_id: &str,
+        request: &RefundRequest,
+    ) -> PaymentResult<Option<Json>> {
+        let Some(vat) = code(config, "vat_code", VAT_CODES)? else {
+            return Ok(None);
+        };
+        let payment = self
+            .find(config, "payments", payment_id)
+            .await?
+            .ok_or_else(|| PaymentError::Rejected("платёж не найден в ЮKassa".into()))?;
+        let paid = util::json_amount(
+            payment.at(&["amount", "value"]),
+            payment.at(&["amount", "currency"]),
+        )?;
+        if paid.currency == request.amount.currency && request.amount.minor >= paid.minor {
+            return Ok(None);
+        }
+        let email = request
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| e.len() > 2 && e.contains('@') && !e.contains(char::is_whitespace))
+            .ok_or_else(|| {
+                PaymentError::Rejected("для чека частичного возврата нужна почта клиента".into())
+            })?;
+        receipt_for(
+            config,
+            vat,
+            email,
+            request.description.as_deref().unwrap_or_default(),
+            request.amount,
+        )
+        .map(Some)
+    }
 }
 
 fn money(amount: Amount) -> Json {
@@ -256,12 +311,14 @@ fn code(
     }
 }
 
-fn receipt(config: &ProviderConfig, request: &InvoiceRequest) -> PaymentResult<Option<Json>> {
-    let Some(vat) = code(config, "vat_code", VAT_CODES)? else {
-        return Ok(None);
-    };
-    let email = util::client_email(request).ok_or(PaymentError::EmailRequired)?;
-    let description = util::clip(request.description.trim(), 128);
+fn receipt_for(
+    config: &ProviderConfig,
+    vat: i64,
+    email: &str,
+    description: &str,
+    amount: Amount,
+) -> PaymentResult<Json> {
+    let description = util::clip(description.trim(), 128);
     let mut receipt = Json::object([
         ("customer", Json::object([("email", Json::from(email))])),
         (
@@ -276,22 +333,45 @@ fn receipt(config: &ProviderConfig, request: &InvoiceRequest) -> PaymentResult<O
                     }),
                 ),
                 ("quantity", Json::number("1")),
-                ("amount", money(request.amount)),
+                ("amount", money(amount)),
                 ("vat_code", Json::from(vat)),
                 ("payment_subject", Json::from("service")),
                 ("payment_mode", Json::from("full_payment")),
+                ("measure", Json::from("piece")),
             ])]),
         ),
     ]);
     if let Some(tax) = code(config, "tax_system_code", TAX_SYSTEMS)? {
         receipt.push("tax_system_code", Json::from(tax));
     }
-    Ok(Some(receipt))
+    Ok(receipt)
+}
+
+fn receipt(config: &ProviderConfig, request: &InvoiceRequest) -> PaymentResult<Option<Json>> {
+    let Some(vat) = code(config, "vat_code", VAT_CODES)? else {
+        return Ok(None);
+    };
+    let email = util::client_email(request).ok_or(PaymentError::EmailRequired)?;
+    receipt_for(config, vat, email, &request.description, request.amount).map(Some)
+}
+
+fn chosen(code: Option<&str>) -> PaymentResult<Option<PayMethod>> {
+    match code {
+        None | Some(PAGE) => Ok(None),
+        Some(code) => METHODS
+            .iter()
+            .find(|m| m.code == code)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| PaymentError::Rejected("этот способ оплаты недоступен".into())),
+    }
 }
 
 fn saved_method(payment: &Json) -> Option<SavedMethod> {
     let method = payment.get("payment_method")?;
-    if method.get("saved").and_then(Json::as_bool) != Some(true) {
+    if method.get("saved").and_then(Json::as_bool) != Some(true)
+        || method.get("status").and_then(Json::as_str) != Some("active")
+    {
         return None;
     }
     let token = method.get("id").and_then(Json::as_str)?.to_string();
@@ -366,6 +446,14 @@ impl PaymentProvider for YooKassa {
         }
     }
 
+    fn methods(&self, currency: Currency) -> Vec<PayMethod> {
+        if self.currencies().contains(&currency) {
+            METHODS.to_vec()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn settings_schema(&self) -> Vec<SettingField> {
         vec![
             SettingField::text(
@@ -378,10 +466,15 @@ impl PaymentProvider for YooKassa {
                 "Секретный ключ",
                 "Кабинет ЮKassa → Интеграция → Ключи API",
             ),
+            SettingField::flag(
+                "autopayments",
+                "Автоплатежи",
+                "Сохранять способ оплаты для автопродления. Включайте, только если ЮKassa подключила магазину автоплатежи, иначе оплата не пройдёт",
+            ),
             SettingField::number(
                 "tax_system_code",
                 "Система налогообложения",
-                "Код для чеков 54-ФЗ, если чеки отправляет ЮKassa",
+                "Только для сторонней онлайн-кассы, код от 1 до 6. С Чеками от ЮKassa оставьте пустым",
             ),
             SettingField::number(
                 "vat_code",
@@ -445,6 +538,15 @@ impl PaymentProvider for YooKassa {
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
         util::require_currency(request.amount, PayCurrency::Rub)?;
+        let method = chosen(request.method.as_deref())?;
+        if let Some(min) = method.and_then(|m| m.min_minor)
+            && request.amount.minor < min
+        {
+            return Err(PaymentError::Rejected(format!(
+                "этот способ оплаты доступен от {}",
+                format::money(Money::new(min, Currency::Rub))
+            )));
+        }
         let return_url = util::return_url(request)
             .ok_or_else(|| PaymentError::NotConfigured("не задан адрес панели".into()))?;
         let mut body = Json::object([
@@ -472,7 +574,16 @@ impl PaymentProvider for YooKassa {
         if let Some(receipt) = receipt(config, request)? {
             body.push("receipt", receipt);
         }
-        if request.save_payment_method {
+        if let Some(method) = method {
+            body.push(
+                "payment_method_data",
+                Json::object([("type", Json::from(method.code))]),
+            );
+        }
+        if config.flag("autopayments")
+            && request.save_payment_method
+            && method.is_none_or(|m| m.code != SBER_LOAN)
+        {
             body.push("save_payment_method", Json::from(true));
         }
         let payment = self
@@ -614,14 +725,12 @@ impl PaymentProvider for YooKassa {
         {
             body.push("description", Json::from(util::clip(reason, 250)));
         }
-        let key = util::idempotency_key(&[
-            "refund",
-            &request.payment_id.to_string(),
-            payment_id,
-            &request.amount.minor.to_string(),
-            request.reason.as_deref().unwrap_or_default(),
-        ]);
-        let refund = self.post(config, "/v3/refunds", &body, &key).await?;
+        if let Some(receipt) = self.refund_receipt(config, payment_id, request).await? {
+            body.push("receipt", receipt);
+        }
+        let refund = self
+            .post(config, "/v3/refunds", &body, &request.key.to_string())
+            .await?;
         let id = refund
             .get("id")
             .and_then(Json::as_str)
@@ -675,10 +784,34 @@ mod tests {
             "amount": {"value": value, "currency": currency},
             "metadata": {"payment_id": PAYMENT.to_string()},
             "payment_method": {
-                "type": "bank_card", "id": ID, "saved": true, "title": "Bank card *4477",
-                "card": {"last4": "4477"}
+                "type": "bank_card", "id": ID, "saved": true, "status": "active",
+                "title": "Bank card *4477", "card": {"last4": "4477"}
             }
         })
+    }
+
+    async fn sent_bodies(server: &MockServer, route: &str) -> Vec<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method.as_str() == "POST" && r.url.path() == route)
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    async fn accepting_payments() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v3/payments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": ID, "status": "pending",
+                "confirmation": {"type": "redirect", "confirmation_url": "https://yoomoney.ru/checkout/x"}
+            })))
+            .mount(&server)
+            .await;
+        server
     }
 
     fn notification(event: &str, id: &str) -> Vec<u8> {
@@ -1018,7 +1151,8 @@ mod tests {
                     "tax_system_code": 2,
                     "items": [{
                         "quantity": 1, "vat_code": 7, "payment_subject": "service",
-                        "payment_mode": "full_payment", "amount": {"value": "499.00", "currency": "RUB"}
+                        "payment_mode": "full_payment", "measure": "piece",
+                        "amount": {"value": "499.00", "currency": "RUB"}
                     }]
                 }
             })))
@@ -1030,7 +1164,11 @@ mod tests {
             .mount(&server)
             .await;
         let kassa = YooKassa::with_api_base(server.uri());
-        let receipts = settings(&[("tax_system_code", json!(2)), ("vat_code", json!("7"))]);
+        let receipts = settings(&[
+            ("autopayments", json!(true)),
+            ("tax_system_code", json!(2)),
+            ("vat_code", json!("7")),
+        ]);
         let mut request = invoice(rub(49_900), Some("client@example.com"));
         request.save_payment_method = true;
         let created = kassa.create_invoice(&receipts, &request).await.unwrap();
@@ -1070,6 +1208,228 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
         assert!(body.get("receipt").is_none());
         assert!(body.get("save_payment_method").is_none());
+        assert!(body.get("payment_method_data").is_none());
+    }
+
+    #[tokio::test]
+    async fn с_чеками_от_юkassa_система_налогообложения_не_уходит() {
+        let server = accepting_payments().await;
+        YooKassa::with_api_base(server.uri())
+            .create_invoice(
+                &settings(&[("vat_code", json!(11))]),
+                &invoice(rub(49_900), Some("client@example.com")),
+            )
+            .await
+            .unwrap();
+        let sent = sent_bodies(&server, "/v3/payments").await;
+        assert_eq!(
+            sent[0]["receipt"],
+            json!({
+                "customer": {"email": "client@example.com"},
+                "items": [{
+                    "description": "Стандарт · 3 месяца",
+                    "quantity": 1,
+                    "amount": {"value": "499.00", "currency": "RUB"},
+                    "vat_code": 11,
+                    "payment_subject": "service",
+                    "payment_mode": "full_payment",
+                    "measure": "piece"
+                }]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn способ_сохраняется_только_с_автоплатежами() {
+        let server = accepting_payments().await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        let mut request = invoice(rub(499_000), None);
+        let autopay = settings(&[("autopayments", json!(true))]);
+        let cases: [(&ProviderConfig, bool, Option<&str>, bool); 7] = [
+            (&settings(&[]), true, None, false),
+            (
+                &settings(&[("autopayments", json!(false))]),
+                true,
+                None,
+                false,
+            ),
+            (&autopay, false, None, false),
+            (&autopay, true, None, true),
+            (&autopay, true, Some("page"), true),
+            (&autopay, true, Some("sbp"), true),
+            (&autopay, true, Some("sber_loan"), false),
+        ];
+        for (config, save, code, expected) in cases {
+            request.save_payment_method = save;
+            request.method = code.map(str::to_string);
+            kassa.create_invoice(config, &request).await.unwrap();
+            let sent = sent_bodies(&server, "/v3/payments").await;
+            let body = sent.last().unwrap();
+            assert_eq!(
+                body.get("save_payment_method"),
+                expected.then_some(&json!(true)),
+                "{save} {code:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn выбранный_способ_уходит_в_payment_method_data() {
+        let server = accepting_payments().await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        for code in [
+            "bank_card",
+            "sbp",
+            "sberbank",
+            "tinkoff_bank",
+            "yoo_money",
+            "sber_loan",
+        ] {
+            let mut request = invoice(rub(300_000), None);
+            request.method = Some(code.into());
+            kassa
+                .create_invoice(&settings(&[]), &request)
+                .await
+                .unwrap();
+            let sent = sent_bodies(&server, "/v3/payments").await;
+            assert_eq!(
+                sent.last().unwrap()["payment_method_data"],
+                json!({"type": code}),
+                "{code}"
+            );
+        }
+        let mut page = invoice(rub(49_900), None);
+        page.method = Some("page".into());
+        kassa.create_invoice(&settings(&[]), &page).await.unwrap();
+        let sent = sent_bodies(&server, "/v3/payments").await;
+        assert!(sent.last().unwrap().get("payment_method_data").is_none());
+        let before = sent.len();
+        let mut unknown = invoice(rub(49_900), None);
+        unknown.method = Some("alfa_pay".into());
+        assert_eq!(
+            kassa.create_invoice(&settings(&[]), &unknown).await,
+            Err(PaymentError::Rejected(
+                "этот способ оплаты недоступен".into()
+            ))
+        );
+        let mut loan = invoice(rub(299_999), None);
+        loan.method = Some("sber_loan".into());
+        assert_eq!(
+            kassa.create_invoice(&settings(&[]), &loan).await,
+            Err(PaymentError::Rejected(
+                "этот способ оплаты доступен от 3\u{a0}000\u{a0}₽".into()
+            ))
+        );
+        assert_eq!(sent_bodies(&server, "/v3/payments").await.len(), before);
+    }
+
+    #[test]
+    fn способы_оплаты_юkassa() {
+        let kassa = YooKassa::new();
+        let methods = kassa.methods(Currency::Rub);
+        let codes: Vec<&str> = methods.iter().map(|m| m.code).collect();
+        assert_eq!(
+            codes,
+            [
+                "page",
+                "bank_card",
+                "sbp",
+                "sberbank",
+                "tinkoff_bank",
+                "yoo_money",
+                "sber_loan"
+            ]
+        );
+        let titles: Vec<&str> = methods.iter().map(|m| m.title).collect();
+        assert_eq!(
+            titles,
+            [
+                "Все способы",
+                "Карта",
+                "СБП",
+                "SberPay",
+                "T-Pay",
+                "ЮMoney",
+                "Кредит от Сбера"
+            ]
+        );
+        assert!(methods.iter().all(|m| !m.hint.is_empty()));
+        assert_eq!(
+            kassa.method(Currency::Rub, "sber_loan").unwrap().min_minor,
+            Some(300_000)
+        );
+        assert!(
+            methods
+                .iter()
+                .filter(|m| m.code != "sber_loan")
+                .all(|m| m.min_minor.is_none())
+        );
+        assert!(kassa.methods(Currency::Usd).is_empty());
+        assert!(kassa.method(Currency::Rub, "alfa_pay").is_none());
+    }
+
+    #[tokio::test]
+    async fn отказ_403_показывает_текст_юkassa() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v3/payments"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "type": "error", "id": "17a47682-8d47-4655-a414-a58bdbcd46f9",
+                "code": "forbidden",
+                "description": "You don't have the rights to make recurring payments"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v3/payments/{ID}")))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "type": "error", "code": "invalid_credentials",
+                "description": "Basic auth failed"
+            })))
+            .mount(&server)
+            .await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        let mut request = invoice(rub(49_900), None);
+        request.save_payment_method = true;
+        assert_eq!(
+            kassa
+                .create_invoice(&settings(&[("autopayments", json!(true))]), &request)
+                .await,
+            Err(PaymentError::Rejected(
+                "You don't have the rights to make recurring payments".into()
+            ))
+        );
+        assert_eq!(
+            kassa.fetch_status(&settings(&[]), ID).await,
+            Err(PaymentError::Rejected(
+                "платёжная система не приняла ключи доступа, проверьте настройки".into()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn сохраняется_только_активный_способ() {
+        for (saved, status, expected) in [
+            (json!(true), json!("active"), true),
+            (json!(true), json!("inactive"), false),
+            (json!(true), json!("pending"), false),
+            (json!(true), serde_json::Value::Null, false),
+            (json!(false), json!("active"), false),
+        ] {
+            let mut body = payment("succeeded", "499.00", "RUB");
+            body["payment_method"]["saved"] = saved.clone();
+            body["payment_method"]["status"] = status.clone();
+            let server = api(body).await;
+            let outcome = YooKassa::with_api_base(server.uri())
+                .parse_webhook(
+                    &settings(&[]),
+                    &hook(&[], notification("payment.succeeded", ID)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.status, ProviderStatus::Paid);
+            assert_eq!(outcome.saved_method.is_some(), expected, "{saved} {status}");
+        }
     }
 
     #[tokio::test]
@@ -1117,14 +1477,44 @@ mod tests {
         assert_eq!(outcome.payment, Some(PaymentRef::PublicId(PAYMENT)));
     }
 
+    fn refund_request(minor: i64, key: u128, email: Option<&str>) -> RefundRequest {
+        RefundRequest {
+            payment_id: PaymentId(41),
+            provider_txid: ID.into(),
+            amount: rub(minor),
+            reason: Some("Не подошёл тариф".into()),
+            key: uuid::Uuid::from_u128(key),
+            email: email.map(str::to_string),
+            description: Some("STEALTHNET: Стандарт · 3 месяца".into()),
+        }
+    }
+
+    async fn refunds_api(paid: &str) -> MockServer {
+        let server = api(payment("succeeded", paid, "RUB")).await;
+        Mock::given(method("POST"))
+            .and(path("/v3/refunds"))
+            .and(basic_auth("504367", "live_secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "rf-2", "status": "succeeded", "payment_id": ID,
+                "amount": {"value": "100.00", "currency": "RUB"}
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
     #[tokio::test]
     async fn возврат_через_юkassa() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v3/refunds"))
-            .and(header_exists("Idempotence-Key"))
+            .and(header(
+                "Idempotence-Key",
+                uuid::Uuid::from_u128(5).to_string().as_str(),
+            ))
             .and(body_partial_json(json!({
-                "payment_id": ID, "amount": {"value": "100.00", "currency": "RUB"}
+                "payment_id": ID, "amount": {"value": "100.00", "currency": "RUB"},
+                "description": "Не подошёл тариф"
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "rf-2", "status": "succeeded", "payment_id": ID,
@@ -1133,18 +1523,7 @@ mod tests {
             .mount(&server)
             .await;
         let outcome = YooKassa::with_api_base(server.uri())
-            .refund(
-                &settings(&[]),
-                &RefundRequest {
-                    payment_id: PaymentId(41),
-                    provider_txid: ID.into(),
-                    amount: rub(10_000),
-                    reason: Some("Не подошёл тариф".into()),
-                    key: uuid::Uuid::from_u128(5),
-                    email: None,
-                    description: None,
-                },
-            )
+            .refund(&settings(&[]), &refund_request(10_000, 5, None))
             .await
             .unwrap();
         assert_eq!(
@@ -1154,6 +1533,116 @@ mod tests {
                 completed: true
             }
         );
+        assert_eq!(lookups(&server).await, 1);
+        let sent = sent_bodies(&server, "/v3/refunds").await;
+        assert!(sent[0].get("receipt").is_none());
+    }
+
+    #[tokio::test]
+    async fn каждый_возврат_со_своим_ключом_идемпотентности() {
+        let server = refunds_api("499.00").await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        for key in [7, 8] {
+            kassa
+                .refund(&settings(&[]), &refund_request(10_000, key, None))
+                .await
+                .unwrap();
+        }
+        let keys: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/v3/refunds")
+            .map(|r| {
+                r.headers
+                    .get("Idempotence-Key")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                uuid::Uuid::from_u128(7).to_string(),
+                uuid::Uuid::from_u128(8).to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn частичный_возврат_с_чеком_полный_без_чека() {
+        let receipts = settings(&[("vat_code", json!(11))]);
+        let server = refunds_api("499.00").await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        kassa
+            .refund(
+                &receipts,
+                &refund_request(10_000, 9, Some(" client@example.com ")),
+            )
+            .await
+            .unwrap();
+        kassa
+            .refund(
+                &receipts,
+                &refund_request(49_900, 10, Some("client@example.com")),
+            )
+            .await
+            .unwrap();
+        let sent = sent_bodies(&server, "/v3/refunds").await;
+        assert_eq!(
+            sent[0]["receipt"],
+            json!({
+                "customer": {"email": "client@example.com"},
+                "items": [{
+                    "description": "STEALTHNET: Стандарт · 3 месяца",
+                    "quantity": 1,
+                    "amount": {"value": "100.00", "currency": "RUB"},
+                    "vat_code": 11,
+                    "payment_subject": "service",
+                    "payment_mode": "full_payment",
+                    "measure": "piece"
+                }]
+            })
+        );
+        assert_eq!(
+            sent[0]["amount"],
+            json!({"value": "100.00", "currency": "RUB"})
+        );
+        assert!(sent[1].get("receipt").is_none());
+        let third_party = settings(&[("vat_code", json!(7)), ("tax_system_code", json!(2))]);
+        kassa
+            .refund(
+                &third_party,
+                &refund_request(10_000, 11, Some("client@example.com")),
+            )
+            .await
+            .unwrap();
+        let sent = sent_bodies(&server, "/v3/refunds").await;
+        assert_eq!(sent[2]["receipt"]["tax_system_code"], json!(2));
+    }
+
+    #[tokio::test]
+    async fn частичный_возврат_с_чеком_требует_почту() {
+        let server = refunds_api("499.00").await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        for email in [None, Some(""), Some("нет почты")] {
+            assert_eq!(
+                kassa
+                    .refund(
+                        &settings(&[("vat_code", json!(11))]),
+                        &refund_request(10_000, 12, email),
+                    )
+                    .await,
+                Err(PaymentError::Rejected(
+                    "для чека частичного возврата нужна почта клиента".into()
+                )),
+                "{email:?}"
+            );
+        }
+        assert!(sent_bodies(&server, "/v3/refunds").await.is_empty());
     }
 
     #[test]
@@ -1170,5 +1659,10 @@ mod tests {
         ])));
         assert!(kassa.supports_recurring() && kassa.supports_refunds());
         assert!(kassa.supports_refund_polling());
+        assert!(kassa.is_configured(&settings(&[("autopayments", json!(true))])));
+        let schema = kassa.settings_schema();
+        let autopayments = schema.iter().find(|f| f.key == "autopayments").unwrap();
+        assert_eq!(autopayments.kind, sn_domain::settings::FieldKind::Flag);
+        assert!(!autopayments.required && autopayments.default.is_none());
     }
 }

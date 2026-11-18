@@ -258,6 +258,7 @@ impl Reply {
             .map(|m| clip(m.trim(), 200))
             .filter(|m| !m.is_empty());
         match (self.status, message) {
+            (403, Some(message)) => PaymentError::Rejected(message),
             (401 | 403, _) => PaymentError::Rejected(
                 "платёжная система не приняла ключи доступа, проверьте настройки".into(),
             ),
@@ -323,6 +324,33 @@ mod tests {
         assert!(json_amount(value.get("a"), None).is_err());
         let euro = Json::parse(br#"{"a":"1.00","cur":"EUR"}"#).unwrap();
         assert!(json_amount(euro.get("a"), euro.get("cur")).is_err());
+    }
+
+    #[test]
+    fn при_403_виден_текст_платёжки_а_при_401_просьба_проверить_ключи() {
+        let reply = |status: u16| Reply {
+            status,
+            body: Bytes::new(),
+        };
+        let keys = PaymentError::Rejected(
+            "платёжная система не приняла ключи доступа, проверьте настройки".into(),
+        );
+        assert_eq!(reply(401).failure(Some("Unauthorized")), keys);
+        assert_eq!(reply(401).failure(None), keys);
+        assert_eq!(reply(403).failure(None), keys);
+        assert_eq!(reply(403).failure(Some("  ")), keys);
+        assert_eq!(
+            reply(403).failure(Some(" Recurring payments are not allowed for this shop ")),
+            PaymentError::Rejected("Recurring payments are not allowed for this shop".into())
+        );
+        assert_eq!(
+            reply(400).failure(Some("Receipt is missing or illegal")),
+            PaymentError::Rejected("Receipt is missing or illegal".into())
+        );
+        assert_eq!(
+            reply(429).failure(Some("Too many requests")),
+            PaymentError::Http { status: 429 }
+        );
     }
 
     #[test]
