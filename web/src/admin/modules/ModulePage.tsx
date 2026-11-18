@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { useSession } from '../session';
+import { PAYOUT_KEY, PayoutMethods, payoutItems, payoutProblem, payoutRows, type PayoutRow } from '../referral/PayoutMethods';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import { Switch } from '../ui';
 import { AiUsage } from './AiUsage';
@@ -20,7 +21,7 @@ const OWN_SCREENS: Record<string, string> = { promolinks: 'Промо-ссылк
 
 export function ModulePage() {
   const { id = '' } = useParams();
-  const { reload } = useSession();
+  const { reload, me } = useSession();
   const [view, setView] = useState<ModuleView | null>(null);
   const [cfg, setCfg] = useState<ModuleConfig | null>(null);
   const [values, setValues] = useState<FieldValues>({});
@@ -30,11 +31,19 @@ export function ModulePage() {
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(0);
+  const [payouts, setPayouts] = useState<PayoutRow[] | null>(null);
+  const [payoutsSaved, setPayoutsSaved] = useState('');
+  const [invalid, setInvalid] = useState<string | null>(null);
 
   const apply = (next: ModuleConfig) => {
     setCfg(next);
     setValues(initialValues(next.schema, next.config));
     setSecrets(NO_SECRETS);
+    const field = next.schema.find((f) => f.key === PAYOUT_KEY && f.kind.type === 'list');
+    const rows = field ? payoutRows(next.config[PAYOUT_KEY], field.default) : null;
+    setPayouts(rows);
+    setPayoutsSaved(rows ? JSON.stringify(payoutItems(rows)) : '');
+    setInvalid(null);
   };
 
   const load = useCallback(async () => {
@@ -83,7 +92,18 @@ export function ModulePage() {
       setError(`Заполните: ${lacking.map((f) => f.label).join(', ')}`);
       return;
     }
+    if (payouts) {
+      const problem = payoutProblem(payouts, values);
+      if (problem) {
+        setError(problem.text);
+        setInvalid(problem.key);
+        return;
+      }
+    }
     const config = changedConfig(cfg.schema, cfg.config, values);
+    if (payouts && JSON.stringify(payoutItems(payouts)) !== payoutsSaved) {
+      config[PAYOUT_KEY] = payoutItems(payouts);
+    }
     const clear = secrets.clear;
     setBusy(true);
     setError(null);
@@ -131,6 +151,7 @@ export function ModulePage() {
   }
 
   const section = view.info.menu?.label ?? OWN_SCREENS[view.info.id] ?? null;
+  const payoutField = cfg.schema.find((f) => f.key === PAYOUT_KEY && f.kind.type === 'list') ?? null;
 
   return (
     <div className="md-page">
@@ -167,6 +188,20 @@ export function ModulePage() {
             Настройки
           </h2>
           <SchemaFields schema={cfg.schema} config={cfg.config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`mod-${id}`} />
+          {payoutField && payouts ? (
+            <PayoutMethods
+              field={payoutField}
+              rows={payouts}
+              onChange={(rows) => {
+                setPayouts(rows);
+                setInvalid(null);
+              }}
+              values={values}
+              currency={me.currency}
+              busy={busy}
+              invalid={invalid}
+            />
+          ) : null}
           {error ? (
             <p className="err" role="alert">
               {error}

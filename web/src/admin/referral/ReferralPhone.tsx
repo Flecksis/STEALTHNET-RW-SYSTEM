@@ -141,7 +141,7 @@ export function ReferralPhone() {
                         <strong className="num">{money(w.amount)}</strong>
                       </span>
                       <span className="hp-note muted">
-                        {methodName(w.method)} · {ago(w.created_at).toLowerCase()}
+                        {methodName(w)} · {ago(w.created_at).toLowerCase()}
                       </span>
                     </span>
                   </button>

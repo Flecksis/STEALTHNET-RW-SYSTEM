@@ -3,8 +3,8 @@ import { api, ApiError } from '../lib/api';
 import { dateLong, money } from '../lib/format';
 import { siteInviteLink } from '../lib/referral';
 import { Card, useCabinet } from './CabinetApp';
-import type { PayoutMethod, Referral, Withdrawal } from './model';
-import { PAYOUT_METHODS as METHODS, payoutDetails, payoutLabel as methodLabel, WITHDRAWAL_STATUS as STATUS } from './withdrawals';
+import type { Referral, Withdrawal } from './model';
+import { firstPayout, payoutDetails, payoutLabel as methodLabel, WITHDRAWAL_STATUS as STATUS } from './withdrawals';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -21,7 +21,7 @@ export function FriendsPage() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [amount, setAmount] = useState('');
-  const [method, setMethod] = useState<PayoutMethod>(me.currency === 'RUB' ? 'sbp' : 'usdt_trc20');
+  const [method, setMethod] = useState('');
   const [details, setDetails] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ text: string; bad: boolean } | null>(null);
@@ -81,12 +81,17 @@ export function FriendsPage() {
   const second = data.levels[1] ?? 0;
   const siteLink = siteInviteLink(data.code);
   const balance = data.balance ?? me.referral_balance;
-  const canWithdraw = data.withdrawals_enabled === true;
-  const hint = METHODS.find((m) => m.key === method)?.hint ?? '';
+  const methods = data.payout_methods ?? [];
+  const chosen = methods.find((m) => m.id === method) ?? methods.find((m) => m.id === firstPayout(methods, me.currency)) ?? null;
+  const canWithdraw = data.withdrawals_enabled === true && methods.length > 0;
   const withdrawals = data.withdrawals ?? [];
 
   const submit = async () => {
     if (busy) {
+      return;
+    }
+    if (!chosen) {
+      setStatus({ text: 'Выберите, куда вывести', bad: true });
       return;
     }
     if (!amount.trim() || !details.trim()) {
@@ -96,7 +101,7 @@ export function FriendsPage() {
     setBusy(true);
     setStatus(null);
     try {
-      await api('/api/client/m/referral/withdrawals', { method: 'POST', body: { amount: amount.trim().replace(',', '.'), method, details: details.trim() } });
+      await api('/api/client/m/referral/withdrawals', { method: 'POST', body: { amount: amount.trim().replace(',', '.'), method: chosen.id, details: details.trim() } });
       setAmount('');
       setDetails('');
       setStatus({ text: 'Заявка отправлена. Деньги придут после проверки, статус виден ниже.', bad: false });
@@ -182,7 +187,7 @@ export function FriendsPage() {
       {canWithdraw && balance.minor > 0 ? (
         <Card className="cb-withdraw" label="Вывод">
           <h2 className="cb-h2">Вывести заработанное</h2>
-          {data.withdraw_min ? <p className="cb-small cb-muted">От {money(data.withdraw_min)}. Заявку проверяют вручную, обычно за день-два.</p> : null}
+          {chosen?.min ? <p className="cb-small cb-muted">От {money(chosen.min)}. Заявку проверяют вручную, обычно за день-два.</p> : null}
           <label className="cb-field">
             Сумма
             <span className="cb-wamount">
@@ -194,17 +199,17 @@ export function FriendsPage() {
           </label>
           <span className="cb-field">
             Куда
-            <span role="group" aria-label="Способ вывода" className="cb-seg">
-              {METHODS.map((m) => (
-                <button key={m.key} type="button" aria-pressed={method === m.key} onClick={() => setMethod(m.key)} disabled={busy}>
-                  {m.label}
+            <span role="group" aria-label="Способ вывода" className="cb-seg cb-seg-wrap">
+              {methods.map((m) => (
+                <button key={m.id} type="button" aria-pressed={chosen?.id === m.id} onClick={() => setMethod(m.id)} disabled={busy}>
+                  {m.title}
                 </button>
               ))}
             </span>
           </span>
           <label className="cb-field">
             Реквизиты
-            <input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={hint} maxLength={200} disabled={busy} />
+            <input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={chosen?.hint ?? ''} maxLength={200} disabled={busy} />
           </label>
           {status ? (
             <p className={status.bad ? 'cb-error' : 'cb-small cb-muted'} role={status.bad ? 'alert' : 'status'}>
@@ -231,7 +236,7 @@ export function FriendsPage() {
                 <li key={w.id} className="cb-payrow">
                   <span className="cb-payrow-main">
                     <strong>
-                      {methodLabel(w.method)} · {payoutDetails(w.details)}
+                      {methodLabel(w)} · {payoutDetails(w.details)}
                     </strong>
                     <span className="cb-small cb-muted">
                       {dateLong(w.created_at, true)}

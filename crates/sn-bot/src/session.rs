@@ -1,7 +1,6 @@
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use sn_domain::ids::{PeriodId, SubscriptionId, TariffId};
-use sn_modules::catalog::referral::PayoutMethod;
 use sn_services::Services;
 use sn_store::{Db, StoreResult};
 
@@ -35,7 +34,7 @@ pub struct DevicePick {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WithdrawalDraft {
-    pub method: Option<PayoutMethod>,
+    pub method: Option<String>,
     pub amount: Option<String>,
 }
 

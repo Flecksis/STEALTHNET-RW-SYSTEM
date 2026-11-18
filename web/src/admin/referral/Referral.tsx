@@ -52,7 +52,7 @@ function Who({ id, person }: { id: number; person: Withdrawal['client'] }) {
 function Details({ w, copied, onCopy }: { w: Withdrawal; copied: boolean; onCopy: () => void }) {
   return (
     <span className="pr-cell">
-      <span className="pr-sub">{methodName(w.method)}</span>
+      <span className="pr-sub">{methodName(w)}</span>
       <span className="rf-details">
         <span className="mono rf-mono">{detailsText(w)}</span>
         <button type="button" className="rf-copy hov" onClick={onCopy} aria-label={`Скопировать реквизиты: ${personName(w.client, w.client_id)}`}>

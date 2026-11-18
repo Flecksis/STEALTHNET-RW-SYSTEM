@@ -183,13 +183,8 @@ fn amount_text(amount: Amount) -> String {
     }
 }
 
-fn payout_method(method: &str) -> &str {
-    match method {
-        "sbp" => "СБП",
-        "card" => "банковская карта",
-        "usdt_trc20" => "USDT (TRC20)",
-        other => other,
-    }
+fn payout_method(method: &str, title: Option<&str>) -> String {
+    sn_modules::catalog::referral::payout_title(method, title)
 }
 
 fn summary(kind: AlertKind, rest: usize) -> Alert {
@@ -1046,23 +1041,22 @@ impl<'a> AlertsOps<'a> {
                 }
             }
             AlertKind::Withdrawals => {
-                let rows: Vec<(i64, i64, i64, String, String)> = sqlx::query_as(
-                    "SELECT id, client_id, amount_minor, currency, method FROM referral_withdrawals \
+                let rows: Vec<(i64, i64, i64, String, String, Option<String>)> = sqlx::query_as(
+                    "SELECT id, client_id, amount_minor, currency, method, method_title FROM referral_withdrawals \
                      WHERE status IN ('holding', 'pending') ORDER BY id LIMIT $1",
                 )
                 .bind(SCAN_LIMIT)
                 .fetch_all(conn.conn())
                 .await?;
-                for (id, client, amount, currency, method) in rows {
+                for (id, client, amount, currency, method, title) in rows {
+                    let method = payout_method(&method, title.as_deref());
                     let mut lines = vec![
                         format!("<b>Заявка на вывод №{id}</b>"),
                         format!("Клиент: {}", escape(&client_label(&mut conn, client).await)),
                     ];
                     match money(amount, &currency) {
-                        Some(sum) => {
-                            lines.push(format!("Сумма: {sum}, {}", escape(payout_method(&method))))
-                        }
-                        None => lines.push(format!("Способ: {}", escape(payout_method(&method)))),
+                        Some(sum) => lines.push(format!("Сумма: {sum}, {}", escape(&method))),
+                        None => lines.push(format!("Способ: {}", escape(&method))),
                     }
                     items.push(Item {
                         id,

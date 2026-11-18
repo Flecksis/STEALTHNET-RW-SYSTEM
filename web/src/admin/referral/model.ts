@@ -5,14 +5,16 @@ import type { Person } from '../home/model';
 import { useSession } from '../session';
 
 export type WithdrawalStatus = 'holding' | 'pending' | 'paid' | 'rejected' | 'canceled';
-export type PayoutMethod = 'sbp' | 'card' | 'usdt_trc20';
+
+export type PayoutOption = { id: string; title: string; hint: string; min: Money | null };
 
 export type Withdrawal = {
   id: number;
   public_id: string;
   client_id: number;
   amount: Money;
-  method: PayoutMethod;
+  method: string;
+  method_title?: string;
   details: string;
   status: WithdrawalStatus;
   comment: string | null;
@@ -26,6 +28,7 @@ export type Summary = {
   levels: [number, number, number];
   withdraw_min: Money | null;
   withdrawals_enabled: boolean;
+  payout_methods?: PayoutOption[];
   invited: number;
   referrers: number;
   earned: Money;
@@ -60,18 +63,12 @@ export const HISTORY: Array<[HistoryFilter, string]> = [
 
 export type Verdict = 'paid' | 'rejected';
 
-const METHODS: Record<PayoutMethod, string> = {
-  sbp: 'СБП',
-  card: 'Банковская карта',
-  usdt_trc20: 'USDT (TRC20)',
-};
-
-export function methodName(method: PayoutMethod): string {
-  return METHODS[method] ?? method;
+export function methodName(w: Withdrawal): string {
+  return w.method_title?.trim() || w.method;
 }
 
 export function detailsText(w: Withdrawal): string {
-  if (w.method === 'card' && /^\d{13,19}$/.test(w.details)) {
+  if (/^\d{13,19}$/.test(w.details)) {
     return w.details.replace(/(\d{4})(?=\d)/g, '$1 ');
   }
   return w.details;
@@ -116,12 +113,17 @@ export function termsText(s: Summary): string {
   const [first, second, third] = s.levels;
   const deeper = [second ? `${second}% со второго уровня` : null, third ? `${third}% с третьего` : null].filter(Boolean).join(' и ');
   const levels = `Пригласившему ${first}% с оплат друзей${deeper ? `, ${deeper}` : ''}.`;
-  const withdraw = s.withdrawals_enabled
-    ? s.withdraw_min
-      ? `Вывод от ${money(s.withdraw_min)}.`
-      : 'Вывод без минимальной суммы.'
-    : 'Заявки на вывод сейчас не принимаются.';
-  return `${levels} ${withdraw}`;
+  return `${levels} ${s.withdrawals_enabled ? withdrawText(s) : 'Заявки на вывод сейчас не принимаются.'}`;
+}
+
+function withdrawText(s: Summary): string {
+  const methods = s.payout_methods ?? [];
+  const mins = new Set(methods.map((m) => m.min?.minor ?? 0));
+  if (mins.size > 1) {
+    return `Вывод: ${methods.map((m) => `${m.title} ${m.min ? `от ${money(m.min)}` : 'без минимума'}`).join(', ')}.`;
+  }
+  const min = methods.length ? (methods[0]?.min ?? null) : s.withdraw_min;
+  return min ? `Вывод от ${money(min)}.` : 'Вывод без минимальной суммы.';
 }
 
 export function totalsText(s: Summary): string {

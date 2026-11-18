@@ -90,31 +90,55 @@ async fn invite(ctx: &ModuleContext, referrer: ClientId, invited: ClientId) {
 }
 
 #[test]
-fn номер_карты_проверяется_по_луну() {
+fn реквизиты_проверяются_по_выбранной_проверке() {
     assert!(luhn("4111111111111111"));
     assert!(!luhn("4111111111111112"));
     assert_eq!(
-        PayoutMethod::Card
-            .normalize_details("4111 1111-1111 1111")
+        DetailsCheck::Card
+            .normalize("4111 1111-1111 1111")
             .as_deref(),
         Some("4111111111111111")
     );
+    assert_eq!(DetailsCheck::Card.normalize("4111 1111 1111 1112"), None);
+    assert_eq!(DetailsCheck::Card.normalize("4111 1111"), None);
     assert_eq!(
-        PayoutMethod::Card.normalize_details("4111 1111 1111 1112"),
+        DetailsCheck::Phone
+            .normalize("  +7 900  123-45-67,\nТ-Банк ")
+            .as_deref(),
+        Some("+7 900 123-45-67, Т-Банк")
+    );
+    assert_eq!(DetailsCheck::Phone.normalize("Т-Банк"), None);
+    assert_eq!(DetailsCheck::Phone.normalize("+7 900 12"), None);
+    assert_eq!(
+        DetailsCheck::Trc20
+            .normalize(" TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC ")
+            .as_deref(),
+        Some("TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC")
+    );
+    assert_eq!(DetailsCheck::Trc20.normalize("0x1234"), None);
+    assert_eq!(
+        DetailsCheck::Trc20.normalize("TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDe0"),
         None
     );
-    assert!(
-        PayoutMethod::Sbp
-            .normalize_details("+7 900 123-45-67, Т-Банк")
-            .is_some()
+    assert_eq!(
+        DetailsCheck::Text
+            .normalize("  me@example.com \n PayPal ")
+            .as_deref(),
+        Some("me@example.com PayPal")
     );
-    assert_eq!(PayoutMethod::Sbp.normalize_details("Т-Банк"), None);
-    assert!(
-        PayoutMethod::UsdtTrc20
-            .normalize_details("TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC")
-            .is_some()
+    assert_eq!(DetailsCheck::Text.normalize("   "), None);
+    assert_eq!(
+        DetailsCheck::Text.normalize(&"я".repeat(DETAILS_MAX)),
+        Some("я".repeat(DETAILS_MAX))
     );
-    assert_eq!(PayoutMethod::UsdtTrc20.normalize_details("0x1234"), None);
+    assert_eq!(
+        DetailsCheck::Text.normalize(&"я".repeat(DETAILS_MAX + 1)),
+        None
+    );
+    for check in DetailsCheck::ALL {
+        assert_eq!(DetailsCheck::parse(check.as_str()), Some(check));
+    }
+    assert_eq!(DetailsCheck::parse("iban"), None);
 }
 
 #[test]
@@ -283,7 +307,7 @@ async fn возврат_оплаты_сторнирует_начисление_�
         referrer,
         &WithdrawalRequest {
             amount: "5.00".into(),
-            method: PayoutMethod::Card,
+            method: "card".into(),
             details: "4111 1111 1111 1111".into(),
         },
     )
@@ -370,7 +394,7 @@ async fn вывод_только_из_реферального_кошелька_
     }
     let ask = |amount: &str| WithdrawalRequest {
         amount: amount.into(),
-        method: PayoutMethod::UsdtTrc20,
+        method: "usdt_trc20".into(),
         details: "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC".into(),
     };
     assert!(matches!(
@@ -487,7 +511,7 @@ async fn клиент_отменяет_свою_заявку_и_деньги_в�
         referrer,
         &WithdrawalRequest {
             amount: "3".into(),
-            method: PayoutMethod::Sbp,
+            method: "sbp".into(),
             details: "+7 900 123-45-67, Т-Банк".into(),
         },
     )
@@ -854,7 +878,7 @@ async fn админка_видит_очередь_историю_сводку_и
     }
     let ask = |amount: &str| WithdrawalRequest {
         amount: amount.into(),
-        method: PayoutMethod::UsdtTrc20,
+        method: "usdt_trc20".into(),
         details: "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC".into(),
     };
     let paid = request_withdrawal(&ctx, anna, &ask("5.00")).await.unwrap();
@@ -891,6 +915,8 @@ async fn админка_видит_очередь_историю_сводку_и
         queue["items"][0]["details"],
         "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC"
     );
+    assert_eq!(queue["items"][0]["method"], "usdt_trc20");
+    assert_eq!(queue["items"][0]["method_title"], "USDT (TRC20)");
     assert_eq!(queue["items"][1]["client"]["name"], serde_json::Value::Null);
 
     let (_, first_page) = get_json(
@@ -925,6 +951,8 @@ async fn админка_видит_очередь_историю_сводку_и
     assert_eq!(status, StatusCode::OK);
     assert_eq!(summary["levels"], serde_json::json!([30, 10, 10]));
     assert_eq!(summary["withdrawals_enabled"], true);
+    assert_eq!(summary["payout_methods"][2]["id"], "usdt_trc20");
+    assert_eq!(summary["payout_methods"][2]["title"], "USDT (TRC20)");
     assert_eq!(summary["invited"], 3);
     assert_eq!(summary["referrers"], 2);
     assert_eq!(summary["earned"]["minor"], 1800);
@@ -960,5 +988,480 @@ async fn админка_видит_очередь_историю_сводку_и
         let (status, _) = get_json(&router, path, &helper).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
     }
+    db.cleanup().await;
+}
+
+#[test]
+fn без_настроек_три_встроенных_способа_вывода() {
+    let defaults = ReferralSettings::parse(&ModuleConfig::default(), Currency::Rub).unwrap();
+    let ids: Vec<&str> = defaults
+        .payout_methods
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect();
+    assert_eq!(ids, ["sbp", "card", "usdt_trc20"]);
+    assert!(
+        defaults
+            .payout_methods
+            .iter()
+            .all(|m| m.enabled && m.min.is_none())
+    );
+    assert_eq!(
+        defaults
+            .payout_methods
+            .iter()
+            .map(|m| m.check)
+            .collect::<Vec<_>>(),
+        [DetailsCheck::Phone, DetailsCheck::Card, DetailsCheck::Trc20]
+    );
+    let field = ReferralModule
+        .settings_schema()
+        .into_iter()
+        .find(|f| f.key == PAYOUT_METHODS_KEY)
+        .unwrap();
+    assert_eq!(field.kind, sn_domain::settings::FieldKind::List);
+    let stored: serde_json::Value = serde_json::from_str(field.default.unwrap()).unwrap();
+    let from_default = ReferralSettings::parse(
+        &ModuleConfig::from_value(&serde_json::json!({ "payout_methods": stored })),
+        Currency::Rub,
+    )
+    .unwrap();
+    assert_eq!(from_default.payout_methods, defaults.payout_methods);
+    let with_min = ReferralSettings::parse(
+        &ModuleConfig::from_value(&serde_json::json!({ "withdraw_min": "500" })),
+        Currency::Rub,
+    )
+    .unwrap();
+    let options = with_min.payout_options();
+    assert_eq!(options.len(), 3);
+    assert!(
+        options
+            .iter()
+            .all(|o| o.min == Some(Money::new(50_000, Currency::Rub)))
+    );
+    assert_eq!(options[0].title, "СБП");
+    assert_eq!(
+        options[0].hint,
+        "Номер телефона и банк, например: +7 900 123-45-67, Т-Банк"
+    );
+    assert_eq!(payout_title("card", None), "Банковская карта");
+    assert_eq!(payout_title("card", Some("  ")), "Банковская карта");
+    assert_eq!(payout_title("card", Some(" Карта МИР ")), "Карта МИР");
+    assert_eq!(payout_title("bank_old", None), "bank_old");
+}
+
+fn payout_item(patch: serde_json::Value) -> serde_json::Value {
+    let mut item =
+        serde_json::json!({ "id": "paypal", "title": "PayPal", "hint": "", "check": "text" });
+    for (key, value) in patch.as_object().unwrap() {
+        item[key.as_str()] = value.clone();
+    }
+    item
+}
+
+#[test]
+fn способы_вывода_из_настроек_и_ошибки_при_сохранении() {
+    let custom = ModuleConfig::from_value(&serde_json::json!({
+        "withdraw_min": "2",
+        "payout_methods": [
+            { "id": "paypal", "title": " PayPal ", "hint": " Почта PayPal ", "check": "text", "min": "5.5", "enabled": true },
+            { "id": "card", "title": "Карта", "hint": "", "check": "card", "min": null, "enabled": false },
+            { "id": "sbp_2", "title": "СБП", "check": "phone", "min": "" },
+            { "id": "usdt_trc20", "title": "USDT", "check": "trc20", "min": 10 }
+        ]
+    }));
+    let parsed = ReferralSettings::parse(&custom, Currency::Usd).unwrap();
+    assert_eq!(
+        parsed.payout_methods[0],
+        PayoutMethod {
+            id: "paypal".into(),
+            title: "PayPal".into(),
+            hint: "Почта PayPal".into(),
+            check: DetailsCheck::Text,
+            min: Some(usd(550)),
+            enabled: true,
+        }
+    );
+    assert!(!parsed.payout_methods[1].enabled);
+    assert_eq!(parsed.payout_methods[2].min, None);
+    assert!(parsed.payout_methods[2].enabled);
+    assert_eq!(parsed.payout_methods[3].min, Some(usd(1000)));
+    assert_eq!(parsed.payout_methods[3].hint, "");
+    let options = parsed.payout_options();
+    assert_eq!(
+        options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+        ["paypal", "sbp_2", "usdt_trc20"]
+    );
+    assert_eq!(
+        options.iter().map(|o| o.min).collect::<Vec<_>>(),
+        [Some(usd(550)), Some(usd(200)), Some(usd(1000))]
+    );
+    assert!(parsed.payout_method("card").is_none());
+    assert!(parsed.payout_method("sbp").is_none());
+    assert_eq!(
+        parsed.payout_method("sbp_2").map(|m| parsed.minimum_for(m)),
+        Some(Some(usd(200)))
+    );
+
+    let eleven: Vec<serde_json::Value> = (0..11)
+        .map(|i| payout_item(serde_json::json!({ "id": format!("m{i}") })))
+        .collect();
+    for (methods, needle) in [
+        (serde_json::json!("sbp,card"), "ожидается список"),
+        (serde_json::json!([42]), "указан неверно"),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "id": "PayPal" }))]),
+            "код",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "id": "" }))]),
+            "код",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "id": "a".repeat(21) }))]),
+            "код",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "id": "пейпал" }))]),
+            "код",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "title": " " }))]),
+            "название",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "title": "я".repeat(41) }))]),
+            "название",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "hint": "я".repeat(121) }))]),
+            "подсказка",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "check": "iban" }))]),
+            "проверка реквизитов",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "check": null }))]),
+            "проверка реквизитов",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "min": "пять" }))]),
+            "минимум",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "min": "-5" }))]),
+            "минимум",
+        ),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "enabled": "да" }))]),
+            "включён",
+        ),
+        (
+            serde_json::json!([
+                payout_item(serde_json::json!({})),
+                payout_item(serde_json::json!({ "title": "Ещё PayPal" }))
+            ]),
+            "коды должны быть разными",
+        ),
+        (serde_json::json!(eleven), "не больше 10"),
+        (
+            serde_json::json!([payout_item(serde_json::json!({ "enabled": false }))]),
+            "включите хотя бы один способ",
+        ),
+        (serde_json::json!([]), "включите хотя бы один способ"),
+    ] {
+        let config = ModuleConfig::from_value(&serde_json::json!({ "payout_methods": methods }));
+        let err = ReferralSettings::parse(&config, Currency::Usd).unwrap_err();
+        assert!(err.contains(needle), "{needle}: {err}");
+        assert!(ReferralModule.validate_config(&config).is_err(), "{needle}");
+    }
+    for methods in [
+        serde_json::json!([]),
+        serde_json::json!([payout_item(serde_json::json!({ "enabled": false }))]),
+    ] {
+        let off = ModuleConfig::from_value(
+            &serde_json::json!({ "withdrawals": false, "payout_methods": methods }),
+        );
+        let parsed = ReferralSettings::parse(&off, Currency::Usd).unwrap();
+        assert!(parsed.payout_options().is_empty());
+        assert!(ReferralModule.validate_config(&off).is_ok());
+    }
+    let broken = ModuleConfig::from_value(
+        &serde_json::json!({ "level1_percent": 25, "payout_methods": "card" }),
+    );
+    let lenient = ReferralSettings::lenient(&broken, Currency::Usd);
+    assert_eq!(lenient.levels, [25, 10, 10]);
+    assert_eq!(lenient.payout_methods, PayoutMethod::builtin());
+}
+
+async fn configure(store: &Store, config: serde_json::Value) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO module_states (module, enabled, config) VALUES ('referral', true, $1) \
+         ON CONFLICT (module) DO UPDATE SET enabled = true, config = EXCLUDED.config",
+    )
+    .bind(config)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+fn paypal_config() -> serde_json::Value {
+    serde_json::json!({
+        "withdraw_min": "2",
+        "payout_methods": [
+            { "id": "paypal", "title": "PayPal", "hint": "Почта PayPal", "check": "text", "min": "5", "enabled": true },
+            { "id": "usdt_trc20", "title": "USDT", "hint": "Адрес TRC20", "check": "trc20", "enabled": true },
+            { "id": "sbp", "title": "СБП", "hint": "", "check": "phone", "enabled": false }
+        ]
+    })
+}
+
+fn ask_with(method: &str, amount: &str, details: &str) -> WithdrawalRequest {
+    WithdrawalRequest {
+        amount: amount.into(),
+        method: method.into(),
+        details: details.into(),
+    }
+}
+
+#[tokio::test]
+async fn заявка_своим_способом_с_его_минимумом() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    configure(&db.store, paypal_config()).await;
+    let referrer = client(&db.store).await;
+    move_referral(&db.store, referrer, 2000, "test:prize").await;
+    let wallet = "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC";
+    assert!(matches!(
+        request_withdrawal(&ctx, referrer, &ask_with("paypal", "4.99", "me@example.com")).await,
+        Err(ReferralError::Rejected(ReferralRejection::BelowMinimum { min })) if min == usd(500)
+    ));
+    assert!(matches!(
+        request_withdrawal(&ctx, referrer, &ask_with("usdt_trc20", "1.99", wallet)).await,
+        Err(ReferralError::Rejected(ReferralRejection::BelowMinimum { min })) if min == usd(200)
+    ));
+    for method in ["sbp", "card", "PAYPAL", ""] {
+        assert!(
+            matches!(
+                request_withdrawal(&ctx, referrer, &ask_with(method, "6", "+7 900 123-45-67"))
+                    .await,
+                Err(ReferralError::Rejected(
+                    ReferralRejection::MethodUnavailable
+                ))
+            ),
+            "{method}"
+        );
+    }
+    assert!(matches!(
+        request_withdrawal(
+            &ctx,
+            referrer,
+            &ask_with("usdt_trc20", "3", "me@example.com")
+        )
+        .await,
+        Err(ReferralError::Rejected(ReferralRejection::BadDetails))
+    ));
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(2000));
+    let paypal = request_withdrawal(
+        &ctx,
+        referrer,
+        &ask_with("paypal", "5", "  me@example.com  "),
+    )
+    .await
+    .unwrap();
+    assert_eq!(paypal.method, "paypal");
+    assert_eq!(paypal.method_title, "PayPal");
+    assert_eq!(paypal.details, "me@example.com");
+    assert_eq!(paypal.amount, usd(500));
+    assert_eq!(paypal.status, WithdrawalStatus::Pending);
+    let usdt = request_withdrawal(&ctx, referrer, &ask_with("usdt_trc20", "2", wallet))
+        .await
+        .unwrap();
+    assert_eq!(usdt.method_title, "USDT");
+    assert_eq!(referral_balance(&db.store, referrer).await, usd(1300));
+    configure(
+        &db.store,
+        serde_json::json!({ "payout_methods": [
+            { "id": "paypal", "title": "PayPal (новый)", "check": "text" }
+        ] }),
+    )
+    .await;
+    let mut conn = db.store.conn().await.unwrap();
+    let mine = store::client_withdrawals(&mut conn, referrer, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        mine.iter()
+            .map(|w| (w.method.as_str(), w.method_title.as_str()))
+            .collect::<Vec<_>>(),
+        [("usdt_trc20", "USDT"), ("paypal", "PayPal")],
+        "название способа берётся на момент заявки"
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn старые_заявки_показываются_по_встроенным_кодам() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let referrer = client(&db.store).await;
+    let mut conn = db.store.conn().await.unwrap();
+    for (method, details) in [
+        ("sbp", "+7 900 123-45-67, Т-Банк"),
+        ("card", "4111111111111111"),
+        ("usdt_trc20", "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC"),
+        ("bank_old", "счёт 40817810"),
+    ] {
+        sqlx::query(
+            "INSERT INTO referral_withdrawals (client_id, amount_minor, currency, method, details, status) \
+             VALUES ($1, 100, 'USD', $2, $3, 'pending')",
+        )
+        .bind(referrer.0)
+        .bind(method)
+        .bind(details)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let found = store::client_withdrawals(&mut conn, referrer, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        found
+            .iter()
+            .map(|w| (w.method.as_str(), w.method_title.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("bank_old", "bank_old"),
+            ("usdt_trc20", "USDT (TRC20)"),
+            ("card", "Банковская карта"),
+            ("sbp", "СБП"),
+        ]
+    );
+    let json = serde_json::to_value(&found[2]).unwrap();
+    assert_eq!(json["method"], "card");
+    assert_eq!(json["method_title"], "Банковская карта");
+    drop(conn);
+    db.cleanup().await;
+}
+
+async fn client_call(
+    router: &axum::Router,
+    request: axum::http::request::Builder,
+    body: Option<serde_json::Value>,
+    principal: &sn_domain::access::ClientPrincipal,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+    let request = request
+        .header("content-type", "application/json")
+        .extension(principal.clone())
+        .body(match body {
+            Some(body) => axum::body::Body::from(body.to_string()),
+            None => axum::body::Body::empty(),
+        })
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+#[tokio::test]
+async fn клиентский_api_отдаёт_способы_вывода_и_название_в_заявках() {
+    use axum::http::{Request, StatusCode};
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let registry =
+        std::sync::Arc::new(crate::registry::ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.client_router(ctx.clone());
+    let referrer = client(&db.store).await;
+    move_referral(&db.store, referrer, 1000, "test:prize").await;
+    let principal = sn_domain::access::ClientPrincipal {
+        client_id: referrer,
+        channel: sn_domain::access::ClientChannel::Cabinet,
+        full_access: true,
+        session_id: Some(1),
+    };
+
+    let (status, me) = client_call(&router, Request::get("/referral/me"), None, &principal).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["withdrawals_enabled"], true);
+    assert_eq!(
+        me["payout_methods"],
+        serde_json::json!([
+            { "id": "sbp", "title": "СБП", "hint": "Номер телефона и банк, например: +7 900 123-45-67, Т-Банк", "min": null },
+            { "id": "card", "title": "Банковская карта", "hint": "Номер карты, 16 цифр", "min": null },
+            { "id": "usdt_trc20", "title": "USDT (TRC20)", "hint": "Адрес кошелька TRC20, начинается с T", "min": null }
+        ])
+    );
+
+    configure(&db.store, paypal_config()).await;
+    let (_, me) = client_call(&router, Request::get("/referral/me"), None, &principal).await;
+    assert_eq!(
+        me["withdraw_min"],
+        serde_json::json!({ "minor": 200, "currency": "USD" })
+    );
+    assert_eq!(
+        me["payout_methods"],
+        serde_json::json!([
+            { "id": "paypal", "title": "PayPal", "hint": "Почта PayPal", "min": { "minor": 500, "currency": "USD" } },
+            { "id": "usdt_trc20", "title": "USDT", "hint": "Адрес TRC20", "min": { "minor": 200, "currency": "USD" } }
+        ])
+    );
+    let (status, created) = client_call(
+        &router,
+        Request::post("/referral/withdrawals"),
+        Some(serde_json::json!({ "amount": "6", "method": "paypal", "details": "me@example.com" })),
+        &principal,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["method"], "paypal");
+    assert_eq!(created["method_title"], "PayPal");
+    assert_eq!(created["details"], "me@example.com");
+    let (status, refused) = client_call(
+        &router,
+        Request::post("/referral/withdrawals"),
+        Some(serde_json::json!({ "amount": "3", "method": "sbp", "details": "+7 900 123-45-67" })),
+        &principal,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused["error"]["code"], "referral.method_unavailable");
+    let (status, low) = client_call(
+        &router,
+        Request::post("/referral/withdrawals"),
+        Some(serde_json::json!({ "amount": "3", "method": "paypal", "details": "me@example.com" })),
+        &principal,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(low["error"]["code"], "referral.below_minimum");
+    assert_eq!(low["error"]["message"], "Минимальная сумма вывода — $5.00");
+    let (_, me) = client_call(&router, Request::get("/referral/me"), None, &principal).await;
+    assert_eq!(me["withdrawals"][0]["method"], "paypal");
+    assert_eq!(me["withdrawals"][0]["method_title"], "PayPal");
+    assert_eq!(me["balance"]["minor"], 400);
+
+    configure(
+        &db.store,
+        serde_json::json!({ "withdrawals": false, "payout_methods": [] }),
+    )
+    .await;
+    let (_, me) = client_call(&router, Request::get("/referral/me"), None, &principal).await;
+    assert_eq!(me["withdrawals_enabled"], false);
+    assert_eq!(me["payout_methods"], serde_json::json!([]));
     db.cleanup().await;
 }

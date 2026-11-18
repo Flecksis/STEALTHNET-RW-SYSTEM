@@ -1,7 +1,7 @@
 import { Switch } from './ui';
 import './form.css';
 
-export type FieldKind = { type: 'text' | 'secret' | 'number' | 'flag' | 'url' } | { type: 'select'; options: string[] };
+export type FieldKind = { type: 'text' | 'secret' | 'number' | 'flag' | 'url' | 'list' } | { type: 'select'; options: string[] };
 
 export type SettingField = {
   key: string;
@@ -32,7 +32,7 @@ export function fieldInitial(field: SettingField, config: Record<string, unknown
 }
 
 export function initialValues(schema: SettingField[], config: Record<string, unknown>): FieldValues {
-  return Object.fromEntries(schema.map((f) => [f.key, fieldInitial(f, config)]));
+  return Object.fromEntries(schema.filter((f) => f.kind.type !== 'list').map((f) => [f.key, fieldInitial(f, config)]));
 }
 
 export function secretFilled(config: Record<string, unknown>, key: string): boolean {
@@ -44,6 +44,9 @@ export function changedConfig(schema: SettingField[], config: Record<string, unk
   const out: Record<string, unknown> = {};
   for (const field of schema) {
     const value = values[field.key];
+    if (field.kind.type === 'list') {
+      continue;
+    }
     if (field.kind.type === 'secret') {
       if (typeof value === 'string' && value.trim()) {
         out[field.key] = value.trim();
@@ -60,7 +63,7 @@ export function changedConfig(schema: SettingField[], config: Record<string, unk
 
 export function missingRequired(schema: SettingField[], config: Record<string, unknown>, values: FieldValues, secrets: SecretState): SettingField[] {
   return schema.filter((field) => {
-    if (!field.required) {
+    if (!field.required || field.kind.type === 'list') {
       return false;
     }
     const value = values[field.key];
@@ -91,6 +94,9 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
   return (
     <>
       {schema.map((field) => {
+        if (field.kind.type === 'list') {
+          return null;
+        }
         const value = values[field.key];
         const id = `${idPrefix}-${field.key}`;
         const hintId = field.hint ? `${id}-hint` : undefined;

@@ -95,6 +95,24 @@ async fn уведомления_собираются_только_о_новом_
     );
     assert_eq!(got[3].html, "Ещё 2 заявки на вывод");
     assert!(alerts.collect().await.unwrap().is_empty());
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO referral_withdrawals (client_id, amount_minor, currency, method, method_title, details) \
+             VALUES ($1, 700, 'USD', 'paypal', 'PayPal <почта>', 'me@example.com')",
+        )
+        .bind(client.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let got = alerts.collect().await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].html.contains("$7.00, PayPal &lt;почта&gt;"),
+        "{}",
+        got[0].html
+    );
 
     let admin = owner(services).await;
     alerts

@@ -17,6 +17,7 @@ pub enum FieldKind {
     Flag,
     Url,
     Select { options: &'static [&'static str] },
+    List,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -76,6 +77,10 @@ impl SettingField {
         options: &'static [&'static str],
     ) -> Self {
         Self::base(key, label, hint, FieldKind::Select { options }, true)
+    }
+
+    pub const fn list(key: &'static str, label: &'static str, hint: &'static str) -> Self {
+        Self::base(key, label, hint, FieldKind::List, false)
     }
 
     pub const fn optional(mut self) -> Self {

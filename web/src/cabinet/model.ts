@@ -96,12 +96,18 @@ export function transitionText(current: string | null): string {
 
 export type WithdrawalStatus = 'holding' | 'pending' | 'paid' | 'rejected' | 'canceled';
 
-export type PayoutMethod = 'sbp' | 'card' | 'usdt_trc20';
+export type PayoutOption = {
+  id: string;
+  title: string;
+  hint: string;
+  min: Money | null;
+};
 
 export type Withdrawal = {
   id: number;
   amount: Money;
-  method: PayoutMethod;
+  method: string;
+  method_title?: string;
   details: string;
   status: WithdrawalStatus;
   comment: string | null;
@@ -118,6 +124,7 @@ export type Referral = {
   levels: number[];
   withdraw_min?: Money | null;
   withdrawals_enabled?: boolean;
+  payout_methods?: PayoutOption[];
   withdrawals?: Withdrawal[];
 };
 

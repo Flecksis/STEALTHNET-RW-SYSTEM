@@ -447,6 +447,10 @@ fn checked_value(field: &SettingField, value: &Value) -> ServiceResult<Value> {
                 Err(field_error(field.key, "выберите значение из списка"))
             }
         }
+        FieldKind::List => match value {
+            Value::Array(items) => Ok(Value::Array(items.clone())),
+            _ => Err(field_error(field.key, "ожидается список")),
+        },
         FieldKind::Text | FieldKind::Secret => {
             let raw = match value {
                 Value::String(s) => s.trim().to_string(),
@@ -2060,6 +2064,33 @@ mod tests {
             let incoming: Map<String, Value> = serde_json::from_value(body).unwrap();
             assert!(apply_fields(&schema(), &incoming, &[], &mut stored).is_err());
         }
+    }
+
+    #[test]
+    fn список_хранится_целиком_и_сбрасывается_пустым_значением() {
+        let schema = vec![SettingField::list("items", "Список", "")];
+        let mut stored = Map::new();
+        let items = serde_json::json!([{ "id": "a", "title": " Первый " }, { "id": "b" }]);
+        let incoming: Map<String, Value> =
+            serde_json::from_value(serde_json::json!({ "items": items.clone() })).unwrap();
+        assert!(
+            apply_fields(&schema, &incoming, &[], &mut stored)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(stored["items"], items);
+        assert_eq!(public_config(&schema, &stored)["items"], items);
+        for body in [
+            serde_json::json!({ "items": "a,b" }),
+            serde_json::json!({ "items": { "id": "a" } }),
+        ] {
+            let incoming: Map<String, Value> = serde_json::from_value(body).unwrap();
+            assert!(apply_fields(&schema, &incoming, &[], &mut stored).is_err());
+        }
+        let reset: Map<String, Value> =
+            serde_json::from_value(serde_json::json!({ "items": null })).unwrap();
+        apply_fields(&schema, &reset, &[], &mut stored).unwrap();
+        assert!(!stored.contains_key("items"));
     }
 
     #[test]

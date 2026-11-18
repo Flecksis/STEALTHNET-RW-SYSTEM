@@ -21,7 +21,7 @@ use sn_modules::catalog::options::{
 };
 use sn_modules::catalog::promo::{self, PromoError, PromoRejection, Purpose};
 use sn_modules::catalog::referral::{
-    self, PayoutMethod, ReferralError, WithdrawalRequest, WithdrawalStatus,
+    self, PayoutOption, ReferralError, ReferralRejection, WithdrawalRequest, WithdrawalStatus,
 };
 use sn_payments::Unavailable;
 use sn_services::ServiceError;
@@ -283,11 +283,16 @@ pub async fn referral_action(
     let (action, arg) = rest.split_once(':').unwrap_or((rest, ""));
     match action {
         "w" => {
+            let ctx = turn.services().module_context();
+            let methods = referral::payout_options(&ctx).await?;
+            if methods.is_empty() {
+                return referral_screen(turn, client).await;
+            }
             let mut keyboard = Keyboard::new();
-            for method in PayoutMethod::ALL {
+            for method in &methods {
                 keyboard = keyboard.row(vec![Button::callback(
-                    method.title_ru(),
-                    format!("ref:m:{}", method.as_str()),
+                    method.title.as_str(),
+                    format!("ref:m:{}", method.id),
                 )]);
             }
             Ok(Screen::new(ui::text(c, "ref.how", &[]))
@@ -295,18 +300,18 @@ pub async fn referral_action(
                 .section(Section::Referral))
         }
         "m" => {
-            let Some(method) = PayoutMethod::parse(arg) else {
+            let ctx = turn.services().module_context();
+            let Some(method) = payout_option(&ctx, arg).await? else {
                 return referral_screen(turn, client).await;
             };
             turn.session.withdrawal = Some(WithdrawalDraft {
-                method: Some(method),
+                method: Some(method.id.clone()),
                 amount: None,
             });
             turn.session.wait_for(Awaiting::WithdrawalAmount);
-            let ctx = turn.services().module_context();
             let overview = referral::overview(&ctx, client.id).await?;
-            let minimum = overview
-                .withdraw_min
+            let minimum = method
+                .min
                 .map(|m| ui::text(c, "ref.minimum", &[("amount", Text(&format::money(m)))]))
                 .unwrap_or_default();
             Ok(Screen::new(ui::text(
@@ -350,13 +355,48 @@ fn referral_error(err: ReferralError) -> String {
     }
 }
 
+async fn payout_option(
+    ctx: &sn_modules::ModuleContext,
+    id: &str,
+) -> Result<Option<PayoutOption>, BotError> {
+    Ok(referral::payout_options(ctx)
+        .await?
+        .into_iter()
+        .find(|m| m.id == id))
+}
+
+fn withdrawal_retry(turn: &Turn<'_>, text: String) -> Screen {
+    let content = turn.services().bot_content();
+    let c = &*content;
+    Screen::new(text)
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(c, "ref.btn.retry", &[], "ref:w"))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Referral)
+}
+
 pub async fn withdrawal_amount(
     turn: &mut Turn<'_>,
     client: &Client,
     raw: &str,
 ) -> Result<Screen, BotError> {
-    let Some(method) = turn.session.withdrawal.as_ref().and_then(|w| w.method) else {
+    let Some(id) = turn
+        .session
+        .withdrawal
+        .as_ref()
+        .and_then(|w| w.method.clone())
+    else {
         return referral_screen(turn, client).await;
+    };
+    let ctx = turn.services().module_context();
+    let Some(method) = payout_option(&ctx, &id).await? else {
+        turn.session.withdrawal = None;
+        return Ok(withdrawal_retry(
+            turn,
+            ReferralRejection::MethodUnavailable.message(),
+        ));
     };
     let amount = raw
         .trim()
@@ -367,7 +407,7 @@ pub async fn withdrawal_amount(
         .filter(|c| !c.is_whitespace() && *c != '\u{a0}')
         .collect::<String>();
     turn.session.withdrawal = Some(WithdrawalDraft {
-        method: Some(method),
+        method: Some(method.id),
         amount: Some(amount),
     });
     turn.session.wait_for(Awaiting::WithdrawalDetails);
@@ -375,7 +415,7 @@ pub async fn withdrawal_amount(
     Ok(Screen::new(ui::text(
         &content,
         "ref.details",
-        &[("hint", Text(method.details_hint()))],
+        &[("hint", Text(&method.hint))],
     ))
     .keyboard(back_to_referral(turn, "common.btn.cancel"))
     .section(Section::Referral))
@@ -417,13 +457,7 @@ pub async fn withdrawal_details(
         ))
         .keyboard(back_to_referral(turn, "common.btn.back"))
         .section(Section::Referral)),
-        Err(err) => Ok(Screen::new(referral_error(err))
-            .keyboard(
-                Keyboard::new()
-                    .push(ui::button(c, "ref.btn.retry", &[], "ref:w"))
-                    .push(ui::menu(c)),
-            )
-            .section(Section::Referral)),
+        Err(err) => Ok(withdrawal_retry(turn, referral_error(err))),
     }
 }
 

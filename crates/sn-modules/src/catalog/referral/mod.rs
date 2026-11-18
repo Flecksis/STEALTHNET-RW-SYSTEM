@@ -19,6 +19,7 @@ use sn_domain::money::{Amount, Currency, Money, PayCurrency, parse_units};
 use sn_domain::payment::{PaymentStatus, ProviderId, providers};
 use sn_domain::settings::{SettingField, keys};
 use sn_store::{Db, StoreError};
+use std::sync::LazyLock;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -33,11 +34,19 @@ pub const TEMPLATE_WITHDRAWAL_REJECTED: &str = "referral_withdrawal_rejected";
 const DEFAULT_LEVELS: [u8; LEVELS] = [30, 10, 10];
 const CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub const PAYOUT_METHODS_KEY: &str = "payout_methods";
+pub const PAYOUT_METHODS_MAX: usize = 10;
+pub const PAYOUT_ID_MAX: usize = 20;
+pub const PAYOUT_TITLE_MAX: usize = 40;
+pub const PAYOUT_HINT_MAX: usize = 120;
+pub const DETAILS_MAX: usize = 200;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReferralSettings {
     pub levels: [u8; LEVELS],
     pub withdraw_min: Option<Money>,
     pub withdrawals: bool,
+    pub payout_methods: Vec<PayoutMethod>,
 }
 
 fn percent_field(config: &ModuleConfig, key: &str, default: u8) -> Result<u8, String> {
@@ -51,51 +60,103 @@ fn percent_field(config: &ModuleConfig, key: &str, default: u8) -> Result<u8, St
     }
 }
 
-fn money_field(
-    config: &ModuleConfig,
-    key: &str,
-    currency: Currency,
-) -> Result<Option<Money>, String> {
-    let raw = match config.get(key) {
+fn money_value(value: Option<&serde_json::Value>, currency: Currency) -> Result<Option<Money>, ()> {
+    let raw = match value {
         None | Some(serde_json::Value::Null) => return Ok(None),
         Some(serde_json::Value::String(s)) => s.trim().to_string(),
         Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(_) => return Err(format!("{key}: ожидается сумма")),
+        Some(_) => return Err(()),
     };
     if raw.is_empty() {
         return Ok(None);
     }
     parse_units(&raw, PayCurrency::from(currency))
         .map(|minor| Some(Money::new(minor, currency)))
-        .ok_or_else(|| format!("{key}: сумма указана неверно"))
+        .ok_or(())
+}
+
+fn money_field(
+    config: &ModuleConfig,
+    key: &str,
+    currency: Currency,
+) -> Result<Option<Money>, String> {
+    money_value(config.get(key), currency).map_err(|()| format!("{key}: сумма указана неверно"))
+}
+
+fn base_settings(
+    config: &ModuleConfig,
+    currency: Currency,
+) -> Result<([u8; LEVELS], Option<Money>, bool), String> {
+    let levels = [
+        percent_field(config, "level1_percent", DEFAULT_LEVELS[0])?,
+        percent_field(config, "level2_percent", DEFAULT_LEVELS[1])?,
+        percent_field(config, "level3_percent", DEFAULT_LEVELS[2])?,
+    ];
+    if levels.iter().map(|l| u32::from(*l)).sum::<u32>() > 100 {
+        return Err("сумма процентов всех уровней больше 100".into());
+    }
+    Ok((
+        levels,
+        money_field(config, "withdraw_min", currency)?,
+        config_flag(config, "withdrawals").unwrap_or(true),
+    ))
 }
 
 impl ReferralSettings {
     pub fn parse(config: &ModuleConfig, currency: Currency) -> Result<Self, String> {
-        let levels = [
-            percent_field(config, "level1_percent", DEFAULT_LEVELS[0])?,
-            percent_field(config, "level2_percent", DEFAULT_LEVELS[1])?,
-            percent_field(config, "level3_percent", DEFAULT_LEVELS[2])?,
-        ];
-        if levels.iter().map(|l| u32::from(*l)).sum::<u32>() > 100 {
-            return Err("сумма процентов всех уровней больше 100".into());
+        let (levels, withdraw_min, withdrawals) = base_settings(config, currency)?;
+        let payout_methods = payout_methods(config, currency)?;
+        if withdrawals && !payout_methods.iter().any(|m| m.enabled) {
+            return Err(
+                "заявки на вывод принимаются, а все способы вывода выключены: включите хотя бы один способ или выключите приём заявок"
+                    .into(),
+            );
         }
         Ok(ReferralSettings {
             levels,
-            withdraw_min: money_field(config, "withdraw_min", currency)?,
-            withdrawals: config_flag(config, "withdrawals").unwrap_or(true),
+            withdraw_min,
+            withdrawals,
+            payout_methods,
         })
     }
 
     pub fn lenient(config: &ModuleConfig, currency: Currency) -> Self {
-        Self::parse(config, currency).unwrap_or_else(|reason| {
-            tracing::warn!(%reason, "настройки рефералов не разобраны, взяты значения по умолчанию");
-            ReferralSettings {
-                levels: DEFAULT_LEVELS,
-                withdraw_min: None,
-                withdrawals: true,
-            }
-        })
+        let (levels, withdraw_min, withdrawals) = base_settings(config, currency)
+            .unwrap_or_else(|reason| {
+                tracing::warn!(%reason, "настройки рефералов не разобраны, взяты значения по умолчанию");
+                (DEFAULT_LEVELS, None, true)
+            });
+        let payout_methods = payout_methods(config, currency).unwrap_or_else(|reason| {
+            tracing::warn!(%reason, "способы вывода не разобраны, взяты встроенные");
+            PayoutMethod::builtin()
+        });
+        ReferralSettings {
+            levels,
+            withdraw_min,
+            withdrawals,
+            payout_methods,
+        }
+    }
+
+    pub fn minimum_for(&self, method: &PayoutMethod) -> Option<Money> {
+        method.min.or(self.withdraw_min)
+    }
+
+    pub fn payout_method(&self, id: &str) -> Option<&PayoutMethod> {
+        self.payout_methods.iter().find(|m| m.enabled && m.id == id)
+    }
+
+    pub fn payout_options(&self) -> Vec<PayoutOption> {
+        self.payout_methods
+            .iter()
+            .filter(|m| m.enabled)
+            .map(|m| PayoutOption {
+                id: m.id.clone(),
+                title: m.title.clone(),
+                hint: m.hint.clone(),
+                min: self.minimum_for(m),
+            })
+            .collect()
     }
 }
 
@@ -126,67 +187,53 @@ pub fn earns_referral(provider: &ProviderId, amount: Amount) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PayoutMethod {
-    Sbp,
+pub enum DetailsCheck {
+    Phone,
     Card,
-    UsdtTrc20,
+    Trc20,
+    Text,
 }
 
-impl PayoutMethod {
-    pub const ALL: [PayoutMethod; 3] = [
-        PayoutMethod::Sbp,
-        PayoutMethod::Card,
-        PayoutMethod::UsdtTrc20,
+impl DetailsCheck {
+    pub const ALL: [DetailsCheck; 4] = [
+        DetailsCheck::Phone,
+        DetailsCheck::Card,
+        DetailsCheck::Trc20,
+        DetailsCheck::Text,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            PayoutMethod::Sbp => "sbp",
-            PayoutMethod::Card => "card",
-            PayoutMethod::UsdtTrc20 => "usdt_trc20",
-        }
-    }
-
-    pub const fn title_ru(self) -> &'static str {
-        match self {
-            PayoutMethod::Sbp => "СБП",
-            PayoutMethod::Card => "Банковская карта",
-            PayoutMethod::UsdtTrc20 => "USDT (TRC20)",
-        }
-    }
-
-    pub const fn details_hint(self) -> &'static str {
-        match self {
-            PayoutMethod::Sbp => "Номер телефона и банк, например: +7 900 123-45-67, Т-Банк",
-            PayoutMethod::Card => "Номер карты, 16 цифр",
-            PayoutMethod::UsdtTrc20 => "Адрес кошелька TRC20, начинается с T",
+            DetailsCheck::Phone => "phone",
+            DetailsCheck::Card => "card",
+            DetailsCheck::Trc20 => "trc20",
+            DetailsCheck::Text => "text",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|m| m.as_str() == value)
+        Self::ALL.into_iter().find(|c| c.as_str() == value)
     }
 
-    pub fn normalize_details(self, raw: &str) -> Option<String> {
+    pub fn normalize(self, raw: &str) -> Option<String> {
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.chars().count() > 200 {
+        if trimmed.is_empty() || trimmed.chars().count() > DETAILS_MAX {
             return None;
         }
+        let spaced = || trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
         match self {
-            PayoutMethod::Sbp => {
+            DetailsCheck::Phone => {
                 let digits = trimmed.chars().filter(char::is_ascii_digit).count();
-                (10..=15)
-                    .contains(&digits)
-                    .then(|| trimmed.split_whitespace().collect::<Vec<_>>().join(" "))
+                (10..=15).contains(&digits).then(spaced)
             }
-            PayoutMethod::Card => {
+            DetailsCheck::Card => {
                 let digits: String = trimmed
                     .chars()
                     .filter(|c| !matches!(c, ' ' | '-'))
                     .collect();
                 ((13..=19).contains(&digits.len()) && luhn(&digits)).then_some(digits)
             }
-            PayoutMethod::UsdtTrc20 => {
+            DetailsCheck::Trc20 => {
                 let valid = trimmed.len() == 34
                     && trimmed.starts_with('T')
                     && trimmed.bytes().all(|b| {
@@ -194,8 +241,190 @@ impl PayoutMethod {
                     });
                 valid.then(|| trimmed.to_string())
             }
+            DetailsCheck::Text => Some(spaced()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PayoutMethod {
+    pub id: String,
+    pub title: String,
+    pub hint: String,
+    pub check: DetailsCheck,
+    pub min: Option<Money>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PayoutOption {
+    pub id: String,
+    pub title: String,
+    pub hint: String,
+    pub min: Option<Money>,
+}
+
+const BUILTIN_METHODS: [(&str, &str, &str, DetailsCheck); 3] = [
+    (
+        "sbp",
+        "СБП",
+        "Номер телефона и банк, например: +7 900 123-45-67, Т-Банк",
+        DetailsCheck::Phone,
+    ),
+    (
+        "card",
+        "Банковская карта",
+        "Номер карты, 16 цифр",
+        DetailsCheck::Card,
+    ),
+    (
+        "usdt_trc20",
+        "USDT (TRC20)",
+        "Адрес кошелька TRC20, начинается с T",
+        DetailsCheck::Trc20,
+    ),
+];
+
+static BUILTIN_CONFIG: LazyLock<String> = LazyLock::new(|| {
+    let methods: Vec<serde_json::Value> = BUILTIN_METHODS
+        .iter()
+        .map(|(id, title, hint, check)| {
+            serde_json::json!({
+                "id": id,
+                "title": title,
+                "hint": hint,
+                "check": check.as_str(),
+                "min": null,
+                "enabled": true,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(methods).to_string()
+});
+
+pub fn builtin_title(id: &str) -> Option<&'static str> {
+    BUILTIN_METHODS
+        .iter()
+        .find(|(code, ..)| *code == id)
+        .map(|(_, title, ..)| *title)
+}
+
+pub fn payout_title(id: &str, stored: Option<&str>) -> String {
+    stored
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .or_else(|| builtin_title(id))
+        .unwrap_or(id)
+        .to_string()
+}
+
+pub fn valid_payout_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= PAYOUT_ID_MAX
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+impl PayoutMethod {
+    pub fn builtin() -> Vec<PayoutMethod> {
+        BUILTIN_METHODS
+            .iter()
+            .map(|(id, title, hint, check)| PayoutMethod {
+                id: (*id).to_string(),
+                title: (*title).to_string(),
+                hint: (*hint).to_string(),
+                check: *check,
+                min: None,
+                enabled: true,
+            })
+            .collect()
+    }
+
+    pub fn normalize_details(&self, raw: &str) -> Option<String> {
+        self.check.normalize(raw)
+    }
+}
+
+fn method_text(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<String, ()> {
+    match map.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(String::new()),
+        Some(serde_json::Value::String(s)) => Ok(s.trim().to_string()),
+        Some(_) => Err(()),
+    }
+}
+
+fn payout_method(
+    item: &serde_json::Value,
+    n: usize,
+    currency: Currency,
+) -> Result<PayoutMethod, String> {
+    let serde_json::Value::Object(map) = item else {
+        return Err(format!("способ вывода №{n} указан неверно"));
+    };
+    let id = method_text(map, "id").unwrap_or_default();
+    if !valid_payout_id(&id) {
+        return Err(format!(
+            "способ вывода №{n}: код — строчная латиница, цифры и _, до {PAYOUT_ID_MAX} символов"
+        ));
+    }
+    let title = method_text(map, "title").unwrap_or_default();
+    if !(1..=PAYOUT_TITLE_MAX).contains(&title.chars().count()) {
+        return Err(format!(
+            "способ вывода №{n}: название от 1 до {PAYOUT_TITLE_MAX} символов"
+        ));
+    }
+    let hint = method_text(map, "hint")
+        .ok()
+        .filter(|h| h.chars().count() <= PAYOUT_HINT_MAX)
+        .ok_or_else(|| {
+            format!("способ вывода «{title}»: подсказка не длиннее {PAYOUT_HINT_MAX} символов")
+        })?;
+    let check = map
+        .get("check")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|c| DetailsCheck::parse(c.trim()))
+        .ok_or_else(|| {
+            format!("способ вывода «{title}»: проверка реквизитов — phone, card, trc20 или text")
+        })?;
+    let min = money_value(map.get("min"), currency)
+        .map_err(|()| format!("способ вывода «{title}»: минимум указан неверно"))?;
+    let enabled = match map.get("enabled") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::Bool(on)) => *on,
+        Some(_) => return Err(format!("способ вывода «{title}»: включён — да или нет")),
+    };
+    Ok(PayoutMethod {
+        id,
+        title,
+        hint,
+        check,
+        min,
+        enabled,
+    })
+}
+
+fn payout_methods(config: &ModuleConfig, currency: Currency) -> Result<Vec<PayoutMethod>, String> {
+    let items = match config.get(PAYOUT_METHODS_KEY) {
+        None | Some(serde_json::Value::Null) => return Ok(PayoutMethod::builtin()),
+        Some(serde_json::Value::Array(items)) => items,
+        Some(_) => return Err("способы вывода: ожидается список".into()),
+    };
+    if items.len() > PAYOUT_METHODS_MAX {
+        return Err(format!("способов вывода не больше {PAYOUT_METHODS_MAX}"));
+    }
+    let mut methods: Vec<PayoutMethod> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let method = payout_method(item, index + 1, currency)?;
+        if methods.iter().any(|m| m.id == method.id) {
+            return Err(format!(
+                "код «{}» стоит у двух способов вывода, коды должны быть разными",
+                method.id
+            ));
+        }
+        methods.push(method);
+    }
+    Ok(methods)
 }
 
 pub fn luhn(digits: &str) -> bool {
@@ -223,6 +452,7 @@ pub fn luhn(digits: &str) -> bool {
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum ReferralRejection {
     WithdrawalsOff,
+    MethodUnavailable,
     BadAmount,
     BelowMinimum { min: Money },
     NotEnough { balance: Money },
@@ -235,6 +465,7 @@ impl ReferralRejection {
     pub const fn code(self) -> &'static str {
         match self {
             ReferralRejection::WithdrawalsOff => "referral.withdrawals_off",
+            ReferralRejection::MethodUnavailable => "referral.method_unavailable",
             ReferralRejection::BadAmount => "referral.bad_amount",
             ReferralRejection::BelowMinimum { .. } => "referral.below_minimum",
             ReferralRejection::NotEnough { .. } => "referral.not_enough",
@@ -247,6 +478,9 @@ impl ReferralRejection {
     pub fn message(self) -> String {
         match self {
             ReferralRejection::WithdrawalsOff => "Вывод сейчас не принимается".into(),
+            ReferralRejection::MethodUnavailable => {
+                "Этот способ вывода сейчас недоступен, выберите другой".into()
+            }
             ReferralRejection::BadAmount => "Сумма указана неверно".into(),
             ReferralRejection::BelowMinimum { min } => {
                 format!("Минимальная сумма вывода — {}", format::money(min))
@@ -286,6 +520,7 @@ pub struct ReferralOverview {
     pub levels: [u8; LEVELS],
     pub withdraw_min: Option<Money>,
     pub withdrawals_enabled: bool,
+    pub payout_methods: Vec<PayoutOption>,
     pub withdrawals: Vec<Withdrawal>,
 }
 
@@ -334,6 +569,7 @@ pub async fn overview(
     if let Some(personal) = personal {
         levels[0] = personal;
     }
+    let payout_methods = settings.payout_options();
     Ok(ReferralOverview {
         code,
         bot_link,
@@ -342,8 +578,20 @@ pub async fn overview(
         balance,
         levels,
         withdraw_min: settings.withdraw_min,
-        withdrawals_enabled: settings.withdrawals,
+        withdrawals_enabled: settings.withdrawals && !payout_methods.is_empty(),
+        payout_methods,
         withdrawals,
+    })
+}
+
+pub async fn payout_options(ctx: &ModuleContext) -> Result<Vec<PayoutOption>, ModuleError> {
+    let mut conn = ctx.store.conn().await?;
+    let currency = installation_currency(&mut conn).await?;
+    let settings = settings(&mut conn, currency).await?;
+    Ok(if settings.withdrawals {
+        settings.payout_options()
+    } else {
+        Vec::new()
     })
 }
 
@@ -630,7 +878,7 @@ pub async fn settle_credit(ctx: &ModuleContext, id: i64) -> Result<bool, ModuleE
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WithdrawalRequest {
     pub amount: String,
-    pub method: PayoutMethod,
+    pub method: String,
     pub details: String,
 }
 
@@ -646,17 +894,19 @@ pub async fn request_withdrawal(
     if !settings.withdrawals {
         return Err(rejected(ReferralRejection::WithdrawalsOff));
     }
+    let method = settings
+        .payout_method(request.method.trim())
+        .ok_or(rejected(ReferralRejection::MethodUnavailable))?;
     let minor = parse_units(request.amount.trim(), PayCurrency::from(currency))
         .filter(|m| *m > 0)
         .ok_or(rejected(ReferralRejection::BadAmount))?;
     let amount = Money::new(minor, currency);
-    if let Some(min) = settings.withdraw_min
+    if let Some(min) = settings.minimum_for(method)
         && amount.minor < min.minor
     {
         return Err(rejected(ReferralRejection::BelowMinimum { min }));
     }
-    let details = request
-        .method
+    let details = method
         .normalize_details(&request.details)
         .ok_or(rejected(ReferralRejection::BadDetails))?;
     let balance = conn
@@ -666,8 +916,7 @@ pub async fn request_withdrawal(
     if balance.minor < amount.minor {
         return Err(rejected(ReferralRejection::NotEnough { balance }));
     }
-    let created =
-        store::insert_withdrawal(&mut conn, client_id, amount, request.method, &details).await?;
+    let created = store::insert_withdrawal(&mut conn, client_id, amount, method, &details).await?;
     drop(conn);
     match hold(ctx, &created).await {
         Ok(withdrawal) => Ok(withdrawal),
@@ -910,9 +1159,15 @@ impl Module for ReferralModule {
             SettingField::number(
                 "withdraw_min",
                 "Минимальная сумма вывода",
-                "В валюте сервиса; пусто — без минимума",
+                "Для способов вывода без своего минимума, в валюте сервиса; пусто — без минимума",
             ),
             SettingField::flag("withdrawals", "Принимать заявки на вывод", "").with_default("true"),
+            SettingField::list(
+                PAYOUT_METHODS_KEY,
+                "Куда выводить",
+                "Способы, из которых клиент выбирает, куда получить деньги. Кнопки идут в этом порядке",
+            )
+            .with_default(BUILTIN_CONFIG.as_str()),
         ]
     }
 

@@ -1,5 +1,5 @@
 use super::store::{self, AdminWithdrawal, Referrer, Totals, Withdrawal, WithdrawalFilter};
-use super::{Decision, LEVELS, ReferralError, ReferralOverview, WithdrawalRequest};
+use super::{Decision, LEVELS, PayoutOption, ReferralError, ReferralOverview, WithdrawalRequest};
 use crate::catalog::installation_currency;
 use crate::catalog::web::{Admin, Customer, WebError};
 use crate::context::ModuleContext;
@@ -59,6 +59,7 @@ struct Summary {
     levels: [u8; LEVELS],
     withdraw_min: Option<Money>,
     withdrawals_enabled: bool,
+    payout_methods: Vec<PayoutOption>,
     #[serde(flatten)]
     totals: Totals,
 }
@@ -71,10 +72,12 @@ async fn summary(
     let mut conn = ctx.store.conn().await?;
     let currency = installation_currency(&mut conn).await?;
     let settings = super::settings(&mut conn, currency).await?;
+    let payout_methods = settings.payout_options();
     Ok(Json(Summary {
         levels: settings.levels,
         withdraw_min: settings.withdraw_min,
-        withdrawals_enabled: settings.withdrawals,
+        withdrawals_enabled: settings.withdrawals && !payout_methods.is_empty(),
+        payout_methods,
         totals: store::totals(&mut conn, currency).await?,
     }))
 }

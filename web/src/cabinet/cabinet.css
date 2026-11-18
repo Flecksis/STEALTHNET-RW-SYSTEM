@@ -1713,6 +1713,17 @@ a.cb-card[id] {
   gap: 14px;
 }
 
+.cb-seg-wrap {
+  flex-wrap: wrap;
+}
+
+.cb-seg-wrap button {
+  height: auto;
+  min-height: 36px;
+  padding: 7px 14px;
+  line-height: 1.25;
+}
+
 .cb-wamount {
   display: flex;
   align-items: center;

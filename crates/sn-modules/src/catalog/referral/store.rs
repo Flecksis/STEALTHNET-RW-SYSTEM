@@ -1,4 +1,4 @@
-use super::PayoutMethod;
+use super::{PayoutMethod, payout_title};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sn_domain::ids::{AdminId, ClientId, PaymentId};
@@ -98,7 +98,8 @@ pub struct Withdrawal {
     pub public_id: Uuid,
     pub client_id: ClientId,
     pub amount: Money,
-    pub method: PayoutMethod,
+    pub method: String,
+    pub method_title: String,
     pub details: String,
     pub status: WithdrawalStatus,
     pub comment: Option<String>,
@@ -114,6 +115,7 @@ struct WithdrawalRow {
     amount_minor: i64,
     currency: String,
     method: String,
+    method_title: Option<String>,
     details: String,
     status: String,
     comment: Option<String>,
@@ -121,8 +123,8 @@ struct WithdrawalRow {
     decided_at: Option<DateTime<Utc>>,
 }
 
-const W_COLUMNS: &str = "id, public_id, client_id, amount_minor, currency, method, details, status, comment, \
-                         created_at, decided_at";
+const W_COLUMNS: &str = "id, public_id, client_id, amount_minor, currency, method, method_title, details, \
+                         status, comment, created_at, decided_at";
 
 impl TryFrom<WithdrawalRow> for Withdrawal {
     type Error = StoreError;
@@ -133,8 +135,8 @@ impl TryFrom<WithdrawalRow> for Withdrawal {
             public_id: row.public_id,
             client_id: ClientId(row.client_id),
             amount: Money::new(row.amount_minor, Currency::parse(&row.currency)?),
-            method: PayoutMethod::parse(&row.method)
-                .ok_or_else(|| StoreError::Decode(format!("способ вывода: {}", row.method)))?,
+            method_title: payout_title(&row.method, row.method_title.as_deref()),
+            method: row.method,
             details: row.details,
             status: WithdrawalStatus::parse(&row.status)?,
             comment: row.comment,
@@ -572,17 +574,18 @@ pub async fn insert_withdrawal(
     db: &mut impl Db,
     client_id: ClientId,
     amount: Money,
-    method: PayoutMethod,
+    method: &PayoutMethod,
     details: &str,
 ) -> StoreResult<Withdrawal> {
     let row: WithdrawalRow = sqlx::query_as(&format!(
-        "INSERT INTO referral_withdrawals (client_id, amount_minor, currency, method, details) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING {W_COLUMNS}"
+        "INSERT INTO referral_withdrawals (client_id, amount_minor, currency, method, method_title, details) \
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING {W_COLUMNS}"
     ))
     .bind(client_id.0)
     .bind(amount.minor)
     .bind(amount.currency.code())
-    .bind(method.as_str())
+    .bind(&method.id)
+    .bind(&method.title)
     .bind(details)
     .fetch_one(db.conn())
     .await?;

@@ -31,6 +31,7 @@ mod gram_wallet;
 mod miniapp;
 mod photos;
 mod referral_login;
+mod referral_payouts;
 mod runtime;
 mod single_subscription;
 mod stars;

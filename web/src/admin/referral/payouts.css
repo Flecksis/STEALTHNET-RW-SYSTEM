@@ -1,0 +1,172 @@
+.po {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.po-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 560px;
+}
+
+.po-list {
+  margin: 4px -20px 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+
+.po-item {
+  border-bottom: 1px solid var(--line);
+}
+
+.po-item.open {
+  background: var(--surface-2);
+}
+
+.po-off .po-name {
+  color: var(--muted);
+}
+
+.po-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 6px 20px;
+}
+
+.po-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.po-main > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.po-main[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+
+.po-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.po-name {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.po-sum {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.po-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 2px 20px 18px;
+}
+
+.po-body .field {
+  background-color: var(--surface);
+}
+
+.po-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px 16px;
+}
+
+.po-wide {
+  grid-column: 1 / -1;
+}
+
+.po-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.po-label {
+  font-weight: 600;
+}
+
+.po-unit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.po-unit .field {
+  width: 140px;
+}
+
+.po-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.po-foot .b36 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.po-remove {
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bad);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.po-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.po-add {
+  width: fit-content;
+}
+
+.po-empty {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .po-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .po-unit .field {
+    width: 100%;
+  }
+}
