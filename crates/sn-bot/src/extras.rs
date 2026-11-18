@@ -14,6 +14,7 @@ use sn_domain::payment::providers;
 use sn_domain::tariff::TrafficLeftover;
 use sn_domain::traffic::TrafficReset;
 use sn_modules::ModuleError;
+use sn_modules::catalog::contests;
 use sn_modules::catalog::options::{
     self, AddonsOffer, DevicesOffer, DevicesRequest, ITEM_DEVICES, ITEM_TRAFFIC, OptionsError,
     TrafficOffer, TrafficRequest,
@@ -42,6 +43,9 @@ pub async fn entry(turn: &mut Turn<'_>, client: &Client, key: &str) -> Result<Sc
         }
         sn_modules::catalog::gifts::BOT_ENTRY if modules.is_enabled(ModuleId::Gifts) => {
             crate::gifts::home(turn, client).await
+        }
+        contests::BOT_ENTRY if modules.is_enabled(ModuleId::Contests) => {
+            crate::contests::entry(turn, client).await
         }
         _ => main_menu(turn.ctx, client).await,
     }

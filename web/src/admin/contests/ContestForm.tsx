@@ -1,0 +1,482 @@
+import { useId, useState, type ReactNode } from 'react';
+import { api } from '../../lib/api';
+import type { Currency } from '../../lib/types';
+import {
+  AUDIENCES,
+  BASE,
+  buildBody,
+  failText,
+  messageKey,
+  PLACEHOLDERS,
+  PRIZE_KINDS,
+  type Audience,
+  type Contest,
+  type Draft,
+  type DraftErrors,
+  type MessageDraft,
+  type Options,
+} from './model';
+
+type Props = {
+  phone: boolean;
+  currency: Currency;
+  options: Options | null;
+  initial: Draft;
+  contest: Contest | null;
+  onCancel: () => void;
+  onSaved: (contest: Contest) => void;
+};
+
+type FieldProps = {
+  id: string;
+  label: string;
+  hint?: string;
+  error?: string;
+  className?: string;
+  children: ReactNode;
+};
+
+function Field({ id, label, hint, error, className, children }: FieldProps) {
+  return (
+    <div className={className ? `pf-field ${className}` : 'pf-field'}>
+      <label htmlFor={id} className="pf-label">
+        {label}
+      </label>
+      {children}
+      {error ? (
+        <span id={`${id}-err`} className="err">
+          {error}
+        </span>
+      ) : hint ? (
+        <span id={`${id}-hint`} className="cap">
+          {hint}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function described(id: string, error?: string): string {
+  return error ? `${id}-err` : `${id}-hint`;
+}
+
+export function ContestForm({ phone, currency, options, initial, contest, onCancel, onSaved }: Props) {
+  const base = useId();
+  const [draft, setDraft] = useState<Draft>(initial);
+  const [errors, setErrors] = useState<DraftErrors>({});
+  const [failure, setFailure] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const locked = contest !== null && !contest.editable.all;
+
+  const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
+    setDraft((d) => ({ ...d, [key]: value }));
+    setErrors((e) => ({ ...e, [key === 'days' || key === 'amount' || key === 'percent' || key === 'validDays' ? 'value' : key]: undefined }));
+  };
+
+  const setMessage = (key: string, patch: Partial<MessageDraft>) => {
+    setDraft((d) => ({ ...d, messages: (d.messages ?? []).map((m) => (m.key === key ? { ...m, ...patch } : m)) }));
+    setErrors((e) => ({ ...e, messages: undefined }));
+  };
+
+  const addMessage = () => {
+    setDraft((d) => ({
+      ...d,
+      messages: [...(d.messages ?? []), { key: messageKey(), id: null, audience: 'participants', onlyEligible: false, sendAt: '', text: '', locked: false }],
+    }));
+  };
+
+  const submit = async () => {
+    const built = buildBody(draft, currency, options);
+    const found = Object.values(built.errors).some(Boolean);
+    setErrors(built.errors);
+    setFailure(found ? 'Исправьте отмеченные поля' : null);
+    if (found) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const saved = contest
+        ? await api<Contest>(`${BASE}/contests/${contest.id}`, { method: 'PUT', body: built.body })
+        : await api<Contest>(`${BASE}/contests`, { method: 'POST', body: built.body });
+      onSaved(saved);
+    } catch (err) {
+      setFailure(failText(err, contest ? 'Изменения не сохранились' : 'Конкурс не создался'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ids = {
+    title: `${base}-title`,
+    description: `${base}-desc`,
+    value: `${base}-value`,
+    valid: `${base}-valid`,
+    winners: `${base}-winners`,
+    starts: `${base}-starts`,
+    ends: `${base}-ends`,
+    min: `${base}-min`,
+    friends: `${base}-friends`,
+  };
+
+  const unit = currency === 'RUB' ? '₽' : '$';
+  const messages = draft.messages;
+  const canAdd = messages !== null && messages.length < (options?.messages_max ?? 6);
+  const hasResults = (messages ?? []).some((m) => m.audience === 'results');
+
+  return (
+    <form
+      className={phone ? 'pf pf-phone ct-form' : 'pf ct-form'}
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <fieldset className="ct-block" disabled={busy}>
+        <legend className="ct-legend">Конкурс</legend>
+        <div className="pf-grid">
+          <Field id={ids.title} label="Название" error={errors.title} hint="Видят клиенты в боте и в сообщениях">
+            <input
+              id={ids.title}
+              className="field"
+              value={draft.title}
+              onChange={(e) => set('title', e.target.value)}
+              maxLength={options?.title_max ?? 100}
+              placeholder="Например, Новогодний розыгрыш"
+              aria-invalid={errors.title ? true : undefined}
+              aria-describedby={described(ids.title, errors.title)}
+            />
+          </Field>
+          <Field id={ids.description} label="Описание" error={errors.description} hint="Необязательно. Пара строк о конкурсе для клиента">
+            <textarea
+              id={ids.description}
+              className="field ct-area"
+              rows={2}
+              value={draft.description}
+              onChange={(e) => set('description', e.target.value)}
+              maxLength={options?.description_max ?? 1000}
+              aria-describedby={described(ids.description, errors.description)}
+            />
+          </Field>
+        </div>
+      </fieldset>
+
+      <fieldset className="ct-block" disabled={busy || locked}>
+        <legend className="ct-legend">Приз</legend>
+        {locked ? <p className="cap ct-lock">Конкурс уже идёт: приз, победителей и условия менять нельзя — так честнее для участников.</p> : null}
+        <div className="pf-field ct-kind">
+          <span className="pf-label" id={`${base}-kind`}>
+            Что получат победители
+          </span>
+          <div role="group" aria-labelledby={`${base}-kind`} className={phone ? 'pf-psegs' : 'segs'}>
+            {PRIZE_KINDS.map(([key, label]) => (
+              <button key={key} type="button" aria-pressed={draft.prizeKind === key} onClick={() => set('prizeKind', key)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {draft.prizeKind === 'promo' && options && !options.promo_enabled ? (
+            <span className="err">Промокод сработает при оплате, только если включён модуль «Промокоды».</span>
+          ) : null}
+        </div>
+        <div className="pf-grid pf-three">
+          {draft.prizeKind === 'days' ? (
+            <Field id={ids.value} label="Сколько дней" error={errors.value} hint="Добавятся к действующей подписке победителя">
+              <span className="pf-unit">
+                <input
+                  id={ids.value}
+                  className="field num"
+                  inputMode="numeric"
+                  value={draft.days}
+                  onChange={(e) => set('days', e.target.value)}
+                  maxLength={3}
+                  aria-invalid={errors.value ? true : undefined}
+                  aria-describedby={described(ids.value, errors.value)}
+                />
+                <span className="muted">дней</span>
+              </span>
+            </Field>
+          ) : null}
+          {draft.prizeKind === 'balance' ? (
+            <Field id={ids.value} label="Сумма на баланс" error={errors.value} hint="Зачислится победителю автоматически">
+              <span className="pf-unit">
+                {currency === 'USD' ? <span className="muted">{unit}</span> : null}
+                <input
+                  id={ids.value}
+                  className="field num"
+                  inputMode={currency === 'USD' ? 'decimal' : 'numeric'}
+                  value={draft.amount}
+                  onChange={(e) => set('amount', e.target.value)}
+                  maxLength={10}
+                  aria-invalid={errors.value ? true : undefined}
+                  aria-describedby={described(ids.value, errors.value)}
+                />
+                {currency === 'RUB' ? <span className="muted">{unit}</span> : null}
+              </span>
+            </Field>
+          ) : null}
+          {draft.prizeKind === 'promo' ? (
+            <>
+              <Field id={ids.value} label="Скидка" error={errors.value} hint="Личный одноразовый код для каждого победителя">
+                <span className="pf-unit">
+                  <input
+                    id={ids.value}
+                    className="field num"
+                    inputMode="numeric"
+                    value={draft.percent}
+                    onChange={(e) => set('percent', e.target.value)}
+                    maxLength={3}
+                    aria-invalid={errors.value ? true : undefined}
+                    aria-describedby={described(ids.value, errors.value)}
+                  />
+                  <span className="muted">%</span>
+                </span>
+              </Field>
+              <Field id={ids.valid} label="Код действует" hint="Дней с момента выдачи">
+                <span className="pf-unit">
+                  <input id={ids.valid} className="field num" inputMode="numeric" value={draft.validDays} onChange={(e) => set('validDays', e.target.value)} maxLength={3} />
+                  <span className="muted">дней</span>
+                </span>
+              </Field>
+            </>
+          ) : null}
+          <Field id={ids.winners} label="Победителей" error={errors.winners} hint={`От 1 до ${options?.winners_max ?? 100}`}>
+            <input
+              id={ids.winners}
+              className="field num"
+              inputMode="numeric"
+              value={draft.winners}
+              onChange={(e) => set('winners', e.target.value)}
+              maxLength={3}
+              aria-invalid={errors.winners ? true : undefined}
+              aria-describedby={described(ids.winners, errors.winners)}
+            />
+          </Field>
+        </div>
+      </fieldset>
+
+      <fieldset className="ct-block" disabled={busy}>
+        <legend className="ct-legend">Сроки</legend>
+        <div className="pf-grid pf-three">
+          {contest ? (
+            <div className="pf-field">
+              <span className="pf-label">Начало</span>
+              <input className="field" type="datetime-local" value={draft.startsAt} disabled={locked} onChange={(e) => set('startsAt', e.target.value)} aria-label="Начало" />
+              <span className="cap">{locked ? 'Конкурс уже начался' : 'Когда начнётся приём участников'}</span>
+            </div>
+          ) : (
+            <Field id={ids.starts} label="Начало" error={errors.startsAt} hint={draft.startNow ? 'Приём участников начнётся сразу' : 'Когда начнётся приём участников'}>
+              <span className="ct-start">
+                <label className="ct-inline-check">
+                  <input type="checkbox" checked={draft.startNow} onChange={(e) => set('startNow', e.target.checked)} />
+                  <span>Сразу</span>
+                </label>
+                {draft.startNow ? null : (
+                  <input
+                    id={ids.starts}
+                    className="field"
+                    type="datetime-local"
+                    value={draft.startsAt}
+                    onChange={(e) => set('startsAt', e.target.value)}
+                    aria-invalid={errors.startsAt ? true : undefined}
+                    aria-describedby={described(ids.starts, errors.startsAt)}
+                  />
+                )}
+              </span>
+            </Field>
+          )}
+          <Field id={ids.ends} label="Итоги" error={errors.endsAt} hint={locked ? 'Итоги можно только отложить' : 'В это время бот выберет победителей и выдаст призы'}>
+            <input
+              id={ids.ends}
+              className="field"
+              type="datetime-local"
+              value={draft.endsAt}
+              onChange={(e) => set('endsAt', e.target.value)}
+              aria-invalid={errors.endsAt ? true : undefined}
+              aria-describedby={described(ids.ends, errors.endsAt)}
+            />
+          </Field>
+        </div>
+      </fieldset>
+
+      <fieldset className="ct-block" disabled={busy || locked}>
+        <legend className="ct-legend">Условия участия</legend>
+        <p className="cap ct-lead">Проверяются по данным проекта — подпискам, оплатам и приглашениям, тариф не важен. Без условий участвовать может любой клиент бота. Перед жеребьёвкой условия проверяются ещё раз.</p>
+        <label className="pf-check">
+          <input type="checkbox" checked={draft.subscription} onChange={(e) => set('subscription', e.target.checked)} />
+          <span>
+            Действующая подписка
+            <span className="cap">Подписка должна действовать и при вступлении, и в момент итогов</span>
+          </span>
+        </label>
+        {draft.subscription ? (
+          <label className="pf-check ct-indent">
+            <input type="checkbox" checked={draft.paidOnly} onChange={(e) => set('paidOnly', e.target.checked)} />
+            <span>Пробная не считается</span>
+          </label>
+        ) : null}
+        <label className="pf-check">
+          <input type="checkbox" checked={draft.purchase} onChange={(e) => set('purchase', e.target.checked)} />
+          <span>
+            Оплата во время конкурса
+            <span className="cap">Подписка, продление или доп. опции, оплаченные между началом и итогами. Возвращённые оплаты не считаются</span>
+          </span>
+        </label>
+        {draft.purchase ? (
+          <div className="ct-indent ct-row">
+            <Field id={ids.min} label="Сумма оплаты от" error={errors.purchaseMin} hint="Пусто — любая сумма">
+              <span className="pf-unit">
+                {currency === 'USD' ? <span className="muted">{unit}</span> : null}
+                <input
+                  id={ids.min}
+                  className="field num"
+                  inputMode={currency === 'USD' ? 'decimal' : 'numeric'}
+                  value={draft.purchaseMin}
+                  onChange={(e) => set('purchaseMin', e.target.value)}
+                  maxLength={10}
+                  aria-invalid={errors.purchaseMin ? true : undefined}
+                  aria-describedby={described(ids.min, errors.purchaseMin)}
+                />
+                {currency === 'RUB' ? <span className="muted">{unit}</span> : null}
+              </span>
+            </Field>
+          </div>
+        ) : null}
+        <div className="ct-row">
+          <Field
+            id={ids.friends}
+            label="Пригласить друзей"
+            error={errors.friends}
+            hint={options && !options.referral_enabled ? 'Модуль «Рефералы» выключен — приглашать будет нечем' : 'Сколько друзей пригласить за время конкурса. Пусто — не нужно'}
+          >
+            <input
+              id={ids.friends}
+              className="field num ct-short"
+              inputMode="numeric"
+              value={draft.friends}
+              onChange={(e) => set('friends', e.target.value)}
+              maxLength={3}
+              placeholder="0"
+              aria-invalid={errors.friends ? true : undefined}
+              aria-describedby={described(ids.friends, errors.friends)}
+            />
+          </Field>
+          {draft.friends.trim() && draft.friends.trim() !== '0' ? (
+            <label className="pf-check ct-friend-paid">
+              <input type="checkbox" checked={draft.friendsPaid} onChange={(e) => set('friendsPaid', e.target.checked)} />
+              <span>
+                Друг должен оплатить подписку
+                <span className="cap">Защищает от накрутки пустыми аккаунтами</span>
+              </span>
+            </label>
+          ) : null}
+        </div>
+      </fieldset>
+
+      {messages !== null ? (
+        <fieldset className="ct-block" disabled={busy}>
+          <legend className="ct-legend">Сообщения</legend>
+          <p className="cap ct-lead">
+            Уходят через рассылки в бот, с кнопкой конкурса. Подстановки:{' '}
+            {PLACEHOLDERS.map(([code, hint], i) => (
+              <span key={code}>
+                <code>{code}</code> — {hint}
+                {i < PLACEHOLDERS.length - 1 ? ', ' : ''}
+              </span>
+            ))}
+            . Победители получают отдельное сообщение со своим призом.
+          </p>
+          {messages.map((m, index) => (
+            <div key={m.key} className={m.locked ? 'ct-msg ct-msg-locked' : 'ct-msg'}>
+              <div className="ct-msg-top">
+                <span className="ct-msg-n">Сообщение {index + 1}</span>
+                {m.locked ? <span className="cap">Уже отправлено, не меняется</span> : null}
+                {!m.locked ? (
+                  <button
+                    type="button"
+                    className="ct-remove hov"
+                    onClick={() => setDraft((d) => ({ ...d, messages: (d.messages ?? []).filter((x) => x.key !== m.key) }))}
+                    aria-label={`Удалить сообщение ${index + 1}`}
+                  >
+                    Удалить
+                  </button>
+                ) : null}
+              </div>
+              <div className="ct-msg-grid">
+                <div className="pf-field">
+                  <span className="pf-label">Кому</span>
+                  <select
+                    className="field"
+                    value={m.audience}
+                    disabled={m.locked}
+                    onChange={(e) => setMessage(m.key, { audience: e.target.value as Audience })}
+                    aria-label={`Кому сообщение ${index + 1}`}
+                  >
+                    {AUDIENCES.filter(([key]) => key !== 'results' || m.audience === 'results' || !hasResults).map(([key, label]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  {m.audience === 'outsiders' ? (
+                    <label className="ct-inline-check">
+                      <input type="checkbox" checked={m.onlyEligible} disabled={m.locked} onChange={(e) => setMessage(m.key, { onlyEligible: e.target.checked })} />
+                      <span>Только тем, кто уже подходит по условиям</span>
+                    </label>
+                  ) : null}
+                </div>
+                <div className="pf-field">
+                  <span className="pf-label">Когда</span>
+                  {m.audience === 'results' ? (
+                    <span className="ct-when">Сразу после жеребьёвки</span>
+                  ) : (
+                    <input
+                      className="field"
+                      type="datetime-local"
+                      value={m.sendAt}
+                      disabled={m.locked}
+                      onChange={(e) => setMessage(m.key, { sendAt: e.target.value })}
+                      aria-label={`Когда отправить сообщение ${index + 1}`}
+                    />
+                  )}
+                </div>
+              </div>
+              <textarea
+                className="field ct-area"
+                rows={phone ? 4 : 3}
+                value={m.text}
+                disabled={m.locked}
+                onChange={(e) => setMessage(m.key, { text: e.target.value })}
+                aria-label={`Текст сообщения ${index + 1}`}
+              />
+            </div>
+          ))}
+          {errors.messages ? <span className="err">{errors.messages}</span> : null}
+          {canAdd ? (
+            <button type="button" className={phone ? 'pf-quiet press' : 'b40 hov'} onClick={addMessage}>
+              Добавить сообщение
+            </button>
+          ) : null}
+        </fieldset>
+      ) : (
+        <p className="cap ct-lead">
+          После создания появятся сообщения: объявление на старте, напоминание за день до итогов тем, кто не участвует, напоминание участникам за три часа и итоги. Их можно поправить на странице конкурса.
+        </p>
+      )}
+
+      <div className="pf-actions">
+        <button type="submit" className={phone ? 'np-ok press' : 'btn-main btn'} disabled={busy}>
+          {busy ? 'Сохраняем…' : contest ? 'Сохранить' : 'Создать конкурс'}
+        </button>
+        <button type="button" className={phone ? 'np-cancel press' : 'btn-line hov'} onClick={onCancel} disabled={busy}>
+          Отменить
+        </button>
+        {failure ? (
+          <span className="err pf-fail" role="alert">
+            {failure}
+          </span>
+        ) : null}
+      </div>
+    </form>
+  );
+}

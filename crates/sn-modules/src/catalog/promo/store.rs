@@ -367,6 +367,28 @@ pub async fn create(
     new: &NewPromo,
     by: Option<AdminId>,
 ) -> StoreResult<PromoCode> {
+    insert(db, code, kind, new, by, false)
+        .await?
+        .ok_or(StoreError::NotFound("промокод"))
+}
+
+pub async fn create_if_free(
+    db: &mut impl Db,
+    code: &str,
+    kind: PromoKind,
+    new: &NewPromo,
+) -> StoreResult<Option<PromoCode>> {
+    insert(db, code, kind, new, None, true).await
+}
+
+async fn insert(
+    db: &mut impl Db,
+    code: &str,
+    kind: PromoKind,
+    new: &NewPromo,
+    by: Option<AdminId>,
+    skip_taken: bool,
+) -> StoreResult<Option<PromoCode>> {
     let (kind_name, percent, amount, currency, days) = match kind {
         PromoKind::Percent { percent } => ("percent", Some(i32::from(percent)), None, None, None),
         PromoKind::Fixed { amount } => (
@@ -390,10 +412,11 @@ pub async fn create(
     let mut tariffs: Vec<i64> = new.tariff_ids.iter().map(|t| t.0).collect();
     tariffs.sort_unstable();
     tariffs.dedup();
-    let row: CodeRow = sqlx::query_as(&format!(
+    let row: Option<CodeRow> = sqlx::query_as(&format!(
         "INSERT INTO promo_codes AS p (code, kind, percent, amount_minor, currency, days, max_uses, per_client, \
          valid_from, valid_until, first_purchase_only, tariff_ids, note, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING {COLUMNS}"
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) {} RETURNING {COLUMNS}",
+        if skip_taken { "ON CONFLICT (code) DO NOTHING" } else { "" }
     ))
     .bind(code)
     .bind(kind_name)
@@ -409,9 +432,9 @@ pub async fn create(
     .bind(&tariffs)
     .bind(new.note.as_deref().map(str::trim).filter(|n| !n.is_empty()))
     .bind(by.map(|a| a.0))
-    .fetch_one(db.conn())
+    .fetch_optional(db.conn())
     .await?;
-    row.try_into()
+    row.map(TryInto::try_into).transpose()
 }
 
 pub async fn list(

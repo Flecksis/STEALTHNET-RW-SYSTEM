@@ -10,7 +10,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::catalog::{options, promo, referral};
+use crate::catalog::{contests, options, promo, referral};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use crate::module::{Module, ScheduledTask};
@@ -37,6 +37,7 @@ pub use auto::{
     RuleDraft, RuleItem, RuleStats, Trigger, check as check_rules, create_rule, delete_rule, rule,
     rule_reach, rules, switch_rule, update_rule,
 };
+pub use auto_store::{contest_batch, contest_progress, open_batch, queue_bot, stop_contest};
 pub use engine::{Engine, EngineConfig, Sender};
 pub use letter::Letter;
 pub use store::{
@@ -174,11 +175,12 @@ pub enum BotSection {
     Promo,
     Referral,
     Options,
+    Contests,
     Documents,
 }
 
 impl BotSection {
-    pub const ALL: [BotSection; 10] = [
+    pub const ALL: [BotSection; 11] = [
         BotSection::Menu,
         BotSection::Subscriptions,
         BotSection::Buy,
@@ -188,6 +190,7 @@ impl BotSection {
         BotSection::Promo,
         BotSection::Referral,
         BotSection::Options,
+        BotSection::Contests,
         BotSection::Documents,
     ];
 
@@ -202,6 +205,7 @@ impl BotSection {
             BotSection::Promo => "promo",
             BotSection::Referral => "referral",
             BotSection::Options => "options",
+            BotSection::Contests => "contests",
             BotSection::Documents => "documents",
         }
     }
@@ -217,6 +221,7 @@ impl BotSection {
             BotSection::Promo => "Промокод",
             BotSection::Referral => "Пригласить друга",
             BotSection::Options => "Доп. опции",
+            BotSection::Contests => "Конкурсы",
             BotSection::Documents => "Документы",
         }
     }
@@ -226,6 +231,7 @@ impl BotSection {
             BotSection::Promo => Some(ModuleId::Promo),
             BotSection::Referral => Some(ModuleId::Referral),
             BotSection::Options => Some(ModuleId::Options),
+            BotSection::Contests => Some(ModuleId::Contests),
             _ => None,
         }
     }
@@ -241,6 +247,7 @@ impl BotSection {
             BotSection::Promo => format!("x:{}", promo::BOT_ENTRY),
             BotSection::Referral => format!("x:{}", referral::BOT_ENTRY),
             BotSection::Options => format!("x:{}", options::BOT_ENTRY),
+            BotSection::Contests => format!("x:{}", contests::BOT_ENTRY),
             BotSection::Documents => "docs".into(),
         }
     }

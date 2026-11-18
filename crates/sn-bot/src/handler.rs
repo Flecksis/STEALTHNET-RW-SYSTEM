@@ -5,7 +5,7 @@ use crate::telegram::{
 };
 use crate::text::{self, escape};
 use crate::ui::{self, Html, Lines, Text};
-use crate::{BotError, account, buy, consent, extras, gifts, gram_wallet, login, media};
+use crate::{BotError, account, buy, consent, contests, extras, gifts, gram_wallet, login, media};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
 use sn_domain::format;
@@ -518,6 +518,8 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             None => main_menu(turn.ctx, client).await?,
         },
         "ref" => extras::referral_action(turn, client, rest).await?,
+        contests::OPEN => contests::open(turn, client, rest).await?,
+        contests::JOIN => contests::join(turn, client, rest).await?,
         "opt" => extras::options_action(turn, client, rest).await?,
         "op" => extras::options_pay(turn, client, rest).await?,
         "gb" => gifts::tariffs(turn, client).await?,
@@ -796,6 +798,28 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
         if let Some(key) = module_button_key(entry) {
             buttons.extend(ui::button(c, key, &[], format!("x:{entry}")));
         }
+    }
+    if contests::has_open(services).await {
+        buttons.extend(ui::button(
+            c,
+            "menu.btn.contests",
+            &[],
+            format!("x:{}", sn_modules::catalog::contests::BOT_ENTRY),
+        ));
+    }
+    if services
+        .modules()
+        .is_enabled(sn_domain::module::ModuleId::Roulette)
+        && let Some(url) = settings.miniapp_url()
+        && sn_modules::catalog::roulette::ready(&services.module_context())
+            .await
+            .unwrap_or(false)
+    {
+        buttons.extend(ui::web_app(
+            c,
+            "menu.btn.roulette",
+            format!("{url}/roulette"),
+        ));
     }
     if !c.documents.is_empty() {
         buttons.extend(ui::button(c, "menu.btn.documents", &[], "docs"));

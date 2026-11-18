@@ -263,7 +263,7 @@ pub async fn delete(db: &mut impl Db, id: i64) -> StoreResult<()> {
 
 pub async fn lock(db: &mut impl Db, id: i64) -> StoreResult<Status> {
     let status: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM broadcasts WHERE id = $1 AND rule_id IS NULL FOR UPDATE",
+        "SELECT status FROM broadcasts WHERE id = $1 AND rule_id IS NULL AND contest_message_id IS NULL FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(db.conn())
@@ -328,7 +328,7 @@ pub async fn image_meta(db: &mut impl Db, id: i64) -> StoreResult<Option<ImageMe
 
 pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
     let row: Row = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM broadcasts b WHERE b.id = $1 AND b.rule_id IS NULL"
+        "SELECT {COLUMNS} FROM broadcasts b WHERE b.id = $1 AND b.rule_id IS NULL AND b.contest_message_id IS NULL"
     ))
     .bind(id)
     .fetch_optional(db.conn())
@@ -367,7 +367,7 @@ pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
     .await?;
     let queued_behind = if parsed.status == Status::Sending {
         sqlx::query_scalar(
-            "SELECT b.id FROM broadcasts b WHERE b.status = 'sending' AND b.rule_id IS NULL \
+            "SELECT b.id FROM broadcasts b WHERE b.status = 'sending' AND b.rule_id IS NULL AND b.contest_message_id IS NULL \
              AND (b.started_at, b.id) < ($1, $2) ORDER BY b.started_at, b.id LIMIT 1",
         )
         .bind(row.started_at)
@@ -416,7 +416,7 @@ pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
 
 pub async fn list(db: &mut impl Db, page: PageRequest) -> StoreResult<Page<ListItem>> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM broadcasts b WHERE b.rule_id IS NULL AND ($1::bigint IS NULL OR b.id < $1) \
+        "SELECT {COLUMNS} FROM broadcasts b WHERE b.rule_id IS NULL AND b.contest_message_id IS NULL AND ($1::bigint IS NULL OR b.id < $1) \
          ORDER BY b.id DESC LIMIT $2"
     ))
     .bind(page.after)

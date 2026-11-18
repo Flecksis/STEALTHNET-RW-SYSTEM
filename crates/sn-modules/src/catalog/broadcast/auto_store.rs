@@ -604,3 +604,68 @@ pub async fn open_batch(db: &mut impl Db, batch: i64, now: DateTime<Utc>) -> Sto
     .await?;
     Ok(())
 }
+
+pub async fn contest_batch(
+    db: &mut impl Db,
+    message_id: i64,
+    text: &str,
+    buttons: &serde_json::Value,
+) -> StoreResult<i64> {
+    let existing: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM broadcasts WHERE contest_message_id = $1 FOR UPDATE")
+            .bind(message_id)
+            .fetch_optional(db.conn())
+            .await?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    Ok(sqlx::query_scalar(
+        "INSERT INTO broadcasts (text, buttons, audience, channel, status, contest_message_id) \
+         VALUES ($1, $2, '{\"kind\": \"all\"}'::jsonb, 'bot', 'done', $3) RETURNING id",
+    )
+    .bind(text)
+    .bind(buttons)
+    .bind(message_id)
+    .fetch_one(db.conn())
+    .await?)
+}
+
+pub async fn contest_progress(
+    db: &mut impl Db,
+    message_ids: &[i64],
+) -> StoreResult<HashMap<i64, Progress>> {
+    let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT b.contest_message_id, r.state, count(*) FROM broadcasts b \
+         JOIN broadcast_recipients r ON r.broadcast_id = b.id \
+         WHERE b.contest_message_id = ANY($1) GROUP BY b.contest_message_id, r.state",
+    )
+    .bind(message_ids)
+    .fetch_all(db.conn())
+    .await?;
+    let mut out: HashMap<i64, Progress> = HashMap::new();
+    for (id, state, count) in rows {
+        let progress = out.entry(id).or_default();
+        progress.total += count;
+        match state.as_str() {
+            "sent" => progress.sent += count,
+            "failed" => progress.failed += count,
+            "blocked" => progress.blocked += count,
+            "skipped" => progress.skipped += count,
+            _ => progress.pending += count,
+        }
+    }
+    Ok(out)
+}
+
+pub async fn stop_contest(db: &mut impl Db, contest_id: i64, reason: &str) -> StoreResult<u64> {
+    Ok(sqlx::query(
+        "UPDATE broadcast_recipients r SET state = 'skipped', done_at = now(), error = $2 \
+         FROM broadcasts b JOIN contest_messages m ON m.id = b.contest_message_id \
+         WHERE b.id = r.broadcast_id AND m.contest_id = $1 AND r.state = 'pending'",
+    )
+    .bind(contest_id)
+    .bind(reason)
+    .execute(db.conn())
+    .await?
+    .rows_affected())
+}

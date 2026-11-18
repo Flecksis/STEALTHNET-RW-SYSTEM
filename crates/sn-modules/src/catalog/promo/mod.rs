@@ -809,6 +809,52 @@ pub async fn create(
     Ok(created)
 }
 
+const PERSONAL_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+pub fn personal_code_text() -> String {
+    use rand::Rng;
+    let mut rng = rand::rngs::OsRng;
+    let tail: String = (0..8)
+        .map(|_| char::from(PERSONAL_ALPHABET[rng.gen_range(0..PERSONAL_ALPHABET.len())]))
+        .collect();
+    format!("WIN-{tail}")
+}
+
+pub async fn issue_personal(
+    db: &mut impl Db,
+    kind: PromoKind,
+    valid_until: Option<DateTime<Utc>>,
+    note: &str,
+) -> Result<PromoCode, ModuleError> {
+    let value = match kind {
+        PromoKind::Percent { percent } => NewPromoValue::Percent { percent },
+        PromoKind::Fixed { amount } => NewPromoValue::Fixed {
+            amount: amount.minor.to_string(),
+        },
+        PromoKind::Days { days } => NewPromoValue::Days { days },
+    };
+    for _ in 0..8 {
+        let code = personal_code_text();
+        let new = NewPromo {
+            code: code.clone(),
+            value: value.clone(),
+            max_uses: Some(1),
+            per_client: 1,
+            valid_from: None,
+            valid_until,
+            first_purchase_only: false,
+            tariff_ids: Vec::new(),
+            note: Some(note.chars().take(500).collect()),
+        };
+        if let Some(created) = store::create_if_free(db, &code, kind, &new).await? {
+            return Ok(created);
+        }
+    }
+    Err(ModuleError::Core(
+        "не удалось придумать свободный промокод".into(),
+    ))
+}
+
 pub async fn list(
     ctx: &ModuleContext,
     filter: ListFilter,

@@ -47,6 +47,7 @@ const ELSEWHERE: Record<string, string> = {
   antibot: '/admin/clients/antibot',
   limits: '/admin/clients/limits',
   landing: '/admin/settings/landing',
+  roulette: '/admin/m/roulette',
 };
 
 export function setupLink(m: ModuleView): string {

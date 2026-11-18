@@ -13,7 +13,7 @@ use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::money::Money;
 use sn_modules::MailSite;
 use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
-use sn_modules::catalog::{gifts, limits, referral};
+use sn_modules::catalog::{contests, gifts, limits, referral};
 use sn_services::Services;
 use sn_services::mail::{RichLetter, Undelivered};
 use sn_store::{Db, StoreError};
@@ -289,6 +289,31 @@ pub fn render(
         limits::TEMPLATE_LIFTED => (
             t("notify.traffic_lifted", &[]),
             Some(("notify.btn.subscription", "subs")),
+        ),
+        contests::TEMPLATE_WON => {
+            let mut text = t(
+                "notify.contest_won",
+                &[
+                    ("title", Html(&param(params, "title")?)),
+                    ("prize", Html(&param(params, "prize")?)),
+                    ("result", Html(&param(params, "note").unwrap_or_default())),
+                ],
+            );
+            if let Some(code) = param(params, "code") {
+                text.push('\n');
+                text.push_str(&t("notify.contest_won_code", &[("code", Html(&code))]));
+            }
+            (text, Some(("notify.btn.contests", "x:contests")))
+        }
+        contests::TEMPLATE_WAITING => (
+            t(
+                "notify.contest_waiting",
+                &[
+                    ("title", Html(&param(params, "title")?)),
+                    ("prize", Html(&param(params, "prize")?)),
+                ],
+            ),
+            Some(("notify.btn.contests", "x:contests")),
         ),
         referral::TEMPLATE_WITHDRAWAL_PAID => (
             t(

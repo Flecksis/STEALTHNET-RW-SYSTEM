@@ -21,6 +21,7 @@ pub enum Section {
     Options,
     Gifts,
     PromoLinks,
+    Contests,
     Login,
     Documents,
     Notify,
@@ -28,7 +29,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 16] = [
+    pub const ALL: [Section; 17] = [
         Section::Menu,
         Section::Subscription,
         Section::Devices,
@@ -41,6 +42,7 @@ impl Section {
         Section::Options,
         Section::Gifts,
         Section::PromoLinks,
+        Section::Contests,
         Section::Login,
         Section::Documents,
         Section::Notify,
@@ -61,6 +63,7 @@ impl Section {
             Section::Options => "Доп. устройства",
             Section::Gifts => "Подарки",
             Section::PromoLinks => "Промо-ссылки",
+            Section::Contests => "Конкурсы",
             Section::Login => "Вход в кабинет",
             Section::Documents => "Документы",
             Section::Notify => "Уведомления",
@@ -82,6 +85,7 @@ impl Section {
             Section::Options => "options",
             Section::Gifts => "gifts",
             Section::PromoLinks => "promo_links",
+            Section::Contests => "contests",
             Section::Login => "login",
             Section::Documents => "documents",
             Section::Notify => "notify",
@@ -101,7 +105,11 @@ impl Section {
             Section::Options => Some(ImageSlot::Options),
             Section::Gifts => Some(ImageSlot::Buy),
             Section::PromoLinks => Some(ImageSlot::Promo),
-            Section::Login | Section::Documents | Section::Notify | Section::Common => None,
+            Section::Contests
+            | Section::Login
+            | Section::Documents
+            | Section::Notify
+            | Section::Common => None,
         }
     }
 }
@@ -501,6 +509,26 @@ const UNTIL: Var = Var {
     name: "until",
     hint: "когда снимется ограничение",
 };
+const PRIZE: Var = Var {
+    name: "prize",
+    hint: "приз",
+};
+const WINNERS: Var = Var {
+    name: "winners",
+    hint: "число победителей",
+};
+const CONDITION: Var = Var {
+    name: "condition",
+    hint: "условие участия",
+};
+const HASH: Var = Var {
+    name: "hash",
+    hint: "отпечаток жеребьёвки",
+};
+const RESULT: Var = Var {
+    name: "result",
+    hint: "как выдан приз",
+};
 
 use Section::*;
 
@@ -637,6 +665,13 @@ pub static CATALOG: &[Entry] = &[
         "Пригласить друга",
     ),
     hideable("menu.btn.options", Menu, "Кнопка докупки", "Докупить"),
+    hideable("menu.btn.contests", Menu, "Кнопка конкурсов", "Конкурсы"),
+    hideable(
+        "menu.btn.roulette",
+        Menu,
+        "Кнопка рулетки в мини-приложении",
+        "Рулетка",
+    ),
     hideable(
         "menu.btn.gifts",
         Menu,
@@ -1634,6 +1669,186 @@ pub static CATALOG: &[Entry] = &[
         &[],
     ),
     text(
+        "contest.list",
+        Contests,
+        "Список конкурсов",
+        "<b>Конкурсы</b>\nВыберите конкурс:",
+        &[],
+    ),
+    text(
+        "contest.none",
+        Contests,
+        "Конкурсов нет",
+        "Сейчас конкурсов нет. Когда начнётся новый, бот пришлёт сообщение.",
+        &[],
+    ),
+    text(
+        "contest.title",
+        Contests,
+        "Заголовок конкурса",
+        "<b>{title}</b>",
+        &[TITLE],
+    ),
+    text(
+        "contest.prize",
+        Contests,
+        "Приз",
+        "Приз: {prize}. Победителей: {winners}.",
+        &[PRIZE, WINNERS],
+    ),
+    text(
+        "contest.until",
+        Contests,
+        "Когда итоги",
+        "Итоги — {date}.",
+        &[DATE],
+    ),
+    text(
+        "contest.conditions",
+        Contests,
+        "Заголовок условий",
+        "\n<b>Условия</b>",
+        &[],
+    ),
+    text(
+        "contest.condition_ok",
+        Contests,
+        "Выполненное условие",
+        "✅ {condition}",
+        &[CONDITION],
+    ),
+    text(
+        "contest.condition",
+        Contests,
+        "Условие после итогов",
+        "• {condition}",
+        &[CONDITION],
+    ),
+    text(
+        "contest.condition_no",
+        Contests,
+        "Невыполненное условие",
+        "▫️ {condition}",
+        &[CONDITION],
+    ),
+    text(
+        "contest.open",
+        Contests,
+        "Без условий",
+        "Участвовать может любой клиент.",
+        &[],
+    ),
+    line(
+        "contest.entries",
+        Contests,
+        "Число участников",
+        "\nУчастников: {count}",
+        &[COUNT],
+    ),
+    text(
+        "contest.joined",
+        Contests,
+        "Клиент участвует",
+        "\nВы участвуете. Итоги придут сюда, в бот.",
+        &[],
+    ),
+    text(
+        "contest.joined_now",
+        Contests,
+        "Клиент только что вступил",
+        "Готово, вы участвуете в конкурсе «{title}». Итоги — {date}.",
+        &[TITLE, DATE],
+    ),
+    text(
+        "contest.not_eligible",
+        Contests,
+        "Условия не выполнены",
+        "\nЧтобы участвовать, выполните условия, отмеченные ▫️, и нажмите «Участвовать» ещё раз.",
+        &[],
+    ),
+    text(
+        "contest.closed",
+        Contests,
+        "Приём закончился",
+        "Приём участников в этом конкурсе закончился.",
+        &[],
+    ),
+    line(
+        "contest.fair",
+        Contests,
+        "Отпечаток жеребьёвки",
+        "\nОтпечаток жеребьёвки: <code>{hash}</code>",
+        &[HASH],
+    ),
+    text(
+        "contest.drawing",
+        Contests,
+        "Подводим итоги",
+        "\nПриём закончился, бот подводит итоги.",
+        &[],
+    ),
+    text(
+        "contest.won",
+        Contests,
+        "Клиент победил",
+        "\nВы победили! Приз: {prize}. {result}",
+        &[PRIZE, RESULT],
+    ),
+    text(
+        "contest.won_code",
+        Contests,
+        "Промокод победителя",
+        "Ваш промокод: <code>{code}</code> — введите его при оплате.",
+        &[CODE],
+    ),
+    text(
+        "contest.lost",
+        Contests,
+        "Клиент не победил",
+        "\nИтоги подведены. В этот раз приз достался другим участникам — спасибо, что участвовали!",
+        &[],
+    ),
+    text(
+        "contest.excluded",
+        Contests,
+        "Клиент не прошёл проверку",
+        "\nИтоги подведены. В розыгрыш вы не попали: {comment}.",
+        &[COMMENT],
+    ),
+    button(
+        "contest.btn.join",
+        Contests,
+        "Кнопка «Участвовать»",
+        "Участвовать",
+        &[],
+    ),
+    button(
+        "contest.btn.open",
+        Contests,
+        "Кнопка конкурса в списке",
+        "{title}",
+        &[TITLE],
+    ),
+    hideable(
+        "contest.btn.buy",
+        Contests,
+        "Кнопка «Купить подписку»",
+        "Купить подписку",
+    ),
+    hideable(
+        "contest.btn.invite",
+        Contests,
+        "Кнопка «Пригласить друга»",
+        "Пригласить друга",
+    ),
+    button(
+        "contest.btn.all",
+        Contests,
+        "Кнопка «Все конкурсы»",
+        "Все конкурсы",
+        &[],
+    ),
+    text(
         "opt.no_subscription",
         Options,
         "Нет подписки",
@@ -2357,6 +2572,27 @@ pub static CATALOG: &[Entry] = &[
         &[AMOUNT, COMMENT],
     ),
     text(
+        "notify.contest_won",
+        Notify,
+        "Победа в конкурсе",
+        "Вы победили в конкурсе «{title}»!\nПриз: {prize}. {result}",
+        &[TITLE, PRIZE, RESULT],
+    ),
+    text(
+        "notify.contest_won_code",
+        Notify,
+        "Промокод победителя",
+        "Ваш промокод: <code>{code}</code> — введите его при оплате.",
+        &[CODE],
+    ),
+    text(
+        "notify.contest_waiting",
+        Notify,
+        "Победа, приз ждёт подписку",
+        "Вы победили в конкурсе «{title}»!\nПриз: {prize}. Дни добавятся, как только у вас появится подписка.",
+        &[TITLE, PRIZE],
+    ),
+    text(
         "notify.withdrawal_rejected_plain",
         Notify,
         "Вывод отклонён",
@@ -2404,6 +2640,12 @@ pub static CATALOG: &[Entry] = &[
         Notify,
         "Кнопка «Пригласить друга»",
         "Пригласить друга",
+    ),
+    hideable(
+        "notify.btn.contests",
+        Notify,
+        "Кнопка «Конкурсы»",
+        "Конкурсы",
     ),
     button("common.btn.menu", Common, "Кнопка «В меню»", "В меню", &[]),
     button("common.btn.back", Common, "Кнопка «Назад»", "Назад", &[]),

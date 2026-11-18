@@ -17,6 +17,7 @@ import { MiniGifts } from './MiniGifts';
 import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
 import { MiniTopUp } from './MiniTopUp';
+import { MiniRoulette } from './MiniRoulette';
 import './mini.css';
 
 const TOKEN_KEY = 'sn.mini.token';
@@ -251,6 +252,7 @@ export function MiniApp() {
           <Route path="payments" element={<MiniPayments />} />
           <Route path="addons" element={<MiniAddons />} />
           <Route path="gifts" element={<MiniGifts />} />
+          <Route path="roulette" element={<MiniRoulette />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />
@@ -271,7 +273,7 @@ function MiniNav() {
   return (
     <nav aria-label="Меню" className="mn-nav">
       {TABS.map((t) => {
-        const current = t.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments'].includes(pathname) : pathname.startsWith(t.to);
+        const current = t.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments', '/app/roulette'].includes(pathname) : pathname.startsWith(t.to);
         return (
           <Link key={t.to} to={t.to} className="mn-tab press" aria-current={current ? 'page' : undefined}>
             <Icon name={t.icon} size={23} />

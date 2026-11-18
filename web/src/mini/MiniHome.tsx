@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { BrandMark } from '../lib/brand';
 import { api } from '../lib/api';
-import { dateLong, money, plural } from '../lib/format';
+import { count, dateLong, money, plural } from '../lib/format';
 import { Icon, type IconName } from '../lib/icons';
 import { resetWhen, trafficMeter, type Referral } from '../cabinet/model';
 import { MiniSubSwitch, ThemeCirc, useMini } from './MiniApp';
@@ -16,6 +16,7 @@ export function MiniHome() {
   const { me, site, view, devices } = useMini();
   const [referral, setReferral] = useState<Referral | null>(null);
   const [gifts, setGifts] = useState(false);
+  const [spins, setSpins] = useState<number | null>(null);
 
   useEffect(() => {
     api<Referral>('/api/client/m/referral/me')
@@ -24,6 +25,9 @@ export function MiniHome() {
     api('/api/client/m/gifts/offers')
       .then(() => setGifts(true))
       .catch(() => setGifts(false));
+    api<{ ready: boolean; spins: { total: number } }>('/api/client/m/roulette/state')
+      .then((s) => setSpins(s.ready ? s.spins.total : null))
+      .catch(() => setSpins(null));
   }, []);
 
   const blocked = me.client.status === 'blocked' || view?.status === 'blocked';
@@ -85,6 +89,9 @@ export function MiniHome() {
   const rows: Array<{ label: string; icon: IconName; value?: string; to?: string; run?: () => void }> = [];
   if (referral) {
     rows.push({ label: 'Друзья', icon: 'share', value: referral.invited ? `${referral.invited} ${plural(referral.invited, 'пришёл', 'пришли', 'пришли')}` : undefined, to: '/app/profile' });
+  }
+  if (spins !== null) {
+    rows.push({ label: 'Рулетка', icon: 'trophy', value: spins ? count(spins, 'вращение', 'вращения', 'вращений') : undefined, to: '/app/roulette' });
   }
   if (view && !expired && !blocked && !view.subscription.ended_at) {
     rows.push({ label: 'Докупить устройства или трафик', icon: 'plus', to: '/app/addons' });

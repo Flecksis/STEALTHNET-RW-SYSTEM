@@ -1,10 +1,12 @@
 import { useParams } from 'react-router';
 import { Broadcasts } from '../broadcast/Broadcasts';
 import { Gifts } from '../gifts/Gifts';
+import { Contests } from '../contests/Contests';
 import { Pending } from '../pages/Pending';
 import { Promo } from '../promo/Promo';
 import { PromoLinks } from '../promolinks/PromoLinks';
 import { Referral } from '../referral/Referral';
+import { Roulette } from '../roulette/Roulette';
 
 export function ModuleScreen() {
   const { module = '' } = useParams();
@@ -19,6 +21,10 @@ export function ModuleScreen() {
       return <PromoLinks />;
     case 'referral':
       return <Referral />;
+    case 'contests':
+      return <Contests />;
+    case 'roulette':
+      return <Roulette />;
     default:
       return <Pending title="Модуль" />;
   }
