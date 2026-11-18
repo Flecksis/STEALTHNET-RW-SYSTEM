@@ -26,7 +26,7 @@ import { Pending } from './pages/Pending';
 import { Antibot } from './protect/Antibot';
 import { Limits } from './protect/Limits';
 import { Money } from './money/Money';
-import { SettingsLayout } from './pages/SettingsLayout';
+import { SettingsGate, SettingsLayout } from './pages/SettingsLayout';
 import { SettingsLook } from './pages/SettingsLook';
 import { SettingsRemna } from './pages/SettingsRemna';
 import { SettingsRemnaSync } from './pages/SettingsRemnaSync';
@@ -257,37 +257,39 @@ export function AdminApp() {
           <Route path="modules/ext/:id/page" element={<ExtPage />} />
           <Route path="modules/:id" element={<ModulePage />} />
           <Route path="m/:module/*" element={<ModuleScreen />} />
-          <Route path="settings/look" element={<SettingsLook />} />
-          <Route path="settings/remnawave" element={<SettingsRemna />} />
-          <Route path="settings/remnawave/sync" element={<SettingsRemnaSync />} />
-          <Route path="settings/payments" element={<SettingsPayments />} />
-          <Route path="settings/general" element={<SettingsGeneral />} />
-          <Route path="settings/bot" element={<SettingsBot />} />
-          <Route path="settings/updates" element={<SettingsUpdates />} />
-          <Route path="settings/backups" element={<SettingsBackups />} />
-          <Route path="settings/bot/texts" element={<SettingsBotTexts />} />
-          <Route path="settings/bot/images" element={<SettingsBotImages />} />
-          <Route path="settings/documents" element={<SettingsDocuments />} />
-          <Route path="settings/landing" element={<SettingsLanding />} />
-          <Route path="settings/admins" element={<SettingsAdmins />} />
-          <Route path="settings/api-keys" element={<SettingsApiKeys />} />
-          <Route path="settings/mail" element={<SettingsMail />} />
-          <Route path="settings/mail/letters" element={<SettingsMailLetters />} />
-          <Route path="settings/alerts" element={<SettingsAlerts />} />
-          <Route path="settings/client" element={<SettingsClientAccess />} />
-          <Route path="settings/languages" element={<SettingsLanguages />} />
-          <Route path="settings/import" element={<SettingsImport />} />
+          <Route path="settings" element={<SettingsGate />}>
+            <Route index element={<Navigate to="/admin/settings/payments" replace />} />
+            <Route path="look" element={<SettingsLook />} />
+            <Route path="remnawave" element={<SettingsRemna />} />
+            <Route path="remnawave/sync" element={<SettingsRemnaSync />} />
+            <Route path="payments" element={<SettingsPayments />} />
+            <Route path="general" element={<SettingsGeneral />} />
+            <Route path="bot" element={<SettingsBot />} />
+            <Route path="updates" element={<SettingsUpdates />} />
+            <Route path="backups" element={<SettingsBackups />} />
+            <Route path="bot/texts" element={<SettingsBotTexts />} />
+            <Route path="bot/images" element={<SettingsBotImages />} />
+            <Route path="documents" element={<SettingsDocuments />} />
+            <Route path="landing" element={<SettingsLanding />} />
+            <Route path="admins" element={<SettingsAdmins />} />
+            <Route path="api-keys" element={<SettingsApiKeys />} />
+            <Route path="mail" element={<SettingsMail />} />
+            <Route path="mail/letters" element={<SettingsMailLetters />} />
+            <Route path="alerts" element={<SettingsAlerts />} />
+            <Route path="client" element={<SettingsClientAccess />} />
+            <Route path="languages" element={<SettingsLanguages />} />
+            <Route path="import" element={<SettingsImport />} />
+            <Route
+              path="*"
+              element={
+                <SettingsLayout>
+                  <Pending title="Раздел настроек" />
+                </SettingsLayout>
+              }
+            />
+          </Route>
           <Route path="security" element={<Security />} />
           <Route path="bug-report" element={<BugReport />} />
-          <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
-          <Route
-            path="settings/*"
-            element={
-              <SettingsLayout>
-                <Pending title="Раздел настроек" />
-              </SettingsLayout>
-            }
-          />
           <Route path="*" element={<Pending title="Страница не найдена" text="Такого раздела нет. Выберите раздел в меню." />} />
         </Routes>
       </Shell>
