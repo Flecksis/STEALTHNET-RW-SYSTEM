@@ -474,6 +474,14 @@
   cursor: pointer;
 }
 
+a.btn-main,
+a.btn-line {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .btn-main:disabled,
 .btn-line:disabled {
   opacity: 0.5;
