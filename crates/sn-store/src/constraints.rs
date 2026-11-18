@@ -2,6 +2,8 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("admins_email_key", Some("Почта")),
     ("admin_sessions_token_key", None),
     ("api_keys_token_key", None),
+    ("ext_modules_api_key_idx", None),
+    ("ext_module_deliveries_event_key", None),
     ("clients_public_id_key", None),
     (
         "client_identities_kind_value_key",
