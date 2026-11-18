@@ -2771,7 +2771,10 @@ async fn почта_старой_панели_переносится_и_не_з�
         &env,
         &mail_dump(&resend),
         Some(admin),
-        runs::StartOptions { replace_mail: true },
+        runs::StartOptions {
+            replace_mail: true,
+            ..Default::default()
+        },
     )
     .await;
     assert_eq!(
@@ -3127,4 +3130,175 @@ async fn почта_без_сервера_переносится_частичн�
     );
     let (again, _) = import(&env, &mail_dump(half), Some(admin)).await;
     assert_eq!(again.mail, None, "частичный перенос не повторяется");
+}
+
+fn multi_dump(setting: Option<&str>, second: bool) -> Vec<u8> {
+    let mut sql = String::from("-- Created at: 2026-11-17T09:00:00.000Z\n\n");
+    let mut settings: Vec<[Option<&str>; 3]> = vec![
+        [Some("ss1"), Some("default_currency"), Some("rub")],
+        [Some("ss3"), Some("max_additional_subscriptions"), Some("5")],
+    ];
+    if let Some(value) = setting {
+        settings.push([
+            Some("ss2"),
+            Some("multi_subscriptions_enabled"),
+            Some(value),
+        ]);
+    }
+    let rows: Vec<&[Option<&str>]> = settings.iter().map(|r| r.as_slice()).collect();
+    sql += &copy("system_settings", &["id", "key", "value"], &rows);
+    sql += &copy(
+        "clients",
+        &["id", "role", "balance", "telegram_id", "telegram_username"],
+        &[&[
+            Some("k1"),
+            Some("CLIENT"),
+            Some("0"),
+            Some("4001"),
+            Some("payer"),
+        ]],
+    );
+    let mut subs: Vec<[Option<&str>; 5]> = vec![[
+        Some("s1"),
+        Some("k1"),
+        Some("601"),
+        Some("0"),
+        Some("2026-12-20 00:00:00"),
+    ]];
+    if second {
+        subs.push([
+            Some("s2"),
+            Some("k1"),
+            Some("602"),
+            Some("1"),
+            Some("2026-12-21 00:00:00"),
+        ]);
+    }
+    let rows: Vec<&[Option<&str>]> = subs.iter().map(|r| r.as_slice()).collect();
+    sql += &copy(
+        "subscriptions",
+        &[
+            "id",
+            "owner_id",
+            "remnawave_uuid",
+            "subscription_index",
+            "expire_at",
+        ],
+        &rows,
+    );
+    sql.into_bytes()
+}
+
+async fn last_codes(services: &Services) -> Vec<String> {
+    let run = scalar(services, "SELECT max(id) FROM import_runs").await;
+    let mut conn = services.store().conn().await.unwrap();
+    runs::issues(&mut conn, run)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.code)
+        .collect()
+}
+
+async fn set_multi(env: &Env, admin: AdminId, enabled: bool) {
+    env.services
+        .settings_ops()
+        .update_multi_subscriptions(&sn_domain::settings::MultiSubscriptions { enabled }, admin)
+        .await
+        .unwrap();
+    env.services.set_remna(Some(env.remna.clone()));
+}
+
+#[tokio::test]
+async fn несколько_подписок_старой_панели_включают_режим() {
+    use super::multi::MultiPlan;
+    let Some(env) = env().await else { return };
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+    let (preview, outcome) = import(&env, &multi_dump(Some("true"), false), Some(admin)).await;
+    assert_eq!(
+        preview.multi,
+        Some(MultiPlan::Enable {
+            setting: true,
+            clients: 0
+        })
+    );
+    assert!(outcome.multi);
+    assert!(s.settings().multi_subscriptions);
+    let codes = last_codes(s).await;
+    assert!(codes.iter().any(|c| c == "multi_gift_limit"), "{codes:?}");
+    let (same, again) = import(&env, &multi_dump(Some("true"), false), Some(admin)).await;
+    assert_eq!(same.multi, Some(MultiPlan::Same));
+    assert!(!again.multi);
+
+    let Some(env) = super::tests::env().await else {
+        return;
+    };
+    let admin = owner(&env.services).await;
+    let (single, _) = import(&env, &multi_dump(Some("false"), false), Some(admin)).await;
+    assert_eq!(
+        single.multi, None,
+        "одна подписка в старой панели — менять нечего"
+    );
+    assert!(!env.services.settings().multi_subscriptions);
+    let (many, done) = import(&env, &multi_dump(None, true), Some(admin)).await;
+    assert_eq!(
+        many.multi,
+        Some(MultiPlan::Enable {
+            setting: false,
+            clients: 1
+        }),
+        "у клиента две подписки — режим включается и без настройки"
+    );
+    assert!(done.multi);
+}
+
+#[tokio::test]
+async fn выбранную_одну_подписку_перенос_меняет_только_с_отметкой() {
+    use super::multi::MultiPlan;
+    let Some(env) = env().await else { return };
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+    set_multi(&env, admin, false).await;
+    let (preview, outcome) = import(&env, &multi_dump(None, true), Some(admin)).await;
+    assert_eq!(
+        preview.multi,
+        Some(MultiPlan::Differs {
+            setting: false,
+            clients: 1,
+            recommended: true
+        })
+    );
+    assert!(!outcome.multi);
+    assert!(
+        !s.settings().multi_subscriptions,
+        "без отметки не затирается"
+    );
+    assert!(last_codes(s).await.iter().any(|c| c == "multi_kept"));
+
+    let (_, replaced) = import_with(
+        &env,
+        &multi_dump(None, true),
+        Some(admin),
+        runs::StartOptions {
+            replace_multi: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(replaced.multi);
+    assert!(s.settings().multi_subscriptions);
+
+    set_multi(&env, admin, false).await;
+    let (off, _) = import(&env, &multi_dump(None, true), Some(admin)).await;
+    assert_eq!(
+        off.multi,
+        Some(MultiPlan::Differs {
+            setting: false,
+            clients: 1,
+            recommended: false
+        }),
+        "выключенное после переноса оператор выключил сам — по умолчанию не включаем"
+    );
+    assert!(!s.settings().multi_subscriptions);
 }

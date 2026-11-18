@@ -1200,33 +1200,5 @@ pub fn map(dump: &Dump) -> Legacy {
     admins(dump, &mut legacy);
     auto_rules(dump, &mut legacy);
     legacy.settings = settings.into_iter().collect();
-    category_limit_notes(&mut legacy);
     legacy
-}
-
-fn category_limit_notes(legacy: &mut Legacy) {
-    let multi = legacy
-        .settings
-        .get("multi_subscriptions_enabled")
-        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1"));
-    if multi {
-        return;
-    }
-    let notes: Vec<Problem> = legacy
-        .categories
-        .iter()
-        .filter(|c| legacy.category_limits.contains_key(&c.old_id))
-        .map(|c| Problem {
-            code: "category_limit",
-            entity: "category",
-            old_id: Some(c.old_id.clone()),
-            who: Some(c.name.clone()),
-            details: format!(
-                "Категория «{}»: в старой панели — одна подписка на клиента. Перенесено как лимит в одну подписку этой категории, \
-                 но он действует, только когда в «Тарифах» разрешено несколько подписок у клиента. В старой панели несколько подписок не разрешались",
-                c.name
-            ),
-        })
-        .collect();
-    legacy.problems.extend(notes);
 }

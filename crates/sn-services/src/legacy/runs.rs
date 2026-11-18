@@ -128,12 +128,16 @@ pub struct Preview {
     pub skipped: Vec<Skip>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<super::mail::MailPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi: Option<super::multi::MultiPlan>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartOptions {
     #[serde(default)]
     pub replace_mail: bool,
+    #[serde(default)]
+    pub replace_multi: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +175,8 @@ pub struct Outcome {
     pub providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

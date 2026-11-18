@@ -11,6 +11,7 @@ pub mod mail;
 pub mod matcher;
 pub mod minishop;
 pub mod model;
+pub mod multi;
 pub mod pgcustom;
 pub mod pgdump;
 pub mod remnashop;
@@ -709,6 +710,20 @@ fn print_preview(preview: &runs::Preview, out: &dyn Fn(&str)) {
             out(&format!("Почта не перенесётся: {reason}."))
         }
         None => {}
+    }
+    match &preview.multi {
+        Some(multi::MultiPlan::Enable { setting, clients }) => out(&format!(
+            "Подписок у клиента станет «несколько»: {}.",
+            multi::reason(*setting, *clients)
+        )),
+        Some(multi::MultiPlan::Differs {
+            setting, clients, ..
+        }) => out(&format!(
+            "Режим подписок: в «Тарифах» выбрана одна подписка у клиента, а {}. Из командной строки режим не меняется: \
+             включите «Разрешить несколько подписок» в «Тарифах» или перенесите через мастер с отметкой.",
+            multi::reason(*setting, *clients)
+        )),
+        Some(multi::MultiPlan::Same) | None => {}
     }
     if preview.currency.switch {
         out(&format!(

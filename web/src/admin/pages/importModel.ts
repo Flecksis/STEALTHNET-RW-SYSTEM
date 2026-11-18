@@ -37,6 +37,11 @@ export type MailPlan =
   | { action: 'differs'; current: string; incoming: string }
   | { action: 'skipped'; reason: string };
 
+export type MultiPlan =
+  | { action: 'enable'; setting: boolean; clients: number }
+  | { action: 'same' }
+  | { action: 'differs'; setting: boolean; clients: number; recommended: boolean };
+
 export type Preview = {
   detected: Source;
   dumped_at: string | null;
@@ -56,6 +61,7 @@ export type Preview = {
   tariff_mode: 'tariffs' | 'classic';
   skipped: Skip[];
   mail?: MailPlan | null;
+  multi?: MultiPlan | null;
 };
 
 export type Stage = 'read' | 'tariffs' | 'clients' | 'subscriptions' | 'payments' | 'promo' | 'referrals' | 'tickets' | 'extras' | 'finish';
@@ -72,6 +78,7 @@ export type Outcome = {
   balance_total_minor: number;
   providers?: string[];
   mail?: string | null;
+  multi?: boolean;
 };
 
 export type Run = {

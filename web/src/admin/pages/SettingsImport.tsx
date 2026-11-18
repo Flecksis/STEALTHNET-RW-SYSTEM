@@ -5,7 +5,7 @@ import { count, dateTime, groupDigits, money, NBSP } from '../../lib/format';
 import { usePhone } from '../../lib/media';
 import '../form.css';
 import './import.css';
-import { ACCEPT, ACTIVE, FILES, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type MailPlan, type Outcome, type Run, type Source } from './importModel';
+import { ACCEPT, ACTIVE, FILES, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type MailPlan, type MultiPlan, type Outcome, type Run, type Source } from './importModel';
 import { SettingsLayout } from './SettingsLayout';
 
 function size(bytes: number): string {
@@ -43,6 +43,8 @@ type Ctx = {
   start: () => Promise<void>;
   replaceMail: boolean;
   setReplaceMail: (value: boolean) => void;
+  replaceMulti: boolean | null;
+  setReplaceMulti: (value: boolean) => void;
   recheck: () => Promise<void>;
   discard: () => Promise<void>;
   again: () => void;
@@ -334,6 +336,44 @@ function MailChoice({ ctx, plan }: { ctx: Ctx; plan: MailPlan }) {
   );
 }
 
+function multiReason(setting: boolean, clients: number): string {
+  const many = clients > 0 ? `у ${count(clients, 'клиента', 'клиентов', 'клиентов')} уже по несколько подписок` : '';
+  if (setting) {
+    return many ? `в старой панели разрешалось несколько подписок, ${many}` : 'в старой панели разрешалось несколько подписок';
+  }
+  return `в старой панели ${many}`;
+}
+
+function replaceMultiOf(ctx: Ctx, plan: MultiPlan | null | undefined): boolean {
+  return plan?.action === 'differs' ? (ctx.replaceMulti ?? plan.recommended) : false;
+}
+
+function MultiFact({ plan }: { plan: MultiPlan }) {
+  if (plan.action !== 'enable') {
+    return null;
+  }
+  return <li>Подписок у клиента станет «несколько»: {multiReason(plan.setting, plan.clients)}.</li>;
+}
+
+function MultiChoice({ ctx, plan }: { ctx: Ctx; plan: MultiPlan }) {
+  if (plan.action !== 'differs') {
+    return null;
+  }
+  return (
+    <div className="imp-block">
+      <span className="strong">В «Тарифах» выбрана одна подписка у клиента</span>
+      <span>
+        А {multiReason(plan.setting, plan.clients)}. Без отметки оставим одну: новые подписки у клиентов не появятся, лишние нельзя будет
+        продлить отдельно. Поменять можно и потом в <Link to="/admin/tariffs">«Тарифах»</Link>.
+      </span>
+      <label className="imp-choice">
+        <input type="checkbox" checked={replaceMultiOf(ctx, plan)} onChange={(e) => ctx.setReplaceMulti(e.target.checked)} disabled={ctx.busy} />
+        Разрешить несколько подписок, как в старой панели
+      </label>
+    </div>
+  );
+}
+
 function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
   const p = run.preview;
   if (!p) {
@@ -426,6 +466,7 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
           </li>
         ) : null}
         {p.mail ? <MailFact plan={p.mail} /> : null}
+        {p.multi ? <MultiFact plan={p.multi} /> : null}
         {p.tariff_mode === 'classic' ? (
           <li>
             В старом боте продавали без тарифов. Подписки разложим по тарифам «серверы и трафик», они будут сняты с продажи — цены задайте сами в
@@ -434,6 +475,7 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
         ) : null}
       </ul>
       {p.mail ? <MailChoice ctx={ctx} plan={p.mail} /> : null}
+      {p.multi ? <MultiChoice ctx={ctx} plan={p.multi} /> : null}
       {p.skipped.length ? (
         <div className="imp-skips">
           <h3 className="strong">Что не перенесётся</h3>
@@ -548,6 +590,15 @@ function NextSteps({ ctx, outcome }: { ctx: Ctx; outcome: Outcome }) {
           </ul>
         </details>
       </li>
+      {outcome.multi ? (
+        <li>
+          <span className="strong">Несколько подписок у клиента.</span>
+          <span>
+            Режим включён, как в старой панели: клиенты сохраняют все свои подписки и продлевают каждую отдельно. Лимиты по категориям — в{' '}
+            <Link to="/admin/tariffs">«Тарифах»</Link>.
+          </span>
+        </li>
+      ) : null}
       {outcome.mail ? (
         <li>
           <span className="strong">Проверьте почту.</span>
@@ -825,6 +876,7 @@ export function SettingsImport() {
   const [error, setError] = useState<string | null>(null);
   const [fresh, setFresh] = useState(false);
   const [replaceMail, setReplaceMail] = useState(false);
+  const [replaceMulti, setReplaceMulti] = useState<boolean | null>(null);
   const xhr = useRef<XMLHttpRequest | null>(null);
 
   const load = useCallback(async () => {
@@ -903,6 +955,7 @@ export function SettingsImport() {
       if (request.status >= 200 && request.status < 300 && data) {
         setFresh(false);
         setReplaceMail(false);
+        setReplaceMulti(null);
         setView((v) => (v ? { ...v, run: data as Run } : v));
         void load();
       } else {
@@ -944,11 +997,20 @@ export function SettingsImport() {
           act(() => api<Run>(`/api/admin/import/${run?.id}/password`, { method: 'POST', body: { password: value } }), 'Пароль не отправился'),
         start: () =>
           act(
-            () => api<Run>(`/api/admin/import/${run?.id}/start`, { method: 'POST', body: { replace_mail: replaceMail && run?.preview?.mail?.action === 'differs' } }),
+            () =>
+              api<Run>(`/api/admin/import/${run?.id}/start`, {
+                method: 'POST',
+                body: {
+                  replace_mail: replaceMail && run?.preview?.mail?.action === 'differs',
+                  replace_multi: run?.preview?.multi?.action === 'differs' ? (replaceMulti ?? run.preview.multi.recommended) : false,
+                },
+              }),
             'Перенос не запустился',
           ),
         replaceMail,
         setReplaceMail,
+        replaceMulti,
+        setReplaceMulti,
         recheck: () => act(() => api<Run>(`/api/admin/import/${run?.id}/check`, { method: 'POST', body: {} }), 'Проверка не запустилась'),
         discard: async () => {
           if (run && run.state !== 'done') {
@@ -956,12 +1018,14 @@ export function SettingsImport() {
           }
           setFresh(false);
           setReplaceMail(false);
+          setReplaceMulti(null);
         },
         again: () => {
           setSource(view.run?.source ?? null);
           setPicked(true);
           setFresh(true);
           setReplaceMail(false);
+          setReplaceMulti(null);
           setError(null);
         },
         busy,

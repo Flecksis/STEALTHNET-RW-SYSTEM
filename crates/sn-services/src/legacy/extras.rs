@@ -3,6 +3,7 @@ use super::model::{
     InvoicePurpose, LAdmin, LAutoRule, LGift, LInvoice, LWithdrawal, Legacy, Source,
     WithdrawalState,
 };
+use super::multi::{self, MultiPlan};
 use super::runs::IssueRow;
 use crate::Services;
 use crate::bot_content::{ContentUpdate, Document, DocumentsUpdate};
@@ -30,6 +31,7 @@ pub struct Done {
     pub settings: u64,
     pub providers: Vec<String>,
     pub mail: Option<String>,
+    pub multi: bool,
     pub admins: u64,
     pub withdrawals: u64,
     pub gifts: u64,
@@ -358,6 +360,7 @@ impl<'a> Extras<'a> {
                 );
             }
             self.mail().await?;
+            self.multi().await?;
             self.admins().await?;
         }
         self.withdrawals().await?;
@@ -367,7 +370,7 @@ impl<'a> Extras<'a> {
         Ok(())
     }
 
-    async fn replace_mail(&self) -> ServiceResult<bool> {
+    async fn options(&self) -> ServiceResult<super::runs::StartOptions> {
         let mut conn = self.services.store().conn().await?;
         let options: Option<Value> =
             sqlx::query_scalar("SELECT options FROM import_runs WHERE id = $1")
@@ -376,7 +379,111 @@ impl<'a> Extras<'a> {
                 .await?;
         Ok(options
             .and_then(|o| serde_json::from_value::<super::runs::StartOptions>(o).ok())
-            .is_some_and(|o| o.replace_mail))
+            .unwrap_or_default())
+    }
+
+    async fn replace_mail(&self) -> ServiceResult<bool> {
+        Ok(self.options().await?.replace_mail)
+    }
+
+    async fn multi(&mut self) -> ServiceResult<()> {
+        let old = multi::old_multi(self.legacy);
+        let entity = self.entity("multi");
+        let plan = multi::plan(self.services, &entity, self.legacy).await?;
+        let enable = match &plan {
+            Some(MultiPlan::Enable { .. }) => true,
+            Some(MultiPlan::Differs { .. }) => self.options().await?.replace_multi,
+            Some(MultiPlan::Same) | None => false,
+        };
+        if enable {
+            match self.actor().await? {
+                Some(actor) => {
+                    let value = sn_domain::settings::MultiSubscriptions { enabled: true };
+                    match self
+                        .services
+                        .settings_ops()
+                        .update_multi_subscriptions(&value, actor)
+                        .await
+                    {
+                        Ok(_) => {
+                            self.done.settings += 1;
+                            self.done.multi = true;
+                            let mut conn = self.services.store().conn().await?;
+                            self.remember(&mut conn, "multi", "applied", self.run_id)
+                                .await?;
+                        }
+                        Err(err) => self.issue(
+                            "multi_skipped",
+                            "setting",
+                            None,
+                            Some("Подписки".into()),
+                            format!("Режим нескольких подписок не включён: {err}. Включите его в «Тарифах»"),
+                        ),
+                    }
+                }
+                None => self.issue(
+                    "multi_skipped",
+                    "setting",
+                    None,
+                    Some("Подписки".into()),
+                    "В установке нет владельца — режим нескольких подписок не включён. Включите его в «Тарифах»",
+                ),
+            }
+        } else if let Some(MultiPlan::Differs {
+            setting, clients, ..
+        }) = plan
+        {
+            self.issue(
+                "multi_kept",
+                "setting",
+                None,
+                Some("Подписки".into()),
+                format!(
+                    "Режим подписок не изменён: в «Тарифах» выбрана одна подписка у клиента, а {}. \
+                     Новые подписки у клиентов не появятся, лишние нельзя будет продлить отдельно. \
+                     Включите «Разрешить несколько подписок» в «Тарифах» или перенесите ещё раз с отметкой",
+                    multi::reason(setting, clients)
+                ),
+            );
+        }
+        if old.wanted()
+            && let Some(limit) = old.gift_limit
+        {
+            self.issue(
+                "multi_gift_limit",
+                "setting",
+                None,
+                Some("Подписки".into()),
+                format!(
+                    "В старой панели подарок не активировался, если у клиента уже {limit} подписок или больше. \
+                     В новой панели общего предела нет: сколько подписок одной категории может быть у клиента, \
+                     задаётся у категории в «Тарифах»"
+                ),
+            );
+        }
+        if !self.services.settings().multi_subscriptions {
+            let limited: Vec<(String, String)> = self
+                .legacy
+                .categories
+                .iter()
+                .filter(|c| self.legacy.category_limits.contains_key(&c.old_id))
+                .map(|c| (c.old_id.clone(), c.name.clone()))
+                .collect();
+            for (old_id, name) in limited {
+                self.issue(
+                    "category_limit",
+                    "category",
+                    Some(&old_id),
+                    Some(name.clone()),
+                    format!(
+                        "Категория «{name}»: в старой панели — одна подписка на клиента. Перенесено как лимит в одну подписку \
+                         этой категории, но он действует, только когда в «Тарифах» разрешено несколько подписок у клиента, \
+                         а сейчас там выбрана одна"
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 
     fn mail_issue(&mut self, code: &str, details: String) {

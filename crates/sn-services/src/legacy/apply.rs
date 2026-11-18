@@ -1489,6 +1489,7 @@ impl<'a> Applier<'a> {
         counts.withdrawals = done.withdrawals;
         self.outcome.providers = done.providers;
         self.outcome.mail = done.mail;
+        self.outcome.multi = done.multi;
         self.progress(Stage::Extras, 1, 1).await
     }
 
