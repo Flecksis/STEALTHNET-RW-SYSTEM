@@ -1133,6 +1133,73 @@ async fn платежи_список_и_ручная_отметка_через_h
 }
 
 #[tokio::test]
+async fn возврат_через_http_с_вариантами_ключом_и_вне_панели() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let client = h.client(5_093_118_423).await;
+    let tariff = h.tariff().await;
+    let payment = h.pending_payment(client, &tariff).await;
+    let refund = format!("/api/admin/payments/{}/refund", payment.id.0);
+    let (status, options) = h.get(&refund, &owner).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert!(options["note"].is_string());
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/payments/{}/mark-paid", payment.id.0),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, options) = h.get(&refund, &owner).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["note"], Value::Null);
+    assert_eq!(options["remaining"]["minor"], payment.amount.minor);
+    assert_eq!(options["to_balance"]["available"], true);
+    assert_eq!(options["outside"]["available"], true);
+    assert_eq!(options["subscription"], false);
+    let key = Uuid::new_v4();
+    let once = json!({
+        "method": "balance", "subscription_action": "keep", "amount_minor": 100,
+        "reason": "часть за перебои", "key": key
+    });
+    let (status, first) = h.write(Method::POST, &refund, &owner, once.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, second) = h.write(Method::POST, &refund, &owner, once).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(first["refund"]["refund_id"], second["refund"]["refund_id"]);
+    let outside_key = Uuid::new_v4();
+    let outside = json!({
+        "method": "provider", "outside": true, "subscription_action": "keep",
+        "amount_minor": payment.amount.minor - 100, "key": outside_key
+    });
+    let (status, done) = h
+        .write(Method::POST, &refund, &owner, outside.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["refund"]["pending"], false);
+    assert_eq!(done["refund"]["status"], "refunded");
+    let (status, again) = h.write(Method::POST, &refund, &owner, outside).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["refund"]["refund_id"], done["refund"]["refund_id"]);
+    let (status, options) = h.get(&refund, &owner).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(options["refunded"]["minor"], payment.amount.minor);
+    assert!(options["note"].is_string());
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &refund,
+            &owner,
+            json!({ "method": "balance", "subscription_action": "keep", "outside": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn второй_фактор_клиента_через_http_и_сброс_в_админке() {
     let Some(h) = http().await else { return };
     h.set_bot().await;

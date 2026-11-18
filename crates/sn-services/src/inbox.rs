@@ -12,18 +12,20 @@ use sn_domain::ledger::{LedgerKind, NewLedgerEntry, Wallet};
 use sn_domain::money::{Amount, Money};
 use sn_domain::order::{Order, OrderKind, OrderStatus};
 use sn_domain::payment::{
-    AmountCheck, NewPayment, Payment, PaymentStatus, RefundMethod, RefundSubscriptionAction,
-    check_paid_amount, providers,
+    AmountCheck, NewPayment, NoticeKind, Payment, PaymentStatus, RefundMethod,
+    RefundSubscriptionAction, check_paid_amount, providers,
 };
 use sn_modules::ModuleError;
 use sn_payments::providers::{StarsPayment, StarsPreCheckout};
 use sn_payments::{
-    PaymentError, PaymentRef, ProviderKind, ProviderStatus, RefundRequest, SavedMethod,
-    WebhookOutcome, WebhookReply, WebhookRequest,
+    OutcomeSignal, PaymentError, PaymentProvider, PaymentRef, PrecheckVerdict, ProviderKind,
+    ProviderNotice, ProviderStatus, RefundRequest, SavedMethod, WebhookOutcome, WebhookReply,
+    WebhookRequest,
 };
 use sn_store::{
-    ActorKind, AuditEntry, Db, InboxOutcome, NewInboundWebhook, NewProviderRefund, NewRefund,
-    ProviderRefund, ProviderRefundStatus, RepeatAction, StatusChange, StoreError, Tx, audit_entity,
+    ActorKind, AuditEntry, Db, InboxOutcome, NewInboundWebhook, NewPaymentNotice,
+    NewProviderRefund, NewRefund, ProviderRefund, ProviderRefundStatus, RepeatAction, StatusChange,
+    StoreError, Tx, audit_entity,
 };
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -57,6 +59,11 @@ pub const REPEAT_METHOD: &str = "repeat";
 pub const REPEAT_CREDITED_TEMPLATE: &str = "payment.repeat_credited";
 pub const REPEAT_REVIEW_TEMPLATE: &str = "payment.repeat_review";
 const REFUND_REQUESTED_AUDIT: &str = "payment.refund_requested";
+pub const PAYMENT_CREDITED_TEMPLATE: &str = "payment.credited";
+pub const PAYMENT_REVIEW_TEMPLATE: &str = "payment.review";
+pub const OUTSIDE_REFUND_PREFIX: &str = "outside:";
+const HOLD_REASON: &str = "платёжная система задержала оплату для проверки";
+const NOTICE_TEXT_LIMIT: usize = 1000;
 
 const PURGE_BATCH: i64 = 500;
 const PURGE_ROUNDS: usize = 40;
@@ -80,6 +87,34 @@ fn address_key(ip: Option<IpAddr>) -> String {
 
 fn clip(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+fn dedupe_key(request: &WebhookRequest) -> String {
+    let digest = digest_hex(&request.body);
+    match request
+        .route_suffix
+        .as_deref()
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+    {
+        Some(kind) => format!("{}:{digest}", clip(&kind.to_ascii_lowercase(), 32)),
+        None => digest,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Received {
+    Underpaid,
+    Overpaid,
+}
+
+impl Received {
+    const fn key(self) -> &'static str {
+        match self {
+            Received::Underpaid => "underpaid",
+            Received::Overpaid => "overpaid",
+        }
+    }
 }
 
 fn rejection_outcome(code: &str) -> InboxOutcome {
@@ -188,6 +223,8 @@ pub struct RefundCommand {
     pub reason: Option<String>,
     #[serde(default)]
     pub key: Option<Uuid>,
+    #[serde(default)]
+    pub outside: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -199,6 +236,47 @@ pub struct RefundResult {
     pub amount: Amount,
     pub status: PaymentStatus,
     pub subscription_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RefundWay {
+    pub available: bool,
+    pub note: Option<String>,
+}
+
+impl RefundWay {
+    fn open() -> Self {
+        RefundWay {
+            available: true,
+            note: None,
+        }
+    }
+
+    fn closed(note: impl Into<String>) -> Self {
+        RefundWay {
+            available: false,
+            note: Some(note.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RefundOptions {
+    pub payment_id: PaymentId,
+    pub status: PaymentStatus,
+    pub provider: String,
+    pub provider_title: String,
+    pub amount: Amount,
+    pub refunded: Amount,
+    pub waiting: Amount,
+    pub remaining: Amount,
+    pub topup: bool,
+    pub subscription: bool,
+    pub days: u32,
+    pub note: Option<String>,
+    pub to_balance: RefundWay,
+    pub via_provider: RefundWay,
+    pub outside: RefundWay,
 }
 
 struct RecordedRefund {
@@ -364,6 +442,32 @@ async fn find_payment(
     Ok(id)
 }
 
+async fn lookup(
+    db: &mut impl Db,
+    provider: &str,
+    reference: &PaymentRef,
+) -> ServiceResult<Option<Payment>> {
+    let found = match reference {
+        PaymentRef::Payment(id) => db.payments().get(*id).await.map(Some),
+        PaymentRef::PublicId(public_id) => db.payments().by_public_id(*public_id).await.map(Some),
+        PaymentRef::ProviderTxid(txid) => db.payments().by_provider_txid(provider, txid).await,
+    };
+    match found {
+        Ok(payment) => Ok(payment.filter(|p| p.provider.as_str() == provider)),
+        Err(StoreError::NotFound(_)) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn paid_elsewhere(tx: &mut Tx, order: OrderId, except: PaymentId) -> ServiceResult<bool> {
+    Ok(tx
+        .payments()
+        .for_order(order)
+        .await?
+        .iter()
+        .any(|p| p.id != except && p.status.is_paid_like()))
+}
+
 async fn locate(tx: &mut Tx, provider: &str, reference: &PaymentRef) -> ServiceResult<Payment> {
     let id = find_payment(tx, provider, reference).await?;
     let payment = tx.payments().lock(id).await?;
@@ -399,6 +503,52 @@ async fn locate_refunded(
     }
 }
 
+async fn replay(tx: &mut Tx, payment: &Payment, key: Uuid) -> ServiceResult<Option<RefundResult>> {
+    let reused = || {
+        ServiceError::rejected(
+            "refund.key_reused",
+            "Этот ключ возврата уже использован для другого платежа",
+        )
+    };
+    if let Some((refund_id, owner)) = tx.refunds().by_request_key(key).await? {
+        if owner != payment.id {
+            return Err(reused());
+        }
+        let amount = tx
+            .refunds()
+            .for_payment(payment.id)
+            .await?
+            .into_iter()
+            .find(|r| r.id == refund_id)
+            .map(|r| r.amount)
+            .ok_or(ServiceError::NotFound("возврат"))?;
+        return Ok(Some(RefundResult {
+            refund_id: Some(refund_id),
+            request_id: None,
+            pending: false,
+            payment_id: payment.id,
+            amount,
+            status: payment.status,
+            subscription_error: None,
+        }));
+    }
+    if let Some(request) = tx.payments().provider_refund_by_key(key).await? {
+        if request.payment_id != payment.id {
+            return Err(reused());
+        }
+        return Ok(Some(RefundResult {
+            refund_id: request.refund_id,
+            request_id: Some(request.id),
+            pending: request.status == ProviderRefundStatus::Pending,
+            payment_id: payment.id,
+            amount: request.amount,
+            status: payment.status,
+            subscription_error: None,
+        }));
+    }
+    Ok(None)
+}
+
 impl<'a> PaymentInbox<'a> {
     pub fn new(services: &'a Services) -> Self {
         PaymentInbox { services }
@@ -412,7 +562,7 @@ impl<'a> PaymentInbox<'a> {
         if hook.request.body.len() > MAX_WEBHOOK_BODY {
             return Ok(WebhookResponse::status(413));
         }
-        let dedupe_key = digest_hex(&hook.request.body);
+        let dedupe_key = dedupe_key(&hook.request);
         if !registry.accepts_webhooks(provider.id()) {
             let reason =
                 if provider.kind() == ProviderKind::External && provider.accepts_http_webhooks() {
@@ -464,6 +614,24 @@ impl<'a> PaymentInbox<'a> {
                 .await;
                 return Ok(WebhookResponse::status(status));
             }
+        };
+        let parsed = match &parsed.signal {
+            Some(OutcomeSignal::Precheck { account }) => {
+                match self
+                    .precheck(provider.id(), &parsed, account.as_deref())
+                    .await
+                {
+                    Ok(verdict) => WebhookOutcome {
+                        reply: provider.precheck_reply(verdict),
+                        ..parsed
+                    },
+                    Err(err) => {
+                        tracing::warn!(provider = provider.id(), error = %err, "проверка платежа перед списанием не прошла");
+                        return Ok(WebhookResponse::status(503));
+                    }
+                }
+            }
+            _ => parsed,
         };
         let record = {
             let mut conn = self.services.store().conn().await?;
@@ -658,12 +826,25 @@ impl<'a> PaymentInbox<'a> {
         provider: &str,
         outcome: &WebhookOutcome,
     ) -> ServiceResult<AcceptResult> {
+        if let Some(notice) = outcome.notice()
+            && outcome.status != ProviderStatus::Held
+        {
+            self.note_event(provider, outcome, notice).await?;
+        }
         let Some(reference) = &outcome.payment else {
             return Ok(AcceptResult::Ignored {
                 reason: "событие без нашего платежа".into(),
             });
         };
         match outcome.status {
+            ProviderStatus::Pending
+                if outcome
+                    .notice()
+                    .is_some_and(|n| n.kind == NoticeKind::RefundReported) =>
+            {
+                self.accept_failure(provider, reference, outcome, PaymentStatus::Canceled)
+                    .await
+            }
             ProviderStatus::Pending => {
                 if let (PaymentRef::Payment(id), Some(txid)) =
                     (reference, outcome.provider_txid.as_deref())
@@ -675,7 +856,16 @@ impl<'a> PaymentInbox<'a> {
                     reason: "платёж ещё не завершён".into(),
                 })
             }
-            ProviderStatus::Paid => self.accept_paid(provider, reference, outcome).await,
+            ProviderStatus::Paid => self.accept_paid(provider, reference, outcome, None).await,
+            ProviderStatus::Overpaid { received } => {
+                self.accept_paid(provider, reference, outcome, Some(received))
+                    .await
+            }
+            ProviderStatus::Underpaid { received } => {
+                self.accept_underpaid(provider, reference, outcome, received)
+                    .await
+            }
+            ProviderStatus::Held => self.accept_held(provider, reference, outcome).await,
             ProviderStatus::Failed => {
                 self.accept_failure(provider, reference, outcome, PaymentStatus::Failed)
                     .await
@@ -697,11 +887,424 @@ impl<'a> PaymentInbox<'a> {
         }
     }
 
+    async fn precheck(
+        &self,
+        provider: &str,
+        outcome: &WebhookOutcome,
+        account: Option<&str>,
+    ) -> ServiceResult<PrecheckVerdict> {
+        let mut conn = self.services.store().conn().await?;
+        let Some(reference) = &outcome.payment else {
+            return Ok(PrecheckVerdict::UnknownInvoice);
+        };
+        let Some(payment) = lookup(&mut conn, provider, reference).await? else {
+            return Ok(PrecheckVerdict::UnknownInvoice);
+        };
+        let client = conn.clients().get(payment.client_id).await?;
+        if account.is_some_and(|account| Uuid::parse_str(account).ok() != Some(client.public_id)) {
+            return Ok(PrecheckVerdict::WrongAccount);
+        }
+        if outcome.amount != Some(payment.amount) {
+            return Ok(PrecheckVerdict::WrongAmount);
+        }
+        if client.is_blocked() {
+            return Ok(PrecheckVerdict::Rejected);
+        }
+        let open = payment.expires_at.is_none_or(|at| at > self.services.now());
+        Ok(match payment.status {
+            PaymentStatus::Pending | PaymentStatus::Failed if open => PrecheckVerdict::Accept,
+            PaymentStatus::Pending | PaymentStatus::Failed | PaymentStatus::Canceled if !open => {
+                PrecheckVerdict::Expired
+            }
+            _ => PrecheckVerdict::Rejected,
+        })
+    }
+
+    async fn note_event(
+        &self,
+        provider: &str,
+        outcome: &WebhookOutcome,
+        notice: &ProviderNotice,
+    ) -> ServiceResult<()> {
+        let mut conn = self.services.store().conn().await?;
+        let payment = match &outcome.payment {
+            Some(reference) => lookup(&mut conn, provider, reference).await?,
+            None => None,
+        };
+        let recorded = conn
+            .payment_notices()
+            .record(&NewPaymentNotice {
+                provider: provider.to_string(),
+                event_key: outcome.event_key.clone(),
+                kind: notice.kind,
+                payment_id: payment.as_ref().map(|p| p.id),
+                client_id: payment.as_ref().map(|p| p.client_id),
+                amount: outcome.amount.or(payment.as_ref().map(|p| p.amount)),
+                text: clip(&notice.text, NOTICE_TEXT_LIMIT),
+            })
+            .await?;
+        if recorded.is_some() {
+            tracing::warn!(
+                provider,
+                event = %outcome.event_key,
+                kind = notice.kind.as_str(),
+                payment = ?payment.as_ref().map(|p| p.id),
+                "платёжная система сообщила о событии, которое нужно проверить вручную"
+            );
+        }
+        Ok(())
+    }
+
+    async fn accept_held(
+        &self,
+        provider: &str,
+        reference: &PaymentRef,
+        outcome: &WebhookOutcome,
+    ) -> ServiceResult<AcceptResult> {
+        let mut tx = self.services.store().begin().await?;
+        let payment = locate(&mut tx, provider, reference).await?;
+        if payment.status != PaymentStatus::Pending {
+            drop(tx);
+            if let Some(notice) = outcome.notice() {
+                self.note_event(provider, outcome, notice).await?;
+            }
+            return Ok(AcceptResult::Ignored {
+                reason: format!("платёж уже {}", payment.status.as_str()),
+            });
+        }
+        if let Some(txid) = outcome.provider_txid.as_deref() {
+            tx.payments().remember_txid(payment.id, txid).await?;
+        }
+        tx.payments().hold(payment.id).await?;
+        let order = tx.orders().lock(payment.order_id).await?;
+        if order.status == OrderStatus::Pending {
+            let reason = outcome.notice().map_or_else(
+                || HOLD_REASON.to_string(),
+                |n| clip(&n.text, NOTICE_TEXT_LIMIT),
+            );
+            tx.orders().mark_review(order.id, &reason).await?;
+            tx.audit()
+                .record(&AuditEntry {
+                    actor_kind: ActorKind::System,
+                    actor_id: None,
+                    action: "order.review".into(),
+                    entity_kind: Some(audit_entity::ORDER.into()),
+                    entity_id: Some(order.id.0),
+                    details: serde_json::json!({
+                        "payment_id": payment.id,
+                        "amount": payment.amount,
+                        "reason": reason,
+                        "held": true,
+                    }),
+                    ip: None,
+                })
+                .await?;
+            self.notify(
+                &mut tx,
+                payment.client_id,
+                PAYMENT_REVIEW_TEMPLATE,
+                format!(
+                    "Оплата {} получена, но платёжная система задержала её для проверки. \
+                     Заказ ждёт ручной проверки, мы свяжемся с вами.",
+                    amount_text(payment.amount)
+                ),
+                &payment,
+                &order,
+            )
+            .await?;
+            tracing::warn!(payment = %payment.id, order = %order.id, "платёжная система задержала оплату, заказ ждёт ручной проверки");
+        }
+        tx.commit().await?;
+        Ok(AcceptResult::StatusChanged {
+            payment_id: payment.id,
+            status: PaymentStatus::Pending,
+        })
+    }
+
+    async fn notify(
+        &self,
+        tx: &mut Tx,
+        client: ClientId,
+        template: &str,
+        text: String,
+        payment: &Payment,
+        order: &Order,
+    ) -> ServiceResult<()> {
+        tx.jobs()
+            .enqueue(
+                &JobPayload::Notify {
+                    client_id: client,
+                    template: template.into(),
+                    params: serde_json::json!({
+                        "text": text,
+                        "amount": payment.amount,
+                        "payment_id": payment.id,
+                        "order_id": order.id,
+                    }),
+                },
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn accept_underpaid(
+        &self,
+        provider: &str,
+        reference: &PaymentRef,
+        outcome: &WebhookOutcome,
+        received: Amount,
+    ) -> ServiceResult<AcceptResult> {
+        let mut tx = self.services.store().begin().await?;
+        let payment = locate(&mut tx, provider, reference).await?;
+        if payment.status.is_paid_like() {
+            return Ok(AcceptResult::Ignored {
+                reason: format!("платёж уже {}", payment.status.as_str()),
+            });
+        }
+        let change = match tx
+            .payments()
+            .transition(
+                payment.id,
+                PaymentStatus::Failed,
+                outcome.provider_txid.as_deref(),
+                Some("оплата пришла не полностью"),
+            )
+            .await
+        {
+            Ok(change) => change,
+            Err(StoreError::Invalid(_)) => StatusChange::Unchanged(payment.clone()),
+            Err(StoreError::Conflict { message, .. }) => {
+                return Err(ServiceError::rejected("payment.txid_mismatch", message));
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let order = tx.orders().lock(payment.order_id).await?;
+        let held = order.status == OrderStatus::Review
+            && !paid_elsewhere(&mut tx, order.id, payment.id).await?;
+        let order = if order.status == OrderStatus::Pending || held {
+            let (canceled, changed) = tx
+                .orders()
+                .transition(order.id, OrderStatus::Canceled)
+                .await?;
+            if changed {
+                let ctx = self.services.module_context();
+                self.services
+                    .modules()
+                    .order_canceled(&ctx, &mut tx, &canceled)
+                    .await?;
+            }
+            canceled
+        } else {
+            order
+        };
+        self.credit_received(
+            &mut tx,
+            provider,
+            &order,
+            &payment,
+            received,
+            Received::Underpaid,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(AcceptResult::StatusChanged {
+            payment_id: payment.id,
+            status: change.payment().status,
+        })
+    }
+
+    async fn credit_received(
+        &self,
+        tx: &mut Tx,
+        provider: &str,
+        order: &Order,
+        payment: &Payment,
+        amount: Amount,
+        why: Received,
+    ) -> ServiceResult<()> {
+        if amount.minor <= 0 {
+            return Ok(());
+        }
+        let currency = self.services.settings().currency;
+        let shown = amount_text(amount);
+        let expected = amount_text(payment.amount);
+        let key = format!("{}:payment:{}", why.key(), payment.id);
+        let details = serde_json::json!({
+            "order_id": order.id,
+            "amount": amount,
+            "expected": payment.amount,
+            "provider_txid": payment.provider_txid,
+        });
+        match amount.as_money().filter(|m| m.currency == currency) {
+            Some(money) => {
+                let appended = tx
+                    .ledger()
+                    .append(&NewLedgerEntry {
+                        client_id: payment.client_id,
+                        wallet: Wallet::Main,
+                        amount: money,
+                        kind: LedgerKind::TopUp,
+                        order_id: Some(order.id),
+                        payment_id: Some(payment.id),
+                        admin_id: None,
+                        comment: Some(match why {
+                            Received::Underpaid => format!(
+                                "Оплата заказа {} пришла не полностью: получено {shown} из {expected}, зачислено на баланс",
+                                order.public_id
+                            ),
+                            Received::Overpaid => format!(
+                                "Излишек оплаты заказа {}: зачислено на баланс",
+                                order.public_id
+                            ),
+                        }),
+                        idempotency_key: Some(key),
+                    })
+                    .await?;
+                if appended.duplicate {
+                    return Ok(());
+                }
+                tx.events()
+                    .push(&DomainEvent::BalanceChanged {
+                        client_id: payment.client_id,
+                        wallet: Wallet::Main,
+                        kind: LedgerKind::TopUp,
+                        delta: money,
+                    })
+                    .await?;
+                tx.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::System,
+                        actor_id: None,
+                        action: format!("payment.{}_credited", why.key()),
+                        entity_kind: Some("payment".into()),
+                        entity_id: Some(payment.id.0),
+                        details,
+                        ip: None,
+                    })
+                    .await?;
+                let text = match why {
+                    Received::Underpaid => format!(
+                        "Оплата пришла не полностью: получено {shown} из {expected}. \
+                         Заказ не оформлен, полученные {shown} зачислены на баланс."
+                    ),
+                    Received::Overpaid => {
+                        format!("Оплата пришла с излишком: лишние {shown} зачислены на баланс.")
+                    }
+                };
+                self.notify(
+                    tx,
+                    payment.client_id,
+                    PAYMENT_CREDITED_TEMPLATE,
+                    text,
+                    payment,
+                    order,
+                )
+                .await?;
+                tracing::info!(payment = %payment.id, amount = %shown, reason = why.key(), "полученные деньги зачислены на баланс");
+            }
+            None => {
+                let recorded = tx
+                    .payment_notices()
+                    .record(&NewPaymentNotice {
+                        provider: provider.to_string(),
+                        event_key: key,
+                        kind: NoticeKind::ManualCredit,
+                        payment_id: Some(payment.id),
+                        client_id: Some(payment.client_id),
+                        amount: Some(amount),
+                        text: match why {
+                            Received::Underpaid => format!(
+                                "Оплата пришла не полностью: получено {shown} из {expected}, заказ отменён. \
+                                 Деньги в другой валюте, чем валюта магазина ({}), поэтому на баланс \
+                                 сами не зачислились: зачислите их вручную или верните клиенту",
+                                currency.code()
+                            ),
+                            Received::Overpaid => format!(
+                                "Оплата пришла с излишком {shown}. Излишек в другой валюте, чем \
+                                 валюта магазина ({}), поэтому на баланс сам не зачислился: \
+                                 зачислите его вручную или верните клиенту",
+                                currency.code()
+                            ),
+                        },
+                    })
+                    .await?;
+                if recorded.is_none() {
+                    return Ok(());
+                }
+                tx.audit()
+                    .record(&AuditEntry {
+                        actor_kind: ActorKind::System,
+                        actor_id: None,
+                        action: format!("payment.{}_review", why.key()),
+                        entity_kind: Some("payment".into()),
+                        entity_id: Some(payment.id.0),
+                        details,
+                        ip: None,
+                    })
+                    .await?;
+                let text = match why {
+                    Received::Underpaid => format!(
+                        "Оплата пришла не полностью: получено {shown} из {expected}. \
+                         Заказ не оформлен. Мы проверим платёж вручную и свяжемся с вами."
+                    ),
+                    Received::Overpaid => format!(
+                        "Оплата пришла с излишком {shown}. Мы проверим платёж вручную и свяжемся с вами."
+                    ),
+                };
+                self.notify(
+                    tx,
+                    payment.client_id,
+                    PAYMENT_REVIEW_TEMPLATE,
+                    text,
+                    payment,
+                    order,
+                )
+                .await?;
+                tracing::warn!(payment = %payment.id, amount = %shown, reason = why.key(), "полученные деньги ждут ручного зачисления");
+            }
+        }
+        Ok(())
+    }
+
+    async fn revoke_method(&self, tx: &mut Tx, payment: &Payment) -> ServiceResult<()> {
+        let provider = payment.provider.as_str();
+        let Some(record) = tx
+            .saved_methods()
+            .active(payment.client_id, provider)
+            .await?
+        else {
+            return Ok(());
+        };
+        if record.created_at > payment.created_at {
+            return Ok(());
+        }
+        tx.saved_methods().revoke(record.id).await?;
+        tx.audit()
+            .record(&AuditEntry {
+                actor_kind: ActorKind::System,
+                actor_id: None,
+                action: "payment.saved_method_revoked".into(),
+                entity_kind: Some("payment".into()),
+                entity_id: Some(payment.id.0),
+                details: serde_json::json!({
+                    "client_id": payment.client_id,
+                    "provider": provider,
+                    "title": record.title,
+                }),
+                ip: None,
+            })
+            .await?;
+        tracing::info!(client = %payment.client_id, provider, payment = %payment.id, "клиент отозвал разрешение на автосписание, сохранённая карта снята");
+        Ok(())
+    }
+
     async fn accept_paid(
         &self,
         provider: &str,
         reference: &PaymentRef,
         outcome: &WebhookOutcome,
+        received: Option<Amount>,
     ) -> ServiceResult<AcceptResult> {
         let mut tx = self.services.store().begin().await?;
         let payment = locate(&mut tx, provider, reference).await?;
@@ -731,6 +1334,29 @@ impl<'a> PaymentInbox<'a> {
                 outcome.saved_method.as_ref(),
             )
             .await?;
+        if let (
+            Some(received),
+            AcceptResult::Accepted {
+                order_id,
+                payment_id,
+            },
+        ) = (received, &result)
+        {
+            let paid = tx.payments().get(*payment_id).await?;
+            let surplus = received.minor - paid.amount.minor;
+            if received.currency == paid.amount.currency && surplus > 0 {
+                let order = tx.orders().get(*order_id).await?;
+                self.credit_received(
+                    &mut tx,
+                    provider,
+                    &order,
+                    &paid,
+                    Amount::new(surplus, received.currency),
+                    Received::Overpaid,
+                )
+                .await?;
+            }
+        }
         tx.commit().await?;
         Ok(result)
     }
@@ -832,45 +1458,48 @@ impl<'a> PaymentInbox<'a> {
             self.save_method(tx, &paid, method).await?;
         }
         let order = tx.orders().lock(paid.order_id).await?;
-        let order = if matches!(order.status, OrderStatus::Pending | OrderStatus::Canceled) {
-            let (order, _) = tx.orders().transition(order.id, OrderStatus::Paid).await?;
-            if let Some(reason) = self.modules_reject(tx, &order, &paid).await? {
-                self.hold_for_review(tx, &order, &paid, &reason).await?;
-                order
-            } else if order.kind == OrderKind::TopUp {
-                credit_topup(tx, &order, &paid).await?;
-                let (fulfilled, changed) = tx
-                    .orders()
-                    .transition(order.id, OrderStatus::Fulfilled)
-                    .await?;
-                if changed {
-                    tx.events()
-                        .push(&DomainEvent::OrderFulfilled {
-                            order_id: fulfilled.id,
-                            client_id: fulfilled.client_id,
-                            order_kind: fulfilled.kind,
-                            subscription_id: None,
-                        })
+        let resumes =
+            order.status == OrderStatus::Review && !paid_elsewhere(tx, order.id, paid.id).await?;
+        let order =
+            if matches!(order.status, OrderStatus::Pending | OrderStatus::Canceled) || resumes {
+                let (order, _) = tx.orders().transition(order.id, OrderStatus::Paid).await?;
+                if let Some(reason) = self.modules_reject(tx, &order, &paid).await? {
+                    self.hold_for_review(tx, &order, &paid, &reason).await?;
+                    order
+                } else if order.kind == OrderKind::TopUp {
+                    credit_topup(tx, &order, &paid).await?;
+                    let (fulfilled, changed) = tx
+                        .orders()
+                        .transition(order.id, OrderStatus::Fulfilled)
                         .await?;
+                    if changed {
+                        tx.events()
+                            .push(&DomainEvent::OrderFulfilled {
+                                order_id: fulfilled.id,
+                                client_id: fulfilled.client_id,
+                                order_kind: fulfilled.kind,
+                                subscription_id: None,
+                            })
+                            .await?;
+                    }
+                    fulfilled
+                } else {
+                    tx.jobs()
+                        .enqueue(&JobPayload::FulfillOrder { order_id: order.id }, None)
+                        .await?;
+                    order
                 }
-                fulfilled
             } else {
-                tx.jobs()
-                    .enqueue(&JobPayload::FulfillOrder { order_id: order.id }, None)
-                    .await?;
+                let original = tx
+                    .payments()
+                    .for_order(order.id)
+                    .await?
+                    .into_iter()
+                    .find(|p| p.id != paid.id && p.status.is_paid_like())
+                    .map(|p| p.id);
+                self.repeat_payment(tx, &order, &paid, original).await?;
                 order
-            }
-        } else {
-            let original = tx
-                .payments()
-                .for_order(order.id)
-                .await?
-                .into_iter()
-                .find(|p| p.id != paid.id && p.status.is_paid_like())
-                .map(|p| p.id);
-            self.repeat_payment(tx, &order, &paid, original).await?;
-            order
-        };
+            };
         tx.events()
             .push(&DomainEvent::PaymentPaid {
                 payment_id: paid.id,
@@ -1068,6 +1697,9 @@ impl<'a> PaymentInbox<'a> {
     ) -> ServiceResult<AcceptResult> {
         let mut tx = self.services.store().begin().await?;
         let payment = locate(&mut tx, provider, reference).await?;
+        if outcome.method_revoked() {
+            self.revoke_method(&mut tx, &payment).await?;
+        }
         let change = match tx
             .payments()
             .transition(
@@ -1080,6 +1712,7 @@ impl<'a> PaymentInbox<'a> {
         {
             Ok(change) => change,
             Err(StoreError::Invalid(_)) | Err(StoreError::Conflict { .. }) => {
+                tx.commit().await?;
                 return Ok(AcceptResult::Ignored {
                     reason: format!("платёж уже {}", payment.status.as_str()),
                 });
@@ -1088,7 +1721,9 @@ impl<'a> PaymentInbox<'a> {
         };
         if change.applied() {
             let order = tx.orders().lock(payment.order_id).await?;
-            if order.status == OrderStatus::Pending {
+            let held = order.status == OrderStatus::Review
+                && !paid_elsewhere(&mut tx, order.id, payment.id).await?;
+            if order.status == OrderStatus::Pending || held {
                 let (canceled, changed) = tx
                     .orders()
                     .transition(order.id, OrderStatus::Canceled)
@@ -1148,6 +1783,20 @@ impl<'a> PaymentInbox<'a> {
             return self
                 .confirm_request(tx, &payment, request, &outcome.event_key, remaining)
                 .await;
+        }
+        if let Some(outside) = partial.or(outcome.amount).and_then(|reported| {
+            refunds.iter().find(|r| {
+                r.amount == reported
+                    && r.provider_refund_id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with(OUTSIDE_REFUND_PREFIX))
+            })
+        }) {
+            tx.refunds().relink(outside.id, &outcome.event_key).await?;
+            tx.commit().await?;
+            return Ok(AcceptResult::AlreadyApplied {
+                payment_id: payment.id,
+            });
         }
         let delta = match partial {
             None => remaining,
@@ -1632,6 +2281,11 @@ impl<'a> PaymentInbox<'a> {
     ) -> ServiceResult<RefundResult> {
         let mut tx = self.services.store().begin().await?;
         let payment = tx.payments().lock(payment_id).await?;
+        if let Some(key) = command.key
+            && let Some(done) = replay(&mut tx, &payment, key).await?
+        {
+            return Ok(done);
+        }
         match self
             .refund_locked(&mut tx, &payment, command, Some(admin))
             .await?
@@ -1676,7 +2330,11 @@ impl<'a> PaymentInbox<'a> {
                     .record(&AuditEntry {
                         actor_kind: ActorKind::Admin,
                         actor_id: Some(admin.0),
-                        action: "payment.refund".into(),
+                        action: if command.outside {
+                            "payment.refund_outside".into()
+                        } else {
+                            "payment.refund".into()
+                        },
                         entity_kind: Some("payment".into()),
                         entity_id: Some(payment.id.0),
                         details: serde_json::json!({
@@ -1725,6 +2383,7 @@ impl<'a> PaymentInbox<'a> {
     ) -> ServiceResult<RefundStep> {
         let currency = self.services.settings().currency;
         let now = self.services.now();
+        let key = command.key.unwrap_or_else(Uuid::new_v4);
         if !matches!(
             payment.status,
             PaymentStatus::Paid | PaymentStatus::PartiallyRefunded
@@ -1763,6 +2422,24 @@ impl<'a> PaymentInbox<'a> {
         let order = tx.orders().get(payment.order_id).await?;
         let credited = credits_balance(&order, tx.payments().repeat_action(payment.id).await?);
         let (provider_refund_id, completed, hold) = match command.method {
+            RefundMethod::Balance if command.outside => {
+                return Err(ServiceError::rejected(
+                    "refund.outside_balance",
+                    "Вне панели деньги возвращают через платёжную систему, а не на баланс",
+                ));
+            }
+            RefundMethod::Provider if command.outside => {
+                if matches!(
+                    payment.provider.as_str(),
+                    providers::BALANCE | providers::STARS
+                ) {
+                    return Err(ServiceError::rejected(
+                        "refund.outside_provider",
+                        "Эту оплату нельзя отметить возвращённой вне панели",
+                    ));
+                }
+                (Some(format!("{OUTSIDE_REFUND_PREFIX}{key}")), true, None)
+            }
             RefundMethod::Balance => {
                 if credited {
                     return Err(ServiceError::rejected(
@@ -1820,7 +2497,7 @@ impl<'a> PaymentInbox<'a> {
                             provider_txid: txid,
                             amount,
                             reason: command.reason.clone(),
-                            key: command.key.unwrap_or_else(Uuid::new_v4),
+                            key,
                             email,
                             description: Some(description),
                         },
@@ -1842,6 +2519,9 @@ impl<'a> PaymentInbox<'a> {
                     hold_entry_id: hold,
                     requested_at: now,
                 })
+                .await?;
+            tx.payments()
+                .set_provider_refund_key(request.id, key)
                 .await?;
             tx.jobs()
                 .enqueue(
@@ -1873,9 +2553,111 @@ impl<'a> PaymentInbox<'a> {
                 },
             )
             .await?;
+        tx.refunds()
+            .set_request_key(recorded.refund_id, key)
+            .await?;
         Ok(RefundStep::Recorded {
             recorded: Box::new(recorded),
             amount,
+        })
+    }
+
+    pub async fn refund_keyed(&self, payment_id: PaymentId, key: Uuid) -> ServiceResult<bool> {
+        let mut conn = self.services.store().conn().await?;
+        if let Some((_, owner)) = conn.refunds().by_request_key(key).await? {
+            return Ok(owner == payment_id);
+        }
+        Ok(conn
+            .payments()
+            .provider_refund_by_key(key)
+            .await?
+            .is_some_and(|r| r.payment_id == payment_id))
+    }
+
+    pub async fn refund_options(&self, payment_id: PaymentId) -> ServiceResult<RefundOptions> {
+        let currency = self.services.settings().currency;
+        let mut conn = self.services.store().conn().await?;
+        let payment = conn.payments().get(payment_id).await?;
+        let already: i64 = conn
+            .refunds()
+            .for_payment(payment.id)
+            .await?
+            .iter()
+            .map(|r| r.amount.minor)
+            .sum();
+        let waiting = pending_minor(&conn.payments().provider_refunds(payment.id).await?);
+        let remaining = (payment.amount.minor - already - waiting).max(0);
+        let order = conn.orders().get(payment.order_id).await?;
+        let topup = credits_balance(&order, conn.payments().repeat_action(payment.id).await?);
+        let registry = self.services.payments();
+        let provider = registry.get(payment.provider.as_str());
+        let title = provider.as_ref().map_or_else(
+            || payment.provider.as_str().to_string(),
+            |p| p.title().to_string(),
+        );
+        let note = if !matches!(
+            payment.status,
+            PaymentStatus::Paid | PaymentStatus::PartiallyRefunded
+        ) {
+            Some("Вернуть можно только оплаченный платёж".to_string())
+        } else if remaining <= 0 && waiting > 0 {
+            Some("Возврат по этому платежу уже ждёт подтверждения платёжной системы".to_string())
+        } else if remaining <= 0 {
+            Some("Платёж уже возвращён полностью".to_string())
+        } else {
+            None
+        };
+        let to_balance = if topup {
+            RefundWay::closed("Пополнение баланса возвращается только через платёжную систему")
+        } else if payment
+            .amount
+            .as_money()
+            .is_none_or(|m| m.currency != currency)
+        {
+            RefundWay::closed("На баланс возвращаются только суммы в валюте магазина")
+        } else {
+            RefundWay::open()
+        };
+        let internal = matches!(
+            payment.provider.as_str(),
+            providers::BALANCE | providers::STARS
+        );
+        let via_provider = match &provider {
+            _ if payment.provider.as_str() == providers::BALANCE => {
+                RefundWay::closed("Оплату с баланса возвращают на баланс")
+            }
+            Some(p) if p.kind() != ProviderKind::Balance && p.supports_refunds() => {
+                if payment.provider_txid.is_some() {
+                    RefundWay::open()
+                } else {
+                    RefundWay::closed("У платежа нет номера транзакции в платёжной системе")
+                }
+            }
+            _ => RefundWay::closed(format!(
+                "{title} не возвращает деньги через панель: верните их в кабинете {title} и отметьте возврат"
+            )),
+        };
+        let outside = if internal {
+            RefundWay::closed("Эту оплату нельзя отметить возвращённой вне панели")
+        } else {
+            RefundWay::open()
+        };
+        Ok(RefundOptions {
+            payment_id: payment.id,
+            status: payment.status,
+            provider: payment.provider.as_str().to_string(),
+            provider_title: title,
+            amount: payment.amount,
+            refunded: Amount::new(already, payment.amount.currency),
+            waiting: Amount::new(waiting, payment.amount.currency),
+            remaining: Amount::new(remaining, payment.amount.currency),
+            topup,
+            subscription: order.subscription_id.is_some(),
+            days: order.quote.days,
+            note,
+            to_balance,
+            via_provider,
+            outside,
         })
     }
 
@@ -1944,9 +2726,61 @@ impl<'a> PaymentInbox<'a> {
             return Ok(PollResult::Unsupported);
         }
         let Some(txid) = payment.provider_txid.clone() else {
-            return Ok(PollResult::Pending);
+            return self.confirm_by_payment(&payment).await;
         };
         self.confirm_by_txid(payment.id, &txid).await
+    }
+
+    async fn confirm_by_payment(&self, payment: &Payment) -> ServiceResult<PollResult> {
+        let Some(provider) = self
+            .services
+            .payments()
+            .get(payment.provider.as_str())
+            .filter(|p| p.kind() == ProviderKind::External && p.polls_by_payment_id())
+        else {
+            return Ok(PollResult::Pending);
+        };
+        let config = self.services.payments().config(provider.id());
+        let outcome = match provider
+            .fetch_status(&config, &payment.public_id.to_string())
+            .await
+        {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => return Ok(PollResult::Pending),
+            Err(PaymentError::NotImplemented(_))
+            | Err(PaymentError::Unsupported(_))
+            | Err(PaymentError::NotConfigured(_)) => return Ok(PollResult::Unsupported),
+            Err(err) => return Err(err.into()),
+        };
+        let Some(txid) = outcome
+            .provider_txid
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+        else {
+            return Ok(PollResult::Pending);
+        };
+        if outcome.status == ProviderStatus::Pending {
+            self.track_pending(payment.id, &txid).await?;
+            return Ok(PollResult::Pending);
+        }
+        self.settle_polled(provider.as_ref(), payment.id, &txid, outcome)
+            .await
+    }
+
+    async fn settle_polled(
+        &self,
+        provider: &dyn PaymentProvider,
+        payment_id: PaymentId,
+        txid: &str,
+        outcome: WebhookOutcome,
+    ) -> ServiceResult<PollResult> {
+        let outcome = WebhookOutcome {
+            payment: Some(PaymentRef::Payment(payment_id)),
+            provider_txid: Some(txid.to_string()),
+            ..outcome
+        };
+        self.apply_outcome(provider.id(), &outcome).await?;
+        Ok(PollResult::Settled)
     }
 
     fn chain_providers(&self) -> Vec<&'static str> {
@@ -2084,13 +2918,8 @@ impl<'a> PaymentInbox<'a> {
             self.track_pending(payment.id, provider_txid).await?;
             return Ok(PollResult::Pending);
         }
-        let outcome = WebhookOutcome {
-            payment: Some(PaymentRef::Payment(payment.id)),
-            provider_txid: Some(provider_txid.to_string()),
-            ..outcome
-        };
-        self.apply_outcome(provider.id(), &outcome).await?;
-        Ok(PollResult::Settled)
+        self.settle_polled(provider.as_ref(), payment.id, provider_txid, outcome)
+            .await
     }
 
     async fn poll_refunds_of(&self, payment: &Payment) -> ServiceResult<PollResult> {

@@ -1038,6 +1038,7 @@ async fn пригласивший_получает_процент_с_оплат�
         amount: Some(payment.amount),
         saved_method: None,
         reply: sn_payments::WebhookReply::ok(),
+        signal: None,
     };
     services
         .inbox()

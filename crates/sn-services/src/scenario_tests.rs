@@ -1906,6 +1906,7 @@ async fn ручная_отметка_оплаты_ставит_выдачу_и_�
                 subscription_action: sn_domain::payment::RefundSubscriptionAction::Keep,
                 reason: None,
                 key: None,
+                outside: false,
             },
             admin,
         )

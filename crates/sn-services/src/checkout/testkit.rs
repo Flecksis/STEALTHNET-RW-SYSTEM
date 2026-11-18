@@ -150,6 +150,7 @@ impl PaymentProvider for TestPay {
             amount: Some(request.amount),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 

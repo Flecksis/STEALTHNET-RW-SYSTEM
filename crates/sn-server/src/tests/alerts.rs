@@ -6,7 +6,7 @@ async fn настройка_уведомлений_в_группу_через_ht
     let owner = h.owner().await;
     let (status, view) = h.get("/api/admin/alerts", &owner).await;
     assert_eq!(status, StatusCode::OK, "{view}");
-    assert_eq!(view["kinds"].as_array().map(Vec::len), Some(5));
+    assert_eq!(view["kinds"].as_array().map(Vec::len), Some(6));
     assert_eq!(view["chat_id"], Value::Null);
     let (status, body) = h
         .write(Method::POST, "/api/admin/alerts/link", &owner, json!({}))

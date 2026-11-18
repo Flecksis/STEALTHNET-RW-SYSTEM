@@ -109,6 +109,7 @@ impl PaymentProvider for FlakyPay {
             amount: Some(request.amount),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         }))
     }
 
@@ -134,6 +135,7 @@ impl PaymentProvider for FlakyPay {
             amount: Some(request.amount),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 }
@@ -550,6 +552,7 @@ async fn ожидание_ответа_кассы_сохраняет_номер_
         amount: Some(payment.amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     });
     assert_eq!(
         kit.services.inbox().poll_payment(payment.id).await.unwrap(),
@@ -1470,6 +1473,7 @@ async fn списание_после_выключения_автопродлен
         amount: Some(charge.amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     });
     assert_eq!(
         kit.services

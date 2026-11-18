@@ -204,6 +204,7 @@ impl YooKassa {
                 amount: Some(refunded),
                 saved_method: None,
                 reply: WebhookReply::ok(),
+                signal: None,
             });
         }
         let payment = self
@@ -239,6 +240,7 @@ impl YooKassa {
             amount: Some(refunded),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 
@@ -422,6 +424,12 @@ fn payment_outcome(payment: &Json) -> PaymentResult<WebhookOutcome> {
             _ => None,
         },
         reply: WebhookReply::ok(),
+        signal: (status == ProviderStatus::Canceled
+            && payment
+                .at(&["cancellation_details", "reason"])
+                .and_then(Json::as_str)
+                == Some("permission_revoked"))
+        .then_some(OutcomeSignal::MethodRevoked),
     })
 }
 
@@ -1475,6 +1483,65 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.status, ProviderStatus::Paid);
         assert_eq!(outcome.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        assert!(!outcome.method_revoked());
+    }
+
+    #[tokio::test]
+    async fn отозванное_разрешение_на_автосписание_помечается_для_снятия_карты() {
+        let server = MockServer::start().await;
+        let mut revoked = payment("canceled", "499.00", "RUB");
+        revoked["cancellation_details"] =
+            json!({"party": "yoo_money", "reason": "permission_revoked"});
+        let mut poor = payment("canceled", "499.00", "RUB");
+        poor["cancellation_details"] =
+            json!({"party": "yoo_money", "reason": "insufficient_funds"});
+        Mock::given(method("POST"))
+            .and(path("/v3/payments"))
+            .and(body_partial_json(
+                json!({"payment_method_id": "pm-revoked"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(revoked.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v3/payments"))
+            .and(body_partial_json(json!({"payment_method_id": "pm-poor"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(poor))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v3/payments/{ID}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(revoked))
+            .mount(&server)
+            .await;
+        let kassa = YooKassa::with_api_base(server.uri());
+        let charged = kassa
+            .charge_saved(&settings(&[]), &invoice(rub(49_900), None), "pm-revoked")
+            .await
+            .unwrap();
+        assert_eq!(charged.status, ProviderStatus::Canceled);
+        assert!(charged.method_revoked());
+        assert_eq!(charged.signal, Some(OutcomeSignal::MethodRevoked));
+        let declined = kassa
+            .charge_saved(&settings(&[]), &invoice(rub(49_900), None), "pm-poor")
+            .await
+            .unwrap();
+        assert_eq!(declined.status, ProviderStatus::Canceled);
+        assert!(!declined.method_revoked());
+        let notified = kassa
+            .parse_webhook(
+                &settings(&[]),
+                &hook(&[], notification("payment.canceled", ID)),
+            )
+            .await
+            .unwrap();
+        assert!(notified.method_revoked());
+        let polled = kassa
+            .fetch_status(&settings(&[]), ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(polled.method_revoked());
     }
 
     fn refund_request(minor: i64, key: u128, email: Option<&str>) -> RefundRequest {

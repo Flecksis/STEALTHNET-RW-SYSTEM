@@ -13,15 +13,17 @@ pub enum AlertKind {
     Stars,
     Refunds,
     Withdrawals,
+    Payments,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 5] = [
+    pub const ALL: [AlertKind; 6] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
         AlertKind::Refunds,
         AlertKind::Withdrawals,
+        AlertKind::Payments,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -31,6 +33,7 @@ impl AlertKind {
             AlertKind::Stars => "stars",
             AlertKind::Refunds => "refunds",
             AlertKind::Withdrawals => "withdrawals",
+            AlertKind::Payments => "payments",
         }
     }
 
@@ -41,6 +44,7 @@ impl AlertKind {
             AlertKind::Stars => "Оплаты звёздами на разборе",
             AlertKind::Refunds => "Возвраты: автоматические и незавершённые",
             AlertKind::Withdrawals => "Заявки на вывод",
+            AlertKind::Payments => "Споры и возвраты в платёжных системах",
         }
     }
 
@@ -51,6 +55,7 @@ impl AlertKind {
             AlertKind::Stars => "Звёзды",
             AlertKind::Refunds => "Возвраты",
             AlertKind::Withdrawals => "Выводы",
+            AlertKind::Payments => "Платежи",
         }
     }
 }

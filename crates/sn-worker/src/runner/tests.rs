@@ -925,6 +925,7 @@ impl PaymentProvider for RefundKassa {
             amount: None,
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         }))
     }
 }
@@ -979,6 +980,7 @@ async fn опрос_оплаченного_автосписания_подтве
                 subscription_action: RefundSubscriptionAction::Keep,
                 reason: Some("Клиент передумал".into()),
                 key: None,
+                outside: false,
             },
             admin,
         )
@@ -1153,6 +1155,7 @@ async fn stalled_order_with_pending_refund(telegram_id: i64) -> Option<PendingRe
                 subscription_action: RefundSubscriptionAction::Keep,
                 reason: Some("не выдали, возвращаем".into()),
                 key: None,
+                outside: false,
             },
             admin,
         )
@@ -1176,6 +1179,7 @@ async fn settle_refund(pending: &PendingRefund, status: ProviderStatus) {
         amount: None,
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     };
     pending
         .setup

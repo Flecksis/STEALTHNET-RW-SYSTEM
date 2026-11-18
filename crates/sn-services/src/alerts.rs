@@ -11,7 +11,7 @@ use sn_domain::alerts::{
 use sn_domain::client::IdentityKind;
 use sn_domain::format;
 use sn_domain::ids::{AdminId, ClientId};
-use sn_domain::money::{Currency, Money};
+use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::settings::keys;
 use sn_store::Db;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +23,9 @@ const TEST_KEY: &str = "alerts.test";
 const TOPICS_KEY: &str = "alerts.topics";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
 const AUTO_REFUND_CURSOR: &str = "alerts.cursor.auto_refunds";
+const PAYMENTS_CURSOR: &str = "alerts.cursor.payments";
 const BODY_MAX: usize = 300;
+const NOTICE_MAX: usize = 600;
 const SCAN_LIMIT: i64 = 500;
 
 fn seen_key(kind: AlertKind) -> String {
@@ -144,6 +146,17 @@ fn amount_line(amount: &serde_json::Value) -> Option<String> {
     money(minor, currency)
 }
 
+fn amount_text(amount: Amount) -> String {
+    match amount.as_money() {
+        Some(value) => format::money(value),
+        None => format!(
+            "{} {}",
+            amount.minor,
+            format::plural_ru(amount.minor.unsigned_abs(), "звезда", "звезды", "звёзд")
+        ),
+    }
+}
+
 fn payout_method(method: &str) -> &str {
     match method {
         "sbp" => "СБП",
@@ -190,6 +203,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
                 format::plural_ru(n, "заявка", "заявки", "заявок")
             ),
             "/admin/m/referral",
+        ),
+        AlertKind::Payments => (
+            format!(
+                "Ещё {rest} {} по платежам",
+                format::plural_ru(n, "событие", "события", "событий")
+            ),
+            "/admin/money",
         ),
     };
     Alert {
@@ -469,6 +489,7 @@ impl<'a> AlertsOps<'a> {
     pub async fn collect(&self) -> ServiceResult<Vec<Alert>> {
         let config = self.config().await?;
         let mut out = self.support(&config).await?;
+        out.extend(self.payments(&config).await?);
         for kind in [
             AlertKind::Orders,
             AlertKind::Stars,
@@ -644,6 +665,63 @@ impl<'a> AlertsOps<'a> {
         Ok(out)
     }
 
+    async fn payments(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let cursor = self.state(PAYMENTS_CURSOR).await?.and_then(|v| v.as_i64());
+        let mut conn = self.services.store().conn().await?;
+        let newest = conn.payment_notices().newest_id().await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(PAYMENTS_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let notices = conn
+            .payment_notices()
+            .between(cursor, newest, SCAN_LIMIT)
+            .await?;
+        let mut out = Vec::new();
+        if config.route(AlertKind::Payments).on {
+            let registry = self.services.payments();
+            for notice in notices.iter().take(PER_KIND) {
+                let provider = registry
+                    .get(&notice.provider)
+                    .map_or_else(|| notice.provider.clone(), |p| p.title().to_string());
+                let mut lines = vec![
+                    format!("<b>{}</b>", escape(notice.kind.title_ru())),
+                    format!("Платёжная система: {}", escape(&provider)),
+                ];
+                if let Some(client) = notice.client_id {
+                    lines.push(format!(
+                        "Клиент: {}",
+                        escape(&client_label(&mut conn, client.0).await)
+                    ));
+                }
+                if let Some(amount) = notice.amount {
+                    lines.push(format!("Сумма: {}", escape(&amount_text(amount))));
+                }
+                lines.push(escape(&cut(&notice.text, NOTICE_MAX)));
+                out.push(Alert {
+                    kind: AlertKind::Payments,
+                    html: lines.join("\n"),
+                    path: match notice.client_id {
+                        Some(client) => format!("/admin/clients/{}", client.0),
+                        None => "/admin/money".to_string(),
+                    },
+                });
+            }
+            if notices.len() > PER_KIND {
+                out.push(summary(AlertKind::Payments, notices.len() - PER_KIND));
+            }
+        }
+        drop(conn);
+        self.put_state(PAYMENTS_CURSOR, &serde_json::json!(newest))
+            .await?;
+        Ok(out)
+    }
+
     async fn items(&self, kind: AlertKind) -> ServiceResult<Vec<Item>> {
         let mut conn = self.services.store().conn().await?;
         let mut items = Vec::new();
@@ -779,7 +857,7 @@ impl<'a> AlertsOps<'a> {
                     });
                 }
             }
-            AlertKind::Support => {}
+            AlertKind::Support | AlertKind::Payments => {}
         }
         Ok(items)
     }

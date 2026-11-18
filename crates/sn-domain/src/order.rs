@@ -105,12 +105,15 @@ impl OrderStatus {
             (self, to),
             (Pending, Paid)
                 | (Pending, Canceled)
+                | (Pending, Review)
                 | (Canceled, Paid)
                 | (Paid, Fulfilled)
                 | (Paid, Review)
                 | (Paid, Refunded)
+                | (Review, Paid)
                 | (Review, Fulfilled)
                 | (Review, Refunded)
+                | (Review, Canceled)
                 | (Fulfilled, Refunded)
         )
     }
@@ -234,5 +237,28 @@ mod tests {
                 .is_err()
         );
         assert!(OrderStatus::Refunded.transition(OrderStatus::Paid).is_err());
+    }
+
+    #[test]
+    fn задержанный_проверкой_заказ_ждёт_решения_и_может_оплатиться_или_отмениться() {
+        assert_eq!(
+            OrderStatus::Pending.transition(OrderStatus::Review),
+            Ok(true)
+        );
+        assert_eq!(OrderStatus::Review.transition(OrderStatus::Paid), Ok(true));
+        assert_eq!(
+            OrderStatus::Review.transition(OrderStatus::Canceled),
+            Ok(true)
+        );
+        assert!(
+            OrderStatus::Fulfilled
+                .transition(OrderStatus::Review)
+                .is_err()
+        );
+        assert!(
+            OrderStatus::Canceled
+                .transition(OrderStatus::Review)
+                .is_err()
+        );
     }
 }

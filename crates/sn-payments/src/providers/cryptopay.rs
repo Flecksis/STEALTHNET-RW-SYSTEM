@@ -312,6 +312,7 @@ impl PaymentProvider for CryptoPay {
                 amount: None,
                 saved_method: None,
                 reply: WebhookReply::ok(),
+                signal: None,
             });
         }
         let payment = util::public_ref(invoice.payload.as_deref())
@@ -342,6 +343,7 @@ impl PaymentProvider for CryptoPay {
             amount,
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 
@@ -405,6 +407,7 @@ impl PaymentProvider for CryptoPay {
             amount,
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         }))
     }
 }

@@ -79,7 +79,7 @@ enum ChargeState {
 }
 
 enum Repeat {
-    Answered(WebhookOutcome),
+    Answered(Box<WebhookOutcome>),
     Pending,
     Unclear(String),
 }
@@ -841,6 +841,7 @@ impl<'a> AutoRenew<'a> {
                             amount: None,
                             saved_method: None,
                             reply: WebhookReply::ok(),
+                            signal: None,
                         },
                     )
                     .await?;
@@ -1009,7 +1010,7 @@ impl<'a> AutoRenew<'a> {
                 }
             },
             None => match self.repeat_charge(payment, provider, &config, now).await? {
-                Repeat::Answered(outcome) => outcome,
+                Repeat::Answered(outcome) => *outcome,
                 Repeat::Pending => return Ok(ChargeCheck::Pending),
                 Repeat::Unclear(reason) => return Ok(ChargeCheck::Unclear(reason)),
             },
@@ -1078,7 +1079,7 @@ impl<'a> AutoRenew<'a> {
         };
         let request = self.charge_request(payment, &order, client);
         match provider.charge_saved(config, &request, &token).await {
-            Ok(outcome) => Ok(Repeat::Answered(outcome)),
+            Ok(outcome) => Ok(Repeat::Answered(Box::new(outcome))),
             Err(err) if transient(&err) => Ok(Repeat::Pending),
             Err(err) => Ok(Repeat::Unclear(format!(
                 "повторный запрос автосписания с тем же ключом отклонён, исход неизвестен: {err}"

@@ -115,6 +115,7 @@ fn refund_state(refund: &str, status: ProviderStatus, minor: i64) -> Option<Webh
         amount: Some(Amount::new(minor, PayCurrency::Usd)),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     })
 }
 

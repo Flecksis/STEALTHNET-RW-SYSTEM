@@ -226,3 +226,122 @@ async fn заказы_и_звёзды_на_разборе_попадают_в_у
     assert!(alerts.collect().await.unwrap().is_empty());
     env.db.cleanup().await;
 }
+
+async fn notice(
+    services: &Services,
+    provider: &str,
+    event: &str,
+    kind: sn_domain::payment::NoticeKind,
+    client: Option<ClientId>,
+    minor: Option<i64>,
+    text: &str,
+) {
+    let mut conn = services.store().conn().await.unwrap();
+    conn.payment_notices()
+        .record(&sn_store::NewPaymentNotice {
+            provider: provider.into(),
+            event_key: event.into(),
+            kind,
+            payment_id: None,
+            client_id: client,
+            amount: minor
+                .map(|m| sn_domain::money::Amount::new(m, sn_domain::money::PayCurrency::Rub)),
+            text: text.into(),
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn споры_и_возвраты_платёжек_приходят_отдельной_темой() {
+    use sn_domain::payment::NoticeKind;
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let alerts = services.alerts();
+    let admin = owner(services).await;
+    let client = telegram_client(services, 7_310).await;
+    notice(
+        services,
+        providers::PLATEGA,
+        "old:DISPUTED",
+        NoticeKind::Dispute,
+        Some(client),
+        Some(49_900),
+        "Старый спор до подключения уведомлений",
+    )
+    .await;
+    assert!(alerts.collect().await.unwrap().is_empty());
+    notice(
+        services,
+        providers::PLATEGA,
+        "tx-1:DISPUTED",
+        NoticeKind::Dispute,
+        Some(client),
+        Some(49_900),
+        "Platega открыла спор по платежу tx-1",
+    )
+    .await;
+    notice(
+        services,
+        providers::LAVA,
+        "refund:r-1",
+        NoticeKind::UnmatchedRefund,
+        None,
+        None,
+        "Lava.top сообщила о возврате <без суммы>",
+    )
+    .await;
+    let got = alerts.collect().await.unwrap();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got.iter().all(|a| a.kind == AlertKind::Payments));
+    assert!(
+        got[0].html.contains("<b>Спор по платежу</b>"),
+        "{}",
+        got[0].html
+    );
+    assert!(
+        got[0].html.contains("Алексей (@morozov_a)"),
+        "{}",
+        got[0].html
+    );
+    assert!(got[0].html.contains("499"), "{}", got[0].html);
+    assert!(got[0].html.contains("Platega"), "{}", got[0].html);
+    assert_eq!(got[0].path, format!("/admin/clients/{}", client.0));
+    assert!(got[1].html.contains("Возврат не привязан к оплате"));
+    assert!(got[1].html.contains("&lt;без суммы&gt;"), "{}", got[1].html);
+    assert_eq!(got[1].path, "/admin/money");
+    assert!(alerts.collect().await.unwrap().is_empty());
+    alerts
+        .update(
+            &AlertsUpdate {
+                routes: vec![RouteInput {
+                    kind: AlertKind::Payments,
+                    on: false,
+                    topic: None,
+                }],
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    notice(
+        services,
+        providers::LAVA,
+        "chargeback:cb-1",
+        NoticeKind::Chargeback,
+        None,
+        Some(69_900),
+        "Чарджбэк",
+    )
+    .await;
+    assert!(alerts.collect().await.unwrap().is_empty());
+    let view = alerts.view().await.unwrap();
+    let payments = view
+        .kinds
+        .iter()
+        .find(|k| k.kind == AlertKind::Payments)
+        .unwrap();
+    assert!(!payments.on);
+    assert_eq!(payments.default_topic, "Платежи");
+    env.db.cleanup().await;
+}

@@ -215,6 +215,7 @@ impl PaymentProvider for YooMoney {
             )),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 }

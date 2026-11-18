@@ -68,6 +68,7 @@ async fn pay(kit: &Kit, public_id: Uuid) {
         amount: Some(payment.amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     };
     kit.services
         .inbox()

@@ -193,6 +193,8 @@ pub struct RefundRequest {
     pub reason: Option<String>,
     #[serde(default)]
     pub key: Option<Uuid>,
+    #[serde(default)]
+    pub outside: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -772,6 +774,7 @@ impl<'a> AdminOps<'a> {
                             .map(|order| order_brief(order, &tariffs));
                         item.payment = Some(PaymentBrief {
                             id: payment.public_id,
+                            number: payment.id,
                             status: payment.status,
                             amount: payment.amount,
                             provider: payment.provider.clone(),
@@ -923,6 +926,7 @@ impl<'a> AdminOps<'a> {
             amount: Some(payment.amount),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         };
         let accepted = self
             .services
@@ -969,10 +973,16 @@ impl<'a> AdminOps<'a> {
             let mut conn = self.services.store().conn().await?;
             conn.payments().get(id).await?
         };
-        if !matches!(
-            payment.status,
-            PaymentStatus::Paid | PaymentStatus::PartiallyRefunded
-        ) {
+        let replay = match request.key {
+            Some(key) => self.services.inbox().refund_keyed(payment.id, key).await?,
+            None => false,
+        };
+        if !replay
+            && !matches!(
+                payment.status,
+                PaymentStatus::Paid | PaymentStatus::PartiallyRefunded
+            )
+        {
             return Err(ServiceError::rejected(
                 "payment.refund_status",
                 "Вернуть можно только оплаченный платёж",
@@ -995,6 +1005,7 @@ impl<'a> AdminOps<'a> {
             subscription_action: request.subscription_action,
             reason: request.reason.clone(),
             key: request.key,
+            outside: request.outside,
         };
         self.services.inbox().refund(id, &command, admin).await
     }

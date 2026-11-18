@@ -5,6 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::money::{Amount, Currency};
+use sn_domain::payment::NoticeKind;
 use sn_domain::settings::{SettingField, missing_required};
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -184,6 +185,43 @@ pub enum ProviderStatus {
     Refunded,
     PartiallyRefunded { refunded: Amount },
     RefundDeclined,
+    Underpaid { received: Amount },
+    Overpaid { received: Amount },
+    Held,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderNotice {
+    pub kind: NoticeKind,
+    pub text: String,
+}
+
+impl ProviderNotice {
+    pub fn new(kind: NoticeKind, text: impl Into<String>) -> Self {
+        ProviderNotice {
+            kind,
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OutcomeSignal {
+    Notice { notice: ProviderNotice },
+    MethodRevoked,
+    Precheck { account: Option<String> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrecheckVerdict {
+    Accept,
+    UnknownInvoice,
+    WrongAccount,
+    WrongAmount,
+    Rejected,
+    Expired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +269,28 @@ pub struct WebhookOutcome {
     pub amount: Option<Amount>,
     pub saved_method: Option<SavedMethod>,
     pub reply: WebhookReply,
+    #[serde(default)]
+    pub signal: Option<OutcomeSignal>,
+}
+
+impl WebhookOutcome {
+    pub fn notice(&self) -> Option<&ProviderNotice> {
+        match &self.signal {
+            Some(OutcomeSignal::Notice { notice }) => Some(notice),
+            _ => None,
+        }
+    }
+
+    pub fn method_revoked(&self) -> bool {
+        matches!(self.signal, Some(OutcomeSignal::MethodRevoked))
+    }
+
+    pub fn with_notice(mut self, kind: NoticeKind, text: impl Into<String>) -> Self {
+        self.signal = Some(OutcomeSignal::Notice {
+            notice: ProviderNotice::new(kind, text),
+        });
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,6 +382,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
 
     fn supports_refund_polling(&self) -> bool {
         false
+    }
+
+    fn polls_by_payment_id(&self) -> bool {
+        false
+    }
+
+    fn precheck_reply(&self, _verdict: PrecheckVerdict) -> WebhookReply {
+        WebhookReply::ok()
     }
 
     async fn create_invoice(

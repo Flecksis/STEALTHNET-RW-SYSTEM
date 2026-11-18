@@ -773,6 +773,7 @@ fn pending(invoice: &GramInvoice) -> WebhookOutcome {
         amount: None,
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     }
 }
 
@@ -950,6 +951,7 @@ impl PaymentProvider for Gram {
                 amount: Some(invoice.amount),
                 saved_method: None,
                 reply: WebhookReply::ok(),
+                signal: None,
             },
             None => pending(&invoice),
         }))

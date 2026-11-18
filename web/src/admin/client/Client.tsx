@@ -10,6 +10,7 @@ import { ClientPhone } from './ClientPhone';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, MessageDialog } from './dialogs';
 import { eventsCount, historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
+import { RefundDialog } from './RefundDialog';
 import { emailOf, liveSubscriptions, nextReset, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
 import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
@@ -42,6 +43,8 @@ function ClientDesktop() {
   const [params, setParams] = useSearchParams();
   const writable = can('clients_write');
   const moneyOk = can('money');
+  const refundsOk = can('refunds');
+  const [refundFor, setRefundFor] = useState<number | null>(null);
   const [card, setCard] = useState<ClientCard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [subId, setSubId] = useState<number | null>(null);
@@ -412,6 +415,11 @@ function ClientDesktop() {
                 <span className="cc-col" style={{ minWidth: 0 }}>
                   <span style={{ fontWeight: 600 }}>{line.what}</span>
                   {line.note ? <span className="cc-small muted">{line.note}</span> : null}
+                  {refundsOk && line.refund ? (
+                    <button type="button" className="cc-his-act" onClick={() => setRefundFor(line.refund ?? null)}>
+                      Вернуть деньги
+                    </button>
+                  ) : null}
                 </span>
                 <span className="num" style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
                   {line.sum}
@@ -572,6 +580,19 @@ function ClientDesktop() {
         </aside>
       </div>
 
+      {refundFor !== null ? (
+        <RefundDialog
+          paymentId={refundFor}
+          onClose={() => setRefundFor(null)}
+          onDone={(_, text) => {
+            setRefundFor(null);
+            setNotice(text);
+            void loadCard();
+            setDetailsKey((k) => k + 1);
+            refreshHistory();
+          }}
+        />
+      ) : null}
       {dialog === 'message' ? (
         <MessageDialog
           clientId={clientId}

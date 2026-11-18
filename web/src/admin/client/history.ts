@@ -1,7 +1,7 @@
 import { count, dateLong, days, money, periodLabel, timeHM, type Money } from '../../lib/format';
 import type { Amount, HistoryItem, OrderBrief, Person } from './types';
 
-export type HistoryLine = { key: string; when: string; what: string; note: string; sum: string };
+export type HistoryLine = { key: string; when: string; what: string; note: string; sum: string; refund?: number };
 
 function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
@@ -143,6 +143,12 @@ const AUDIT_TEXT: Record<string, string> = {
   'payment.refund_confirmed_manually': 'Возврат подтверждён вручную',
   'payment.refund_declined': 'Возврат отклонён',
   'payment.refund_canceled': 'Возврат отменён',
+  'payment.refund_outside': 'Возврат отмечен как сделанный вне панели',
+  'payment.underpaid_credited': 'Оплата пришла не полностью, полученное зачислено на баланс',
+  'payment.underpaid_review': 'Оплата пришла не полностью, деньги ждут ручного зачисления',
+  'payment.overpaid_credited': 'Излишек оплаты зачислен на баланс',
+  'payment.overpaid_review': 'Излишек оплаты ждёт ручного зачисления',
+  'payment.saved_method_revoked': 'Клиент отозвал автосписание, сохранённая карта снята',
   'order.redeliver': 'Заказ выдан повторно',
   'order.mark_fulfilled': 'Заказ отмечен выданным',
   'order.recalculate': 'Заказ пересчитан',
@@ -181,7 +187,10 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         return { ...base, what, note: `${via}, деньги вернули`, sum };
       }
       if (payment.status === 'partially_refunded') {
-        return { ...base, what, note: `${via}, часть денег вернули`, sum };
+        return { ...base, what, note: `${via}, часть денег вернули`, sum, refund: payment.number };
+      }
+      if (payment.status === 'paid') {
+        return { ...base, what, note: via, sum, refund: payment.number };
       }
       return { ...base, what, note: via, sum };
     }

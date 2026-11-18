@@ -83,6 +83,7 @@ fn status_answer(charge: &Payment, status: ProviderStatus) -> WebhookOutcome {
         amount: Some(charge.amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     }
 }
 

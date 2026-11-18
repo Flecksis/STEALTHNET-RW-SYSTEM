@@ -25,6 +25,7 @@ pub(crate) fn skipped(
         amount: None,
         saved_method: None,
         reply,
+        signal: None,
     }
 }
 
@@ -100,6 +101,13 @@ pub(crate) fn bad(reason: impl Into<String>) -> PaymentError {
 
 pub(crate) fn minor(raw: &str, currency: PayCurrency) -> PaymentResult<i64> {
     parse_units(raw, currency).ok_or_else(|| bad(format!("сумма «{}» не разобрана", clip(raw, 32))))
+}
+
+pub(crate) fn amount_text(amount: Amount) -> String {
+    match amount.as_money() {
+        Some(money) => sn_domain::format::money(money),
+        None => amount.to_string(),
+    }
 }
 
 pub(crate) fn pay_currency(code: &str) -> PaymentResult<PayCurrency> {

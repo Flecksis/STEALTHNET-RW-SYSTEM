@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use sn_domain::money::{Amount, Currency, PayCurrency};
-use sn_domain::payment::providers;
+use sn_domain::payment::{NoticeKind, providers};
 use sn_domain::settings::SettingField;
 use uuid::Uuid;
 
@@ -167,6 +167,7 @@ impl Lava {
             amount,
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 
@@ -258,18 +259,37 @@ impl Lava {
             return Ok(ignored(format!("{event}:")));
         }
         let event_key = format!("{prefix}:{id}");
-        let amount = match util::json_amount(data.get("amount"), data.get("currency")) {
-            Ok(amount) if amount.minor > 0 => amount,
-            _ => return Ok(ignored(event_key)),
+        let amount = util::json_amount(data.get("amount"), data.get("currency"))
+            .ok()
+            .filter(|amount| amount.minor > 0);
+        let email = data
+            .get("customer_email")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|e| e.contains('@'));
+        let unmatched = |why: &str| {
+            let (kind, what) = match prefix {
+                "chargeback" => (NoticeKind::Chargeback, "чарджбэке"),
+                _ => (NoticeKind::UnmatchedRefund, "возврате"),
+            };
+            let sum = amount.map_or_else(|| "без суммы".to_string(), util::amount_text);
+            let buyer = email.map_or_else(String::new, |e| format!(", покупатель {e}"));
+            let mut outcome = ignored(event_key.clone());
+            outcome.amount = amount;
+            outcome.with_notice(
+                kind,
+                format!(
+                    "Lava.top сообщила о {what} {sum} (№ {id}{buyer}), но оплату для него найти \
+                     не удалось: {why}. Найдите платёж в кабинете Lava.top и отметьте возврат \
+                     в панели вручную"
+                ),
+            )
         };
-        let (Some(currency), Some(email)) = (
-            amount.currency.as_currency(),
-            data.get("customer_email")
-                .and_then(Json::as_str)
-                .map(str::trim)
-                .filter(|e| e.contains('@')),
-        ) else {
-            return Ok(ignored(event_key));
+        let Some(amount) = amount else {
+            return Ok(unmatched("в уведомлении нет суммы"));
+        };
+        let (Some(currency), Some(email)) = (amount.currency.as_currency(), email) else {
+            return Ok(unmatched("в уведомлении нет почты покупателя"));
         };
         let product = data
             .at(&["product", "product_name"])
@@ -286,7 +306,10 @@ impl Lava {
                 found = sales.len(),
                 "возврат Lava.top не привязан к оплате: нет единственной подходящей оплаты"
             );
-            return Ok(ignored(event_key));
+            return Ok(unmatched(&match sales.len() {
+                0 => "оплат этого покупателя на такую сумму нет".to_string(),
+                n => format!("подходят сразу несколько оплат ({n})"),
+            }));
         };
         let status = match share {
             Share::Full => ProviderStatus::Refunded,
@@ -295,7 +318,7 @@ impl Lava {
                 ProviderStatus::PartiallyRefunded { refunded: amount }
             }
         };
-        Ok(WebhookOutcome {
+        let outcome = WebhookOutcome {
             event_key,
             payment: Some(PaymentRef::ProviderTxid(sale.id.clone())),
             provider_txid: Some(sale.id.clone()),
@@ -303,6 +326,18 @@ impl Lava {
             amount: Some(amount),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
+        };
+        Ok(match prefix {
+            "chargeback" => outcome.with_notice(
+                NoticeKind::Chargeback,
+                format!(
+                    "Lava.top сообщила о чарджбэке {} (№ {id}): банк покупателя вернул ему деньги. \
+                     Платёж отмечен возвращённым, подписка не изменена — решите, отключать ли её",
+                    util::amount_text(amount)
+                ),
+            ),
+            _ => outcome,
         })
     }
 }
@@ -649,6 +684,7 @@ impl PaymentProvider for Lava {
             amount,
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         }))
     }
 }
@@ -1368,11 +1404,48 @@ mod tests {
                 refund("full", "r-6", json!(6.99), "USD"),
             ),
         ] {
+            let several = items.len() > 1;
             let (_server, lava) = with_sales(items).await;
             let outcome = lava.parse_webhook(&settings(), &keyed(body)).await.unwrap();
             assert_eq!(outcome.payment, None, "{}", outcome.event_key);
             assert_eq!(outcome.status, ProviderStatus::Pending);
+            let notice = outcome.notice().unwrap();
+            assert_eq!(notice.kind, NoticeKind::UnmatchedRefund);
+            assert!(
+                notice.text.to_lowercase().contains(EMAIL)
+                    && notice.text.contains(&outcome.event_key[7..]),
+                "{}",
+                notice.text
+            );
+            assert!(outcome.amount.is_some_and(|a| a.minor > 0));
+            if several && outcome.event_key == "refund:r-3" {
+                assert!(
+                    notice.text.contains("несколько оплат (2)"),
+                    "{}",
+                    notice.text
+                );
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn неполные_уведомления_о_возврате_lava_тоже_уходят_админу() {
+        let (server, lava) = with_sales(vec![]).await;
+        let mut no_email: Value =
+            serde_json::from_slice(&refund("full", "r-x", json!(6.99), "USD")).unwrap();
+        no_email["data"]["customer_email"] = Value::Null;
+        for (body, why) in [
+            (serde_json::to_vec(&no_email).unwrap(), "нет почты"),
+            (refund("full", "r-zero", json!(0), "USD"), "нет суммы"),
+            (refund("full", "r-eur", json!(6.99), "EUR"), "нет суммы"),
+        ] {
+            let outcome = lava.parse_webhook(&settings(), &keyed(body)).await.unwrap();
+            assert_eq!(outcome.payment, None);
+            let notice = outcome.notice().unwrap();
+            assert_eq!(notice.kind, NoticeKind::UnmatchedRefund);
+            assert!(notice.text.contains(why), "{}", notice.text);
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1388,6 +1461,13 @@ mod tests {
         assert_eq!(
             full.payment,
             Some(PaymentRef::ProviderTxid(CONTRACT.into()))
+        );
+        let notice = full.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::Chargeback);
+        assert!(
+            notice.text.contains("подписка не изменена"),
+            "{}",
+            notice.text
         );
         let rest = lava
             .parse_webhook(&settings(), &keyed(chargeback(json!(4.49))))
@@ -1405,6 +1485,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome.status, ProviderStatus::Refunded);
+        assert_eq!(outcome.signal, None);
+        let (_other, empty) = with_sales(vec![]).await;
+        let lost = empty
+            .parse_webhook(&settings(), &keyed(chargeback(json!(6.99))))
+            .await
+            .unwrap();
+        assert_eq!(lost.payment, None);
+        assert_eq!(lost.amount, Some(usd(699)));
+        let notice = lost.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::Chargeback);
+        assert!(notice.text.contains("чарджбэке"), "{}", notice.text);
     }
 
     #[tokio::test]

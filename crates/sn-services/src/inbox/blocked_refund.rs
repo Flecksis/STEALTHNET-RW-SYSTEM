@@ -133,6 +133,7 @@ impl PaymentInbox<'_> {
             subscription_action: RefundSubscriptionAction::Keep,
             reason: Some(BLOCKED_REFUND_REASON.into()),
             key: Some(refund_key(&payment)),
+            outside: false,
         };
         let step = match self.refund_locked(&mut tx, &payment, &command, None).await {
             Ok(step) => step,

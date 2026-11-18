@@ -434,6 +434,7 @@ fn refund_notice(
         amount: Some(refunded),
         saved_method: None,
         reply: reply(0),
+        signal: None,
     })
 }
 
@@ -451,6 +452,7 @@ fn refund_failure(
         amount: amount(fields, "Amount").ok(),
         saved_method: None,
         reply: reply(0),
+        signal: None,
     }
 }
 
@@ -483,6 +485,7 @@ fn payment_outcome(model: &Json, test_mode: bool) -> PaymentResult<Option<Webhoo
         amount: Some(model_amount(model)?),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     }))
 }
 
@@ -519,6 +522,7 @@ fn refund_outcome(model: &Json, refund_id: &str) -> PaymentResult<WebhookOutcome
         amount: Some(refunded),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     })
 }
 
@@ -597,6 +601,21 @@ impl PaymentProvider for CloudPayments {
         true
     }
 
+    fn polls_by_payment_id(&self) -> bool {
+        true
+    }
+
+    fn precheck_reply(&self, verdict: PrecheckVerdict) -> WebhookReply {
+        reply(match verdict {
+            PrecheckVerdict::Accept => 0,
+            PrecheckVerdict::UnknownInvoice => 10,
+            PrecheckVerdict::WrongAccount => 11,
+            PrecheckVerdict::WrongAmount => 12,
+            PrecheckVerdict::Rejected => 13,
+            PrecheckVerdict::Expired => 20,
+        })
+    }
+
     async fn create_invoice(
         &self,
         config: &ProviderConfig,
@@ -634,12 +653,20 @@ impl PaymentProvider for CloudPayments {
         let payment = util::public_ref(field(&fields, "InvoiceId"));
         let operation = notified_operation(&fields);
         match kind.as_str() {
-            "check" => Ok(util::skipped(
-                event_key,
-                payment,
-                None,
-                reply(check_code(&fields, test_mode)),
-            )),
+            "check" => {
+                let code = check_code(&fields, test_mode);
+                let mut outcome = util::skipped(event_key, payment, None, reply(code));
+                if code == 0 && operation != Some(Operation::Refund) {
+                    outcome.amount = amount(&fields, "Amount").ok();
+                    outcome.signal = Some(OutcomeSignal::Precheck {
+                        account: field(&fields, "AccountId")
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_string),
+                    });
+                }
+                Ok(outcome)
+            }
             "pay"
                 if is_test(&fields) == test_mode
                     && operation.is_none_or(|op| op == Operation::Payment) =>
@@ -659,6 +686,7 @@ impl PaymentProvider for CloudPayments {
                     amount: Some(amount(&fields, "Amount")?),
                     saved_method: None,
                     reply: reply(0),
+                    signal: None,
                 })
             }
             "refund" if operation.is_none_or(|op| op == Operation::Refund) => {
@@ -984,6 +1012,30 @@ mod tests {
         assert_eq!(ok.reply, reply(0));
         assert_eq!(ok.status, ProviderStatus::Pending);
         assert_eq!(ok.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        assert_eq!(ok.amount, Some(rub(49_900)));
+        assert_eq!(
+            ok.signal,
+            Some(OutcomeSignal::Precheck {
+                account: Some(CLIENT.to_string())
+            })
+        );
+        let wrong = check(settings(), pay_form("499.00", "USD", "0")).await;
+        assert_eq!(wrong.signal, None);
+        let refund_check = check(
+            settings(),
+            pay_form("100.00", "RUB", "1").replace("OperationType=Payment", "OperationType=Refund"),
+        )
+        .await;
+        assert_eq!(refund_check.signal, None);
+        let anonymous_check = check(
+            settings(),
+            pay_form("499.00", "RUB", "0").replace(&format!("&AccountId={CLIENT}"), ""),
+        )
+        .await;
+        assert_eq!(
+            anonymous_check.signal,
+            Some(OutcomeSignal::Precheck { account: None })
+        );
         let code =
             |config: ProviderConfig, body: String| async move { check(config, body).await.reply };
         assert_eq!(
@@ -1022,6 +1074,22 @@ mod tests {
         let payout = pay_form("499.00", "RUB", "0")
             .replace("OperationType=Payment", "OperationType=CardPayout");
         assert_eq!(code(settings(), payout).await, reply(13));
+    }
+
+    #[test]
+    fn сверка_check_с_базой_отвечает_кодами_cloudpayments() {
+        let cp = CloudPayments::new();
+        for (verdict, code) in [
+            (PrecheckVerdict::Accept, 0),
+            (PrecheckVerdict::UnknownInvoice, 10),
+            (PrecheckVerdict::WrongAccount, 11),
+            (PrecheckVerdict::WrongAmount, 12),
+            (PrecheckVerdict::Rejected, 13),
+            (PrecheckVerdict::Expired, 20),
+        ] {
+            assert_eq!(cp.precheck_reply(verdict), reply(code), "{verdict:?}");
+        }
+        assert!(cp.polls_by_payment_id());
     }
 
     #[tokio::test]

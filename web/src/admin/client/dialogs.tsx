@@ -111,7 +111,7 @@ type BalanceProps = {
   onDone: (balance: Money) => void;
 };
 
-function parseMinor(raw: string): number | null {
+export function parseMinor(raw: string): number | null {
   const clean = raw.replace(/\s/g, '').replace(',', '.');
   if (!/^\d+(\.\d{0,2})?$/.test(clean)) {
     return null;

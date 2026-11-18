@@ -669,6 +669,53 @@ impl<'c> PaymentsRepo<'c> {
         row.try_into()
     }
 
+    pub async fn set_provider_refund_key(&mut self, id: i64, key: Uuid) -> StoreResult<()> {
+        sqlx::query(
+            "UPDATE provider_refunds SET request_key = $2 WHERE id = $1 \
+             AND NOT EXISTS (SELECT 1 FROM provider_refunds WHERE request_key = $2)",
+        )
+        .bind(id)
+        .bind(key)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn provider_refund_by_key(
+        &mut self,
+        key: Uuid,
+    ) -> StoreResult<Option<ProviderRefund>> {
+        let row: Option<ProviderRefundRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM provider_refunds WHERE request_key = $1",
+            refund_columns("")
+        ))
+        .bind(key)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        row.map(TryInto::try_into).transpose()
+    }
+
+    pub async fn hold(&mut self, id: PaymentId) -> StoreResult<bool> {
+        let held: Option<i64> = sqlx::query_scalar(
+            "UPDATE payments SET expires_at = NULL WHERE id = $1 AND status = 'pending' RETURNING id",
+        )
+        .bind(id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(held.is_some())
+    }
+
+    pub async fn awaiting_payment(&mut self, order_id: OrderId) -> StoreResult<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM payments WHERE order_id = $1 AND status = 'pending') \
+             AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = $1 \
+             AND status IN ('paid', 'refunded', 'partially_refunded'))",
+        )
+        .bind(order_id.0)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn unheld_refunds_minor(
         &mut self,
         client_id: ClientId,

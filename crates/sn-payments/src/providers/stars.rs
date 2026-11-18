@@ -432,6 +432,7 @@ impl PaymentProvider for TelegramStars {
             amount: Some(Amount::new(event.total_amount, PayCurrency::Xtr)),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         })
     }
 

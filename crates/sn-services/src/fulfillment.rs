@@ -145,6 +145,17 @@ fn not_in_review(status: OrderStatus) -> ServiceError {
     ServiceError::rejected("order.review_status", message)
 }
 
+fn awaiting_payment() -> ServiceError {
+    ServiceError::rejected(
+        "order.awaiting_payment",
+        "Платёж по заказу ещё не получен: платёжная система задержала его для проверки. \
+         Выдать заказ можно после оплаты",
+    )
+}
+
+pub const AWAITING_PAYMENT_REASON: &str =
+    "заказ ещё не оплачен: платёжная система задержала платёж для проверки";
+
 fn refund_pending() -> ServiceError {
     ServiceError::rejected(
         "order.refund_pending",
@@ -348,12 +359,19 @@ impl<'a> Fulfillment<'a> {
     }
 
     pub async fn run(&self, order_id: OrderId) -> ServiceResult<FulfillmentOutcome> {
-        let (order, waits_refund) = {
+        let (order, waits_refund, unpaid) = {
             let mut conn = self.services.store().conn().await?;
             let order = conn.orders().get(order_id).await?;
             let waits_refund = conn.orders().refund_pending(order_id).await?;
-            (order, waits_refund)
+            let unpaid = order.status == OrderStatus::Review
+                && conn.payments().awaiting_payment(order_id).await?;
+            (order, waits_refund, unpaid)
         };
+        if unpaid {
+            return Ok(FulfillmentOutcome::Review {
+                reason: AWAITING_PAYMENT_REASON.into(),
+            });
+        }
         match order.status {
             OrderStatus::Fulfilled => {
                 return Ok(FulfillmentOutcome::Done {
@@ -474,6 +492,9 @@ impl<'a> Fulfillment<'a> {
         if !matches!(order.status, OrderStatus::Paid | OrderStatus::Review) {
             return Err(not_deliverable(order.status));
         }
+        if tx.payments().awaiting_payment(order.id).await? {
+            return Err(awaiting_payment());
+        }
         if tx.orders().refund_pending(order.id).await? {
             return Err(refund_pending());
         }
@@ -566,6 +587,9 @@ impl<'a> Fulfillment<'a> {
         let order = tx.orders().lock(order_id).await?;
         if order.status != OrderStatus::Review {
             return Err(not_in_review(order.status));
+        }
+        if tx.payments().awaiting_payment(order.id).await? {
+            return Err(awaiting_payment());
         }
         if !order.kind.needs_remnawave() {
             return Err(ServiceError::rejected(
@@ -664,6 +688,9 @@ impl<'a> Fulfillment<'a> {
         let order = tx.orders().lock(order_id).await?;
         if order.status != OrderStatus::Review {
             return Err(not_in_review(order.status));
+        }
+        if tx.payments().awaiting_payment(order.id).await? {
+            return Err(awaiting_payment());
         }
         let state = tx.orders().plan_state(order.id).await?;
         let reason = tx.orders().review_reason(order.id).await?;

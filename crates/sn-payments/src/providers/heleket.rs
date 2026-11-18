@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::DateTime;
-use sn_domain::money::{Currency, PayCurrency};
-use sn_domain::payment::providers;
+use sn_domain::money::{Amount, Currency, PayCurrency, parse_units};
+use sn_domain::payment::{NoticeKind, providers};
 use sn_domain::settings::SettingField;
 use uuid::Uuid;
 
@@ -117,6 +117,27 @@ impl Heleket {
             _ => Err(reply.failure(error_text(&parsed).as_deref())),
         }
     }
+
+    async fn explained(&self, config: &ProviderConfig, outcome: WebhookOutcome) -> WebhookOutcome {
+        if outcome.status != ProviderStatus::Held {
+            return outcome;
+        }
+        let links = match outcome.provider_txid.as_deref() {
+            Some(uuid) => self
+                .call(
+                    config,
+                    "/v1/payment/aml-links",
+                    &Json::object([("uuid", Json::from(uuid))]),
+                )
+                .await
+                .map_err(|err| {
+                    tracing::warn!(invoice = uuid, error = %err, "ссылка на анкету AML от Heleket не получена");
+                })
+                .ok(),
+            None => None,
+        };
+        outcome.with_notice(NoticeKind::AmlCheck, aml_note(links.as_ref()))
+    }
 }
 
 fn error_text(parsed: &Json) -> Option<String> {
@@ -197,13 +218,82 @@ fn coin(code: &str) -> PaymentResult<Option<&'static Coin>> {
         .ok_or_else(|| PaymentError::Rejected("этот способ оплаты недоступен".into()))
 }
 
-fn map_status(status: &str) -> ProviderStatus {
-    match status {
-        "paid" | "paid_over" => ProviderStatus::Paid,
-        "wrong_amount" | "fail" | "system_fail" | "locked" => ProviderStatus::Failed,
-        "cancel" => ProviderStatus::Canceled,
-        "refund_paid" => ProviderStatus::Refunded,
-        _ => ProviderStatus::Pending,
+fn received_usd(info: &Json) -> Option<Amount> {
+    let raw = info
+        .get("payment_amount_usd")
+        .and_then(Json::scalar_text)?
+        .trim();
+    let cents = match raw.split_once('.') {
+        Some((whole, fraction)) => {
+            format!("{whole}.{}", fraction.chars().take(2).collect::<String>())
+        }
+        None => raw.to_string(),
+    };
+    parse_units(&cents, PayCurrency::Usd).map(|minor| Amount::new(minor, PayCurrency::Usd))
+}
+
+fn invoice_amount(info: &Json) -> PaymentResult<Amount> {
+    util::json_amount(info.get("amount"), info.get("currency"))
+}
+
+fn settled(info: &Json, status: &str) -> PaymentResult<(ProviderStatus, Option<Amount>)> {
+    Ok(match status {
+        "paid" => (ProviderStatus::Paid, Some(invoice_amount(info)?)),
+        "paid_over" => {
+            let invoice = invoice_amount(info)?;
+            match received_usd(info) {
+                Some(received)
+                    if invoice.currency == PayCurrency::Usd && received.minor > invoice.minor =>
+                {
+                    (ProviderStatus::Overpaid { received }, Some(invoice))
+                }
+                _ => (ProviderStatus::Paid, Some(invoice)),
+            }
+        }
+        "wrong_amount" => match received_usd(info).filter(|r| r.minor > 0) {
+            Some(received) => (ProviderStatus::Underpaid { received }, Some(received)),
+            None => (ProviderStatus::Failed, None),
+        },
+        "fail" | "system_fail" => (ProviderStatus::Failed, None),
+        "cancel" => (ProviderStatus::Canceled, None),
+        "locked" => (ProviderStatus::Held, None),
+        _ => (ProviderStatus::Pending, None),
+    })
+}
+
+const REFUND_NOTE: &str = "Heleket сообщил о возврате денег по этому платежу, но сумму возврата \
+                           в уведомлении не прислал. Сверьте возврат в кабинете Heleket и отметьте \
+                           его в панели как сделанный вне панели";
+
+fn aml_note(links: Option<&Json>) -> String {
+    let head = "Heleket задержал оплату для проверки AML: деньги заблокированы, пока клиент \
+                не заполнит анкету";
+    let items: &[Json] = links.and_then(Json::as_array).unwrap_or_default();
+    let open = items
+        .iter()
+        .filter(|item| {
+            !matches!(
+                item.get("status").and_then(Json::as_str),
+                Some("completed" | "expired")
+            )
+        })
+        .chain(items.iter())
+        .find_map(|item| {
+            let link = item
+                .get("link")
+                .and_then(Json::as_str)
+                .filter(|l| util::is_https(l))?;
+            Some((link, item.get("expired_at").and_then(Json::as_str)))
+        });
+    match open {
+        Some((link, Some(until))) => format!(
+            "{head}. Ссылка на анкету для клиента: {link} (действует до {})",
+            util::clip(until, 19).replace('T', " ")
+        ),
+        Some((link, None)) => format!("{head}. Ссылка на анкету для клиента: {link}"),
+        None => {
+            format!("{head}. Ссылку на анкету получить не удалось: возьмите её в кабинете Heleket")
+        }
     }
 }
 
@@ -218,12 +308,8 @@ fn outcome(info: &Json) -> PaymentResult<WebhookOutcome> {
         .or_else(|| info.get("payment_status"))
         .and_then(Json::as_str)
         .ok_or_else(|| util::bad("нет статуса счёта"))?;
-    let mapped = map_status(status);
-    let amount = match mapped {
-        ProviderStatus::Paid => Some(util::json_amount(info.get("amount"), info.get("currency"))?),
-        _ => None,
-    };
-    Ok(WebhookOutcome {
+    let (mapped, amount) = settled(info, status)?;
+    let outcome = WebhookOutcome {
         event_key: format!("{uuid}:{status}"),
         payment: util::public_ref(info.get("order_id").and_then(Json::as_str))
             .or_else(|| Some(PaymentRef::ProviderTxid(uuid.to_string()))),
@@ -232,6 +318,11 @@ fn outcome(info: &Json) -> PaymentResult<WebhookOutcome> {
         amount,
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
+    };
+    Ok(match status {
+        "refund_paid" => outcome.with_notice(NoticeKind::RefundReported, REFUND_NOTE),
+        _ => outcome,
     })
 }
 
@@ -384,7 +475,7 @@ impl PaymentProvider for Heleket {
             return Err(PaymentError::BadSignature);
         }
         match body.get("type").and_then(Json::as_str) {
-            Some("payment") | None => outcome(&body),
+            Some("payment") | None => Ok(self.explained(config, outcome(&body)?).await),
             Some(other) => Ok(util::skipped(
                 format!(
                     "{other}:{}",
@@ -410,7 +501,7 @@ impl PaymentProvider for Heleket {
                 &Json::object([("uuid", Json::from(uuid))]),
             )
             .await?;
-        outcome(&result).map(Some)
+        Ok(Some(self.explained(config, outcome(&result)?).await))
     }
 }
 
@@ -491,17 +582,20 @@ mod tests {
         for (status, expected) in [
             ("paid", ProviderStatus::Paid),
             ("paid_over", ProviderStatus::Paid),
-            ("wrong_amount", ProviderStatus::Failed),
+            (
+                "wrong_amount",
+                ProviderStatus::Underpaid { received: usd(699) },
+            ),
             ("fail", ProviderStatus::Failed),
             ("system_fail", ProviderStatus::Failed),
             ("cancel", ProviderStatus::Canceled),
-            ("refund_paid", ProviderStatus::Refunded),
+            ("refund_paid", ProviderStatus::Pending),
             ("process", ProviderStatus::Pending),
             ("check", ProviderStatus::Pending),
             ("confirm_check", ProviderStatus::Pending),
             ("wrong_amount_waiting", ProviderStatus::Pending),
-            ("locked", ProviderStatus::Failed),
             ("refund_process", ProviderStatus::Pending),
+            ("refund_fail", ProviderStatus::Pending),
         ] {
             let outcome = parse(signed(&data(status, "6.99", "USD"), KEY))
                 .await
@@ -531,6 +625,140 @@ mod tests {
         let skipped = parse(wallet).await.unwrap();
         assert_eq!(skipped.payment, None);
         assert_eq!(skipped.status, ProviderStatus::Pending);
+    }
+
+    fn with_usd(status: &str, amount: &str, paid_usd: Option<&str>) -> String {
+        let body = data(status, amount, "USD");
+        let body = match paid_usd {
+            Some(paid) => body.replace(
+                "\"payment_amount_usd\":\"6.99\"",
+                &format!("\"payment_amount_usd\":\"{paid}\""),
+            ),
+            None => body.replace("\"payment_amount_usd\":\"6.99\",", ""),
+        };
+        signed(&body, KEY)
+    }
+
+    #[tokio::test]
+    async fn итоговая_недоплата_несёт_полученное_в_долларах_вниз_до_центов() {
+        let under = parse(with_usd("wrong_amount", "6.99", Some("5.4999")))
+            .await
+            .unwrap();
+        assert_eq!(
+            under.status,
+            ProviderStatus::Underpaid { received: usd(549) }
+        );
+        assert_eq!(under.amount, Some(usd(549)));
+        assert_eq!(under.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        let whole = parse(with_usd("wrong_amount", "6.99", Some("3")))
+            .await
+            .unwrap();
+        assert_eq!(
+            whole.status,
+            ProviderStatus::Underpaid { received: usd(300) }
+        );
+        for paid in [None, Some("0.004"), Some("-1"), Some("много")] {
+            let failed = parse(with_usd("wrong_amount", "6.99", paid)).await.unwrap();
+            assert_eq!(failed.status, ProviderStatus::Failed, "{paid:?}");
+            assert_eq!(failed.amount, None);
+        }
+        let waiting = parse(with_usd("wrong_amount_waiting", "6.99", Some("5.00")))
+            .await
+            .unwrap();
+        assert_eq!(waiting.status, ProviderStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn излишек_paid_over_считается_по_полученному_в_долларах() {
+        let over = parse(with_usd("paid_over", "6.99", Some("7.519")))
+            .await
+            .unwrap();
+        assert_eq!(over.status, ProviderStatus::Overpaid { received: usd(751) });
+        assert_eq!(over.amount, Some(usd(699)));
+        for paid in [None, Some("6.99"), Some("6.5")] {
+            let even = parse(with_usd("paid_over", "6.99", paid)).await.unwrap();
+            assert_eq!(even.status, ProviderStatus::Paid, "{paid:?}");
+            assert_eq!(even.amount, Some(usd(699)));
+        }
+    }
+
+    #[tokio::test]
+    async fn возврат_неизвестной_суммы_уходит_админу_а_не_в_учёт() {
+        let refund = parse(with_usd("refund_paid", "6.99", Some("6.99")))
+            .await
+            .unwrap();
+        assert_eq!(refund.status, ProviderStatus::Pending);
+        assert_eq!(refund.amount, None);
+        assert_eq!(refund.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        let notice = refund.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::RefundReported);
+        assert!(notice.text.contains("вне панели"), "{}", notice.text);
+        let paid = parse(with_usd("paid", "6.99", None)).await.unwrap();
+        assert_eq!(paid.signal, None);
+    }
+
+    #[tokio::test]
+    async fn блокировка_aml_держит_платёж_и_приносит_ссылку_на_анкету() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/aml-links"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": [
+                    {"link": "https://aml.heleket.hk/old", "expired_at": "2026-09-15T12:00:00.000000Z", "status": "expired"},
+                    {"link": "https://aml.heleket.hk/form/7f3c", "expired_at": "2026-11-25T12:00:00.000000Z", "status": "init"}
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = Heleket::with_api_base(server.uri());
+        let locked = provider
+            .parse_webhook(
+                &settings(),
+                &hook(&[], with_usd("locked", "6.99", Some("6.99"))),
+            )
+            .await
+            .unwrap();
+        assert_eq!(locked.status, ProviderStatus::Held);
+        assert_eq!(locked.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        let notice = locked.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::AmlCheck);
+        assert!(
+            notice.text.contains("https://aml.heleket.hk/form/7f3c")
+                && notice.text.contains("2026-11-25 12:00:00")
+                && !notice.text.contains("/old"),
+            "{}",
+            notice.text
+        );
+        let sent = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+        assert_eq!(
+            body,
+            json!({"uuid": "62f88b36-a9d5-4fa6-aa26-e040c3dbf26d"})
+        );
+    }
+
+    #[tokio::test]
+    async fn без_ссылки_на_анкету_блокировка_всё_равно_держит_платёж() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/aml-links"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let locked = Heleket::with_api_base(server.uri())
+            .parse_webhook(
+                &settings(),
+                &hook(&[], with_usd("locked", "6.99", Some("6.99"))),
+            )
+            .await
+            .unwrap();
+        assert_eq!(locked.status, ProviderStatus::Held);
+        let notice = locked.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::AmlCheck);
+        assert!(notice.text.contains("кабинете Heleket"), "{}", notice.text);
     }
 
     #[tokio::test]

@@ -91,7 +91,14 @@ export type OrderBrief = {
 export type HistoryItem = { at: string } & (
   | {
       type: 'payment';
-      payment: { id: string; status: 'paid' | 'partially_refunded' | 'refunded' | 'failed' | string; amount: Amount; provider: string; method: string | null };
+      payment: {
+        id: string;
+        number: number;
+        status: 'paid' | 'partially_refunded' | 'refunded' | 'failed' | string;
+        amount: Amount;
+        provider: string;
+        method: string | null;
+      };
       order: OrderBrief | null;
     }
   | { type: 'order'; order: OrderBrief }

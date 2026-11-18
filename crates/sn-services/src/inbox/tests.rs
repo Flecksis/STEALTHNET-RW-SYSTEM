@@ -28,6 +28,7 @@ mod actions;
 mod blocked;
 mod gate;
 mod holds;
+mod notices;
 mod polling;
 mod resume;
 
@@ -43,6 +44,7 @@ struct Kassa {
     status: Mutex<Option<WebhookOutcome>>,
     lookups: Mutex<Vec<String>>,
     refund_status: Mutex<Option<WebhookOutcome>>,
+    finds_by_payment: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
@@ -84,6 +86,10 @@ impl PaymentProvider for Kassa {
 
     fn supports_refund_polling(&self) -> bool {
         true
+    }
+
+    fn polls_by_payment_id(&self) -> bool {
+        *self.finds_by_payment.lock().unwrap()
     }
 
     async fn create_invoice(
@@ -136,6 +142,7 @@ impl PaymentProvider for Kassa {
                 status: 200,
                 body: serde_json::json!({ "code": 0 }),
             },
+            signal: None,
         })
     }
 
@@ -281,6 +288,7 @@ fn refund_command(
         subscription_action: action,
         reason: reason.map(str::to_string),
         key: None,
+        outside: false,
     }
 }
 
@@ -366,6 +374,7 @@ fn paid_by(payment: &Payment, txid: &str) -> WebhookOutcome {
         amount: Some(payment.amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     }
 }
 
@@ -506,6 +515,7 @@ fn outcome(payment: &Payment, status: ProviderStatus) -> WebhookOutcome {
         amount: Some(payment.amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     }
 }
 
@@ -956,6 +966,7 @@ async fn админ_возвращает_покупку_на_баланс_или
         subscription_action: RefundSubscriptionAction::Keep,
         reason: Some("Клиент передумал".into()),
         key: None,
+        outside: false,
     };
     let refunded = inbox
         .refund(balance_payment.id, &to_balance, admin)
@@ -990,6 +1001,7 @@ async fn админ_возвращает_покупку_на_баланс_или
                 subscription_action: RefundSubscriptionAction::Keep,
                 reason: None,
                 key: None,
+                outside: false,
             },
             admin,
         )
@@ -1418,6 +1430,7 @@ async fn возврат_без_подтверждения_кассы_ждёт_и
         subscription_action: RefundSubscriptionAction::Keep,
         reason: Some("Клиент передумал".into()),
         key: None,
+        outside: false,
     };
     let requested = inbox.refund(topped.id, &command, admin).await.unwrap();
     assert_eq!(kassa.refunds.lock().unwrap().len(), 1);
@@ -2252,6 +2265,7 @@ async fn ожидающий_возврат_уточняется_опросом_�
         amount: None,
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     });
     assert_eq!(
         inbox.poll_payment(first.id).await.unwrap(),
@@ -2269,6 +2283,7 @@ async fn ожидающий_возврат_уточняется_опросом_�
         amount: Some(Amount::new(1_000, PayCurrency::Usd)),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     });
     assert_eq!(
         inbox.poll_payment(first.id).await.unwrap(),
@@ -2291,6 +2306,7 @@ async fn ожидающий_возврат_уточняется_опросом_�
         amount: Some(Amount::new(400, PayCurrency::Usd)),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
     });
     assert_eq!(
         inbox.poll_refunds(10).await.unwrap(),
@@ -2349,6 +2365,7 @@ async fn возврат_повторной_оплаты_сторнирует_б�
         subscription_action: RefundSubscriptionAction::Keep,
         reason: None,
         key: None,
+        outside: false,
     };
     assert_eq!(
         inbox

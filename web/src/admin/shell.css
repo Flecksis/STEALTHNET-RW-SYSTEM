@@ -584,6 +584,8 @@
 .dialog {
   width: 100%;
   max-width: 440px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;

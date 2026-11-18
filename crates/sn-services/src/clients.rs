@@ -58,6 +58,7 @@ pub struct OrderBrief {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PaymentBrief {
     pub id: Uuid,
+    pub number: PaymentId,
     pub status: PaymentStatus,
     pub amount: Amount,
     pub provider: ProviderId,
@@ -969,6 +970,7 @@ impl<'a> ClientOps<'a> {
                             .map(|order| order_brief(order, &tariffs)),
                         payment: PaymentBrief {
                             id: payment.public_id,
+                            number: payment.id,
                             status: payment.status,
                             amount: payment.amount,
                             provider: payment.provider,

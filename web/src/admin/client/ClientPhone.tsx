@@ -9,6 +9,7 @@ import { useSession } from '../session';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, MessageDialog } from './dialogs';
 import { historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
+import { RefundDialog } from './RefundDialog';
 import { devicesWord, emailOf, liveSubscriptions, nextReset, personName, seenText, tariffOf, telegramOf } from './model';
 import { planTitle } from './SubscriptionBlock';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
@@ -78,6 +79,8 @@ export function ClientPhone() {
   const { can, me } = useSession();
   const writable = can('clients_write');
   const moneyOk = can('money');
+  const refundsOk = can('refunds');
+  const [refundFor, setRefundFor] = useState<number | null>(null);
   const [card, setCard] = useState<ClientCard | null>(null);
   const [details, setDetails] = useState<SubscriptionDetails | null>(null);
   const [detailsKey, setDetailsKey] = useState(0);
@@ -697,6 +700,11 @@ export function ClientPhone() {
                 <span className="pc-hist-text">
                   <b>{l.what}</b>
                   <span className="pc-small pc-muted">{l.when}</span>
+                  {refundsOk && l.refund ? (
+                    <button type="button" className="pc-his-act press" onClick={() => setRefundFor(l.refund ?? null)}>
+                      Вернуть деньги
+                    </button>
+                  ) : null}
                 </span>
                 {l.sum ? <b className="num pc-sum">{l.sum}</b> : null}
               </div>
@@ -806,6 +814,19 @@ export function ClientPhone() {
         </div>
       ) : null}
 
+      {refundFor !== null ? (
+        <RefundDialog
+          paymentId={refundFor}
+          onClose={() => setRefundFor(null)}
+          onDone={(_, text) => {
+            setRefundFor(null);
+            show({ kind: 'info', head: text });
+            void loadCard();
+            setDetailsKey((k) => k + 1);
+            void loadHistory();
+          }}
+        />
+      ) : null}
       {dialog === 'message' ? (
         <MessageDialog
           clientId={clientId}

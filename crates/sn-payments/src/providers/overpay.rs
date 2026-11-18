@@ -355,6 +355,7 @@ impl Order {
             amount: amount.map(|minor| self.money(minor)),
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         }
     }
 

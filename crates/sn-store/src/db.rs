@@ -247,6 +247,10 @@ pub trait Db: Send {
         RefundsRepo::new(self.conn())
     }
 
+    fn payment_notices(&mut self) -> PaymentNoticesRepo<'_> {
+        PaymentNoticesRepo::new(self.conn())
+    }
+
     fn autorenew(&mut self) -> AutoRenewRepo<'_> {
         AutoRenewRepo::new(self.conn())
     }

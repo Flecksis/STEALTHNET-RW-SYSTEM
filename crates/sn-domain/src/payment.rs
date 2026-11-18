@@ -234,6 +234,57 @@ pub fn check_paid_amount(expected: Amount, received: Option<Amount>) -> AmountCh
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    Dispute,
+    Chargeback,
+    UnmatchedRefund,
+    RefundReported,
+    AmlCheck,
+    ManualCredit,
+}
+
+impl NoticeKind {
+    pub const ALL: [NoticeKind; 6] = [
+        NoticeKind::Dispute,
+        NoticeKind::Chargeback,
+        NoticeKind::UnmatchedRefund,
+        NoticeKind::RefundReported,
+        NoticeKind::AmlCheck,
+        NoticeKind::ManualCredit,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            NoticeKind::Dispute => "dispute",
+            NoticeKind::Chargeback => "chargeback",
+            NoticeKind::UnmatchedRefund => "unmatched_refund",
+            NoticeKind::RefundReported => "refund_reported",
+            NoticeKind::AmlCheck => "aml_check",
+            NoticeKind::ManualCredit => "manual_credit",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        NoticeKind::ALL
+            .into_iter()
+            .find(|k| k.as_str() == value)
+            .ok_or_else(|| DomainError::unknown("notice_kind", value))
+    }
+
+    pub const fn title_ru(self) -> &'static str {
+        match self {
+            NoticeKind::Dispute => "Спор по платежу",
+            NoticeKind::Chargeback => "Чарджбэк",
+            NoticeKind::UnmatchedRefund => "Возврат не привязан к оплате",
+            NoticeKind::RefundReported => "Платёжная система сообщила о возврате",
+            NoticeKind::AmlCheck => "Платёж задержан проверкой AML",
+            NoticeKind::ManualCredit => "Деньги ждут ручного зачисления",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RefundMethod {
     Balance,
     Provider,

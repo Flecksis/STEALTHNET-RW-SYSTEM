@@ -10,7 +10,7 @@ use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::PaymentStatus;
 use sn_services::admin::{MarkPaidRequest, MarkPaidResult, PaymentFilter, RefundRequest};
-use sn_services::inbox::{PendingRefundRequest, RefundActionReview};
+use sn_services::inbox::{PendingRefundRequest, RefundActionReview, RefundOptions};
 
 const REFUND_LIST_LIMIT: i64 = 100;
 
@@ -18,7 +18,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payments", get(list))
         .route("/payments/{id}/mark-paid", post(mark_paid))
-        .route("/payments/{id}/refund", post(refund))
+        .route("/payments/{id}/refund", get(refund_options).post(refund))
         .route("/refunds/pending", get(pending_refunds))
         .route("/refunds/actions", get(refund_actions))
         .route("/refunds/{id}/cancel", post(cancel_refund_request))
@@ -104,6 +104,17 @@ async fn mark_paid(
             .admin()
             .mark_paid(PaymentId(id), &body, admin.0.admin_id)
             .await?,
+    ))
+}
+
+async fn refund_options(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<RefundOptions>> {
+    admin.require(Permission::Refunds)?;
+    Ok(Json(
+        state.services.inbox().refund_options(PaymentId(id)).await?,
     ))
 }
 

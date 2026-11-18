@@ -5,7 +5,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals';
+type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments';
 
 type KindView = { kind: Kind; title: string; default_topic: string; on: boolean; topic: string | null };
 
@@ -22,10 +22,11 @@ type Route = { on: boolean; topic: string };
 
 const ABOUT: Record<Kind, string> = {
   support: 'Новое обращение или новое сообщение клиента в старом',
-  orders: 'Оплата прошла, а подписку не удалось выдать автоматически',
+  orders: 'Подписку не удалось выдать автоматически или платёжная система задержала оплату для проверки',
   stars: 'Оплата звёздами, которую не получилось сопоставить со счётом',
   refunds: 'Оплату заблокированного клиента вернули автоматически, или подписку после возврата нужно поменять вручную',
   withdrawals: 'Клиент попросил вывести заработанное по рефералке',
+  payments: 'Спор или чарджбэк, возврат без привязки к оплате, деньги для ручного зачисления',
 };
 
 function failText(err: unknown, fallback: string): string {

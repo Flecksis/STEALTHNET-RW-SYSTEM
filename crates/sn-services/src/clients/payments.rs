@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sn_domain::ids::{ClientId, OrderId, PaymentId, TariffId};
 use sn_domain::money::{Amount, Currency};
-use sn_domain::order::{Order, OrderKind};
+use sn_domain::order::{Order, OrderKind, OrderStatus};
 use sn_domain::paging::PageRequest;
 use sn_domain::payment::{Payment, PaymentStatus, providers};
 use sn_payments::ProviderRegistry;
@@ -178,7 +178,10 @@ impl ClientOps<'_> {
                 let outcome = outcomes.get(&payment.id).copied().unwrap_or_default();
                 let open = payment.status == PaymentStatus::Pending
                     && payment.pay_url.is_some()
-                    && payment.expires_at.is_none_or(|at| at > now);
+                    && payment.expires_at.is_none_or(|at| at > now)
+                    && orders
+                        .get(&payment.order_id)
+                        .is_none_or(|order| order.status != OrderStatus::Review);
                 ClientPayment {
                     id: payment.public_id,
                     status: payment.status,

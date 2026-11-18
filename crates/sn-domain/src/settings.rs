@@ -202,6 +202,7 @@ impl Default for PaymentOrder {
                 providers::STARS,
                 providers::CLOUDPAYMENTS,
                 providers::OVERPAY,
+                providers::CRYPTOPAY,
             ]
             .map(String::from)
             .to_vec(),
@@ -623,5 +624,20 @@ mod tests {
         let order = PaymentOrder::default();
         assert_eq!(order.for_currency(Currency::Usd)[0], "cryptopay");
         assert_eq!(order.for_currency(Currency::Rub)[0], "platega");
+    }
+
+    #[test]
+    fn crypto_pay_есть_в_порядке_способов_для_рублей() {
+        let order = PaymentOrder::default();
+        assert!(order.rub.iter().any(|id| id == providers::CRYPTOPAY));
+        assert_eq!(
+            order
+                .rub
+                .iter()
+                .filter(|id| *id == providers::CRYPTOPAY)
+                .count(),
+            1
+        );
+        assert_eq!(order.usd[0], providers::CRYPTOPAY);
     }
 }

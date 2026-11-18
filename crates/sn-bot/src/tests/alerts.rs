@@ -165,6 +165,6 @@ async fn уведомления_уходят_в_группу_по_темам() {
                 .is_some_and(|t| t.contains("Проверка уведомлений"))
         })
         .count();
-    assert_eq!(checks, 5);
+    assert_eq!(checks, 6);
     db.cleanup().await;
 }

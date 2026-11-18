@@ -5,6 +5,7 @@ use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, RefundId, Subscripti
 use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::payment::{Refund, RefundMethod, RefundSubscriptionAction};
 use sqlx::PgConnection;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedMethodRecord {
@@ -175,6 +176,39 @@ impl<'c> RefundsRepo<'c> {
             .execute(&mut *self.conn)
             .await?;
         Ok(RefundId(id))
+    }
+
+    pub async fn set_request_key(&mut self, id: RefundId, key: Uuid) -> StoreResult<()> {
+        sqlx::query(
+            "UPDATE refunds SET request_key = $2 WHERE id = $1 \
+             AND NOT EXISTS (SELECT 1 FROM refunds WHERE request_key = $2)",
+        )
+        .bind(id.0)
+        .bind(key)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn relink(&mut self, id: RefundId, provider_refund_id: &str) -> StoreResult<()> {
+        sqlx::query("UPDATE refunds SET provider_refund_id = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(provider_refund_id)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn by_request_key(
+        &mut self,
+        key: Uuid,
+    ) -> StoreResult<Option<(RefundId, PaymentId)>> {
+        let row: Option<(i64, i64)> =
+            sqlx::query_as("SELECT id, payment_id FROM refunds WHERE request_key = $1")
+                .bind(key)
+                .fetch_optional(&mut *self.conn)
+                .await?;
+        Ok(row.map(|(id, payment)| (RefundId(id), PaymentId(payment))))
     }
 
     pub async fn for_payment(&mut self, payment_id: PaymentId) -> StoreResult<Vec<Refund>> {

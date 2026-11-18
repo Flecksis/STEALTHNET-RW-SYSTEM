@@ -417,6 +417,19 @@
   flex-direction: column;
 }
 
+.pc-his-act {
+  align-self: flex-start;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
 .pc-sum {
   flex: 0 0 auto;
   font-weight: 700;

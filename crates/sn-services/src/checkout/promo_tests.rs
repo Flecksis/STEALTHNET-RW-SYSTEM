@@ -72,6 +72,7 @@ async fn report(kit: &Kit, payment: &Payment, status: ProviderStatus) {
                 amount: Some(payment.amount),
                 saved_method: None,
                 reply: WebhookReply::ok(),
+                signal: None,
             },
         )
         .await

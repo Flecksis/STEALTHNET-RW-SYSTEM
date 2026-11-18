@@ -44,6 +44,8 @@ pub mod templates {
     pub const REPEAT_REVIEW: &str = sn_services::inbox::REPEAT_REVIEW_TEMPLATE;
     pub const REFUNDED_BLOCKED: &str = sn_services::inbox::BLOCKED_REFUND_TEMPLATE;
     pub const AUTORENEW_AFTER_OFF: &str = sn_services::autorenew::CHARGED_AFTER_OFF_TEMPLATE;
+    pub const PAYMENT_CREDITED: &str = sn_services::inbox::PAYMENT_CREDITED_TEMPLATE;
+    pub const PAYMENT_REVIEW: &str = sn_services::inbox::PAYMENT_REVIEW_TEMPLATE;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,8 +207,12 @@ pub fn render(
             ),
             Some(("notify.btn.reply", reply.as_str())),
         ),
-        templates::REPEAT_CREDITED => (param(params, "text")?, Some(("notify.btn.balance", "bal"))),
-        templates::REPEAT_REVIEW => (param(params, "text")?, Some(("notify.btn.support", "sup"))),
+        templates::REPEAT_CREDITED | templates::PAYMENT_CREDITED => {
+            (param(params, "text")?, Some(("notify.btn.balance", "bal")))
+        }
+        templates::REPEAT_REVIEW | templates::PAYMENT_REVIEW => {
+            (param(params, "text")?, Some(("notify.btn.support", "sup")))
+        }
         gifts::TEMPLATE_READY => {
             let tariff = param(params, "tariff")?;
             let term = param(params, "term")?;
@@ -459,6 +465,18 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
         templates::TOPUP_DONE => head(
             LetterKind::Payments,
             "Баланс пополнен",
+            "История оплат",
+            "/cabinet/payments",
+        ),
+        templates::PAYMENT_CREDITED => head(
+            LetterKind::Payments,
+            "Деньги зачислены на баланс",
+            "История оплат",
+            "/cabinet/payments",
+        ),
+        templates::PAYMENT_REVIEW => head(
+            LetterKind::Payments,
+            "Оплату проверим вручную",
             "История оплат",
             "/cabinet/payments",
         ),

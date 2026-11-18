@@ -5,7 +5,7 @@ use crate::util;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use sn_domain::money::{Amount, Currency, PayCurrency};
-use sn_domain::payment::providers;
+use sn_domain::payment::{NoticeKind, providers};
 use sn_domain::settings::SettingField;
 use uuid::Uuid;
 
@@ -277,14 +277,26 @@ fn transaction_outcome(tx: &Json, id: &str) -> PaymentResult<WebhookOutcome> {
         "CHARGEBACKED" => ProviderStatus::Refunded,
         _ => ProviderStatus::Pending,
     };
-    Ok(WebhookOutcome {
+    let amount = transaction_amount(tx)?;
+    let outcome = WebhookOutcome {
         event_key: format!("{id}:{status_text}"),
         payment: reference(tx.get("payload").and_then(Json::as_str), id),
         provider_txid: Some(id.to_string()),
         status,
-        amount: Some(transaction_amount(tx)?),
+        amount: Some(amount),
         saved_method: None,
         reply: WebhookReply::ok(),
+        signal: None,
+    };
+    Ok(match status_text {
+        "DISPUTED" => outcome.with_notice(
+            NoticeKind::Dispute,
+            format!(
+                "Platega открыла спор по платежу {id}: деньги зарезервированы до конца проверки, \
+                 вернуть их сейчас нельзя. Подробности — в кабинете Platega"
+            ),
+        ),
+        _ => outcome,
     })
 }
 
@@ -505,6 +517,7 @@ impl PaymentProvider for Platega {
                 amount,
                 saved_method: None,
                 reply: WebhookReply::ok(),
+                signal: None,
             });
         }
         let tx = self
@@ -637,6 +650,7 @@ impl PaymentProvider for Platega {
             status,
             saved_method: None,
             reply: WebhookReply::ok(),
+            signal: None,
         }))
     }
 }
@@ -856,6 +870,19 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(polled.status, expected, "{status}");
+            let disputed = status == "DISPUTED";
+            for got in [&outcome, &polled] {
+                assert_eq!(
+                    got.notice().map(|n| n.kind),
+                    disputed.then_some(NoticeKind::Dispute),
+                    "{status}"
+                );
+            }
+            if disputed {
+                assert_eq!(outcome.payment, Some(PaymentRef::PublicId(PAYMENT)));
+                assert_eq!(outcome.amount, Some(rub(49_900)));
+                assert!(outcome.notice().unwrap().text.contains(TX));
+            }
         }
         let server = MockServer::start().await;
         let subscription = parse(&server, &headers(), callback("SUBSCRIPTION_ACTIVATED"))

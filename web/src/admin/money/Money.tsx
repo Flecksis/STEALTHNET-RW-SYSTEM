@@ -4,7 +4,9 @@ import { api, ApiError } from '../../lib/api';
 import { Avatar } from '../Avatar';
 import { ConfirmDialog } from '../client/dialogs';
 import { amountText, lowerFirst, methodText } from '../client/history';
+import { RefundDialog } from '../client/RefundDialog';
 import { agoLong, orderLine, personName, type PaymentItem } from '../home/model';
+import { useSession } from '../session';
 import './money.css';
 
 type Filter = 'pending' | 'canceled' | 'paid' | 'all';
@@ -18,6 +20,7 @@ const FILTERS: Array<[Filter, string]> = [
 
 const MANUAL = new Set(['pending', 'canceled', 'failed']);
 const NOT_MANUAL = new Set(['stars', 'balance']);
+const REFUNDABLE = new Set(['paid', 'partially_refunded']);
 
 type PageData = { items: PaymentItem[]; next: number | null };
 
@@ -27,7 +30,9 @@ function stateOf(p: PaymentItem): { text: string; color: string } {
     case 'partially_refunded':
       return { text: `оплачен ${lowerFirst(agoLong(p.paid_at ?? p.created_at))}`, color: 'var(--muted)' };
     case 'pending':
-      return { text: 'ждём оплату', color: 'var(--warn)' };
+      return p.order?.status === 'review'
+        ? { text: 'задержан проверкой', color: 'var(--warn)' }
+        : { text: 'ждём оплату', color: 'var(--warn)' };
     case 'canceled':
       return { text: 'истёк или отменён', color: 'var(--muted)' };
     case 'refunded':
@@ -42,6 +47,9 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function Money() {
+  const { can } = useSession();
+  const refunds = can('refunds');
+  const [refund, setRefund] = useState<PaymentItem | null>(null);
   const [filter, setFilter] = useState<Filter>('pending');
   const [items, setItems] = useState<PaymentItem[] | null>(null);
   const [next, setNext] = useState<number | null>(null);
@@ -130,6 +138,7 @@ export function Money() {
           const name = personName(p.client, p.client_id);
           const state = stateOf(p);
           const manual = MANUAL.has(p.status) && !NOT_MANUAL.has(p.provider) && p.amount.currency !== 'XTR';
+          const returnable = refunds && REFUNDABLE.has(p.status);
           return (
             <div key={p.id} className="mo-row">
               <Link to={`/admin/clients/${p.client_id}`} className="mo-who hov">
@@ -151,6 +160,11 @@ export function Money() {
                     Отметить оплаченным
                   </button>
                 ) : null}
+                {returnable ? (
+                  <button type="button" className="btn-line hov" onClick={() => setRefund(p)}>
+                    Вернуть
+                  </button>
+                ) : null}
               </span>
             </div>
           );
@@ -163,6 +177,17 @@ export function Money() {
           </div>
         ) : null}
       </section>
+      {refund ? (
+        <RefundDialog
+          paymentId={refund.id}
+          onClose={() => setRefund(null)}
+          onDone={(_, text) => {
+            setRefund(null);
+            setDone(`${personName(refund.client, refund.client_id)}: ${lowerFirst(text)}`);
+            void load();
+          }}
+        />
+      ) : null}
       {confirm ? (
         <ConfirmDialog
           title="Отметить платёж оплаченным?"
