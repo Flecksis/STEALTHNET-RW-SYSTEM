@@ -1,4 +1,7 @@
-use crate::context::{BalanceChange, CoreApi, ModuleContext, Notification};
+use crate::context::{
+    BalanceChange, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, ModuleContext, Notification,
+    SubscriptionGrant,
+};
 use crate::error::ModuleError;
 use async_trait::async_trait;
 use sn_domain::client::{Locale, RegistrationSource};
@@ -6,11 +9,12 @@ use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::{Amount, Currency, Money};
-use sn_domain::order::{NewOrder, Order, OrderKind, PurchaseIntent};
+use sn_domain::order::{NewOrder, Order, OrderKind, OrderStatus, PurchaseIntent};
 use sn_domain::payment::{NewPayment, Payment, PaymentStatus, ProviderId};
+use sn_domain::plan::PlanKind;
 use sn_domain::pricing::Quote;
 use sn_store::testing::TestDb;
-use sn_store::{Db, NewClient, Store, StoreError, StoreOptions};
+use sn_store::{Db, NewClient, Store, StoreError, StoreOptions, Tx};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -22,6 +26,7 @@ pub struct Calls {
     pub addons: Vec<(OrderId, SubscriptionId, String, u64)>,
     pub notifications: Vec<(ClientId, Notification)>,
     pub jobs: Vec<JobPayload>,
+    pub grants: Vec<(SubscriptionGrant, OrderId)>,
 }
 
 pub struct TestCore {
@@ -29,6 +34,7 @@ pub struct TestCore {
     pub calls: Mutex<Calls>,
     pub fail_days: AtomicBool,
     pub slow_days_ms: AtomicU64,
+    pub refuse_grant: Mutex<Option<GrantRefusal>>,
 }
 
 impl TestCore {
@@ -38,7 +44,21 @@ impl TestCore {
             calls: Mutex::new(Calls::default()),
             fail_days: AtomicBool::new(false),
             slow_days_ms: AtomicU64::new(0),
+            refuse_grant: Mutex::new(None),
         })
+    }
+
+    pub fn grants(&self) -> Vec<(SubscriptionGrant, OrderId)> {
+        self.calls
+            .lock()
+            .map(|c| c.grants.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn refuse(&self, refusal: Option<GrantRefusal>) {
+        if let Ok(mut slot) = self.refuse_grant.lock() {
+            *slot = refusal;
+        }
     }
 
     pub fn days(&self) -> Vec<(SubscriptionId, u32, String)> {
@@ -126,6 +146,72 @@ impl CoreApi for TestCore {
             calls.jobs.push(job);
         }
         Ok(())
+    }
+
+    async fn grant_preview(&self, _grant: &SubscriptionGrant) -> Result<GrantPreview, ModuleError> {
+        let refusal = self.refuse_grant.lock().ok().and_then(|r| r.clone());
+        Ok(GrantPreview {
+            plan: PlanKind::New,
+            multi: false,
+            current: None,
+            choices: Vec::new(),
+            refusal,
+        })
+    }
+
+    async fn grant_subscription(
+        &self,
+        tx: &mut Tx,
+        grant: &SubscriptionGrant,
+    ) -> Result<Result<GrantedOrder, GrantRefusal>, ModuleError> {
+        if let Some(refusal) = self.refuse_grant.lock().ok().and_then(|r| r.clone()) {
+            return Ok(Err(refusal));
+        }
+        let order = tx
+            .orders()
+            .create(&NewOrder {
+                client_id: grant.client_id,
+                subscription_id: None,
+                kind: OrderKind::ModuleGrant,
+                intent: PurchaseIntent::ModuleGrant {
+                    module: grant.module,
+                    reference: grant.reference.clone(),
+                    tariff_id: None,
+                    period_id: None,
+                    days: grant.spec.days(),
+                },
+                quote: Quote {
+                    currency: Currency::Usd,
+                    lines: Vec::new(),
+                    subtotal: Money::zero(Currency::Usd),
+                    discount: Money::zero(Currency::Usd),
+                    total: Money::zero(Currency::Usd),
+                    stars: None,
+                    days: grant.spec.days(),
+                    extra_devices: 0,
+                },
+                snapshot: None,
+            })
+            .await?;
+        tx.orders().transition(order.id, OrderStatus::Paid).await?;
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.grants.push((grant.clone(), order.id));
+        }
+        Ok(Ok(GrantedOrder {
+            order_id: order.id,
+            order_public_id: order.public_id,
+            plan: PlanKind::New,
+            subscription_id: None,
+        }))
+    }
+
+    async fn notify_in(
+        &self,
+        _tx: &mut Tx,
+        client_id: ClientId,
+        notification: Notification,
+    ) -> Result<(), ModuleError> {
+        self.notify(client_id, notification).await
     }
 
     async fn apply_device_addon(

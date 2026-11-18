@@ -16,6 +16,7 @@ pub enum Awaiting {
     SupportMessage,
     WithdrawalAmount,
     WithdrawalDetails,
+    GiftCode,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +61,8 @@ pub struct Session {
     pub withdrawal: Option<WithdrawalDraft>,
     #[serde(default)]
     pub support_ticket: Option<i64>,
+    #[serde(default)]
+    pub gift_code: Option<String>,
 }
 
 impl Session {

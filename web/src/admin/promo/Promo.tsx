@@ -16,6 +16,7 @@ import {
   valueText,
   type PromoCode,
 } from './model';
+import { PromoTabs } from '../promolinks/PromoTabs';
 import { PromoForm } from './PromoForm';
 import { PromoPhone } from './PromoPhone';
 import { usePromos } from './usePromos';
@@ -71,6 +72,7 @@ function PromoDesk() {
 
   return (
     <div className="pr-page">
+      <PromoTabs />
       <div className="pr-head">
         <h1 className="page-title tight">Промокоды</h1>
         <span className="pr-head-acts">

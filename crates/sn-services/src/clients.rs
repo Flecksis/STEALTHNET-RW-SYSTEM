@@ -176,6 +176,7 @@ pub(crate) fn order_brief(order: &Order, tariffs: &HashMap<TariffId, String>) ->
     let tariff_id = match &order.intent {
         PurchaseIntent::Subscription { tariff_id, .. }
         | PurchaseIntent::AdminGrant { tariff_id, .. } => Some(*tariff_id),
+        PurchaseIntent::ModuleGrant { tariff_id, .. } => *tariff_id,
         _ => order.snapshot.as_ref().map(|snapshot| snapshot.tariff_id),
     };
     let days = (order.quote.days > 0).then_some(order.quote.days);

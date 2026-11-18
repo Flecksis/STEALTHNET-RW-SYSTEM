@@ -311,6 +311,19 @@ pub(crate) async fn name_base(db: &mut impl Db, client_id: ClientId) -> Result<S
     }))
 }
 
+fn paid_and_active(subscription: &Subscription, now: DateTime<Utc>) -> bool {
+    subscription.kind != SubscriptionKind::Trial
+        && subscription.remna.is_some()
+        && subscription.mirror.expire_at.is_some_and(|at| at > now)
+}
+
+fn custom_grant_halt() -> Halt {
+    Halt::Review(
+        "у клиента уже есть действующая подписка, а выдача модулем создаёт отдельную: решите вручную"
+            .into(),
+    )
+}
+
 fn name_candidates(base: &str, ordinal: u32) -> Vec<String> {
     (ordinal..ordinal.saturating_add(NAME_CANDIDATES))
         .map(|n| remna_name(base, n))
@@ -369,7 +382,8 @@ impl<'a> Fulfillment<'a> {
             },
             PurchaseIntent::Subscription { .. }
             | PurchaseIntent::Trial
-            | PurchaseIntent::AdminGrant { .. } => self.subscription(order.clone()).await,
+            | PurchaseIntent::AdminGrant { .. }
+            | PurchaseIntent::ModuleGrant { .. } => self.subscription(order.clone()).await,
             PurchaseIntent::Imported { .. } => Err(Halt::Review(
                 "заказ перенесён из старой системы и не выдаётся".into(),
             )),
@@ -1000,11 +1014,12 @@ impl<'a> Fulfillment<'a> {
         snapshot: &TariffSnapshot,
     ) -> Result<Option<Subscription>, Halt> {
         let grant = matches!(order.intent, PurchaseIntent::AdminGrant { .. });
+        let module_grant = matches!(order.intent, PurchaseIntent::ModuleGrant { .. });
         let purchase = matches!(
             order.intent,
             PurchaseIntent::Subscription { target: None, .. }
         );
-        if self.services.settings().multi_subscriptions || !(grant || purchase) {
+        if self.services.settings().multi_subscriptions || !(grant || module_grant || purchase) {
             return Ok(None);
         }
         let Some((existing, category)) =
@@ -1012,8 +1027,13 @@ impl<'a> Fulfillment<'a> {
         else {
             return Ok(None);
         };
+        if order.intent.custom_grant() && paid_and_active(&existing, self.services.now()) {
+            return Err(custom_grant_halt());
+        }
         let kind = if grant {
             OrderKind::AdminGrant
+        } else if module_grant {
+            OrderKind::ModuleGrant
         } else {
             classify(
                 snapshot.category_id,
@@ -1080,6 +1100,22 @@ impl<'a> Fulfillment<'a> {
                     period_id: Some(*period_id),
                 },
                 *extra_devices,
+            ),
+            PurchaseIntent::ModuleGrant {
+                tariff_id,
+                period_id,
+                ..
+            } => (
+                order
+                    .intent
+                    .granted_kind()
+                    .unwrap_or(SubscriptionKind::Manual),
+                *tariff_id,
+                AutoRenewState {
+                    enabled: false,
+                    period_id: *period_id,
+                },
+                0,
             ),
             PurchaseIntent::TopUp { .. }
             | PurchaseIntent::Module { .. }
@@ -1309,8 +1345,8 @@ impl<'a> Fulfillment<'a> {
             OrderKind::New | OrderKind::Trial => PlanKind::New,
             OrderKind::Renewal => PlanKind::Renewal,
             OrderKind::Change => PlanKind::Change,
-            OrderKind::AdminGrant if current.is_none() => PlanKind::New,
-            OrderKind::AdminGrant => classify(
+            OrderKind::AdminGrant | OrderKind::ModuleGrant if current.is_none() => PlanKind::New,
+            OrderKind::AdminGrant | OrderKind::ModuleGrant => classify(
                 context.snapshot.category_id,
                 Some(CurrentTariff {
                     kind: context.subscription.kind,
@@ -1329,6 +1365,11 @@ impl<'a> Fulfillment<'a> {
         context: &Context,
     ) -> Result<FulfillmentPlan, Halt> {
         self.wait_for_others(context).await?;
+        if context.order.intent.custom_grant()
+            && paid_and_active(&context.subscription, self.services.now())
+        {
+            return Err(custom_grant_halt());
+        }
         let mut profile = context.profile.clone();
         let current = match self.find_user(remna, context).await? {
             Found::User(user) => Some(*user),
@@ -1585,8 +1626,15 @@ impl<'a> Fulfillment<'a> {
         tx.subscriptions()
             .apply_mirror(subscription.id, &mirror)
             .await?;
+        let custom = order.intent.custom_grant();
         let kind = if trial {
             SubscriptionKind::Trial
+        } else if let Some(granted) = order.intent.granted_kind() {
+            if custom || subscription.kind == SubscriptionKind::Trial {
+                granted
+            } else {
+                subscription.kind
+            }
         } else if matches!(order.intent, PurchaseIntent::AdminGrant { .. }) {
             if subscription.kind == SubscriptionKind::Trial {
                 SubscriptionKind::Manual
@@ -1604,7 +1652,7 @@ impl<'a> Fulfillment<'a> {
             .apply_purchase(
                 subscription.id,
                 &PurchaseApplied {
-                    tariff_id: (!trial).then_some(snapshot.tariff_id),
+                    tariff_id: (!trial && !custom).then_some(snapshot.tariff_id),
                     kind,
                     extra_devices,
                     period_started_at: plan.period_started_at,
@@ -1647,6 +1695,11 @@ impl<'a> Fulfillment<'a> {
                 })
                 .await?;
         }
+        if custom && subscription.autorenew.enabled {
+            tx.subscriptions()
+                .set_autorenew(subscription.id, AutoRenewState::default())
+                .await?;
+        }
         let charged_after_off = match &order.intent {
             PurchaseIntent::Subscription { period_id, .. } => {
                 let current = tx.subscriptions().lock(subscription.id).await?;
@@ -1678,7 +1731,8 @@ impl<'a> Fulfillment<'a> {
             .await?;
         if changed {
             let event = match (order.kind, subscription.remna.is_some()) {
-                (OrderKind::New | OrderKind::Trial, _) | (OrderKind::AdminGrant, false) => {
+                (OrderKind::New | OrderKind::Trial, _)
+                | (OrderKind::AdminGrant | OrderKind::ModuleGrant, false) => {
                     DomainEvent::SubscriptionCreated {
                         subscription_id: subscription.id,
                         client_id: order.client_id,

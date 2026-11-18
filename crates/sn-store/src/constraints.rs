@@ -39,6 +39,12 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("broadcasts_rule_day_key", None),
     ("import_runs_public_id_key", None),
     ("import_runs_running_key", None),
+    ("gifts_public_id_key", None),
+    ("gifts_code_key", None),
+    ("gifts_order_key", None),
+    ("promo_links_code_key", Some("Код ссылки")),
+    ("promo_link_activations_client_key", None),
+    ("promo_link_activations_order_key", None),
 ];
 
 pub fn field_for(constraint: &str) -> Option<&'static str> {

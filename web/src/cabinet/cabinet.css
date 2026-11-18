@@ -1958,3 +1958,50 @@ a.cb-card[id] {
 .cb-phone .cb-subs-state {
   font-size: 13px;
 }
+
+.cb-gift-card {
+  max-width: 760px;
+}
+
+.cb-gift-h {
+  padding-top: 18px;
+}
+
+.cb-gift-code {
+  color: var(--ink);
+  letter-spacing: 0.04em;
+}
+
+.cb-gift-big {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.cb-gift-acts {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 6px;
+}
+
+.cb-gift-code-card .cb-promo input {
+  letter-spacing: 0.04em;
+}
+
+.cb-phone .cb-gift-big {
+  font-size: 22px;
+}
+
+.cb-phone .cb-gift-code-card .cb-promo {
+  flex-direction: column;
+}
+
+.cb-phone .cb-gift-code-card .cb-promo-field input {
+  width: 100%;
+}

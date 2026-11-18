@@ -14,6 +14,8 @@ function failText(err: unknown, fallback: string): string {
 
 const NO_SECRETS: SecretState = { clear: [], replacing: [] };
 
+const OWN_SCREENS: Record<string, string> = { promolinks: 'Промо-ссылки' };
+
 export function ModulePage() {
   const { id = '' } = useParams();
   const { reload } = useSession();
@@ -124,6 +126,8 @@ export function ModulePage() {
     );
   }
 
+  const section = view.info.menu?.label ?? OWN_SCREENS[view.info.id] ?? null;
+
   return (
     <div className="md-page">
       <Link to="/admin/modules" className="md-back">
@@ -142,14 +146,14 @@ export function ModulePage() {
         </div>
         <Switch on={view.active} onToggle={() => void toggle()} label={view.info.title} disabled={busy || view.locked !== null} />
       </section>
-      {view.info.menu && view.active ? (
+      {section && view.active ? (
         <Link to={`/admin/m/${view.info.id}`} className="md-back">
-          Открыть раздел «{view.info.menu.label}»
+          Открыть раздел «{section}»
         </Link>
       ) : null}
       {cfg.schema.length === 0 ? (
         <section className="card card-pad">
-          <p className="muted">Своих настроек у модуля нет: он работает сам там, где указано выше.</p>
+          <p className="muted">{section ? `Настройки и список — в разделе «${section}».` : 'Своих настроек у модуля нет: он работает сам там, где указано выше.'}</p>
         </section>
       ) : (
         <section className="card md-form" aria-labelledby="md-form-h">

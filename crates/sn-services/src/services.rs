@@ -305,6 +305,10 @@ impl Services {
         PaymentInbox::new(self)
     }
 
+    pub fn grants(&self) -> crate::grants::Grants<'_> {
+        crate::grants::Grants::new(self)
+    }
+
     pub fn fulfillment(&self) -> Fulfillment<'_> {
         Fulfillment::new(self)
     }

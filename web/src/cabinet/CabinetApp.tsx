@@ -12,6 +12,7 @@ import type { Site } from '../lib/types';
 import { AddonsPage } from './Addons';
 import { DevicesPage } from './Devices';
 import { FriendsPage } from './Friends';
+import { GiftsPage } from './Gifts';
 import { HelpPage, type TicketBrief } from './Help';
 import { Login } from './Login';
 import type { ClientMe } from './model';
@@ -150,6 +151,7 @@ export function CabinetApp() {
             <Route path="security" element={<SecurityPage />} />
             <Route path="devices" element={<DevicesPage />} />
             <Route path="friends" element={<FriendsPage />} />
+            <Route path="gifts" element={<GiftsPage />} />
             <Route path="help" element={<HelpPage />} />
             <Route path="help/:id" element={<HelpPage />} />
             <Route path="*" element={<SubscriptionPage />} />
@@ -166,38 +168,55 @@ const TABS: Array<{ key: string; label: string; to: string }> = [
   { key: 'pay', label: 'Тарифы', to: '/cabinet/pay' },
   { key: 'devices', label: 'Устройства', to: '/cabinet/devices' },
   { key: 'friends', label: 'Друзья', to: '/cabinet/friends' },
+  { key: 'gifts', label: 'Подарки', to: '/cabinet/gifts' },
   { key: 'help', label: 'Помощь', to: '/cabinet/help' },
 ];
 
 let referralKnown: boolean | null = null;
+let giftsKnown: boolean | null = null;
 
-function useTabs() {
-  const { site } = useCabinet();
-  const [referral, setReferral] = useState<boolean | null>(referralKnown);
+function useProbe(path: string, known: () => boolean | null, remember: (value: boolean) => void): boolean | null {
+  const [value, setValue] = useState<boolean | null>(known());
   useEffect(() => {
-    if (referralKnown !== null) {
+    if (known() !== null) {
       return;
     }
     let alive = true;
-    api('/api/client/m/referral/me')
+    api(path)
       .then(() => {
-        referralKnown = true;
+        remember(true);
         if (alive) {
-          setReferral(true);
+          setValue(true);
         }
       })
       .catch(() => {
-        referralKnown = false;
+        remember(false);
         if (alive) {
-          setReferral(false);
+          setValue(false);
         }
       });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [path, known, remember]);
+  return value;
+}
+
+const knowReferral = () => referralKnown;
+const rememberReferral = (value: boolean) => {
+  referralKnown = value;
+};
+const knowGifts = () => giftsKnown;
+const rememberGifts = (value: boolean) => {
+  giftsKnown = value;
+};
+
+function useTabs() {
+  const { site } = useCabinet();
+  const referral = useProbe('/api/client/m/referral/me', knowReferral, rememberReferral);
+  const gifts = useProbe('/api/client/m/gifts/offers', knowGifts, rememberGifts);
   const help = supportTickets(site) || supportLink(site) !== null;
-  return TABS.filter((t) => (t.key === 'friends' ? referral === true : t.key === 'help' ? help : true));
+  return TABS.filter((t) => (t.key === 'friends' ? referral === true : t.key === 'gifts' ? gifts === true : t.key === 'help' ? help : true));
 }
 
 function useAnswered(): number {
@@ -262,6 +281,9 @@ function currentTab(path: string): string {
   }
   if (path.startsWith('/cabinet/friends')) {
     return 'friends';
+  }
+  if (path.startsWith('/cabinet/gifts')) {
+    return 'gifts';
   }
   if (path.startsWith('/cabinet/help')) {
     return 'help';

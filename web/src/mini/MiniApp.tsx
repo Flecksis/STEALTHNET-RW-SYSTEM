@@ -13,6 +13,7 @@ import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
 import { MiniPayments } from './MiniPayments';
 import { MiniAddons } from './MiniAddons';
+import { MiniGifts } from './MiniGifts';
 import { MiniPlans } from './MiniPlans';
 import { MiniProfile } from './MiniProfile';
 import { MiniTopUp } from './MiniTopUp';
@@ -249,6 +250,7 @@ export function MiniApp() {
           <Route path="topup" element={<MiniTopUp />} />
           <Route path="payments" element={<MiniPayments />} />
           <Route path="addons" element={<MiniAddons />} />
+          <Route path="gifts" element={<MiniGifts />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />

@@ -121,7 +121,9 @@ async fn squads(
     admin: CurrentAdmin,
     State(state): State<AppState>,
 ) -> ApiResult<Json<Vec<SquadBrief>>> {
-    admin.require(Permission::Tariffs)?;
+    if !admin.can(Permission::Marketing) {
+        admin.require(Permission::Tariffs)?;
+    }
     Ok(Json(state.services.tariffs().squads().await?))
 }
 

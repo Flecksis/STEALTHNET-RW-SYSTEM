@@ -5,7 +5,7 @@ use crate::telegram::{
 };
 use crate::text::{self, escape};
 use crate::ui::{self, Html, Lines, Text};
-use crate::{BotError, account, buy, consent, extras, gram_wallet, login, media};
+use crate::{BotError, account, buy, consent, extras, gifts, gram_wallet, login, media};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, RegistrationSource, TelegramProfile};
 use sn_domain::format;
@@ -14,7 +14,7 @@ use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
 use sn_domain::settings::CoreSettings;
 use sn_domain::subscription::Subscription;
-use sn_modules::catalog::{broadcast, options, promo, referral};
+use sn_modules::catalog::{broadcast, gifts as gift_module, options, promo, promolinks, referral};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
 use sn_services::bot_content::{BotContent, Document};
@@ -415,7 +415,16 @@ async fn after_start(
     match param {
         Some(param) if param.starts_with(login::PREFIX) => login_screen(turn, client, param).await,
         Some(SUPPORT_START) => Ok(account::support_prompt(turn)),
-        _ => main_menu(turn.ctx, client).await,
+        Some(param) => {
+            if let Some(code) = gift_module::start_code(param) {
+                return gifts::open_code(turn, client, &code).await;
+            }
+            if let Some(code) = promolinks::start_code(param) {
+                return gifts::promo_link(turn, client, &code).await;
+            }
+            main_menu(turn.ctx, client).await
+        }
+        None => main_menu(turn.ctx, client).await,
     }
 }
 
@@ -436,6 +445,7 @@ async fn input(
         Awaiting::SupportMessage => account::support_entered(turn, client, text).await,
         Awaiting::WithdrawalAmount => extras::withdrawal_amount(turn, client, text).await,
         Awaiting::WithdrawalDetails => extras::withdrawal_details(turn, client, text).await,
+        Awaiting::GiftCode => gifts::code_entered(turn, client, text).await,
     }
 }
 
@@ -509,6 +519,16 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "ref" => extras::referral_action(turn, client, rest).await?,
         "opt" => extras::options_action(turn, client, rest).await?,
         "op" => extras::options_pay(turn, client, rest).await?,
+        "gb" => gifts::tariffs(turn, client).await?,
+        "gt" => match id_arg(rest) {
+            Some(id) => gifts::periods(turn, client, TariffId(id)).await?,
+            None => gifts::tariffs(turn, client).await?,
+        },
+        "gp" => gifts::summary(turn, client, rest).await?,
+        "gy" => gifts::pay(turn, client, rest).await?,
+        "gl" => gifts::mine(turn, client).await?,
+        "ga" => gifts::ask_code(turn),
+        "gr" => gifts::redeem(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
         "docs" => documents_screen(&turn.services().bot_content()),
         _ => main_menu(turn.ctx, client).await?,
@@ -559,7 +579,10 @@ pub fn module_buttons(services: &Services) -> Vec<&'static str> {
         .filter(|e| {
             matches!(
                 e.key,
-                promo::BOT_ENTRY | referral::BOT_ENTRY | options::BOT_ENTRY
+                promo::BOT_ENTRY
+                    | referral::BOT_ENTRY
+                    | options::BOT_ENTRY
+                    | gift_module::BOT_ENTRY
             )
         })
         .collect();
@@ -572,6 +595,7 @@ fn module_button_key(entry: &str) -> Option<&'static str> {
         promo::BOT_ENTRY => Some("menu.btn.promo"),
         referral::BOT_ENTRY => Some("menu.btn.referral"),
         options::BOT_ENTRY => Some("menu.btn.options"),
+        gift_module::BOT_ENTRY => Some("menu.btn.gifts"),
         _ => None,
     }
 }

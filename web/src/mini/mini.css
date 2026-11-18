@@ -1158,3 +1158,47 @@
 .mn-term-sub.bad {
   color: var(--bad);
 }
+
+.mn-gifts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mn-gift {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px 4px;
+}
+
+.mn-gift + .mn-gift {
+  border-top: 1px solid var(--line);
+}
+
+.mn-gift-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.mn-gift-code {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.mn-gift .mn-tone {
+  padding-bottom: 8px;
+}
+
+.mn-gift .mn-link {
+  height: 36px;
+}
+
+.mn-gift-has {
+  align-self: flex-start;
+}

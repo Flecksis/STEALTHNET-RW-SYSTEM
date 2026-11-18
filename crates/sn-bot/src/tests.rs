@@ -25,6 +25,7 @@ mod balance_off;
 mod broadcast;
 mod client_letters;
 mod content;
+mod gifts;
 mod gram_wallet;
 mod miniapp;
 mod photos;

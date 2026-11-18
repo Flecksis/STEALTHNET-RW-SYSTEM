@@ -1,0 +1,126 @@
+.gf-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gf-sum {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.gf-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.gf-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 260px;
+  color: var(--muted);
+}
+
+.gf-search svg {
+  position: absolute;
+  left: 11px;
+  pointer-events: none;
+}
+
+.gf-search .field {
+  width: 100%;
+  padding-left: 34px;
+}
+
+.gf-row {
+  grid-template-columns: minmax(150px, 1fr) minmax(180px, 1.5fr) minmax(130px, 1fr) minmax(130px, 1fr) 110px minmax(150px, 1.1fr);
+}
+
+.gf-who {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.gf-who:hover {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.gf-label {
+  display: none;
+}
+
+.gf-mode {
+  align-self: flex-start;
+}
+
+.gf-days {
+  max-width: 320px;
+}
+
+.gf-days .field {
+  width: 120px;
+}
+
+.gf-psearch .field {
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 16px;
+}
+
+.pf-psegs.gf-pfilter {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.gf-pfilter button {
+  font-size: 13px;
+}
+
+@container (max-width: 1040px) {
+  .pr-row.gf-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr);
+    grid-template-areas:
+      'code gift state'
+      'code giver paid'
+      'code recipient paid';
+  }
+
+  .gf-label {
+    display: block;
+  }
+
+  .pr-row.gf-row > :nth-child(1) {
+    grid-area: code;
+  }
+
+  .pr-row.gf-row > :nth-child(2) {
+    grid-area: gift;
+  }
+
+  .pr-row.gf-row > :nth-child(3) {
+    grid-area: giver;
+  }
+
+  .pr-row.gf-row > :nth-child(4) {
+    grid-area: recipient;
+  }
+
+  .pr-row.gf-row > :nth-child(5) {
+    grid-area: paid;
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .pr-row.gf-row > :nth-child(6) {
+    grid-area: state;
+    align-self: start;
+  }
+}

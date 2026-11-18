@@ -181,6 +181,13 @@ async fn me(
         "must_change_password": must_change_password,
         "permissions": permissions,
         "menu": state.services.modules().menu(),
+        "modules": state
+            .services
+            .modules()
+            .enabled()
+            .iter()
+            .map(|m| m.id())
+            .collect::<Vec<_>>(),
         "currency": settings.currency,
         "brand_name": settings.brand_name,
         "logo_url": settings.logo_url(),

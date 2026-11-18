@@ -1,0 +1,63 @@
+.pl-row {
+  grid-template-columns: minmax(160px, 1.2fr) minmax(220px, 2fr) 150px minmax(140px, 1fr) auto;
+}
+
+.pr-cell.pl-acts {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pl-tabs {
+  margin-bottom: -6px;
+}
+
+.pl-ptabs {
+  align-self: stretch;
+  margin: 0 0 4px;
+}
+
+.pl-ptabs + .np-sum {
+  margin-top: 4px;
+}
+
+.pl-ptabs a {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+@container (max-width: 1040px) {
+  .pr-row.pl-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto;
+    grid-template-areas:
+      'name give act'
+      'name used act'
+      'name state act';
+  }
+
+  .pr-row.pl-row > :nth-child(1) {
+    grid-area: name;
+  }
+
+  .pr-row.pl-row > :nth-child(2) {
+    grid-area: give;
+  }
+
+  .pr-row.pl-row > :nth-child(3) {
+    grid-area: used;
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .pr-row.pl-row > :nth-child(4) {
+    grid-area: state;
+  }
+
+  .pr-row.pl-row > .pr-cell.pl-acts {
+    grid-area: act;
+    align-self: center;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+}

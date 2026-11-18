@@ -77,7 +77,7 @@ export type Amount = { minor: number; currency: 'USD' | 'RUB' | 'XTR' };
 
 export type OrderBrief = {
   id: string;
-  kind: 'new' | 'renewal' | 'change' | 'top_up' | 'trial' | 'module' | 'admin_grant';
+  kind: 'new' | 'renewal' | 'change' | 'top_up' | 'trial' | 'module' | 'admin_grant' | 'module_grant';
   status: string;
   label: string | null;
   tariff_id: number | null;

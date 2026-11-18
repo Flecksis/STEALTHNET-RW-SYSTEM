@@ -58,6 +58,7 @@ export type Me = {
   must_change_password?: boolean;
   permissions: Permission[];
   menu: ModuleMenuItem[];
+  modules?: string[];
   currency: Currency;
   brand_name: string;
   logo_url?: string | null;

@@ -195,6 +195,9 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
       if (order.kind === 'admin_grant') {
         return { ...base, what: span ? `Выдана ${name} на ${span}` : `Выдана ${name}`, note: 'Без оплаты, администратор', sum: '' };
       }
+      if (order.kind === 'module_grant') {
+        return { ...base, what: order.label ?? (span ? `${name} на ${span}` : name), note: 'Без оплаты', sum: '' };
+      }
       return { ...base, what: span ? `${name} на ${span}` : name, note: 'Без оплаты', sum: '' };
     }
     case 'event': {

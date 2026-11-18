@@ -4,6 +4,7 @@ use crate::module::ModuleId;
 use crate::money::Money;
 use crate::plan::FulfillmentPlan;
 use crate::pricing::Quote;
+use crate::subscription::SubscriptionKind;
 use crate::tariff::TariffSnapshot;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,10 +20,11 @@ pub enum OrderKind {
     Trial,
     Module,
     AdminGrant,
+    ModuleGrant,
 }
 
 impl OrderKind {
-    pub const ALL: [OrderKind; 7] = [
+    pub const ALL: [OrderKind; 8] = [
         OrderKind::New,
         OrderKind::Renewal,
         OrderKind::Change,
@@ -30,6 +32,7 @@ impl OrderKind {
         OrderKind::Trial,
         OrderKind::Module,
         OrderKind::AdminGrant,
+        OrderKind::ModuleGrant,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -41,6 +44,7 @@ impl OrderKind {
             OrderKind::Trial => "trial",
             OrderKind::Module => "module",
             OrderKind::AdminGrant => "admin_grant",
+            OrderKind::ModuleGrant => "module_grant",
         }
     }
 
@@ -154,6 +158,36 @@ pub enum PurchaseIntent {
         old_id: String,
         label: Option<String>,
     },
+    ModuleGrant {
+        module: ModuleId,
+        reference: String,
+        tariff_id: Option<TariffId>,
+        period_id: Option<PeriodId>,
+        days: u32,
+    },
+}
+
+impl PurchaseIntent {
+    pub fn granted_kind(&self) -> Option<SubscriptionKind> {
+        match self {
+            PurchaseIntent::ModuleGrant { module, .. } => Some(match module {
+                ModuleId::Gifts => SubscriptionKind::Gift,
+                ModuleId::Promolinks => SubscriptionKind::Promo,
+                _ => SubscriptionKind::Manual,
+            }),
+            _ => None,
+        }
+    }
+
+    pub const fn custom_grant(&self) -> bool {
+        matches!(
+            self,
+            PurchaseIntent::ModuleGrant {
+                tariff_id: None,
+                ..
+            }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -19,6 +19,7 @@ import {
   type Filter,
   type PromoCode,
 } from './model';
+import { PromoTabs } from '../promolinks/PromoTabs';
 import { PromoForm } from './PromoForm';
 import { usePromos } from './usePromos';
 import '../form.css';
@@ -88,6 +89,7 @@ export function PromoPhone() {
           </span>
         </Link>
       </PhoneHeader>
+      <PromoTabs phone />
       <p className="np-sum" aria-live="polite">
         {summary(data.items, data.error, data.filter)}
       </p>

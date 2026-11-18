@@ -4,6 +4,7 @@ pub mod broadcast;
 mod buy;
 pub mod consent;
 mod extras;
+mod gifts;
 pub mod gram_wallet;
 pub mod handler;
 pub mod login;

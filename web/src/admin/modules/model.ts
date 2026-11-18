@@ -42,6 +42,7 @@ export const GROUPS: Array<[ModuleGroup, string]> = [
 ];
 
 const ELSEWHERE: Record<string, string> = {
+  promolinks: '/admin/m/promolinks',
   options: '/admin/tariffs',
   antibot: '/admin/clients',
   limits: '/admin/clients',

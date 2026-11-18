@@ -15,11 +15,15 @@ const LEN = 2 * Math.PI * R;
 export function MiniHome() {
   const { me, site, view, devices } = useMini();
   const [referral, setReferral] = useState<Referral | null>(null);
+  const [gifts, setGifts] = useState(false);
 
   useEffect(() => {
     api<Referral>('/api/client/m/referral/me')
       .then(setReferral)
       .catch(() => setReferral(null));
+    api('/api/client/m/gifts/offers')
+      .then(() => setGifts(true))
+      .catch(() => setGifts(false));
   }, []);
 
   const blocked = me.client.status === 'blocked' || view?.status === 'blocked';
@@ -84,6 +88,9 @@ export function MiniHome() {
   }
   if (view && !expired && !blocked && !view.subscription.ended_at) {
     rows.push({ label: 'Докупить устройства или трафик', icon: 'plus', to: '/app/addons' });
+  }
+  if (gifts) {
+    rows.push({ label: 'Подарить подписку', icon: 'gift', to: '/app/gifts' });
   }
   rows.push({ label: 'Промокод', icon: 'percent', to: '/app/plans' });
   rows.push({ label: 'История оплат', icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });

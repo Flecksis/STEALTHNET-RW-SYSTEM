@@ -6,8 +6,11 @@ use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
 use sn_domain::money::Money;
-use sn_modules::{BalanceChange, BotSender, CoreApi, MailSender, ModuleError, Notification};
-use sn_store::{Db, StoreError};
+use sn_modules::{
+    BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, MailSender,
+    ModuleError, Notification, SubscriptionGrant,
+};
+use sn_store::{Db, StoreError, Tx};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -114,12 +117,53 @@ impl CoreApi for Services {
             .map_err(addon_error)
     }
 
+    async fn grant_preview(&self, grant: &SubscriptionGrant) -> Result<GrantPreview, ModuleError> {
+        self.grants().preview(grant).await.map_err(grant_error)
+    }
+
+    async fn grant_subscription(
+        &self,
+        tx: &mut Tx,
+        grant: &SubscriptionGrant,
+    ) -> Result<Result<GrantedOrder, GrantRefusal>, ModuleError> {
+        self.grants().grant(tx, grant).await.map_err(grant_error)
+    }
+
+    async fn notify_in(
+        &self,
+        tx: &mut Tx,
+        client_id: ClientId,
+        notification: Notification,
+    ) -> Result<(), ModuleError> {
+        tx.jobs()
+            .enqueue(
+                &JobPayload::Notify {
+                    client_id,
+                    template: notification.template,
+                    params: notification.params,
+                },
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
     fn bot_sender(&self) -> Option<Arc<dyn BotSender>> {
         Services::bot_sender(self)
     }
 
     fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
         Some(Arc::new(crate::mail::MailBridge::new(self.clone())))
+    }
+}
+
+fn grant_error(err: ServiceError) -> ModuleError {
+    match err {
+        ServiceError::Module(err) => err,
+        ServiceError::Store(err) => ModuleError::Store(err),
+        ServiceError::NotFound(what) => ModuleError::NotFound(what),
+        ServiceError::Rejected { message, .. } => ModuleError::Invalid(message),
+        other => ModuleError::Core(other.to_string()),
     }
 }
 

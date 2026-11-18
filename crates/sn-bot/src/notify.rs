@@ -13,7 +13,7 @@ use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::money::Money;
 use sn_modules::MailSite;
 use sn_modules::catalog::broadcast::{ButtonSpec, letter_for};
-use sn_modules::catalog::referral;
+use sn_modules::catalog::{gifts, referral};
 use sn_services::Services;
 use sn_services::mail::{RichLetter, Undelivered};
 use sn_store::{Db, StoreError};
@@ -207,6 +207,47 @@ pub fn render(
         ),
         templates::REPEAT_CREDITED => (param(params, "text")?, Some(("notify.btn.balance", "bal"))),
         templates::REPEAT_REVIEW => (param(params, "text")?, Some(("notify.btn.support", "sup"))),
+        gifts::TEMPLATE_READY => {
+            let tariff = param(params, "tariff")?;
+            let term = param(params, "term")?;
+            let code = param(params, "code")?;
+            let mut lines = vec![t(
+                "notify.gift_ready",
+                &[
+                    ("tariff", Html(&tariff)),
+                    ("term", Html(&term)),
+                    ("code", Html(&code)),
+                ],
+            )];
+            if let Some(link) = param(params, "bot_link") {
+                lines.push(t("notify.gift_ready_link", &[("link", Html(&link))]));
+            }
+            if let Some(url) = param(params, "cabinet_link") {
+                lines.push(t("notify.gift_ready_cabinet", &[("url", Html(&url))]));
+            }
+            if let Some(until) = date_param(params, "expire_at", offset) {
+                lines.push(t("notify.gift_ready_until", &[("date", Text(&until))]));
+            }
+            (
+                lines
+                    .into_iter()
+                    .filter(|line| !line.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Some(("notify.btn.gifts", "gl")),
+            )
+        }
+        gifts::TEMPLATE_REDEEMED => (
+            t(
+                "notify.gift_redeemed",
+                &[
+                    ("code", Html(&param(params, "code")?)),
+                    ("tariff", Html(&param(params, "tariff")?)),
+                    ("term", Html(&param(params, "term")?)),
+                ],
+            ),
+            Some(("notify.btn.gifts", "gl")),
+        ),
         referral::TEMPLATE_CREDIT => (
             t(
                 "notify.referral_credit",
@@ -468,6 +509,18 @@ pub fn letter_head(template: &str, params: &serde_json::Value) -> Option<LetterH
             "Оплата возвращена",
             "Открыть сайт",
             "/",
+        ),
+        gifts::TEMPLATE_READY => head(
+            LetterKind::Payments,
+            "Подарок оплачен",
+            "Мои подарки",
+            "/cabinet/gifts",
+        ),
+        gifts::TEMPLATE_REDEEMED => head(
+            LetterKind::Payments,
+            "Ваш подарок активировали",
+            "Мои подарки",
+            "/cabinet/gifts",
         ),
         templates::SUPPORT_REPLY => LetterHead {
             kind: LetterKind::Support,

@@ -7,7 +7,7 @@ export type Amount = { minor: number; currency: Currency | 'XTR' };
 export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'canceled' | 'refunded' | 'partially_refunded';
 
 export type Purchase = {
-  kind: 'new' | 'renewal' | 'change' | 'top_up' | 'trial' | 'module' | 'admin_grant';
+  kind: 'new' | 'renewal' | 'change' | 'top_up' | 'trial' | 'module' | 'admin_grant' | 'module_grant';
   tariff: string | null;
   days: number | null;
   months: number | null;

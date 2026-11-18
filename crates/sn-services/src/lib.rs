@@ -14,6 +14,7 @@ pub mod core_api;
 pub mod error;
 pub mod events;
 pub mod fulfillment;
+pub mod grants;
 pub mod inbox;
 pub mod infra;
 pub mod landing;

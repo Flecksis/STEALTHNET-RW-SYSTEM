@@ -40,6 +40,9 @@ pub async fn entry(turn: &mut Turn<'_>, client: &Client, key: &str) -> Result<Sc
         options::BOT_ENTRY if modules.is_enabled(ModuleId::Options) => {
             options_start(turn, client).await
         }
+        sn_modules::catalog::gifts::BOT_ENTRY if modules.is_enabled(ModuleId::Gifts) => {
+            crate::gifts::home(turn, client).await
+        }
         _ => main_menu(turn.ctx, client).await,
     }
 }
