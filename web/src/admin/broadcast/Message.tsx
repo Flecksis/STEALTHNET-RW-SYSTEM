@@ -188,9 +188,10 @@ type FieldsProps = {
   preview: ReactNode;
   placeholder: string;
   subjectPlaceholder: string;
+  extra?: ReactNode;
 };
 
-export function MessageFields({ options, value, onChange, check, tried, busy, setBusy, onNote, preview, placeholder, subjectPlaceholder }: FieldsProps) {
+export function MessageFields({ options, value, onChange, check, tried, busy, setBusy, onNote, preview, placeholder, subjectPlaceholder, extra }: FieldsProps) {
   const limits = options.limits;
   const { channel, subject, text, image, buttons } = value;
   const { limit, length, textProblem, buttonProblems, subjectLength, subjectProblem, mailOff } = check;
@@ -252,6 +253,7 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
           </h2>
           <span className="muted">Текст с разметкой Telegram. Обычные эмодзи вставляются как есть.</span>
         </div>
+        {extra}
         <div className="row">
           <span className="rl">Куда</span>
           <div className="rc">

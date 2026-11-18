@@ -39,6 +39,7 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("broadcast_recipients_email_key", None),
     ("broadcast_recipients_unsubscribe_key", None),
     ("broadcasts_rule_day_key", None),
+    ("auto_broadcasts_preset_key", None),
     ("broadcasts_contest_message_key", None),
     ("contest_entries_place_key", None),
     ("roulette_tickets_order_key", None),

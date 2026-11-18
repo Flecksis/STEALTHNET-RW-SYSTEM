@@ -50,6 +50,7 @@ pub fn admin(ctx: ModuleContext) -> Router {
         .route("/images/{id}", get(image))
         .route("/auto", get(auto_list).post(auto_create))
         .route("/auto/reach", post(auto_reach))
+        .route("/auto/presets/enable", post(auto_presets))
         .route(
             "/auto/{id}",
             get(auto_view).put(auto_update).delete(auto_remove),
@@ -253,6 +254,15 @@ async fn auto_switch(
     Ok(Json(
         super::switch_rule(&ctx, id, body.enabled, Some(admin.0.admin_id)).await?,
     ))
+}
+
+async fn auto_presets(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+) -> Result<Json<serde_json::Value>, WebError> {
+    admin.require(Permission::Marketing)?;
+    let enabled = super::enable_presets(&ctx, Some(admin.0.admin_id)).await?;
+    Ok(Json(serde_json::json!({ "enabled": enabled })))
 }
 
 async fn auto_reach(

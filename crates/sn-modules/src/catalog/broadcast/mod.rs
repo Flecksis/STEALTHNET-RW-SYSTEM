@@ -5,6 +5,7 @@ mod auto_tests;
 mod engine;
 mod letter;
 mod page;
+mod presets;
 mod routes;
 mod store;
 #[cfg(test)]
@@ -34,13 +35,14 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub use auto::{
-    AUTO_EVERY_SECS, AUTO_TASK, AutoReach, CATCH_UP_HOURS, CheckReport, ReachQuery, Rule,
-    RuleDraft, RuleItem, RuleStats, Trigger, check as check_rules, create_rule, delete_rule, rule,
-    rule_reach, rules, switch_rule, update_rule,
+    AUTO_EVERY_SECS, AUTO_TASK, AutoReach, CATCH_UP_HOURS, CheckReport, Delay, Localized,
+    ReachQuery, Rule, RuleDraft, RuleItem, RuleStats, Trigger, Unit, check as check_rules,
+    create_rule, delete_rule, rule, rule_reach, rules, switch_rule, update_rule,
 };
 pub use auto_store::{contest_batch, contest_progress, open_batch, queue_bot, stop_contest};
 pub use engine::{Engine, EngineConfig, Sender};
 pub use letter::{Letter, body_html, body_text};
+pub use presets::{PRESETS_KEY, Seeded, enable as enable_presets, seed as seed_presets};
 pub use store::{
     Broadcast, ChannelProgress, FailedEmail, ImageMeta, ListItem, Problem, Progress, Reach,
     Subscriber,
@@ -1180,7 +1182,7 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
             .collect(),
         tariffs,
         limits: LIMITS,
-        auto: auto::options(),
+        auto: auto::options(&mut conn).await?,
     })
 }
 

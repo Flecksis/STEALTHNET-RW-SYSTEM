@@ -7,28 +7,41 @@ import { plural, timeHM } from '../../lib/format';
 import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { BotWarning } from './List';
-import { MessageFields, TestFields, checkMessage, messageFrom, subjectOf, toDraft, toSpec, type MessageValue, type Note } from './Message';
+import {
+  MessageFields,
+  TestFields,
+  checkMessage,
+  messageFrom,
+  subjectOf,
+  toDraft,
+  toSpec,
+  type ButtonDraft,
+  type MessageValue,
+  type Note,
+} from './Message';
 import { ChannelPreview } from './Preview';
 import {
   AUTO_ROOT,
   BASE,
-  TRIGGER_DAYS,
   TRIGGER_HINTS,
+  TRIGGER_WHEN,
   addresses,
   at,
   clients,
   count,
-  dayWord,
   failText,
   hasBot,
   hasEmail,
   imageUrl,
   timing,
+  unitWord,
   type AutoReach,
   type Channel,
+  type Localized,
   type Options,
   type Rule,
   type Trigger,
+  type Unit,
 } from './model';
 import '../form.css';
 import './broadcast.css';
@@ -248,14 +261,28 @@ type EditorProps = {
   onDeleted: () => void;
 };
 
+type English = { subject: string; text: string; buttons: ButtonDraft[] };
+
+function englishOf(en: Localized | null): English | null {
+  return en ? { subject: en.subject ?? '', text: en.text, buttons: en.buttons.map(toDraft) } : null;
+}
+
+function englishBody(en: English | null) {
+  return en ? { subject: en.subject.trim().replace(/\s+/g, ' ') || null, text: en.text, buttons: en.buttons.map(toSpec) } : null;
+}
+
 function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const { me } = useSession();
-  const limits = options.limits;
   const auto = options.auto;
+  const start = rule ? null : TRIGGER_WHEN.no_subscription;
   const [id, setId] = useState<number | null>(rule?.id ?? null);
   const [message, setMessage] = useState<MessageValue>(() => messageFrom(rule));
-  const [trigger, setTrigger] = useState<Trigger>(rule?.trigger ?? 'expiring');
-  const [days, setDays] = useState(String(rule?.days ?? TRIGGER_DAYS.expiring.start));
+  const [english, setEnglish] = useState<English | null>(() => englishOf(rule?.en ?? null));
+  const [lang, setLang] = useState<'ru' | 'en'>('ru');
+  const [trigger, setTrigger] = useState<Trigger>(rule?.trigger ?? 'no_subscription');
+  const [amount, setAmount] = useState(String(rule ? rule.amount : (start?.amount ?? 1)));
+  const [unit, setUnit] = useState<Unit>(rule?.unit ?? start?.unit ?? 'days');
+  const [percent, setPercent] = useState(String(rule?.percent ?? auto.percent_default));
   const [withRenewal, setWithRenewal] = useState(rule?.with_autorenew ?? false);
   const [enabled, setEnabled] = useState(rule?.enabled ?? false);
   const [reach, setReach] = useState<AutoReach | null>(null);
@@ -266,33 +293,76 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const [confirm, setConfirm] = useState<Confirm>(null);
 
   const { channel, text, image, buttons } = message;
-  const change = (patch: Partial<MessageValue>) => setMessage((current) => ({ ...current, ...patch }));
-  const check = checkMessage(message, options, tried);
+  const englishShown: MessageValue | null = english ? { ...message, subject: english.subject, text: english.text, buttons: english.buttons } : null;
+  const shown = lang === 'en' && englishShown ? englishShown : message;
+  const change = (patch: Partial<MessageValue>) => {
+    if (lang === 'en' && english) {
+      const shared: Partial<MessageValue> = {};
+      if ('channel' in patch) {
+        shared.channel = patch.channel;
+      }
+      if ('image' in patch) {
+        shared.image = patch.image;
+      }
+      setMessage((current) => ({ ...current, ...shared }));
+      setEnglish((current) =>
+        current
+          ? {
+              subject: patch.subject ?? current.subject,
+              text: patch.text ?? current.text,
+              buttons: patch.buttons ?? current.buttons,
+            }
+          : current,
+      );
+      return;
+    }
+    setMessage((current) => ({ ...current, ...patch }));
+  };
+  const checkRu = checkMessage(message, options, tried);
+  const checkEn = englishShown
+    ? checkMessage({ ...englishShown, subject: englishShown.subject.trim() ? englishShown.subject : message.subject }, options, tried)
+    : null;
+  const check = lang === 'en' && checkEn ? checkEn : checkRu;
   const option = auto.triggers.find((t) => t.key === trigger);
-  const minDays = option?.min_days ?? 1;
-  const dayCount = Number.parseInt(days, 10);
-  const daysOk = /^\d+$/.test(days.trim()) && dayCount >= minDays && dayCount <= limits.days;
+  const byPercent = option?.percent ?? false;
+  const minAmount = option?.min ?? 1;
+  const maxAmount = unit === 'hours' ? auto.hours_max : auto.days_max;
+  const amountCount = Number.parseInt(amount, 10);
+  const amountOk = byPercent || (/^\d+$/.test(amount.trim()) && amountCount >= minAmount && amountCount <= maxAmount);
+  const percentCount = Number.parseInt(percent, 10);
+  const percentOk = !byPercent || (/^\d+$/.test(percent.trim()) && percentCount >= auto.percent_min && percentCount <= auto.percent_max);
+  const whenOk = amountOk && percentOk;
   const renewal = trigger === 'expiring' && withRenewal;
   const subject = subjectOf(message);
+  const whenProblem = !amountOk
+    ? `Число ${unit === 'hours' ? 'часов' : 'дней'} от ${minAmount} до ${maxAmount}`
+    : !percentOk
+      ? `Порог от ${auto.percent_min} до ${auto.percent_max}%`
+      : null;
 
   const body = useMemo(
     () => ({
       trigger,
-      days: daysOk ? dayCount : 0,
+      amount: byPercent || !amountOk ? 0 : amountCount,
+      unit: byPercent ? 'days' : unit,
+      percent: byPercent && percentOk ? percentCount : null,
       with_autorenew: renewal,
       channel,
       subject,
       text,
       image_id: image?.id ?? null,
       buttons: buttons.map(toSpec),
+      en: englishBody(english),
     }),
-    [trigger, daysOk, dayCount, renewal, channel, subject, text, image, buttons],
+    [trigger, byPercent, amountOk, amountCount, unit, percentOk, percentCount, renewal, channel, subject, text, image, buttons, english],
   );
   const bodyKey = JSON.stringify(body);
   const [savedKey, setSavedKey] = useState(() => (rule ? bodyKey : ''));
   const dirty = bodyKey !== savedKey;
 
-  const probeKey = daysOk ? JSON.stringify({ trigger, days: dayCount, with_autorenew: renewal, id }) : '';
+  const probeKey = whenOk
+    ? JSON.stringify({ trigger, amount: body.amount, unit: body.unit, percent: body.percent, with_autorenew: renewal, id })
+    : '';
   useEffect(() => {
     if (!probeKey) {
       setReach(null);
@@ -324,28 +394,40 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
     setTrigger(next);
     setNote(null);
     if (!rule) {
-      setDays(String(TRIGGER_DAYS[next].start));
+      setAmount(String(TRIGGER_WHEN[next].amount));
+      setUnit(TRIGGER_WHEN[next].unit);
     }
   };
 
-  const canSave = check.contentOk && daysOk && busy === null;
-  const canEnable = canSave && !check.mailOff;
+  const contentOk = checkRu.contentOk && (checkEn?.messageOk ?? true);
+  const canSave = contentOk && whenOk && busy === null;
+  const canEnable = canSave && !checkRu.mailOff;
   const waiting = reach ? (hasBot(channel) ? reach.recipients : 0) + (hasEmail(channel) ? reach.emails : 0) : 0;
+  const problemText = !whenOk
+    ? (whenProblem ?? 'Проверьте, когда отправить')
+    : !checkRu.contentOk
+      ? 'Проверьте сообщение: в нём есть ошибки'
+      : 'Проверьте текст на английском: в нём есть ошибки';
 
   const apply = (saved: Rule) => {
     setId(saved.id);
     setEnabled(saved.enabled);
     setMessage((current) => ({ ...current, subject: saved.subject ?? '', text: saved.text, buttons: saved.buttons.map(toDraft) }));
+    const savedEnglish = englishOf(saved.en);
+    setEnglish(savedEnglish);
     setSavedKey(
       JSON.stringify({
         trigger: saved.trigger,
-        days: saved.days,
+        amount: saved.amount,
+        unit: saved.unit,
+        percent: saved.percent,
         with_autorenew: saved.with_autorenew,
         channel: saved.channel,
         subject: subjectOf({ ...message, subject: saved.subject ?? '', channel: saved.channel }),
         text: saved.text,
         image_id: saved.image?.id ?? null,
         buttons: saved.buttons.map((b) => toSpec(toDraft(b))),
+        en: englishBody(savedEnglish),
       }),
     );
     onSaved(saved);
@@ -354,7 +436,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const save = async (on: boolean) => {
     setTried(true);
     if (!canSave) {
-      setNote({ text: !daysOk ? `Укажите число дней от ${minDays} до ${limits.days}` : 'Проверьте сообщение: в нём есть ошибки', tone: 'bad' });
+      setNote({ text: problemText, tone: 'bad' });
       return;
     }
     setBusy('save');
@@ -399,7 +481,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
     setTried(true);
     if (!canEnable) {
       setNote({
-        text: check.mailOff ? 'Почта не отправляет: выберите «В бот» или настройте почту' : !daysOk ? `Укажите число дней от ${minDays} до ${limits.days}` : 'Проверьте сообщение: в нём есть ошибки',
+        text: checkRu.mailOff ? 'Почта не отправляет: выберите «В бот» или настройте почту' : problemText,
         tone: 'bad',
       });
       return;
@@ -428,10 +510,53 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   };
 
   const preview = (
-    <ChannelPreview channel={channel} subject={message.subject} text={text} image={image ? imageUrl(image.id) : null} buttons={buttons.map(toSpec)} brand={me.brand_name} />
+    <ChannelPreview
+      key={lang}
+      channel={channel}
+      subject={shown.subject.trim() ? shown.subject : message.subject}
+      text={shown.text}
+      image={image ? imageUrl(image.id) : null}
+      buttons={shown.buttons.map(toSpec)}
+      brand={me.brand_name}
+    />
   );
-  const spec = TRIGGER_DAYS[trigger];
+  const spec = TRIGGER_WHEN[trigger];
   const recipients = reach ? reachLine(reach, channel) : null;
+  const languages = (
+    <div className="row ar-langs">
+      <span className="rl">Язык</span>
+      <div className="rc">
+        <span className="segs" role="group" aria-label="Язык текста">
+          {(['ru', 'en'] as const).map((value) => (
+            <button key={value} type="button" aria-pressed={lang === value} onClick={() => setLang(value)}>
+              {value === 'ru' ? 'Русский' : 'English'}
+            </button>
+          ))}
+        </span>
+        <span className="cap">
+          {lang === 'ru'
+            ? english
+              ? 'Клиенты, выбравшие английский, получат английский текст. Канал и картинка общие.'
+              : 'Клиенты, выбравшие английский, получат этот текст: английского пока нет.'
+            : auto.english
+              ? 'Этот текст получат клиенты, выбравшие английский. Канал и картинка общие.'
+              : 'Английский выключен в настройках «Языки»: текст сохранится и заработает, когда его включат.'}
+        </span>
+        {lang === 'en' && english ? (
+          <button
+            type="button"
+            className="bc-link bad"
+            onClick={() => {
+              setEnglish(null);
+              setLang('ru');
+            }}
+          >
+            Убрать английский текст
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <div className="bc-grid">
@@ -462,33 +587,63 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
             </div>
           </div>
           <div className="row">
-            <span className="rl">Срок</span>
+            <span className="rl">{byPercent ? 'Порог' : 'Срок'}</span>
             <div className="rc">
-              <span className="bc-extra ar-days">
-                <span>{spec.before}</span>
-                <input
-                  className="fld"
-                  value={days}
-                  inputMode="numeric"
-                  aria-label="Число дней"
-                  aria-invalid={!daysOk}
-                  onChange={(e) => {
-                    setDays(e.target.value.replace(/[^\d]/g, '').slice(0, 3));
-                    setNote(null);
-                  }}
-                />
-                <span>
-                  {daysOk ? dayWord(dayCount) : 'дней'} {spec.after}
-                </span>
-              </span>
-              {daysOk ? (
-                <span className="cap">
-                  Сообщение уйдёт {timing(trigger, dayCount)}
-                  {minDays === 0 ? '. Ноль — сразу после окончания' : ''}
+              {byPercent ? (
+                <span className="bc-extra ar-days">
+                  <span>{spec.before}</span>
+                  <input
+                    className="fld"
+                    value={percent}
+                    inputMode="numeric"
+                    aria-label="Доля израсходованного трафика, процентов"
+                    aria-invalid={!percentOk}
+                    onChange={(e) => {
+                      setPercent(e.target.value.replace(/[^\d]/g, '').slice(0, 2));
+                      setNote(null);
+                    }}
+                  />
+                  <span>% {spec.after}</span>
                 </span>
               ) : (
-                <span className="err">
-                  Число дней от {minDays} до {limits.days}
+                <span className="bc-extra ar-days">
+                  <span>{spec.before}</span>
+                  <input
+                    className="fld"
+                    value={amount}
+                    inputMode="numeric"
+                    aria-label={unit === 'hours' ? 'Число часов' : 'Число дней'}
+                    aria-invalid={!amountOk}
+                    onChange={(e) => {
+                      setAmount(e.target.value.replace(/[^\d]/g, '').slice(0, 3));
+                      setNote(null);
+                    }}
+                  />
+                  <select
+                    className="field ar-unit"
+                    value={unit}
+                    aria-label="Часы или дни"
+                    onChange={(e) => {
+                      setUnit(e.target.value as Unit);
+                      setNote(null);
+                    }}
+                  >
+                    {(['hours', 'days'] as Unit[]).map((value) => (
+                      <option key={value} value={value}>
+                        {unitWord(Number.isNaN(amountCount) ? 5 : amountCount, value)}
+                      </option>
+                    ))}
+                  </select>
+                  <span>{spec.after}</span>
+                </span>
+              )}
+              {whenProblem ? (
+                <span className="err">{whenProblem}</span>
+              ) : (
+                <span className="cap">
+                  Сообщение уйдёт{byPercent ? ',' : ''} {timing(trigger, amountCount || 0, unit, byPercent ? percentCount : null)}
+                  {minAmount === 0 && !byPercent ? '. Ноль — сразу после окончания' : ''}
+                  {byPercent ? '. Только у подписок с лимитом трафика' : ''}
                 </span>
               )}
             </div>
@@ -508,7 +663,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
                   />
                   <span className="bc-opt-text">
                     <span className="bc-opt-title">Писать и тем, у кого включено автопродление</span>
-                    <span className="cap">Им бот сам напоминает перед списанием, если на балансе не хватает денег, и сообщает о продлении</span>
+                    <span className="cap">Без этой отметки правило таким подпискам не пишет: бот сам спишет оплату или напомнит пополнить баланс</span>
                   </span>
                 </label>
               </div>
@@ -517,8 +672,8 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
           <div className="bc-reach" aria-live="polite">
             {reachError ? (
               <span className="err">{reachError}</span>
-            ) : !daysOk ? (
-              <span className="muted">Уточните срок</span>
+            ) : !whenOk ? (
+              <span className="muted">{byPercent ? 'Уточните порог' : 'Уточните срок'}</span>
             ) : reach === null ? (
               <span className="muted">Считаем…</span>
             ) : reach.cases === 0 ? (
@@ -546,23 +701,54 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
           </div>
         </section>
 
-        <MessageFields
-          options={options}
-          value={message}
-          onChange={change}
-          check={check}
-          tried={tried}
-          busy={busy}
-          setBusy={setBusy}
-          onNote={setNote}
-          preview={preview}
-          placeholder="Например: Подписка закончится через 3 дня. Продлите сейчас, чтобы VPN не отключился."
-          subjectPlaceholder="Например: Подписка скоро закончится"
-        />
+        {lang === 'en' && !english ? (
+          <section className="sec" aria-labelledby="ar-en-h">
+            <div className="sec-head">
+              <h2 id="ar-en-h" className="section-title">
+                Сообщение
+              </h2>
+              <span className="muted">Текст для клиентов, которые выбрали английский язык.</span>
+            </div>
+            {languages}
+            <div className="row">
+              <div className="rc">
+                <span>Английского текста пока нет: клиенты с английским получат русский.</span>
+                <span>
+                  <button
+                    type="button"
+                    className="btn-line hov"
+                    onClick={() => setEnglish({ subject: '', text: '', buttons: message.buttons.map((b) => ({ ...b, text: '' })) })}
+                  >
+                    Добавить английский текст
+                  </button>
+                </span>
+              </div>
+            </div>
+          </section>
+        ) : (
+          <MessageFields
+            options={options}
+            value={shown}
+            onChange={change}
+            check={check}
+            tried={tried}
+            busy={busy}
+            setBusy={setBusy}
+            onNote={setNote}
+            preview={preview}
+            placeholder={
+              lang === 'en'
+                ? 'For example: Your subscription ends in 3 days. Renew it now to keep the VPN running.'
+                : 'Например: Подписка закончится через 3 дня. Продлите сейчас, чтобы VPN не отключился.'
+            }
+            subjectPlaceholder={lang === 'en' ? 'Пусто — тема как у русского письма' : 'Например: Подписка скоро закончится'}
+            extra={languages}
+          />
+        )}
 
         <TestFields
           options={options}
-          value={message}
+          value={shown}
           check={check}
           busy={busy}
           setBusy={setBusy}

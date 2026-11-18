@@ -946,3 +946,43 @@
 .bc-prule .hp-title {
   white-space: normal;
 }
+
+.bc-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.bc-presets p {
+  flex: 1 1 380px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.bc-presets .btn-main {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ar-unit {
+  width: auto;
+  min-width: 96px;
+}
+
+.ar-langs .segs {
+  align-self: flex-start;
+}
+
+.ar-langs .rc {
+  gap: 6px;
+}
+
+.ar-langs .bc-link {
+  align-self: flex-start;
+}

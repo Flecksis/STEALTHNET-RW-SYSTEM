@@ -7,7 +7,7 @@ import { PhoneHeader } from '../phone';
 import { Switch } from '../ui';
 import { BotWarning } from './List';
 import { BroadcastTabs } from './Tabs';
-import { AUTO_ROOT, BASE, at, channelLabel, count, failText, type Options, type RuleItem } from './model';
+import { AUTO_ROOT, BASE, at, channelLabel, clients, count, failText, type AutoReach, type Options, type RuleItem } from './model';
 import '../form.css';
 import '../home/phone.css';
 
@@ -74,6 +74,35 @@ function useRules() {
     return () => window.clearInterval(timer);
   }, [live, load]);
 
+  const presetsOff = (items ?? []).filter((item) => item.preset !== null && !item.enabled);
+
+  const presetsWaiting = async (): Promise<number> => {
+    const counts = await Promise.all(
+      presetsOff.map((item) =>
+        api<AutoReach>(`${BASE}/auto/reach`, {
+          method: 'POST',
+          body: { trigger: item.trigger, amount: item.amount, unit: item.unit, percent: item.percent, with_autorenew: item.with_autorenew, id: item.id },
+        })
+          .then((reach) => reach.recipients)
+          .catch(() => 0),
+      ),
+    );
+    return counts.reduce((sum, value) => sum + value, 0);
+  };
+
+  const enablePresets = async () => {
+    setBusy(-1);
+    setError(null);
+    try {
+      await api(`${BASE}/auto/presets/enable`, { method: 'POST' });
+      await load();
+    } catch (err) {
+      setError(failText(err, 'Не получилось включить стандартные правила'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const toggle = async (item: RuleItem) => {
     setBusy(item.id);
     setError(null);
@@ -87,7 +116,7 @@ function useRules() {
     }
   };
 
-  return { items, options, error, busy, toggle };
+  return { items, options, error, busy, toggle, presetsOff, presetsWaiting, enablePresets };
 }
 
 type Data = ReturnType<typeof useRules>;
@@ -124,9 +153,65 @@ function Lead({ options, compact }: { options: Options | null; compact?: boolean
   );
 }
 
+function Presets({ presetsOff, presetsWaiting, enablePresets, busy }: Data) {
+  const [asking, setAsking] = useState<number | null>(null);
+  if (presetsOff.length === 0) {
+    return null;
+  }
+  const n = presetsOff.length;
+  const ask = async () => {
+    setAsking(-1);
+    setAsking(await presetsWaiting());
+  };
+  return (
+    <div className="bc-presets" role="group" aria-label="Стандартные правила">
+      {asking === null ? (
+        <>
+          <p>
+            {n === 1 ? 'Стандартное правило добавлено выключенным' : 'Стандартные правила добавлены выключенными'}, чтобы клиентам ничего не пришло неожиданно. Проверьте тексты и
+            включите — переключателем у правила или все сразу.
+          </p>
+          <span>
+            <button type="button" className="btn-main btn" onClick={() => void ask()} disabled={busy !== null}>
+              Включить стандартные правила
+            </button>
+          </span>
+        </>
+      ) : (
+        <>
+          <p>
+            {asking < 0
+              ? 'Считаем, кому сообщения уйдут сразу…'
+              : asking > 0
+                ? `После включения в ближайшие минуты сообщения уйдут ${clients(asking)} — у них событие наступило за последние сутки. Дальше — каждому, у кого оно наступит.`
+                : 'Сейчас под условия никто не попадает: сообщения начнут уходить, когда у клиентов наступят события.'}
+          </p>
+          <span className="bc-ask-btns">
+            <button
+              type="button"
+              className="btn-main btn"
+              onClick={() => {
+                setAsking(null);
+                void enablePresets();
+              }}
+              disabled={busy !== null || asking < 0}
+            >
+              {busy === -1 ? 'Включаем…' : `Включить ${count(n)}`}
+            </button>
+            <button type="button" className="btn-line hov" onClick={() => setAsking(null)} disabled={busy !== null}>
+              Не включать
+            </button>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 const EMPTY = 'Правил пока нет. Например: напомнить о продлении за 3 дня до конца подписки или написать тем, кто попробовал пробный период и ничего не купил.';
 
-function AutoDesktop({ items, options, error, busy, toggle }: Data) {
+function AutoDesktop(data: Data) {
+  const { items, options, error, busy, toggle } = data;
   return (
     <>
       <div className="bc-top">
@@ -138,6 +223,7 @@ function AutoDesktop({ items, options, error, busy, toggle }: Data) {
       <BroadcastTabs />
       <BotWarning options={options} />
       <Lead options={options} />
+      <Presets {...data} />
       <section className="card bc-list" aria-label="Правила">
         {error ? (
           <p className="err bc-pad" role="alert">
@@ -184,7 +270,8 @@ function AutoDesktop({ items, options, error, busy, toggle }: Data) {
   );
 }
 
-function AutoPhone({ items, options, error, busy, toggle }: Data) {
+function AutoPhone(data: Data) {
+  const { items, options, error, busy, toggle } = data;
   return (
     <div className="hp bc-phone">
       <PhoneHeader title="Рассылки">
@@ -197,6 +284,7 @@ function AutoPhone({ items, options, error, busy, toggle }: Data) {
       <BroadcastTabs />
       <BotWarning options={options} />
       <Lead options={options} compact />
+      <Presets {...data} />
       {error ? (
         <p className="err" role="alert">
           {error}

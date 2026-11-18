@@ -20,7 +20,7 @@ use sn_domain::order::PurchaseIntent;
 use sn_domain::settings::{SupportMode, TrialSettings};
 use sn_domain::traffic::{TrafficPolicy, TrafficReset};
 use sn_modules::catalog::broadcast::{
-    BotSection, ButtonSpec, Channel, RuleDraft, Trigger, create_rule,
+    BotSection, ButtonSpec, Channel, RuleDraft, Trigger, Unit, create_rule,
 };
 use sn_modules::catalog::gifts;
 use sn_store::Db;
@@ -1529,7 +1529,9 @@ impl<'a> Extras<'a> {
             let dropped = rule.buttons.len() - buttons.len();
             let draft = RuleDraft {
                 trigger,
-                days,
+                amount: days,
+                unit: Unit::Days,
+                percent: None,
                 with_autorenew: false,
                 channel: match rule.channel.as_str() {
                     "email" => Channel::Email,
@@ -1540,6 +1542,7 @@ impl<'a> Extras<'a> {
                 text: text.clone(),
                 image_id: None,
                 buttons,
+                en: None,
                 enabled: false,
             };
             match create_rule(&ctx, &draft, self.admin).await {

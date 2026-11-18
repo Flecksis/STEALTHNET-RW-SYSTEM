@@ -18,11 +18,11 @@ use tokio::time::Instant;
 use tower::ServiceExt;
 
 #[derive(Debug, Clone)]
-struct Sent {
-    chat: i64,
-    html: String,
+pub(super) struct Sent {
+    pub(super) chat: i64,
+    pub(super) html: String,
     photo: Option<String>,
-    buttons: Vec<OutButton>,
+    pub(super) buttons: Vec<OutButton>,
     at: Instant,
 }
 
@@ -56,7 +56,7 @@ impl FakeSender {
             .extend(deliveries);
     }
 
-    fn sent(&self) -> Vec<Sent> {
+    pub(super) fn sent(&self) -> Vec<Sent> {
         self.log.lock().unwrap().clone()
     }
 

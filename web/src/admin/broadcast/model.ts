@@ -119,13 +119,29 @@ export type Limits = {
   subject: number;
 };
 
-export type Trigger = 'expiring' | 'expired' | 'trial_ended' | 'no_purchase' | 'not_connected';
+export type Trigger =
+  | 'no_subscription'
+  | 'trial_expiring'
+  | 'expiring'
+  | 'traffic_low'
+  | 'trial_ended'
+  | 'expired'
+  | 'no_purchase'
+  | 'not_connected';
+
+export type Unit = 'hours' | 'days';
 
 export type AutoOptions = {
   every_minutes: number;
   catch_up_hours: number;
   rules_max: number;
-  triggers: Array<{ key: Trigger; title: string; min_days: number }>;
+  days_max: number;
+  hours_max: number;
+  percent_min: number;
+  percent_max: number;
+  percent_default: number;
+  english: boolean;
+  triggers: Array<{ key: Trigger; title: string; min: number; percent: boolean }>;
 };
 
 export type Options = {
@@ -142,10 +158,14 @@ export const AUTO_ROOT = `${ROOT}/auto`;
 
 export type RuleStats = { cases: number; unreachable: number; progress: Progress; last_sent_at: string | null };
 
+export type Localized = { subject: string | null; text: string; buttons: ButtonSpec[] };
+
 export type Rule = {
   id: number;
   trigger: Trigger;
-  days: number;
+  amount: number;
+  unit: Unit;
+  percent: number | null;
   with_autorenew: boolean;
   title: string;
   timing: string;
@@ -154,6 +174,8 @@ export type Rule = {
   text: string;
   image: Image | null;
   buttons: ButtonSpec[];
+  en: Localized | null;
+  preset: string | null;
   enabled: boolean;
   notice: string | null;
   sending_notices: string[];
@@ -167,7 +189,9 @@ export type Rule = {
 export type RuleItem = {
   id: number;
   trigger: Trigger;
-  days: number;
+  amount: number;
+  unit: Unit;
+  percent: number | null;
   with_autorenew: boolean;
   title: string;
   timing: string;
@@ -175,6 +199,8 @@ export type RuleItem = {
   preview: string;
   has_image: boolean;
   buttons: number;
+  english: boolean;
+  preset: string | null;
   enabled: boolean;
   notice: string | null;
   stats: RuleStats;
@@ -183,34 +209,45 @@ export type RuleItem = {
 export type AutoReach = { cases: number; recipients: number; stopped: number; emails: number; unsubscribed: number };
 
 export const TRIGGER_HINTS: Record<Trigger, string> = {
-  expiring: 'Подписка действует, до конца осталось столько дней. Пробные тоже',
-  expired: 'Подписку не продлили, другой действующей нет. Пробные — отдельным событием',
+  no_subscription: 'Прошло столько времени с регистрации, а подписок у клиента нет — ни пробной, ни платной',
+  trial_expiring: 'До конца пробного периода осталось столько времени. Тем, кто уже купил подписку, не пишет',
+  expiring: 'Подписка действует, до конца осталось столько времени. Пробные — отдельным событием',
+  traffic_low: 'У подписки с лимитом израсходована указанная доля трафика. Один раз до сброса или докупки трафика',
   trial_ended: 'Пробный период закончился, оплаченных покупок у клиента нет',
-  no_purchase: 'Прошло столько дней с регистрации, оплаченных покупок нет. Пробный период — не покупка',
+  expired: 'Подписку не продлили, другой действующей нет. Пробные — отдельным событием',
+  no_purchase: 'Прошло столько времени с регистрации, оплаченных покупок нет. Пробный период — не покупка',
   not_connected: 'Оплаченная подписка действует, но с покупки ни одного подключения',
 };
 
-export const TRIGGER_DAYS: Record<Trigger, { before: string; after: string; start: number }> = {
-  expiring: { before: 'За', after: 'до окончания подписки', start: 3 },
-  expired: { before: 'Через', after: 'после окончания подписки', start: 1 },
-  trial_ended: { before: 'Через', after: 'после окончания пробного периода', start: 0 },
-  no_purchase: { before: 'Через', after: 'после регистрации', start: 3 },
-  not_connected: { before: 'Через', after: 'после покупки', start: 2 },
+export const TRIGGER_WHEN: Record<Trigger, { before: string; after: string; amount: number; unit: Unit }> = {
+  no_subscription: { before: 'Через', after: 'после регистрации', amount: 1, unit: 'days' },
+  trial_expiring: { before: 'За', after: 'до окончания пробного периода', amount: 6, unit: 'hours' },
+  expiring: { before: 'За', after: 'до окончания подписки', amount: 3, unit: 'days' },
+  traffic_low: { before: 'Когда израсходовано', after: 'трафика', amount: 0, unit: 'days' },
+  trial_ended: { before: 'Через', after: 'после окончания пробного периода', amount: 0, unit: 'days' },
+  expired: { before: 'Через', after: 'после окончания подписки', amount: 1, unit: 'days' },
+  no_purchase: { before: 'Через', after: 'после регистрации', amount: 3, unit: 'days' },
+  not_connected: { before: 'Через', after: 'после покупки', amount: 2, unit: 'days' },
 };
 
-export function dayWord(n: number): string {
-  return plural(n, 'день', 'дня', 'дней');
+export function unitWord(n: number, unit: Unit): string {
+  return unit === 'hours' ? plural(n, 'час', 'часа', 'часов') : plural(n, 'день', 'дня', 'дней');
 }
 
-export function timing(trigger: Trigger, days: number): string {
-  const span = `${days}${'\u00a0'}${dayWord(days)}`;
+export function timing(trigger: Trigger, amount: number, unit: Unit, percent: number | null): string {
+  if (trigger === 'traffic_low') {
+    return `когда израсходовано ${percent ?? 80}% трафика`;
+  }
+  const span = `${amount}${'\u00a0'}${unitWord(amount, unit)}`;
   switch (trigger) {
     case 'expiring':
+    case 'trial_expiring':
       return `за ${span} до окончания`;
     case 'expired':
     case 'trial_ended':
-      return days === 0 ? 'сразу после окончания' : `через ${span} после окончания`;
+      return amount === 0 ? 'сразу после окончания' : `через ${span} после окончания`;
     case 'no_purchase':
+    case 'no_subscription':
       return `через ${span} после регистрации`;
     case 'not_connected':
       return `через ${span} после покупки`;

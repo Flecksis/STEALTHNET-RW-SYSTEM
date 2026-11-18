@@ -8,42 +8,57 @@ use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sn_domain::client::{Languages, Locale};
 use sn_domain::format::plural_ru;
 use sn_domain::ids::{AdminId, ClientId};
+use sn_domain::settings::keys;
 use sn_store::{ActorKind, AuditEntry, Db, StoreError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub const AUTO_TASK: &str = "auto";
 pub const AUTO_EVERY_SECS: u64 = 300;
 pub const CATCH_UP_HOURS: i64 = 24;
 pub const RULE_ENTITY: &str = "broadcast_rule";
 pub const RULES_MAX: usize = 50;
+pub const HOURS_MAX: u16 = 168;
+pub const PERCENT_MIN: u8 = 10;
+pub const PERCENT_MAX: u8 = 99;
+pub const PERCENT_DEFAULT: u8 = 80;
 const BATCH: i64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
+    NoSubscription,
+    TrialExpiring,
     Expiring,
-    Expired,
+    TrafficLow,
     TrialEnded,
+    Expired,
     NoPurchase,
     NotConnected,
 }
 
 impl Trigger {
-    pub const ALL: [Trigger; 5] = [
+    pub const ALL: [Trigger; 8] = [
+        Trigger::NoSubscription,
+        Trigger::TrialExpiring,
         Trigger::Expiring,
-        Trigger::Expired,
+        Trigger::TrafficLow,
         Trigger::TrialEnded,
+        Trigger::Expired,
         Trigger::NoPurchase,
         Trigger::NotConnected,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Trigger::NoSubscription => "no_subscription",
+            Trigger::TrialExpiring => "trial_expiring",
             Trigger::Expiring => "expiring",
-            Trigger::Expired => "expired",
+            Trigger::TrafficLow => "traffic_low",
             Trigger::TrialEnded => "trial_ended",
+            Trigger::Expired => "expired",
             Trigger::NoPurchase => "no_purchase",
             Trigger::NotConnected => "not_connected",
         }
@@ -55,39 +70,139 @@ impl Trigger {
 
     pub const fn title(self) -> &'static str {
         match self {
+            Trigger::NoSubscription => "Не взял ни пробный период, ни подписку",
+            Trigger::TrialExpiring => "Пробный период скоро закончится",
             Trigger::Expiring => "Подписка скоро закончится",
-            Trigger::Expired => "Подписка закончилась и не продлена",
+            Trigger::TrafficLow => "Заканчивается трафик",
             Trigger::TrialEnded => "Пробный период закончился, покупки нет",
+            Trigger::Expired => "Подписка закончилась и не продлена",
             Trigger::NoPurchase => "Нет покупок после регистрации",
             Trigger::NotConnected => "Нет подключений после покупки",
         }
     }
 
-    pub const fn min_days(self) -> u16 {
+    pub const fn min_amount(self) -> u16 {
         match self {
-            Trigger::Expired | Trigger::TrialEnded => 0,
-            Trigger::Expiring | Trigger::NoPurchase | Trigger::NotConnected => 1,
+            Trigger::Expired | Trigger::TrialEnded | Trigger::TrafficLow => 0,
+            _ => 1,
         }
     }
 
-    pub fn timing(self, days: u16) -> String {
-        let n = u64::from(days);
-        let span = format!("{n} {}", plural_ru(n, "день", "дня", "дней"));
+    pub const fn by_percent(self) -> bool {
+        matches!(self, Trigger::TrafficLow)
+    }
+
+    pub fn timing(self, delay: Delay, percent: Option<u8>) -> String {
+        let span = delay.words();
         match self {
-            Trigger::Expiring => format!("за {span} до окончания"),
-            Trigger::Expired | Trigger::TrialEnded if days == 0 => "сразу после окончания".into(),
+            Trigger::TrafficLow => format!(
+                "когда израсходовано {}% трафика",
+                percent.unwrap_or(PERCENT_DEFAULT)
+            ),
+            Trigger::Expiring | Trigger::TrialExpiring => format!("за {span} до окончания"),
+            Trigger::Expired | Trigger::TrialEnded if delay.amount == 0 => {
+                "сразу после окончания".into()
+            }
             Trigger::Expired | Trigger::TrialEnded => format!("через {span} после окончания"),
-            Trigger::NoPurchase => format!("через {span} после регистрации"),
+            Trigger::NoPurchase | Trigger::NoSubscription => {
+                format!("через {span} после регистрации")
+            }
             Trigger::NotConnected => format!("через {span} после покупки"),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    Hours,
+    #[default]
+    Days,
+}
+
+impl Unit {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Unit::Hours => "hours",
+            Unit::Days => "days",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [Unit::Hours, Unit::Days]
+            .into_iter()
+            .find(|u| u.as_str() == value)
+    }
+
+    pub const fn max(self) -> u16 {
+        match self {
+            Unit::Hours => HOURS_MAX,
+            Unit::Days => DAYS_MAX,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delay {
+    pub amount: u16,
+    pub unit: Unit,
+}
+
+impl Delay {
+    pub const fn days(amount: u16) -> Self {
+        Delay {
+            amount,
+            unit: Unit::Days,
+        }
+    }
+
+    pub const fn hours(amount: u16) -> Self {
+        Delay {
+            amount,
+            unit: Unit::Hours,
+        }
+    }
+
+    pub fn span(self) -> Duration {
+        match self.unit {
+            Unit::Hours => Duration::hours(i64::from(self.amount)),
+            Unit::Days => Duration::days(i64::from(self.amount)),
+        }
+    }
+
+    pub fn words(self) -> String {
+        let n = u64::from(self.amount);
+        match self.unit {
+            Unit::Hours => format!("{n} {}", plural_ru(n, "час", "часа", "часов")),
+            Unit::Days => format!("{n} {}", plural_ru(n, "день", "дня", "дней")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Localized {
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub buttons: Vec<ButtonSpec>,
+}
+
+impl Localized {
+    fn is_blank(&self) -> bool {
+        self.text.trim().is_empty()
+            && self.buttons.is_empty()
+            && self.subject.as_deref().is_none_or(|s| s.trim().is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TriggerOption {
     pub key: Trigger,
     pub title: &'static str,
-    pub min_days: u16,
+    pub min: u16,
+    pub percent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -95,29 +210,56 @@ pub struct AutoOptions {
     pub every_minutes: u64,
     pub catch_up_hours: i64,
     pub rules_max: usize,
+    pub days_max: u16,
+    pub hours_max: u16,
+    pub percent_min: u8,
+    pub percent_max: u8,
+    pub percent_default: u8,
+    pub english: bool,
     pub triggers: Vec<TriggerOption>,
 }
 
-pub fn options() -> AutoOptions {
-    AutoOptions {
+pub async fn english_on(db: &mut impl Db) -> Result<bool, StoreError> {
+    Ok(db
+        .settings()
+        .get(keys::LANGUAGES)
+        .await?
+        .and_then(|value| serde_json::from_value::<Languages>(value).ok())
+        .is_some_and(|languages| languages.english))
+}
+
+pub async fn options(db: &mut impl Db) -> Result<AutoOptions, StoreError> {
+    Ok(AutoOptions {
         every_minutes: AUTO_EVERY_SECS / 60,
         catch_up_hours: CATCH_UP_HOURS,
         rules_max: RULES_MAX,
+        days_max: DAYS_MAX,
+        hours_max: HOURS_MAX,
+        percent_min: PERCENT_MIN,
+        percent_max: PERCENT_MAX,
+        percent_default: PERCENT_DEFAULT,
+        english: english_on(db).await?,
         triggers: Trigger::ALL
             .into_iter()
             .map(|key| TriggerOption {
                 key,
                 title: key.title(),
-                min_days: key.min_days(),
+                min: key.min_amount(),
+                percent: key.by_percent(),
             })
             .collect(),
-    }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RuleDraft {
     pub trigger: Trigger,
-    pub days: u16,
+    #[serde(default, alias = "days")]
+    pub amount: u16,
+    #[serde(default)]
+    pub unit: Unit,
+    #[serde(default)]
+    pub percent: Option<u8>,
     #[serde(default)]
     pub with_autorenew: bool,
     #[serde(default)]
@@ -130,6 +272,8 @@ pub struct RuleDraft {
     pub image_id: Option<i64>,
     #[serde(default)]
     pub buttons: Vec<ButtonSpec>,
+    #[serde(default)]
+    pub en: Option<Localized>,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -137,13 +281,15 @@ pub struct RuleDraft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleContent {
     pub trigger: Trigger,
-    pub days: u16,
+    pub delay: Delay,
+    pub percent: Option<u8>,
     pub with_autorenew: bool,
     pub channel: Channel,
     pub subject: Option<String>,
     pub text: String,
     pub image_id: Option<i64>,
     pub buttons: Vec<ButtonSpec>,
+    pub en: Option<Localized>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -169,7 +315,9 @@ impl From<Tally> for RuleStats {
 pub struct Rule {
     pub id: i64,
     pub trigger: Trigger,
-    pub days: u16,
+    pub amount: u16,
+    pub unit: Unit,
+    pub percent: Option<u8>,
     pub with_autorenew: bool,
     pub title: &'static str,
     pub timing: String,
@@ -178,6 +326,8 @@ pub struct Rule {
     pub text: String,
     pub image: Option<ImageMeta>,
     pub buttons: Vec<ButtonSpec>,
+    pub en: Option<Localized>,
+    pub preset: Option<String>,
     pub enabled: bool,
     pub notice: Option<String>,
     pub sending_notices: Vec<String>,
@@ -192,7 +342,9 @@ pub struct Rule {
 pub struct RuleItem {
     pub id: i64,
     pub trigger: Trigger,
-    pub days: u16,
+    pub amount: u16,
+    pub unit: Unit,
+    pub percent: Option<u8>,
     pub with_autorenew: bool,
     pub title: &'static str,
     pub timing: String,
@@ -200,6 +352,8 @@ pub struct RuleItem {
     pub preview: String,
     pub has_image: bool,
     pub buttons: usize,
+    pub english: bool,
+    pub preset: Option<String>,
     pub enabled: bool,
     pub notice: Option<String>,
     pub stats: RuleStats,
@@ -208,7 +362,12 @@ pub struct RuleItem {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ReachQuery {
     pub trigger: Trigger,
-    pub days: u16,
+    #[serde(default, alias = "days")]
+    pub amount: u16,
+    #[serde(default)]
+    pub unit: Unit,
+    #[serde(default)]
+    pub percent: Option<u8>,
     #[serde(default)]
     pub with_autorenew: bool,
     #[serde(default)]
@@ -231,16 +390,66 @@ pub struct CheckReport {
     pub queued: usize,
 }
 
-fn check_days(trigger: Trigger, days: u16) -> Result<u16, BroadcastError> {
-    let min = trigger.min_days();
-    if days < min || days > DAYS_MAX {
-        return Err(invalid(format!("Когда: число дней от {min} до {DAYS_MAX}")));
+fn check_when(
+    trigger: Trigger,
+    amount: u16,
+    unit: Unit,
+    percent: Option<u8>,
+) -> Result<(Delay, Option<u8>), BroadcastError> {
+    if trigger.by_percent() {
+        let value = percent.unwrap_or(PERCENT_DEFAULT);
+        if !(PERCENT_MIN..=PERCENT_MAX).contains(&value) {
+            return Err(invalid(format!(
+                "Порог: от {PERCENT_MIN} до {PERCENT_MAX}% трафика"
+            )));
+        }
+        return Ok((Delay::days(0), Some(value)));
     }
-    Ok(days)
+    let min = trigger.min_amount();
+    let max = unit.max();
+    if amount < min || amount > max {
+        let what = match unit {
+            Unit::Hours => "часов",
+            Unit::Days => "дней",
+        };
+        return Err(invalid(format!("Когда: число {what} от {min} до {max}")));
+    }
+    Ok((Delay { amount, unit }, None))
+}
+
+fn english(err: BroadcastError) -> BroadcastError {
+    match err {
+        BroadcastError::Rejected { code, message } => BroadcastError::Rejected {
+            code,
+            message: format!("Текст на английском. {message}"),
+        },
+        other => other,
+    }
+}
+
+fn clean_en(
+    en: Option<&Localized>,
+    channel: Channel,
+    with_image: bool,
+) -> Result<Option<Localized>, BroadcastError> {
+    let Some(en) = en.filter(|en| !en.is_blank()) else {
+        return Ok(None);
+    };
+    let subject = match en.subject.as_deref().map(str::trim) {
+        Some(subject) if !subject.is_empty() => {
+            clean_subject(Some(subject), channel).map_err(english)?
+        }
+        _ => None,
+    };
+    Ok(Some(Localized {
+        subject,
+        text: clean_text(&en.text, with_image).map_err(english)?,
+        buttons: clean_buttons(&en.buttons).map_err(english)?,
+    }))
 }
 
 async fn cleaned(db: &mut impl Db, draft: &RuleDraft) -> Result<RuleContent, BroadcastError> {
-    let days = check_days(draft.trigger, draft.days)?;
+    let (delay, percent) = check_when(draft.trigger, draft.amount, draft.unit, draft.percent)?;
     if let Some(id) = draft.image_id
         && !store::image_exists(db, id).await?
     {
@@ -249,26 +458,38 @@ async fn cleaned(db: &mut impl Db, draft: &RuleDraft) -> Result<RuleContent, Bro
             "Картинка не найдена: загрузите её заново",
         ));
     }
+    let with_image = draft.image_id.is_some();
     Ok(RuleContent {
         trigger: draft.trigger,
-        days,
+        delay,
+        percent,
         with_autorenew: draft.with_autorenew && draft.trigger == Trigger::Expiring,
         channel: draft.channel,
         subject: clean_subject(draft.subject.as_deref(), draft.channel)?,
-        text: clean_text(&draft.text, draft.image_id.is_some())?,
+        text: clean_text(&draft.text, with_image)?,
         image_id: draft.image_id,
         buttons: clean_buttons(&draft.buttons)?,
+        en: clean_en(draft.en.as_ref(), draft.channel, with_image)?,
     })
 }
 
-fn ready(ctx: &ModuleContext, channel: Channel, enabled: bool) -> Result<(), BroadcastError> {
+pub(super) fn ready(
+    ctx: &ModuleContext,
+    channel: Channel,
+    enabled: bool,
+) -> Result<(), BroadcastError> {
     if enabled && channel.has(Lane::Email) {
         mail_site(ctx)?;
     }
     Ok(())
 }
 
-fn audit(action: &str, admin: Option<AdminId>, id: i64, details: serde_json::Value) -> AuditEntry {
+pub(super) fn audit(
+    action: &str,
+    admin: Option<AdminId>,
+    id: i64,
+    details: serde_json::Value,
+) -> AuditEntry {
     AuditEntry {
         actor_kind: if admin.is_some() {
             ActorKind::Admin
@@ -301,15 +522,19 @@ async fn view(db: &mut impl Db, id: i64) -> Result<Rule, BroadcastError> {
     Ok(Rule {
         id: row.id,
         trigger: parsed.trigger,
-        days: parsed.days,
+        amount: parsed.delay.amount,
+        unit: parsed.delay.unit,
+        percent: parsed.percent,
         with_autorenew: row.with_autorenew,
         title: parsed.trigger.title(),
-        timing: parsed.trigger.timing(parsed.days),
+        timing: parsed.trigger.timing(parsed.delay, parsed.percent),
         channel: parsed.channel,
         subject: row.subject,
         text: row.text,
         image,
         buttons: parsed.buttons,
+        en: parsed.en,
+        preset: row.preset,
         enabled: row.enabled,
         notice: row.notice,
         sending_notices,
@@ -326,14 +551,18 @@ fn item(row: &RuleRow, tally: Tally) -> Result<RuleItem, BroadcastError> {
     Ok(RuleItem {
         id: row.id,
         trigger: parsed.trigger,
-        days: parsed.days,
+        amount: parsed.delay.amount,
+        unit: parsed.delay.unit,
+        percent: parsed.percent,
         with_autorenew: row.with_autorenew,
         title: parsed.trigger.title(),
-        timing: parsed.trigger.timing(parsed.days),
+        timing: parsed.trigger.timing(parsed.delay, parsed.percent),
         channel: parsed.channel,
         preview: store::preview(&row.text),
         has_image: row.image_id.is_some(),
         buttons: parsed.buttons.len(),
+        english: parsed.en.is_some(),
+        preset: row.preset.clone(),
         enabled: row.enabled,
         notice: row.notice.clone(),
         stats: tally.into(),
@@ -355,6 +584,18 @@ pub async fn rule(ctx: &ModuleContext, id: i64) -> Result<Rule, BroadcastError> 
     view(&mut conn, id).await
 }
 
+fn details(content: &RuleContent, enabled: bool) -> serde_json::Value {
+    serde_json::json!({
+        "trigger": content.trigger,
+        "amount": content.delay.amount,
+        "unit": content.delay.unit,
+        "percent": content.percent,
+        "channel": content.channel,
+        "english": content.en.is_some(),
+        "enabled": enabled,
+    })
+}
+
 pub async fn create_rule(
     ctx: &ModuleContext,
     draft: &RuleDraft,
@@ -368,18 +609,13 @@ pub async fn create_rule(
         )));
     }
     ready(ctx, content.channel, draft.enabled)?;
-    let id = auto_store::insert(&mut tx, &content, draft.enabled, admin).await?;
+    let id = auto_store::insert(&mut tx, &content, draft.enabled, None, admin).await?;
     tx.audit()
         .record(&audit(
             "broadcast.auto_created",
             admin,
             id,
-            serde_json::json!({
-                "trigger": content.trigger,
-                "days": content.days,
-                "channel": content.channel,
-                "enabled": draft.enabled,
-            }),
+            details(&content, draft.enabled),
         ))
         .await?;
     let view = view(&mut tx, id).await?;
@@ -406,12 +642,7 @@ pub async fn update_rule(
             "broadcast.auto_updated",
             admin,
             id,
-            serde_json::json!({
-                "trigger": content.trigger,
-                "days": content.days,
-                "channel": content.channel,
-                "enabled": draft.enabled,
-            }),
+            details(&content, draft.enabled),
         ))
         .await?;
     let view = view(&mut tx, id).await?;
@@ -477,16 +708,23 @@ pub async fn rule_reach(
     ctx: &ModuleContext,
     query: &ReachQuery,
 ) -> Result<AutoReach, BroadcastError> {
-    let days = check_days(query.trigger, query.days)?;
+    let (delay, percent) = check_when(query.trigger, query.amount, query.unit, query.percent)?;
     let mut conn = ctx.store.conn().await?;
     let now = crate::catalog::db_now(&mut conn).await?;
     let probe = Probe {
         trigger: query.trigger,
-        days,
+        delay,
+        percent,
         with_autorenew: query.with_autorenew && query.trigger == Trigger::Expiring,
         rule: query.id,
+        english: false,
     };
-    let bounds = Bounds::of(query.trigger, days, now, Duration::hours(CATCH_UP_HOURS));
+    let bounds = Bounds::of(
+        query.trigger,
+        delay.span(),
+        now,
+        Duration::hours(CATCH_UP_HOURS),
+    );
     let counted = auto_store::count(&mut conn, &probe, &bounds).await?;
     Ok(AutoReach {
         cases: counted.cases,
@@ -505,16 +743,19 @@ struct Round {
 }
 
 pub async fn check(ctx: &ModuleContext, now: DateTime<Utc>) -> Result<CheckReport, ModuleError> {
-    let ids = {
+    let (ids, english) = {
         let mut conn = ctx.store.conn().await?;
-        auto_store::enabled_ids(&mut conn).await?
+        (
+            auto_store::enabled_ids(&mut conn).await?,
+            english_on(&mut conn).await?,
+        )
     };
     let mail = mail_site(ctx).map(|_| ()).map_err(|err| err.to_string());
     let mut report = CheckReport::default();
     for id in ids {
         report.rules += 1;
         loop {
-            let round = check_rule(ctx, id, now, &mail).await?;
+            let round = check_rule(ctx, id, now, &mail, english).await?;
             report.cases += round.cases;
             report.queued += round.queued;
             if !round.more {
@@ -537,11 +778,22 @@ fn mail_notice(channel: Channel, mail: &Result<(), String>) -> Option<String> {
     }
 }
 
+pub(super) fn traffic_mark(key: &str) -> Option<(i64, i32)> {
+    let mut parts = key.split(':');
+    if parts.next() != Some("traffic") {
+        return None;
+    }
+    let subscription = parts.next()?.parse().ok()?;
+    let seq = parts.next()?.parse().ok()?;
+    Some((subscription, seq))
+}
+
 async fn check_rule(
     ctx: &ModuleContext,
     id: i64,
     now: DateTime<Utc>,
     mail: &Result<(), String>,
+    english: bool,
 ) -> Result<Round, ModuleError> {
     let mut tx = ctx.store.begin().await?;
     let row = match auto_store::lock(&mut tx, id).await {
@@ -561,77 +813,108 @@ async fn check_rule(
         tx.commit().await?;
         return Ok(Round::default());
     }
+    if parsed.trigger == Trigger::TrafficLow {
+        auto_store::rearm_traffic(&mut tx, id, parsed.percent.unwrap_or(PERCENT_DEFAULT)).await?;
+    }
     let probe = Probe {
         trigger: parsed.trigger,
-        days: parsed.days,
+        delay: parsed.delay,
+        percent: parsed.percent,
         with_autorenew: row.with_autorenew,
         rule: Some(id),
+        english: english && parsed.en.is_some(),
     };
     let bounds = Bounds::of(
         parsed.trigger,
-        parsed.days,
+        parsed.delay.span(),
         now,
         Duration::hours(CATCH_UP_HOURS),
     );
     let found = auto_store::found(&mut tx, &probe, &bounds, BATCH).await?;
     let full = i64::try_from(found.len()).unwrap_or(i64::MAX) >= BATCH;
-    let targets: Vec<(Option<i64>, Option<String>)> = found
+    let targets: Vec<(Option<i64>, Option<String>, Locale)> = found
         .iter()
         .map(|f| {
             (
                 f.chat().filter(|_| bot_lane),
                 f.mailbox().filter(|_| mail_lane).map(str::to_string),
+                f.locale(),
             )
         })
         .collect();
-    let any = targets
-        .iter()
-        .any(|(chat, email)| chat.is_some() || email.is_some());
-    let batch = if any {
-        Some(auto_store::batch(&mut tx, id, now.date_naive(), row.version).await?)
-    } else {
-        None
-    };
+    let mut batches: HashMap<Locale, i64> = HashMap::new();
+    for (chat, email, locale) in &targets {
+        if (chat.is_some() || email.is_some()) && !batches.contains_key(locale) {
+            let batch =
+                auto_store::batch(&mut tx, id, now.date_naive(), row.version, *locale).await?;
+            batches.insert(*locale, batch);
+        }
+    }
     let cases: Vec<NewCase<'_>> = found
         .iter()
         .zip(&targets)
-        .map(|(f, (chat, email))| NewCase {
+        .map(|(f, (chat, email, locale))| NewCase {
             key: &f.case_key,
             client_id: ClientId(f.client_id),
             due_at: f.due_at,
-            queued: chat.is_some() || email.is_some(),
+            batch: (chat.is_some() || email.is_some())
+                .then(|| batches.get(locale).copied())
+                .flatten(),
         })
         .collect();
-    let recorded: HashSet<String> = auto_store::record_cases(&mut tx, id, batch, &cases)
+    let recorded: HashSet<String> = auto_store::record_cases(&mut tx, id, &cases)
         .await?
         .into_iter()
         .collect();
-    let mut chats: Vec<(ClientId, i64)> = Vec::new();
-    let mut mails: Vec<(ClientId, String)> = Vec::new();
+    let mut chats: HashMap<i64, Vec<(ClientId, i64)>> = HashMap::new();
+    let mut mails: HashMap<i64, Vec<(ClientId, String)>> = HashMap::new();
     let mut seen_chat: HashSet<i64> = HashSet::new();
     let mut seen_mail: HashSet<i64> = HashSet::new();
+    let mut fired: Vec<(i64, i32)> = Vec::new();
     let mut queued = 0usize;
-    for (f, (chat, email)) in found.iter().zip(&targets) {
+    for (f, (chat, email, locale)) in found.iter().zip(&targets) {
         if !recorded.contains(&f.case_key) {
             continue;
         }
+        if let Some(mark) = traffic_mark(&f.case_key) {
+            fired.push(mark);
+        }
+        let Some(batch) = batches.get(locale).copied() else {
+            continue;
+        };
         if chat.is_some() || email.is_some() {
             queued += 1;
         }
         if let Some(chat) = chat
             && seen_chat.insert(f.client_id)
         {
-            chats.push((ClientId(f.client_id), *chat));
+            chats
+                .entry(batch)
+                .or_default()
+                .push((ClientId(f.client_id), *chat));
         }
         if let Some(email) = email
             && seen_mail.insert(f.client_id)
         {
-            mails.push((ClientId(f.client_id), email.clone()));
+            mails
+                .entry(batch)
+                .or_default()
+                .push((ClientId(f.client_id), email.clone()));
         }
     }
-    if let Some(batch) = batch {
-        let added = auto_store::queue_bot(&mut tx, batch, &chats).await?
-            + auto_store::queue_mail(&mut tx, batch, &mails).await?;
+    if !fired.is_empty() {
+        auto_store::mark_traffic(&mut tx, id, &fired).await?;
+    }
+    for batch in batches.values().copied() {
+        let added =
+            auto_store::queue_bot(&mut tx, batch, chats.get(&batch).map_or(&[], Vec::as_slice))
+                .await?
+                + auto_store::queue_mail(
+                    &mut tx,
+                    batch,
+                    mails.get(&batch).map_or(&[], Vec::as_slice),
+                )
+                .await?;
         if added > 0 {
             auto_store::open_batch(&mut tx, batch, now).await?;
         }

@@ -132,6 +132,18 @@ async fn serve(config: Config, store: Store) -> Result<()> {
     if let Err(err) = services.legacy().recover().await {
         tracing::warn!(error = %err, "состояние переноса из старого бота не восстановлено");
     }
+    match broadcast::seed_presets(&services.module_context()).await {
+        Ok(seeded) if !seeded.created.is_empty() || !seeded.covered.is_empty() => {
+            tracing::info!(
+                created = ?seeded.created,
+                covered = ?seeded.covered,
+                enabled = seeded.enabled,
+                "стандартные авторассылки разобраны"
+            );
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(error = %err, "стандартные авторассылки не добавлены"),
+    }
     let cancel = CancellationToken::new();
     let signals = cancel.clone();
     tokio::spawn(async move {
