@@ -521,3 +521,45 @@ async fn отключение_срабатывает_и_поверх_огран�
     assert_eq!(after.squad_ids(), vec![squad(9)]);
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn превышение_без_ограничения_после_перезапуска_ограничивается_следующей_проверкой() {
+    let Some(kit) = limits_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let (client_id, subscription) = trial_subscription(&kit, 7_023).await;
+    let user = user_of(&subscription);
+    let rule_id = add_rule(services, rule(Period::Day, 5.0, Restriction::Disable)).await;
+    let ctx = services.module_context();
+    set_lifetime(&kit, user, 0);
+    limits::scan_at(&ctx, at(10, 9, 0)).await.unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        limits::store::upsert_exceed(
+            &mut conn,
+            &limits::store::NewExceed {
+                rule: rule_id,
+                subscription_id: subscription.id,
+                client_id,
+                period: Period::Day,
+                window_start: chrono::NaiveDate::from_ymd_opt(2026, 11, 10).unwrap(),
+                window_end: at(11, 0, 0),
+                limit_bytes: 5 * GIB,
+                used_bytes: 6 * GIB,
+                warn: true,
+                alert: true,
+                restriction: Restriction::Disable,
+                squad: None,
+                at: at(10, 9, 5),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    set_lifetime(&kit, user, 6 * GIB);
+    let report = limits::scan_at(&ctx, at(10, 9, 10)).await.unwrap();
+    assert_eq!(report.restricted, 1);
+    assert_eq!(kit.remna.user(user).unwrap().status, UserStatus::Disabled);
+    kit.db.cleanup().await;
+}

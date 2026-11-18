@@ -418,7 +418,7 @@ pub async fn pending_restrictions(
     let rows: Vec<ExceedRow> = sqlx::query_as(&format!(
         "SELECT {EXCEED_COLUMNS} FROM traffic_exceeds e \
          WHERE e.restriction <> 'none' AND e.restricted_at IS NULL AND e.lifted_at IS NULL \
-           AND e.restrict_tries > 0 AND e.restrict_tries < $2 AND e.window_end > $1 \
+           AND e.restrict_tries < $2 AND e.window_end > $1 \
          ORDER BY e.id LIMIT 200"
     ))
     .bind(now)
