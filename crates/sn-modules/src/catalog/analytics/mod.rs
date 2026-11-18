@@ -115,11 +115,7 @@ impl TabQuery {
     }
 }
 
-pub fn range(
-    query: &TabQuery,
-    offset: FixedOffset,
-    now: DateTime<Utc>,
-) -> Result<Range, WebError> {
+pub fn range(query: &TabQuery, offset: FixedOffset, now: DateTime<Utc>) -> Result<Range, WebError> {
     let bad = |text: &str| WebError::rejected("analytics.period", text.to_string());
     let today = local_day(now, offset);
     let to = query.to.unwrap_or(today);
@@ -153,15 +149,24 @@ pub async fn ready(db: &mut impl Db, currency: Currency) -> StoreResult<bool> {
     Ok(matches!(row, Some((code, version)) if code == currency.code() && version == spans::VERSION))
 }
 
+struct Building;
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        BUILDING.store(false, Ordering::SeqCst);
+    }
+}
+
 pub fn build_in_background(store: Store, currency: Currency) {
     if BUILDING.swap(true, Ordering::SeqCst) {
         return;
     }
+    let building = Building;
     tokio::spawn(async move {
-        if let Err(e) = spans::refresh(&store, currency, Some(chrono::Duration::zero())).await {
+        let _building = building;
+        if let Err(e) = spans::refresh(&store, currency, None).await {
             tracing::warn!(error = %e, "аналитика: первый расчёт не удался");
         }
-        BUILDING.store(false, Ordering::SeqCst);
     });
 }
 
@@ -237,9 +242,11 @@ pub async fn report(
 
 async fn channel_since(store: &Store) -> StoreResult<Option<DateTime<Utc>>> {
     let mut conn = store.conn().await?;
-    Ok(sqlx::query_scalar("SELECT min(created_at) FROM orders WHERE channel IS NOT NULL")
-        .fetch_one(conn.conn())
-        .await?)
+    Ok(
+        sqlx::query_scalar("SELECT min(created_at) FROM orders WHERE channel IS NOT NULL")
+            .fetch_one(conn.conn())
+            .await?,
+    )
 }
 
 async fn db_now(ctx: &ModuleContext) -> Result<DateTime<Utc>, WebError> {

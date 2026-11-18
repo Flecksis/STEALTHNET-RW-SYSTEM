@@ -82,9 +82,11 @@ pub async fn rebuild_all(db: &mut impl Db, currency: Currency) -> StoreResult<()
     sqlx::query("DELETE FROM analytics_payments")
         .execute(db.conn())
         .await?;
-    sqlx::query(&format!("{CLIENT_UPSERT}{CLIENT_SELECT} WHERE true{CLIENT_CONFLICT}"))
-        .execute(db.conn())
-        .await?;
+    sqlx::query(&format!(
+        "{CLIENT_UPSERT}{CLIENT_SELECT} WHERE true{CLIENT_CONFLICT}"
+    ))
+    .execute(db.conn())
+    .await?;
     sqlx::query(&PAYMENT_INSERT.replace("$CUR", "$1"))
         .bind(currency.code())
         .execute(db.conn())
@@ -125,11 +127,14 @@ pub async fn refresh_since(
         .bind(&ids)
         .execute(db.conn())
         .await?;
-    sqlx::query(&format!("{} AND p.id = ANY($1)", PAYMENT_INSERT.replace("$CUR", "$2")))
-        .bind(&ids)
-        .bind(currency.code())
-        .execute(db.conn())
-        .await?;
+    sqlx::query(&format!(
+        "{} AND p.id = ANY($1)",
+        PAYMENT_INSERT.replace("$CUR", "$2")
+    ))
+    .bind(&ids)
+    .bind(currency.code())
+    .execute(db.conn())
+    .await?;
     sqlx::query(
         "UPDATE analytics_clients ac SET first_paid_at = f.first \
          FROM (SELECT client_id, min(paid_at) AS first FROM analytics_payments \

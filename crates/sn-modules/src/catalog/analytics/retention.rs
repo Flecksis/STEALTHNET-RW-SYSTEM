@@ -1,5 +1,7 @@
 use super::labels;
-use super::metric::{Bar, CohortRow, Column, Detail, Group, ListRef, Metric, Row, Unit, num, share};
+use super::metric::{
+    Bar, CohortRow, Column, Detail, Group, ListRef, Metric, Row, Unit, num, share,
+};
 use super::query::{SUBSCRIPTION_DIMS, Sql, grid, local_day, midnight, rows};
 use super::spans::{GRACE_DAYS, MONTH_DAYS};
 use super::tab::{Ctx, both, prev_points, prev_total};
@@ -9,6 +11,7 @@ use sn_store::StoreResult;
 pub const COLUMNS: usize = 12;
 
 type IslandRow = (i64, DateTime<Utc>, i32, DateTime<Utc>, DateTime<Utc>);
+type MoneyRow = (i64, DateTime<Utc>, i32, DateTime<Utc>, DateTime<Utc>, i64);
 
 pub struct Cohorts {
     pub rows: Vec<CohortRow>,
@@ -27,7 +30,10 @@ pub async fn cohorts(c: &Ctx<'_>, last: NaiveDate, count: usize) -> StoreResult<
         .filter_map(|i| first.checked_add_months(Months::new(u32::try_from(i).unwrap_or(0))))
         .collect();
     let lo = midnight(first, offset);
-    let hi = midnight(last.checked_add_months(Months::new(1)).unwrap_or(last), offset);
+    let hi = midnight(
+        last.checked_add_months(Months::new(1)).unwrap_or(last),
+        offset,
+    );
     let mut sql = Sql::default();
     let s = sql.time(lo);
     let e = sql.time(hi);
@@ -44,8 +50,7 @@ pub async fn cohorts(c: &Ctx<'_>, last: NaiveDate, count: usize) -> StoreResult<
     );
     let mut conn = c.store.conn().await?;
     let islands: Vec<IslandRow> = rows(&mut conn, &sql, &text).await?;
-    let money: Vec<(i64, DateTime<Utc>, i32, DateTime<Utc>, DateTime<Utc>, i64)> =
-        rows(&mut conn, &sql, &money_text).await?;
+    let money: Vec<MoneyRow> = rows(&mut conn, &sql, &money_text).await?;
     let month = Duration::days(MONTH_DAYS);
     let now = c.range.now;
     let mut out: Vec<CohortRow> = starts
@@ -97,7 +102,11 @@ pub async fn cohorts(c: &Ctx<'_>, last: NaiveDate, count: usize) -> StoreResult<
                 break;
             }
             let cell = &mut out[i].money[k - 1];
-            let add = if *paid_at < *first_at + month * step { *amount } else { 0 };
+            let add = if *paid_at < *first_at + month * step {
+                *amount
+            } else {
+                0
+            };
             *cell = Some(cell.unwrap_or(0) + add);
         }
     }
@@ -131,7 +140,11 @@ pub struct Renewals {
     pub back: f64,
 }
 
-pub async fn renewals(c: &Ctx<'_>, start: DateTime<Utc>, end: DateTime<Utc>) -> StoreResult<Renewals> {
+pub async fn renewals(
+    c: &Ctx<'_>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> StoreResult<Renewals> {
     let mut sql = Sql::default();
     let s = sql.time(start);
     let e = sql.time(end);
@@ -145,7 +158,10 @@ pub async fn renewals(c: &Ctx<'_>, start: DateTime<Utc>, end: DateTime<Utc>) -> 
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 3).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 3]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 3]);
     Ok(Renewals {
         on_time: v[0],
         late: v[1],
@@ -179,7 +195,10 @@ async fn autorenew(c: &Ctx<'_>) -> StoreResult<Autorenew> {
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 2).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 2]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 2]);
     let results: Vec<(String, i64)> = rows(&mut conn, &sql, &results_text).await?;
     Ok(Autorenew {
         on: v[0],
@@ -219,7 +238,10 @@ async fn expiring(c: &Ctx<'_>) -> StoreResult<Expiring> {
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 6).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 6]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 6]);
     Ok(Expiring {
         auto7: v[0],
         manual7: v[1],
@@ -261,9 +283,13 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     let churn_upper = c.range.now - grace;
     let churn_cond = |sql: &mut Sql| {
         let u = sql.time(churn_upper);
-        format!("i.ends_at < {u} AND {}", c.filters.client(sql, "i.client_id"))
+        format!(
+            "i.ends_at < {u} AND {}",
+            c.filters.client(sql, "i.client_id")
+        )
     };
-    let back_cond = |sql: &mut Sql| format!("i.seq > 1 AND {}", c.filters.client(sql, "i.client_id"));
+    let back_cond =
+        |sql: &mut Sql| format!("i.seq > 1 AND {}", c.filters.client(sql, "i.client_id"));
     let renew_prev = async {
         match c.range.prev_window() {
             Some((s, e)) => Ok(Some(renewals(c, s, e).await?)),
@@ -276,8 +302,20 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         renew_prev,
         autorenew(c),
         expiring(c),
-        both(c, "analytics_islands i", "i.ends_at", churn_cond, &["count(DISTINCT i.client_id)"]),
-        both(c, "analytics_islands i", "i.starts_at", back_cond, &["count(DISTINCT i.client_id)"]),
+        both(
+            c,
+            "analytics_islands i",
+            "i.ends_at",
+            churn_cond,
+            &["count(DISTINCT i.client_id)"]
+        ),
+        both(
+            c,
+            "analytics_islands i",
+            "i.starts_at",
+            back_cond,
+            &["count(DISTINCT i.client_id)"]
+        ),
         paying_at(c, c.range.start()),
     )?;
     let note = c.filters.ignored(&SUBSCRIPTION_DIMS);
@@ -291,11 +329,16 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             rows: coh.rows.clone(),
         });
     let kept = |key: &'static str, title: &str, k: usize, sub: bool| {
-        let m = Metric::new(key, title, Unit::Percent, kept_share(&coh.rows, k, from, to))
-            .detail(Detail::Cohorts {
-                columns: COLUMNS,
-                rows: coh.rows.clone(),
-            });
+        let m = Metric::new(
+            key,
+            title,
+            Unit::Percent,
+            kept_share(&coh.rows, k, from, to),
+        )
+        .detail(Detail::Cohorts {
+            columns: COLUMNS,
+            rows: coh.rows.clone(),
+        });
         let m = if kept_share(&coh.rows, k, from, to).is_none() {
             m.note("срок не наступил")
         } else {
@@ -313,26 +356,65 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         ],
         note: Some("Продления, оплаченные в периоде: до конца подписки, с опозданием до трёх дней или после перерыва".into()),
     };
-    let on_time = Metric::new("on_time", "Вовремя", Unit::Percent, share(ren.on_time, total))
-        .prev(ren_prev.as_ref().and_then(|r| share(r.on_time, total_prev.unwrap_or(0.0))))
-        .note(format!("{} продлений", ren.on_time as i64))
-        .detail(ren_bars.clone());
-    let late = Metric::new("late", "Опоздали на 1–3 дня", Unit::Percent, share(ren.late, total))
-        .prev(ren_prev.as_ref().and_then(|r| share(r.late, total_prev.unwrap_or(0.0))))
-        .detail(ren_bars.clone());
-    let after = Metric::new("after_break", "После перерыва", Unit::Percent, share(ren.back, total))
-        .prev(ren_prev.as_ref().and_then(|r| share(r.back, total_prev.unwrap_or(0.0))))
-        .note(format!("{} чел.", ren.back as i64))
-        .detail(ren_bars);
+    let on_time = Metric::new(
+        "on_time",
+        "Вовремя",
+        Unit::Percent,
+        share(ren.on_time, total),
+    )
+    .prev(
+        ren_prev
+            .as_ref()
+            .and_then(|r| share(r.on_time, total_prev.unwrap_or(0.0))),
+    )
+    .note(format!("{} продлений", ren.on_time as i64))
+    .detail(ren_bars.clone());
+    let late = Metric::new(
+        "late",
+        "Опоздали на 1–3 дня",
+        Unit::Percent,
+        share(ren.late, total),
+    )
+    .prev(
+        ren_prev
+            .as_ref()
+            .and_then(|r| share(r.late, total_prev.unwrap_or(0.0))),
+    )
+    .detail(ren_bars.clone());
+    let after = Metric::new(
+        "after_break",
+        "После перерыва",
+        Unit::Percent,
+        share(ren.back, total),
+    )
+    .prev(
+        ren_prev
+            .as_ref()
+            .and_then(|r| share(r.back, total_prev.unwrap_or(0.0))),
+    )
+    .note(format!("{} чел.", ren.back as i64))
+    .detail(ren_bars);
     let tried: f64 = auto
         .results
         .iter()
         .filter(|(k, _)| matches!(k.as_str(), "charged" | "insufficient" | "failed"))
         .map(|(_, n)| *n)
         .sum();
-    let charged = auto.results.iter().find(|(k, _)| k == "charged").map_or(0.0, |r| r.1);
-    let poor = auto.results.iter().find(|(k, _)| k == "insufficient").map_or(0.0, |r| r.1);
-    let failed = auto.results.iter().find(|(k, _)| k == "failed").map_or(0.0, |r| r.1);
+    let charged = auto
+        .results
+        .iter()
+        .find(|(k, _)| k == "charged")
+        .map_or(0.0, |r| r.1);
+    let poor = auto
+        .results
+        .iter()
+        .find(|(k, _)| k == "insufficient")
+        .map_or(0.0, |r| r.1);
+    let failed = auto
+        .results
+        .iter()
+        .find(|(k, _)| k == "failed")
+        .map_or(0.0, |r| r.1);
     let auto_bars = Detail::Bars {
         bars: auto
             .results
@@ -345,26 +427,52 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             .collect(),
         note: Some("Попытки автопродления за период".into()),
     };
-    let auto_on = Metric::new("autorenew_on", "Включено", Unit::Percent, share(auto.on, auto.paid))
-        .note(format!("{} из {}", auto.on as i64, auto.paid as i64))
-        .hint("Сейчас, среди активных платных подписок")
-        .detail(Detail::Bars {
-            bars: vec![
-                Bar { label: "Включено".into(), value: auto.on, list: Some(ListRef::clients("autorenew_on")) },
-                Bar { label: "Выключено".into(), value: auto.paid - auto.on, list: Some(ListRef::clients("autorenew_off")) },
-            ],
-            note: None,
-        });
-    let auto_ok = Metric::new("autorenew_ok", "Списания прошли", Unit::Percent, share(charged, tried))
-        .note(format!("{} из {}", charged as i64, tried as i64))
-        .detail(auto_bars.clone());
-    let auto_fail = Metric::new("autorenew_fail", "Не прошли", Unit::Count, Some(poor + failed))
-        .note(format!("денег нет: {}", poor as i64))
-        .detail(auto_bars);
+    let auto_on = Metric::new(
+        "autorenew_on",
+        "Включено",
+        Unit::Percent,
+        share(auto.on, auto.paid),
+    )
+    .note(format!("{} из {}", auto.on as i64, auto.paid as i64))
+    .hint("Сейчас, среди активных платных подписок")
+    .detail(Detail::Bars {
+        bars: vec![
+            Bar {
+                label: "Включено".into(),
+                value: auto.on,
+                list: Some(ListRef::clients("autorenew_on")),
+            },
+            Bar {
+                label: "Выключено".into(),
+                value: auto.paid - auto.on,
+                list: Some(ListRef::clients("autorenew_off")),
+            },
+        ],
+        note: None,
+    });
+    let auto_ok = Metric::new(
+        "autorenew_ok",
+        "Списания прошли",
+        Unit::Percent,
+        share(charged, tried),
+    )
+    .note(format!("{} из {}", charged as i64, tried as i64))
+    .detail(auto_bars.clone());
+    let auto_fail = Metric::new(
+        "autorenew_fail",
+        "Не прошли",
+        Unit::Count,
+        Some(poor + failed),
+    )
+    .note(format!("денег нет: {}", poor as i64))
+    .detail(auto_bars);
     let churned = churn.total(0);
     let churn_metric = Metric::new("churned", "Ушли", Unit::Count, Some(churned))
         .prev(prev_total(&churn_prev, 0))
-        .note_opt(share(churned, paying_start).map(|p| format!("{} платящих", super::metric::pct_text(p))))
+        .note_opt(
+            share(churned, paying_start)
+                .map(|p| format!("{} платящих", super::metric::pct_text(p))),
+        )
         .hint("Оплаченный период закончился больше трёх дней назад и не продлён")
         .detail(Detail::Series {
             points: churn.points(0),
@@ -382,19 +490,44 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             list: Some(ListRef::clients("returned").dates(from, to)),
         });
     let exp_table = |a: f64, m: f64, set: &str| Detail::Table {
-        columns: vec![Column { title: "Подписок".into(), unit: Unit::Count }],
+        columns: vec![Column {
+            title: "Подписок".into(),
+            unit: Unit::Count,
+        }],
         rows: vec![
-            Row { label: "С автопродлением".into(), sub: None, cells: vec![Some(a)], list: Some(ListRef::clients(set).slice("auto:on")), children: Vec::new() },
-            Row { label: "Без автопродления".into(), sub: None, cells: vec![Some(m)], list: Some(ListRef::clients(set).slice("auto:off")), children: Vec::new() },
+            Row {
+                label: "С автопродлением".into(),
+                sub: None,
+                cells: vec![Some(a)],
+                list: Some(ListRef::clients(set).slice("auto:on")),
+                children: Vec::new(),
+            },
+            Row {
+                label: "Без автопродления".into(),
+                sub: None,
+                cells: vec![Some(m)],
+                list: Some(ListRef::clients(set).slice("auto:off")),
+                children: Vec::new(),
+            },
         ],
         note: Some("Сумма — по последней оплате каждой подписки".into()),
     };
-    let exp7 = Metric::new("expiring7", "Истекают за 7 дней", Unit::Count, Some(exp.auto7 + exp.manual7))
-        .note(format!("на {}", labels::money_short(exp.sum7, c.currency)))
-        .detail(exp_table(exp.auto7, exp.manual7, "expiring7"));
-    let exp30 = Metric::new("expiring30", "Истекают за 30 дней", Unit::Count, Some(exp.auto30 + exp.manual30))
-        .note(format!("на {}", labels::money_short(exp.sum30, c.currency)))
-        .detail(exp_table(exp.auto30, exp.manual30, "expiring30"));
+    let exp7 = Metric::new(
+        "expiring7",
+        "Истекают за 7 дней",
+        Unit::Count,
+        Some(exp.auto7 + exp.manual7),
+    )
+    .note(format!("на {}", labels::money_short(exp.sum7, c.currency)))
+    .detail(exp_table(exp.auto7, exp.manual7, "expiring7"));
+    let exp30 = Metric::new(
+        "expiring30",
+        "Истекают за 30 дней",
+        Unit::Count,
+        Some(exp.auto30 + exp.manual30),
+    )
+    .note(format!("на {}", labels::money_short(exp.sum30, c.currency)))
+    .detail(exp_table(exp.auto30, exp.manual30, "expiring30"));
     Ok(vec![
         Group::new(None, vec![cohorts_metric]),
         Group::new(
@@ -408,6 +541,9 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         ),
         Group::new(Some("Продления"), vec![on_time, late, after]),
         Group::new(Some("Автопродление"), vec![auto_on, auto_ok, auto_fail]),
-        Group::new(Some("Уход и возврат"), vec![churn_metric, back_metric, exp7, exp30]),
+        Group::new(
+            Some("Уход и возврат"),
+            vec![churn_metric, back_metric, exp7, exp30],
+        ),
     ])
 }

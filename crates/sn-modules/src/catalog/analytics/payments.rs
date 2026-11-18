@@ -19,7 +19,11 @@ fn cond(c: &Ctx<'_>, sql: &mut Sql) -> String {
         parts.push(format!("COALESCE(p.pay_method, '') = {v}"));
     }
     if let Some(ch) = &c.filters.channel {
-        let v = sql.arg(Arg::Text(if ch == "unknown" { String::new() } else { ch.clone() }));
+        let v = sql.arg(Arg::Text(if ch == "unknown" {
+            String::new()
+        } else {
+            ch.clone()
+        }));
         parts.push(format!(
             "COALESCE((SELECT o.channel FROM orders o WHERE o.id = p.order_id), '') = {v}"
         ));
@@ -138,6 +142,8 @@ impl Line {
     }
 }
 
+type ProviderLines = (String, Line, Vec<(String, Line)>);
+
 fn p90(values: &[i64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -159,15 +165,23 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         invoices(c),
         disputes(c),
         rejected(c),
-        both(c, "payments p", "p.created_at", |sql| cond(c, sql), &["count(*)",
-            "count(*) FILTER (WHERE p.status = 'canceled' OR (p.status = 'pending' AND p.expires_at < now()))",
-            "count(*) FILTER (WHERE p.status = 'failed')"]),
+        both(
+            c,
+            "payments p",
+            "p.created_at",
+            |sql| cond(c, sql),
+            &[
+                "count(*)",
+                "count(*) FILTER (WHERE p.status = 'canceled' OR (p.status = 'pending' AND p.expires_at < now()))",
+                "count(*) FILTER (WHERE p.status = 'failed')"
+            ]
+        ),
         both(c, "payments p", "p.created_at", paid_cond, &["count(*)"]),
     )?;
     let now = c.range.now;
     let cur = c.currency.code();
     let mut total = Line::default();
-    let mut providers: Vec<(String, Line, Vec<(String, Line)>)> = Vec::new();
+    let mut providers: Vec<ProviderLines> = Vec::new();
     let mut reasons: Vec<(String, String, f64)> = Vec::new();
     for r in &rows_now {
         let money = r.9 == cur;
@@ -192,9 +206,16 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             }
         }
         if r.2 == "failed" {
-            let reason = r.8.clone().map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).unwrap_or_else(|| "Без причины".into());
+            let reason =
+                r.8.clone()
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .unwrap_or_else(|| "Без причины".into());
             let reason: String = reason.chars().take(120).collect();
-            match reasons.iter_mut().find(|x| x.0 == provider && x.1 == reason) {
+            match reasons
+                .iter_mut()
+                .find(|x| x.0 == provider && x.1 == reason)
+            {
                 Some(x) => x.2 += 1.0,
                 None => reasons.push((provider.clone(), reason, 1.0)),
             }
@@ -206,7 +227,11 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             p.1.disputes += num(*n);
         }
     }
-    providers.sort_by(|a, b| b.1.revenue.total_cmp(&a.1.revenue).then(b.1.invoices.total_cmp(&a.1.invoices)));
+    providers.sort_by(|a, b| {
+        b.1.revenue
+            .total_cmp(&a.1.revenue)
+            .then(b.1.invoices.total_cmp(&a.1.invoices))
+    });
     reasons.sort_by(|a, b| b.2.total_cmp(&a.2));
     let (from, to) = (c.range.dates.from, c.range.dates.to);
     let table_rows: Vec<Row> = providers
@@ -218,7 +243,9 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
                     .map(|(m, l)| {
                         l.row(
                             labels::method(&c.titles, p, m),
-                            ListRef::payments("invoices").slice(format!("method:{p}/{m}")).dates(from, to),
+                            ListRef::payments("invoices")
+                                .slice(format!("method:{p}/{m}"))
+                                .dates(from, to),
                             total.revenue,
                             Vec::new(),
                         )
@@ -229,23 +256,55 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             };
             line.row(
                 labels::provider(&c.titles, p),
-                ListRef::payments("invoices").slice(format!("provider:{p}")).dates(from, to),
+                ListRef::payments("invoices")
+                    .slice(format!("provider:{p}"))
+                    .dates(from, to),
                 total.revenue,
                 children,
             )
         })
         .collect();
     let columns = vec![
-        Column { title: "Счетов".into(), unit: Unit::Count },
-        Column { title: "Оплачено".into(), unit: Unit::Count },
-        Column { title: "Доля оплаченных".into(), unit: Unit::Percent },
-        Column { title: "Брошено".into(), unit: Unit::Count },
-        Column { title: "Ошибки".into(), unit: Unit::Count },
-        Column { title: "До оплаты".into(), unit: Unit::Seconds },
-        Column { title: "Возвраты".into(), unit: Unit::Money },
-        Column { title: "Споры".into(), unit: Unit::Count },
-        Column { title: "Выручка".into(), unit: Unit::Money },
-        Column { title: "Доля выручки".into(), unit: Unit::Percent },
+        Column {
+            title: "Счетов".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Оплачено".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Доля оплаченных".into(),
+            unit: Unit::Percent,
+        },
+        Column {
+            title: "Брошено".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Ошибки".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "До оплаты".into(),
+            unit: Unit::Seconds,
+        },
+        Column {
+            title: "Возвраты".into(),
+            unit: Unit::Money,
+        },
+        Column {
+            title: "Споры".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Выручка".into(),
+            unit: Unit::Money,
+        },
+        Column {
+            title: "Доля выручки".into(),
+            unit: Unit::Percent,
+        },
     ];
     let note = c.filters.ignored(&APPLIES);
     let table = Detail::Table {
@@ -253,34 +312,56 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         rows: table_rows,
         note: Some("Счёт — попытка оплаты, созданная за период. Брошенный — клиент открыл и не оплатил, срок истёк. Время до оплаты — медиана. Нажмите на платёжку — откроются её счета.".into()),
     };
-    let invoices_metric = Metric::new("invoices", "Счета и оплаты", Unit::Count, Some(inv.total(0)))
-        .prev(prev_total(&inv_prev, 0))
-        .note_opt(note.clone())
-        .detail(table.clone());
-    let paid_share = Metric::new("paid_share", "Доля оплаченных", Unit::Percent, share(paid_s.total(0), inv.total(0)))
-        .prev(match (&paid_prev, &inv_prev) {
-            (Some(p), Some(i)) => share(p.total(0), i.total(0)),
-            _ => None,
-        })
-        .note(format!("{} из {}", paid_s.total(0) as i64, inv.total(0) as i64))
-        .detail(Detail::Series {
-            points: paid_s.points(0),
-            prev: prev_points(&paid_prev, 0),
-            breakdowns: Vec::new(),
-            list: None,
-        });
-    let abandoned = Metric::new("abandoned", "Брошенные счета", Unit::Count, Some(inv.total(1)))
-        .prev(prev_total(&inv_prev, 1))
-        .detail(Detail::Series {
-            points: inv.points(1),
-            prev: prev_points(&inv_prev, 1),
-            breakdowns: Vec::new(),
-            list: Some(ListRef::payments("abandoned").dates(from, to)),
-        });
+    let invoices_metric = Metric::new(
+        "invoices",
+        "Счета и оплаты",
+        Unit::Count,
+        Some(inv.total(0)),
+    )
+    .prev(prev_total(&inv_prev, 0))
+    .note_opt(note.clone())
+    .detail(table.clone());
+    let paid_share = Metric::new(
+        "paid_share",
+        "Доля оплаченных",
+        Unit::Percent,
+        share(paid_s.total(0), inv.total(0)),
+    )
+    .prev(match (&paid_prev, &inv_prev) {
+        (Some(p), Some(i)) => share(p.total(0), i.total(0)),
+        _ => None,
+    })
+    .note(format!(
+        "{} из {}",
+        paid_s.total(0) as i64,
+        inv.total(0) as i64
+    ))
+    .detail(Detail::Series {
+        points: paid_s.points(0),
+        prev: prev_points(&paid_prev, 0),
+        breakdowns: Vec::new(),
+        list: None,
+    });
+    let abandoned = Metric::new(
+        "abandoned",
+        "Брошенные счета",
+        Unit::Count,
+        Some(inv.total(1)),
+    )
+    .prev(prev_total(&inv_prev, 1))
+    .detail(Detail::Series {
+        points: inv.points(1),
+        prev: prev_points(&inv_prev, 1),
+        breakdowns: Vec::new(),
+        list: Some(ListRef::payments("abandoned").dates(from, to)),
+    });
     let errors = Metric::new("failed", "Ошибки оплаты", Unit::Count, Some(inv.total(2)))
         .prev(prev_total(&inv_prev, 2))
         .detail(Detail::Table {
-            columns: vec![Column { title: "Раз".into(), unit: Unit::Count }],
+            columns: vec![Column {
+                title: "Раз".into(),
+                unit: Unit::Count,
+            }],
             rows: reasons
                 .iter()
                 .take(30)
@@ -305,41 +386,66 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     .iter()
     .map(|(label, lo, hi)| Bar {
         label: (*label).into(),
-        value: num(total.waits.iter().filter(|w| **w >= *lo && **w < *hi).count() as i64),
+        value: num(total
+            .waits
+            .iter()
+            .filter(|w| **w >= *lo && **w < *hi)
+            .count() as i64),
         list: None,
     })
     .collect();
-    let waits = Metric::new("time_to_pay", "Время до оплаты", Unit::Seconds, median(&total.waits))
-        .note(match p90(&total.waits) {
-            Some(v) => format!("90 % — до {}", labels::duration(v as i64)),
-            None => "медиана".into(),
-        })
-        .detail(Detail::Bars {
-            bars: wait_bars,
-            note: Some("От создания счёта до оплаты".into()),
-        });
+    let waits = Metric::new(
+        "time_to_pay",
+        "Время до оплаты",
+        Unit::Seconds,
+        median(&total.waits),
+    )
+    .note(match p90(&total.waits) {
+        Some(v) => format!("90 % — до {}", labels::duration(v as i64)),
+        None => "медиана".into(),
+    })
+    .detail(Detail::Bars {
+        bars: wait_bars,
+        note: Some("От создания счёта до оплаты".into()),
+    });
     let rejected_total: f64 = rej.iter().map(|r| num(r.2)).sum();
-    let rejected_metric = Metric::new("rejected", "Отклонённые уведомления", Unit::Count, Some(rejected_total))
-        .hint("Уведомления платёжек, которые панель не приняла. Журнал хранится 30 дней.")
-        .detail(Detail::Table {
-            columns: vec![Column { title: "Раз".into(), unit: Unit::Count }],
-            rows: rej
-                .iter()
-                .map(|(source, outcome, n)| Row {
-                    label: labels::outcome(outcome).into(),
-                    sub: Some(labels::provider(&c.titles, source)),
-                    cells: vec![Some(num(*n))],
-                    list: None,
-                    children: Vec::new(),
-                })
-                .collect(),
-            note: None,
-        });
-    let refunds = Metric::new("provider_refunds", "Возвраты", Unit::Money, Some(total.refunded))
-        .note(format!("споров: {}", total.disputes as i64))
-        .detail(table);
+    let rejected_metric = Metric::new(
+        "rejected",
+        "Отклонённые уведомления",
+        Unit::Count,
+        Some(rejected_total),
+    )
+    .hint("Уведомления платёжек, которые панель не приняла. Журнал хранится 30 дней.")
+    .detail(Detail::Table {
+        columns: vec![Column {
+            title: "Раз".into(),
+            unit: Unit::Count,
+        }],
+        rows: rej
+            .iter()
+            .map(|(source, outcome, n)| Row {
+                label: labels::outcome(outcome).into(),
+                sub: Some(labels::provider(&c.titles, source)),
+                cells: vec![Some(num(*n))],
+                list: None,
+                children: Vec::new(),
+            })
+            .collect(),
+        note: None,
+    });
+    let refunds = Metric::new(
+        "provider_refunds",
+        "Возвраты",
+        Unit::Money,
+        Some(total.refunded),
+    )
+    .note(format!("споров: {}", total.disputes as i64))
+    .detail(table);
     Ok(vec![
         Group::new(None, vec![invoices_metric, paid_share, abandoned, errors]),
-        Group::new(Some("Скорость и потери"), vec![waits, refunds, rejected_metric]),
+        Group::new(
+            Some("Скорость и потери"),
+            vec![waits, refunds, rejected_metric],
+        ),
     ])
 }

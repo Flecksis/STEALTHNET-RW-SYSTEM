@@ -159,8 +159,12 @@ impl Range {
     }
 
     pub fn prev_window(&self) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-        self.prev
-            .map(|p| (midnight(p.from, self.offset), bound_after(p.to, self.offset)))
+        self.prev.map(|p| {
+            (
+                midnight(p.from, self.offset),
+                bound_after(p.to, self.offset),
+            )
+        })
     }
 }
 
@@ -353,7 +357,11 @@ impl Filters {
     pub fn facts(&self, sql: &mut Sql, a: &str) -> String {
         let mut parts = vec![self.tariff_cond(sql, &format!("{a}.tariff_id"))];
         if let Some(ch) = &self.channel {
-            let value = if ch == "unknown" { String::new() } else { ch.clone() };
+            let value = if ch == "unknown" {
+                String::new()
+            } else {
+                ch.clone()
+            };
             let p = sql.arg(Arg::Text(value));
             parts.push(format!("{a}.channel = {p}"));
         }
@@ -432,7 +440,11 @@ pub fn bind<'q, O>(mut query: Q<'q, O>, args: &'q [Arg]) -> Q<'q, O> {
     query
 }
 
-pub async fn rows<O>(db: &mut impl sn_store::Db, sql: &Sql, text: &str) -> sn_store::StoreResult<Vec<O>>
+pub async fn rows<O>(
+    db: &mut impl sn_store::Db,
+    sql: &Sql,
+    text: &str,
+) -> sn_store::StoreResult<Vec<O>>
 where
     O: Send + Unpin + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
 {
@@ -503,13 +515,19 @@ mod tests {
 
     #[test]
     fn шаги_делят_период_на_дни_недели_и_месяцы() {
-        let october = Dates { from: d(2026, 10, 1), to: d(2026, 10, 31) };
+        let october = Dates {
+            from: d(2026, 10, 1),
+            to: d(2026, 10, 31),
+        };
         assert_eq!(starts(october, Step::Day).len(), 31);
         let weeks = starts(october, Step::Week);
         assert_eq!(weeks[0], d(2026, 10, 1));
         assert_eq!(weeks[1], d(2026, 10, 5));
         assert_eq!(weeks.len(), 5);
-        let year = Dates { from: d(2025, 11, 15), to: d(2026, 10, 31) };
+        let year = Dates {
+            from: d(2025, 11, 15),
+            to: d(2026, 10, 31),
+        };
         let months = starts(year, Step::Month);
         assert_eq!(months[0], d(2025, 11, 15));
         assert_eq!(months[1], d(2025, 12, 1));
@@ -518,25 +536,43 @@ mod tests {
 
     #[test]
     fn шаг_сам_укрупняется_когда_точек_слишком_много() {
-        let year = Dates { from: d(2025, 1, 1), to: d(2025, 12, 31) };
+        let year = Dates {
+            from: d(2025, 1, 1),
+            to: d(2025, 12, 31),
+        };
         assert_eq!(fit_step(year, Some(Step::Day)), Step::Week);
         assert_eq!(fit_step(year, None), Step::Month);
-        let month = Dates { from: d(2026, 10, 1), to: d(2026, 10, 31) };
+        let month = Dates {
+            from: d(2026, 10, 1),
+            to: d(2026, 10, 31),
+        };
         assert_eq!(fit_step(month, None), Step::Day);
-        let ten = Dates { from: d(2016, 1, 1), to: d(2026, 1, 1) };
+        let ten = Dates {
+            from: d(2016, 1, 1),
+            to: d(2026, 1, 1),
+        };
         assert_eq!(fit_step(ten, Some(Step::Day)), Step::Month);
     }
 
     #[test]
     fn прошлый_период_той_же_длины_и_прошлый_год() {
-        let october = Dates { from: d(2026, 10, 1), to: d(2026, 10, 31) };
+        let october = Dates {
+            from: d(2026, 10, 1),
+            to: d(2026, 10, 31),
+        };
         assert_eq!(
             previous(october, Compare::Prev),
-            Some(Dates { from: d(2026, 8, 31), to: d(2026, 9, 30) })
+            Some(Dates {
+                from: d(2026, 8, 31),
+                to: d(2026, 9, 30)
+            })
         );
         assert_eq!(
             previous(october, Compare::Year),
-            Some(Dates { from: d(2025, 10, 1), to: d(2025, 10, 31) })
+            Some(Dates {
+                from: d(2025, 10, 1),
+                to: d(2025, 10, 31)
+            })
         );
         assert_eq!(previous(october, Compare::None), None);
     }
@@ -548,7 +584,14 @@ mod tests {
             midnight(d(2026, 10, 1), msk),
             Utc.with_ymd_and_hms(2026, 9, 30, 21, 0, 0).unwrap()
         );
-        let b = bounds_of(Dates { from: d(2026, 10, 1), to: d(2026, 10, 2) }, Step::Day, msk);
+        let b = bounds_of(
+            Dates {
+                from: d(2026, 10, 1),
+                to: d(2026, 10, 2),
+            },
+            Step::Day,
+            msk,
+        );
         assert_eq!(b.len(), 3);
         assert_eq!(b[2], Utc.with_ymd_and_hms(2026, 10, 2, 21, 0, 0).unwrap());
     }
@@ -557,13 +600,22 @@ mod tests {
     fn фильтр_источника_разбирается() {
         assert_eq!(
             SourceFilter::parse("utm:tiktok/osen-shorts"),
-            Some(SourceFilter::Utm { source: "tiktok".into(), campaign: Some("osen-shorts".into()) })
+            Some(SourceFilter::Utm {
+                source: "tiktok".into(),
+                campaign: Some("osen-shorts".into())
+            })
         );
         assert_eq!(
             SourceFilter::parse("utm:vk"),
-            Some(SourceFilter::Utm { source: "vk".into(), campaign: None })
+            Some(SourceFilter::Utm {
+                source: "vk".into(),
+                campaign: None
+            })
         );
-        assert_eq!(SourceFilter::parse("promo:12"), Some(SourceFilter::Promo("12".into())));
+        assert_eq!(
+            SourceFilter::parse("promo:12"),
+            Some(SourceFilter::Promo("12".into()))
+        );
         assert_eq!(SourceFilter::parse("ref"), Some(SourceFilter::Referral));
         assert_eq!(SourceFilter::parse("none"), Some(SourceFilter::Unlabeled));
         assert_eq!(SourceFilter::parse(""), None);
@@ -577,7 +629,10 @@ mod tests {
             source: Some(SourceFilter::Referral),
             ..Filters::default()
         };
-        assert_eq!(f.ignored(&CLIENT_DIMS).as_deref(), Some("без фильтра по платёжке"));
+        assert_eq!(
+            f.ignored(&CLIENT_DIMS).as_deref(),
+            Some("без фильтра по платёжке")
+        );
         assert_eq!(f.ignored(&PAYMENT_DIMS), None);
     }
 }

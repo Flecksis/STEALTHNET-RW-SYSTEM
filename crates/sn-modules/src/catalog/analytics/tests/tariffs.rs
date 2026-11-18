@@ -10,7 +10,10 @@ async fn продажи_переходы_допы_промокоды_и_приз
     let s = scene(db.store.clone()).await;
     let seed = &s.seed;
     let sa: i64 = seed
-        .scalar(&format!("SELECT id FROM subscriptions WHERE client_id = {}", s.a))
+        .scalar(&format!(
+            "SELECT id FROM subscriptions WHERE client_id = {}",
+            s.a
+        ))
         .await;
     seed.buy(Buy {
         client: s.a,
@@ -24,7 +27,10 @@ async fn продажи_переходы_допы_промокоды_и_приз
     })
     .await;
     let order: i64 = seed
-        .scalar(&format!("SELECT min(id) FROM orders WHERE client_id = {}", s.a))
+        .scalar(&format!(
+            "SELECT min(id) FROM orders WHERE client_id = {}",
+            s.a
+        ))
         .await;
     seed.exec(&format!(
         "INSERT INTO promo_codes (id, code, kind, percent) OVERRIDING SYSTEM VALUE VALUES (900, 'AUTUMN', 'percent', 17); \
@@ -37,8 +43,20 @@ async fn продажи_переходы_допы_промокоды_и_приз
     let r = ctx_report(&db.store, "tariffs", month(3, Compare::None)).await;
     assert_eq!(value(&r, "sales"), 3.0);
     let rows = table(&r, "sales");
-    assert_eq!(rows[0], ("Про".to_string(), vec![Some(2.0), Some(149_000.0), Some(74_500.0)]));
-    assert_eq!(rows[1], ("Старт".to_string(), vec![Some(1.0), Some(25_000.0), Some(25_000.0)]));
+    assert_eq!(
+        rows[0],
+        (
+            "Про".to_string(),
+            vec![Some(2.0), Some(149_000.0), Some(74_500.0)]
+        )
+    );
+    assert_eq!(
+        rows[1],
+        (
+            "Старт".to_string(),
+            vec![Some(1.0), Some(25_000.0), Some(25_000.0)]
+        )
+    );
     assert_eq!(value(&r, "changes"), 1.0);
     assert_eq!(table(&r, "changes")[0].0, "Старт → Про");
     assert_eq!(value(&r, "addon_devices"), 15_000.0);
@@ -46,7 +64,10 @@ async fn продажи_переходы_допы_промокоды_и_приз
     assert_eq!(value(&r, "promocodes"), 1.0);
     assert_eq!(
         table(&r, "promocodes")[0],
-        ("AUTUMN".to_string(), vec![Some(1.0), Some(5_000.0), Some(25_000.0), Some(0.0)])
+        (
+            "AUTUMN".to_string(),
+            vec![Some(1.0), Some(5_000.0), Some(25_000.0), Some(0.0)]
+        )
     );
     assert_eq!(value(&r, "prizes"), 3_000.0);
     assert_eq!(value(&r, "gifts_sold"), 0.0);

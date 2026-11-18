@@ -25,7 +25,10 @@ async fn продления_уход_возврат_и_когорты() {
         .await;
     }
     let sa: i64 = seed
-        .scalar(&format!("SELECT id FROM subscriptions WHERE client_id = {}", s.a))
+        .scalar(&format!(
+            "SELECT id FROM subscriptions WHERE client_id = {}",
+            s.a
+        ))
         .await;
     seed.buy(Buy {
         client: s.a,

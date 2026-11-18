@@ -542,7 +542,10 @@ async fn вход_администратора_и_переключение_мо�
         .iter()
         .map(|e| e["label"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(labels, ["Рассылки", "Промокоды", "Рефералы", "Подарки"]);
+    assert_eq!(
+        labels,
+        ["Рассылки", "Промокоды", "Рефералы", "Подарки", "UTM-метки"]
+    );
     db.cleanup().await;
 }
 

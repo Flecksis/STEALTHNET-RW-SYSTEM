@@ -449,7 +449,7 @@ mod tests {
     fn меню_строится_только_из_включённых_модулей() {
         let registry = ModuleRegistry::catalog_only();
         let labels: Vec<&str> = registry.menu().into_iter().map(|e| e.label).collect();
-        assert_eq!(labels, ["Рассылки", "Промокоды", "Рефералы"]);
+        assert_eq!(labels, ["Рассылки", "Промокоды", "Рефералы", "UTM-метки"]);
     }
 
     struct AiChat;

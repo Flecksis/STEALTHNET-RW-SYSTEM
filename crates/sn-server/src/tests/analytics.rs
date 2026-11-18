@@ -197,7 +197,15 @@ async fn аналитика_видна_с_правом_деньги_и_назы�
     let (status, options) = h.get("/api/admin/m/analytics/options", &owner).await;
     assert_eq!(status, StatusCode::OK, "{options}");
     assert_eq!(options["providers"][0]["value"], "yookassa");
-    for tab in ["clients", "retention", "payments", "sources", "tariffs", "economy", "support"] {
+    for tab in [
+        "clients",
+        "retention",
+        "payments",
+        "sources",
+        "tariffs",
+        "economy",
+        "support",
+    ] {
         let body = ready_tab(&h, &format!("/api/admin/m/analytics/tab/{tab}"), &owner).await;
         assert!(!body["groups"].as_array().unwrap().is_empty(), "{tab}");
     }
@@ -253,7 +261,10 @@ async fn ссылки_меток_создаются_и_не_повторяютс
     assert_eq!(body["error"]["code"], "utm.value");
     let (status, body) = h.get("/api/admin/m/utm/links", &owner).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["links"][0]["param"], "s_tiktok__m_video__k_osen-shorts");
+    assert_eq!(
+        body["links"][0]["param"],
+        "s_tiktok__m_video__k_osen-shorts"
+    );
     let (status, body) = h
         .write(
             Method::POST,

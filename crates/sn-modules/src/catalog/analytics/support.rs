@@ -186,23 +186,31 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             bars: reply_bars(&closes),
             note: None,
         });
-    let ai_share = Metric::new("ai_share", "Закрыл ИИ-чат", Unit::Percent, share(by_ai, answered))
-        .note(format!("{} из {} с ответом", by_ai as i64, answered as i64))
-        .hint("Обращения, где ответил только ИИ, без человека")
-        .detail(Detail::Table {
-            columns: vec![Column { title: "Обращений".into(), unit: Unit::Count }],
-            rows: reasons
-                .iter()
-                .map(|(l, n)| Row {
-                    label: l.clone(),
-                    sub: Some("передано человеку".into()),
-                    cells: vec![Some(*n)],
-                    list: None,
-                    children: Vec::new(),
-                })
-                .collect(),
-            note: Some("Почему ИИ передал обращение человеку".into()),
-        });
+    let ai_share = Metric::new(
+        "ai_share",
+        "Закрыл ИИ-чат",
+        Unit::Percent,
+        share(by_ai, answered),
+    )
+    .note(format!("{} из {} с ответом", by_ai as i64, answered as i64))
+    .hint("Обращения, где ответил только ИИ, без человека")
+    .detail(Detail::Table {
+        columns: vec![Column {
+            title: "Обращений".into(),
+            unit: Unit::Count,
+        }],
+        rows: reasons
+            .iter()
+            .map(|(l, n)| Row {
+                label: l.clone(),
+                sub: Some("передано человеку".into()),
+                cells: vec![Some(*n)],
+                list: None,
+                children: Vec::new(),
+            })
+            .collect(),
+        note: Some("Почему ИИ передал обращение человеку".into()),
+    });
     let per_1000 = Metric::new(
         "per_1000",
         "На 1 000 платящих",
@@ -211,7 +219,8 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     )
     .note(format!("{} платящих", paying as i64))
     .detail(Detail::None);
-    let tokens_metric = Metric::new("ai_tokens", "Токены ИИ", Unit::Count, Some(tokens)).detail(Detail::None);
+    let tokens_metric =
+        Metric::new("ai_tokens", "Токены ИИ", Unit::Count, Some(tokens)).detail(Detail::None);
     Ok(vec![
         Group::new(None, vec![tickets_metric, per_1000]),
         Group::new(Some("Скорость"), vec![first_reply, close]),

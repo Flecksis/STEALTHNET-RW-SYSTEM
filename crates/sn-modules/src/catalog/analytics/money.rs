@@ -1,8 +1,8 @@
 use super::facts::crypto_cond;
 use super::labels;
 use super::metric::{
-    BRow, Breakdown, Column, Detail, Group, ListRef, Metric, Point, Row, Unit, num, pct_text, ratio,
-    share,
+    BRow, Breakdown, Column, Detail, Group, ListRef, Metric, Point, Row, Unit, num, pct_text,
+    ratio, share,
 };
 use super::query::{Arg, PAYMENT_DIMS, SUBSCRIPTION_DIMS, Sql, local_day, rows};
 use super::tab::{Ctx, Series, Window, both, prev_points, prev_total};
@@ -95,7 +95,8 @@ fn cuts(c: &Ctx<'_>, rows: &[DimRow], set: i32) -> Vec<Cut> {
         }
         let (key, label) = match set {
             31 => {
-                let (k, l) = labels::kind(kind.as_deref().unwrap_or(""), item.as_deref().unwrap_or(""));
+                let (k, l) =
+                    labels::kind(kind.as_deref().unwrap_or(""), item.as_deref().unwrap_or(""));
                 (k.to_string(), l.to_string())
             }
             111 => (
@@ -125,7 +126,11 @@ fn cuts(c: &Ctx<'_>, rows: &[DimRow], set: i32) -> Vec<Cut> {
             _ => {
                 let ch = channel.clone().unwrap_or_default();
                 (
-                    if ch.is_empty() { "unknown".into() } else { ch.clone() },
+                    if ch.is_empty() {
+                        "unknown".into()
+                    } else {
+                        ch.clone()
+                    },
                     labels::channel(&ch).to_string(),
                 )
             }
@@ -268,7 +273,10 @@ pub async fn mrr_moves(c: &Ctx<'_>, t0: DateTime<Utc>, t1: DateTime<Utc>) -> Sto
     );
     let mut conn = c.store.conn().await?;
     let r = super::query::grid(&mut conn, &sql, &text, 10).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 10]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 10]);
     Ok(Moves {
         new: (v[0], v[1]),
         expansion: (v[2], v[3]),
@@ -487,8 +495,15 @@ pub async fn forecast(c: &Ctx<'_>) -> StoreResult<Forecast> {
     );
     let mut conn = c.store.conn().await?;
     let r = super::query::grid(&mut conn, &sql, &text, 5).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 5]);
-    let rate = if v[3] > 0.0 { (v[2] / v[3]).min(1.0) } else { 0.0 };
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 5]);
+    let rate = if v[3] > 0.0 {
+        (v[2] / v[3]).min(1.0)
+    } else {
+        0.0
+    };
     Ok(Forecast {
         month,
         received: v[0],
@@ -511,8 +526,18 @@ async fn promo_days(c: &Ctx<'_>) -> StoreResult<f64> {
 }
 
 const MONTHS: [&str; 12] = [
-    "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
-    "ноябрь", "декабрь",
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
 ];
 
 fn ratio_points(labels: &[NaiveDate], a: &[f64], b: &[f64]) -> Vec<Point> {
@@ -544,7 +569,10 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     };
     let prev_active = async {
         match c.range.prev_window() {
-            Some((s, e)) => Ok(Some((active_clients(c, s, e).await?, payers(c, s, e).await?))),
+            Some((s, e)) => Ok(Some((
+                active_clients(c, s, e).await?,
+                payers(c, s, e).await?,
+            ))),
             None => StoreResult::Ok(None),
         }
     };
@@ -627,7 +655,8 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             breakdowns: Vec::new(),
             list: None,
         });
-    let moved = moves.new.0 + moves.expansion.0 + moves.returned.0 - moves.contraction.0 - moves.churn.0;
+    let moved =
+        moves.new.0 + moves.expansion.0 + moves.returned.0 - moves.contraction.0 - moves.churn.0;
     let move_row = |label: &str, v: (f64, f64), sign: f64, set: &str| Row {
         label: label.into(),
         sub: None,
@@ -639,8 +668,14 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         .note_opt(sub_note.clone())
         .detail(Detail::Table {
             columns: vec![
-                Column { title: "MRR".into(), unit: Unit::Money },
-                Column { title: "Клиентов".into(), unit: Unit::Count },
+                Column {
+                    title: "MRR".into(),
+                    unit: Unit::Money,
+                },
+                Column {
+                    title: "Клиентов".into(),
+                    unit: Unit::Count,
+                },
             ],
             rows: vec![
                 move_row("Новые", moves.new, 1.0, "mrr_new"),
@@ -656,12 +691,22 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
                     children: Vec::new(),
                 },
             ],
-            note: Some("Сравнение месячной стоимости подписок каждого клиента в начале и в конце периода".into()),
+            note: Some(
+                "Сравнение месячной стоимости подписок каждого клиента в начале и в конце периода"
+                    .into(),
+            ),
         });
     let check = Metric::new("check", "Средний чек", Unit::Money, ratio(gross, pays))
-        .prev(prev.as_ref().and_then(|p| ratio(p.total(GROSS), p.total(PAYS))))
+        .prev(
+            prev.as_ref()
+                .and_then(|p| ratio(p.total(GROSS), p.total(PAYS))),
+        )
         .detail(Detail::Series {
-            points: ratio_points(&series.labels, &series.columns[GROSS], &series.columns[PAYS]),
+            points: ratio_points(
+                &series.labels,
+                &series.columns[GROSS],
+                &series.columns[PAYS],
+            ),
             prev: prev
                 .as_ref()
                 .map(|p| ratio_points(&p.labels, &p.columns[GROSS], &p.columns[PAYS]))
@@ -669,55 +714,133 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             breakdowns: Vec::new(),
             list: None,
         });
-    let table2 = |a: &str, av: f64, au: Unit, b: &str, bv: f64, total: &str, tv: Option<f64>| Detail::Table {
-        columns: vec![Column { title: "Значение".into(), unit: Unit::Money }],
-        rows: vec![
-            Row { label: a.into(), sub: None, cells: vec![Some(av)], list: None, children: Vec::new() },
-            Row { label: b.into(), sub: Some(match au { Unit::Count => "клиентов".into(), _ => String::new() }), cells: vec![Some(bv)], list: None, children: Vec::new() },
-            Row { label: total.into(), sub: None, cells: vec![tv], list: None, children: Vec::new() },
-        ],
-        note: None,
+    let table2 = |a: &str, av: f64, au: Unit, b: &str, bv: f64, total: &str, tv: Option<f64>| {
+        Detail::Table {
+            columns: vec![Column {
+                title: "Значение".into(),
+                unit: Unit::Money,
+            }],
+            rows: vec![
+                Row {
+                    label: a.into(),
+                    sub: None,
+                    cells: vec![Some(av)],
+                    list: None,
+                    children: Vec::new(),
+                },
+                Row {
+                    label: b.into(),
+                    sub: Some(match au {
+                        Unit::Count => "клиентов".into(),
+                        _ => String::new(),
+                    }),
+                    cells: vec![Some(bv)],
+                    list: None,
+                    children: Vec::new(),
+                },
+                Row {
+                    label: total.into(),
+                    sub: None,
+                    cells: vec![tv],
+                    list: None,
+                    children: Vec::new(),
+                },
+            ],
+            note: None,
+        }
     };
-    let arpu = Metric::new("arpu", "ARPU — на активного", Unit::Money, ratio(gross, active))
-        .prev(match (&prev, before_active) {
-            (Some(p), Some((a, _))) => ratio(p.total(GROSS), a),
-            _ => None,
-        })
-        .hint("Выручка на клиента с активной подпиской любого вида")
-        .detail(table2("Выручка", gross, Unit::Money, "Клиентов с подпиской", active, "ARPU", ratio(gross, active)));
-    let arppu = Metric::new("arppu", "ARPPU — на платящего", Unit::Money, ratio(gross, paying))
-        .prev(match (&prev, before_active) {
-            (Some(p), Some((_, b))) => ratio(p.total(GROSS), b),
-            _ => None,
-        })
-        .hint("Выручка на клиента, который платил в этом периоде")
-        .detail(table2("Выручка", gross, Unit::Money, "Платили", paying, "ARPPU", ratio(gross, paying)));
-    let ltv_metric = Metric::new("ltv", "LTV — за всё время", Unit::Money, ratio(ltv.0, ltv.1))
-        .prev(ltv_before.and_then(|(a, b)| ratio(a, b)))
-        .hint("Сколько в среднем принёс платящий клиент за всё время, за вычетом возвратов")
-        .detail(table2("Выручка за всё время", ltv.0, Unit::Money, "Платящих за всё время", ltv.1, "LTV", ratio(ltv.0, ltv.1)));
-    let promo = Metric::new("promo", "Скидки по промокодам", Unit::Money, Some(series.total(PROMO)))
-        .prev(prev_total(&prev, PROMO))
-        .note_opt(if days > 0.0 {
-            Some(format!("и {} по промокодам на дни", labels::count(days as i64, "день", "дня", "дней")))
-        } else {
-            pay_note.clone()
-        })
-        .detail(Detail::Series {
-            points: series.points(PROMO),
-            prev: prev_points(&prev, PROMO),
-            breakdowns: Vec::new(),
-            list: Some(ListRef::payments("promo").dates(c.range.dates.from, c.range.dates.to)),
-        });
-    let discount = Metric::new("discount", "Другие скидки", Unit::Money, Some(series.total(DISCOUNT)))
-        .prev(prev_total(&prev, DISCOUNT))
-        .hint("Личные скидки и скидки за устройства")
-        .detail(Detail::Series {
-            points: series.points(DISCOUNT),
-            prev: prev_points(&prev, DISCOUNT),
-            breakdowns: Vec::new(),
-            list: None,
-        });
+    let arpu = Metric::new(
+        "arpu",
+        "ARPU — на активного",
+        Unit::Money,
+        ratio(gross, active),
+    )
+    .prev(match (&prev, before_active) {
+        (Some(p), Some((a, _))) => ratio(p.total(GROSS), a),
+        _ => None,
+    })
+    .hint("Выручка на клиента с активной подпиской любого вида")
+    .detail(table2(
+        "Выручка",
+        gross,
+        Unit::Money,
+        "Клиентов с подпиской",
+        active,
+        "ARPU",
+        ratio(gross, active),
+    ));
+    let arppu = Metric::new(
+        "arppu",
+        "ARPPU — на платящего",
+        Unit::Money,
+        ratio(gross, paying),
+    )
+    .prev(match (&prev, before_active) {
+        (Some(p), Some((_, b))) => ratio(p.total(GROSS), b),
+        _ => None,
+    })
+    .hint("Выручка на клиента, который платил в этом периоде")
+    .detail(table2(
+        "Выручка",
+        gross,
+        Unit::Money,
+        "Платили",
+        paying,
+        "ARPPU",
+        ratio(gross, paying),
+    ));
+    let ltv_metric = Metric::new(
+        "ltv",
+        "LTV — за всё время",
+        Unit::Money,
+        ratio(ltv.0, ltv.1),
+    )
+    .prev(ltv_before.and_then(|(a, b)| ratio(a, b)))
+    .hint("Сколько в среднем принёс платящий клиент за всё время, за вычетом возвратов")
+    .detail(table2(
+        "Выручка за всё время",
+        ltv.0,
+        Unit::Money,
+        "Платящих за всё время",
+        ltv.1,
+        "LTV",
+        ratio(ltv.0, ltv.1),
+    ));
+    let promo = Metric::new(
+        "promo",
+        "Скидки по промокодам",
+        Unit::Money,
+        Some(series.total(PROMO)),
+    )
+    .prev(prev_total(&prev, PROMO))
+    .note_opt(if days > 0.0 {
+        Some(format!(
+            "и {} по промокодам на дни",
+            labels::count(days as i64, "день", "дня", "дней")
+        ))
+    } else {
+        pay_note.clone()
+    })
+    .detail(Detail::Series {
+        points: series.points(PROMO),
+        prev: prev_points(&prev, PROMO),
+        breakdowns: Vec::new(),
+        list: Some(ListRef::payments("promo").dates(c.range.dates.from, c.range.dates.to)),
+    });
+    let discount = Metric::new(
+        "discount",
+        "Другие скидки",
+        Unit::Money,
+        Some(series.total(DISCOUNT)),
+    )
+    .prev(prev_total(&prev, DISCOUNT))
+    .hint("Личные скидки и скидки за устройства")
+    .detail(Detail::Series {
+        points: series.points(DISCOUNT),
+        prev: prev_points(&prev, DISCOUNT),
+        breakdowns: Vec::new(),
+        list: None,
+    });
     let accrued = pay.accrued.total(0);
     let referral = Metric::new("referral", "Выплаты рефералам", Unit::Money, Some(accrued))
         .prev(pay.accrued_prev.as_ref().map(|p| p.total(0)))
@@ -725,14 +848,39 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         .note_opt(c.filters.ignored(&super::query::NO_DIMS))
         .detail(Detail::Series {
             points: pay.accrued.points(0),
-            prev: pay.accrued_prev.as_ref().map(|p| p.points(0)).unwrap_or_default(),
+            prev: pay
+                .accrued_prev
+                .as_ref()
+                .map(|p| p.points(0))
+                .unwrap_or_default(),
             breakdowns: vec![Breakdown {
                 key: "kind",
                 title: "Куда",
                 rows: vec![
-                    BRow { key: "accrued".into(), label: "Начислено".into(), value: accrued, count: Some(pay.accrued.total(1) as i64), prev: None, list: None },
-                    BRow { key: "withdrawn".into(), label: "Выведено деньгами".into(), value: pay.withdrawn, count: None, prev: None, list: None },
-                    BRow { key: "spent".into(), label: "Потрачено на покупки".into(), value: pay.spent, count: None, prev: None, list: None },
+                    BRow {
+                        key: "accrued".into(),
+                        label: "Начислено".into(),
+                        value: accrued,
+                        count: Some(pay.accrued.total(1) as i64),
+                        prev: None,
+                        list: None,
+                    },
+                    BRow {
+                        key: "withdrawn".into(),
+                        label: "Выведено деньгами".into(),
+                        value: pay.withdrawn,
+                        count: None,
+                        prev: None,
+                        list: None,
+                    },
+                    BRow {
+                        key: "spent".into(),
+                        label: "Потрачено на покупки".into(),
+                        value: pay.spent,
+                        count: None,
+                        prev: None,
+                        list: None,
+                    },
                 ],
             }],
             list: None,
@@ -748,46 +896,93 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         .note(share(lost, gross).map_or_else(String::new, |s| format!("{} выручки", pct_text(s))))
         .detail(Detail::Series {
             points: loss.refunds.points(0),
-            prev: loss.refunds_prev.as_ref().map(|p| p.points(0)).unwrap_or_default(),
+            prev: loss
+                .refunds_prev
+                .as_ref()
+                .map(|p| p.points(0))
+                .unwrap_or_default(),
             breakdowns: vec![Breakdown {
                 key: "kind",
                 title: "Вид",
                 rows: vec![
-                    BRow { key: "balance".into(), label: "Возвраты на баланс".into(), value: loss.refunds.total(2), count: None, prev: None, list: None },
-                    BRow { key: "provider".into(), label: "Возвраты в платёжку".into(), value: loss.refunds.total(3), count: None, prev: None, list: None },
-                    BRow { key: "disputes".into(), label: "Споры и чарджбэки".into(), value: loss.disputes.1, count: Some(loss.disputes.0 as i64), prev: None, list: None },
-                    BRow { key: "declined".into(), label: "Платёжка отказала в возврате".into(), value: 0.0, count: Some(loss.declined as i64), prev: None, list: None },
+                    BRow {
+                        key: "balance".into(),
+                        label: "Возвраты на баланс".into(),
+                        value: loss.refunds.total(2),
+                        count: None,
+                        prev: None,
+                        list: None,
+                    },
+                    BRow {
+                        key: "provider".into(),
+                        label: "Возвраты в платёжку".into(),
+                        value: loss.refunds.total(3),
+                        count: None,
+                        prev: None,
+                        list: None,
+                    },
+                    BRow {
+                        key: "disputes".into(),
+                        label: "Споры и чарджбэки".into(),
+                        value: loss.disputes.1,
+                        count: Some(loss.disputes.0 as i64),
+                        prev: None,
+                        list: None,
+                    },
+                    BRow {
+                        key: "declined".into(),
+                        label: "Платёжка отказала в возврате".into(),
+                        value: 0.0,
+                        count: Some(loss.declined as i64),
+                        prev: None,
+                        list: None,
+                    },
                 ],
             }],
             list: Some(ListRef::payments("refunds").dates(c.range.dates.from, c.range.dates.to)),
         });
-    let stars = Metric::new("stars", "Звёзды Telegram, шт.", Unit::Stars, Some(series.total(STARS)))
-        .prev(prev_total(&prev, STARS))
-        .note(format!("{} оплат", series.total(STAR_PAYS) as i64))
-        .detail(Detail::Series {
-            points: series.points(STARS),
-            prev: prev_points(&prev, STARS),
-            breakdowns: Vec::new(),
-            list: Some(ListRef::payments("stars").dates(c.range.dates.from, c.range.dates.to)),
-        });
-    let crypto = Metric::new("crypto", "Криптовалюта", Unit::Money, Some(series.total(CRYPTO)))
-        .prev(prev_total(&prev, CRYPTO))
-        .hint("Оплаты через криптовалютные платёжки и способы")
-        .detail(Detail::Series {
-            points: series.points(CRYPTO),
-            prev: prev_points(&prev, CRYPTO),
-            breakdowns: Vec::new(),
-            list: Some(ListRef::payments("crypto").dates(c.range.dates.from, c.range.dates.to)),
-        });
-    let balance = Metric::new("balance", "Оплачено с баланса", Unit::Money, Some(series.total(BALANCE)))
-        .prev(prev_total(&prev, BALANCE))
-        .hint("В выручку не входит: деньги учтены при пополнении баланса")
-        .detail(Detail::Series {
-            points: series.points(BALANCE),
-            prev: prev_points(&prev, BALANCE),
-            breakdowns: Vec::new(),
-            list: Some(ListRef::payments("balance").dates(c.range.dates.from, c.range.dates.to)),
-        });
+    let stars = Metric::new(
+        "stars",
+        "Звёзды Telegram, шт.",
+        Unit::Stars,
+        Some(series.total(STARS)),
+    )
+    .prev(prev_total(&prev, STARS))
+    .note(format!("{} оплат", series.total(STAR_PAYS) as i64))
+    .detail(Detail::Series {
+        points: series.points(STARS),
+        prev: prev_points(&prev, STARS),
+        breakdowns: Vec::new(),
+        list: Some(ListRef::payments("stars").dates(c.range.dates.from, c.range.dates.to)),
+    });
+    let crypto = Metric::new(
+        "crypto",
+        "Криптовалюта",
+        Unit::Money,
+        Some(series.total(CRYPTO)),
+    )
+    .prev(prev_total(&prev, CRYPTO))
+    .hint("Оплаты через криптовалютные платёжки и способы")
+    .detail(Detail::Series {
+        points: series.points(CRYPTO),
+        prev: prev_points(&prev, CRYPTO),
+        breakdowns: Vec::new(),
+        list: Some(ListRef::payments("crypto").dates(c.range.dates.from, c.range.dates.to)),
+    });
+    let balance = Metric::new(
+        "balance",
+        "Оплачено с баланса",
+        Unit::Money,
+        Some(series.total(BALANCE)),
+    )
+    .prev(prev_total(&prev, BALANCE))
+    .hint("В выручку не входит: деньги учтены при пополнении баланса")
+    .detail(Detail::Series {
+        points: series.points(BALANCE),
+        prev: prev_points(&prev, BALANCE),
+        breakdowns: Vec::new(),
+        list: Some(ListRef::payments("balance").dates(c.range.dates.from, c.range.dates.to)),
+    });
     let mut extra = vec![stars, crypto, balance];
     if let Some(fc) = fc {
         let month = MONTHS[fc.month.month0() as usize];
@@ -810,7 +1005,10 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         Group::new(None, vec![revenue, net]),
         Group::new(Some("Подписки"), vec![mrr_metric, moves_metric]),
         Group::new(Some("На клиента"), vec![check, arpu, arppu, ltv_metric]),
-        Group::new(Some("Скидки, выплаты, потери"), vec![promo, discount, referral, refunds]),
+        Group::new(
+            Some("Скидки, выплаты, потери"),
+            vec![promo, discount, referral, refunds],
+        ),
         Group::new(Some("Отдельно"), extra),
     ])
 }

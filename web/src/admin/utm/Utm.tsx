@@ -35,6 +35,8 @@ import '../analytics/analytics.css';
 import '../home/phone.css';
 import './utm.css';
 
+const STRAY_SHOWN = 12;
+
 type Mode = { kind: 'link'; id: number } | { kind: 'stray'; index: number } | { kind: 'new'; draft: Draft; id: number | null } | null;
 
 function percent(part: number, whole: number): string {
@@ -462,7 +464,7 @@ export function Utm() {
           <section className="hp-group">
             <h2 className="hp-h2">Метки не из конструктора</h2>
             <div className="hp-card hp-list">
-              {page.stray.map((s, i) => (
+              {page.stray.slice(0, STRAY_SHOWN).map((s, i) => (
                 <button key={`${s.source_key}/${s.medium}/${s.campaign}`} type="button" className="axp-row" onClick={() => setMode({ kind: 'stray', index: i })}>
                   <span className="ut-ptext">
                     <span className="axp-name">{tags([s.source_key, s.medium, s.campaign]) || 'без источника'}</span>
@@ -483,7 +485,7 @@ export function Utm() {
               <span>Метки не из конструктора</span>
               <span className="num">{groupDigits(page.stray.reduce((a, s) => a + s.registrations, 0))}</span>
             </div>
-            {page.stray.map((s, i) => (
+            {page.stray.slice(0, STRAY_SHOWN).map((s, i) => (
               <button
                 key={`${s.source_key}/${s.medium}/${s.campaign}`}
                 type="button"
@@ -496,6 +498,11 @@ export function Utm() {
                 <span className="ut-sub num">{money({ minor: s.revenue, currency })}</span>
               </button>
             ))}
+            {page.stray.length > STRAY_SHOWN ? (
+              <RouterLink className="ut-list-note ut-rest" to="/admin/m/analytics?tab=sources&source=">
+                {`Ещё ${groupDigits(page.stray.length - STRAY_SHOWN)} — в «Аналитика → Источники»`}
+              </RouterLink>
+            ) : null}
           </div>
         )
       ) : null}

@@ -63,12 +63,17 @@ async fn регистрации_пробные_и_состояние_клиен�
     assert_eq!(value(&r, "devices"), 1.0);
     assert_eq!(value(&r, "traffic"), 1.0);
     assert_eq!(value(&r, "never"), 3.0);
-    assert_eq!(metric(&r, "never").note.as_deref(), Some("не заходили 7 дней: 1, 30 дней: 0"));
+    assert_eq!(
+        metric(&r, "never").note.as_deref(),
+        Some("не заходили 7 дней: 1, 30 дней: 0")
+    );
     assert_eq!(value(&r, "balances"), 20_000.0);
     assert_eq!(value(&r, "blocked"), 1.0);
     assert_eq!(metric(&r, "blocked").note.as_deref(), Some("+1 за период"));
     assert_eq!(value(&r, "english"), 1.0);
-    let q = filtered(month(3, Compare::None), |q| q.source = Some("utm:vk".into()));
+    let q = filtered(month(3, Compare::None), |q| {
+        q.source = Some("utm:vk".into())
+    });
     let r = ctx_report(&db.store, "clients", q).await;
     assert_eq!(value(&r, "registrations"), 1.0);
     assert_eq!(value(&r, "english"), 1.0);

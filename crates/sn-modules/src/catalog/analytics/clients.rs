@@ -1,5 +1,7 @@
 use super::labels;
-use super::metric::{BRow, Bar, Breakdown, Column, Detail, Group, ListRef, Metric, Row, Unit, num, share};
+use super::metric::{
+    BRow, Bar, Breakdown, Column, Detail, Group, ListRef, Metric, Row, Unit, num, share,
+};
 use super::query::{CLIENT_DIMS, SUBSCRIPTION_DIMS, Sql, grid, rows};
 use super::snapshots;
 use super::tab::{Ctx, Window, both, prev_points, prev_total};
@@ -26,8 +28,11 @@ async fn reg_groups(c: &Ctx<'_>, w: &Window) -> StoreResult<Vec<GroupRow>> {
 }
 
 fn reg_breakdowns(c: &Ctx<'_>, now: &[GroupRow], before: Option<&Vec<GroupRow>>) -> Vec<Breakdown> {
-    let sets: [(i32, &'static str, &'static str); 3] =
-        [(3, "channel", "Где"), (5, "login", "Вход"), (6, "source", "Источник")];
+    let sets: [(i32, &'static str, &'static str); 3] = [
+        (3, "channel", "Где"),
+        (5, "login", "Вход"),
+        (6, "source", "Источник"),
+    ];
     sets.iter()
         .map(|(set, key, title)| {
             let pick = |rows: &[GroupRow]| -> Vec<(String, String, i64)> {
@@ -65,7 +70,9 @@ fn reg_breakdowns(c: &Ctx<'_>, now: &[GroupRow], before: Option<&Vec<GroupRow>>)
                 rows: pick(now)
                     .into_iter()
                     .map(|(k, l, n)| BRow {
-                        prev: prev.as_ref().map(|p| p.iter().find(|x| x.1 == l).map_or(0.0, |x| num(x.2))),
+                        prev: prev
+                            .as_ref()
+                            .map(|p| p.iter().find(|x| x.1 == l).map_or(0.0, |x| num(x.2))),
                         list: Some(
                             ListRef::clients("registered")
                                 .slice(format!("{key}:{k}"))
@@ -119,7 +126,7 @@ pub fn median(values: &[i64]) -> Option<f64> {
     let mut v = values.to_vec();
     v.sort_unstable();
     let mid = v.len() / 2;
-    Some(if v.len() % 2 == 0 {
+    Some(if v.len().is_multiple_of(2) {
         (num(v[mid - 1]) + num(v[mid])) / 2.0
     } else {
         num(v[mid])
@@ -145,7 +152,17 @@ fn wait_bars(waits: &[i64]) -> Vec<Bar> {
         .collect()
 }
 
-type SubRow = (String, Option<i64>, Option<i32>, Option<i32>, Option<i64>, Option<i64>, Option<DateTime<Utc>>, Option<DateTime<Utc>>, i64);
+type SubRow = (
+    String,
+    Option<i64>,
+    Option<i32>,
+    Option<i32>,
+    Option<i64>,
+    Option<i64>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    i64,
+);
 
 async fn active_subs(c: &Ctx<'_>) -> StoreResult<Vec<SubRow>> {
     let mut sql = Sql::default();
@@ -194,7 +211,10 @@ async fn wallets(c: &Ctx<'_>) -> StoreResult<Wallets> {
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 9).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 9]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 9]);
     Ok(Wallets {
         main: (v[0], v[1]),
         referral: (v[2], v[3]),
@@ -232,35 +252,68 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             None => StoreResult::Ok(None),
         }
     };
-    let ((regs, regs_prev), (tr, tr_prev), groups_now, groups_before, trial, trial_before, subs, wal) =
-        tokio::try_join!(
-            both(c, "analytics_clients ac", "ac.created_at", |sql| format!(
-                "NOT ac.deleted AND {}",
-                c.filters.source_cond(sql, "ac")
-            ), &["count(*)"]),
-            both(c, "orders o", "o.paid_at", |sql| format!(
+    let (
+        (regs, regs_prev),
+        (tr, tr_prev),
+        groups_now,
+        groups_before,
+        trial,
+        trial_before,
+        subs,
+        wal,
+    ) = tokio::try_join!(
+        both(
+            c,
+            "analytics_clients ac",
+            "ac.created_at",
+            |sql| format!("NOT ac.deleted AND {}", c.filters.source_cond(sql, "ac")),
+            &["count(*)"]
+        ),
+        both(
+            c,
+            "orders o",
+            "o.paid_at",
+            |sql| format!(
                 "o.kind = 'trial' AND o.status IN ('paid', 'fulfilled', 'review') AND {}",
                 c.filters.client(sql, "o.client_id")
-            ), &["count(*)"]),
-            reg_groups(c, &now_w),
-            groups_prev,
-            trials(c, c.range.start(), c.range.end()),
-            trials_prev,
-            active_subs(c),
-            wallets(c),
-        )?;
-    let history = snapshots::series(c, &["subs.paid", "subs.trial", "subs.gift", "subs.promo", "subs.manual", "subs.custom"]).await?;
+            ),
+            &["count(*)"]
+        ),
+        reg_groups(c, &now_w),
+        groups_prev,
+        trials(c, c.range.start(), c.range.end()),
+        trials_prev,
+        active_subs(c),
+        wallets(c),
+    )?;
+    let history = snapshots::series(
+        c,
+        &[
+            "subs.paid",
+            "subs.trial",
+            "subs.gift",
+            "subs.promo",
+            "subs.manual",
+            "subs.custom",
+        ],
+    )
+    .await?;
     let client_note = c.filters.ignored(&CLIENT_DIMS);
     let sub_note = c.filters.ignored(&SUBSCRIPTION_DIMS);
-    let registrations = Metric::new("registrations", "Регистрации", Unit::Count, Some(regs.total(0)))
-        .prev(prev_total(&regs_prev, 0))
-        .note_opt(client_note.clone())
-        .detail(Detail::Series {
-            points: regs.points(0),
-            prev: prev_points(&regs_prev, 0),
-            breakdowns: reg_breakdowns(c, &groups_now, groups_before.as_ref()),
-            list: Some(ListRef::clients("registered").dates(c.range.dates.from, c.range.dates.to)),
-        });
+    let registrations = Metric::new(
+        "registrations",
+        "Регистрации",
+        Unit::Count,
+        Some(regs.total(0)),
+    )
+    .prev(prev_total(&regs_prev, 0))
+    .note_opt(client_note.clone())
+    .detail(Detail::Series {
+        points: regs.points(0),
+        prev: prev_points(&regs_prev, 0),
+        breakdowns: reg_breakdowns(c, &groups_now, groups_before.as_ref()),
+        list: Some(ListRef::clients("registered").dates(c.range.dates.from, c.range.dates.to)),
+    });
     let trials_metric = Metric::new("trials", "Пробные периоды", Unit::Count, Some(tr.total(0)))
         .prev(prev_total(&tr_prev, 0))
         .note_opt(client_note.clone())
@@ -270,14 +323,19 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             breakdowns: Vec::new(),
             list: Some(ListRef::clients("trials").dates(c.range.dates.from, c.range.dates.to)),
         });
-    let bought = Metric::new("trial_bought", "Купили после пробного", Unit::Percent, share(trial.bought, trial.total))
-        .prev(trial_before.as_ref().and_then(|t| share(t.bought, t.total)))
-        .note(format!("{} из {}", trial.bought as i64, trial.total as i64))
-        .sub()
-        .detail(Detail::Bars {
-            bars: wait_bars(&trial.waits),
-            note: Some("Сколько прошло от пробного периода до первой покупки".into()),
-        });
+    let bought = Metric::new(
+        "trial_bought",
+        "Купили после пробного",
+        Unit::Percent,
+        share(trial.bought, trial.total),
+    )
+    .prev(trial_before.as_ref().and_then(|t| share(t.bought, t.total)))
+    .note(format!("{} из {}", trial.bought as i64, trial.total as i64))
+    .sub()
+    .detail(Detail::Bars {
+        bars: wait_bars(&trial.waits),
+        note: Some("Сколько прошло от пробного периода до первой покупки".into()),
+    });
     let wait = Metric::new(
         "trial_wait",
         "Время до покупки",
@@ -377,126 +435,241 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             label: c.names.tariff(*tariff),
             sub: None,
             cells: vec![Some(*paid), Some(*all)],
-            list: Some(ListRef::clients("active").slice(format!("tariff:{}", tariff.map_or_else(|| "none".into(), |t| t.to_string())))),
+            list: Some(ListRef::clients("active").slice(format!(
+                "tariff:{}",
+                tariff.map_or_else(|| "none".into(), |t| t.to_string())
+            ))),
             children: Vec::new(),
         });
     }
-    let active = Metric::new("active_subs", "Активные подписки", Unit::Count, Some(total_subs))
-        .note("сейчас")
-        .detail(Detail::Series {
-            points: history.0,
-            prev: Vec::new(),
-            breakdowns: vec![Breakdown {
-                key: "kind",
-                title: "Вид",
-                rows: by_kind
-                    .iter()
-                    .map(|(k, v)| BRow {
-                        key: k.clone(),
-                        label: labels::subscription_kind(k).into(),
-                        value: *v,
-                        count: None,
-                        prev: None,
-                        list: Some(ListRef::clients("active").slice(format!("kind:{k}"))),
-                    })
-                    .collect(),
-            }],
-            list: Some(ListRef::clients("active")),
-        })
-        .hint(history.1.unwrap_or_else(|| "По дням — с первого ночного снимка после обновления".into()));
-    let tariffs_metric = Metric::new("subs_tariffs", "По тарифам", Unit::Count, Some(by_tariff.iter().map(|t| t.2).sum()))
-        .note("платных")
-        .sub()
-        .note_opt(sub_note.clone())
-        .detail(Detail::Table {
-            columns: vec![
-                Column { title: "Платных".into(), unit: Unit::Count },
-                Column { title: "Всего".into(), unit: Unit::Count },
-            ],
-            rows: tariff_rows,
-            note: None,
-        });
+    let active = Metric::new(
+        "active_subs",
+        "Активные подписки",
+        Unit::Count,
+        Some(total_subs),
+    )
+    .note("сейчас")
+    .detail(Detail::Series {
+        points: history.0,
+        prev: Vec::new(),
+        breakdowns: vec![Breakdown {
+            key: "kind",
+            title: "Вид",
+            rows: by_kind
+                .iter()
+                .map(|(k, v)| BRow {
+                    key: k.clone(),
+                    label: labels::subscription_kind(k).into(),
+                    value: *v,
+                    count: None,
+                    prev: None,
+                    list: Some(ListRef::clients("active").slice(format!("kind:{k}"))),
+                })
+                .collect(),
+        }],
+        list: Some(ListRef::clients("active")),
+    })
+    .hint(
+        history
+            .1
+            .unwrap_or_else(|| "По дням — с первого ночного снимка после обновления".into()),
+    );
+    let tariffs_metric = Metric::new(
+        "subs_tariffs",
+        "По тарифам",
+        Unit::Count,
+        Some(by_tariff.iter().map(|t| t.2).sum()),
+    )
+    .note("платных")
+    .sub()
+    .note_opt(sub_note.clone())
+    .detail(Detail::Table {
+        columns: vec![
+            Column {
+                title: "Платных".into(),
+                unit: Unit::Count,
+            },
+            Column {
+                title: "Всего".into(),
+                unit: Unit::Count,
+            },
+        ],
+        rows: tariff_rows,
+        note: None,
+    });
     let multi_metric = Metric::new("multi", "Несколько подписок", Unit::Count, Some(multi))
         .note("клиентов")
         .sub()
         .detail(Detail::Bars {
-            bars: bars(&[("1 подписка", multi_bars[0]), ("2 подписки", multi_bars[1]), ("3 и больше", multi_bars[2])], "multi", c),
+            bars: bars(
+                &[
+                    ("1 подписка", multi_bars[0]),
+                    ("2 подписки", multi_bars[1]),
+                    ("3 и больше", multi_bars[2]),
+                ],
+                "multi",
+                c,
+            ),
             note: None,
         });
-    let devices_metric = Metric::new("devices", "Упёрлись в лимит устройств", Unit::Count, Some(at_limit))
-        .note(format!("из {}", total_subs as i64))
-        .detail(Detail::Bars {
-            bars: bars(
-                &[
-                    ("Нет данных", devices[0]),
-                    ("1 устройство", devices[1]),
-                    ("2", devices[2]),
-                    ("3", devices[3]),
-                    ("4–5", devices[4]),
-                    ("6 и больше", devices[5]),
-                ],
-                "devices",
-                c,
-            ),
-            note: Some("Сколько устройств подключено к активным подпискам — по данным Remnawave".into()),
-        });
-    let traffic_metric = Metric::new("traffic", "Близко к лимиту трафика", Unit::Count, Some(near))
-        .note("90 % и больше")
-        .detail(Detail::Bars {
-            bars: bars(
-                &[
-                    ("До 1 ГБ", traffic[0]),
-                    ("1–10 ГБ", traffic[1]),
-                    ("10–50 ГБ", traffic[2]),
-                    ("50–200 ГБ", traffic[3]),
-                    ("Больше 200 ГБ", traffic[4]),
-                ],
-                "traffic",
-                c,
-            ),
-            note: Some("Расход за текущий цикл сброса трафика, как его считает Remnawave".into()),
-        });
+    let devices_metric = Metric::new(
+        "devices",
+        "Упёрлись в лимит устройств",
+        Unit::Count,
+        Some(at_limit),
+    )
+    .note(format!("из {}", total_subs as i64))
+    .detail(Detail::Bars {
+        bars: bars(
+            &[
+                ("Нет данных", devices[0]),
+                ("1 устройство", devices[1]),
+                ("2", devices[2]),
+                ("3", devices[3]),
+                ("4–5", devices[4]),
+                ("6 и больше", devices[5]),
+            ],
+            "devices",
+            c,
+        ),
+        note: Some(
+            "Сколько устройств подключено к активным подпискам — по данным Remnawave".into(),
+        ),
+    });
+    let traffic_metric = Metric::new(
+        "traffic",
+        "Близко к лимиту трафика",
+        Unit::Count,
+        Some(near),
+    )
+    .note("90 % и больше")
+    .detail(Detail::Bars {
+        bars: bars(
+            &[
+                ("До 1 ГБ", traffic[0]),
+                ("1–10 ГБ", traffic[1]),
+                ("10–50 ГБ", traffic[2]),
+                ("50–200 ГБ", traffic[3]),
+                ("Больше 200 ГБ", traffic[4]),
+            ],
+            "traffic",
+            c,
+        ),
+        note: Some("Расход за текущий цикл сброса трафика, как его считает Remnawave".into()),
+    });
     let never_metric = Metric::new("never", "Ни разу не подключались", Unit::Count, Some(never))
-        .note_opt(Some(format!("не заходили 7 дней: {}, 30 дней: {}", idle7 as i64, idle30 as i64)))
+        .note_opt(Some(format!(
+            "не заходили 7 дней: {}, 30 дней: {}",
+            idle7 as i64, idle30 as i64
+        )))
         .detail(Detail::Bars {
-            bars: bars(&[("Ни разу", never), ("Не заходили 7 дней", idle7), ("Не заходили 30 дней", idle30)], "idle", c),
+            bars: bars(
+                &[
+                    ("Ни разу", never),
+                    ("Не заходили 7 дней", idle7),
+                    ("Не заходили 30 дней", idle30),
+                ],
+                "idle",
+                c,
+            ),
             note: None,
         });
-    let balances = Metric::new("balances", "Деньги на балансах", Unit::Money, Some(wal.main.0))
-        .note(format!("у {}", labels::count(wal.main.1 as i64, "клиента", "клиентов", "клиентов")))
-        .detail(Detail::Table {
-            columns: vec![
-                Column { title: "Сумма".into(), unit: Unit::Money },
-                Column { title: "Клиентов".into(), unit: Unit::Count },
+    let balances = Metric::new(
+        "balances",
+        "Деньги на балансах",
+        Unit::Money,
+        Some(wal.main.0),
+    )
+    .note(format!(
+        "у {}",
+        labels::count(wal.main.1 as i64, "клиента", "клиентов", "клиентов")
+    ))
+    .detail(Detail::Table {
+        columns: vec![
+            Column {
+                title: "Сумма".into(),
+                unit: Unit::Money,
+            },
+            Column {
+                title: "Клиентов".into(),
+                unit: Unit::Count,
+            },
+        ],
+        rows: vec![
+            Row {
+                label: "Основной баланс".into(),
+                sub: None,
+                cells: vec![Some(wal.main.0), Some(wal.main.1)],
+                list: Some(ListRef::clients("balance")),
+                children: Vec::new(),
+            },
+            Row {
+                label: "Реферальный баланс".into(),
+                sub: None,
+                cells: vec![Some(wal.referral.0), Some(wal.referral.1)],
+                list: Some(ListRef::clients("referral_balance")),
+                children: Vec::new(),
+            },
+        ],
+        note: None,
+    });
+    let blocked = Metric::new(
+        "blocked",
+        "Заблокированы",
+        Unit::Count,
+        Some(wal.blocked_now),
+    )
+    .note(format!("+{} за период", wal.blocked_in as i64))
+    .detail(Detail::Bars {
+        bars: bars(
+            &[
+                ("Заблокированы сейчас", wal.blocked_now),
+                ("За период", wal.blocked_in),
             ],
-            rows: vec![
-                Row { label: "Основной баланс".into(), sub: None, cells: vec![Some(wal.main.0), Some(wal.main.1)], list: Some(ListRef::clients("balance")), children: Vec::new() },
-                Row { label: "Реферальный баланс".into(), sub: None, cells: vec![Some(wal.referral.0), Some(wal.referral.1)], list: Some(ListRef::clients("referral_balance")), children: Vec::new() },
-            ],
-            note: None,
-        });
-    let blocked = Metric::new("blocked", "Заблокированы", Unit::Count, Some(wal.blocked_now))
-        .note(format!("+{} за период", wal.blocked_in as i64))
-        .detail(Detail::Bars {
-            bars: bars(&[("Заблокированы сейчас", wal.blocked_now), ("За период", wal.blocked_in)], "blocked", c),
-            note: None,
-        });
-    let bot = Metric::new("bot_blocked", "Заблокировали бота", Unit::Count, Some(wal.bot))
-        .hint("Бот не может им написать: рассылки до них не дойдут")
-        .detail(Detail::None);
+            "blocked",
+            c,
+        ),
+        note: None,
+    });
+    let bot = Metric::new(
+        "bot_blocked",
+        "Заблокировали бота",
+        Unit::Count,
+        Some(wal.bot),
+    )
+    .hint("Бот не может им написать: рассылки до них не дойдут")
+    .detail(Detail::None);
     let lang = Metric::new("english", "Английский язык", Unit::Count, Some(wal.en))
         .note(format!("русский — {}", wal.ru as i64))
         .detail(Detail::Bars {
             bars: vec![
-                Bar { label: "Русский".into(), value: wal.ru, list: None },
-                Bar { label: "Английский".into(), value: wal.en, list: None },
+                Bar {
+                    label: "Русский".into(),
+                    value: wal.ru,
+                    list: None,
+                },
+                Bar {
+                    label: "Английский".into(),
+                    value: wal.en,
+                    list: None,
+                },
             ],
             note: None,
         });
     Ok(vec![
         Group::new(None, vec![registrations]),
         Group::new(Some("Пробные"), vec![trials_metric, bought, wait]),
-        Group::new(Some("Подписки сейчас"), vec![active, tariffs_metric, multi_metric, devices_metric, traffic_metric, never_metric]),
+        Group::new(
+            Some("Подписки сейчас"),
+            vec![
+                active,
+                tariffs_metric,
+                multi_metric,
+                devices_metric,
+                traffic_metric,
+                never_metric,
+            ],
+        ),
         Group::new(Some("Клиенты сейчас"), vec![balances, blocked, bot, lang]),
     ])
 }

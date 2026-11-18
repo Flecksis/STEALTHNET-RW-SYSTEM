@@ -17,6 +17,7 @@ import { emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenTex
 import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
 import './client.css';
+import { registrationText, useClientUtm, UtmValue } from '../utm/ClientSource';
 import { Avatar } from '../Avatar';
 import { ExtendDialog } from './ExtendDialog';
 
@@ -41,6 +42,7 @@ export function ClientPage() {
 function ClientDesktop() {
   const { id } = useParams();
   const clientId = Number(id);
+  const utm = useClientUtm(clientId);
   const { can, me } = useSession();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -524,6 +526,16 @@ function ClientDesktop() {
                 <Link to={`/admin/clients/${stats.referrer.client_id}`}>
                   {stats.referrer.telegram_username ? `@${stats.referrer.telegram_username}` : (stats.referrer.name ?? `клиент ${stats.referrer.client_id}`)}
                 </Link>
+              </div>
+            ) : null}
+            <div className="cc-prof">
+              <span className="muted">Регистрация</span>
+              <span>{registrationText(card.client.registration_source, card.client.created_at)}</span>
+            </div>
+            {utm ? (
+              <div className="cc-prof">
+                <span className="muted">Метка</span>
+                <UtmValue found={utm} />
               </div>
             ) : null}
             <div className="cc-prof">

@@ -1442,15 +1442,6 @@ a.dr-row {
   position: relative;
 }
 
-.axp-dot {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-}
 
 .axp-row {
   width: 100%;

@@ -21,10 +21,14 @@ async fn списки_за_цифрами_совпадают_с_цифрами()
         return;
     };
     let s = scene(db.store.clone()).await;
-    spans::refresh(&db.store, Currency::Rub, None).await.unwrap();
+    spans::refresh(&db.store, Currency::Rub, None)
+        .await
+        .unwrap();
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Rub);
-    let renewals = page(&ctx, &march("revenue", Some("kind:renewal")), now()).await.unwrap();
+    let renewals = page(&ctx, &march("revenue", Some("kind:renewal")), now())
+        .await
+        .unwrap();
     assert_eq!(renewals.total, 1);
     assert_eq!(renewals.items[0].client_id, s.b);
     assert_eq!(renewals.items[0].amount, Some(99_000));
@@ -33,13 +37,19 @@ async fn списки_за_цифрами_совпадают_с_цифрами()
     assert_eq!(all.total, 4);
     let registered = page(&ctx, &march("registered", None), now()).await.unwrap();
     assert_eq!(registered.total, 4);
-    let bots = page(&ctx, &march("registered", Some("channel:bot")), now()).await.unwrap();
+    let bots = page(&ctx, &march("registered", Some("channel:bot")), now())
+        .await
+        .unwrap();
     assert_eq!(bots.total, 3);
     let fresh = page(&ctx, &march("mrr_new", None), now()).await.unwrap();
     assert_eq!(fresh.total, 3);
-    let yk = page(&ctx, &march("invoices", Some("provider:yookassa")), now()).await.unwrap();
+    let yk = page(&ctx, &march("invoices", Some("provider:yookassa")), now())
+        .await
+        .unwrap();
     assert_eq!(yk.total, 2);
-    let vk = page(&ctx, &march("source", Some("utm:vk")), now()).await.unwrap();
+    let vk = page(&ctx, &march("source", Some("utm:vk")), now())
+        .await
+        .unwrap();
     assert_eq!(vk.total, 1);
     assert_eq!(vk.items[0].client_id, s.e);
 }
@@ -63,7 +73,13 @@ async fn ссылки_меток_проверяются_и_получают_ци
     assert!(check(&input("вк", "games")).is_err());
     assert!(check(&input("vk", "a__b")).is_err());
     assert!(check(&input("vk", &"x".repeat(60))).is_err());
-    assert!(check(&LinkInput { title: " ".into(), ..input("vk", "games") }).is_err());
+    assert!(
+        check(&LinkInput {
+            title: " ".into(),
+            ..input("vk", "games")
+        })
+        .is_err()
+    );
     let core = TestCore::new(&db.store);
     let ctx = context(&db.store, &core, Currency::Rub);
     {
@@ -77,18 +93,26 @@ async fn ссылки_меток_проверяются_и_получают_ци
             .await
             .unwrap();
     }
-    spans::refresh(&db.store, Currency::Rub, Some(chrono::Duration::zero())).await.unwrap();
+    spans::refresh(&db.store, Currency::Rub, Some(chrono::Duration::zero()))
+        .await
+        .unwrap();
     let q = LinksQuery {
         from: Some(day(2026, 2, 1)),
         to: Some(day(2026, 3, 31)),
     };
-    let found = crate::catalog::utm::links::page(&ctx, &q, now()).await.unwrap();
+    let found = crate::catalog::utm::links::page(&ctx, &q, now())
+        .await
+        .unwrap();
     assert_eq!(found.bot.as_deref(), Some("example_vpn_bot"));
     assert!(!found.preparing);
     assert_eq!(found.links.len(), 1);
     assert_eq!(found.links[0].param, "s_vk__k_games");
     assert_eq!(
-        (found.links[0].stats.registrations, found.links[0].stats.paid, found.links[0].stats.revenue),
+        (
+            found.links[0].stats.registrations,
+            found.links[0].stats.paid,
+            found.links[0].stats.revenue
+        ),
         (1, 1, 15_000)
     );
     assert_eq!(found.stray.len(), 1);

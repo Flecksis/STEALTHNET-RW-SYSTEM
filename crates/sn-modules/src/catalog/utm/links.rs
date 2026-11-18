@@ -93,9 +93,18 @@ pub fn check(input: &LinkInput) -> Result<(String, Utm), WebError> {
     if title.is_empty() || title.chars().count() > 100 {
         return Err(bad("utm.title", "Название — от 1 до 100 знаков"));
     }
-    let field = |value: &Option<String>| value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let field = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
     let parts = [
-        ("источник", Some(input.source.trim().to_string()).filter(|v| !v.is_empty())),
+        (
+            "источник",
+            Some(input.source.trim().to_string()).filter(|v| !v.is_empty()),
+        ),
         ("канал", field(&input.medium)),
         ("кампания", field(&input.campaign)),
         ("объявление", field(&input.content)),
@@ -110,7 +119,9 @@ pub fn check(input: &LinkInput) -> Result<(String, Utm), WebError> {
         {
             return Err(bad(
                 "utm.value",
-                &format!("В поле «{name}» можно латиницу, цифры, «-» и «_», без двух «_» подряд, до 64 знаков"),
+                &format!(
+                    "В поле «{name}» можно латиницу, цифры, «-» и «_», без двух «_» подряд, до 64 знаков"
+                ),
             ));
         }
     }
@@ -160,11 +171,20 @@ async fn setting_text(db: &mut impl Db, key: &str) -> StoreResult<Option<String>
         .get(key)
         .await?
         .and_then(|v| v.as_str().map(str::to_string))
-        .map(|v| v.trim().trim_start_matches('@').trim_end_matches('/').to_string())
+        .map(|v| {
+            v.trim()
+                .trim_start_matches('@')
+                .trim_end_matches('/')
+                .to_string()
+        })
         .filter(|v| !v.is_empty()))
 }
 
-pub async fn page(ctx: &ModuleContext, q: &LinksQuery, now: DateTime<Utc>) -> Result<LinksPage, WebError> {
+pub async fn page(
+    ctx: &ModuleContext,
+    q: &LinksQuery,
+    now: DateTime<Utc>,
+) -> Result<LinksPage, WebError> {
     let (currency, offset, links, bot, site) = {
         let mut conn = ctx.store.conn().await?;
         let currency = installation_currency(&mut conn).await?;
@@ -176,7 +196,10 @@ pub async fn page(ctx: &ModuleContext, q: &LinksQuery, now: DateTime<Utc>) -> Re
     };
     let today = local_day(now, offset);
     let to = q.to.unwrap_or(today).min(today);
-    let from = q.from.unwrap_or_else(|| to.with_day(1).unwrap_or(to)).min(to);
+    let from = q
+        .from
+        .unwrap_or_else(|| to.with_day(1).unwrap_or(to))
+        .min(to);
     let ready = {
         let mut conn = ctx.store.conn().await?;
         analytics::ready(&mut conn, currency).await?
@@ -259,9 +282,10 @@ pub async fn create_route(
     admin.require(Permission::Marketing)?;
     let (title, utm) = check(&input)?;
     let mut conn = ctx.store.conn().await?;
-    if by_tags(&mut conn, &utm).await?.is_some_and(|l| {
-        l.content == utm.content && l.term == utm.term
-    }) {
+    if by_tags(&mut conn, &utm)
+        .await?
+        .is_some_and(|l| l.content == utm.content && l.term == utm.term)
+    {
         return Err(bad("utm.exists", "Ссылка с такими метками уже есть"));
     }
     let link: UtmLink = sqlx::query_as(
@@ -313,8 +337,13 @@ pub async fn update_route(
     .fetch_optional(conn.conn())
     .await
     .map_err(sn_store::StoreError::from)?;
-    link.map(Json)
-        .ok_or_else(|| WebError::new(axum::http::StatusCode::NOT_FOUND, "utm.not_found", "Ссылки нет"))
+    link.map(Json).ok_or_else(|| {
+        WebError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "utm.not_found",
+            "Ссылки нет",
+        )
+    })
 }
 
 pub async fn archive_route(
@@ -324,10 +353,14 @@ pub async fn archive_route(
 ) -> Result<Json<serde_json::Value>, WebError> {
     admin.require(Permission::Marketing)?;
     let mut conn = ctx.store.conn().await?;
-    let done = sqlx::query("UPDATE utm_links SET archived_at = now() WHERE id = $1 AND archived_at IS NULL")
-        .bind(id)
-        .execute(conn.conn())
-        .await
-        .map_err(sn_store::StoreError::from)?;
-    Ok(Json(serde_json::json!({ "archived": done.rows_affected() > 0 })))
+    let done = sqlx::query(
+        "UPDATE utm_links SET archived_at = now() WHERE id = $1 AND archived_at IS NULL",
+    )
+    .bind(id)
+    .execute(conn.conn())
+    .await
+    .map_err(sn_store::StoreError::from)?;
+    Ok(Json(
+        serde_json::json!({ "archived": done.rows_affected() > 0 }),
+    ))
 }

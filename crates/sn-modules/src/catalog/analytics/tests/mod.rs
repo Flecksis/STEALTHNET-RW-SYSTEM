@@ -96,7 +96,10 @@ impl Seed {
 
     pub async fn scalar(&self, sql: &str) -> i64 {
         let mut conn = self.store.conn().await.unwrap();
-        sqlx::query_scalar(sql).fetch_one(conn.conn()).await.unwrap()
+        sqlx::query_scalar(sql)
+            .fetch_one(conn.conn())
+            .await
+            .unwrap()
     }
 
     pub async fn category(&self, name: &str) -> i64 {
@@ -118,7 +121,12 @@ impl Seed {
             .unwrap()
     }
 
-    pub async fn client(&self, created: DateTime<Utc>, channel: &str, utm: Option<(&str, &str)>) -> i64 {
+    pub async fn client(
+        &self,
+        created: DateTime<Utc>,
+        channel: &str,
+        utm: Option<(&str, &str)>,
+    ) -> i64 {
         let mut conn = self.store.conn().await.unwrap();
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO clients (registration_source, created_at) VALUES ($1, $2) RETURNING id",
@@ -187,7 +195,9 @@ impl Seed {
             }));
         }
         let quote = json!({"days": b.days, "lines": lines});
-        let snapshot = b.tariff.map(|t| json!({"tariff_id": t, "days": b.days, "name": "Тариф"}));
+        let snapshot = b
+            .tariff
+            .map(|t| json!({"tariff_id": t, "days": b.days, "name": "Тариф"}));
         let intent = b.intent.clone().unwrap_or_else(|| json!({"type": "trial"}));
         let mut conn = self.store.conn().await.unwrap();
         let order: i64 = sqlx::query_scalar(
@@ -226,11 +236,7 @@ impl Seed {
     }
 }
 
-pub async fn ctx_report(
-    store: &Store,
-    tab: &str,
-    query: TabQuery,
-) -> TabReport {
+pub async fn ctx_report(store: &Store, tab: &str, query: TabQuery) -> TabReport {
     spans::refresh(store, Currency::Rub, Some(chrono::Duration::zero()))
         .await
         .unwrap();
@@ -286,7 +292,8 @@ pub fn value(r: &TabReport, key: &str) -> f64 {
 }
 
 pub fn metric<'a>(r: &'a TabReport, key: &str) -> &'a Metric {
-    r.metric(key).unwrap_or_else(|| panic!("нет показателя {key}"))
+    r.metric(key)
+        .unwrap_or_else(|| panic!("нет показателя {key}"))
 }
 
 pub fn breakdown(r: &TabReport, key: &str, by: &str) -> Vec<(String, f64)> {
@@ -302,7 +309,10 @@ pub fn breakdown(r: &TabReport, key: &str, by: &str) -> Vec<(String, f64)> {
 
 pub fn table(r: &TabReport, key: &str) -> Vec<(String, Vec<Option<f64>>)> {
     match &metric(r, key).detail {
-        Detail::Table { rows, .. } => rows.iter().map(|r| (r.label.clone(), r.cells.clone())).collect(),
+        Detail::Table { rows, .. } => rows
+            .iter()
+            .map(|r| (r.label.clone(), r.cells.clone()))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -311,8 +321,4 @@ pub fn filtered(query: TabQuery, f: impl FnOnce(&mut TabQuery)) -> TabQuery {
     let mut q = query;
     f(&mut q);
     q
-}
-
-pub fn no_filters() -> Filters {
-    Filters::default()
 }

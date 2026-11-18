@@ -4,7 +4,8 @@ use super::query::{PAYMENT_DIMS, Sql, grid, rows};
 use super::tab::Ctx;
 use sn_store::StoreResult;
 
-const SALE: &str = "f.kind IN ('new', 'renewal', 'change') AND NOT f.stars AND f.provider <> 'balance'";
+const SALE: &str =
+    "f.kind IN ('new', 'renewal', 'change') AND NOT f.stars AND f.provider <> 'balance'";
 
 type SaleRow = (Option<i64>, Option<i32>, i64, f64);
 
@@ -58,7 +59,10 @@ async fn addons(c: &Ctx<'_>) -> StoreResult<Addons> {
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 4).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 4]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 4]);
     Ok(Addons {
         devices: (v[0], v[1]),
         traffic: (v[2], v[3]),
@@ -109,7 +113,10 @@ async fn gifts(c: &Ctx<'_>) -> StoreResult<Gifts> {
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 5).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 5]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 5]);
     Ok(Gifts {
         bought: v[0],
         bought_sum: v[1],
@@ -144,7 +151,10 @@ async fn prizes(c: &Ctx<'_>) -> StoreResult<Prizes> {
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 5).await?;
-    let v = r.first().map(|r| r.1.clone()).unwrap_or_else(|| vec![0.0; 5]);
+    let v = r
+        .first()
+        .map(|r| r.1.clone())
+        .unwrap_or_else(|| vec![0.0; 5]);
     Ok(Prizes {
         contest_money: v[0],
         roulette_money: v[1],
@@ -165,8 +175,14 @@ fn row(label: String, sub: Option<String>, cells: Vec<Option<f64>>, list: Option
 }
 
 pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
-    let (sold, moved, add, promo, gift, prize) =
-        tokio::try_join!(sales(c), changes(c), addons(c), promos(c), gifts(c), prizes(c))?;
+    let (sold, moved, add, promo, gift, prize) = tokio::try_join!(
+        sales(c),
+        changes(c),
+        addons(c),
+        promos(c),
+        gifts(c),
+        prizes(c)
+    )?;
     let (from, to) = (c.range.dates.from, c.range.dates.to);
     let note = c.filters.ignored(&PAYMENT_DIMS);
     let mut tariff_rows: Vec<Row> = Vec::new();
@@ -176,9 +192,16 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             labels::period(period.map(i64::from)),
             None,
             vec![Some(num(*n)), Some(*sum), ratio(*sum, num(*n))],
-            Some(ListRef::payments("revenue").slice(format!("tariff:{key}")).dates(from, to)),
+            Some(
+                ListRef::payments("revenue")
+                    .slice(format!("tariff:{key}"))
+                    .dates(from, to),
+            ),
         );
-        match tariff_rows.iter_mut().find(|r| r.label == c.names.tariff(*tariff)) {
+        match tariff_rows
+            .iter_mut()
+            .find(|r| r.label == c.names.tariff(*tariff))
+        {
             Some(r) => {
                 let count = r.cells[0].unwrap_or(0.0) + num(*n);
                 let total = r.cells[1].unwrap_or(0.0) + sum;
@@ -190,54 +213,116 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
                     c.names.tariff(*tariff),
                     None,
                     vec![Some(num(*n)), Some(*sum), ratio(*sum, num(*n))],
-                    Some(ListRef::payments("revenue").slice(format!("tariff:{key}")).dates(from, to)),
+                    Some(
+                        ListRef::payments("revenue")
+                            .slice(format!("tariff:{key}"))
+                            .dates(from, to),
+                    ),
                 );
                 parent.children.push(child);
                 tariff_rows.push(parent);
             }
         }
     }
-    tariff_rows.sort_by(|a, b| b.cells[1].unwrap_or(0.0).total_cmp(&a.cells[1].unwrap_or(0.0)));
+    tariff_rows.sort_by(|a, b| {
+        b.cells[1]
+            .unwrap_or(0.0)
+            .total_cmp(&a.cells[1].unwrap_or(0.0))
+    });
     let total_sales: f64 = sold.iter().map(|r| num(r.2)).sum();
-    let sales_metric = Metric::new("sales", "Продажи по тарифам", Unit::Count, Some(total_sales))
-        .note("новые, продления и смена тарифа")
-        .note_opt(note.clone())
-        .detail(Detail::Table {
-            columns: vec![
-                Column { title: "Продаж".into(), unit: Unit::Count },
-                Column { title: "Сумма".into(), unit: Unit::Money },
-                Column { title: "Средняя цена".into(), unit: Unit::Money },
-            ],
-            rows: tariff_rows,
-            note: Some("Средняя цена — после скидок. Нажмите на тариф, чтобы увидеть сроки.".into()),
-        });
+    let sales_metric = Metric::new(
+        "sales",
+        "Продажи по тарифам",
+        Unit::Count,
+        Some(total_sales),
+    )
+    .note("новые, продления и смена тарифа")
+    .note_opt(note.clone())
+    .detail(Detail::Table {
+        columns: vec![
+            Column {
+                title: "Продаж".into(),
+                unit: Unit::Count,
+            },
+            Column {
+                title: "Сумма".into(),
+                unit: Unit::Money,
+            },
+            Column {
+                title: "Средняя цена".into(),
+                unit: Unit::Money,
+            },
+        ],
+        rows: tariff_rows,
+        note: Some("Средняя цена — после скидок. Нажмите на тариф, чтобы увидеть сроки.".into()),
+    });
     let total_moves: f64 = moved.iter().map(|r| num(r.2)).sum();
-    let changes_metric = Metric::new("changes", "Переходы между тарифами", Unit::Count, Some(total_moves))
-        .detail(Detail::Table {
-            columns: vec![Column { title: "Переходов".into(), unit: Unit::Count }],
-            rows: moved
-                .iter()
-                .map(|(a, b, n)| row(format!("{} → {}", c.names.tariff(*a), c.names.tariff(*b)), None, vec![Some(num(*n))], None))
-                .collect(),
-            note: None,
-        });
-    let devices = Metric::new("addon_devices", "Доп. устройства", Unit::Money, Some(add.devices.0))
-        .note(format!("{} покупок", add.devices.1 as i64))
-        .hint("Отдельные покупки устройств и устройства, добавленные при покупке подписки")
-        .detail(Detail::None);
-    let traffic = Metric::new("addon_traffic", "Пакеты трафика", Unit::Money, Some(add.traffic.0))
-        .note(format!("{} покупок", add.traffic.1 as i64))
-        .detail(Detail::None);
+    let changes_metric = Metric::new(
+        "changes",
+        "Переходы между тарифами",
+        Unit::Count,
+        Some(total_moves),
+    )
+    .detail(Detail::Table {
+        columns: vec![Column {
+            title: "Переходов".into(),
+            unit: Unit::Count,
+        }],
+        rows: moved
+            .iter()
+            .map(|(a, b, n)| {
+                row(
+                    format!("{} → {}", c.names.tariff(*a), c.names.tariff(*b)),
+                    None,
+                    vec![Some(num(*n))],
+                    None,
+                )
+            })
+            .collect(),
+        note: None,
+    });
+    let devices = Metric::new(
+        "addon_devices",
+        "Доп. устройства",
+        Unit::Money,
+        Some(add.devices.0),
+    )
+    .note(format!("{} покупок", add.devices.1 as i64))
+    .hint("Отдельные покупки устройств и устройства, добавленные при покупке подписки")
+    .detail(Detail::None);
+    let traffic = Metric::new(
+        "addon_traffic",
+        "Пакеты трафика",
+        Unit::Money,
+        Some(add.traffic.0),
+    )
+    .note(format!("{} покупок", add.traffic.1 as i64))
+    .detail(Detail::None);
     let uses: f64 = promo.iter().map(|p| num(p.2)).sum();
     let cost: f64 = promo.iter().map(|p| num(p.3)).sum();
     let promo_metric = Metric::new("promocodes", "Промокоды", Unit::Count, Some(uses))
-        .note(format!("скидок на {}", labels::money_short(cost, c.currency)))
+        .note(format!(
+            "скидок на {}",
+            labels::money_short(cost, c.currency)
+        ))
         .detail(Detail::Table {
             columns: vec![
-                Column { title: "Применений".into(), unit: Unit::Count },
-                Column { title: "Скидка".into(), unit: Unit::Money },
-                Column { title: "Выручка с ними".into(), unit: Unit::Money },
-                Column { title: "Дней подарено".into(), unit: Unit::Days },
+                Column {
+                    title: "Применений".into(),
+                    unit: Unit::Count,
+                },
+                Column {
+                    title: "Скидка".into(),
+                    unit: Unit::Money,
+                },
+                Column {
+                    title: "Выручка с ними".into(),
+                    unit: Unit::Money,
+                },
+                Column {
+                    title: "Дней подарено".into(),
+                    unit: Unit::Days,
+                },
             ],
             rows: promo
                 .iter()
@@ -249,7 +334,12 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
                             "fixed" => "скидка суммой".into(),
                             _ => "дни подписки".into(),
                         }),
-                        vec![Some(num(*n)), Some(num(*disc)), Some(num(*rev)), Some(num(*days))],
+                        vec![
+                            Some(num(*n)),
+                            Some(num(*disc)),
+                            Some(num(*rev)),
+                            Some(num(*days)),
+                        ],
                         None,
                     )
                 })
@@ -257,35 +347,78 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             note: None,
         });
     let gifts_metric = Metric::new("gifts_sold", "Подарки", Unit::Count, Some(gift.bought))
-        .note(format!("на {}", labels::money_short(gift.bought_sum, c.currency)))
+        .note(format!(
+            "на {}",
+            labels::money_short(gift.bought_sum, c.currency)
+        ))
         .detail(Detail::Table {
-            columns: vec![Column { title: "Подарков".into(), unit: Unit::Count }],
+            columns: vec![Column {
+                title: "Подарков".into(),
+                unit: Unit::Count,
+            }],
             rows: vec![
                 row("Куплено".into(), None, vec![Some(gift.bought)], None),
                 row("Активировано".into(), None, vec![Some(gift.redeemed)], None),
                 row("Отменено".into(), None, vec![Some(gift.canceled)], None),
-                row("Истекли неактивированными".into(), None, vec![Some(gift.expired)], None),
+                row(
+                    "Истекли неактивированными".into(),
+                    None,
+                    vec![Some(gift.expired)],
+                    None,
+                ),
             ],
             note: None,
         });
     let prize_money = prize.contest_money + prize.roulette_money;
-    let prizes_metric = Metric::new("prizes", "Призы конкурсов и рулетки", Unit::Money, Some(prize_money))
-        .note(format!("и {} подписки", labels::count(prize.roulette_days as i64, "день", "дня", "дней")))
-        .detail(Detail::Table {
-            columns: vec![
-                Column { title: "Деньгами".into(), unit: Unit::Money },
-                Column { title: "Призов или дней".into(), unit: Unit::Count },
-            ],
-            rows: vec![
-                row("Конкурсы".into(), Some("деньги на баланс · выдано призов".into()), vec![Some(prize.contest_money), Some(prize.contest_issued)], None),
-                row("Рулетка".into(), Some("деньги на баланс · дней подписки".into()), vec![Some(prize.roulette_money), Some(prize.roulette_days)], None),
-                row("Вращений рулетки".into(), None, vec![None, Some(prize.spins)], None),
-            ],
-            note: Some("Дни подписки в деньги не пересчитаны".into()),
-        });
+    let prizes_metric = Metric::new(
+        "prizes",
+        "Призы конкурсов и рулетки",
+        Unit::Money,
+        Some(prize_money),
+    )
+    .note(format!(
+        "и {} подписки",
+        labels::count(prize.roulette_days as i64, "день", "дня", "дней")
+    ))
+    .detail(Detail::Table {
+        columns: vec![
+            Column {
+                title: "Деньгами".into(),
+                unit: Unit::Money,
+            },
+            Column {
+                title: "Призов или дней".into(),
+                unit: Unit::Count,
+            },
+        ],
+        rows: vec![
+            row(
+                "Конкурсы".into(),
+                Some("деньги на баланс · выдано призов".into()),
+                vec![Some(prize.contest_money), Some(prize.contest_issued)],
+                None,
+            ),
+            row(
+                "Рулетка".into(),
+                Some("деньги на баланс · дней подписки".into()),
+                vec![Some(prize.roulette_money), Some(prize.roulette_days)],
+                None,
+            ),
+            row(
+                "Вращений рулетки".into(),
+                None,
+                vec![None, Some(prize.spins)],
+                None,
+            ),
+        ],
+        note: Some("Дни подписки в деньги не пересчитаны".into()),
+    });
     Ok(vec![
         Group::new(None, vec![sales_metric, changes_metric]),
         Group::new(Some("Допы"), vec![devices, traffic]),
-        Group::new(Some("Промо, подарки, призы"), vec![promo_metric, gifts_metric, prizes_metric]),
+        Group::new(
+            Some("Промо, подарки, призы"),
+            vec![promo_metric, gifts_metric, prizes_metric],
+        ),
     ])
 }

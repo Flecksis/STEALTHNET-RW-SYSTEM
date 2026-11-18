@@ -47,7 +47,19 @@ impl SourceStat {
     }
 }
 
-type StatRow = (String, String, String, String, i64, i64, i64, i64, i64, i64, i64);
+type StatRow = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
 
 pub async fn stats(
     store: &Store,
@@ -89,20 +101,22 @@ pub async fn stats(
     let found: Vec<StatRow> = rows(&mut conn, &sql, &text).await?;
     let mut out: Vec<SourceStat> = found
         .into_iter()
-        .map(|(t, k, m, c, regs, trials, paid, rev, all, base, kept)| SourceStat {
-            source_type: t,
-            source_key: k,
-            medium: m,
-            campaign: c,
-            registrations: regs,
-            trials,
-            paid,
-            revenue: rev,
-            revenue_all: all,
-            kept_base: base,
-            kept,
-            clicks: 0,
-        })
+        .map(
+            |(t, k, m, c, regs, trials, paid, rev, all, base, kept)| SourceStat {
+                source_type: t,
+                source_key: k,
+                medium: m,
+                campaign: c,
+                registrations: regs,
+                trials,
+                paid,
+                revenue: rev,
+                revenue_all: all,
+                kept_base: base,
+                kept,
+                clicks: 0,
+            },
+        )
         .collect();
     let utm_only = matches!(
         filters.source,
@@ -118,13 +132,19 @@ pub async fn stats(
         .fetch_all(sn_store::Db::conn(&mut conn))
         .await?;
         for (source, medium, campaign, n) in clicks {
-            if let Some(super::query::SourceFilter::Utm { source: want, campaign: camp }) = &filters.source
+            if let Some(super::query::SourceFilter::Utm {
+                source: want,
+                campaign: camp,
+            }) = &filters.source
                 && (want != &source || camp.as_ref().is_some_and(|c| c != &campaign))
             {
                 continue;
             }
             match out.iter_mut().find(|s| {
-                s.source_type == "utm" && s.source_key == source && s.medium == medium && s.campaign == campaign
+                s.source_type == "utm"
+                    && s.source_key == source
+                    && s.medium == medium
+                    && s.campaign == campaign
             }) {
                 Some(s) => s.clicks += n,
                 None => out.push(SourceStat {
@@ -151,15 +171,42 @@ const TYPES: [&str; 5] = ["utm", "promo", "ref", "gift", "none"];
 
 fn columns() -> Vec<Column> {
     vec![
-        Column { title: "Перешли".into(), unit: Unit::Count },
-        Column { title: "Регистрации".into(), unit: Unit::Count },
-        Column { title: "Пробные".into(), unit: Unit::Count },
-        Column { title: "Заплатили".into(), unit: Unit::Count },
-        Column { title: "Конверсия".into(), unit: Unit::Percent },
-        Column { title: "Выручка за период".into(), unit: Unit::Money },
-        Column { title: "За всё время".into(), unit: Unit::Money },
-        Column { title: "LTV".into(), unit: Unit::Money },
-        Column { title: "Платят через месяц".into(), unit: Unit::Percent },
+        Column {
+            title: "Перешли".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Регистрации".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Пробные".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Заплатили".into(),
+            unit: Unit::Count,
+        },
+        Column {
+            title: "Конверсия".into(),
+            unit: Unit::Percent,
+        },
+        Column {
+            title: "Выручка за период".into(),
+            unit: Unit::Money,
+        },
+        Column {
+            title: "За всё время".into(),
+            unit: Unit::Money,
+        },
+        Column {
+            title: "LTV".into(),
+            unit: Unit::Money,
+        },
+        Column {
+            title: "Платят через месяц".into(),
+            unit: Unit::Percent,
+        },
     ]
 }
 
@@ -188,8 +235,18 @@ fn slice_of(s: &SourceStat, by_campaign: bool) -> String {
 
 pub fn rows_for(stats: &[SourceStat], kind: Option<&str>, names: &Names, c: &Ctx<'_>) -> Vec<Row> {
     let mut groups: Vec<(String, String, SourceStat, Vec<SourceStat>)> = Vec::new();
-    for s in stats.iter().filter(|s| kind.is_none_or(|k| s.source_type == k)) {
-        let key = (s.source_type.clone(), if s.source_type == "utm" || s.source_type == "promo" { s.source_key.clone() } else { String::new() });
+    for s in stats
+        .iter()
+        .filter(|s| kind.is_none_or(|k| s.source_type == k))
+    {
+        let key = (
+            s.source_type.clone(),
+            if s.source_type == "utm" || s.source_type == "promo" {
+                s.source_key.clone()
+            } else {
+                String::new()
+            },
+        );
         match groups.iter_mut().find(|g| g.0 == key.0 && g.1 == key.1) {
             Some(g) => {
                 g.2.add(s);
@@ -203,31 +260,48 @@ pub fn rows_for(stats: &[SourceStat], kind: Option<&str>, names: &Names, c: &Ctx
             }
         }
     }
-    groups.sort_by(|a, b| b.2.registrations.cmp(&a.2.registrations).then(b.2.clicks.cmp(&a.2.clicks)));
+    groups.sort_by(|a, b| {
+        b.2.registrations
+            .cmp(&a.2.registrations)
+            .then(b.2.clicks.cmp(&a.2.clicks))
+    });
     let (from, to) = (c.range.dates.from, c.range.dates.to);
     groups
         .into_iter()
         .map(|(t, k, total, parts)| {
             let utm = t == "utm";
-            let children = if utm && (parts.len() > 1 || parts.iter().any(|p| !p.campaign.is_empty())) {
-                parts
-                    .iter()
-                    .map(|p| Row {
-                        label: if p.campaign.is_empty() { "без кампании".into() } else { p.campaign.clone() },
-                        sub: (!p.medium.is_empty()).then(|| p.medium.clone()),
-                        cells: cells(p, true),
-                        list: Some(ListRef::clients("source").slice(slice_of(p, true)).dates(from, to)),
-                        children: Vec::new(),
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            let children =
+                if utm && (parts.len() > 1 || parts.iter().any(|p| !p.campaign.is_empty())) {
+                    parts
+                        .iter()
+                        .map(|p| Row {
+                            label: if p.campaign.is_empty() {
+                                "без кампании".into()
+                            } else {
+                                p.campaign.clone()
+                            },
+                            sub: (!p.medium.is_empty()).then(|| p.medium.clone()),
+                            cells: cells(p, true),
+                            list: Some(
+                                ListRef::clients("source")
+                                    .slice(slice_of(p, true))
+                                    .dates(from, to),
+                            ),
+                            children: Vec::new(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
             Row {
                 label: names.source(&t, &k),
                 sub: utm.then(|| "UTM-метка".to_string()),
                 cells: cells(&total, utm),
-                list: Some(ListRef::clients("source").slice(slice_of(&total, false)).dates(from, to)),
+                list: Some(
+                    ListRef::clients("source")
+                        .slice(slice_of(&total, false))
+                        .dates(from, to),
+                ),
                 children,
             }
         })
@@ -241,32 +315,56 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             None => StoreResult::Ok(None),
         }
     };
-    let (now, before) = tokio::try_join!(stats(c.store, c.range.start(), c.range.end(), c.range.now, &c.filters), prev)?;
+    let (now, before) = tokio::try_join!(
+        stats(
+            c.store,
+            c.range.start(),
+            c.range.end(),
+            c.range.now,
+            &c.filters
+        ),
+        prev
+    )?;
     let note = c.filters.ignored(&CLIENT_DIMS);
     let sum = |list: &[SourceStat], kind: Option<&str>| {
         let mut t = SourceStat::default();
-        for s in list.iter().filter(|s| kind.is_none_or(|k| s.source_type == k)) {
+        for s in list
+            .iter()
+            .filter(|s| kind.is_none_or(|k| s.source_type == k))
+        {
             t.add(s);
         }
         t
     };
     let all = sum(&now, None);
     let all_prev = before.as_ref().map(|b| sum(b, None));
-    let table = |kind: Option<&str>| Detail::Table {
+    let table = |kind: Option<&str>| {
+        Detail::Table {
         columns: columns(),
         rows: rows_for(&now, kind, &c.names, c),
         note: Some("Клиенты, пришедшие за период. «Заплатили» и «За всё время» — их оплаты до сегодняшнего дня. Перешли — нажали «Старт» в боте, открыли мини-приложение или сайт по ссылке с меткой.".into()),
+    }
     };
     let mut metrics = vec![
-        Metric::new("sources", "Все источники", Unit::Count, Some(num(all.registrations)))
-            .prev(all_prev.as_ref().map(|p| num(p.registrations)))
-            .note("регистраций")
-            .note_opt(note.clone())
-            .detail(table(None)),
-        Metric::new("conversion", "Конверсия в оплату", Unit::Percent, all.conversion())
-            .prev(all_prev.as_ref().and_then(SourceStat::conversion))
-            .note(format!("{} из {}", all.paid, all.registrations))
-            .detail(table(None)),
+        Metric::new(
+            "sources",
+            "Все источники",
+            Unit::Count,
+            Some(num(all.registrations)),
+        )
+        .prev(all_prev.as_ref().map(|p| num(p.registrations)))
+        .note("регистраций")
+        .note_opt(note.clone())
+        .detail(table(None)),
+        Metric::new(
+            "conversion",
+            "Конверсия в оплату",
+            Unit::Percent,
+            all.conversion(),
+        )
+        .prev(all_prev.as_ref().and_then(SourceStat::conversion))
+        .note(format!("{} из {}", all.paid, all.registrations))
+        .detail(table(None)),
     ];
     let mut by_type = Vec::new();
     for kind in TYPES {
@@ -280,10 +378,18 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             _ => "unlabeled",
         };
         by_type.push(
-            Metric::new(key, labels::source_type(kind), Unit::Count, Some(num(t.registrations)))
-                .prev(tp.map(|p| num(p.registrations)))
-                .note(t.conversion().map_or_else(|| "регистраций".into(), |c| format!("конверсия {}", super::metric::pct_text(c))))
-                .detail(table(Some(kind))),
+            Metric::new(
+                key,
+                labels::source_type(kind),
+                Unit::Count,
+                Some(num(t.registrations)),
+            )
+            .prev(tp.map(|p| num(p.registrations)))
+            .note(t.conversion().map_or_else(
+                || "регистраций".into(),
+                |c| format!("конверсия {}", super::metric::pct_text(c)),
+            ))
+            .detail(table(Some(kind))),
         );
     }
     let clicks: i64 = now.iter().map(|s| s.clicks).sum();
@@ -295,12 +401,20 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         first
     };
     metrics.push(
-        Metric::new("clicks", "Переходы по меткам", Unit::Count, Some(num(clicks)))
-            .note(match first_click {
-                Some(at) => format!("считаются с {}", labels::date_text(super::query::local_day(at, c.range.offset))),
-                None => "считаются с обновления".into(),
-            })
-            .detail(table(Some("utm"))),
+        Metric::new(
+            "clicks",
+            "Переходы по меткам",
+            Unit::Count,
+            Some(num(clicks)),
+        )
+        .note(match first_click {
+            Some(at) => format!(
+                "считаются с {}",
+                labels::date_text(super::query::local_day(at, c.range.offset))
+            ),
+            None => "считаются с обновления".into(),
+        })
+        .detail(table(Some("utm"))),
     );
     Ok(vec![
         Group::new(None, metrics),

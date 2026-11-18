@@ -97,7 +97,9 @@ fn kind_cond(key: &str) -> Option<String> {
 }
 
 fn payment_slice(sql: &mut Sql, slice: &str) -> Result<String, WebError> {
-    let (dim, value) = slice.split_once(':').ok_or_else(|| bad("Разрез указан неверно"))?;
+    let (dim, value) = slice
+        .split_once(':')
+        .ok_or_else(|| bad("Разрез указан неверно"))?;
     Ok(match dim {
         "kind" => kind_cond(value).ok_or_else(|| bad("Такого вида оплаты нет"))?,
         "tariff" if value == "none" => "f.tariff_id IS NULL".into(),
@@ -113,7 +115,11 @@ fn payment_slice(sql: &mut Sql, slice: &str) -> Result<String, WebError> {
         "provider" => format!("f.provider = {}", sql.text(value)),
         "method" => {
             let (p, m) = value.split_once('/').unwrap_or((value, ""));
-            format!("f.provider = {} AND f.method = {}", sql.text(p), sql.text(m))
+            format!(
+                "f.provider = {} AND f.method = {}",
+                sql.text(p),
+                sql.text(m)
+            )
         }
         "channel" => {
             let v = if value == "unknown" { "" } else { value };
@@ -152,11 +158,18 @@ fn describe(ctx: &ModuleContext, names: &labels::Names, r: &PayRow) -> String {
     let way = if method.is_empty() {
         labels::provider(&titles, provider)
     } else {
-        format!("{}, {}", labels::provider(&titles, provider), labels::method(&titles, provider, method).to_lowercase())
+        format!(
+            "{}, {}",
+            labels::provider(&titles, provider),
+            labels::method(&titles, provider, method).to_lowercase()
+        )
     };
     parts.push(way);
     if *refunded > 0 {
-        parts.push(format!("возвращено {}", labels::money_short(*refunded as f64, ctx.currency)));
+        parts.push(format!(
+            "возвращено {}",
+            labels::money_short(*refunded as f64, ctx.currency)
+        ));
     }
     parts.join(" · ")
 }
@@ -176,7 +189,10 @@ async fn payments(
         "revenue" => "NOT f.stars AND f.provider <> 'balance'".to_string(),
         "promo" => "NOT f.stars AND f.promo_minor > 0".to_string(),
         "stars" => "f.stars".to_string(),
-        "crypto" => format!("NOT f.stars AND f.provider <> 'balance' AND {}", crypto_cond("f")),
+        "crypto" => format!(
+            "NOT f.stars AND f.provider <> 'balance' AND {}",
+            crypto_cond("f")
+        ),
         "balance" => "f.provider = 'balance'".to_string(),
         "refunds" => "f.refunded_minor > 0".to_string(),
         _ => return Err(bad("Такого списка нет")),
@@ -217,6 +233,19 @@ async fn payments(
     })
 }
 
+type InvoiceRow = (
+    i64,
+    String,
+    DateTime<Utc>,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    i64,
+);
+
 async fn invoices(
     ctx: &ModuleContext,
     q: &ListQuery,
@@ -237,7 +266,11 @@ async fn invoices(
         Some(("provider", p)) => format!("p.provider = {}", sql.text(p)),
         Some(("method", v)) => {
             let (p, m) = v.split_once('/').unwrap_or((v, ""));
-            format!("p.provider = {} AND COALESCE(p.pay_method, '') = {}", sql.text(p), sql.text(m))
+            format!(
+                "p.provider = {} AND COALESCE(p.pay_method, '') = {}",
+                sql.text(p),
+                sql.text(m)
+            )
         }
         _ => "true".into(),
     };
@@ -253,8 +286,7 @@ async fn invoices(
          FROM x {NAME_JOIN} ORDER BY x.created_at DESC LIMIT {limit} OFFSET {skip}"
     );
     let mut conn = ctx.store.conn().await?;
-    let found: Vec<(i64, String, DateTime<Utc>, String, String, String, i64, String, Option<String>, i64)> =
-        rows(&mut conn, &sql, &text).await?;
+    let found: Vec<InvoiceRow> = rows(&mut conn, &sql, &text).await?;
     let titles = ctx.core.payment_titles();
     let total = found.first().map_or(0, |r| r.9);
     Ok(ListPage {
@@ -264,27 +296,36 @@ async fn invoices(
         more: (page + 1) * PAGE < total,
         items: found
             .into_iter()
-            .map(|(client_id, name, at, status, provider, method, amount, currency, reason, _)| {
-                let state = match status.as_str() {
-                    "paid" | "partially_refunded" | "refunded" => "оплачен".to_string(),
-                    "failed" => format!("ошибка{}", reason.map(|r| format!(": {r}")).unwrap_or_default()),
-                    "canceled" => "брошен".into(),
-                    _ => "ждёт оплаты".into(),
-                };
-                let way = if method.is_empty() {
-                    labels::provider(&titles, &provider)
-                } else {
-                    format!("{}, {}", labels::provider(&titles, &provider), labels::method(&titles, &provider, &method).to_lowercase())
-                };
-                ListItem {
-                    client_id,
-                    name,
-                    what: format!("{way} · {state}"),
-                    amount: Some(amount),
-                    stars: currency == "XTR",
-                    at: Some(at),
-                }
-            })
+            .map(
+                |(client_id, name, at, status, provider, method, amount, currency, reason, _)| {
+                    let state = match status.as_str() {
+                        "paid" | "partially_refunded" | "refunded" => "оплачен".to_string(),
+                        "failed" => format!(
+                            "ошибка{}",
+                            reason.map(|r| format!(": {r}")).unwrap_or_default()
+                        ),
+                        "canceled" => "брошен".into(),
+                        _ => "ждёт оплаты".into(),
+                    };
+                    let way = if method.is_empty() {
+                        labels::provider(&titles, &provider)
+                    } else {
+                        format!(
+                            "{}, {}",
+                            labels::provider(&titles, &provider),
+                            labels::method(&titles, &provider, &method).to_lowercase()
+                        )
+                    };
+                    ListItem {
+                        client_id,
+                        name,
+                        what: format!("{way} · {state}"),
+                        amount: Some(amount),
+                        stars: currency == "XTR",
+                        at: Some(at),
+                    }
+                },
+            )
             .collect(),
     })
 }
@@ -307,9 +348,15 @@ fn client_set(
         "registered" | "source" => {
             let mut cond = filters.source_cond(sql, "ac");
             match (q.set.as_str(), dim) {
-                ("registered", "channel") => cond.push_str(&format!(" AND ac.reg_channel = {}", sql.text(value))),
-                ("registered", "login") => cond.push_str(&format!(" AND ac.login_kind = {}", sql.text(value))),
-                ("registered", "source") => cond.push_str(&format!(" AND ac.source_type = {}", sql.text(value))),
+                ("registered", "channel") => {
+                    cond.push_str(&format!(" AND ac.reg_channel = {}", sql.text(value)))
+                }
+                ("registered", "login") => {
+                    cond.push_str(&format!(" AND ac.login_kind = {}", sql.text(value)))
+                }
+                ("registered", "source") => {
+                    cond.push_str(&format!(" AND ac.source_type = {}", sql.text(value)))
+                }
                 ("source", _) => {
                     let only = Filters {
                         source: SourceFilter::parse(&slice),
@@ -351,7 +398,9 @@ fn client_set(
             );
             match q.set.as_str() {
                 "autorenew_on" => cond.push_str(" AND sb.kind = 'paid' AND sb.autorenew_enabled"),
-                "autorenew_off" => cond.push_str(" AND sb.kind = 'paid' AND NOT sb.autorenew_enabled"),
+                "autorenew_off" => {
+                    cond.push_str(" AND sb.kind = 'paid' AND NOT sb.autorenew_enabled")
+                }
                 "expiring7" | "expiring30" => {
                     let days = if q.set == "expiring7" { 7 } else { 30 };
                     let till = sql.time(now + Duration::days(days));
@@ -381,7 +430,11 @@ fn client_set(
         }
         "balance" | "referral_balance" => {
             let f = fc(sql, "b.client_id");
-            let wallet = if q.set == "balance" { "main" } else { "referral" };
+            let wallet = if q.set == "balance" {
+                "main"
+            } else {
+                "referral"
+            };
             format!(
                 "SELECT b.client_id, b.updated_at AS at, 'Баланс' AS what, b.amount_minor AS amount \
                  FROM client_balances b WHERE b.wallet = '{wallet}' AND b.amount_minor > 0 AND {f}"
@@ -396,7 +449,11 @@ fn client_set(
         }
         "renewed_on_time" | "renewed_late" => {
             let f = filters.spans(sql, "sp");
-            let cond = if q.set == "renewed_on_time" { "sp.gap_seconds <= 0" } else { "sp.gap_seconds > 0" };
+            let cond = if q.set == "renewed_on_time" {
+                "sp.gap_seconds <= 0"
+            } else {
+                "sp.gap_seconds > 0"
+            };
             format!(
                 "SELECT sp.client_id, sp.paid_at AS at, \
                    CASE WHEN sp.gap_seconds > 0 THEN 'Продление с опозданием на ' || ceil(sp.gap_seconds / 86400.0)::int || ' дн.' \
@@ -446,6 +503,8 @@ fn client_set(
     })
 }
 
+type ClientRow = (i64, String, String, Option<i64>, Option<DateTime<Utc>>, i64);
+
 async fn clients(
     ctx: &ModuleContext,
     q: &ListQuery,
@@ -464,8 +523,7 @@ async fn clients(
          FROM x {NAME_JOIN} ORDER BY x.at DESC NULLS LAST, x.client_id DESC LIMIT {limit} OFFSET {skip}"
     );
     let mut conn = ctx.store.conn().await?;
-    let found: Vec<(i64, String, String, Option<i64>, Option<DateTime<Utc>>, i64)> =
-        rows(&mut conn, &sql, &text).await?;
+    let found: Vec<ClientRow> = rows(&mut conn, &sql, &text).await?;
     let total = found.first().map_or(0, |r| r.5);
     let money = q.set.starts_with("mrr_") || q.set.ends_with("balance");
     Ok(ListPage {
@@ -487,7 +545,11 @@ async fn clients(
     })
 }
 
-pub async fn page(ctx: &ModuleContext, q: &ListQuery, now: DateTime<Utc>) -> Result<ListPage, WebError> {
+pub async fn page(
+    ctx: &ModuleContext,
+    q: &ListQuery,
+    now: DateTime<Utc>,
+) -> Result<ListPage, WebError> {
     let offset = {
         let mut conn = ctx.store.conn().await?;
         offset(&mut conn).await?
@@ -501,7 +563,9 @@ pub async fn page(ctx: &ModuleContext, q: &ListQuery, now: DateTime<Utc>) -> Res
     let start = midnight(from, offset);
     let end = bound_after(to, offset);
     match q.set.as_str() {
-        "revenue" | "promo" | "stars" | "crypto" | "balance" | "refunds" => payments(ctx, q, start, end).await,
+        "revenue" | "promo" | "stars" | "crypto" | "balance" | "refunds" => {
+            payments(ctx, q, start, end).await
+        }
         "invoices" | "abandoned" => invoices(ctx, q, start, end).await,
         _ => clients(ctx, q, start, end, now).await,
     }
@@ -566,14 +630,27 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, WebError> {
         if !m.is_empty() {
             methods.push(Choice {
                 value: format!("{p}/{m}"),
-                label: format!("{} · {}", labels::provider(&titles, p), labels::method(&titles, p, m)),
+                label: format!(
+                    "{} · {}",
+                    labels::provider(&titles, p),
+                    labels::method(&titles, p, m)
+                ),
             });
         }
     }
     let mut sources = vec![
-        Choice { value: "none".into(), label: "Без источника".into() },
-        Choice { value: "ref".into(), label: "Рефералы".into() },
-        Choice { value: "gift".into(), label: "Подарки".into() },
+        Choice {
+            value: "none".into(),
+            label: "Без источника".into(),
+        },
+        Choice {
+            value: "ref".into(),
+            label: "Рефералы".into(),
+        },
+        Choice {
+            value: "gift".into(),
+            label: "Подарки".into(),
+        },
     ];
     sources.extend(utm.into_iter().map(|(s,)| Choice {
         value: format!("utm:{s}"),
@@ -586,11 +663,17 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, WebError> {
     Ok(Options {
         tariffs: tariffs
             .into_iter()
-            .map(|(id, name)| Choice { value: id.to_string(), label: name })
+            .map(|(id, name)| Choice {
+                value: id.to_string(),
+                label: name,
+            })
             .collect(),
         categories: categories
             .into_iter()
-            .map(|(id, name)| Choice { value: id.to_string(), label: name })
+            .map(|(id, name)| Choice {
+                value: id.to_string(),
+                label: name,
+            })
             .collect(),
         channels: ["bot", "miniapp", "cabinet", "autorenew", "admin", "unknown"]
             .iter()

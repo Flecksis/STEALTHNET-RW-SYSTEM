@@ -143,7 +143,16 @@ pub fn build(mut purchases: Vec<Purchase>) -> (Vec<Span>, Vec<Island>) {
     (spans, islands)
 }
 
-type OrderRow = (i64, i64, Option<i64>, String, DateTime<Utc>, i64, i64, Option<i64>);
+type OrderRow = (
+    i64,
+    i64,
+    Option<i64>,
+    String,
+    DateTime<Utc>,
+    i64,
+    i64,
+    Option<i64>,
+);
 
 async fn rebuild(db: &mut impl Db, clients: &[i64], currency: Currency) -> StoreResult<()> {
     let rows: Vec<OrderRow> = sqlx::query_as(

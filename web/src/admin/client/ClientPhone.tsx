@@ -17,6 +17,7 @@ import { ClientProtect } from '../protect/ClientProtect';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
 import '../home/phone.css';
 import './phone.css';
+import { registrationText, useClientUtm, UtmValue } from '../utm/ClientSource';
 import { Avatar } from '../Avatar';
 import { ExtendDialog } from './ExtendDialog';
 
@@ -78,6 +79,7 @@ function statusOf(details: SubscriptionDetails | null, sub: Subscription, blocke
 export function ClientPhone() {
   const { id } = useParams();
   const clientId = Number(id);
+  const utm = useClientUtm(clientId);
   const navigate = useNavigate();
   const { can, me } = useSession();
   const writable = can('clients_write');
@@ -647,6 +649,18 @@ export function ClientPhone() {
             <dd>
               {money(card.stats.paid_total)}
               {card.stats.payments_count ? ` за ${count(card.stats.payments_count, 'платёж', 'платежа', 'платежей')}` : ''}
+            </dd>
+          </div>
+        ) : null}
+        <div className="pc-fact">
+          <dt>Регистрация</dt>
+          <dd>{registrationText(card.client.registration_source, card.client.created_at)}</dd>
+        </div>
+        {utm ? (
+          <div className="pc-fact">
+            <dt>Метка</dt>
+            <dd>
+              <UtmValue found={utm} />
             </dd>
           </div>
         ) : null}

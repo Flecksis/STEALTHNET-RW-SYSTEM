@@ -18,11 +18,15 @@ pub async fn scene(store: Store) -> Scene {
     let cat = seed.category("Основные").await;
     let start = seed.tariff(cat, "Старт").await;
     let pro = seed.tariff(cat, "Про").await;
-    let a = seed.client(utc(2026, 2, 25, 10), "bot", Some(("tiktok", "osen"))).await;
+    let a = seed
+        .client(utc(2026, 2, 25, 10), "bot", Some(("tiktok", "osen")))
+        .await;
     let b = seed.client(utc(2026, 2, 1, 10), "web", None).await;
     let c = seed.client(utc(2026, 3, 14, 10), "miniapp", None).await;
     let d = seed.client(utc(2026, 3, 19, 10), "bot", None).await;
-    let e = seed.client(utc(2026, 3, 24, 10), "bot", Some(("vk", "games"))).await;
+    let e = seed
+        .client(utc(2026, 3, 24, 10), "bot", Some(("vk", "games")))
+        .await;
     let f = seed.client(utc(2026, 3, 3, 10), "bot", None).await;
     seed.identity(a, "telegram", "1").await;
     seed.identity(b, "email", "b@example.com").await;
@@ -128,7 +132,9 @@ pub async fn scene(store: Store) -> Scene {
             provider: "cryptopay",
             amount: 15_000,
             channel: Some("bot"),
-            intent: Some(json!({"type": "module", "module": "options", "kind": "devices", "payload": {}})),
+            intent: Some(
+                json!({"type": "module", "module": "options", "kind": "devices", "payload": {}}),
+            ),
             ..Buy::default()
         })
         .await;
@@ -208,7 +214,13 @@ async fn выручка_разбивки_и_средние_за_месяц() {
         ]
     );
     let periods = breakdown(&r, "revenue", "period");
-    assert_eq!(periods, vec![("30".to_string(), 124_000.0), ("none".to_string(), 65_000.0)]);
+    assert_eq!(
+        periods,
+        vec![
+            ("30".to_string(), 124_000.0),
+            ("none".to_string(), 65_000.0)
+        ]
+    );
     assert_eq!(value(&r, "arpu"), 37_800.0);
     assert_eq!(value(&r, "arppu"), 47_250.0);
     assert_eq!(value(&r, "ltv"), 69_500.0);
@@ -227,7 +239,10 @@ async fn mrr_и_его_движение() {
     assert_eq!(value(&r, "mrr"), 184_000.0);
     assert_eq!(value(&r, "mrr_moves"), 85_000.0);
     let rows = table(&r, "mrr_moves");
-    assert_eq!(rows[0], ("Новые".to_string(), vec![Some(85_000.0), Some(3.0)]));
+    assert_eq!(
+        rows[0],
+        ("Новые".to_string(), vec![Some(85_000.0), Some(3.0)])
+    );
     assert_eq!(rows[3], ("Ушли".to_string(), vec![Some(-0.0), Some(0.0)]));
     let r = ctx_report(&db.store, "money", month(4, Compare::None)).await;
     let rows = table(&r, "mrr_moves");
@@ -240,10 +255,14 @@ async fn фильтры_сужают_выручку() {
         return;
     };
     let s = scene(db.store.clone()).await;
-    let q = filtered(month(3, Compare::None), |q| q.provider = Some("yookassa".into()));
+    let q = filtered(month(3, Compare::None), |q| {
+        q.provider = Some("yookassa".into())
+    });
     let r = ctx_report(&db.store, "money", q).await;
     assert_eq!(value(&r, "revenue"), 75_000.0);
-    let q = filtered(month(3, Compare::None), |q| q.source = Some("utm:tiktok".into()));
+    let q = filtered(month(3, Compare::None), |q| {
+        q.source = Some("utm:tiktok".into())
+    });
     let r = ctx_report(&db.store, "money", q).await;
     assert_eq!(value(&r, "revenue"), 25_000.0);
     let q = filtered(month(3, Compare::None), |q| q.tariff = Some(s.pro));
@@ -253,7 +272,10 @@ async fn фильтры_сужают_выручку() {
     let q = filtered(month(3, Compare::None), |q| q.channel = Some("bot".into()));
     let r = ctx_report(&db.store, "money", q).await;
     assert_eq!(value(&r, "revenue"), 40_000.0);
-    assert_eq!(metric(&r, "mrr").note.as_deref(), Some("без фильтра по каналу"));
+    assert_eq!(
+        metric(&r, "mrr").note.as_deref(),
+        Some("без фильтра по каналу")
+    );
 }
 
 #[tokio::test]

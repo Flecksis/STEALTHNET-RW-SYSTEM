@@ -47,7 +47,6 @@ export function AnalyticsPhone({ page }: { page: Page }) {
       </div>
     );
   }
-  const count = Object.values(page.q.filters).filter(Boolean).length;
   return (
     <div className="an anp">
       <PhoneHeader title="Аналитика" />
@@ -60,7 +59,6 @@ export function AnalyticsPhone({ page }: { page: Page }) {
             <CompareSelect page={page} phone />
             <button type="button" className="axp-filter" aria-label="Фильтры" aria-expanded={filters} onClick={() => setFilters(true)}>
               <Icon name="sliders" size={18} stroke={2} />
-              {count ? <span className="axp-dot" /> : null}
             </button>
           </div>
           <CustomDates page={page} />

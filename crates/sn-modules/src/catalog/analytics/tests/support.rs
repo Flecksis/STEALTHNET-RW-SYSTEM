@@ -28,7 +28,10 @@ async fn обращения_скорость_ответа_и_доля_ии() {
     assert_eq!(value(&r, "tickets"), 2.0);
     let mut channels = breakdown(&r, "tickets", "channel");
     channels.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(channels, vec![("bot".to_string(), 1.0), ("cabinet".to_string(), 1.0)]);
+    assert_eq!(
+        channels,
+        vec![("bot".to_string(), 1.0), ("cabinet".to_string(), 1.0)]
+    );
     assert_eq!(value(&r, "first_reply"), 930.0);
     assert_eq!(value(&r, "close_time"), 3_600.0);
     assert_eq!(value(&r, "ai_share"), 50.0);

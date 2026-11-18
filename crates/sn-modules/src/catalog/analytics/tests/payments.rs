@@ -10,7 +10,10 @@ async fn счета_оплаты_брошенные_и_ошибки() {
     let s = scene(db.store.clone()).await;
     let seed = &s.seed;
     let order: i64 = seed
-        .scalar(&format!("SELECT min(id) FROM orders WHERE client_id = {}", s.a))
+        .scalar(&format!(
+            "SELECT min(id) FROM orders WHERE client_id = {}",
+            s.a
+        ))
         .await;
     seed.exec(&format!(
         "INSERT INTO payments (order_id, client_id, provider, pay_method, amount_minor, currency, status, created_at, failure_reason) \
@@ -37,7 +40,9 @@ async fn счета_оплаты_брошенные_и_ошибки() {
     assert_eq!(yk.1[8], Some(75_000.0));
     let errors = table(&r, "failed");
     assert_eq!(errors[0], ("Карта отклонена".to_string(), vec![Some(1.0)]));
-    let q = filtered(month(3, Compare::None), |q| q.provider = Some("platega".into()));
+    let q = filtered(month(3, Compare::None), |q| {
+        q.provider = Some("platega".into())
+    });
     let r = ctx_report(&db.store, "payments", q).await;
     assert_eq!(value(&r, "invoices"), 1.0);
     assert_eq!(value(&r, "provider_refunds"), 10_000.0);

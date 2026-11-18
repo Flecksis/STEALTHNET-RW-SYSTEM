@@ -96,13 +96,28 @@ pub fn count(n: i64, one: &str, few: &str, many: &str) -> String {
 }
 
 const GENITIVE: [&str; 12] = [
-    "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
-    "ноября", "декабря",
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
 ];
 
 pub fn date_text(day: chrono::NaiveDate) -> String {
     use chrono::Datelike;
-    format!("{} {} {}", day.day(), GENITIVE[day.month0() as usize], day.year())
+    format!(
+        "{} {} {}",
+        day.day(),
+        GENITIVE[day.month0() as usize],
+        day.year()
+    )
 }
 
 pub fn money_short(minor: f64, currency: sn_domain::money::Currency) -> String {
@@ -112,7 +127,10 @@ pub fn money_short(minor: f64, currency: sn_domain::money::Currency) -> String {
         _ => ("", "\u{a0}₽"),
     };
     if major.abs() >= 1_000_000.0 {
-        format!("{head}{}\u{a0}млн{tail}", format!("{:.1}", major / 1_000_000.0).replace('.', ","))
+        format!(
+            "{head}{}\u{a0}млн{tail}",
+            format!("{:.1}", major / 1_000_000.0).replace('.', ",")
+        )
     } else if major.abs() >= 1_000.0 {
         format!("{head}{}\u{a0}тыс{tail}", (major / 1_000.0).round())
     } else {
@@ -227,7 +245,10 @@ pub async fn names(db: &mut impl sn_store::Db) -> sn_store::StoreResult<Names> {
     Ok(Names {
         tariffs: tariffs.into_iter().collect(),
         categories: categories.into_iter().collect(),
-        links: links.into_iter().map(|(id, n)| (id.to_string(), n)).collect(),
+        links: links
+            .into_iter()
+            .map(|(id, n)| (id.to_string(), n))
+            .collect(),
     })
 }
 
