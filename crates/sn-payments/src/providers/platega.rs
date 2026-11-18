@@ -646,6 +646,49 @@ impl PaymentProvider for Platega {
             signal: None,
         }))
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let request = match self.request(config, reqwest::Method::GET, "/balance/all") {
+            Ok(request) => request,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let reply = match util::send(request).await {
+            Ok(reply) => reply,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let parsed = Json::parse(&reply.body);
+        if matches!(reply.status, 401 | 403) {
+            let text = parsed.as_ref().and_then(message).map(str::trim);
+            if text.is_some_and(|t| t.to_ascii_lowercase().contains("merchant not exists")) {
+                return ConnectionCheck::new(
+                    CheckStatus::KeysRejected,
+                    "Platega не знает мерчанта с таким MerchantId",
+                )
+                .detail("MerchantId и секрет есть в кабинете Platega: Настройки");
+            }
+            let check = ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                "Platega не приняла MerchantId и секрет",
+            );
+            return match text.filter(|t| !t.is_empty()) {
+                Some(text) => check.detail(format!("Ответ Platega: «{}»", util::clip(text, 200))),
+                None => check,
+            };
+        }
+        match parsed {
+            Some(Json::Array(_)) if reply.is_success() => {
+                ConnectionCheck::ok("MerchantId и секрет приняты Platega")
+            }
+            Some(body) if !reply.is_success() => {
+                ConnectionCheck::failed(&reply.failure(message(&body)))
+            }
+            _ => ConnectionCheck::failed(&reply.failure(None)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -684,6 +727,72 @@ mod tests {
 
     fn reply(body: serde_json::Value) -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_platega_по_балансам() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/balance/all"))
+            .and(header("X-MerchantId", MERCHANT))
+            .and(header("X-Secret", "platega-secret"))
+            .respond_with(reply(json!([
+                {"amount": 15000.5, "currency": "RUB"},
+                {"amount": 8420.31, "frozenBalance": 500, "currency": "USDT"}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/balance/all"))
+            .and(header(
+                "X-MerchantId",
+                "00000000-0000-4000-8000-000000000000",
+            ))
+            .respond_with(problem(401, "Auth:SIGN_1002", "Merchant not exists."))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/balance/all"))
+            .respond_with(problem(401, "Auth:GEN_1001", "Access denied."))
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let provider = Platega::with_api_base(server.uri());
+        let context = CheckContext::default();
+        let ok = provider.check_connection(&settings(), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok, "{}", ok.summary);
+        assert!(ok.details.is_empty());
+        let unknown = provider
+            .check_connection(
+                &config(&[
+                    ("merchant_id", json!("00000000-0000-4000-8000-000000000000")),
+                    ("secret", json!("platega-secret")),
+                ]),
+                &context,
+            )
+            .await;
+        assert_eq!(unknown.status, CheckStatus::KeysRejected);
+        assert!(unknown.summary.contains("не знает мерчанта"));
+        let wrong = provider
+            .check_connection(
+                &config(&[("merchant_id", json!(MERCHANT)), ("secret", json!("other"))]),
+                &context,
+            )
+            .await;
+        assert_eq!(wrong.status, CheckStatus::KeysRejected);
+        assert_eq!(wrong.details, ["Ответ Platega: «Access denied.»"]);
+        for request in server.received_requests().await.unwrap() {
+            assert_eq!(request.method, wiremock::http::Method::GET);
+        }
+        let down = failing_api(502).await;
+        let unreachable = Platega::with_api_base(down.uri())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = Platega::with_api_base(closed_api())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
     }
 
     fn problem(status: u16, code: &str, text: &str) -> ResponseTemplate {

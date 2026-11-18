@@ -1,7 +1,9 @@
 use crate::provider::{
-    ClientLabel, PayMethod, PaymentProvider, ProviderConfig, ProviderIssue, ProviderKind,
+    ClientLabel, ConnectionCheck, PayMethod, PaymentProvider, ProviderConfig, ProviderIssue,
+    ProviderKind,
 };
-use serde::Serialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
 use sn_domain::payment::{ButtonLabel, MethodChoice, PaymentChannels};
@@ -104,6 +106,13 @@ fn method_views(
     views
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckRecord {
+    pub at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub check: ConnectionCheck,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProviderView {
     pub id: &'static str,
@@ -120,11 +129,13 @@ pub struct ProviderView {
     pub methods: Vec<MethodView>,
     pub label: ClientLabel,
     pub custom_label: ButtonLabel,
+    pub check: Option<CheckRecord>,
 }
 
 pub struct ProviderRegistry {
     providers: Vec<Arc<dyn PaymentProvider>>,
     snapshot: RwLock<Arc<RegistrySnapshot>>,
+    checks: RwLock<HashMap<String, CheckRecord>>,
 }
 
 impl ProviderRegistry {
@@ -151,6 +162,7 @@ impl ProviderRegistry {
                 states,
                 order: Vec::new(),
             })),
+            checks: RwLock::new(HashMap::new()),
         }
     }
 
@@ -185,6 +197,35 @@ impl ProviderRegistry {
         match self.snapshot.write() {
             Ok(mut guard) => *guard = snapshot,
             Err(poisoned) => *poisoned.into_inner() = snapshot,
+        }
+    }
+
+    pub fn check(&self, id: &str) -> Option<CheckRecord> {
+        match self.checks.read() {
+            Ok(guard) => guard.get(id).cloned(),
+            Err(poisoned) => poisoned.into_inner().get(id).cloned(),
+        }
+    }
+
+    pub fn set_checks(&self, checks: HashMap<String, CheckRecord>) {
+        match self.checks.write() {
+            Ok(mut guard) => *guard = checks,
+            Err(poisoned) => *poisoned.into_inner() = checks,
+        }
+    }
+
+    pub fn record_check(&self, id: &str, record: Option<CheckRecord>) {
+        let mut guard = match self.checks.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match record {
+            Some(record) => {
+                guard.insert(id.to_string(), record);
+            }
+            None => {
+                guard.remove(id);
+            }
         }
     }
 
@@ -258,6 +299,7 @@ impl ProviderRegistry {
                     methods: method_views(p.as_ref(), &state.methods, snapshot.currency),
                     label: p.client_label(snapshot.currency, &state.config),
                     custom_label: state.label.clone(),
+                    check: self.check(p.id()),
                 }
             })
             .collect()

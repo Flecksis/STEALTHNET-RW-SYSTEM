@@ -250,9 +250,11 @@ impl Services {
             bot_token.as_deref(),
         )
         .await?;
+        let checks = settings::provider_checks(&mut conn, &self.inner.payments).await?;
         let bot_content = crate::bot_content::load(&mut conn).await?;
         drop(conn);
         self.inner.payments.apply(snapshot);
+        self.inner.payments.set_checks(checks);
         self.inner.modules.set_currency(core.currency);
         self.inner.modules.load(self.store()).await?;
         let mut conn = self.store().conn().await?;

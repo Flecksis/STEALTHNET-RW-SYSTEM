@@ -43,6 +43,7 @@ mod multi_subscriptions;
 mod oauth;
 mod password_reset;
 mod photos;
+mod provider_check;
 mod robots;
 mod support_mode;
 

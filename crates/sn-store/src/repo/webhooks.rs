@@ -199,6 +199,23 @@ impl<'c> WebhooksRepo<'c> {
         Ok(inserted.is_some())
     }
 
+    pub async fn trace(
+        &mut self,
+        source: &str,
+        since: DateTime<Utc>,
+    ) -> StoreResult<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+        Ok(sqlx::query_as(
+            "SELECT \
+                 max(received_at) FILTER (WHERE outcome IN ('accepted', 'ignored', 'payment_not_found', 'amount_mismatch', 'rejected_business')), \
+                 max(received_at) FILTER (WHERE outcome = 'rejected_signature') \
+             FROM webhook_inbox WHERE source = $1 AND received_at >= $2",
+        )
+        .bind(source)
+        .bind(since)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn recent(&mut self, limit: i64) -> StoreResult<Vec<InboxEntry>> {
         let rows: Vec<InboxEntryRow> = sqlx::query_as(
             "SELECT id, source, outcome, body IS NOT NULL AS has_body, payment_id, error, remote_ip, received_at \

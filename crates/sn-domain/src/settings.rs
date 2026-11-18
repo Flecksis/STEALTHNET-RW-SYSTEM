@@ -556,6 +556,12 @@ pub mod keys {
         format!("payments.{id}")
     }
 
+    pub const PROVIDER_CHECKS: &str = "payments.check.";
+
+    pub fn provider_check(id: &str) -> String {
+        format!("{PROVIDER_CHECKS}{id}")
+    }
+
     pub fn module(id: &str) -> String {
         format!("modules.{id}")
     }

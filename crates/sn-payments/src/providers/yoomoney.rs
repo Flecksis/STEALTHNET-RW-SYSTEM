@@ -211,6 +211,23 @@ impl PaymentProvider for YooMoney {
             signal: None,
         })
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let check = ConnectionCheck::manual(
+            "У ЮMoney нет запроса, который проверяет кошелёк и секрет уведомлений и ничего не создаёт. \
+             Номер кошелька подходит по формату. Проверьте подключение тестовым платежом на небольшую сумму: \
+             после оплаты здесь будет видно, дошло ли уведомление и сошлась ли подпись",
+        );
+        if config.get("wallet").is_some_and(|w| !w.starts_with("4100")) {
+            check.detail("Номера кошельков ЮMoney обычно начинаются с 4100: сверьте номер с кабинетом ЮMoney")
+        } else {
+            check
+        }
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +245,23 @@ mod tests {
             ("wallet", json!("4100118412345678")),
             ("notification_secret", json!(SECRET)),
         ])
+    }
+
+    #[tokio::test]
+    async fn юmoney_честно_говорит_что_проверить_можно_только_оплатой() {
+        let context = CheckContext::default();
+        let check = YooMoney.check_connection(&settings(), &context).await;
+        assert_eq!(check.status, CheckStatus::Manual);
+        assert!(check.summary.contains("тестовым платежом"));
+        assert!(check.details.is_empty());
+        assert!(!check.summary.contains(SECRET));
+        let odd = config(&[
+            ("wallet", json!("12345678901")),
+            ("notification_secret", json!(SECRET)),
+        ]);
+        let hinted = YooMoney.check_connection(&odd, &context).await;
+        assert_eq!(hinted.status, CheckStatus::Manual);
+        assert!(hinted.details[0].contains("4100"));
     }
 
     fn documented() -> Vec<(&'static str, String)> {

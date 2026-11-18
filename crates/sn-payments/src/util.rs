@@ -224,6 +224,18 @@ pub(crate) fn rfc3986(value: &str) -> String {
     out
 }
 
+pub(crate) const KEYS_REFUSED: &str =
+    "платёжная система не приняла ключи доступа, проверьте настройки";
+
+pub(crate) fn keys_refused(err: &PaymentError) -> bool {
+    match err {
+        PaymentError::Rejected(reason) => reason == KEYS_REFUSED,
+        PaymentError::Http { status } => matches!(status, 401 | 403),
+        PaymentError::BadSignature => true,
+        _ => false,
+    }
+}
+
 pub(crate) struct Reply {
     pub(crate) status: u16,
     pub(crate) body: Bytes,
@@ -263,9 +275,7 @@ impl Reply {
             .filter(|m| !m.is_empty());
         match (self.status, message) {
             (403, Some(message)) => PaymentError::Rejected(message),
-            (401 | 403, _) => PaymentError::Rejected(
-                "платёжная система не приняла ключи доступа, проверьте настройки".into(),
-            ),
+            (401 | 403, _) => PaymentError::Rejected(KEYS_REFUSED.into()),
             (429 | 500..=599, _) => PaymentError::Http {
                 status: self.status,
             },

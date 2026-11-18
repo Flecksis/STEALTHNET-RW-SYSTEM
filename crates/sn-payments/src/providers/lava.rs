@@ -14,6 +14,7 @@ const API: &str = "https://gate.lava.top";
 const KEY_HEADER: &str = "x-api-key";
 const WEBHOOK_KEY_MAX: usize = 80;
 const SALE_PAGES: u32 = 5;
+const PRODUCT_PAGES: u32 = 10;
 const PAGE_SIZE: usize = 20;
 
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +122,52 @@ impl Lava {
             return Err(reply.failure(message(&parsed)));
         }
         Ok(parsed)
+    }
+
+    async fn offer_product(
+        &self,
+        config: &ProviderConfig,
+        offer: Uuid,
+        visibility: &str,
+    ) -> PaymentResult<Option<String>> {
+        let mut before: Option<String> = None;
+        for _ in 0..PRODUCT_PAGES {
+            let mut query = vec![("feedVisibility", visibility.to_string())];
+            if let Some(before) = &before {
+                query.push(("beforeCreatedAt", before.clone()));
+            }
+            let page = self.get(config, "/api/v2/products", &query).await?;
+            let items = page
+                .get("items")
+                .and_then(Json::as_array)
+                .ok_or_else(|| util::bad("Lava.top не вернула список продуктов"))?;
+            for item in items {
+                let data = item.get("data").unwrap_or(item);
+                let has_offer = data
+                    .get("offers")
+                    .and_then(Json::as_array)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|o| o.get("id").and_then(Json::as_str))
+                    .any(|id| Uuid::parse_str(id.trim()).ok() == Some(offer));
+                if has_offer {
+                    return Ok(Some(
+                        data.get("title")
+                            .and_then(Json::as_str)
+                            .map(|t| util::clip(t.trim(), 80))
+                            .unwrap_or_default(),
+                    ));
+                }
+            }
+            before = page
+                .get("nextPage")
+                .and_then(Json::as_str)
+                .and_then(next_before);
+            if before.is_none() || items.is_empty() {
+                break;
+            }
+        }
+        Ok(None)
     }
 
     async fn invoice(&self, config: &ProviderConfig, id: &str) -> PaymentResult<Json> {
@@ -340,6 +387,15 @@ impl Lava {
             _ => outcome,
         })
     }
+}
+
+fn next_before(next: &str) -> Option<String> {
+    reqwest::Url::parse(next)
+        .ok()?
+        .query_pairs()
+        .find(|(key, _)| key == "beforeCreatedAt")
+        .map(|(_, value)| value.into_owned())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn message(body: &Json) -> Option<&str> {
@@ -687,6 +743,52 @@ impl PaymentProvider for Lava {
             signal: None,
         }))
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let Some(offer) = offer_id(config) else {
+            return ConnectionCheck::failed(&PaymentError::NotConfigured(
+                "ID оффера Lava.top — это UUID из кабинета".into(),
+            ));
+        };
+        let refused = || {
+            ConnectionCheck::new(CheckStatus::KeysRejected, "Lava не приняла API-ключ")
+                .detail("Ключ создаётся в кабинете Lava: Интеграции → API → Настроить API key")
+        };
+        match self.offer_product(config, offer, "ONLY_HIDDEN").await {
+            Ok(Some(title)) => {
+                return ConnectionCheck::ok(if title.is_empty() {
+                    "API-ключ принят, оффер найден в Lava".to_string()
+                } else {
+                    format!("API-ключ принят, оффер найден: продукт «{title}»")
+                });
+            }
+            Ok(None) => {}
+            Err(err) if util::keys_refused(&err) => return refused(),
+            Err(err) => return ConnectionCheck::failed(&err),
+        }
+        match self.offer_product(config, offer, "ONLY_VISIBLE").await {
+            Ok(Some(title)) => ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                if title.is_empty() {
+                    "API-ключ принят, но у продукта с этим оффером не включена «Цена по запросу API»".to_string()
+                } else {
+                    format!("API-ключ принят, но у продукта «{title}» не включена «Цена по запросу API»")
+                },
+            )
+            .detail("Продукты с ценой по запросу API Lava прячет со страницы автора, а этот продукт виден. Без неё Lava не примет сумму из панели"),
+            Ok(None) => ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                "API-ключ принят, но оффера с таким ID нет среди продуктов Lava",
+            )
+            .detail("Скопируйте ID оффера из продукта с включённой «Ценой по запросу API»"),
+            Err(err) if util::keys_refused(&err) => refused(),
+            Err(err) => ConnectionCheck::failed(&err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -710,6 +812,95 @@ mod tests {
             ("offer_id", json!(OFFER)),
             ("webhook_key", json!(KEY)),
         ])
+    }
+
+    fn product(title: &str, offer: &str) -> Value {
+        json!({"type": "PRODUCT", "data": {
+            "id": "4e8f8b1c-6b0e-4a59-9d4f-3c1f2a7b9e10", "title": title, "type": "DIGITAL_PRODUCT",
+            "offers": [{"id": offer, "name": "Подписка", "prices": [{"amount": 499.0, "currency": "RUB", "periodicity": "ONE_TIME"}]}]
+        }})
+    }
+
+    async fn products(server: &MockServer, visibility: &str, before: Option<&str>, body: Value) {
+        let mock = Mock::given(method("GET"))
+            .and(path("/api/v2/products"))
+            .and(header("x-api-key", "lava-api-key"))
+            .and(query_param("feedVisibility", visibility));
+        let mock = match before {
+            Some(before) => mock.and(query_param("beforeCreatedAt", before)),
+            None => mock.and(wiremock::matchers::query_param_is_missing(
+                "beforeCreatedAt",
+            )),
+        };
+        mock.respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_lava_ищет_оффер_среди_продуктов() {
+        let server = MockServer::start().await;
+        let stamp = "2026-11-01T05:43:18.922Z";
+        products(
+            &server,
+            "ONLY_HIDDEN",
+            None,
+            json!({
+                "items": [product("Другой продукт", "11111111-1111-4111-8111-111111111111")],
+                "nextPage": format!("https://gate.lava.top/api/v2/products?beforeCreatedAt={stamp}&feedVisibility=ONLY_HIDDEN")
+            }),
+        )
+        .await;
+        products(
+            &server,
+            "ONLY_HIDDEN",
+            Some(stamp),
+            json!({"items": [product("VPN на месяц", OFFER)], "nextPage": null}),
+        )
+        .await;
+        products(
+            &server,
+            "ONLY_VISIBLE",
+            None,
+            json!({"items": [product("Открытый продукт", SECOND)], "nextPage": null}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/products"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": "Invalid API key", "details": {}, "timestamp": "2026-11-18T12:14:11.981087055+02:00"
+            })))
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let provider = Lava::with_api_base(server.uri());
+        let context = CheckContext::default();
+        let ok = provider.check_connection(&settings(), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok, "{}", ok.summary);
+        assert!(ok.summary.contains("«VPN на месяц»"));
+        let mut visible = settings();
+        visible.set("offer_id", json!(SECOND));
+        let price = provider.check_connection(&visible, &context).await;
+        assert_eq!(price.status, CheckStatus::SettingsRejected);
+        assert!(price.summary.contains("Цена по запросу API"));
+        let mut missing = settings();
+        missing.set("offer_id", json!("22222222-2222-4222-8222-222222222222"));
+        let unknown = provider.check_connection(&missing, &context).await;
+        assert_eq!(unknown.status, CheckStatus::SettingsRejected);
+        assert!(unknown.summary.contains("нет среди продуктов"));
+        let mut wrong = settings();
+        wrong.set("api_key", json!("other-key"));
+        let rejected = provider.check_connection(&wrong, &context).await;
+        assert_eq!(rejected.status, CheckStatus::KeysRejected);
+        let down = failing_api(502).await;
+        let unreachable = Lava::with_api_base(down.uri())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = Lava::with_api_base(closed_api())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
     }
 
     fn event(kind: &str, amount: Value, currency: &str) -> Vec<u8> {

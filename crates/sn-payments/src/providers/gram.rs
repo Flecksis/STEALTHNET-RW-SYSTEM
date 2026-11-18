@@ -956,6 +956,40 @@ impl PaymentProvider for Gram {
             None => pending(&invoice),
         }))
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let wallet = match config.require("wallet") {
+            Ok(wallet) => wallet,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let base = self.toncenter(config);
+        let key = config.get("toncenter_key");
+        let network = if config.flag("testnet") {
+            "в тестовой сети TON"
+        } else {
+            "в сети TON"
+        };
+        match self.request_page(&base, wallet, key, 1).await {
+            Ok(_) => ConnectionCheck::ok(match key {
+                Some(_) => format!("toncenter принял ключ API и видит кошелёк {network}"),
+                None => format!("toncenter видит кошелёк {network}. Ключ API не задан, проверка оплат идёт не чаще раза в секунду"),
+            }),
+            Err((PaymentError::Http { status: status @ (401 | 403) }, detail)) => ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                format!("toncenter не принял ключ API (ответ {status}: {})", crate::util::clip(&detail, 120)),
+            )
+            .detail("Без ключа оплаты всё равно проверяются, но не чаще раза в секунду. Новый ключ начинает работать через 5–10 минут; нужен ключ для сети Mainnet со статусом Active в боте @toncenter"),
+            Err((PaymentError::Http { status: status @ (400 | 416) }, detail)) => ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                format!("toncenter не понял адрес кошелька (ответ {status}: {})", crate::util::clip(&detail, 120)),
+            ),
+            Err((err, _)) => ConnectionCheck::failed(&err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -972,6 +1006,55 @@ mod tests {
         let mut pairs = vec![("wallet", json!(WALLET))];
         pairs.extend(extra.iter().cloned());
         config(&pairs)
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_gram_через_toncenter() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .and(query_param("address", WALLET))
+            .and(query_param("limit", "1"))
+            .and(header("X-API-Key", "bad-key"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(
+                json!({"ok": false, "error": "API key does not exist", "code": 401}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/getTransactions"))
+            .and(query_param("address", WALLET))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"ok": true, "result": []})),
+            )
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let gram = Gram::with_endpoints(server.uri(), server.uri(), server.uri());
+        let context = CheckContext::default();
+        let free = gram.check_connection(&settings(&[]), &context).await;
+        assert_eq!(free.status, CheckStatus::Ok, "{}", free.summary);
+        assert!(free.summary.contains("Ключ API не задан"));
+        let keyed = gram
+            .check_connection(&settings(&[("toncenter_key", json!("good-key"))]), &context)
+            .await;
+        assert_eq!(keyed.status, CheckStatus::Ok);
+        assert!(keyed.summary.contains("принял ключ"));
+        let rejected = gram
+            .check_connection(&settings(&[("toncenter_key", json!("bad-key"))]), &context)
+            .await;
+        assert_eq!(rejected.status, CheckStatus::KeysRejected);
+        assert!(rejected.summary.contains("API key does not exist"));
+        let down = crate::test_support::failing_api(502).await;
+        let unreachable = Gram::with_endpoints(down.uri(), down.uri(), down.uri())
+            .check_connection(&settings(&[]), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = crate::test_support::closed_api();
+        let refused = Gram::with_endpoints(closed.clone(), closed.clone(), closed)
+            .check_connection(&settings(&[]), &context)
+            .await;
+        assert_eq!(refused.status, CheckStatus::Unreachable);
     }
 
     async fn rates(server: &MockServer, usd: f64, rub: f64) {

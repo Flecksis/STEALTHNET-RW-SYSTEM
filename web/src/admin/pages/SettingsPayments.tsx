@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { money, plural, type Money } from '../../lib/format';
+import { ago, money, plural, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import type { Currency } from '../../lib/types';
 import { ConfirmDialog } from '../client/dialogs';
@@ -29,6 +29,14 @@ function settle(rows: MethodRow[]): MethodRow[] {
   return [...rows.filter((r) => r.on), ...rows.filter((r) => !r.on)];
 }
 
+type CheckStatus = 'ok' | 'keys_rejected' | 'settings_rejected' | 'unreachable' | 'manual';
+
+type HookCheck = { label: string; state: 'same' | 'other' | 'off'; address: string | null; note: string | null };
+
+type InboxTrace = { verified_at: string | null; rejected_at: string | null };
+
+type CheckRecord = { at: string; status: CheckStatus; summary: string; details: string[]; hooks: HookCheck[]; inbox?: InboxTrace | null };
+
 type Provider = {
   id: string;
   title: string;
@@ -44,7 +52,105 @@ type Provider = {
   methods?: MethodView[];
   label?: { title: string; hint: string };
   custom_label?: { title?: string | null; hint?: string | null };
+  check?: CheckRecord | null;
 };
+
+const CHECK_HEADS: Record<CheckStatus, string> = {
+  ok: 'Подключение работает',
+  keys_rejected: 'Ключи не приняты',
+  settings_rejected: 'Ошибка в настройках',
+  unreachable: 'Платёжная система не ответила',
+  manual: 'Проверить без оплаты нельзя',
+};
+
+function hookTrouble(hook: HookCheck): boolean {
+  return hook.state !== 'same' || Boolean(hook.note);
+}
+
+function checkMark(check: CheckRecord | null | undefined): { text: string; warn: boolean } | null {
+  if (!check) {
+    return null;
+  }
+  switch (check.status) {
+    case 'ok':
+      return check.hooks.some(hookTrouble) || inboxLines(check.inbox, '').some((line) => line.warn)
+        ? { text: 'есть замечания', warn: true }
+        : { text: `проверено ${ago(check.at)}`, warn: false };
+    case 'keys_rejected':
+      return { text: 'ключи не приняты', warn: true };
+    case 'settings_rejected':
+      return { text: 'ошибка в настройках', warn: true };
+    case 'unreachable':
+      return { text: 'нет ответа при проверке', warn: true };
+    case 'manual':
+      return null;
+  }
+}
+
+function hookText(hook: HookCheck): string {
+  const note = hook.note ? `. ${hook.note}` : '';
+  switch (hook.state) {
+    case 'same':
+      return hook.note ? `адрес совпадает с адресом панели, но ${hook.note}` : 'адрес совпадает с адресом панели';
+    case 'other':
+      return `адрес другой${hook.address ? `: ${hook.address}` : ''}${note}`;
+    case 'off':
+      return `уведомление выключено${note}`;
+  }
+}
+
+function inboxLines(inbox: InboxTrace | null | undefined, title: string): Array<{ text: string; warn: boolean }> {
+  if (!inbox) {
+    return [];
+  }
+  const lines: Array<{ text: string; warn: boolean }> = [];
+  const forged = inbox.rejected_at !== null && (inbox.verified_at === null || Date.parse(inbox.rejected_at) > Date.parse(inbox.verified_at));
+  if (forged && inbox.rejected_at) {
+    lines.push({
+      text: `Уведомление ${ago(inbox.rejected_at)} не прошло проверку подписи. Если его прислала ${title}, ключ для уведомлений в панели не совпадает с ключом в кабинете`,
+      warn: true,
+    });
+  }
+  if (inbox.verified_at) {
+    lines.push({ text: `Последнее уведомление с верной подписью пришло ${ago(inbox.verified_at)}`, warn: false });
+  }
+  return lines;
+}
+
+function CheckResult({ check, title }: { check: CheckRecord; title: string }) {
+  const notices = inboxLines(check.inbox, title);
+  const trouble = check.hooks.some(hookTrouble) || notices.some((line) => line.warn);
+  const tone = check.status === 'ok' ? (trouble ? 'warn' : 'ok') : check.status === 'manual' ? 'plain' : 'bad';
+  return (
+    <div className={`pay-verify ${tone}`} role="status">
+      <span className="pay-verify-head">
+        {CHECK_HEADS[check.status]}
+        <span className="pay-verify-at">{ago(check.at)}</span>
+      </span>
+      <span>{check.summary}</span>
+      {check.details.map((line) => (
+        <span key={line} className="pay-verify-line">
+          {line}
+        </span>
+      ))}
+      {notices.map((line) => (
+        <span key={line.text} className={line.warn ? 'pay-verify-line trouble' : 'pay-verify-line'}>
+          {line.text}
+        </span>
+      ))}
+      {check.hooks.length ? (
+        <span className="pay-verify-hooks">
+          {check.hooks.map((hook) => (
+            <span key={hook.label} className={hookTrouble(hook) ? 'pay-verify-hook trouble' : 'pay-verify-hook'}>
+              <span className="pay-verify-label">{hook.label}</span>
+              <span>{hookText(hook)}</span>
+            </span>
+          ))}
+        </span>
+      ) : null}
+    </div>
+  );
+}
 
 function issueTime(iso: string): string {
   const at = new Date(iso);
@@ -286,6 +392,10 @@ export function SettingsPayments() {
     setWork({ ...work, shown: { ...work.shown, [next.id]: shown } });
   };
 
+  const checked = (id: string, check: CheckRecord) => {
+    setProviders((list) => (list ? list.map((p) => (p.id === id ? { ...p, check } : p)) : list));
+  };
+
   const toggleChannel = (id: string, channel: keyof Channels) => {
     const current = work.channels[id] ?? ALL_CHANNELS;
     edit({ channels: { ...work.channels, [id]: { ...current, [channel]: !current[channel] } } });
@@ -358,6 +468,7 @@ export function SettingsPayments() {
         </div>
         {visible.map((p) => {
           const on = work.shown[p.id] === true;
+          const mark = checkMark(p.check);
           return (
             <Fragment key={p.id}>
               <div className="pay-row">
@@ -365,6 +476,7 @@ export function SettingsPayments() {
                 <span className="pay-what muted">{ACCEPTS[p.id] ?? ''}</span>
                 <span className="pay-state" style={{ color: p.configured ? 'var(--ink-2)' : 'var(--warn)' }}>
                   {p.configured ? 'Подключена' : 'Не настроена'}
+                  {p.configured && mark ? <span className={mark.warn ? 'pay-checked warn' : 'pay-checked'}>{mark.text}</span> : null}
                 </span>
                 <span className={p.configured ? 'pay-switch' : 'pay-switch off'}>
                   <Switch on={on} onToggle={() => p.configured && edit({ shown: { ...work.shown, [p.id]: !on } })} label={`Показывать клиентам: ${p.title}`} disabled={!p.configured || busy} />
@@ -381,7 +493,9 @@ export function SettingsPayments() {
                   {p.issue.message}
                 </p>
               ) : null}
-              {setup === p.id ? <ProviderSetup provider={p} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
+              {setup === p.id ? (
+                <ProviderSetup provider={p} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} onChecked={(check) => checked(p.id, check)} />
+              ) : null}
             </Fragment>
           );
         })}
@@ -400,7 +514,9 @@ export function SettingsPayments() {
                 Настроить
               </button>
             </div>
-            {setup === balance.id ? <ProviderSetup provider={balance} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} /> : null}
+            {setup === balance.id ? (
+              <ProviderSetup provider={balance} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} onChecked={(check) => checked(balance.id, check)} />
+            ) : null}
             {methodLine(balance)}
             {balanceOn ? (
               channelLine(balance.id, 'С баланса')
@@ -553,9 +669,16 @@ export function SettingsPayments() {
   );
 }
 
-type SetupProps = { provider: Provider; currency: Currency; publicUrl: string | null; onClose: () => void; onSaved: (provider: Provider) => void };
+type SetupProps = {
+  provider: Provider;
+  currency: Currency;
+  publicUrl: string | null;
+  onClose: () => void;
+  onSaved: (provider: Provider) => void;
+  onChecked: (check: CheckRecord) => void;
+};
 
-function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: SetupProps) {
+function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChecked }: SetupProps) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [values, setValues] = useState<FieldValues>({});
@@ -568,6 +691,10 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
   const [labelTitle, setLabelTitle] = useState('');
   const [labelHint, setLabelHint] = useState('');
   const [savedLabel, setSavedLabel] = useState('');
+  const [connected, setConnected] = useState(provider.configured);
+  const [check, setCheck] = useState<CheckRecord | null>(provider.check ?? null);
+  const [checking, setChecking] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
@@ -622,6 +749,25 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
       return next;
     });
 
+  const keysPending = schema !== null && (Object.keys(changedConfig(schema, config, values)).length > 0 || secrets.clear.length > 0);
+  const pending =
+    keysPending || JSON.stringify(chosenMethods(rows)) !== savedRows || JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel;
+  const checkable = provider.kind !== 'balance';
+
+  const runCheck = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      const result = await api<CheckRecord>(`/api/admin/payments/providers/${provider.id}/check`, { method: 'POST' });
+      setCheck(result);
+      onChecked(result);
+    } catch (err) {
+      setError(failText(err, 'Проверка не выполнена'));
+    } finally {
+      setChecking(false);
+    }
+  };
+
   const save = async () => {
     if (!schema) {
       return;
@@ -634,17 +780,33 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
     setBusy(true);
     setError(null);
     try {
-      const saved = await api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`, {
+      const keysChanged = keysPending;
+      const methods = chosenMethods(rows);
+      const label = [labelTitle.trim(), labelHint.trim()];
+      const result = await api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`, {
         method: 'PUT',
         body: {
           config: changedConfig(schema, config, values),
           clear: secrets.clear,
-          ...(JSON.stringify(chosenMethods(rows)) !== savedRows ? { methods: chosenMethods(rows) } : {}),
-          ...(JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel ? { label: { title: labelTitle.trim() || null, hint: labelHint.trim() || null } } : {}),
+          ...(JSON.stringify(methods) !== savedRows ? { methods } : {}),
+          ...(JSON.stringify(label) !== savedLabel ? { label: { title: label[0] || null, hint: label[1] || null } } : {}),
         },
       });
-      onSaved(saved.provider);
-      onClose();
+      onSaved(result.provider);
+      if (!keysChanged || !checkable || !result.provider.configured) {
+        onClose();
+        return;
+      }
+      setConfig(result.provider.settings);
+      setValues(initialValues(result.schema, result.provider.settings));
+      setSecrets({ clear: [], replacing: [] });
+      setSavedRows(JSON.stringify(methods));
+      setSavedLabel(JSON.stringify(label));
+      setConnected(true);
+      setCheck(null);
+      setSaved(true);
+      setBusy(false);
+      await runCheck();
     } catch (err) {
       setError(failText(err, 'Настройки системы не сохранились'));
       setBusy(false);
@@ -748,6 +910,22 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
           <span className="cap">{ownHooks}</span>
         </div>
       ) : null}
+      {checkable && schema ? (
+        <div className="sf-field" style={{ maxWidth: 'none' }}>
+          <span className="sf-label">Проверка подключения</span>
+          {saved && checking ? <span className="cap">Ключи сохранены, проверяем их запросом в {provider.title}</span> : null}
+          {check ? (
+            <CheckResult check={check} title={provider.title} />
+          ) : (
+            <span className="cap">
+              {connected
+                ? `Панель отправит в ${provider.title} запрос с сохранёнными ключами. Он ничего не создаёт и не списывает деньги.`
+                : 'Проверить можно после того, как ключи будут заполнены и сохранены.'}
+            </span>
+          )}
+          {keysPending && connected ? <span className="cap">Проверяются сохранённые ключи: сначала сохраните изменения.</span> : null}
+        </div>
+      ) : null}
       {error ? (
         <p className="err" role="alert">
           {error}
@@ -755,12 +933,17 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved }: Setu
       ) : null}
       <div className="cc-btns" style={{ gap: 10 }}>
         {schema ? (
-          <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
+          <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy || checking}>
             {busy ? 'Сохраняем…' : 'Сохранить'}
           </button>
         ) : null}
+        {checkable && schema ? (
+          <button type="button" className="btn-line hov" onClick={() => void runCheck()} disabled={busy || checking || !connected || keysPending} style={{ padding: '0 16px' }}>
+            {checking ? 'Проверяем…' : 'Проверить подключение'}
+          </button>
+        ) : null}
         <button type="button" className="btn-line hov" onClick={onClose} disabled={busy} style={{ padding: '0 16px' }}>
-          Отменить
+          {pending ? 'Отменить' : 'Закрыть'}
         </button>
       </div>
     </div>

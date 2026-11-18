@@ -1073,3 +1073,72 @@ async fn клиент_с_сертификатом_собирается_один_
     assert!(overpay.client(&broken).is_err());
     assert_ne!(locked(&overpay.built).as_ref().unwrap().digest, digest);
 }
+
+#[tokio::test]
+async fn проверка_подключения_overpay_ничего_не_создаёт() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/orders"))
+        .and(wiremock::matchers::query_param("projectId", "1017"))
+        .and(wiremock::matchers::query_param(
+            "merchant_order_id",
+            Uuid::nil().to_string(),
+        ))
+        .and(basic_auth("shop", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"orders": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/orders"))
+        .and(basic_auth("shop", "wrong"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"message": "Unauthorized"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/orders"))
+        .and(basic_auth("nocert", "secret"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .insert_header("content-type", "text/html")
+                .set_body_string(
+                    "<html><head><title>400 No required SSL certificate was sent</title></head></html>",
+                ),
+        )
+        .mount(&server)
+        .await;
+    let overpay = Overpay::with_api_base(server.uri());
+    let context = CheckContext::default();
+    let ok = overpay.check_connection(&settings(), &context).await;
+    assert_eq!(ok.status, CheckStatus::Ok, "{}", ok.summary);
+    assert!(ok.details[0].contains("Номер проекта"));
+    let mut wrong = settings();
+    wrong.set("password", json!("wrong"));
+    let login = overpay.check_connection(&wrong, &context).await;
+    assert_eq!(login.status, CheckStatus::KeysRejected);
+    assert!(login.summary.contains("логин и пароль"));
+    let mut no_cert = settings();
+    no_cert.set("login", json!("nocert"));
+    let cert = overpay.check_connection(&no_cert, &context).await;
+    assert_eq!(cert.status, CheckStatus::KeysRejected);
+    assert!(cert.summary.contains("сертификат"));
+    let broken = overpay
+        .check_connection(
+            &with_pem("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----"),
+            &context,
+        )
+        .await;
+    assert_eq!(broken.status, CheckStatus::SettingsRejected);
+    for request in requests(&server).await {
+        assert_eq!(request.method, wiremock::http::Method::GET);
+        assert!(request.body.is_empty());
+    }
+    let down = failing_api(502).await;
+    let unreachable = Overpay::with_api_base(down.uri())
+        .check_connection(&settings(), &context)
+        .await;
+    assert_eq!(unreachable.status, CheckStatus::Unreachable);
+    let closed = Overpay::with_api_base(closed_api())
+        .check_connection(&settings(), &context)
+        .await;
+    assert_eq!(closed.status, CheckStatus::Unreachable);
+}

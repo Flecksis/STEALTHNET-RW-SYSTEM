@@ -124,6 +124,27 @@ struct BotReply<T> {
 }
 
 #[derive(Deserialize)]
+struct BotUser {
+    #[serde(default)]
+    username: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HookInfo {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    last_error_message: Option<String>,
+}
+
+fn hook_host(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| "другой сервер".to_string())
+}
+
+#[derive(Deserialize)]
 struct RawTransactions {
     transactions: Vec<RawTransaction>,
 }
@@ -463,6 +484,54 @@ impl PaymentProvider for TelegramStars {
             .ok_or_else(|| PaymentError::Rejected("в транзакции звёзд нет плательщика".into()))?;
         self.refund_star_payment(config, user, charge).await
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let me: BotUser = match self.call(config, "getMe", &serde_json::json!({})).await {
+            Ok(me) => me,
+            Err(err)
+                if util::keys_refused(&err)
+                    || err == PaymentError::Rejected("Not Found".into()) =>
+            {
+                return ConnectionCheck::new(
+                    CheckStatus::KeysRejected,
+                    "Telegram не принял токен бота: замените его в разделе «Бот»",
+                );
+            }
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let mut check = ConnectionCheck::ok(match me.username.as_deref() {
+            Some(name) if !name.trim().is_empty() => {
+                format!(
+                    "Токен бота принят: звёзды принимает @{}",
+                    truncate(name.trim(), 64)
+                )
+            }
+            _ => "Токен бота принят Telegram".to_string(),
+        });
+        if let Ok(hook) = self
+            .call::<HookInfo>(config, "getWebhookInfo", &serde_json::json!({}))
+            .await
+            && !hook.url.trim().is_empty()
+        {
+            check.hooks.push(HookCheck {
+                label: "Обновления бота".into(),
+                state: HookState::Other,
+                address: Some(hook_host(&hook.url)),
+                note: Some(match hook.last_error_message.as_deref().map(str::trim) {
+                    Some(error) if !error.is_empty() => format!(
+                        "Telegram отправляет обновления бота на другой сервер, поэтому оплаты звёздами не дойдут до панели. Забрать бота можно в разделе «Бот». Последняя ошибка доставки: {}",
+                        truncate(error, 200)
+                    ),
+                    _ => "Telegram отправляет обновления бота на другой сервер, поэтому оплаты звёздами не дойдут до панели. Забрать бота можно в разделе «Бот»".into(),
+                }),
+            });
+        }
+        check
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +545,99 @@ mod tests {
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     const TOKEN: &str = "123:abc";
+
+    fn token(value: &str) -> ProviderConfig {
+        config(&[(STARS_TOKEN_FIELD, json!(value))])
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_звёзд_по_токену_бота() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/getMe")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "result": {"id": 123, "is_bot": true, "first_name": "VPN", "username": "vpn_shop_bot"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/getWebhookInfo")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "result": {"url": "", "has_custom_certificate": false, "pending_update_count": 0}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/bot1:AAAA/getMe"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "ok": false, "error_code": 401, "description": "Unauthorized"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/botAAAA/getMe"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "ok": false, "error_code": 404, "description": "Not Found"
+            })))
+            .mount(&server)
+            .await;
+        let provider = TelegramStars::with_api_base(server.uri());
+        let context = CheckContext::default();
+        let ok = provider.check_connection(&token(TOKEN), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok);
+        assert!(ok.summary.contains("@vpn_shop_bot"), "{}", ok.summary);
+        assert!(ok.hooks.is_empty());
+        for wrong in ["1:AAAA", "AAAA"] {
+            let rejected = provider.check_connection(&token(wrong), &context).await;
+            assert_eq!(rejected.status, CheckStatus::KeysRejected, "{wrong}");
+            assert!(!rejected.summary.contains(wrong));
+        }
+        let down = crate::test_support::failing_api(502).await;
+        let unreachable = TelegramStars::with_api_base(down.uri())
+            .check_connection(&token(TOKEN), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = TelegramStars::with_api_base(crate::test_support::closed_api())
+            .check_connection(&token(TOKEN), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
+        assert!(!closed.summary.contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn звёзды_не_дойдут_если_обновления_бота_уходят_на_другой_сервер() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/getMe")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "result": {"id": 123, "is_bot": true, "first_name": "VPN", "username": "vpn_shop_bot"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/getWebhookInfo")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "result": {
+                    "url": "https://old-bot.example.net/hook/secret-path",
+                    "pending_update_count": 12,
+                    "last_error_message": "Connection timed out"
+                }
+            })))
+            .mount(&server)
+            .await;
+        let check = TelegramStars::with_api_base(server.uri())
+            .check_connection(&token(TOKEN), &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::Ok);
+        let hook = &check.hooks[0];
+        assert_eq!(hook.state, HookState::Other);
+        assert_eq!(hook.address.as_deref(), Some("old-bot.example.net"));
+        let note = hook.note.as_deref().unwrap();
+        assert!(note.contains("Connection timed out"));
+        assert!(!note.contains("secret-path"));
+    }
 
     #[tokio::test]
     async fn оплата_звёздами_из_бота() {

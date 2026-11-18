@@ -47,6 +47,7 @@ pub fn routes() -> Router<AppState> {
             "/payments/providers/{id}",
             get(provider).put(update_provider),
         )
+        .route("/payments/providers/{id}/check", post(check_provider))
         .route("/modules", get(modules))
         .route("/modules/{id}", patch(toggle_module))
         .route(
@@ -349,6 +350,21 @@ async fn update_provider(
             .services
             .settings_ops()
             .update_provider(&id, &body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn check_provider(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<sn_payments::CheckRecord>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .check_provider(&id, admin.0.admin_id)
             .await?,
     ))
 }

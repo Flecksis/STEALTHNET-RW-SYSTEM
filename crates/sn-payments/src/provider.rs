@@ -310,6 +310,171 @@ pub struct RefundOutcome {
     pub completed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Ok,
+    KeysRejected,
+    SettingsRejected,
+    Unreachable,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookState {
+    Same,
+    Other,
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookCheck {
+    pub label: String,
+    pub state: HookState,
+    pub address: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxTrace {
+    pub verified_at: Option<DateTime<Utc>>,
+    pub rejected_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionCheck {
+    pub status: CheckStatus,
+    pub summary: String,
+    #[serde(default)]
+    pub details: Vec<String>,
+    #[serde(default)]
+    pub hooks: Vec<HookCheck>,
+    #[serde(default)]
+    pub inbox: Option<InboxTrace>,
+}
+
+pub const NO_CHECK_REQUEST: &str = "Проверить без оплаты нельзя: у платёжной системы нет запроса, \
+     который проверяет ключи и ничего не создаёт. Проверьте тестовым платежом на небольшую сумму";
+
+impl ConnectionCheck {
+    pub fn new(status: CheckStatus, summary: impl Into<String>) -> Self {
+        ConnectionCheck {
+            status,
+            summary: summary.into(),
+            details: Vec::new(),
+            hooks: Vec::new(),
+            inbox: None,
+        }
+    }
+
+    pub fn ok(summary: impl Into<String>) -> Self {
+        Self::new(CheckStatus::Ok, summary)
+    }
+
+    pub fn manual(summary: impl Into<String>) -> Self {
+        Self::new(CheckStatus::Manual, summary)
+    }
+
+    pub fn detail(mut self, text: impl Into<String>) -> Self {
+        self.details.push(text.into());
+        self
+    }
+
+    pub fn failed(err: &PaymentError) -> Self {
+        let (status, summary) = match err {
+            PaymentError::NotConfigured(reason) => (
+                CheckStatus::SettingsRejected,
+                format!("Настройки не готовы: {reason}"),
+            ),
+            PaymentError::Rejected(reason) => (
+                CheckStatus::KeysRejected,
+                format!("Платёжная система не приняла запрос: {reason}"),
+            ),
+            PaymentError::BadSignature => (
+                CheckStatus::KeysRejected,
+                "Платёжная система не приняла подпись запроса: проверьте ключ".to_string(),
+            ),
+            PaymentError::Http {
+                status: status @ (401 | 403),
+            } => (
+                CheckStatus::KeysRejected,
+                format!("Платёжная система не приняла ключи (HTTP {status})"),
+            ),
+            PaymentError::Http {
+                status: status @ (429 | 500..=599),
+            } => (
+                CheckStatus::Unreachable,
+                format!("Платёжная система временно не отвечает (HTTP {status}), попробуйте позже"),
+            ),
+            PaymentError::Http { status } => (
+                CheckStatus::KeysRejected,
+                format!("Платёжная система отказала в запросе (HTTP {status})"),
+            ),
+            PaymentError::Transport(reason) => (
+                CheckStatus::Unreachable,
+                format!(
+                    "Не удалось связаться с платёжной системой: {reason}. Проверьте, что сервер панели выходит в интернет, и повторите позже"
+                ),
+            ),
+            PaymentError::BadPayload(reason) => (
+                CheckStatus::Unreachable,
+                format!("Ответ платёжной системы не разобран: {reason}"),
+            ),
+            other => (CheckStatus::SettingsRejected, other.to_string()),
+        };
+        Self::new(status, summary)
+    }
+
+    pub fn scrub(&mut self, secrets: &[&str]) {
+        let clean = |text: &mut String| {
+            for secret in secrets.iter().map(|s| s.trim()).filter(|s| s.len() >= 6) {
+                if text.contains(secret) {
+                    *text = text.replace(secret, "•••");
+                }
+            }
+        };
+        clean(&mut self.summary);
+        self.details.iter_mut().for_each(clean);
+        for hook in &mut self.hooks {
+            clean(&mut hook.label);
+            if let Some(address) = hook.address.as_mut() {
+                clean(address);
+            }
+            if let Some(note) = hook.note.as_mut() {
+                clean(note);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckContext {
+    pub webhook_url: Option<String>,
+}
+
+pub fn hook_address(address: &str) -> String {
+    let address = address.trim();
+    let without_query = address.split(['?', '#']).next().unwrap_or(address);
+    without_query.trim_end_matches('/').to_string()
+}
+
+pub fn same_hook(expected: &str, actual: &str) -> bool {
+    let normalize = |raw: &str| -> Option<String> {
+        let url = reqwest::Url::parse(raw.trim()).ok()?;
+        let host = url.host_str()?.to_ascii_lowercase();
+        let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+        let path = url.path().trim_end_matches('/').to_string();
+        let query = url.query().map(|q| format!("?{q}")).unwrap_or_default();
+        Some(format!("{}://{host}{port}{path}{query}", url.scheme()))
+    };
+    match (normalize(expected), normalize(actual)) {
+        (Some(expected), Some(actual)) => expected == actual,
+        _ => false,
+    }
+}
+
 #[async_trait]
 pub trait PaymentProvider: Send + Sync + 'static {
     fn id(&self) -> &'static str;
@@ -436,6 +601,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
     ) -> PaymentResult<Option<WebhookOutcome>> {
         Ok(None)
     }
+
+    async fn check_connection(
+        &self,
+        _config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        ConnectionCheck::manual(NO_CHECK_REQUEST)
+    }
 }
 
 pub fn http_client() -> reqwest::Client {
@@ -446,4 +619,86 @@ pub fn http_client() -> reqwest::Client {
         .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ошибки_запроса_становятся_понятным_итогом_проверки() {
+        let status = |err: PaymentError| ConnectionCheck::failed(&err).status;
+        assert_eq!(
+            status(PaymentError::Transport("operation timed out".into())),
+            CheckStatus::Unreachable
+        );
+        assert_eq!(
+            status(PaymentError::Http { status: 502 }),
+            CheckStatus::Unreachable
+        );
+        assert_eq!(
+            status(PaymentError::Http { status: 429 }),
+            CheckStatus::Unreachable
+        );
+        assert_eq!(
+            status(PaymentError::Http { status: 401 }),
+            CheckStatus::KeysRejected
+        );
+        assert_eq!(
+            status(PaymentError::Rejected("нет доступа".into())),
+            CheckStatus::KeysRejected
+        );
+        assert_eq!(
+            status(PaymentError::NotConfigured("не задано поле api_key".into())),
+            CheckStatus::SettingsRejected
+        );
+        assert_eq!(
+            status(PaymentError::BadPayload("тело не JSON".into())),
+            CheckStatus::Unreachable
+        );
+    }
+
+    #[test]
+    fn ключи_вычищаются_из_итога_проверки() {
+        let mut check = ConnectionCheck::new(
+            CheckStatus::KeysRejected,
+            "Платёжная система не приняла запрос: key sk_live_12345 is revoked",
+        )
+        .detail("Ответ: sk_live_12345");
+        check.hooks.push(HookCheck {
+            label: "Pay".into(),
+            state: HookState::Other,
+            address: Some("https://old.example.com/hook/sk_live_12345".into()),
+            note: Some("s".into()),
+        });
+        check.scrub(&["sk_live_12345", "s", "  "]);
+        let text = serde_json::to_string(&check).unwrap();
+        assert!(!text.contains("sk_live_12345"), "{text}");
+        assert!(check.summary.ends_with("key ••• is revoked"));
+        assert_eq!(check.hooks[0].note.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn адреса_уведомлений_сравниваются_без_мелочей() {
+        let ours = "https://panel.example.com/api/webhooks/pay/cloudpayments/pay";
+        assert!(same_hook(ours, ours));
+        assert!(same_hook(
+            ours,
+            " HTTPS://Panel.Example.com/api/webhooks/pay/cloudpayments/pay/ "
+        ));
+        assert!(!same_hook(
+            ours,
+            "http://panel.example.com/api/webhooks/pay/cloudpayments/pay"
+        ));
+        assert!(!same_hook(
+            ours,
+            "https://panel.example.com/api/webhooks/pay/cloudpayments/check"
+        ));
+        assert!(!same_hook(ours, &format!("{ours}?x=1")));
+        assert!(!same_hook(ours, "не адрес"));
+        assert_eq!(
+            hook_address("https://old.example.com/cp/pay/?key=secret#frag"),
+            "https://old.example.com/cp/pay"
+        );
+    }
 }

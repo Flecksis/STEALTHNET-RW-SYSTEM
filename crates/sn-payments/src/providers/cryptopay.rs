@@ -347,6 +347,63 @@ impl PaymentProvider for CryptoPay {
         })
     }
 
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let testnet = config.flag("testnet");
+        let token = match config.require("api_token") {
+            Ok(token) => token,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let reply = match util::send(
+            self.http
+                .get(format!("{}/api/getMe", self.base(config)))
+                .header("Crypto-Pay-API-Token", token),
+        )
+        .await
+        {
+            Ok(reply) => reply,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let parsed = match reply.json() {
+            Ok(parsed) => parsed,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        if parsed.get("ok").and_then(Json::as_bool) == Some(true) {
+            let name = parsed
+                .at(&["result", "name"])
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            let check = ConnectionCheck::ok(match name {
+                Some(name) => format!(
+                    "Токен принят: приложение «{}» в Crypto Pay",
+                    util::clip(name, 64)
+                ),
+                None => "Токен принят Crypto Pay".to_string(),
+            });
+            return if testnet {
+                check.detail(
+                    "Включена тестовая сеть: оплаты ненастоящие. Перед запуском выключите её и вставьте токен из @CryptoBot",
+                )
+            } else {
+                check
+            };
+        }
+        let error = parsed.at(&["error", "name"]).and_then(Json::as_str);
+        if reply.status == 401 || error == Some("UNAUTHORIZED") {
+            return ConnectionCheck::new(CheckStatus::KeysRejected, "Crypto Pay не принял токен")
+                .detail(if testnet {
+                    "Включена тестовая сеть: нужен токен приложения из @CryptoTestnetBot. Токен из @CryptoBot подходит только без тестовой сети"
+                } else {
+                    "Нужен токен приложения из @CryptoBot: Crypto Pay → My Apps → API Token. Токен из @CryptoTestnetBot подходит только с включённой тестовой сетью"
+                });
+        }
+        ConnectionCheck::failed(&reply.failure(error))
+    }
+
     async fn fetch_status(
         &self,
         config: &ProviderConfig,
@@ -659,6 +716,59 @@ mod tests {
                 .is_err()
         );
         assert!(provider.is_configured(&config()));
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_crypto_pay() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/getMe"))
+            .and(header("Crypto-Pay-API-Token", "1234:AAA"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {"app_id": 1, "name": "VPN Shop", "payment_processing_bot_username": "CryptoBot"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/getMe"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "ok": false, "error": {"code": 401, "name": "UNAUTHORIZED"}
+            })))
+            .mount(&server)
+            .await;
+        let provider = CryptoPay::with_api_base(server.uri());
+        let context = CheckContext::default();
+        let ok = provider.check_connection(&config(), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok);
+        assert!(ok.summary.contains("«VPN Shop»"), "{}", ok.summary);
+        assert!(ok.details.is_empty());
+        let testnet = provider
+            .check_connection(&with_assets("USDT", true), &context)
+            .await;
+        assert_eq!(testnet.status, CheckStatus::Ok);
+        assert!(testnet.details[0].contains("тестовая сеть"));
+        let mut wrong = config();
+        wrong.set("api_token", serde_json::json!("9999:BBB"));
+        let rejected = provider.check_connection(&wrong, &context).await;
+        assert_eq!(rejected.status, CheckStatus::KeysRejected);
+        assert!(rejected.details[0].contains("@CryptoBot"));
+        wrong.set("testnet", serde_json::json!(true));
+        let rejected = provider.check_connection(&wrong, &context).await;
+        assert!(rejected.details[0].contains("@CryptoTestnetBot"));
+        for request in server.received_requests().await.unwrap() {
+            assert!(request.body.is_empty());
+        }
+        let down = crate::test_support::failing_api(502).await;
+        let unreachable = CryptoPay::with_api_base(down.uri())
+            .check_connection(&config(), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = CryptoPay::with_api_base(crate::test_support::closed_api())
+            .check_connection(&config(), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
+        assert!(!closed.summary.contains("1234:AAA"));
     }
 
     #[tokio::test]

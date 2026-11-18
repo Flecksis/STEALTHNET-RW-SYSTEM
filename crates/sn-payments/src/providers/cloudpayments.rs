@@ -20,6 +20,13 @@ const SBP: &str = "sbp";
 const MAX_TTL_MINUTES: i64 = 43_200;
 const MAX_REDIRECT_LEN: usize = 1024;
 
+const HOOKS: [(&str, &str); 4] = [
+    ("check", "Check"),
+    ("pay", "Pay"),
+    ("fail", "Fail"),
+    ("refund", "Refund"),
+];
+
 const METHODS: [PayMethod; 2] = [
     PayMethod::new(
         PAGE,
@@ -226,6 +233,59 @@ pub fn signature(secret: &str, message: &[u8]) -> String {
             STANDARD.encode(mac.finalize().into_bytes())
         }
         Err(_) => String::new(),
+    }
+}
+
+fn hook_check(label: &str, model: &Json, expected: &str) -> HookCheck {
+    let enabled = model.get("IsEnabled").and_then(Json::as_bool) == Some(true);
+    let address = model
+        .get("Address")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty());
+    let off = |address: Option<&str>| HookCheck {
+        label: label.to_string(),
+        state: HookState::Off,
+        address: address.map(hook_address),
+        note: None,
+    };
+    let Some(address) = address.filter(|_| enabled) else {
+        return off(address);
+    };
+    if !same_hook(expected, address) {
+        return HookCheck {
+            label: label.to_string(),
+            state: HookState::Other,
+            address: Some(hook_address(address)),
+            note: None,
+        };
+    }
+    let mut notes = Vec::new();
+    if let Some(format) = model
+        .get("Format")
+        .and_then(Json::as_str)
+        .filter(|f| !f.eq_ignore_ascii_case("CloudPayments"))
+    {
+        notes.push(format!(
+            "формат {}, нужен CloudPayments",
+            util::clip(format, 24)
+        ));
+    }
+    if let Some(encoding) = model
+        .get("Encoding")
+        .and_then(Json::as_str)
+        .filter(|e| !e.eq_ignore_ascii_case("UTF8"))
+    {
+        notes.push(format!(
+            "кодировка {}, нужна UTF-8",
+            util::clip(encoding, 24)
+        ));
+    }
+    HookCheck {
+        label: label.to_string(),
+        state: HookState::Same,
+        address: None,
+        note: (!notes.is_empty()).then(|| notes.join(", ")),
     }
 }
 
@@ -778,6 +838,69 @@ impl PaymentProvider for CloudPayments {
             .ok_or_else(|| PaymentError::Rejected("возврат не найден в CloudPayments".into()))?;
         refund_outcome(&model, provider_refund_id.trim()).map(Some)
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        context: &CheckContext,
+    ) -> ConnectionCheck {
+        match self
+            .call(config, "test", &Json::Object(Vec::new()), None)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) if util::keys_refused(&err) => {
+                return ConnectionCheck::new(
+                    CheckStatus::KeysRejected,
+                    "CloudPayments не принял Public ID и пароль для API",
+                )
+                .detail("Оба значения берутся в кабинете CloudPayments → Сайты → настройки сайта. Пароль для API не совпадает с паролем от кабинета");
+            }
+            Err(err) => return ConnectionCheck::failed(&err),
+        }
+        let mut check = ConnectionCheck::ok("Public ID и пароль для API приняты CloudPayments");
+        if config.flag("test_mode") {
+            check = check.detail(
+                "Включён тестовый режим: засчитываются только тестовые оплаты, настоящие панель не примет",
+            );
+        }
+        let Some(base) = context.webhook_url.as_deref() else {
+            return check.detail(
+                "Адрес панели не задан в основных настройках, поэтому адреса уведомлений не сравнивались",
+            );
+        };
+        for (kind, label) in HOOKS {
+            match self
+                .call(
+                    config,
+                    &format!("site/notifications/{kind}/get"),
+                    &Json::Object(Vec::new()),
+                    None,
+                )
+                .await
+            {
+                Ok(Some(model)) => {
+                    check
+                        .hooks
+                        .push(hook_check(label, &model, &format!("{base}/{kind}")));
+                }
+                Ok(None) => check.hooks.push(HookCheck {
+                    label: label.to_string(),
+                    state: HookState::Off,
+                    address: None,
+                    note: None,
+                }),
+                Err(err) => {
+                    check.hooks.clear();
+                    return check.detail(format!(
+                        "Настройки уведомлений CloudPayments не получены: {}",
+                        ConnectionCheck::failed(&err).summary
+                    ));
+                }
+            }
+        }
+        check
+    }
 }
 
 #[cfg(test)]
@@ -792,6 +915,112 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const SECRET: &str = "cp-api-secret";
+
+    fn notifications(kind: &str, model: serde_json::Value) -> Mock {
+        Mock::given(method("POST"))
+            .and(path(format!("/site/notifications/{kind}/get")))
+            .and(basic_auth("pk_8f3b2c1d0e", SECRET))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Model": model, "Success": true, "Message": null
+            })))
+    }
+
+    fn hook_model(enabled: bool, address: &str, encoding: &str) -> serde_json::Value {
+        json!({
+            "IsEnabled": enabled, "Address": address, "HttpMethod": "POST",
+            "Encoding": encoding, "Format": "CloudPayments"
+        })
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_cloudpayments_и_адресов_уведомлений() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/test"))
+            .and(basic_auth("pk_8f3b2c1d0e", SECRET))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Success": true, "Message": "bd6353c3-0ed6-4a65-946f-083664bf8dbd"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "Success": false, "Message": "Authentication failed.", "ErrorCode": null
+            })))
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let base = "https://panel.example.com/api/webhooks/pay/cloudpayments";
+        notifications("check", hook_model(true, &format!("{base}/check"), "UTF8"))
+            .mount(&server)
+            .await;
+        notifications(
+            "pay",
+            hook_model(true, &format!("{base}/pay/"), "Windows1251"),
+        )
+        .mount(&server)
+        .await;
+        notifications("fail", hook_model(false, "", "UTF8"))
+            .mount(&server)
+            .await;
+        notifications(
+            "refund",
+            hook_model(true, "https://old.example.com/cp/refund?key=1", "UTF8"),
+        )
+        .mount(&server)
+        .await;
+        let provider = CloudPayments::with_api_base(server.uri());
+        let context = CheckContext {
+            webhook_url: Some(base.into()),
+        };
+        let ok = provider.check_connection(&settings(), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok, "{}", ok.summary);
+        let states: Vec<(&str, HookState)> = ok
+            .hooks
+            .iter()
+            .map(|h| (h.label.as_str(), h.state))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("Check", HookState::Same),
+                ("Pay", HookState::Same),
+                ("Fail", HookState::Off),
+                ("Refund", HookState::Other)
+            ]
+        );
+        assert_eq!(ok.hooks[0].note, None);
+        assert_eq!(
+            ok.hooks[1].note.as_deref(),
+            Some("кодировка Windows1251, нужна UTF-8")
+        );
+        assert_eq!(
+            ok.hooks[3].address.as_deref(),
+            Some("https://old.example.com/cp/refund")
+        );
+        let mut test_mode = settings();
+        test_mode.set("test_mode", json!(true));
+        let without_url = provider
+            .check_connection(&test_mode, &CheckContext::default())
+            .await;
+        assert_eq!(without_url.status, CheckStatus::Ok);
+        assert!(without_url.hooks.is_empty());
+        assert_eq!(without_url.details.len(), 2);
+        let mut wrong = settings();
+        wrong.set("api_secret", json!("wrong-secret"));
+        let rejected = provider.check_connection(&wrong, &context).await;
+        assert_eq!(rejected.status, CheckStatus::KeysRejected);
+        assert!(rejected.hooks.is_empty());
+        let down = crate::test_support::failing_api(503).await;
+        let unreachable = CloudPayments::with_api_base(down.uri())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = CloudPayments::with_api_base(crate::test_support::closed_api())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
+    }
 
     fn settings() -> ProviderConfig {
         config(&[

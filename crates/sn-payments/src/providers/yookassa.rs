@@ -761,6 +761,82 @@ impl PaymentProvider for YooKassa {
             }),
         }
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let request = match self.request(config, reqwest::Method::GET, "/v3/me") {
+            Ok(request) => request,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let reply = match util::send(request).await {
+            Ok(reply) => reply,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        if matches!(reply.status, 401 | 403) {
+            return ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                "ЮKassa не приняла shopId и секретный ключ",
+            )
+            .detail("Оба значения есть в кабинете ЮKassa: Интеграция → Ключи API. Ключ тестового магазина подходит только к shopId тестового магазина");
+        }
+        let me = match reply.json() {
+            Ok(me) if reply.is_success() => me,
+            Ok(me) => {
+                return ConnectionCheck::failed(
+                    &reply.failure(me.get("description").and_then(Json::as_str)),
+                );
+            }
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        if me.get("status").and_then(Json::as_str) == Some("disabled") {
+            return ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                "Ключи приняты, но магазин в ЮKassa отключён: оплаты не пройдут",
+            )
+            .detail("Причину покажет кабинет ЮKassa или менеджер ЮKassa");
+        }
+        let fiscal = me
+            .at(&["fiscalization", "enabled"])
+            .or_else(|| me.get("fiscalization_enabled"))
+            .and_then(Json::as_bool);
+        let vat = code(config, "vat_code", VAT_CODES).ok().flatten();
+        if fiscal == Some(true) && vat.is_none() {
+            return ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                "Ключи приняты, но в магазине включены чеки, а ставка НДС в настройках не указана",
+            )
+            .detail("Без ставки НДС панель не передаёт чек, и ЮKassa отклонит такую оплату. Укажите код ставки НДС");
+        }
+        let mut check = ConnectionCheck::ok("shopId и секретный ключ приняты ЮKassa");
+        if me.get("test").and_then(Json::as_bool) == Some(true) {
+            check = check.detail(
+                "Это тестовый магазин: деньги ненастоящие. Перед запуском вставьте shopId и ключ боевого магазина",
+            );
+        }
+        if fiscal == Some(false) && vat.is_some() {
+            check = check.detail(
+                "В магазине не включены чеки, поэтому ставка НДС из настроек не используется",
+            );
+        }
+        if let Some(enabled) = me.get("payment_methods").and_then(Json::as_array) {
+            let enabled: Vec<&str> = enabled.iter().filter_map(Json::as_str).collect();
+            let missing: Vec<&str> = METHODS
+                .iter()
+                .filter(|m| m.code != PAGE && !enabled.contains(&m.code))
+                .map(|m| m.title)
+                .collect();
+            if !missing.is_empty() && !enabled.is_empty() {
+                check = check.detail(format!(
+                    "Магазину не подключены способы: {}. Если они отмечены в способах оплаты, клиент увидит ошибку",
+                    missing.join(", ")
+                ));
+            }
+        }
+        check
+    }
 }
 
 #[cfg(test)]
@@ -782,6 +858,103 @@ mod tests {
         ];
         pairs.extend_from_slice(extra);
         config(&pairs)
+    }
+
+    fn me(fiscal: bool, test: bool, status: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "account_id": "504367",
+            "test": test,
+            "fiscalization_enabled": fiscal,
+            "fiscalization": {"enabled": fiscal, "provider": "avanpost"},
+            "payment_methods": ["bank_card", "sbp", "yoo_money"],
+            "itn": "7736207543",
+            "status": status
+        }))
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_юkassa_по_сведениям_о_магазине() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v3/me"))
+            .and(basic_auth("504367", "live_secret"))
+            .respond_with(me(false, false, "enabled"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v3/me"))
+            .and(basic_auth("504368", "test_secret"))
+            .respond_with(me(true, true, "enabled"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v3/me"))
+            .and(basic_auth("504369", "off_secret"))
+            .respond_with(me(false, false, "disabled"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v3/me"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "type": "error",
+                "id": "ab5a11cd-13cc-4e33-af8b-75a74e18dd09",
+                "code": "invalid_credentials",
+                "description": "Basic authentication failed"
+            })))
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let provider = YooKassa::with_api_base(server.uri());
+        let context = CheckContext::default();
+        let ok = provider.check_connection(&settings(&[]), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok, "{}", ok.summary);
+        assert_eq!(ok.details.len(), 1);
+        assert!(ok.details[0].contains("SberPay"));
+        assert!(ok.details[0].contains("T-Pay"));
+        assert!(!ok.details[0].contains("СБП"));
+        let unused_vat = provider
+            .check_connection(&settings(&[("vat_code", json!(1))]), &context)
+            .await;
+        assert!(unused_vat.details[0].contains("ставка НДС"));
+        let test_shop = config(&[
+            ("shop_id", json!("504368")),
+            ("secret_key", json!("test_secret")),
+        ]);
+        let no_vat = provider.check_connection(&test_shop, &context).await;
+        assert_eq!(no_vat.status, CheckStatus::SettingsRejected);
+        assert!(no_vat.summary.contains("ставка НДС"));
+        let mut with_vat = test_shop.clone();
+        with_vat.set("vat_code", json!(1));
+        let test = provider.check_connection(&with_vat, &context).await;
+        assert_eq!(test.status, CheckStatus::Ok);
+        assert!(test.details[0].contains("тестовый магазин"));
+        let disabled = provider
+            .check_connection(
+                &config(&[
+                    ("shop_id", json!("504369")),
+                    ("secret_key", json!("off_secret")),
+                ]),
+                &context,
+            )
+            .await;
+        assert_eq!(disabled.status, CheckStatus::SettingsRejected);
+        let rejected = provider
+            .check_connection(&settings(&[("secret_key", json!("wrong"))]), &context)
+            .await;
+        assert_eq!(rejected.status, CheckStatus::KeysRejected);
+        for request in server.received_requests().await.unwrap() {
+            assert_eq!(request.method, wiremock::http::Method::GET);
+            assert!(request.headers.get("idempotence-key").is_none());
+        }
+        let down = failing_api(502).await;
+        let unreachable = YooKassa::with_api_base(down.uri())
+            .check_connection(&settings(&[]), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = YooKassa::with_api_base(closed_api())
+            .check_connection(&settings(&[]), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
     }
 
     fn payment(status: &str, value: &str, currency: &str) -> serde_json::Value {

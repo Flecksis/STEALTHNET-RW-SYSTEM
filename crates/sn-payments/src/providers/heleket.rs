@@ -503,6 +503,88 @@ impl PaymentProvider for Heleket {
             .await?;
         Ok(Some(self.explained(config, outcome(&result)?).await))
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let (merchant, key) = match (config.require("merchant_id"), config.require("api_key")) {
+            (Ok(merchant), Ok(key)) => (merchant, key),
+            (Err(err), _) | (_, Err(err)) => return ConnectionCheck::failed(&err),
+        };
+        let reply = match util::send(
+            self.http
+                .post(format!("{}/v1/payment/services", self.base(config)))
+                .header("merchant", merchant)
+                .header("sign", signature(b"", key)),
+        )
+        .await
+        {
+            Ok(reply) => reply,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let parsed = Json::parse(&reply.body);
+        let accepted = reply.is_success()
+            && parsed
+                .as_ref()
+                .and_then(|p| p.get("state"))
+                .and_then(Json::scalar_text)
+                == Some("0");
+        if accepted {
+            let services = parsed
+                .as_ref()
+                .and_then(|p| p.get("result"))
+                .and_then(Json::as_array)
+                .unwrap_or_default();
+            let closed: Vec<&str> = COINS
+                .iter()
+                .filter(|coin| {
+                    services.iter().any(|service| {
+                        let text = |key: &str| service.get(key).and_then(Json::as_str);
+                        text("currency").is_some_and(|c| c.eq_ignore_ascii_case(coin.currency))
+                            && text("network").is_some_and(|n| n.eq_ignore_ascii_case(coin.network))
+                            && service.get("is_available").and_then(Json::as_bool) == Some(false)
+                    })
+                })
+                .map(|coin| coin.method.title)
+                .collect();
+            let check = ConnectionCheck::ok("ID мерчанта и платёжный ключ приняты Heleket");
+            return if closed.is_empty() {
+                check
+            } else {
+                check.detail(format!(
+                    "Сейчас Heleket не принимает: {}",
+                    closed.join(", ")
+                ))
+            };
+        }
+        let message = parsed.as_ref().and_then(error_text);
+        if message
+            .as_deref()
+            .is_some_and(|m| m.to_ascii_lowercase().contains("merchant unknown"))
+        {
+            return ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                "Heleket не знает мерчанта с таким ID",
+            )
+            .detail("ID мерчанта — это UUID из личного кабинета Heleket, раздел «Настройки»");
+        }
+        if matches!(reply.status, 401 | 403) || reply.is_success() {
+            let check = ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                "Heleket не принял ID мерчанта и платёжный ключ",
+            );
+            return match message {
+                Some(message) => check.detail(format!(
+                    "Ответ Heleket: «{}». Нужен платёжный ключ из раздела API, ключ выплат не подходит",
+                    util::clip(&message, 200)
+                )),
+                None => check.detail("Нужен платёжный ключ из раздела API, ключ выплат не подходит"),
+            };
+        }
+        ConnectionCheck::failed(&reply.failure(message.as_deref()))
+    }
 }
 
 #[cfg(test)]
@@ -530,6 +612,83 @@ mod tests {
     fn signed(data: &str, key: &str) -> String {
         let sign = signature(data.as_bytes(), key);
         format!("{},\"sign\":\"{sign}\"}}", &data[..data.len() - 1])
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_heleket_списком_способов() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/services"))
+            .and(header("merchant", MERCHANT))
+            .and(header("sign", md5::hex(KEY.as_bytes()).as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": [
+                    {"network": "TRON", "currency": "USDT", "is_available": true,
+                     "limit": {"min_amount": "1.00000000", "max_amount": "100000.00000000"},
+                     "commission": {"fee_amount": "0.00", "percent": "2.00"}},
+                    {"network": "BTC", "currency": "BTC", "is_available": false},
+                    {"network": "DOGE", "currency": "DOGE", "is_available": false}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/services"))
+            .and(header("merchant", "00000000-0000-4000-8000-000000000000"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({"message": "Merchant unknown."})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/services"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"state": 1, "message": "Wrong key"})),
+            )
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        let provider = Heleket::with_api_base(server.uri());
+        let context = CheckContext::default();
+        let ok = provider.check_connection(&settings(), &context).await;
+        assert_eq!(ok.status, CheckStatus::Ok, "{}", ok.summary);
+        assert_eq!(ok.details, ["Сейчас Heleket не принимает: Bitcoin"]);
+        let unknown = provider
+            .check_connection(
+                &config(&[
+                    ("merchant_id", json!("00000000-0000-4000-8000-000000000000")),
+                    ("api_key", json!(KEY)),
+                ]),
+                &context,
+            )
+            .await;
+        assert_eq!(unknown.status, CheckStatus::KeysRejected);
+        assert!(unknown.summary.contains("мерчанта"));
+        let wrong = provider
+            .check_connection(
+                &config(&[
+                    ("merchant_id", json!(MERCHANT)),
+                    ("api_key", json!("other-key")),
+                ]),
+                &context,
+            )
+            .await;
+        assert_eq!(wrong.status, CheckStatus::KeysRejected);
+        assert!(wrong.details[0].contains("«Wrong key»"));
+        for request in server.received_requests().await.unwrap() {
+            assert!(request.body.is_empty());
+        }
+        let down = failing_api(500).await;
+        let unreachable = Heleket::with_api_base(down.uri())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(unreachable.status, CheckStatus::Unreachable);
+        let closed = Heleket::with_api_base(closed_api())
+            .check_connection(&settings(), &context)
+            .await;
+        assert_eq!(closed.status, CheckStatus::Unreachable);
     }
 
     async fn parse(body: String) -> PaymentResult<WebhookOutcome> {

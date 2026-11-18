@@ -952,6 +952,54 @@ impl PaymentProvider for Overpay {
         let order = self.known_order(config, id).await?;
         Ok(Some(order.refund_state(target)))
     }
+
+    async fn check_connection(
+        &self,
+        config: &ProviderConfig,
+        _context: &CheckContext,
+    ) -> ConnectionCheck {
+        let project = match config.require("project_id") {
+            Ok(project) => project,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        let path = format!(
+            "/api/orders?projectId={}&merchant_order_id={}",
+            util::rfc3986(project),
+            Uuid::nil()
+        );
+        let reply = match self.call(config, reqwest::Method::GET, &path, None).await {
+            Ok(reply) => reply,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
+        if reply.is_success() {
+            return match reply.json() {
+                Ok(body) if body.get("orders").and_then(Json::as_array).is_some() => {
+                    ConnectionCheck::ok("Сертификат, логин и пароль приняты Overpay").detail(
+                        "Номер проекта этой проверкой не подтверждается: сверьте его с кабинетом Overpay",
+                    )
+                }
+                Ok(_) => ConnectionCheck::failed(&util::bad("в ответе Overpay нет списка заказов")),
+                Err(err) => ConnectionCheck::failed(&err),
+            };
+        }
+        if String::from_utf8_lossy(&reply.body)
+            .to_ascii_lowercase()
+            .contains("ssl certificate")
+        {
+            return ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                "Overpay не принял сертификат клиента",
+            )
+            .detail("Нужен сертификат с закрытым ключом, который Overpay выдал для этого проекта. Проверьте, что вставлен весь файл и срок сертификата не истёк");
+        }
+        if matches!(reply.status, 401 | 403) {
+            return ConnectionCheck::new(
+                CheckStatus::KeysRejected,
+                "Overpay принял сертификат, но не принял логин и пароль API",
+            );
+        }
+        ConnectionCheck::failed(&failure(&reply))
+    }
 }
 
 #[cfg(test)]

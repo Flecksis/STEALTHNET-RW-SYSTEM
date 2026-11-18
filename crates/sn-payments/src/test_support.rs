@@ -56,3 +56,19 @@ pub(crate) fn hook(headers: &[(&str, &str)], body: impl Into<Bytes>) -> WebhookR
         query: None,
     }
 }
+
+pub(crate) fn closed_api() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}")
+}
+
+pub(crate) async fn failing_api(status: u16) -> wiremock::MockServer {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(status).set_body_string("Bad Gateway"))
+        .mount(&server)
+        .await;
+    server
+}

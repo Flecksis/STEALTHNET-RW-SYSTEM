@@ -22,8 +22,8 @@ use sn_domain::settings::{
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
 use sn_payments::{
-    PaymentProvider, ProviderConfig, ProviderKind, ProviderRegistry, ProviderState, ProviderView,
-    RegistrySnapshot,
+    CheckContext, CheckRecord, CheckStatus, ConnectionCheck, InboxTrace, PaymentProvider,
+    ProviderConfig, ProviderKind, ProviderRegistry, ProviderState, ProviderView, RegistrySnapshot,
 };
 use sn_remnawave::{
     CustomRemarks, HwidSettings, RemnaConfig, RemnawaveApi, RemnawaveClient, SubscriptionSettings,
@@ -38,6 +38,9 @@ pub const REMNA_WEBHOOK_PATH: &str = "/api/remnawave/webhook";
 pub const MAX_TEXT_FIELD: usize = 2_000;
 pub const MAX_LARGE_FIELD: usize = 20_000;
 pub const MAX_REMARK_CHARS: usize = 200;
+pub const PROVIDER_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+pub const CHECK_UNCONFIGURED: &str = "settings.provider_check_unconfigured";
+pub const INBOX_TRACE_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSettings {
@@ -358,6 +361,25 @@ pub async fn registry_snapshot(
         states,
         order: core.payment_order.for_currency(core.currency).to_vec(),
     })
+}
+
+pub async fn provider_checks(
+    db: &mut impl Db,
+    registry: &ProviderRegistry,
+) -> ServiceResult<HashMap<String, CheckRecord>> {
+    let mut checks = HashMap::new();
+    for (key, value) in db.settings().with_prefix(keys::PROVIDER_CHECKS).await? {
+        let Some(id) = key.strip_prefix(keys::PROVIDER_CHECKS) else {
+            continue;
+        };
+        if registry.get(id).is_none() {
+            continue;
+        }
+        if let Some(record) = parse::<CheckRecord>(&key, value) {
+            checks.insert(id.to_string(), record);
+        }
+    }
+    Ok(checks)
 }
 
 pub async fn module_secret_rows(
@@ -1503,6 +1525,9 @@ impl<'a> SettingsOps<'a> {
         tx.settings()
             .set_as(&keys::provider(id), &stored, Some(admin))
             .await?;
+        if !update.config.is_empty() || !update.clear.is_empty() {
+            tx.settings().delete(&keys::provider_check(id)).await?;
+        }
         let changed_secrets: Vec<&str> = changes
             .iter()
             .map(|c| match c {
@@ -1528,6 +1553,96 @@ impl<'a> SettingsOps<'a> {
         tx.commit().await?;
         self.saved().await?;
         self.provider(id)
+    }
+
+    pub async fn check_provider(&self, id: &str, admin: AdminId) -> ServiceResult<CheckRecord> {
+        let registry = self.services.payments();
+        let provider = registry
+            .get(id)
+            .filter(|p| p.kind() != ProviderKind::Balance)
+            .ok_or(ServiceError::NotFound("платёжная система"))?;
+        let id = provider.id();
+        let config = registry.config(id);
+        if !provider.is_configured(&config) {
+            return Err(ServiceError::rejected(
+                CHECK_UNCONFIGURED,
+                format!(
+                    "{} ещё не подключена: заполните и сохраните ключи, потом проверьте",
+                    provider.title()
+                ),
+            ));
+        }
+        let mut check = match provider.validate_settings(&config) {
+            Err(err) => ConnectionCheck::failed(&err),
+            Ok(()) => {
+                crate::limits::RateLimits::new(self.services)
+                    .hit(crate::limits::rules::PAYMENT_CHECK, id)
+                    .await?;
+                let context = CheckContext {
+                    webhook_url: self
+                        .services
+                        .settings()
+                        .public_url
+                        .as_deref()
+                        .map(|u| u.trim().trim_end_matches('/'))
+                        .filter(|u| !u.is_empty())
+                        .map(|base| format!("{base}/api/webhooks/pay/{id}")),
+                };
+                tokio::time::timeout(
+                    PROVIDER_CHECK_TIMEOUT,
+                    provider.check_connection(&config, &context),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    ConnectionCheck::new(
+                        CheckStatus::Unreachable,
+                        format!(
+                            "Платёжная система не ответила за {} секунд, попробуйте позже",
+                            PROVIDER_CHECK_TIMEOUT.as_secs()
+                        ),
+                    )
+                })
+            }
+        };
+        if provider.accepts_http_webhooks() {
+            let since = self.services.now() - chrono::Duration::days(INBOX_TRACE_DAYS);
+            let mut conn = self.services.store().conn().await?;
+            let (verified_at, rejected_at) = conn.webhooks().trace(id, since).await?;
+            if verified_at.is_some() || rejected_at.is_some() {
+                check.inbox = Some(InboxTrace {
+                    verified_at,
+                    rejected_at,
+                });
+            }
+        }
+        let secrets: Vec<&str> = provider
+            .settings_schema()
+            .iter()
+            .filter(|f| f.is_secret())
+            .filter_map(|f| config.get(f.key))
+            .chain(config.get(STARS_TOKEN_FIELD))
+            .collect();
+        check.scrub(&secrets);
+        let record = CheckRecord {
+            at: self.services.now(),
+            check,
+        };
+        let mut tx = self.services.store().begin().await?;
+        tx.settings()
+            .set_as(&keys::provider_check(id), &record, Some(admin))
+            .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "settings.provider_check",
+                "provider",
+                None,
+                serde_json::json!({ "provider": id, "status": record.check.status }),
+            ))
+            .await?;
+        tx.commit().await?;
+        registry.record_check(id, Some(record.clone()));
+        tracing::info!(provider = id, status = ?record.check.status, "проверено подключение платёжной системы");
+        Ok(record)
     }
 
     pub async fn remnawave(&self) -> ServiceResult<RemnaSettingsView> {
@@ -1868,6 +1983,9 @@ impl<'a> SettingsOps<'a> {
                 Some(admin),
             )
             .await?;
+            tx.settings()
+                .delete(&keys::provider_check(providers::STARS))
+                .await?;
             changed.push("token");
         }
         if let Some(username) = &update.username {
