@@ -16,7 +16,7 @@ jobs:
   fmt:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - run: rustup toolchain install
@@ -25,7 +25,7 @@ jobs:
   clippy:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - run: rustup toolchain install
@@ -51,7 +51,7 @@ jobs:
     env:
       SN_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/sn_test
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - run: rustup toolchain install
@@ -64,7 +64,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -79,7 +79,7 @@ jobs:
   installer:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - run: sh tests/install/scenarios.sh sh
@@ -95,7 +95,7 @@ jobs:
     env:
       LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: install before this commit has an image
@@ -120,7 +120,7 @@ jobs:
     env:
       LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: install as root
@@ -194,7 +194,7 @@ jobs:
       LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
       IMAGE: ghcr.io/stealthnet-app/stealthnet-rw-system
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -266,7 +266,7 @@ jobs:
     env:
       LOGIN_URL: http://127.0.0.1:8080/api/admin/auth/login
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: the registry holds no saved sign-in
@@ -301,7 +301,7 @@ jobs:
       LOCAL: localhost:5000/stealthnet-rw-system
       NEXT: "0000000000000000000000000000000000000001"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: a local registry with this build and a newer one
@@ -384,7 +384,7 @@ jobs:
       group: release
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           fetch-depth: 0
