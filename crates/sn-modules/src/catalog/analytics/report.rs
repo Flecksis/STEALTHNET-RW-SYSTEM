@@ -431,10 +431,9 @@ async fn trials(store: &Store, p: &Params, w: &Window) -> StoreResult<ByMonthPai
     let src = &p.source;
     with_source(
         sqlx::query_as(&format!(
-            "SELECT {m}, count(*), count(*) FILTER (WHERE l.last_paid >= o.paid_at) \
+            "SELECT {m}, count(*), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM analytics_spans l \
+               WHERE l.client_id = o.client_id AND l.paid_at >= o.paid_at)) \
              FROM orders o \
-             LEFT JOIN (SELECT client_id, max(paid_at) AS last_paid FROM analytics_spans GROUP BY client_id) l \
-               ON l.client_id = o.client_id \
              WHERE o.kind = 'trial' AND o.paid_at >= $1 AND o.paid_at < $2 \
                AND o.status IN ('paid', 'fulfilled', 'review') AND {f} GROUP BY 1",
             m = month_of("o.paid_at", 3),

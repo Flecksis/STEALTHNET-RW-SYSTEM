@@ -392,7 +392,9 @@ fn found_sql(trigger: Trigger) -> String {
              AND i.kind = 'telegram' AND i.value ~ '^[0-9]{{1,15}}$' ORDER BY i.id LIMIT 1) tg ON true \
          LEFT JOIN LATERAL (SELECT lower(i.value) AS value FROM client_identities i WHERE i.client_id = c.id \
              AND i.kind = 'email' AND i.value LIKE '%_@_%' ORDER BY i.id LIMIT 1) em ON true \
-         WHERE NOT EXISTS (SELECT 1 FROM auto_broadcast_cases k WHERE k.rule_id = $6 AND k.case_key = f.case_key)",
+         LEFT JOIN LATERAL (SELECT true AS hit FROM auto_broadcast_cases k WHERE k.rule_id = $6 \
+             AND k.case_key = f.case_key LIMIT 1) seen ON true \
+         WHERE seen.hit IS NULL",
         cases = cases_sql(trigger)
     )
 }

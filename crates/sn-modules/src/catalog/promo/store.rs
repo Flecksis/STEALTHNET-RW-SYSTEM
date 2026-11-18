@@ -289,8 +289,7 @@ pub async fn paid_orders_without_use(db: &mut impl Db, limit: i64) -> StoreResul
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT o.id FROM orders o \
          WHERE o.status IN ('paid', 'fulfilled', 'review') AND o.paid_at > now() - interval '7 days' \
-         AND EXISTS (SELECT 1 FROM jsonb_array_elements(o.quote -> 'lines') l \
-                     WHERE l -> 'kind' ->> 'type' = 'adjustment' AND l -> 'kind' -> 'source' ->> 'type' = 'promo') \
+         AND o.quote -> 'lines' @> '[{\"kind\": {\"type\": \"adjustment\", \"source\": {\"type\": \"promo\"}}}]' \
          AND NOT EXISTS (SELECT 1 FROM promo_redemptions r WHERE r.order_id = o.id AND r.status = 'used') \
          AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.order_id = o.id AND p.status = 'refunded') \
          ORDER BY o.id LIMIT $1",

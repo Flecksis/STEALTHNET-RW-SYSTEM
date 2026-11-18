@@ -391,6 +391,30 @@ async fn клиенты_ищутся_по_сегментам_и_строке() {
         .await
         .unwrap();
     assert_eq!(by_default.items.len(), 10);
+
+    let sub_public = conn.subscriptions().get(alena_sub).await.unwrap().public_id;
+    assert_eq!(
+        found(&mut conn, None, Some(&sub_public.to_string())).await,
+        [alena]
+    );
+    let twin = client(
+        &mut conn,
+        &Person {
+            telegram: Some(igor.0),
+            ..Person::NOBODY
+        },
+    )
+    .await;
+    assert_eq!(
+        found(&mut conn, None, Some(&igor.0.to_string())).await,
+        [twin, igor]
+    );
+    assert!(found(&mut conn, None, Some("1006")).await.is_empty());
+    assert!(
+        found(&mut conn, Some(ClientSegment::Active), Some("igor_nv"))
+            .await
+            .is_empty()
+    );
     drop(conn);
     db.cleanup().await;
 }
@@ -505,6 +529,96 @@ async fn история_клиента_одной_лентой_без_потер
         .await
         .unwrap();
     assert!(empty.items.is_empty());
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn аудит_в_истории_клиента_по_разу_и_без_чужих_записей() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let alexey = client(&mut conn, &Person::NOBODY).await;
+    let other = client(&mut conn, &Person::NOBODY).await;
+    let payment = paid(&mut conn, alexey, "cryptopay", usd(500)).await;
+    let entry = |actor_kind, actor_id: Option<i64>, action: &str, kind: &str, id: i64| AuditEntry {
+        actor_kind,
+        actor_id,
+        action: action.into(),
+        entity_kind: Some(kind.into()),
+        entity_id: Some(id),
+        details: serde_json::json!({}),
+        ip: None,
+    };
+    for record in [
+        entry(
+            ActorKind::Client,
+            Some(alexey.0),
+            "client.totp_enabled",
+            audit_entity::CLIENT,
+            alexey.0,
+        ),
+        entry(
+            ActorKind::System,
+            None,
+            "payment.amount_mismatch",
+            audit_entity::PAYMENT,
+            payment.0,
+        ),
+        entry(
+            ActorKind::Client,
+            Some(other.0),
+            "client.totp_enabled",
+            audit_entity::CLIENT,
+            other.0,
+        ),
+        entry(
+            ActorKind::Admin,
+            Some(alexey.0),
+            "client.note",
+            audit_entity::CLIENT,
+            other.0,
+        ),
+        entry(
+            ActorKind::Client,
+            Some(alexey.0),
+            "client.oauth_linked",
+            audit_entity::ADMIN,
+            other.0,
+        ),
+    ] {
+        conn.audit().record(&record).await.unwrap();
+    }
+    let mut seen = Vec::new();
+    for money in [true, false] {
+        let history = conn
+            .clients()
+            .history(alexey, PageRequest::new(Some(50), None), money)
+            .await
+            .unwrap();
+        let mut audit: Vec<String> = history
+            .items
+            .iter()
+            .filter_map(|item| match &item.entry {
+                ClientHistoryEntry::Audit(record) => Some(record.action.clone()),
+                _ => None,
+            })
+            .collect();
+        audit.sort();
+        assert_eq!(
+            conn.clients().history_count(alexey, money).await.unwrap(),
+            i64::try_from(history.items.len()).unwrap()
+        );
+        seen.push(audit);
+    }
+    assert_eq!(
+        seen[0],
+        [
+            "client.oauth_linked",
+            "client.totp_enabled",
+            "payment.amount_mismatch"
+        ]
+    );
+    assert_eq!(seen[1], ["client.oauth_linked", "client.totp_enabled"]);
     drop(conn);
     db.cleanup().await;
 }

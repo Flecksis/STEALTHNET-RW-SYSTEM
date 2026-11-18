@@ -63,13 +63,14 @@ fn feed_sql(money: bool) -> String {
     };
     format!(
         "SELECT {SOURCE_AUDIT} AS src, a.id, a.created_at AS at FROM audit_log a \
-         WHERE (a.entity_kind, a.entity_id) IN ( \
-             SELECT '{client}', $1::bigint \
-             UNION ALL SELECT '{subscription}', id FROM subscriptions WHERE client_id = $1 \
-             UNION ALL SELECT '{order}', id FROM orders WHERE client_id = $1 \
-             {payment_audit} \
-             UNION ALL SELECT '{ticket}', id FROM tickets WHERE client_id = $1) \
-         OR (a.actor_kind = 'client' AND a.actor_id = $1) \
+         WHERE a.id IN ( \
+             SELECT x.id FROM audit_log x WHERE (x.entity_kind, x.entity_id) IN ( \
+                 SELECT '{client}', $1::bigint \
+                 UNION ALL SELECT '{subscription}', id FROM subscriptions WHERE client_id = $1 \
+                 UNION ALL SELECT '{order}', id FROM orders WHERE client_id = $1 \
+                 {payment_audit} \
+                 UNION ALL SELECT '{ticket}', id FROM tickets WHERE client_id = $1) \
+             UNION ALL SELECT x.id FROM audit_log x WHERE x.actor_kind = 'client' AND x.actor_id = $1) \
          UNION ALL SELECT {SOURCE_EVENT}, e.id, e.occurred_at FROM domain_events e WHERE e.client_id = $1 \
              AND e.kind NOT IN {REPEATED_EVENTS} \
              AND NOT (e.kind = 'subscription_status_changed' \

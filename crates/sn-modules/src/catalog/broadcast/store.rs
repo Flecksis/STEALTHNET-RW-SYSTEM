@@ -483,17 +483,45 @@ fn condition(audience: Audience) -> String {
     }
 }
 
-fn identity(lane: Lane) -> &'static str {
+fn identity_match(lane: Lane) -> &'static str {
     match lane {
-        Lane::Bot => {
-            "JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id AND i.kind = 'telegram' \
-             AND i.value ~ '^[0-9]{1,15}$' ORDER BY i.id LIMIT 1) ident ON true"
-        }
-        Lane::Email => {
-            "JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id AND i.kind = 'email' \
-             AND i.value LIKE '%_@_%' ORDER BY i.id LIMIT 1) ident ON true"
-        }
+        Lane::Bot => "i.kind = 'telegram' AND i.value ~ '^[0-9]{1,15}$'",
+        Lane::Email => "i.kind = 'email' AND i.value LIKE '%_@_%'",
     }
+}
+
+fn identity(lane: Lane, value: bool) -> String {
+    if value {
+        format!(
+            "JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id AND {} \
+             ORDER BY i.id LIMIT 1) ident ON true",
+            identity_match(lane)
+        )
+    } else {
+        String::new()
+    }
+}
+
+const fn by_subscription(audience: Audience) -> bool {
+    matches!(
+        audience,
+        Audience::Active
+            | Audience::Expiring { .. }
+            | Audience::Expired
+            | Audience::NeverConnected
+            | Audience::Trial
+    )
+}
+
+const fn active_only(audience: Audience) -> bool {
+    matches!(
+        audience,
+        Audience::Active | Audience::Expiring { .. } | Audience::NeverConnected | Audience::Trial
+    )
+}
+
+const fn needs_value(lane: Lane) -> bool {
+    matches!(lane, Lane::Email)
 }
 
 fn excluded(lane: Lane) -> &'static str {
@@ -505,15 +533,33 @@ fn excluded(lane: Lane) -> &'static str {
     }
 }
 
-fn audience_from(audience: Audience, lane: Lane) -> String {
+fn audience_from(audience: Audience, lane: Lane, value: bool) -> String {
     let x = status_of("x");
-    format!(
-        "FROM clients c {} \
-         LEFT JOIN LATERAL (SELECT x.* FROM subscriptions x WHERE x.client_id = c.id AND x.ended_at IS NULL \
+    let subscription = if by_subscription(audience) {
+        format!(
+            "LEFT JOIN LATERAL (SELECT x.* FROM subscriptions x WHERE x.client_id = c.id AND x.ended_at IS NULL \
              AND x.remna_missing_at IS NULL ORDER BY CASE {x} WHEN 'active' THEN 0 WHEN 'limited' THEN 1 \
-             WHEN 'disabled' THEN 2 WHEN 'expired' THEN 3 ELSE 4 END, x.expire_at DESC NULLS LAST, x.id DESC LIMIT 1) s ON true \
-         WHERE c.deleted_at IS NULL AND c.status = 'active' AND {}",
-        identity(lane),
+             WHEN 'disabled' THEN 2 WHEN 'expired' THEN 3 ELSE 4 END, x.expire_at DESC NULLS LAST, x.id DESC LIMIT 1) s ON true"
+        )
+    } else {
+        String::new()
+    };
+    let active = if active_only(audience) {
+        format!(
+            "AND c.id IN (SELECT y.client_id FROM subscriptions y WHERE y.ended_at IS NULL \
+             AND y.remna_missing_at IS NULL AND {} = 'active') ",
+            status_of("y")
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "FROM clients c {} {subscription} \
+         WHERE c.deleted_at IS NULL AND c.status = 'active' \
+         AND EXISTS (SELECT 1 FROM client_identities i WHERE i.client_id = c.id AND {}) \
+         {active}AND {}",
+        identity(lane, value),
+        identity_match(lane),
         condition(audience)
     )
 }
@@ -534,7 +580,7 @@ async fn count_lane(
     Ok(sqlx::query_as(&format!(
         "SELECT count(*) FILTER (WHERE NOT ({skip})), count(*) FILTER (WHERE {skip}) {from}",
         skip = excluded(lane),
-        from = audience_from(audience, lane)
+        from = audience_from(audience, lane, needs_value(lane))
     ))
     .bind(now)
     .bind(bound(audience, now))
@@ -571,7 +617,7 @@ pub async fn launch(
         inserted += sqlx::query(&format!(
             "INSERT INTO broadcast_recipients (broadcast_id, channel, client_id, chat_id, email, unsubscribe) \
              {select} {from} AND NOT ({skip}) ON CONFLICT DO NOTHING",
-            from = audience_from(audience, lane),
+            from = audience_from(audience, lane, true),
             skip = excluded(lane),
         ))
         .bind(now)

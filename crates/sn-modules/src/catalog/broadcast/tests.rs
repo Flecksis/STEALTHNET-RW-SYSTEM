@@ -721,6 +721,48 @@ async fn аудитории_совпадают_с_ожиданием() {
     assert_eq!(count(Audience::Trial).await, (1, 0));
     assert_eq!(count(Audience::NoSubscription).await, (1, 0));
     assert_eq!(count(Audience::Tariff { tariff_id: pro }).await, (1, 0));
+
+    let mut conn = store.conn().await.unwrap();
+    for (client, email) in [
+        (paid, "Paid@Example.com"),
+        (trial, "trial@example.com"),
+        (mail, "mail@example.com"),
+        (expired, "gone@example.com"),
+        (deleted, "deleted@example.com"),
+    ] {
+        conn.clients()
+            .add_identity(
+                client,
+                &NewIdentity {
+                    kind: IdentityKind::Email,
+                    value: email.into(),
+                    verified: true,
+                    meta: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    drop(conn);
+    exec(
+        store,
+        "INSERT INTO broadcast_unsubscribes (email, client_id) VALUES ('gone@example.com', $1)",
+        expired.0,
+    )
+    .await;
+    let mails = |audience| {
+        let ctx = ctx.clone();
+        async move {
+            let reach = reach(&ctx, audience).await.unwrap();
+            (reach.emails, reach.unsubscribed)
+        }
+    };
+    assert_eq!(mails(Audience::All).await, (3, 1));
+    assert_eq!(mails(Audience::Active).await, (2, 0));
+    assert_eq!(mails(Audience::Trial).await, (1, 0));
+    assert_eq!(mails(Audience::Expired).await, (0, 1));
+    assert_eq!(mails(Audience::NoSubscription).await, (0, 0));
+    assert_eq!(count(Audience::All).await, (7, 1));
     db.cleanup().await;
 }
 

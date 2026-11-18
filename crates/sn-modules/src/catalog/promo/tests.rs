@@ -842,6 +842,35 @@ async fn потерянное_событие_оплаты_досводится_�
     }
     assert_eq!(settle(&ctx, 10).await.unwrap(), 1);
     assert_eq!(settle(&ctx, 10).await.unwrap(), 0);
+    let personal = priced(&[sn_domain::pricing::PriceAdjustment {
+        source: sn_domain::pricing::AdjustmentSource::PersonalDiscount,
+        kind: sn_domain::pricing::AdjustmentKind::Percent { percent: 10 },
+        label: "Личная скидка".into(),
+    }]);
+    let discounted = order(
+        &db.store,
+        buyer,
+        OrderKind::Renewal,
+        intent(),
+        personal.clone(),
+    )
+    .await;
+    paid_payment(
+        &db.store,
+        discounted.id,
+        buyer,
+        "cryptopay",
+        Amount::from(personal.total),
+    )
+    .await;
+    {
+        let mut conn = db.store.conn().await.unwrap();
+        conn.orders()
+            .transition(discounted.id, sn_domain::order::OrderStatus::Paid)
+            .await
+            .unwrap();
+    }
+    assert_eq!(settle(&ctx, 10).await.unwrap(), 0);
     let other = client(&db.store).await;
     assert!(matches!(
         check(&ctx, other, "LOST", checkout()).await,

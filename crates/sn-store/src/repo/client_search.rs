@@ -113,28 +113,28 @@ fn needle(raw: &str) -> Option<Needle> {
 fn needle_condition(needle: &Needle) -> &'static str {
     match needle {
         Needle::ShortUuid(_) => {
-            "EXISTS (SELECT 1 FROM subscriptions q WHERE q.client_id = c.id AND q.short_uuid = $6)"
+            "c.id IN (SELECT q.client_id FROM subscriptions q WHERE q.short_uuid = $6)"
         }
         Needle::Uuid(_) => {
-            "(c.public_id = $6 OR EXISTS (SELECT 1 FROM subscriptions q WHERE q.client_id = c.id AND q.public_id = $6))"
+            "c.id IN (SELECT q.id FROM clients q WHERE q.public_id = $6 \
+             UNION ALL SELECT q.client_id FROM subscriptions q WHERE q.public_id = $6)"
         }
         Needle::Number { .. } => {
-            "(c.id = $6 OR EXISTS (SELECT 1 FROM client_identities q WHERE q.client_id = c.id \
-             AND q.kind = 'telegram' AND q.value = $7))"
+            "c.id IN (SELECT $6::bigint UNION ALL SELECT q.client_id FROM client_identities q \
+             WHERE q.kind = 'telegram' AND q.value = $7)"
         }
         Needle::Username(_) => {
-            "EXISTS (SELECT 1 FROM client_identities q WHERE q.client_id = c.id AND q.kind = 'telegram' \
+            "c.id IN (SELECT q.client_id FROM client_identities q WHERE q.kind = 'telegram' \
              AND lower(q.meta ->> 'username') LIKE $6)"
         }
         Needle::Email(_) => {
-            "EXISTS (SELECT 1 FROM client_identities q WHERE q.client_id = c.id AND q.kind = 'email' \
+            "c.id IN (SELECT q.client_id FROM client_identities q WHERE q.kind = 'email' \
              AND q.value LIKE $6)"
         }
         Needle::Words { .. } => {
-            "(EXISTS (SELECT 1 FROM client_identities q WHERE q.client_id = c.id \
-             AND NOT EXISTS (SELECT 1 FROM unnest($6::text[]) w WHERE strpos(q.search_text, w) = 0)) \
-             OR EXISTS (SELECT 1 FROM subscriptions q WHERE q.client_id = c.id \
-             AND (q.short_uuid = $7 OR q.remna_username = $7)))"
+            "c.id IN (SELECT q.client_id FROM subscriptions q WHERE q.short_uuid = $7 OR q.remna_username = $7 \
+             UNION ALL SELECT q.client_id FROM client_identities q \
+             WHERE NOT EXISTS (SELECT 1 FROM unnest($6::text[]) w WHERE strpos(q.search_text, w) = 0))"
         }
     }
 }
