@@ -6,7 +6,7 @@ import { t } from '../lib/i18n';
 import { methodKey } from '../lib/methods';
 import { Card, useCabinet } from './CabinetApp';
 import type { ItemQuote, PayResult } from './extras';
-import { codeDaysText, failText, giftItem, giftState, GIFTS, planText, shareLink, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from './gifting';
+import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitNote, planText, shareLink, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from './gifting';
 import { stars, type CheckoutMethod } from './model';
 
 const PAYMENT_KEY = 'sn.cabinet.gift';
@@ -160,7 +160,7 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
           return;
         }
         setPreview(p);
-        setTarget(p.multi && p.choices.length > 0 && !p.current ? 'new' : 'auto');
+        setTarget(firstTarget(p));
       })
       .catch((err) => alive && setError(failText(err, t('Подарок не нашёлся'))));
     return () => {
@@ -215,6 +215,7 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
           <p className="cb-ink2">
             {t('Подписка «{name}» на {term}.', { name: preview.gift.tariff, term: preview.gift.term })}
           </p>
+          {limitNote(preview) ? <p className="cb-muted">{limitNote(preview)}</p> : null}
           {choose ? (
             <div role="radiogroup" aria-label={t('Куда зачесть подарок')} className="cb-method-grid">
               {preview.choices.map((c) => (
@@ -226,13 +227,15 @@ function RedeemCard({ code, onClose, onDone }: { code: string; onClose: () => vo
                   </span>
                 </button>
               ))}
-              <button type="button" role="radio" aria-checked={target === 'new'} className="cb-method cb-target" onClick={() => setTarget('new')}>
-                <span className="cb-radio" aria-hidden="true" />
-                <span className="cb-method-text">
-                  <strong>{t('Новая подписка')}</strong>
-                  <span className="cb-target-note muted">{t('Со своей ссылкой, текущие останутся как есть')}</span>
-                </span>
-              </button>
+              {preview.new_allowed !== false ? (
+                <button type="button" role="radio" aria-checked={target === 'new'} className="cb-method cb-target" onClick={() => setTarget('new')}>
+                  <span className="cb-radio" aria-hidden="true" />
+                  <span className="cb-method-text">
+                    <strong>{t('Новая подписка')}</strong>
+                    <span className="cb-target-note muted">{t('Со своей ссылкой, текущие останутся как есть')}</span>
+                  </span>
+                </button>
+              ) : null}
             </div>
           ) : plan ? (
             <p className={`cb-lead ${plan.tone}`}>{plan.text}</p>

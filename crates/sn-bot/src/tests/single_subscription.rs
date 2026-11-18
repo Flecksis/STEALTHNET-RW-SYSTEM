@@ -321,3 +321,66 @@ async fn меню_с_двумя_подписками_короткими_стро
     assert!(!menu.contains("Баланс"), "{menu}");
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn при_лимите_категории_бот_продлевает_её_подписку_или_просит_выбрать() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let standard = tariff_in(&db, "С обходом", "Стандарт").await;
+    set_multi(&services, true).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.tariffs()
+            .set_subscription_limit(standard.category_id, Some(1))
+            .await
+            .unwrap();
+    }
+    handle_update(&ctx, text_update(1, 705, "/start")).await;
+    let client = client_of(&services, 705).await.unwrap();
+    let first = give(&db, client.id, &standard, 83).await;
+    handle_update(&ctx, callback_update(2, 705, "buy:new")).await;
+    handle_update(&ctx, callback_update(3, 705, &format!("t:{}", standard.id))).await;
+    let screen = last_text(&server).await;
+    assert!(
+        screen.contains("В категории «С обходом» у вас уже есть подписка: оплата продлит её."),
+        "{screen}"
+    );
+    let cart = Session::load(&services, 705).await.unwrap().cart.unwrap();
+    assert_eq!(cart.subscription_id, Some(first));
+    let second = give(&db, client.id, &standard, 84).await;
+    handle_update(&ctx, callback_update(4, 705, "buy:new")).await;
+    handle_update(&ctx, callback_update(5, 705, &format!("t:{}", standard.id))).await;
+    let screen = last_text(&server).await;
+    assert!(
+        screen.contains("В категории «С обходом» новую подписку оформить нельзя."),
+        "{screen}"
+    );
+    let buttons = last_buttons(&server).await;
+    assert!(
+        buttons.contains(&format!("tb:{}:{first}", standard.id)),
+        "{buttons:?}"
+    );
+    assert!(
+        buttons.contains(&format!("tb:{}:{second}", standard.id)),
+        "{buttons:?}"
+    );
+    handle_update(
+        &ctx,
+        callback_update(6, 705, &format!("tb:{}:{second}", standard.id)),
+    )
+    .await;
+    let cart = Session::load(&services, 705).await.unwrap().cart.unwrap();
+    assert_eq!(cart.subscription_id, Some(second));
+    handle_update(
+        &ctx,
+        callback_update(7, 705, &format!("p:{}", standard.periods[0].id)),
+    )
+    .await;
+    let summary = last_text(&server).await;
+    assert!(
+        summary.contains("Продление: подписка будет действовать до"),
+        "{summary}"
+    );
+    db.cleanup().await;
+}

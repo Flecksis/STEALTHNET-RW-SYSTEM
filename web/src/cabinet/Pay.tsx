@@ -5,9 +5,9 @@ import { count, dateLong, money, MINUS, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
-import { gbText, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type TariffOffer } from './model';
+import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type QuoteLineView, type TariffOffer } from './model';
 import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
-import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
+import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 import { methodKey } from '../lib/methods';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
@@ -62,7 +62,10 @@ export function Pay() {
   }, []);
 
   const list = subs.list ?? [];
-  const targets = useMemo(() => payTargets(list, multi), [list, multi]);
+  const offers = catalog?.tariffs ?? [];
+  const picked = offers.find((o) => o.category.id === cat) ?? null;
+  const full = useMemo(() => fullCategory(list, multi, picked?.category), [list, multi, picked]);
+  const targets = useMemo(() => payTargets(list, multi, full), [list, multi, full]);
   const asked: PayTarget | null = params.get('sub') === 'new' ? 'new' : (subs.chosen?.subscription.id ?? null);
 
   useEffect(() => {
@@ -73,7 +76,6 @@ export function Pay() {
 
   const live = subs.list === undefined || target === null ? undefined : targetView(list, target, multi);
 
-  const offers = catalog?.tariffs ?? [];
   const categories = useMemo(() => {
     const seen = new Map<number, { id: number; name: string; sort: number }>();
     for (const o of offers) {
@@ -106,7 +108,7 @@ export function Pay() {
     setDevices(start === current && live ? included + live.subscription.extra_devices : included);
   }, [catalog, live, cat, offers, current, params]);
 
-  const offer: TariffOffer | null = offers.find((o) => o.category.id === cat) ?? null;
+  const offer: TariffOffer | null = picked;
   const included = offer?.tariff.devices.included ?? 0;
   const extra = offer?.tariff.devices.extra ?? null;
   const maxDevices = included + (extra?.max ?? 0);
@@ -132,6 +134,21 @@ export function Pay() {
       remember(CABINET_SUB_KEY, next);
     }
   };
+
+  const keptId = subs.chosen?.subscription.id ?? null;
+  useEffect(() => {
+    if (!full || target === null || full.some((v) => v.subscription.id === target)) {
+      return;
+    }
+    const next = full.find((v) => v.subscription.id === keptId) ?? full[0];
+    if (!next) {
+      return;
+    }
+    setTarget(next.subscription.id);
+    if (offer && next.subscription.tariff_id === offer.tariff.id) {
+      setDevices(offer.tariff.devices.included + next.subscription.extra_devices);
+    }
+  }, [full, target, keptId, offer]);
 
   useEffect(() => {
     if (!offer || !periodOffer) {
@@ -270,6 +287,7 @@ export function Pay() {
                 tone: 'muted',
               };
 
+  const limitNote = fullNote(full, offer?.category);
   const limit = offer?.tariff.traffic.limit_bytes ?? 0;
   const trafficNote = limit ? t('Трафик: {traffic} {plan}.', { traffic: gbText(limit), plan: resetPlan(offer?.tariff.traffic.reset ?? 'no_reset') }) : null;
 
@@ -278,6 +296,9 @@ export function Pay() {
 
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? priceOf(q.total) : '';
+  const deviceCut = q ? (linesOf(q.lines, 'device_discount')[0] ?? null) : null;
+  const ladder = ladderText(offer?.tariff.device_discounts);
+  const cutText = (line: QuoteLineView) => `${MINUS}${starsMode && line.stars !== null ? stars(Math.abs(line.stars)) : priceOf({ minor: Math.abs(line.amount.minor), currency: line.amount.currency })}`;
   const after =
     quote?.expire_preview && !blocked
       ? change || !live
@@ -371,6 +392,7 @@ export function Pay() {
       <header className="cb-pay-head">
         <h1 className="cb-title">{title}</h1>
         <p className={`cb-lead ${lead.tone}`}>{lead.text}</p>
+        {limitNote ? <p className="cb-muted">{limitNote}</p> : null}
         {trafficNote ? <p className="cb-muted">{trafficNote}</p> : null}
       </header>
       <div className="cb-cols">
@@ -451,6 +473,12 @@ export function Pay() {
                     price: starsMode && extra.monthly_stars ? stars(extra.monthly_stars) : extraMonthly ? priceOf(extraMonthly) : '',
                   })}
                 </span>
+                {ladder ? <span className="cb-muted">{ladder}</span> : null}
+                {deviceCut ? (
+                  <span className="cb-devs-cut" aria-live="polite">
+                    {deviceCut.label}
+                  </span>
+                ) : null}
               </span>
               <span className="cb-stepper">
                 <button type="button" aria-label={t('Меньше устройств')} aria-disabled={devices <= included} onClick={() => devices > included && setDevices(devices - 1)}>
@@ -509,7 +537,7 @@ export function Pay() {
             {q && offer && periodOffer
               ? (() => {
                   const periodLine = q.lines.find((l) => l.kind.type === 'period') ?? null;
-                  const extraLines = q.lines.filter((l) => l.kind.type !== 'period');
+                  const extraLines = linesOf(q.lines, 'extra_devices');
                   const extraStars = extraLines.reduce((sum, l) => sum + (l.stars ?? 0), 0);
                   const extraMinor = extraLines.reduce((sum, l) => sum + l.amount.minor, 0);
                   return (
@@ -530,15 +558,16 @@ export function Pay() {
                   );
                 })()
               : null}
-            {q && (starsMode ? (q.stars?.discount ?? 0) > 0 : q.discount.minor > 0) ? (
-              <div className="cb-line">
-                <span>{t('Промокод {code}', { code: promo ?? '' })}</span>
-                <span className="num">
-                  {MINUS}
-                  {starsMode && q.stars ? stars(q.stars.discount) : priceOf(q.discount)}
-                </span>
-              </div>
-            ) : null}
+            {q
+              ? [...linesOf(q.lines, 'device_discount'), ...linesOf(q.lines, 'adjustment')]
+                  .filter((line) => (starsMode ? (line.stars ?? 0) !== 0 : line.amount.minor !== 0))
+                  .map((line) => (
+                    <div key={`${line.kind.type}:${line.label}`} className="cb-line">
+                      <span>{line.label}</span>
+                      <span className="num">{cutText(line)}</span>
+                    </div>
+                  ))
+              : null}
             <form
               className="cb-promo"
               onSubmit={(e) => {

@@ -35,7 +35,19 @@ export type RedeemPreview = {
   multi: boolean;
   current: GrantCurrent | null;
   choices: GrantCurrent[];
+  new_allowed?: boolean;
 };
+
+export function firstTarget(p: RedeemPreview): GiftTarget {
+  if (!(p.multi && p.choices.length > 0 && !p.current)) {
+    return 'auto';
+  }
+  return p.new_allowed === false ? (p.choices[0]?.subscription_id ?? 'auto') : 'new';
+}
+
+export function limitNote(p: RedeemPreview): string | null {
+  return p.new_allowed === false && p.choices.length > 1 && !p.current ? t('Новую подписку этой категории оформить нельзя: срок добавится к одной из ваших подписок.') : null;
+}
 
 export type Redeemed = { gift: RedeemPreview['gift']; order_id: string; plan: RedeemPreview['plan']; subscription_id: number | null };
 

@@ -1,12 +1,15 @@
 import type { Subscription } from '../admin/clients/types';
-import { count, dateLong, days, type Money } from '../lib/format';
+import { count, dateLong, days, NBSP, type Money } from '../lib/format';
 import { lang, msg, t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 
 export type TrafficReset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
 
+export type DeviceDiscount = { from: number; percent: number };
+
 export type TariffBrief = {
   id: number;
+  category_id?: number;
   name: string;
   on_sale: boolean;
   devices: { included: number; extra: { max: number; monthly: { usd?: number; rub?: number }; monthly_stars: number | null } | null };
@@ -64,10 +67,24 @@ export type PeriodOffer = {
 };
 
 export type TariffOffer = {
-  category: { id: number; name: string; sort: number; visible: boolean };
-  tariff: TariffBrief & { category_id: number; description: string | null; sort: number };
+  category: { id: number; name: string; sort: number; visible: boolean; subscription_limit?: number | null };
+  tariff: TariffBrief & { category_id: number; description: string | null; sort: number; device_discounts?: DeviceDiscount[] };
   periods: PeriodOffer[];
 };
+
+export type QuoteLineView = { kind: { type: string }; label: string; amount: Money; stars: number | null };
+
+export function ladderText(discounts: DeviceDiscount[] | undefined): string | null {
+  if (!discounts || discounts.length === 0) {
+    return null;
+  }
+  const steps = discounts.map((d) => t('от {n} — {percent}%', { n: d.from, percent: d.percent }).replace(/ /g, NBSP)).join(', ');
+  return t('Скидка за доп. устройства: {steps}', { steps });
+}
+
+export function linesOf(lines: QuoteLineView[], type: string): QuoteLineView[] {
+  return lines.filter((line) => line.kind.type === type);
+}
 
 export type Catalog = { currency: Currency; tariffs: TariffOffer[] };
 
@@ -84,7 +101,7 @@ export type CheckoutMethod = {
 export type Quote = {
   quote: {
     currency: Currency;
-    lines: Array<{ kind: { type: string }; label: string; amount: Money; stars: number | null }>;
+    lines: QuoteLineView[];
     subtotal: Money;
     discount: Money;
     total: Money;

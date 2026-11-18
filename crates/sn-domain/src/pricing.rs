@@ -47,6 +47,10 @@ pub enum QuoteLineKind {
         count: u32,
         days: u32,
     },
+    DeviceDiscount {
+        count: u32,
+        percent: u8,
+    },
     TrafficAddon {
         gb: u32,
     },
@@ -97,6 +101,9 @@ impl QuoteLine {
             }
             QuoteLineKind::DeviceAddon { count, days } => {
                 format!("Extra devices: +{count} for {}", format::days_in(*days, en))
+            }
+            QuoteLineKind::DeviceDiscount { count, percent } => {
+                device_discount_label(*count, *percent, en)
             }
             QuoteLineKind::TrafficAddon { gb } => {
                 format!("Traffic: +{}", format::gigabytes_in(u64::from(*gb), en))
@@ -160,6 +167,41 @@ impl Quote {
 }
 
 pub const MONTH_DAYS: u32 = 30;
+
+pub fn device_discount_label(count: u32, percent: u8, locale: Locale) -> String {
+    let devices = format::count_in(
+        u64::from(count),
+        locale,
+        ["доп. устройство", "доп. устройства", "доп. устройств"],
+        ["extra device", "extra devices"],
+    );
+    match locale {
+        Locale::Ru => format!("Скидка за {devices}, −{percent}%"),
+        Locale::En => format!("Discount for {devices}, −{percent}%"),
+    }
+}
+
+pub fn device_discount_line(
+    count: u32,
+    percent: u8,
+    amount: Money,
+    stars: Option<Stars>,
+) -> Result<Option<QuoteLine>, DomainError> {
+    let cut = amount.percent(percent)?.min(amount)?;
+    let stars_cut = match stars {
+        Some(stars) => Some(stars.percent(percent)?),
+        None => None,
+    };
+    if cut.is_zero() && stars_cut.is_none_or(|s| s.0 == 0) {
+        return Ok(None);
+    }
+    Ok(Some(QuoteLine {
+        kind: QuoteLineKind::DeviceDiscount { count, percent },
+        label: device_discount_label(count, percent, Locale::Ru),
+        amount: cut.checked_neg()?,
+        stars: stars_cut.map(|s| Stars(-s.0)),
+    }))
+}
 
 pub fn days_left(expire_at: DateTime<Utc>, now: DateTime<Utc>) -> u32 {
     let seconds = (expire_at - now).num_seconds();
@@ -235,6 +277,8 @@ pub fn quote(req: &QuoteRequest<'_>) -> Result<Quote, DomainError> {
     }];
     let mut subtotal = base;
     let mut stars_subtotal = period.stars;
+    let mut device_cut = Money::zero(req.currency);
+    let mut device_stars_cut: Option<Stars> = None;
 
     if req.extra_devices > 0 {
         let extra = tariff
@@ -268,10 +312,21 @@ pub fn quote(req: &QuoteRequest<'_>) -> Result<Quote, DomainError> {
             amount,
             stars,
         });
+        if let Some(step) = tariff.device_discount(req.extra_devices)
+            && let Some(line) =
+                device_discount_line(req.extra_devices, step.percent, amount, stars)?
+        {
+            device_cut = line.amount.checked_neg()?;
+            device_stars_cut = line.stars.map(|s| Stars(-s.0));
+            lines.push(line);
+        }
     }
 
-    let mut total = subtotal;
-    let mut stars_total = stars_subtotal;
+    let mut total = subtotal.checked_sub(device_cut)?;
+    let mut stars_total = match (stars_subtotal, device_stars_cut) {
+        (Some(stars), Some(cut)) => Some(stars.checked_sub(cut)?),
+        (stars, _) => stars,
+    };
     for adjustment in req.adjustments {
         let (cut, stars_cut) = match &adjustment.kind {
             AdjustmentKind::Percent { percent } => {
@@ -393,6 +448,7 @@ pub fn balance_check(balance: Money, total: Money) -> Result<BalanceCheck, Domai
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tariff::DeviceDiscount;
     use crate::tariff::fixtures::{standard, unblock};
 
     fn promo(percent: u8) -> PriceAdjustment {
@@ -524,6 +580,121 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err, DomainError::ExtraDevicesNotSold);
+    }
+
+    fn with_discounts(mut tariff: Tariff) -> Tariff {
+        tariff.devices.extra.as_mut().unwrap().max = 6;
+        tariff.device_discounts = vec![
+            DeviceDiscount {
+                from: 2,
+                percent: 10,
+            },
+            DeviceDiscount {
+                from: 5,
+                percent: 20,
+            },
+        ];
+        tariff
+    }
+
+    fn devices_quote(
+        tariff: &Tariff,
+        currency: Currency,
+        period: i64,
+        extra_devices: u32,
+        adjustments: &[PriceAdjustment],
+    ) -> Quote {
+        quote(&QuoteRequest {
+            currency,
+            tariff,
+            period_id: PeriodId(period),
+            extra_devices,
+            sell_extra_devices: true,
+            adjustments,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn скидка_за_устройства_только_на_сумму_устройств() {
+        let tariff = with_discounts(standard());
+        let q = devices_quote(&tariff, Currency::Usd, 12, 3, &[]);
+        assert_eq!(q.subtotal, Money::new(699 + 891, Currency::Usd));
+        assert_eq!(
+            q.lines[2].kind,
+            QuoteLineKind::DeviceDiscount {
+                count: 3,
+                percent: 10
+            }
+        );
+        assert_eq!(q.lines[2].amount, Money::new(-89, Currency::Usd));
+        assert_eq!(q.lines[2].stars, Some(Stars(-45)));
+        assert_eq!(q.discount, Money::new(89, Currency::Usd));
+        assert_eq!(q.total, Money::new(699 + 891 - 89, Currency::Usd));
+        assert_eq!(
+            q.lines.iter().map(|l| l.amount.minor).sum::<i64>(),
+            q.total.minor
+        );
+        let stars = q.stars.unwrap();
+        assert_eq!(stars.subtotal, Stars(350 + 450));
+        assert_eq!(stars.discount, Stars(45));
+        assert_eq!(stars.total, Stars(755));
+        let one = devices_quote(&tariff, Currency::Usd, 12, 1, &[]);
+        assert_eq!(one.lines.len(), 2);
+        assert_eq!(one.discount.minor, 0);
+        let five = devices_quote(&tariff, Currency::Usd, 12, 5, &[]);
+        assert_eq!(five.discount, Money::new(297, Currency::Usd));
+        assert_eq!(five.stars.unwrap().discount, Stars(150));
+        let plain = devices_quote(&standard(), Currency::Usd, 12, 2, &[]);
+        assert_eq!(plain.discount.minor, 0);
+    }
+
+    #[test]
+    fn промокод_считается_после_скидки_за_устройства() {
+        let tariff = with_discounts(standard());
+        let q = devices_quote(&tariff, Currency::Usd, 12, 3, &[promo(10)]);
+        assert!(matches!(
+            q.lines[2].kind,
+            QuoteLineKind::DeviceDiscount { .. }
+        ));
+        assert!(matches!(q.lines[3].kind, QuoteLineKind::Adjustment { .. }));
+        assert_eq!(q.lines[3].amount, Money::new(-150, Currency::Usd));
+        assert_eq!(q.total, Money::new(1501 - 150, Currency::Usd));
+        assert_eq!(q.discount, Money::new(89 + 150, Currency::Usd));
+        assert_eq!(q.stars.unwrap().total, Stars(755 - 76));
+        assert_eq!(
+            q.lines.iter().map(|l| l.amount.minor).sum::<i64>(),
+            q.total.minor
+        );
+    }
+
+    #[test]
+    fn скидка_за_устройства_в_рублях_до_целого_рубля() {
+        let tariff = with_discounts(unblock());
+        let q = devices_quote(&tariff, Currency::Rub, 32, 3, &[]);
+        assert_eq!(q.lines[2].amount, Money::new(-4_400, Currency::Rub));
+        assert_eq!(q.total, Money::new(64_900 + 44_100 - 4_400, Currency::Rub));
+        assert_eq!(q.total.minor % 100, 0);
+    }
+
+    #[test]
+    fn подпись_скидки_за_устройства_на_двух_языках() {
+        let tariff = with_discounts(standard());
+        let q = devices_quote(&tariff, Currency::Usd, 12, 3, &[]);
+        assert_eq!(q.lines[2].label, "Скидка за 3\u{a0}доп. устройства, −10%");
+        let english = crate::lang::sync_scope(Locale::En, || q.clone().shown());
+        assert_eq!(
+            english.lines[2].label,
+            "Discount for 3\u{a0}extra devices, −10%"
+        );
+        assert_eq!(
+            device_discount_label(1, 5, Locale::Ru),
+            "Скидка за 1\u{a0}доп. устройство, −5%"
+        );
+        assert_eq!(
+            device_discount_label(5, 20, Locale::Ru),
+            "Скидка за 5\u{a0}доп. устройств, −20%"
+        );
     }
 
     #[test]

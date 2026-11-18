@@ -429,6 +429,7 @@ fn preview_screen(c: &BotContent, preview: &RedeemPreview) -> Screen {
             "gift.plan_renewal",
             &[("current", Text(&current_name(current)))],
         ),
+        _ if !preview.new_allowed => ui::text(c, "gift.plan_limit", &[]),
         _ if preview.multi && !preview.choices.is_empty() => ui::text(c, "gift.plan_separate", &[]),
         _ => ui::text(c, "gift.plan_new", &[]),
     };
@@ -438,7 +439,15 @@ fn preview_screen(c: &BotContent, preview: &RedeemPreview) -> Screen {
     }
     let mut keyboard = Keyboard::new();
     if preview.multi && !preview.choices.is_empty() && preview.current.is_none() {
-        lines.add(ui::text(c, "gift.choose_target", &[]));
+        lines.add(ui::text(
+            c,
+            if preview.new_allowed {
+                "gift.choose_target"
+            } else {
+                "gift.choose_existing"
+            },
+            &[],
+        ));
         for choice in &preview.choices {
             keyboard = keyboard.push(ui::button(
                 c,
@@ -447,7 +456,9 @@ fn preview_screen(c: &BotContent, preview: &RedeemPreview) -> Screen {
                 format!("gr:{}", choice.subscription_id),
             ));
         }
-        keyboard = keyboard.push(ui::button(c, "gift.btn.new", &[], "gr:n"));
+        if preview.new_allowed {
+            keyboard = keyboard.push(ui::button(c, "gift.btn.new", &[], "gr:n"));
+        }
     } else {
         keyboard = keyboard.push(ui::button(c, "gift.btn.activate", &[], "gr"));
     }

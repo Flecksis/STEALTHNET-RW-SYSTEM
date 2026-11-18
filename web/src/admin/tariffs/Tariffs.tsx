@@ -12,6 +12,7 @@ import {
   fromRaw,
   GIB,
   inputOf,
+  limitText,
   nextKey,
   perMonthNote,
   priceOf,
@@ -21,8 +22,10 @@ import {
   termText,
   trafficText,
   type Applied,
+  type Category,
   type Channels,
   type Draft,
+  type DraftDiscount,
   type DraftPack,
   type Leftover,
   type Squad,
@@ -56,7 +59,7 @@ export function Tariffs() {
   const [hwidOff, setHwidOff] = useState(false);
   const [trial, setTrial] = useState<Trial | null>(null);
   const [multi, setMulti] = useState<Multi | null>(null);
-  const [dialog, setDialog] = useState<'' | 'category' | 'trial' | 'multi' | 'delete'>('');
+  const [dialog, setDialog] = useState<'' | 'category' | 'category-edit' | 'trial' | 'multi' | 'delete'>('');
 
   const load = useCallback(async () => {
     try {
@@ -103,6 +106,7 @@ export function Tariffs() {
     return map;
   }, [view]);
   const shown = (view?.tariffs ?? []).filter((t) => t.category_id === category);
+  const picked = view?.categories.find((c) => c.id === category) ?? null;
 
   const pickCategory = (id: number) => {
     setCategory(id);
@@ -240,6 +244,18 @@ export function Tariffs() {
         </button>
       </div>
 
+      {picked ? (
+        <div className="tf-cat">
+          <span>
+            <span className="muted">Подписок этой категории у клиента:</span> <strong>{limitText(picked.subscription_limit)}</strong>
+            {picked.subscription_limit && multi && !multi.enabled ? <span className="muted"> · не действует, пока у клиента одна подписка</span> : null}
+          </span>
+          <button type="button" className="b38 hov" onClick={() => setDialog('category-edit')}>
+            Изменить категорию
+          </button>
+        </div>
+      ) : null}
+
       {error ? (
         <p className="err" role="alert">
           {error}
@@ -303,7 +319,7 @@ export function Tariffs() {
         const opened = draft?.id === tariff.id;
         const packs = tariff.traffic.limit_bytes ? (tariff.traffic_addon?.packs ?? []) : [];
         const meta = [
-          devicesText(tariff.devices),
+          devicesText(tariff.devices, tariff.device_discounts ?? []),
           trafficText(tariff.traffic),
           packs.length ? `докупка трафика по ${packs.map((p) => p.gb).join(', ')} ГБ` : null,
           `сквады: ${tariff.squads.map(squadName).join(', ')}`,
@@ -370,8 +386,11 @@ export function Tariffs() {
         );
       })}
 
-      {dialog === 'category' ? (
+      {dialog === 'category' || (dialog === 'category-edit' && picked) ? (
         <CategoryDialog
+          category={dialog === 'category-edit' ? picked : null}
+          multi={multi}
+          onMulti={settingsOk && multi ? () => setDialog('multi') : null}
           onClose={() => setDialog('')}
           onDone={async (id) => {
             setDialog('');
@@ -460,6 +479,7 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onS
   const setPeriod = (key: string, patch: Partial<Draft['periods'][number]>) =>
     onEdit({ periods: draft.periods.map((p) => (p.key === key ? { ...p, ...patch } : p)) });
   const setPack = (key: string, patch: Partial<DraftPack>) => onEdit({ packs: draft.packs.map((p) => (p.key === key ? { ...p, ...patch } : p)) });
+  const setDiscount = (key: string, patch: Partial<DraftDiscount>) => onEdit({ discounts: draft.discounts.map((d) => (d.key === key ? { ...d, ...patch } : d)) });
   const periodic = draft.reset === 'day' || draft.reset === 'week' || draft.reset === 'month' || draft.reset === 'month_rolling';
   const leftovers: Array<[Leftover, string]> = [
     ['burn', 'Сгорает'],
@@ -598,6 +618,62 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onS
             </>
           ) : null}
         </div>
+        {draft.extraOn ? (
+          <div className="tf-col" style={{ gap: 8, marginTop: 8 }}>
+            <span className="tf-bt">Скидка за доп. устройства</span>
+            <span className="muted">Чем больше доп. устройств, тем больше скидка. Действует только на сумму за доп. устройства: при покупке, продлении, автопродлении, смене тарифа и докупке.</span>
+            {draft.discounts.map((d) => {
+              const from = Number(d.from) || 0;
+              return (
+                <div key={d.key} className="tf-period">
+                  <label className="tf-inline">
+                    <span className="muted">от</span>
+                    <input
+                      className="field num"
+                      inputMode="numeric"
+                      value={d.from}
+                      onChange={(e) => setDiscount(d.key, { from: e.target.value.replace(/\D/g, '').slice(0, 3) })}
+                      style={{ width: 72 }}
+                      aria-label="С какого числа доп. устройств"
+                      disabled={busy}
+                    />
+                    <span className="muted" style={{ minWidth: 112 }}>
+                      {plural(from, 'доп. устройства', 'доп. устройств', 'доп. устройств')}
+                    </span>
+                  </label>
+                  <label className="tf-inline">
+                    <span className="muted">скидка</span>
+                    <input
+                      className="field num"
+                      inputMode="numeric"
+                      value={d.percent}
+                      onChange={(e) => setDiscount(d.key, { percent: e.target.value.replace(/\D/g, '').slice(0, 2) })}
+                      style={{ width: 64 }}
+                      aria-label="Скидка в процентах"
+                      disabled={busy}
+                    />
+                    <span className="muted">%</span>
+                  </label>
+                  <button type="button" className="tf-x hov" aria-label={`Убрать скидку от ${d.from || ''} доп. устройств`} onClick={() => onEdit({ discounts: draft.discounts.filter((x) => x.key !== d.key) })} disabled={busy}>
+                    <Icon name="close" size={16} stroke={2} />
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              className="tf-add"
+              onClick={() => {
+                const last = draft.discounts[draft.discounts.length - 1];
+                const next = last ? String(Math.min((Number(last.from) || 0) + 1, Number(draft.extraMax) || 1)) : String(Math.min(2, Number(draft.extraMax) || 1));
+                onEdit({ discounts: [...draft.discounts, { key: nextKey(), from: next, percent: '' }] });
+              }}
+              disabled={busy || draft.discounts.length >= 10}
+            >
+              Добавить ступень скидки
+            </button>
+          </div>
+        ) : null}
         {hwidOff ? (
           <p className="tf-warn">
             Лимит устройств выключен в Remnawave: клиенты подключат сколько угодно устройств.{' '}
@@ -786,28 +862,74 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onS
   );
 }
 
-function CategoryDialog({ onClose, onDone }: { onClose: () => void; onDone: (id: number) => Promise<void> }) {
-  const [name, setName] = useState('');
+type CategoryProps = {
+  category: Category | null;
+  multi: Multi | null;
+  onMulti: (() => void) | null;
+  onClose: () => void;
+  onDone: (id: number) => Promise<void>;
+};
+
+function CategoryDialog({ category, multi, onMulti, onClose, onDone }: CategoryProps) {
+  const [name, setName] = useState(category?.name ?? '');
+  const [limit, setLimit] = useState(category?.subscription_limit ? String(category.subscription_limit) : '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const field = useId();
-  const create = async () => {
+  const limitField = useId();
+  const save = async () => {
+    const value = limit.trim() ? Number(limit) : null;
+    if (value !== null && (!Number.isInteger(value) || value < 1 || value > 100)) {
+      setError('Подписок этой категории у клиента: от 1 до 100 или пусто');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const created = await api<{ id: number }>('/api/admin/categories', { method: 'POST', body: { name: name.trim() } });
-      await onDone(created.id);
+      const body = { name: name.trim(), sort: category?.sort ?? 0, visible: category?.visible ?? true, subscription_limit: value };
+      const saved = category
+        ? await api<{ id: number }>(`/api/admin/categories/${category.id}`, { method: 'PUT', body })
+        : await api<{ id: number }>('/api/admin/categories', { method: 'POST', body });
+      await onDone(saved.id);
     } catch (err) {
-      setError(failText(err, 'Категория не создалась'));
+      setError(failText(err, category ? 'Категория не сохранилась' : 'Категория не создалась'));
       setBusy(false);
     }
   };
   return (
-    <Dialog title="Новая категория" busy={busy} onClose={onClose}>
+    <Dialog title={category ? 'Категория' : 'Новая категория'} busy={busy} onClose={onClose}>
       <div className="field-row">
         <label htmlFor={field}>Название</label>
         <input id={field} className="field" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Белые списки" disabled={busy} autoFocus />
         <span className="cap">Клиенты увидят её как раздел каталога</span>
+      </div>
+      <div className="field-row">
+        <label htmlFor={limitField}>Подписок этой категории у клиента</label>
+        <span className="tf-inline">
+          <input
+            id={limitField}
+            className="field num"
+            inputMode="numeric"
+            value={limit}
+            onChange={(e) => setLimit(e.target.value.replace(/\D/g, '').slice(0, 3))}
+            placeholder="Без ограничений"
+            style={{ width: 168 }}
+            disabled={busy}
+          />
+        </span>
+        <span className="cap">
+          Пусто — без ограничений. Когда у клиента набралось столько подписок этой категории, новую оформить нельзя: покупка тарифа этой категории продлит одну из них. Подписки, которые уже есть, остаются.
+        </span>
+        {multi && !multi.enabled ? (
+          <p className="tf-warn">
+            Сейчас у клиента может быть только одна подписка, поэтому ограничение не действует.{' '}
+            {onMulti ? (
+              <button type="button" className="tf-link" onClick={onMulti} disabled={busy}>
+                Разрешить несколько подписок
+              </button>
+            ) : null}
+          </p>
+        ) : null}
       </div>
       {error ? (
         <p className="err" role="alert">
@@ -815,8 +937,8 @@ function CategoryDialog({ onClose, onDone }: { onClose: () => void; onDone: (id:
         </p>
       ) : null}
       <div className="dialog-actions">
-        <button type="button" className="btn-main btn" onClick={() => void create()} disabled={busy || !name.trim()}>
-          {busy ? 'Создаём…' : 'Создать'}
+        <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy || !name.trim()}>
+          {busy ? (category ? 'Сохраняем…' : 'Создаём…') : category ? 'Сохранить' : 'Создать'}
         </button>
         <button type="button" className="btn-line hov" onClick={onClose} disabled={busy}>
           Отменить
@@ -850,7 +972,7 @@ function MultiDialog({ value, onClose, onDone }: { value: Multi; onClose: () => 
       </span>
       {enabled ? (
         <p className="cap">
-          Клиент может держать несколько подписок. В боте при покупке он выбирает, какую продлить, или оформляет новую. Тариф той же категории продлевает выбранную подписку, другой категории — переводит её на новый тариф.
+          Клиент может держать несколько подписок. В боте при покупке он выбирает, какую продлить, или оформляет новую. Тариф той же категории продлевает выбранную подписку, другой категории — переводит её на новый тариф. Сколько подписок одной категории может быть у клиента, задаётся в настройках категории.
         </p>
       ) : (
         <p className="cap">

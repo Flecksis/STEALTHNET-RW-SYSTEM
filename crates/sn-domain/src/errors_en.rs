@@ -102,6 +102,12 @@ pub fn by_code(code: &str) -> Option<&'static str> {
             "The subscription is blocked, so payment isn't available. Please contact support."
         }
         "subscription.ended" => "The subscription has ended.",
+        "subscription.category_full" => {
+            "You can't add another subscription in this category. Renew the one you have or choose a plan from another category."
+        }
+        "subscription.choose" => {
+            "Choose which subscription in this category to renew: a new one can't be added."
+        }
         "support.body" => "The message is empty or too long.",
         "support.closed" => "This request is closed. Please open a new one.",
         "support.too_many" => "You have too many open requests. Please wait for a reply.",

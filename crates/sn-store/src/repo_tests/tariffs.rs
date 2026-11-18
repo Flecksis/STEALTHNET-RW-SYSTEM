@@ -200,3 +200,89 @@ async fn неудачная_правка_тарифа_не_меняет_ниче
     drop(conn);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn лимит_подписок_категории_и_лесенка_скидок_хранятся_и_читаются() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let first = category(&mut conn, "С обходом").await;
+    assert_eq!(
+        conn.tariffs()
+            .category(first)
+            .await
+            .unwrap()
+            .subscription_limit,
+        None
+    );
+    let limited = conn
+        .tariffs()
+        .set_subscription_limit(first, Some(1))
+        .await
+        .unwrap();
+    assert_eq!(limited.subscription_limit, Some(1));
+    let renamed = conn
+        .tariffs()
+        .update_category(
+            first,
+            &NewCategory {
+                name: "Обход".into(),
+                sort: 2,
+                visible: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.subscription_limit, Some(1));
+    assert_eq!(
+        conn.tariffs().categories(true).await.unwrap()[0].subscription_limit,
+        Some(1)
+    );
+    conn.tariffs()
+        .set_subscription_limit(first, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.tariffs()
+            .category(first)
+            .await
+            .unwrap()
+            .subscription_limit,
+        None
+    );
+    assert!(
+        conn.tariffs()
+            .set_subscription_limit(first, Some(0))
+            .await
+            .is_err()
+    );
+    let created = conn
+        .tariffs()
+        .create(&tariff(first, vec![period(30, 349, 24_900, 175)], &[1]))
+        .await
+        .unwrap();
+    assert!(created.device_discounts.is_empty());
+    let ladder = [
+        sn_domain::tariff::DeviceDiscount {
+            from: 1,
+            percent: 5,
+        },
+        sn_domain::tariff::DeviceDiscount {
+            from: 2,
+            percent: 10,
+        },
+    ];
+    conn.tariffs()
+        .set_device_discounts(created.id, &ladder)
+        .await
+        .unwrap();
+    let stored = conn.tariffs().get(created.id).await.unwrap();
+    assert_eq!(stored.device_discounts, ladder.to_vec());
+    assert!(
+        conn.tariffs()
+            .set_device_discounts(TariffId(9_999_999), &ladder)
+            .await
+            .is_err()
+    );
+    drop(conn);
+    db.cleanup().await;
+}

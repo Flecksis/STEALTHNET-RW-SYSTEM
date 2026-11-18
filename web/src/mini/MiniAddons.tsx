@@ -3,8 +3,8 @@ import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money, MINUS, traffic } from '../lib/format';
 import { t } from '../lib/i18n';
-import { stars } from '../cabinet/model';
-import { addonItem, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from '../cabinet/extras';
+import { linesOf, stars } from '../cabinet/model';
+import { addonItem, addonLadder, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from '../cabinet/extras';
 import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
@@ -92,6 +92,7 @@ export function MiniAddons() {
   const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
   const balanceShort = methods.find((m) => m.kind === 'balance' && m.unavailable?.type === 'insufficient_balance');
   const q = quote?.quote ?? null;
+  const addonCut = q ? (linesOf(q.lines, 'device_discount')[0] ?? null) : null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
 
   const pay = async () => {
@@ -224,6 +225,8 @@ export function MiniAddons() {
             ) : (
               <span>{t('К этой подписке больше устройств не докупить.')}</span>
             )}
+            {devices.can_add > 0 && devices.discounts?.length ? <span>{addonLadder(devices.discounts)}</span> : null}
+            {addonCut ? <span className="mn-notes-strong">{t('{label}: {amount}', { label: addonCut.label, amount: starsMode && addonCut.stars !== null ? stars(addonCut.stars) : money(addonCut.amount) })}</span> : null}
           </p>
         </>
       ) : null}

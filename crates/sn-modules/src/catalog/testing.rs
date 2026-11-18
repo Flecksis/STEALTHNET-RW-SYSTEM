@@ -155,6 +155,7 @@ impl CoreApi for TestCore {
             multi: false,
             current: None,
             choices: Vec::new(),
+            new_allowed: true,
             refusal,
         })
     }

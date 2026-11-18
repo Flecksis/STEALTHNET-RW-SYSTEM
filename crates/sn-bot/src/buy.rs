@@ -8,18 +8,20 @@ use crate::text;
 use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
-use sn_domain::ids::{PeriodId, TariffId};
+use sn_domain::ids::{PeriodId, SubscriptionId, TariffId};
 use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_domain::money::Money;
 use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
-use sn_domain::tariff::{ExtraDevices, Tariff};
+use sn_domain::tariff::{DeviceDiscount, ExtraDevices, Tariff};
 use sn_modules::catalog::promo::{self, PromoError, Purpose};
 use sn_payments::Unavailable;
 use sn_services::Services;
 use sn_services::bot_content::BotContent;
-use sn_services::checkout::{CartRequest, Channel, CheckoutRequest, CheckoutResult, TariffOffer};
+use sn_services::checkout::{
+    CartRequest, CategoryFull, Channel, CheckoutRequest, CheckoutResult, TariffOffer,
+};
 use sn_store::{Db, StoreError};
 use uuid::Uuid;
 
@@ -144,6 +146,80 @@ async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {
         .section(Section::Buy))
 }
 
+pub fn discount_steps(discounts: &[DeviceDiscount]) -> String {
+    discounts
+        .iter()
+        .enumerate()
+        .map(|(index, step)| match (lang::current(), index) {
+            (sn_domain::client::Locale::Ru, 0) => {
+                format!("от {} — {}%", text::devices_from(step.from), step.percent)
+            }
+            (sn_domain::client::Locale::Ru, _) => format!("от {} — {}%", step.from, step.percent),
+            (sn_domain::client::Locale::En, 0) => {
+                format!("{}+ extra devices — {}%", step.from, step.percent)
+            }
+            (sn_domain::client::Locale::En, _) => format!("{}+ — {}%", step.from, step.percent),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+async fn category_choice(
+    services: &Services,
+    c: &BotContent,
+    full: &CategoryFull,
+    tariff_id: TariffId,
+) -> Screen {
+    let offset = services.settings().remna_offset();
+    let mut keyboard = Keyboard::new();
+    for sub in &full.held {
+        let name = tariff_name(services, sub.tariff_id).await;
+        let data = format!("tb:{tariff_id}:{}", sub.id);
+        keyboard = keyboard.push(match sub.mirror.expire_at {
+            Some(at) => ui::button(
+                c,
+                "buy.btn.extend_item",
+                &[
+                    ("tariff", Text(&name)),
+                    ("date", Text(&text::day_month(at, offset))),
+                ],
+                data,
+            ),
+            None => ui::button(
+                c,
+                "buy.btn.extend_item_open",
+                &[("tariff", Text(&name))],
+                data,
+            ),
+        });
+    }
+    Screen::new(ui::text(
+        c,
+        "buy.category_choose",
+        &[("category", Text(&full.category.name))],
+    ))
+    .keyboard(keyboard.pair(ui::back(c, "buy:new"), ui::menu(c)))
+    .section(Section::Buy)
+}
+
+pub async fn tariff_for(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    tariff_id: TariffId,
+    subscription_id: SubscriptionId,
+) -> Result<Screen, BotError> {
+    let services = turn.services().clone();
+    let owned = live(services.subscriptions().list_for_client(client.id).await?)
+        .iter()
+        .any(|s| s.id == subscription_id);
+    if !owned {
+        return start(turn, client, "").await;
+    }
+    let cart = turn.session.cart.get_or_insert_with(Cart::default);
+    cart.subscription_id = Some(subscription_id);
+    tariff(turn, client, tariff_id).await
+}
+
 pub async fn tariff(
     turn: &mut Turn<'_>,
     client: &Client,
@@ -155,6 +231,27 @@ pub async fn tariff(
     let Some(offer) = offers.into_iter().find(|o| o.tariff.id == tariff_id) else {
         return start(turn, client, "").await;
     };
+    let services = turn.services().clone();
+    let mut limit_note = None;
+    if let Some(full) = services
+        .checkout()
+        .category_room(client.id, tariff_id)
+        .await?
+    {
+        let target = turn.session.cart.as_ref().and_then(|c| c.subscription_id);
+        if !target.is_some_and(|id| full.holds(id)) {
+            let [only] = full.held.as_slice() else {
+                return Ok(category_choice(&services, c, &full, tariff_id).await);
+            };
+            let cart = turn.session.cart.get_or_insert_with(Cart::default);
+            cart.subscription_id = Some(only.id);
+            limit_note = Some(ui::text(
+                c,
+                "buy.category_renew",
+                &[("category", Text(&full.category.name))],
+            ));
+        }
+    }
     let cart = turn.session.cart.get_or_insert_with(Cart::default);
     cart.tariff_id = Some(tariff_id);
     cart.period_id = None;
@@ -173,6 +270,9 @@ pub async fn tariff(
         .filter(|d| !d.trim().is_empty())
     {
         lines.add(text::escape(description));
+    }
+    if let Some(note) = limit_note {
+        lines.add(note);
     }
     lines.add(ui::text(
         c,
@@ -284,21 +384,30 @@ fn devices_screen(
         })
         .collect();
     let included_text = text::devices(tariff.devices.included);
-    Screen::new(ui::text(
+    let mut lines = Lines::new();
+    lines.add(ui::text(
         c,
         "buy.extra_devices",
         &[
             ("included", Text(&included_text)),
             ("price", Text(&text::money(monthly))),
         ],
-    ))
-    .keyboard(
-        Keyboard::new()
-            .push(ui::button(c, "buy.btn.no_extra", &[], "d:0"))
-            .grid(buttons, 4)
-            .push(ui::back(c, back)),
-    )
-    .section(Section::Buy)
+    ));
+    if !tariff.device_discounts.is_empty() {
+        lines.add(ui::text(
+            c,
+            "buy.device_discounts",
+            &[("steps", Text(&discount_steps(&tariff.device_discounts)))],
+        ));
+    }
+    Screen::new(lines.text())
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(c, "buy.btn.no_extra", &[], "d:0"))
+                .grid(buttons, 4)
+                .push(ui::back(c, back)),
+        )
+        .section(Section::Buy)
 }
 
 pub async fn period(

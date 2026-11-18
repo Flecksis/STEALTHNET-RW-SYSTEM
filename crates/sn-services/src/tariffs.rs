@@ -2,10 +2,12 @@ use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use serde::{Deserialize, Serialize};
+use sn_domain::DomainError;
 use sn_domain::ids::{AdminId, CategoryId, PeriodId, RemnaUserId, SquadId, TariffId};
 use sn_domain::money::{Currency, Stars};
 use sn_domain::tariff::{
-    Category, CurrencyPrices, DevicePolicy, Tariff, TariffChannels, TariffPeriod, TrafficAddon,
+    Category, CurrencyPrices, DeviceDiscount, DevicePolicy, Tariff, TariffChannels, TariffPeriod,
+    TrafficAddon, check_device_discounts, check_subscription_limit,
 };
 use sn_domain::traffic::TrafficPolicy;
 use sn_remnawave::{BulkSquadsRequest, BulkUpdateRequest, BulkUserFields};
@@ -49,6 +51,8 @@ pub struct TariffInput {
     #[serde(default)]
     pub external_squad: Option<SquadId>,
     pub periods: Vec<PeriodInput>,
+    #[serde(default)]
+    pub device_discounts: Vec<DeviceDiscount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -58,6 +62,8 @@ pub struct CategoryInput {
     pub sort: i32,
     #[serde(default = "enabled")]
     pub visible: bool,
+    #[serde(default)]
+    pub subscription_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -116,6 +122,13 @@ fn check_prices(field: &str, prices: &CurrencyPrices) -> ServiceResult<()> {
     Ok(())
 }
 
+fn invalid_from(field: &str, err: DomainError) -> ServiceError {
+    match err {
+        DomainError::InvalidValue { reason, .. } => invalid(field, reason),
+        other => other.into(),
+    }
+}
+
 fn check_stars(field: &str, stars: Option<Stars>) -> ServiceResult<()> {
     if stars.is_some_and(|s| s.0 <= 0) {
         return Err(invalid(field, "цена в звёздах должна быть больше нуля"));
@@ -163,6 +176,8 @@ impl TariffInput {
             }
             check_prices("Цена за устройство в месяц", &extra.monthly)?;
             check_stars("Цена устройства в звёздах", extra.monthly_stars)?;
+            check_device_discounts(&self.device_discounts, extra.max)
+                .map_err(|err| invalid_from("Скидка за доп. устройства", err))?;
         }
         self.traffic.validate()?;
         if let Some(addon) = &self.traffic_addon {
@@ -212,6 +227,16 @@ impl TariffInput {
             traffic: self.traffic,
             squads: self.squads.clone(),
             external_squad: self.external_squad,
+            device_discounts: self.discounts(),
+        }
+    }
+
+    pub fn discounts(&self) -> Vec<DeviceDiscount> {
+        match &self.devices.extra {
+            Some(extra) => {
+                check_device_discounts(&self.device_discounts, extra.max).unwrap_or_default()
+            }
+            None => Vec::new(),
         }
     }
 
@@ -259,6 +284,8 @@ impl CategoryInput {
         if name.is_empty() || name.chars().count() > 60 {
             return Err(invalid("Категория", "название от 1 до 60 символов"));
         }
+        check_subscription_limit(self.subscription_limit)
+            .map_err(|err| invalid_from("Подписок этой категории у клиента", err))?;
         Ok(NewCategory {
             name: name.to_string(),
             sort: self.sort,
@@ -534,7 +561,11 @@ impl<'a> TariffAdmin<'a> {
         input.validate()?;
         let mut tx = self.services.store().begin().await?;
         self.check_references(&mut tx, input).await?;
-        let tariff = tx.tariffs().create(&input.to_new()).await?;
+        let created = tx.tariffs().create(&input.to_new()).await?;
+        tx.tariffs()
+            .set_device_discounts(created.id, &input.discounts())
+            .await?;
+        let tariff = tx.tariffs().get(created.id).await?;
         tx.audit()
             .record(&Actor::Admin(admin).audit(
                 "tariff.create",
@@ -557,7 +588,11 @@ impl<'a> TariffAdmin<'a> {
         let mut tx = self.services.store().begin().await?;
         tx.tariffs().get(id).await?;
         self.check_references(&mut tx, input).await?;
-        let tariff = tx.tariffs().update(id, &input.to_new()).await?;
+        tx.tariffs().update(id, &input.to_new()).await?;
+        tx.tariffs()
+            .set_device_discounts(id, &input.discounts())
+            .await?;
+        let tariff = tx.tariffs().get(id).await?;
         tx.audit()
             .record(&Actor::Admin(admin).audit(
                 "tariff.update",
@@ -625,12 +660,19 @@ impl<'a> TariffAdmin<'a> {
         let category = input.to_new()?;
         let mut tx = self.services.store().begin().await?;
         let created = tx.tariffs().create_category(&category).await?;
+        let created = tx
+            .tariffs()
+            .set_subscription_limit(created.id, input.subscription_limit)
+            .await?;
         tx.audit()
             .record(&Actor::Admin(admin).audit(
                 "category.create",
                 "category",
                 Some(created.id.0),
-                serde_json::json!({ "name": created.name }),
+                serde_json::json!({
+                    "name": created.name,
+                    "subscription_limit": created.subscription_limit,
+                }),
             ))
             .await?;
         tx.commit().await?;
@@ -645,13 +687,21 @@ impl<'a> TariffAdmin<'a> {
     ) -> ServiceResult<Category> {
         let category = input.to_new()?;
         let mut tx = self.services.store().begin().await?;
-        let updated = tx.tariffs().update_category(id, &category).await?;
+        tx.tariffs().update_category(id, &category).await?;
+        let updated = tx
+            .tariffs()
+            .set_subscription_limit(id, input.subscription_limit)
+            .await?;
         tx.audit()
             .record(&Actor::Admin(admin).audit(
                 "category.update",
                 "category",
                 Some(id.0),
-                serde_json::json!({ "name": updated.name, "visible": updated.visible }),
+                serde_json::json!({
+                    "name": updated.name,
+                    "visible": updated.visible,
+                    "subscription_limit": updated.subscription_limit,
+                }),
             ))
             .await?;
         tx.commit().await?;
@@ -687,6 +737,7 @@ mod tests {
             traffic: TrafficPolicy::UNLIMITED,
             squads: vec![SquadId(Uuid::from_u128(1))],
             external_squad: None,
+            device_discounts: Vec::new(),
             periods: vec![PeriodInput {
                 days: 30,
                 prices: CurrencyPrices {
@@ -719,5 +770,40 @@ mod tests {
         let mut free_stars = input();
         free_stars.periods[0].stars = Some(Stars(0));
         assert!(free_stars.validate().is_err());
+    }
+
+    #[test]
+    fn скидка_за_устройства_из_формы_проверяется_и_сортируется() {
+        let step = |from, percent| DeviceDiscount { from, percent };
+        let mut ladder = input();
+        ladder.device_discounts = vec![step(2, 20), step(1, 10)];
+        assert!(ladder.validate().is_ok());
+        assert_eq!(ladder.discounts(), vec![step(1, 10), step(2, 20)]);
+        let mut too_many = input();
+        too_many.device_discounts = vec![step(3, 10)];
+        let err = too_many.validate().unwrap_err().to_string();
+        assert!(err.contains("Скидка за доп. устройства"), "{err}");
+        let mut falling = input();
+        falling.device_discounts = vec![step(1, 20), step(2, 10)];
+        assert!(falling.validate().is_err());
+        let mut not_sold = input();
+        not_sold.devices.extra = None;
+        not_sold.device_discounts = vec![step(1, 10)];
+        assert!(not_sold.validate().is_ok());
+        assert!(not_sold.discounts().is_empty());
+    }
+
+    #[test]
+    fn лимит_подписок_категории_из_формы() {
+        let category = |limit| CategoryInput {
+            name: "С обходом".into(),
+            sort: 0,
+            visible: true,
+            subscription_limit: limit,
+        };
+        assert!(category(None).to_new().is_ok());
+        assert!(category(Some(1)).to_new().is_ok());
+        assert!(category(Some(0)).to_new().is_err());
+        assert!(category(Some(101)).to_new().is_err());
     }
 }

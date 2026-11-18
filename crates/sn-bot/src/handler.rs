@@ -8,7 +8,7 @@ use crate::ui::{self, Html, Lines, Text};
 use crate::{BotError, account, buy, consent, contests, extras, gifts, gram_wallet, login, media};
 use sn_domain::bot_content::Section;
 use sn_domain::client::{Client, IdentityKind, Locale, RegistrationSource, TelegramProfile};
-use sn_domain::ids::TariffId;
+use sn_domain::ids::{SubscriptionId, TariffId};
 use sn_domain::lang;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
@@ -524,6 +524,15 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         "buy" => buy::start(turn, client, rest).await?,
         "t" => match id_arg(rest) {
             Some(id) => buy::tariff(turn, client, TariffId(id)).await?,
+            None => buy::start(turn, client, "").await?,
+        },
+        "tb" => match rest
+            .split_once(':')
+            .and_then(|(tariff, sub)| Some((id_arg(tariff)?, id_arg(sub)?)))
+        {
+            Some((tariff, sub)) => {
+                buy::tariff_for(turn, client, TariffId(tariff), SubscriptionId(sub)).await?
+            }
             None => buy::start(turn, client, "").await?,
         },
         "p" => match id_arg(rest) {

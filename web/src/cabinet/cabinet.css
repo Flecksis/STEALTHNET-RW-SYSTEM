@@ -983,6 +983,10 @@
   gap: 4px;
 }
 
+.cb-devs-cut {
+  font-weight: 700;
+}
+
 .cb-stepper {
   display: flex;
   align-items: center;

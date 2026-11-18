@@ -458,6 +458,10 @@ const CAN_ADD: Var = Var {
     name: "can_add",
     hint: "сколько ещё можно добавить",
 };
+const STEPS: Var = Var {
+    name: "steps",
+    hint: "ступени скидки: от скольких устройств и сколько процентов",
+};
 const GB: Var = Var {
     name: "gb",
     hint: "гигабайт в пакете",
@@ -1044,6 +1048,20 @@ pub static CATALOG: &[Entry] = &[
         &[],
     ),
     text(
+        "buy.category_renew",
+        Buy,
+        "Подписка категории уже есть, оплата продлит её",
+        "В категории «{category}» у вас уже есть подписка: оплата продлит её.",
+        &[CATEGORY],
+    ),
+    text(
+        "buy.category_choose",
+        Buy,
+        "Новую подписку категории оформить нельзя",
+        "В категории «{category}» новую подписку оформить нельзя. Какую подписку продлить?",
+        &[CATEGORY],
+    ),
+    text(
         "buy.empty",
         Buy,
         "Нет тарифов",
@@ -1161,6 +1179,13 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка числа доп. устройств",
         "+{count}",
         &[COUNT],
+    ),
+    text(
+        "buy.device_discounts",
+        Buy,
+        "Скидка за доп. устройства",
+        "Скидка за доп. устройства: {steps}.",
+        &[STEPS],
     ),
     text(
         "buy.summary_title",
@@ -1943,6 +1968,13 @@ pub static CATALOG: &[Entry] = &[
         &[INCLUDED, EXTRA, CAN_ADD, DAYS, PRICE, STARS],
     ),
     text(
+        "opt.discounts",
+        Options,
+        "Скидка за доп. устройства",
+        "Скидка за доп. устройства: {steps}. Ступень считается по числу доп. устройств у подписки после покупки.",
+        &[STEPS],
+    ),
+    text(
         "opt.stars",
         Options,
         "Цена в звёздах",
@@ -2199,6 +2231,20 @@ pub static CATALOG: &[Entry] = &[
         Gifts,
         "Куда зачесть подарок",
         "Продлить одну из подписок или оформить новую?",
+        &[],
+    ),
+    text(
+        "gift.plan_limit",
+        Gifts,
+        "Новую подписку этой категории оформить нельзя",
+        "Новую подписку этой категории оформить нельзя: срок добавится к одной из ваших подписок.",
+        &[],
+    ),
+    text(
+        "gift.choose_existing",
+        Gifts,
+        "Какую подписку продлить подарком",
+        "Какую подписку продлить?",
         &[],
     ),
     button(

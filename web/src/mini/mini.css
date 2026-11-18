@@ -479,6 +479,11 @@
   color: var(--ink-2);
 }
 
+.mn-notes > .mn-notes-strong {
+  font-weight: 700;
+  color: var(--ink);
+}
+
 .mn-move {
   display: flex;
   flex-direction: column;
@@ -618,6 +623,11 @@
 .mn-devs-text > span {
   font-size: 13px;
   color: var(--muted);
+}
+
+.mn-devs-text > .mn-devs-cut {
+  font-weight: 700;
+  color: var(--ink);
 }
 
 .mn-stepper {

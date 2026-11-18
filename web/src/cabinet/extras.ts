@@ -1,6 +1,6 @@
 import { count, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
-import type { CheckoutMethod, Quote, TrafficReset } from './model';
+import { ladderText, type CheckoutMethod, type DeviceDiscount, type Quote, type TrafficReset } from './model';
 
 export type Unavailable = { code: string; message: string };
 
@@ -17,6 +17,7 @@ export type DevicesOffer = {
   per_device: Money;
   per_device_stars: number | null;
   expire_at: string;
+  discounts?: DeviceDiscount[];
 };
 
 export type TrafficPack = { gb: number; price: Money; stars: number | null };
@@ -38,6 +39,10 @@ export type AddonsOffer = {
   devices: Availability<DevicesOffer>;
   traffic: Availability<TrafficOffer>;
 };
+
+export function addonLadder(discounts: DeviceDiscount[]): string {
+  return `${ladderText(discounts) ?? ''}. ${t('Скидка считается по числу доп. устройств у подписки после покупки.')}`;
+}
 
 export type AddonKind = 'devices' | 'traffic';
 

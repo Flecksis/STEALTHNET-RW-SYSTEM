@@ -78,6 +78,7 @@ fn tariff() -> Tariff {
         traffic: TrafficPolicy::UNLIMITED,
         squads: Vec::new(),
         external_squad: None,
+        device_discounts: Vec::new(),
     }
 }
 

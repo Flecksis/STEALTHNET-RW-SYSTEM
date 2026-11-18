@@ -15,10 +15,11 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money, Stars};
 use sn_domain::order::{Order, OrderStatus, PurchaseIntent};
 use sn_domain::pricing::{
-    Quote, QuoteLine, QuoteLineKind, StarsTotal, days_left, prorated, prorated_stars,
+    Quote, QuoteLine, QuoteLineKind, StarsTotal, days_left, device_discount_line, prorated,
+    prorated_stars,
 };
 use sn_domain::subscription::{Subscription, SubscriptionStatus};
-use sn_domain::tariff::{Tariff, TrafficLeftover};
+use sn_domain::tariff::{DeviceDiscount, Tariff, TrafficLeftover, device_discount};
 use sn_domain::traffic::{GIB, TrafficReset};
 use sn_domain::{format, lang};
 use sn_store::{Db, StoreError, StoreResult};
@@ -69,6 +70,7 @@ pub struct DevicesOffer {
     pub per_device: Money,
     pub per_device_stars: Option<Stars>,
     pub expire_at: DateTime<Utc>,
+    pub discounts: Vec<DeviceDiscount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -335,6 +337,7 @@ pub async fn offer(
             .transpose()
             .map_err(domain)?,
         expire_at,
+        discounts: tariff.device_discounts.clone(),
     })
 }
 
@@ -353,30 +356,51 @@ pub fn devices_quote(offer: &DevicesOffer, count: u32) -> Result<Quote, OptionsE
         .map(|s| prorated_stars(s, count, offer.days))
         .transpose()
         .map_err(domain)?;
+    let mut lines = vec![QuoteLine {
+        kind: QuoteLineKind::DeviceAddon {
+            count,
+            days: offer.days,
+        },
+        label: format!(
+            "Доп. устройства: +{count} на {}{}{}",
+            offer.days,
+            format::NBSP,
+            days_word(offer.days)
+        ),
+        amount,
+        stars,
+    }];
+    let after = offer.extra_now.saturating_add(count);
+    let cut = match device_discount(&offer.discounts, after) {
+        Some(step) => device_discount_line(after, step.percent, amount, stars).map_err(domain)?,
+        None => None,
+    };
+    let (discount, stars_discount) = match &cut {
+        Some(line) => (
+            line.amount.checked_neg().map_err(domain)?,
+            line.stars.map(|s| Stars(-s.0)),
+        ),
+        None => (Money::zero(amount.currency), None),
+    };
+    lines.extend(cut);
+    let total = amount.checked_sub(discount).map_err(domain)?;
     Ok(Quote {
         currency: amount.currency,
-        lines: vec![QuoteLine {
-            kind: QuoteLineKind::DeviceAddon {
-                count,
-                days: offer.days,
-            },
-            label: format!(
-                "Доп. устройства: +{count} на {}{}{}",
-                offer.days,
-                format::NBSP,
-                days_word(offer.days)
-            ),
-            amount,
-            stars,
-        }],
+        lines,
         subtotal: amount,
-        discount: Money::zero(amount.currency),
-        total: amount,
-        stars: stars.map(|total| StarsTotal {
-            subtotal: total,
-            discount: Stars::ZERO,
-            total,
-        }),
+        discount,
+        total,
+        stars: match stars {
+            Some(subtotal) => {
+                let discount = stars_discount.unwrap_or(Stars::ZERO);
+                Some(StarsTotal {
+                    subtotal,
+                    discount,
+                    total: subtotal.checked_sub(discount).map_err(domain)?,
+                })
+            }
+            None => None,
+        },
         days: 0,
         extra_devices: count,
     })
@@ -844,7 +868,51 @@ mod tests {
             per_device: prorated(usd(99), 1, days).unwrap(),
             per_device_stars: Some(prorated_stars(Stars(50), 1, days).unwrap()),
             expire_at: at(16) + Duration::days(i64::from(days)),
+            discounts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn докупка_устройств_со_скидкой_по_числу_устройств_после_покупки() {
+        let offer = DevicesOffer {
+            extra_now: 1,
+            can_add: 5,
+            discounts: vec![
+                DeviceDiscount {
+                    from: 2,
+                    percent: 10,
+                },
+                DeviceDiscount {
+                    from: 5,
+                    percent: 20,
+                },
+            ],
+            ..sample_offer(2, 30)
+        };
+        let one = devices_quote(&offer, 1).unwrap();
+        assert_eq!(one.subtotal, usd(99));
+        assert_eq!(one.lines[1].amount, usd(-10));
+        assert_eq!(
+            one.lines[1].kind,
+            QuoteLineKind::DeviceDiscount {
+                count: 2,
+                percent: 10
+            }
+        );
+        assert_eq!(one.total, usd(89));
+        assert_eq!(one.discount, usd(10));
+        assert_eq!(one.stars.unwrap().total, Stars(45));
+        let four = devices_quote(&offer, 4).unwrap();
+        assert_eq!(four.lines[1].label, "Скидка за 5\u{a0}доп. устройств, −20%");
+        assert_eq!(four.total, usd(396 - 79));
+        assert_eq!(four.stars.unwrap().discount, Stars(40));
+        let first = DevicesOffer {
+            extra_now: 0,
+            ..offer.clone()
+        };
+        let single = devices_quote(&first, 1).unwrap();
+        assert_eq!(single.lines.len(), 1);
+        assert_eq!(single.total, usd(99));
     }
 
     #[test]

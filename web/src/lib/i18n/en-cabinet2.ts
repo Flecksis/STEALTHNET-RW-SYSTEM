@@ -279,4 +279,10 @@ export const CABINET2: Record<string, string> = {
   'Войти через {provider}': 'Sign in with {provider}',
   'Опишите вопрос — сначала ответит {ai}. Если он не справится или вы попросите, подключится оператор.': 'Describe your question. {ai} replies first; if it can\'t help or you ask, an operator joins in.',
   'Вопрос передан оператору. Ответ придёт сюда.': 'Passed to an operator. The reply will show up here.',
+  'Скидка за доп. устройства: {steps}': 'Discount on extra devices: {steps}',
+  'от {n} — {percent}%': '{n}+ — {percent}%',
+  'Скидка считается по числу доп. устройств у подписки после покупки.': 'The discount depends on how many extra devices the subscription has after the purchase.',
+  'В категории «{category}» у вас уже есть подписка, поэтому оплата продлит её.': 'You already have a subscription in “{category}”, so this payment renews it.',
+  'В категории «{category}» новую подписку не оформить. Выберите, какую продлить.': 'You can\'t add another subscription in “{category}”. Choose which one to renew.',
+  'Новую подписку этой категории оформить нельзя: срок добавится к одной из ваших подписок.': 'You can\'t add another subscription in this category, so the time will be added to one of yours.',
 };

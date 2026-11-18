@@ -108,6 +108,7 @@ async fn tariff_brief(
     match db.tariffs().get(id).await {
         Ok(t) => Ok(Some(crate::clients::TariffBrief {
             id: t.id,
+            category_id: t.category_id,
             name: t.name,
             on_sale: t.on_sale,
             devices: t.devices,

@@ -11,6 +11,7 @@ use sn_domain::ids::SubscriptionId;
 use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_domain::payment::providers;
+use sn_domain::pricing::QuoteLineKind;
 use sn_domain::tariff::TrafficLeftover;
 use sn_domain::traffic::TrafficReset;
 use sn_modules::ModuleError;
@@ -641,7 +642,7 @@ fn devices_screen(
         .per_device_stars
         .map(|s| ui::text(c, "opt.stars", &[("stars", Text(&text::stars(s)))]))
         .unwrap_or_default();
-    let message = ui::text(
+    let mut message = ui::text(
         c,
         "opt.offer",
         &[
@@ -653,6 +654,14 @@ fn devices_screen(
             ("stars", Html(&stars)),
         ],
     );
+    if !offer.discounts.is_empty() {
+        message.push('\n');
+        message.push_str(&ui::text(
+            c,
+            "opt.discounts",
+            &[("steps", Text(&crate::buy::discount_steps(&offer.discounts)))],
+        ));
+    }
     let buttons: Vec<_> = (1..=offer.can_add)
         .filter_map(|n| {
             ui::button(
@@ -749,9 +758,14 @@ async fn addon_summary(
         .unwrap_or_default();
     let label = quote
         .lines
-        .first()
-        .map(|line| line.shown_label())
-        .unwrap_or_default();
+        .iter()
+        .enumerate()
+        .filter(|(index, line)| {
+            *index == 0 || matches!(line.kind, QuoteLineKind::DeviceDiscount { .. })
+        })
+        .map(|(_, line)| line.shown_label())
+        .collect::<Vec<_>>()
+        .join(" · ");
     let mut lines = Lines::new();
     lines.add(ui::text(
         c,

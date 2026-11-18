@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { encode } from 'uqr';
 import { api, ApiError } from '../../lib/api';
-import { days, groupDigits, money, NBSP, periodLabel, type Money } from '../../lib/format';
+import { count, days, groupDigits, money, NBSP, periodLabel, type Money } from '../../lib/format';
 import type { Currency } from '../../lib/types';
 import type { TariffBrief } from './types';
 import '../form.css';
@@ -396,6 +396,7 @@ type GrantTariffOption = {
   id: number;
   name: string;
   category_id: number;
+  category_limit?: number | null;
   on_sale: boolean;
   periods: GrantPeriodOption[];
   ready: boolean;
@@ -406,12 +407,14 @@ type GrantProps = {
   subscriptionId: number | null;
   currentTariffId: number | null;
   currentTrial: boolean;
+  held?: Array<{ id: number; tariff_id: number | null }>;
   onClose: () => void;
   onDone: (result: { plan: 'new' | 'renewal' | 'change'; days: number }) => void;
 };
 
-export function GrantDialog({ clientId, subscriptionId, currentTariffId, currentTrial, onClose, onDone }: GrantProps) {
+export function GrantDialog({ clientId, subscriptionId, currentTariffId, currentTrial, held = [], onClose, onDone }: GrantProps) {
   const [tariffs, setTariffs] = useState<GrantTariffOption[] | null>(null);
+  const [multi, setMulti] = useState(false);
   const [tariffId, setTariffId] = useState<number | null>(null);
   const [periodId, setPeriodId] = useState<number | 'custom' | null>(null);
   const [custom, setCustom] = useState('30');
@@ -424,11 +427,12 @@ export function GrantDialog({ clientId, subscriptionId, currentTariffId, current
 
   useEffect(() => {
     let cancelled = false;
-    api<{ tariffs: GrantTariffOption[] }>('/api/admin/clients/grant-options')
+    api<{ tariffs: GrantTariffOption[]; multi_subscriptions?: boolean }>('/api/admin/clients/grant-options')
       .then((data) => {
         if (cancelled) {
           return;
         }
+        setMulti(data.multi_subscriptions === true);
         const usable = data.tariffs.filter((t) => t.ready && t.periods.length > 0);
         setTariffs(usable);
         const first = usable.find((t) => t.id !== currentTariffId) ?? usable[0];
@@ -461,6 +465,10 @@ export function GrantDialog({ clientId, subscriptionId, currentTariffId, current
     : currentTrial || !tariff || currentCategory !== tariff.category_id
       ? 'change'
       : 'renewal';
+  const sameCategory = tariff
+    ? held.filter((s) => s.id !== subscriptionId && s.tariff_id !== null && tariffs?.find((t) => t.id === s.tariff_id)?.category_id === tariff.category_id).length
+    : 0;
+  const overLimit = multi && (!subscriptionId || plan === 'change') && !!tariff?.category_limit && sameCategory >= tariff.category_limit;
   const customDays = Number(custom);
   const customValid = Number.isInteger(customDays) && customDays >= 1 && customDays <= 3650;
   const chosenDays = periodId === 'custom' ? (customValid ? customDays : 0) : (shown.find((p) => p.id === periodId)?.days ?? 0);
@@ -549,6 +557,14 @@ export function GrantDialog({ clientId, subscriptionId, currentTariffId, current
             ) : null}
           </div>
           <p className="cap">{explain}</p>
+          {overLimit && tariff?.category_limit ? (
+            <p className="warn-line" role="note">
+              У клиента уже {count(sameCategory, 'подписка', 'подписки', 'подписок')} этой категории, а в настройках категории разрешено не больше {tariff.category_limit}.{' '}
+              {subscriptionId
+                ? 'Клиенту такой переход недоступен, а смена тарифа здесь всё равно переведёт подписку в эту категорию.'
+                : 'Клиент в боте и кабинете новую не оформит, а выдача создаст ещё одну.'}
+            </p>
+          ) : null}
           <div className="field-row">
             <label htmlFor={noteField}>Комментарий</label>
             <input

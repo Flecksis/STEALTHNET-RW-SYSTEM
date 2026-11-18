@@ -86,6 +86,12 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.btn.extend_item" => "Renew {tariff} · until {date}",
         "buy.btn.extend_item_open" => "Renew {tariff}",
         "buy.btn.new" => "New subscription",
+        "buy.category_renew" => {
+            "You already have a subscription in “{category}”: this payment renews it."
+        }
+        "buy.category_choose" => {
+            "You can't add another subscription in “{category}”. Which one do you want to renew?"
+        }
         "buy.empty" => "No plans on sale right now.",
         "buy.title" => "<b>Choose a plan</b>",
         "buy.category" => "\n<b>{category}</b>",
@@ -105,6 +111,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         }
         "buy.btn.no_extra" => "No extra devices",
         "buy.btn.extra" => "+{count}",
+        "buy.device_discounts" => "Discount on extra devices: {steps}.",
         "buy.summary_title" => "<b>Checkout</b>",
         "buy.summary_line" => "{label} — {amount}",
         "buy.summary_total" => "Total: <b>{total}</b>",
@@ -255,6 +262,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "opt.offer" => {
             "Devices: {included} in the plan, {extra} added, up to {can_add} more.\n{days} left on the subscription. One device for that time costs {price}{stars}."
         }
+        "opt.discounts" => {
+            "Discount on extra devices: {steps}. The step depends on how many extra devices the subscription has after the purchase."
+        }
         "opt.stars" => " or {stars}",
         "opt.btn.count" => "+{count}",
         "opt.traffic" => {
@@ -306,6 +316,10 @@ pub fn default(key: &str) -> Option<&'static str> {
             "This is your own gift: once you activate it, the code won't work for a friend."
         }
         "gift.choose_target" => "Renew one of your subscriptions or start a new one?",
+        "gift.plan_limit" => {
+            "You can't add another subscription in this category, so the time will be added to one of yours."
+        }
+        "gift.choose_existing" => "Which subscription do you want to renew?",
         "gift.btn.activate" => "Activate",
         "gift.btn.extend" => "Renew “{tariff}”",
         "gift.btn.new" => "New subscription",

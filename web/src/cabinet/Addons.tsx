@@ -3,9 +3,9 @@ import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money, MINUS, traffic } from '../lib/format';
 import { t } from '../lib/i18n';
-import { addonItem, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from './extras';
+import { addonItem, addonLadder, daysText, doneText, firstKind, leftoverText, offerUrl, type AddonChoice, type AddonKind, type AddonsOffer, type ItemQuote, type PayResult } from './extras';
 import { Card, useCabinet } from './CabinetApp';
-import { stars } from './model';
+import { linesOf, stars } from './model';
 import { finished, type PaymentProgress } from './payments';
 import { SubSwitch, useSubs } from './SubSwitch';
 import { subName } from './subs';
@@ -151,6 +151,7 @@ export function AddonsPage() {
   const chosen = methods.find((m) => methodKey(m) === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
   const q = quote?.quote ?? null;
+  const addonCut = q ? (linesOf(q.lines, 'device_discount')[0] ?? null) : null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
 
   const pay = async () => {
@@ -340,6 +341,12 @@ export function AddonsPage() {
                         })
                     : t('К этой подписке больше устройств не докупить.')}
                 </span>
+                {devices.can_add > 0 && devices.discounts?.length ? <span className="cb-muted">{addonLadder(devices.discounts)}</span> : null}
+                {addonCut ? (
+                  <span className="cb-devs-cut" aria-live="polite">
+                    {addonCut.label}
+                  </span>
+                ) : null}
               </span>
               {devices.can_add > 0 ? (
                 <span className="cb-stepper">

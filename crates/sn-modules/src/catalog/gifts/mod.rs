@@ -650,6 +650,7 @@ pub struct RedeemPreview {
     pub multi: bool,
     pub current: Option<GrantCurrent>,
     pub choices: Vec<GrantCurrent>,
+    pub new_allowed: bool,
 }
 
 pub async fn preview(
@@ -695,6 +696,7 @@ pub async fn preview(
         multi: preview.multi,
         current: preview.current,
         choices: preview.choices,
+        new_allowed: preview.new_allowed,
     })
 }
 

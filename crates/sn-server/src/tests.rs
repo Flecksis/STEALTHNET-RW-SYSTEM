@@ -2341,6 +2341,96 @@ async fn тарифы_каналы_применение_и_удаление_че
 }
 
 #[tokio::test]
+async fn лимит_подписок_категории_и_скидка_за_устройства_через_http() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    h.remna.set_squads(vec![InternalSquad {
+        uuid: Uuid::from_u128(1),
+        name: "Основной".into(),
+        view_position: 0,
+        info: SquadInfo::default(),
+        inbounds: Vec::new(),
+    }]);
+    let (status, category) = h
+        .write(
+            Method::POST,
+            "/api/admin/categories",
+            &owner,
+            json!({ "name": "С обходом", "subscription_limit": 1 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{category}");
+    assert_eq!(category["subscription_limit"], 1);
+    let id = category["id"].as_i64().unwrap();
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/categories/{id}"),
+            &owner,
+            json!({ "name": "С обходом", "subscription_limit": 0 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "tariff.invalid");
+    let (status, updated) = h
+        .write(
+            Method::PUT,
+            &format!("/api/admin/categories/{id}"),
+            &owner,
+            json!({ "name": "Обход", "sort": 1, "visible": true, "subscription_limit": 2 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["subscription_limit"], 2);
+    assert_eq!(updated["name"], "Обход");
+    let tariff = |discounts: Value| {
+        json!({
+            "category_id": id,
+            "name": "Обход",
+            "devices": { "included": 3, "extra": { "max": 5, "monthly": { "usd": 99, "rub": 4900 }, "monthly_stars": 50 } },
+            "traffic": { "limit_bytes": null, "reset": "no_reset" },
+            "squads": [Uuid::from_u128(1)],
+            "periods": [{ "days": 30, "prices": { "usd": 299, "rub": 19900 }, "stars": 150 }],
+            "device_discounts": discounts
+        })
+    };
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/tariffs",
+            &owner,
+            tariff(json!([{ "from": 6, "percent": 10 }])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, created) = h
+        .write(
+            Method::POST,
+            "/api/admin/tariffs",
+            &owner,
+            tariff(json!([{ "from": 5, "percent": 20 }, { "from": 2, "percent": 10 }])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(
+        created["device_discounts"],
+        json!([{ "from": 2, "percent": 10 }, { "from": 5, "percent": 20 }])
+    );
+    let (_, list) = h.get("/api/admin/tariffs", &owner).await;
+    assert_eq!(list["categories"][0]["subscription_limit"], 2, "{list}");
+    let client = h.client(5_093_118_501).await;
+    let token = h.client_token(client).await;
+    let (status, catalog) = h.get("/api/client/catalog", &token).await;
+    assert_eq!(status, StatusCode::OK, "{catalog}");
+    assert_eq!(catalog["tariffs"][0]["category"]["subscription_limit"], 2);
+    assert_eq!(
+        catalog["tariffs"][0]["tariff"]["device_discounts"][1]["percent"],
+        20
+    );
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn главная_сводка_лента_оплаты_и_обращения_с_именами() {
     let Some(h) = http().await else { return };
     let owner = h.owner().await;

@@ -108,6 +108,7 @@ pub struct GrantPreview {
     pub multi: bool,
     pub current: Option<GrantCurrent>,
     pub choices: Vec<GrantCurrent>,
+    pub new_allowed: bool,
     pub refusal: Option<GrantRefusal>,
 }
 

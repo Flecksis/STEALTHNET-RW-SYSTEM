@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use sn_domain::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use sn_domain::money::Stars;
 use sn_domain::tariff::{
-    Category, CurrencyPrices, DevicePolicy, ExtraDevices, Tariff, TariffChannels, TariffPeriod,
-    TrafficAddon,
+    Category, CurrencyPrices, DeviceDiscount, DevicePolicy, ExtraDevices, Tariff, TariffChannels,
+    TariffPeriod, TrafficAddon,
 };
 use sn_domain::traffic::{TrafficPolicy, TrafficReset};
 use sqlx::postgres::PgArguments;
@@ -64,6 +64,7 @@ struct TariffRow {
     traffic_reset: String,
     external_squad_uuid: Option<Uuid>,
     traffic_addon: Option<Json<TrafficAddon>>,
+    device_discounts: Json<Vec<DeviceDiscount>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -80,7 +81,8 @@ struct PeriodRow {
 
 const TARIFF_COLUMNS: &str = "id, category_id, name, description, on_sale, sort, devices_included, extra_devices_enabled, \
                               extra_devices_max, extra_device_usd_minor, extra_device_rub_minor, extra_device_stars, \
-                              traffic_limit_bytes, traffic_reset, external_squad_uuid, traffic_addon";
+                              traffic_limit_bytes, traffic_reset, external_squad_uuid, traffic_addon, \
+                              device_discounts";
 
 const PERIOD_COLUMNS: &str =
     "id, tariff_id, days, price_usd_minor, price_rub_minor, stars, sort, active";
@@ -134,6 +136,24 @@ fn tariff_from(
         traffic_addon: row.traffic_addon.map(|addon| addon.0),
         squads,
         external_squad: row.external_squad_uuid.map(SquadId),
+        device_discounts: row.device_discounts.0,
+    })
+}
+
+type CategoryRow = (i64, String, i32, bool, Option<i32>);
+
+const CATEGORY_COLUMNS: &str = "id, name, sort, visible, subscription_limit";
+
+fn category_from(row: CategoryRow) -> StoreResult<Category> {
+    let (id, name, sort, visible, limit) = row;
+    Ok(Category {
+        id: CategoryId(id),
+        name,
+        sort,
+        visible,
+        subscription_limit: limit
+            .map(|v| non_negative_u32(v, "subscription_limit"))
+            .transpose()?,
     })
 }
 
@@ -240,39 +260,37 @@ impl<'c> TariffsRepo<'c> {
     }
 
     pub async fn categories(&mut self, include_hidden: bool) -> StoreResult<Vec<Category>> {
-        let rows: Vec<(i64, String, i32, bool)> = sqlx::query_as(
-            "SELECT id, name, sort, visible FROM tariff_categories \
-             WHERE deleted_at IS NULL AND ($1 OR visible) ORDER BY sort, id",
-        )
+        let rows: Vec<CategoryRow> = sqlx::query_as(&format!(
+            "SELECT {CATEGORY_COLUMNS} FROM tariff_categories \
+             WHERE deleted_at IS NULL AND ($1 OR visible) ORDER BY sort, id"
+        ))
         .bind(include_hidden)
         .fetch_all(&mut *self.conn)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, name, sort, visible)| Category {
-                id: CategoryId(id),
-                name,
-                sort,
-                visible,
-            })
-            .collect())
+        rows.into_iter().map(category_from).collect()
+    }
+
+    pub async fn category(&mut self, id: CategoryId) -> StoreResult<Category> {
+        let row: Option<CategoryRow> = sqlx::query_as(&format!(
+            "SELECT {CATEGORY_COLUMNS} FROM tariff_categories WHERE id = $1 AND deleted_at IS NULL"
+        ))
+        .bind(id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        category_from(row.ok_or(StoreError::NotFound("категория"))?)
     }
 
     pub async fn create_category(&mut self, category: &NewCategory) -> StoreResult<Category> {
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO tariff_categories (name, sort, visible) VALUES ($1, $2, $3) RETURNING id",
-        )
+        let row: CategoryRow = sqlx::query_as(&format!(
+            "INSERT INTO tariff_categories (name, sort, visible) VALUES ($1, $2, $3) \
+             RETURNING {CATEGORY_COLUMNS}"
+        ))
         .bind(category.name.trim())
         .bind(category.sort)
         .bind(category.visible)
         .fetch_one(&mut *self.conn)
         .await?;
-        Ok(Category {
-            id: CategoryId(id),
-            name: category.name.trim().to_string(),
-            sort: category.sort,
-            visible: category.visible,
-        })
+        category_from(row)
     }
 
     pub async fn update_category(
@@ -280,24 +298,51 @@ impl<'c> TariffsRepo<'c> {
         id: CategoryId,
         category: &NewCategory,
     ) -> StoreResult<Category> {
-        let done = sqlx::query(
-            "UPDATE tariff_categories SET name = $2, sort = $3, visible = $4 WHERE id = $1 AND deleted_at IS NULL",
-        )
+        let row: Option<CategoryRow> = sqlx::query_as(&format!(
+            "UPDATE tariff_categories SET name = $2, sort = $3, visible = $4 \
+             WHERE id = $1 AND deleted_at IS NULL RETURNING {CATEGORY_COLUMNS}"
+        ))
         .bind(id.0)
         .bind(category.name.trim())
         .bind(category.sort)
         .bind(category.visible)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        category_from(row.ok_or(StoreError::NotFound("категория"))?)
+    }
+
+    pub async fn set_subscription_limit(
+        &mut self,
+        id: CategoryId,
+        limit: Option<u32>,
+    ) -> StoreResult<Category> {
+        let row: Option<CategoryRow> = sqlx::query_as(&format!(
+            "UPDATE tariff_categories SET subscription_limit = $2 \
+             WHERE id = $1 AND deleted_at IS NULL RETURNING {CATEGORY_COLUMNS}"
+        ))
+        .bind(id.0)
+        .bind(limit.map(|v| to_i32(v, "subscription_limit")).transpose()?)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        category_from(row.ok_or(StoreError::NotFound("категория"))?)
+    }
+
+    pub async fn set_device_discounts(
+        &mut self,
+        id: TariffId,
+        discounts: &[DeviceDiscount],
+    ) -> StoreResult<()> {
+        let done = sqlx::query(
+            "UPDATE tariffs SET device_discounts = $2 WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id.0)
+        .bind(Json(discounts))
         .execute(&mut *self.conn)
         .await?;
         if done.rows_affected() == 0 {
-            return Err(StoreError::NotFound("категория"));
+            return Err(StoreError::NotFound("тариф"));
         }
-        Ok(Category {
-            id,
-            name: category.name.trim().to_string(),
-            sort: category.sort,
-            visible: category.visible,
-        })
+        Ok(())
     }
 
     async fn assemble(&mut self, rows: Vec<TariffRow>) -> StoreResult<Vec<Tariff>> {

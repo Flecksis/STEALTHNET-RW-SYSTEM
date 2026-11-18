@@ -109,6 +109,15 @@ pub fn devices(n: u32) -> String {
     format::devices_in(n, lang::current())
 }
 
+pub fn devices_from(n: u32) -> String {
+    format::count_in(
+        u64::from(n),
+        lang::current(),
+        ["доп. устройства", "доп. устройств", "доп. устройств"],
+        ["extra device", "extra devices"],
+    )
+}
+
 pub fn amount(value: Amount) -> String {
     match (value.as_money(), value.as_stars()) {
         (Some(value), _) => money(value),

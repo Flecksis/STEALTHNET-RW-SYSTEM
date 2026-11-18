@@ -239,9 +239,27 @@
   color: var(--warn);
 }
 
-.tf-warn a {
+.tf-warn a,
+.tf-link {
   color: var(--accent-ink);
   font-weight: 600;
+}
+
+.tf-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tf-cat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: -6px;
 }
 
 .tf-fieldset {

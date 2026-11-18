@@ -49,6 +49,30 @@ pub struct Category {
     pub name: String,
     pub sort: i32,
     pub visible: bool,
+    #[serde(default)]
+    pub subscription_limit: Option<u32>,
+}
+
+pub const MAX_SUBSCRIPTION_LIMIT: u32 = 100;
+
+impl Category {
+    pub fn is_full(&self, multi: bool, held: usize) -> bool {
+        subscriptions_full(multi, self.subscription_limit, held)
+    }
+}
+
+pub fn subscriptions_full(multi: bool, limit: Option<u32>, held: usize) -> bool {
+    multi && limit.is_some_and(|limit| held >= limit as usize)
+}
+
+pub fn check_subscription_limit(limit: Option<u32>) -> Result<(), DomainError> {
+    match limit {
+        Some(limit) if limit == 0 || limit > MAX_SUBSCRIPTION_LIMIT => Err(DomainError::invalid(
+            "subscription_limit",
+            "подписок этой категории у клиента — от 1 до 100 или без ограничений",
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +106,76 @@ pub struct ExtraDevices {
 pub struct DevicePolicy {
     pub included: u32,
     pub extra: Option<ExtraDevices>,
+}
+
+pub const MAX_DEVICE_DISCOUNTS: usize = 10;
+pub const MAX_DEVICE_DISCOUNT_PERCENT: u8 = 99;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceDiscount {
+    pub from: u32,
+    pub percent: u8,
+}
+
+pub fn device_discount(discounts: &[DeviceDiscount], extra: u32) -> Option<DeviceDiscount> {
+    discounts
+        .iter()
+        .filter(|d| d.from > 0 && d.from <= extra && d.percent > 0)
+        .max_by_key(|d| d.from)
+        .copied()
+}
+
+pub fn check_device_discounts(
+    discounts: &[DeviceDiscount],
+    max_extra: u32,
+) -> Result<Vec<DeviceDiscount>, DomainError> {
+    const FIELD: &str = "device_discounts";
+    if discounts.len() > MAX_DEVICE_DISCOUNTS {
+        return Err(DomainError::invalid(
+            FIELD,
+            "ступеней скидки за устройства может быть не больше десяти",
+        ));
+    }
+    let mut sorted = discounts.to_vec();
+    sorted.sort_by_key(|d| d.from);
+    for (index, step) in sorted.iter().enumerate() {
+        if step.from == 0 {
+            return Err(DomainError::invalid(
+                FIELD,
+                "скидка начинается хотя бы с одного доп. устройства",
+            ));
+        }
+        if step.from > max_extra {
+            return Err(DomainError::invalid(
+                FIELD,
+                format!(
+                    "скидка от {} доп. устройств не сработает: докупить можно не больше {max_extra}",
+                    step.from
+                ),
+            ));
+        }
+        if step.percent == 0 || step.percent > MAX_DEVICE_DISCOUNT_PERCENT {
+            return Err(DomainError::invalid(FIELD, "скидка — от 1 до 99 %"));
+        }
+        if let Some(previous) = index.checked_sub(1).map(|i| sorted[i]) {
+            if previous.from == step.from {
+                return Err(DomainError::invalid(
+                    FIELD,
+                    format!("две ступени от {} доп. устройств: оставьте одну", step.from),
+                ));
+            }
+            if previous.percent >= step.percent {
+                return Err(DomainError::invalid(
+                    FIELD,
+                    format!(
+                        "скидка от {} доп. устройств должна быть больше, чем от {}",
+                        step.from, previous.from
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(sorted)
 }
 
 impl DevicePolicy {
@@ -228,9 +322,16 @@ pub struct Tariff {
     pub traffic_addon: Option<TrafficAddon>,
     pub squads: Vec<SquadId>,
     pub external_squad: Option<SquadId>,
+    #[serde(default)]
+    pub device_discounts: Vec<DeviceDiscount>,
 }
 
 impl Tariff {
+    pub fn device_discount(&self, extra: u32) -> Option<DeviceDiscount> {
+        self.devices.extra.as_ref()?;
+        device_discount(&self.device_discounts, extra)
+    }
+
     pub fn period(&self, id: PeriodId) -> Option<&TariffPeriod> {
         self.periods.iter().find(|p| p.id == id)
     }
@@ -319,6 +420,7 @@ impl Tariff {
         }
         if let Some(extra) = &self.devices.extra {
             extra.monthly.validate("extra_device_price")?;
+            check_device_discounts(&self.device_discounts, extra.max)?;
         }
         if let Some(addon) = &self.traffic_addon {
             addon.validate(self.traffic.is_limited())?;
@@ -484,6 +586,7 @@ pub(crate) mod fixtures {
             traffic_addon: None,
             squads: vec![SquadId(Uuid::from_u128(1)), SquadId(Uuid::from_u128(2))],
             external_squad: None,
+            device_discounts: Vec::new(),
         }
     }
 
@@ -521,6 +624,7 @@ pub(crate) mod fixtures {
             }),
             squads: vec![SquadId(Uuid::from_u128(3)), SquadId(Uuid::from_u128(1))],
             external_squad: None,
+            device_discounts: Vec::new(),
         }
     }
 }
@@ -588,6 +692,68 @@ mod tests {
         );
         assert_eq!(devices.max_total(), 5);
     }
+    #[test]
+    fn скидка_за_устройства_берётся_по_самой_большой_подходящей_ступени() {
+        let mut tariff = standard();
+        tariff.devices.extra.as_mut().unwrap().max = 6;
+        tariff.device_discounts = vec![
+            DeviceDiscount {
+                from: 5,
+                percent: 20,
+            },
+            DeviceDiscount {
+                from: 2,
+                percent: 10,
+            },
+        ];
+        assert_eq!(tariff.device_discount(0), None);
+        assert_eq!(tariff.device_discount(1), None);
+        assert_eq!(
+            tariff.device_discount(2),
+            Some(DeviceDiscount {
+                from: 2,
+                percent: 10
+            })
+        );
+        assert_eq!(tariff.device_discount(4).map(|d| d.percent), Some(10));
+        assert_eq!(tariff.device_discount(6).map(|d| d.percent), Some(20));
+        assert!(tariff.validate().is_ok());
+        tariff.devices.extra = None;
+        assert_eq!(tariff.device_discount(6), None);
+    }
+
+    #[test]
+    fn лесенка_скидок_проверяется_до_записи() {
+        let step = |from, percent| DeviceDiscount { from, percent };
+        let sorted = check_device_discounts(&[step(5, 20), step(2, 10)], 6).unwrap();
+        assert_eq!(sorted, vec![step(2, 10), step(5, 20)]);
+        assert!(check_device_discounts(&[], 0).unwrap().is_empty());
+        assert!(check_device_discounts(&[step(0, 10)], 6).is_err());
+        assert!(check_device_discounts(&[step(7, 10)], 6).is_err());
+        assert!(check_device_discounts(&[step(2, 0)], 6).is_err());
+        assert!(check_device_discounts(&[step(2, 100)], 6).is_err());
+        assert!(check_device_discounts(&[step(2, 10), step(2, 20)], 6).is_err());
+        assert!(check_device_discounts(&[step(2, 20), step(4, 10)], 6).is_err());
+        assert!(check_device_discounts(&[step(2, 10), step(4, 10)], 6).is_err());
+        assert!(check_device_discounts(&[step(1, 1); 11], 100).is_err());
+        let mut tariff = standard();
+        tariff.device_discounts = vec![step(3, 10)];
+        assert!(tariff.validate().is_err());
+    }
+
+    #[test]
+    fn лимит_подписок_категории_действует_только_в_режиме_нескольких() {
+        assert!(!subscriptions_full(false, Some(1), 3));
+        assert!(!subscriptions_full(true, None, 3));
+        assert!(!subscriptions_full(true, Some(2), 1));
+        assert!(subscriptions_full(true, Some(2), 2));
+        assert!(subscriptions_full(true, Some(1), 3));
+        assert!(check_subscription_limit(Some(0)).is_err());
+        assert!(check_subscription_limit(Some(101)).is_err());
+        assert!(check_subscription_limit(Some(1)).is_ok());
+        assert!(check_subscription_limit(None).is_ok());
+    }
+
     #[test]
     fn пакеты_трафика_только_при_лимите() {
         let mut tariff = unblock();

@@ -1,5 +1,5 @@
 use crate::Actor;
-use crate::checkout::single_subscription;
+use crate::checkout::{category_full, single_subscription};
 use crate::error::ServiceResult;
 use crate::services::Services;
 use chrono::{DateTime, Utc};
@@ -29,6 +29,7 @@ struct Decision {
     current: Option<GrantCurrent>,
     choices: Vec<GrantCurrent>,
     multi: bool,
+    new_allowed: bool,
 }
 
 fn refusal(code: &'static str, message: &str) -> GrantRefusal {
@@ -43,6 +44,10 @@ fn refusal(code: &'static str, message: &str) -> GrantRefusal {
             "You already have an active subscription, and this gives a new one. You can use it once your subscription ends."
         }
         "grant.unavailable" => "Subscriptions can't be issued right now. Please try later.",
+        "grant.category_full" => {
+            "This subscription can't move to the gift plan: you already have a subscription in that category. Add the gift to it instead."
+        }
+        "grant.choose" => "Choose which subscription to add the gift to.",
         _ => message,
     };
     GrantRefusal::new(code, sn_domain::lang::pick(message, english))
@@ -194,12 +199,22 @@ async fn decide(
         .into_iter()
         .filter(|s| s.ended_at.is_none())
         .collect();
+    let full = if custom {
+        None
+    } else {
+        category_full(db, multi, grant.client_id, snapshot.category_id).await?
+    };
     let target: Option<(Subscription, Option<CategoryId>)> = if !multi {
         single_subscription(db, grant.client_id, snapshot.category_id).await?
     } else {
         let picked = match grant.target {
-            GrantTarget::New => None,
             GrantTarget::Subscription(id) => match live.iter().find(|s| s.id == id) {
+                Some(_) if full.as_ref().is_some_and(|full| !full.holds(id)) => {
+                    return Ok(Err(refusal(
+                        "grant.category_full",
+                        "Эту подписку нельзя перевести на тариф подарка: в его категории у вас уже есть подписка. Добавьте подарок к ней.",
+                    )));
+                }
                 Some(found) => Some(found.clone()),
                 None => {
                     return Ok(Err(refusal(
@@ -208,6 +223,13 @@ async fn decide(
                     )));
                 }
             },
+            GrantTarget::New | GrantTarget::Auto if full.is_some() => {
+                match full.as_ref().map(|full| full.held.as_slice()) {
+                    Some([only]) => Some(only.clone()),
+                    _ => None,
+                }
+            }
+            GrantTarget::New => None,
             GrantTarget::Auto if custom => None,
             GrantTarget::Auto => live
                 .iter()
@@ -259,6 +281,7 @@ async fn decide(
         current,
         choices,
         multi,
+        new_allowed: full.is_none(),
     }))
 }
 
@@ -305,6 +328,7 @@ impl<'a> Grants<'a> {
                 multi: decision.multi,
                 current: decision.current,
                 choices: decision.choices,
+                new_allowed: decision.new_allowed,
                 refusal: None,
             },
             Err(refused) => GrantPreview {
@@ -312,6 +336,7 @@ impl<'a> Grants<'a> {
                 multi: self.services.settings().multi_subscriptions,
                 current: None,
                 choices: Vec::new(),
+                new_allowed: true,
                 refusal: Some(refused),
             },
         })
@@ -336,6 +361,12 @@ impl<'a> Grants<'a> {
             Ok(decision) => decision,
             Err(refused) => return Ok(Err(refused)),
         };
+        if !decision.new_allowed && decision.target.is_none() {
+            return Ok(Err(refusal(
+                "grant.choose",
+                "Выберите, к какой подписке добавить подарок.",
+            )));
+        }
         let (tariff_id, period_id) = match grant.spec {
             GrantSpec::Tariff {
                 tariff_id,

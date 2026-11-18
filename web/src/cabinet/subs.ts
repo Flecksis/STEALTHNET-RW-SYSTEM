@@ -70,9 +70,32 @@ export function pickSub(list: SubscriptionView[], wanted: Remembered | null): Su
   return list.find((v) => v.subscription.id === wanted) ?? list[0] ?? null;
 }
 
-export function payTargets(list: SubscriptionView[], multi: boolean): PayTarget[] {
+export type CategoryRoom = { id: number; name: string; subscription_limit?: number | null };
+
+export function fullCategory(list: SubscriptionView[], multi: boolean, category: CategoryRoom | null | undefined): SubscriptionView[] | null {
+  const limit = category?.subscription_limit ?? null;
+  if (!multi || !category || !limit) {
+    return null;
+  }
+  const held = liveSubs(list).filter((v) => v.tariff?.category_id === category.id);
+  return held.length >= limit ? held : null;
+}
+
+export function payTargets(list: SubscriptionView[], multi: boolean, full: SubscriptionView[] | null = null): PayTarget[] {
+  if (full && full.length > 0) {
+    return full.map((v) => v.subscription.id);
+  }
   const renewable = list.filter((v) => !(multi && v.subscription.kind === 'trial')).map((v) => v.subscription.id);
   return multi || renewable.length === 0 ? [...renewable, 'new'] : renewable;
+}
+
+export function fullNote(full: SubscriptionView[] | null, category: CategoryRoom | null | undefined): string | null {
+  if (!full || full.length === 0 || !category) {
+    return null;
+  }
+  return full.length === 1
+    ? t('В категории «{category}» у вас уже есть подписка, поэтому оплата продлит её.', { category: category.name })
+    : t('В категории «{category}» новую подписку не оформить. Выберите, какую продлить.', { category: category.name });
 }
 
 export function resolveTarget(targets: PayTarget[], list: SubscriptionView[], multi: boolean, want: PayTarget | null): PayTarget {

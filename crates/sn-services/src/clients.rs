@@ -119,6 +119,7 @@ pub struct HistoryPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TariffBrief {
     pub id: TariffId,
+    pub category_id: CategoryId,
     pub name: String,
     pub on_sale: bool,
     pub devices: DevicePolicy,
@@ -147,6 +148,7 @@ pub struct GrantTariff {
     pub id: TariffId,
     pub name: String,
     pub category_id: CategoryId,
+    pub category_limit: Option<u32>,
     pub on_sale: bool,
     pub devices: DevicePolicy,
     pub traffic: TrafficPolicy,
@@ -381,6 +383,7 @@ impl<'a> ClientOps<'a> {
             .filter(|t| wanted.contains(&t.id))
             .map(|t| TariffBrief {
                 id: t.id,
+                category_id: t.category_id,
                 name: t.name,
                 on_sale: t.on_sale,
                 devices: t.devices,
@@ -440,12 +443,20 @@ impl<'a> ClientOps<'a> {
 
     pub async fn grant_options(&self) -> ServiceResult<Vec<GrantTariff>> {
         let mut conn = self.services.store().conn().await?;
+        let limits: std::collections::HashMap<CategoryId, Option<u32>> = conn
+            .tariffs()
+            .categories(true)
+            .await?
+            .into_iter()
+            .map(|category| (category.id, category.subscription_limit))
+            .collect();
         Ok(conn
             .tariffs()
             .list(true)
             .await?
             .into_iter()
             .map(|tariff| GrantTariff {
+                category_limit: limits.get(&tariff.category_id).copied().flatten(),
                 ready: !tariff.squads.is_empty(),
                 periods: tariff
                     .periods

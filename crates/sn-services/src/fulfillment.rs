@@ -1,6 +1,6 @@
 use crate::Actor;
 use crate::autorenew::{AUTORENEW_METHOD, CHARGED_AFTER_OFF_TEMPLATE};
-use crate::checkout::single_subscription;
+use crate::checkout::{category_full, single_subscription};
 use crate::error::{ServiceError, ServiceResult};
 use crate::inbox::{BLOCKED_REFUND_REASON, BlockedRefund};
 use crate::services::Services;
@@ -31,8 +31,8 @@ use sn_remnawave::{
     CreateUserRequest, RemnaError, RemnaUser, RemnawaveApi, UpdateUserRequest, UserStatus,
 };
 use sn_store::{
-    Db, NewSubscription, PlanStage, PurchaseApplied, ReviewJob, ReviewOrder, StoreError, Tx,
-    audit_entity,
+    Db, LockSpace, NewSubscription, PlanStage, PurchaseApplied, ReviewJob, ReviewOrder, StoreError,
+    Tx, audit_entity,
 };
 use sqlx::types::Json;
 use std::collections::HashSet;
@@ -101,6 +101,27 @@ pub struct Recalculation {
     pub job_id: JobId,
     pub state: &'static str,
     pub plan: PlanStage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CategoryGuard {
+    New,
+    Change,
+}
+
+async fn with_category_lock<T, F>(
+    services: &Services,
+    client_id: ClientId,
+    work: F,
+) -> Result<T, Halt>
+where
+    F: Future<Output = Result<T, Halt>>,
+{
+    let mut guard = services.store().begin().await?;
+    guard.lock(LockSpace::Category, client_id.0).await?;
+    let result = work.await;
+    guard.rollback().await?;
+    result
 }
 
 pub fn review_actions(order: &ReviewOrder) -> Vec<ReviewAction> {
@@ -1202,13 +1223,112 @@ impl<'a> Fulfillment<'a> {
             .snapshot
             .clone()
             .ok_or_else(|| Halt::Review("в заказе нет снимка тарифа".into()))?;
-        let subscription = self.ensure_subscription(&order, &snapshot).await?;
+        match self.category_guard(&order, &snapshot).await? {
+            Some(CategoryGuard::Change) => {
+                with_category_lock(
+                    self.services,
+                    order.client_id,
+                    Box::pin(self.change_category(&*remna, &order, &snapshot)),
+                )
+                .await
+            }
+            Some(CategoryGuard::New) => {
+                with_category_lock(
+                    self.services,
+                    order.client_id,
+                    Box::pin(self.deliver(&*remna, &order, &snapshot)),
+                )
+                .await
+            }
+            None => Box::pin(self.deliver(&*remna, &order, &snapshot)).await,
+        }
+    }
+
+    async fn deliver(
+        &self,
+        remna: &dyn RemnawaveApi,
+        order: &Order,
+        snapshot: &TariffSnapshot,
+    ) -> Result<Option<SubscriptionId>, Halt> {
+        let subscription = self.ensure_subscription(order, snapshot).await?;
         with_subscription_lock(
             self.services,
             subscription.id,
-            self.locked(&*remna, order.id),
+            Box::pin(self.locked(remna, order.id)),
         )
         .await
+    }
+
+    async fn category_guard(
+        &self,
+        order: &Order,
+        snapshot: &TariffSnapshot,
+    ) -> Result<Option<CategoryGuard>, Halt> {
+        if !self.services.settings().multi_subscriptions {
+            return Ok(None);
+        }
+        let limited = match &order.intent {
+            PurchaseIntent::Subscription { .. } => true,
+            PurchaseIntent::ModuleGrant { tariff_id, .. } => tariff_id.is_some(),
+            _ => false,
+        };
+        if !limited {
+            return Ok(None);
+        }
+        let mut conn = self.services.store().conn().await?;
+        let limit = match conn.tariffs().category(snapshot.category_id).await {
+            Ok(category) => category.subscription_limit,
+            Err(StoreError::NotFound(_)) => None,
+            Err(err) => return Err(err.into()),
+        };
+        if limit.is_none() {
+            return Ok(None);
+        }
+        let Some(target) = order.subscription_id else {
+            return Ok(Some(CategoryGuard::New));
+        };
+        if conn.orders().plan_state(order.id).await?.applied() {
+            return Ok(None);
+        }
+        let subscription = conn.subscriptions().get(target).await?;
+        let category = match subscription.tariff_id {
+            Some(id) => match conn.tariffs().get(id).await {
+                Ok(tariff) => Some(tariff.category_id),
+                Err(StoreError::NotFound(_)) => None,
+                Err(err) => return Err(err.into()),
+            },
+            None => None,
+        };
+        if category == Some(snapshot.category_id) {
+            return Ok(None);
+        }
+        Ok(Some(CategoryGuard::Change))
+    }
+
+    async fn change_category(
+        &self,
+        remna: &dyn RemnawaveApi,
+        order: &Order,
+        snapshot: &TariffSnapshot,
+    ) -> Result<Option<SubscriptionId>, Halt> {
+        let target = order
+            .subscription_id
+            .ok_or_else(|| Halt::Review("у заказа нет подписки".into()))?;
+        let full = {
+            let mut conn = self.services.store().conn().await?;
+            category_full(&mut conn, true, order.client_id, snapshot.category_id).await?
+        };
+        if let Some(full) = full
+            && !full.holds(target)
+        {
+            return Err(Halt::Review(format!(
+                "в категории «{}» у клиента уже {} из {} разрешённых подписок, а этот заказ перевёл бы в неё ещё одну: решите вручную",
+                full.category.name,
+                full.held.len(),
+                full.category.subscription_limit.unwrap_or_default()
+            )));
+        }
+        self.deliver(remna, order, snapshot).await
     }
 
     async fn locked(
@@ -1422,17 +1542,47 @@ impl<'a> Fulfillment<'a> {
             order.intent,
             PurchaseIntent::Subscription { target: None, .. }
         );
-        if self.services.settings().multi_subscriptions || !(grant || module_grant || purchase) {
-            return Ok(None);
-        }
-        let Some((existing, category)) =
-            single_subscription(tx, order.client_id, snapshot.category_id).await?
-        else {
-            return Ok(None);
+        let (existing, category, reason) = if self.services.settings().multi_subscriptions {
+            if !(purchase || (module_grant && !order.intent.custom_grant())) {
+                return Ok(None);
+            }
+            let Some(full) = category_full(tx, true, order.client_id, snapshot.category_id).await?
+            else {
+                return Ok(None);
+            };
+            let Some(latest) = full.held.iter().rev().find(|s| s.remna.is_some()).cloned() else {
+                return Err(Halt::Retry(format!(
+                    "сначала выдаётся подписка категории «{}», заказ добавится к ней",
+                    full.category.name
+                )));
+            };
+            (
+                latest,
+                Some(snapshot.category_id),
+                format!(
+                    "подписок категории «{}» у клиента может быть не больше {}",
+                    full.category.name,
+                    full.category.subscription_limit.unwrap_or_default()
+                ),
+            )
+        } else {
+            if !(grant || module_grant || purchase) {
+                return Ok(None);
+            }
+            let Some((existing, category)) =
+                single_subscription(tx, order.client_id, snapshot.category_id).await?
+            else {
+                return Ok(None);
+            };
+            if order.intent.custom_grant() && paid_and_active(&existing, self.services.now()) {
+                return Err(custom_grant_halt());
+            }
+            (
+                existing,
+                category,
+                "у клиента может быть только одна подписка".to_string(),
+            )
         };
-        if order.intent.custom_grant() && paid_and_active(&existing, self.services.now()) {
-            return Err(custom_grant_halt());
-        }
         let kind = if grant {
             OrderKind::AdminGrant
         } else if module_grant {
@@ -1456,7 +1606,7 @@ impl<'a> Fulfillment<'a> {
                 serde_json::json!({
                     "subscription_id": existing.id,
                     "order_kind": kind,
-                    "reason": "у клиента может быть только одна подписка",
+                    "reason": reason,
                 }),
             ))
             .await?;

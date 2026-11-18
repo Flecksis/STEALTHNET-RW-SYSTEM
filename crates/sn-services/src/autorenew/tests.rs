@@ -1292,6 +1292,7 @@ fn удалённый_срок_заменяется_ближайшим_по_дн
         traffic: sn_domain::traffic::TrafficPolicy::UNLIMITED,
         squads: vec![squad(1)],
         external_squad: None,
+        device_discounts: Vec::new(),
     };
     let subscription = Subscription {
         id: sn_domain::ids::SubscriptionId(1),

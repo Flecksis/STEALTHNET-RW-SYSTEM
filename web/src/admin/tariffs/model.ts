@@ -1,4 +1,4 @@
-import { count, groupDigits, money, NBSP, periodLabel } from '../../lib/format';
+import { count, groupDigits, money, NBSP, periodLabel, plural } from '../../lib/format';
 import type { Currency } from '../../lib/types';
 
 export type Prices = { usd: number | null; rub: number | null };
@@ -9,6 +9,7 @@ export type Traffic = { limit_bytes: number | null; reset: TrafficReset };
 export type Leftover = 'burn' | 'carry';
 export type TrafficPack = { gb: number; prices: Prices; stars: number | null };
 export type TrafficAddon = { packs: TrafficPack[]; leftover: Leftover };
+export type Discount = { from: number; percent: number };
 export type Tariff = {
   id: number;
   category_id: number;
@@ -22,8 +23,9 @@ export type Tariff = {
   traffic_addon?: TrafficAddon | null;
   squads: string[];
   external_squad: string | null;
+  device_discounts?: Discount[];
 };
-export type Category = { id: number; name: string; sort: number; visible: boolean };
+export type Category = { id: number; name: string; sort: number; visible: boolean; subscription_limit?: number | null };
 export type Channels = { bot: boolean; cabinet: boolean; miniapp: boolean };
 export type Stats = { tariff_id: number; sales_30d: number; channels: Channels };
 export type View = { currency: Currency; categories: Category[]; tariffs: Tariff[]; stats: Stats[] };
@@ -96,9 +98,25 @@ export function perMonthNote(days: number, minor: number | null, base: number | 
   return note;
 }
 
-export function devicesText(devices: Devices): string {
+export function fromDevices(n: number): string {
+  return `${n}${NBSP}${plural(n, 'доп. устройства', 'доп. устройств', 'доп. устройств')}`;
+}
+
+export function discountsText(discounts: Discount[]): string {
+  return discounts.map((d, index) => `от ${index === 0 ? fromDevices(d.from) : d.from} — ${d.percent}%`).join(', ');
+}
+
+export function devicesText(devices: Devices, discounts: Discount[] = []): string {
   const base = count(devices.included, 'устройство', 'устройства', 'устройств');
-  return devices.extra ? `${base}, можно докупить ещё ${devices.extra.max}` : base;
+  if (!devices.extra) {
+    return base;
+  }
+  const extra = `${base}, можно докупить ещё ${devices.extra.max}`;
+  return discounts.length ? `${extra}, скидка ${discountsText(discounts)}` : extra;
+}
+
+export function limitText(limit: number | null | undefined): string {
+  return limit ? `не больше ${limit}` : 'без ограничений';
 }
 
 export function trafficText(traffic: Traffic): string {
@@ -125,6 +143,8 @@ export type DraftPeriod = { key: string; id: number | null; days: string; price:
 
 export type DraftPack = { key: string; gb: string; price: string; stars: string; other: number | null };
 
+export type DraftDiscount = { key: string; from: string; percent: string };
+
 export type Draft = {
   id: number | null;
   category_id: number;
@@ -139,6 +159,7 @@ export type Draft = {
   extraOther: number | null;
   extraStars: string;
   extraMax: string;
+  discounts: DraftDiscount[];
   gb: string;
   reset: TrafficReset;
   packs: DraftPack[];
@@ -181,6 +202,7 @@ export function draftOf(tariff: Tariff, channels: Channels, currency: Currency):
     extraOther: tariff.devices.extra ? other(tariff.devices.extra.monthly) : null,
     extraStars: tariff.devices.extra?.monthly_stars ? String(tariff.devices.extra.monthly_stars) : '',
     extraMax: tariff.devices.extra ? String(tariff.devices.extra.max) : '2',
+    discounts: (tariff.device_discounts ?? []).map((d) => ({ key: nextKey(), from: String(d.from), percent: String(d.percent) })),
     gb: tariff.traffic.limit_bytes ? String(Math.round(tariff.traffic.limit_bytes / GIB)) : '',
     reset: tariff.traffic.reset,
     packs: (tariff.traffic_addon?.packs ?? []).map((pack) => ({
@@ -213,6 +235,7 @@ export function blankDraft(categoryId: number, squads: Squad[], currency: Curren
     extraOther: null,
     extraStars: '',
     extraMax: '2',
+    discounts: [],
     gb: '',
     reset: 'no_reset',
     packs: [],
@@ -250,6 +273,7 @@ export function inputOf(draft: Draft, currency: Currency): { body: unknown; erro
     return { body: null, error: 'Устройств в тарифе: от 1 до 100' };
   }
   let extra = null;
+  const discounts: Discount[] = [];
   if (draft.extraOn) {
     const max = Number(draft.extraMax);
     const price = fromRaw(draft.extraPrice, currency);
@@ -265,6 +289,27 @@ export function inputOf(draft: Draft, currency: Currency): { body: unknown; erro
     }
     const monthly = currency === 'RUB' ? { rub: price, usd: draft.extraOther } : { usd: price, rub: draft.extraOther };
     extra = { max, monthly, monthly_stars: stars };
+    for (const d of draft.discounts) {
+      const from = Number(d.from);
+      const percent = Number(d.percent);
+      if (!Number.isInteger(from) || from < 1 || from > max) {
+        return { body: null, error: `Скидка за доп. устройства: число устройств от 1 до ${max}` };
+      }
+      if (!Number.isInteger(percent) || percent < 1 || percent > 99) {
+        return { body: null, error: 'Скидка за доп. устройства: от 1 до 99 %' };
+      }
+      if (discounts.some((x) => x.from === from)) {
+        return { body: null, error: `Скидка от ${fromDevices(from)} указана дважды` };
+      }
+      discounts.push({ from, percent });
+    }
+    discounts.sort((a, b) => a.from - b.from);
+    for (const [index, step] of discounts.entries()) {
+      const previous = index > 0 ? discounts[index - 1] : undefined;
+      if (previous && step.percent <= previous.percent) {
+        return { body: null, error: `Скидка от ${fromDevices(step.from)} должна быть больше, чем от ${previous.from}` };
+      }
+    }
   }
   const gb = draft.gb.trim() ? Number(draft.gb) : null;
   if (gb !== null && (!Number.isInteger(gb) || gb < 1)) {
@@ -306,6 +351,7 @@ export function inputOf(draft: Draft, currency: Currency): { body: unknown; erro
       squads: draft.squads,
       external_squad: draft.external_squad,
       periods,
+      device_discounts: discounts,
     },
   };
 }

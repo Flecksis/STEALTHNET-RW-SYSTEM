@@ -36,6 +36,7 @@ pub enum LockSpace {
     AutoRenew = 4,
     Telegram = 5,
     Worker = 6,
+    Category = 7,
 }
 
 impl LockSpace {

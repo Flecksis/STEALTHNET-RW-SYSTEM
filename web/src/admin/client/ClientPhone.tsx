@@ -863,6 +863,7 @@ export function ClientPhone() {
           subscriptionId={dialog === 'change' && sub ? sub.id : null}
           currentTariffId={dialog === 'change' && sub ? sub.tariff_id : null}
           currentTrial={dialog === 'change' && sub?.kind === 'trial'}
+          held={live.map((s) => ({ id: s.id, tariff_id: s.tariff_id }))}
           onClose={() => setDialog('')}
           onDone={() => {
             setDialog('');

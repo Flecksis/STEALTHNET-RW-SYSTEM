@@ -39,7 +39,11 @@ pub(crate) mod balance_off_tests;
 #[cfg(test)]
 mod channel_tests;
 #[cfg(test)]
+mod discount_tests;
+#[cfg(test)]
 mod gram_tests;
+#[cfg(test)]
+mod limit_tests;
 #[cfg(test)]
 mod method_tests;
 #[cfg(test)]
@@ -267,6 +271,88 @@ pub(crate) async fn single_subscription(
         .into_iter()
         .find(|s| s.id == id)
         .map(|subscription| (subscription, category)))
+}
+
+pub const CATEGORY_FULL: &str = "subscription.category_full";
+pub const CHOOSE_SUBSCRIPTION: &str = "subscription.choose";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CategoryFull {
+    pub category: Category,
+    pub held: Vec<Subscription>,
+}
+
+impl CategoryFull {
+    pub fn holds(&self, id: SubscriptionId) -> bool {
+        self.held.iter().any(|s| s.id == id)
+    }
+
+    pub fn full_error(&self) -> ServiceError {
+        ServiceError::rejected(
+            CATEGORY_FULL,
+            format!(
+                "В категории «{}» новую подписку оформить нельзя: продлите действующую подписку этой категории или выберите тариф другой категории.",
+                self.category.name
+            ),
+        )
+    }
+
+    pub fn choose_error(&self) -> ServiceError {
+        ServiceError::rejected(
+            CHOOSE_SUBSCRIPTION,
+            format!(
+                "Выберите, какую подписку категории «{}» продлить: новую в этой категории оформить нельзя.",
+                self.category.name
+            ),
+        )
+    }
+}
+
+pub(crate) async fn category_held(
+    db: &mut impl Db,
+    client_id: ClientId,
+    category: CategoryId,
+) -> ServiceResult<Vec<Subscription>> {
+    let live: Vec<Subscription> = db
+        .subscriptions()
+        .by_client(client_id)
+        .await?
+        .into_iter()
+        .filter(|s| s.ended_at.is_none())
+        .collect();
+    let held = held_subscriptions(db, &live).await?;
+    let mut inside: Vec<Subscription> = live
+        .into_iter()
+        .filter(|s| {
+            held.iter()
+                .any(|h| h.id == s.id && h.category_id == Some(category))
+        })
+        .collect();
+    inside.sort_by_key(|s| s.id);
+    Ok(inside)
+}
+
+pub(crate) async fn category_full(
+    db: &mut impl Db,
+    multi: bool,
+    client_id: ClientId,
+    category_id: CategoryId,
+) -> ServiceResult<Option<CategoryFull>> {
+    if !multi {
+        return Ok(None);
+    }
+    let category = match db.tariffs().category(category_id).await {
+        Ok(category) => category,
+        Err(StoreError::NotFound(_)) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if category.subscription_limit.is_none() {
+        return Ok(None);
+    }
+    let held = category_held(db, client_id, category_id).await?;
+    Ok(category
+        .is_full(multi, held.len())
+        .then_some(CategoryFull { category, held }))
 }
 
 pub(crate) struct PaidOrder {
@@ -703,20 +789,33 @@ impl<'a> Checkout<'a> {
             return Err(ServiceError::Forbidden);
         }
         let tariff = conn.tariffs().get(cart.tariff_id).await?;
+        let multi = self.services.settings().multi_subscriptions;
+        let full = category_full(&mut conn, multi, client_id, tariff.category_id).await?;
         let current = match cart.subscription_id {
             Some(id) => {
                 let subscription = conn.subscriptions().get(id).await?;
                 if subscription.client_id != client_id {
                     return Err(ServiceError::NotFound("подписка"));
                 }
+                if let Some(full) = &full
+                    && !full.holds(id)
+                {
+                    return Err(full.full_error());
+                }
                 Some(subscription)
             }
-            None if self.services.settings().multi_subscriptions => conn
-                .subscriptions()
-                .by_client(client_id)
-                .await?
-                .into_iter()
-                .find(|s| s.kind == SubscriptionKind::Trial && s.ended_at.is_none()),
+            None if multi => match &full {
+                Some(full) => match full.held.as_slice() {
+                    [only] => Some(only.clone()),
+                    _ => return Err(full.choose_error()),
+                },
+                None => conn
+                    .subscriptions()
+                    .by_client(client_id)
+                    .await?
+                    .into_iter()
+                    .find(|s| s.kind == SubscriptionKind::Trial && s.ended_at.is_none()),
+            },
             None => single_subscription(&mut conn, client_id, tariff.category_id)
                 .await?
                 .map(|(subscription, _)| subscription),
@@ -813,6 +912,22 @@ impl<'a> Checkout<'a> {
             quote,
             methods,
         })
+    }
+
+    pub async fn category_room(
+        &self,
+        client_id: ClientId,
+        tariff_id: TariffId,
+    ) -> ServiceResult<Option<CategoryFull>> {
+        let mut conn = self.services.store().conn().await?;
+        let tariff = conn.tariffs().get(tariff_id).await?;
+        category_full(
+            &mut conn,
+            self.services.settings().multi_subscriptions,
+            client_id,
+            tariff.category_id,
+        )
+        .await
     }
 
     pub async fn quote(&self, client_id: ClientId, cart: &CartRequest) -> ServiceResult<QuoteView> {

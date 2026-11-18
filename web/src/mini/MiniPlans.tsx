@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { count, money, MINUS, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
-import { gbText, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
-import { NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
+import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
+import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
@@ -26,12 +26,15 @@ function payLabel(transition: boolean, total: string, telegram: boolean): string
 export function MiniPlans() {
   const { me, subs, view: shown, choose, reload } = useMini();
   const multi = me.multi_subscriptions === true;
-  const targets = useMemo(() => payTargets(subs, multi), [subs, multi]);
   const [picked, setPicked] = useState<PayTarget | null>(null);
-  const target = resolveTarget(targets, subs, multi, picked ?? shown?.subscription.id ?? null);
-  const view = targetView(subs, target, multi);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [cat, setCat] = useState<number | null>(null);
+  const chosenOffer = catalog?.tariffs.find((o) => o.category.id === cat) ?? null;
+  const full = useMemo(() => fullCategory(subs, multi, chosenOffer?.category), [subs, multi, chosenOffer]);
+  const targets = useMemo(() => payTargets(subs, multi, full), [subs, multi, full]);
+  const wanted = picked ?? shown?.subscription.id ?? null;
+  const target = full ? (wanted !== null && targets.includes(wanted) ? wanted : (targets[0] ?? 'new')) : resolveTarget(targets, subs, multi, wanted);
+  const view = targetView(subs, target, multi);
   const [period, setPeriod] = useState<number | null>(null);
   const [devices, setDevices] = useState(0);
   const [promoOpen, setPromoOpen] = useState(false);
@@ -75,13 +78,24 @@ export function MiniPlans() {
     setDevices(startOffer.tariff.devices.included + (startOffer === current && view ? view.subscription.extra_devices : 0));
   }, [catalog, cat, current, offers, view]);
 
-  const offer: TariffOffer | null = offers.find((o) => o.category.id === cat) ?? null;
+  const offer: TariffOffer | null = chosenOffer;
   const included = offer?.tariff.devices.included ?? 0;
   const extra = offer?.tariff.devices.extra ?? null;
   const maxDevices = included + (extra?.max ?? 0);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
   const subscriptionId = typeof target === 'number' ? target : null;
   const another = !view && subs.length > 0;
+
+  const forced = full && typeof target === 'number' && target !== wanted ? target : null;
+  useEffect(() => {
+    if (forced === null || !chosenOffer) {
+      return;
+    }
+    const held = subs.find((v) => v.subscription.id === forced);
+    if (held && held.subscription.tariff_id === chosenOffer.tariff.id) {
+      setDevices(chosenOffer.tariff.devices.included + held.subscription.extra_devices);
+    }
+  }, [forced, chosenOffer, subs]);
 
   const pickTarget = (next: PayTarget) => {
     if (next === target) {
@@ -147,6 +161,12 @@ export function MiniPlans() {
   const currentName = view && subs.length > 1 ? subName(view, subs) : (current?.tariff.name ?? view?.tariff?.name ?? null);
   const limitBytes = offer?.tariff.traffic.limit_bytes ?? 0;
   const extraMonthly: Money | null = extra && catalog ? { minor: catalog.currency === 'RUB' ? (extra.monthly.rub ?? 0) : (extra.monthly.usd ?? 0), currency: catalog.currency } : null;
+  const limitNote = fullNote(full, offer?.category);
+  const ladder = ladderText(offer?.tariff.device_discounts);
+  const deviceCut = q ? (linesOf(q.lines, 'device_discount')[0] ?? null) : null;
+  const promoLines = q ? linesOf(q.lines, 'adjustment') : [];
+  const promoMinor = promoLines.reduce((sum, line) => sum - line.amount.minor, 0);
+  const promoStars = promoLines.reduce((sum, line) => sum - (line.stars ?? 0), 0);
 
   const pay = async () => {
     if (!offer || !periodOffer || !chosen) {
@@ -247,8 +267,9 @@ export function MiniPlans() {
           <span>{transitionText(currentName)}</span>
         </div>
       ) : null}
-      {(fromTrial && offer) || another || limitBytes ? (
+      {(fromTrial && offer) || another || limitBytes || limitNote ? (
         <div className="mn-notes">
+          {limitNote ? <span>{limitNote}</span> : null}
           {fromTrial && offer ? <span>{t('Пробный период закончится сразу после оплаты, тариф «{name}» начнёт действовать с даты оплаты', { name: offer.tariff.name })}</span> : null}
           {another ? <span>{t('У новой подписки будет своя ссылка, текущие подписки останутся как есть')}</span> : null}
           {limitBytes ? (
@@ -290,6 +311,12 @@ export function MiniPlans() {
                 {t('по {price} в месяц', { price: starsMode && extra.monthly_stars ? stars(extra.monthly_stars) : extraMonthly ? money(extraMonthly) : '' })}
               </span>
             </span>
+            {ladder && !deviceCut ? <span>{ladder}</span> : null}
+            {deviceCut ? (
+              <span className="mn-devs-cut" aria-live="polite">
+                {deviceCut.label}
+              </span>
+            ) : null}
           </span>
           <span className="mn-stepper">
             <button type="button" className="mn-circ press" aria-label={t('Меньше устройств')} aria-disabled={devices <= included} onClick={() => devices > included && setDevices(devices - 1)}>
@@ -332,9 +359,9 @@ export function MiniPlans() {
           </form>
         ) : null}
         {promoError ? <p className="mn-error">{promoError}</p> : null}
-        {q && (starsMode ? (q.stars?.discount ?? 0) > 0 : q.discount.minor > 0) ? (
+        {q && (starsMode ? promoStars > 0 : promoMinor > 0) ? (
           <p className="mn-muted small">
-            {t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode && q.stars ? stars(q.stars.discount) : money(q.discount)}` })}
+            {t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode ? stars(promoStars) : money({ minor: promoMinor, currency: q.currency })}` })}
           </p>
         ) : null}
         {q && methods.length === 0 ? (

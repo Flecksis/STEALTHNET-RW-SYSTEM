@@ -5,7 +5,7 @@ import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { methodKey } from '../lib/methods';
 import type { ItemQuote, PayResult } from '../cabinet/extras';
-import { codeDaysText, failText, giftItem, giftState, GIFTS, planText, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from '../cabinet/gifting';
+import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitNote, planText, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from '../cabinet/gifting';
 import { stars } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
@@ -24,7 +24,7 @@ function Redeem({ code, onClose }: { code: string; onClose: () => void }) {
       .then((p) => {
         if (alive) {
           setPreview(p);
-          setTarget(p.multi && p.choices.length > 0 && !p.current ? 'new' : 'auto');
+          setTarget(firstTarget(p));
         }
       })
       .catch((err) => alive && setError(failText(err, t('Подарок не нашёлся'))));
@@ -69,6 +69,7 @@ function Redeem({ code, onClose }: { code: string; onClose: () => void }) {
           {t('Подписка «{name}» на {term}.', { name: preview.gift.tariff, term: preview.gift.term })}
         </span>
       ) : null}
+      {preview && limitNote(preview) ? <span className="mn-muted small">{limitNote(preview)}</span> : null}
       {preview && choose ? (
         <div role="radiogroup" aria-label={t('Куда зачесть подарок')} className="mn-terms">
           {preview.choices.map((c) => (
@@ -79,12 +80,14 @@ function Redeem({ code, onClose }: { code: string; onClose: () => void }) {
               </span>
             </button>
           ))}
-          <button type="button" role="radio" aria-checked={target === 'new'} className="mn-term press" onClick={() => setTarget('new')}>
-            <span className="mn-dot" aria-hidden="true" />
-            <span className="mn-term-text">
-              <strong>{t('Новая подписка')}</strong>
-            </span>
-          </button>
+          {preview.new_allowed !== false ? (
+            <button type="button" role="radio" aria-checked={target === 'new'} className="mn-term press" onClick={() => setTarget('new')}>
+              <span className="mn-dot" aria-hidden="true" />
+              <span className="mn-term-text">
+                <strong>{t('Новая подписка')}</strong>
+              </span>
+            </button>
+          ) : null}
         </div>
       ) : null}
       {plan && !choose ? <span className={`mn-tone ${plan.tone === 'warn' ? 'warn' : 'muted'}`}>{plan.text}</span> : null}

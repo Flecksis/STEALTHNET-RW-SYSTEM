@@ -331,3 +331,129 @@ async fn промо_выдача_не_заменяет_подписку_опла
     assert_eq!(remna_user(&kit, &trial).await.squad_ids(), vec![squad(9)]);
     kit.db.cleanup().await;
 }
+
+async fn limited_category(kit: &Kit, tariff: &Tariff, limit: Option<u32>) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.tariffs()
+        .set_subscription_limit(tariff.category_id, limit)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn при_лимите_категории_подарок_добавляет_дни_к_её_подписке() {
+    let Some(kit) = kit().await else { return };
+    set_multi(&kit, true).await;
+    let client_id = client(&kit.services, 711).await;
+    let tariff = standard(&kit.services).await;
+    let first = provision(&kit, client_id, &tariff, 30).await;
+    limited_category(&kit, &tariff, Some(1)).await;
+    for target in [GrantTarget::Auto, GrantTarget::New] {
+        let preview = kit
+            .services
+            .grants()
+            .preview(&gift(client_id, &tariff, 30, target))
+            .await
+            .unwrap();
+        assert_eq!(preview.plan, PlanKind::Renewal);
+        assert!(!preview.new_allowed);
+        assert_eq!(preview.current.map(|c| c.subscription_id), Some(first.id));
+    }
+    let granted = grant(&kit, &gift(client_id, &tariff, 30, GrantTarget::New))
+        .await
+        .unwrap();
+    assert_eq!(granted.subscription_id, Some(first.id));
+    let renewed = deliver(&kit, granted.order_id).await;
+    assert_eq!(renewed.id, first.id);
+    assert_eq!(
+        renewed.mirror.expire_at,
+        first.mirror.expire_at.map(|at| at + Duration::days(30))
+    );
+    assert_eq!(live(&kit, client_id).await.len(), 1);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn при_нескольких_подписках_заполненной_категории_подарок_просит_выбрать() {
+    let Some(kit) = kit().await else { return };
+    set_multi(&kit, true).await;
+    let client_id = client(&kit.services, 712).await;
+    let tariff = standard(&kit.services).await;
+    let first = provision(&kit, client_id, &tariff, 30).await;
+    let second = provision(&kit, client_id, &tariff, 30).await;
+    limited_category(&kit, &tariff, Some(2)).await;
+    let preview = kit
+        .services
+        .grants()
+        .preview(&gift(client_id, &tariff, 30, GrantTarget::Auto))
+        .await
+        .unwrap();
+    assert!(!preview.new_allowed);
+    assert!(preview.current.is_none());
+    assert_eq!(
+        preview
+            .choices
+            .iter()
+            .map(|c| c.subscription_id)
+            .collect::<Vec<_>>(),
+        vec![first.id, second.id]
+    );
+    assert_eq!(
+        grant(&kit, &gift(client_id, &tariff, 30, GrantTarget::New))
+            .await
+            .unwrap_err()
+            .code,
+        "grant.choose"
+    );
+    let premium_category = category(&kit.services, "Премиум").await;
+    let premium = crate::checkout::testkit::tariff(
+        &kit.services,
+        premium_category,
+        "Премиум",
+        TrafficPolicy::UNLIMITED,
+        vec![squad(3)],
+    )
+    .await;
+    let other = provision(&kit, client_id, &premium, 30).await;
+    assert_eq!(
+        grant(
+            &kit,
+            &gift(client_id, &tariff, 30, GrantTarget::Subscription(other.id))
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "grant.category_full"
+    );
+    let chosen = grant(
+        &kit,
+        &gift(client_id, &tariff, 30, GrantTarget::Subscription(second.id)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(deliver(&kit, chosen.order_id).await.id, second.id);
+    assert_eq!(live(&kit, client_id).await.len(), 3);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn подарок_выданный_до_покупки_в_заполненной_категории_продлевает_её() {
+    let Some(kit) = kit().await else { return };
+    set_multi(&kit, true).await;
+    let client_id = client(&kit.services, 713).await;
+    let tariff = standard(&kit.services).await;
+    limited_category(&kit, &tariff, Some(1)).await;
+    let granted = grant(&kit, &gift(client_id, &tariff, 30, GrantTarget::Auto))
+        .await
+        .unwrap();
+    assert_eq!(granted.plan, PlanKind::New);
+    let bought = provision(&kit, client_id, &tariff, 30).await;
+    let renewed = deliver(&kit, granted.order_id).await;
+    assert_eq!(renewed.id, bought.id);
+    assert_eq!(
+        order(&kit.services, granted.order_id).await.kind,
+        OrderKind::ModuleGrant
+    );
+    assert_eq!(live(&kit, client_id).await.len(), 1);
+    kit.db.cleanup().await;
+}

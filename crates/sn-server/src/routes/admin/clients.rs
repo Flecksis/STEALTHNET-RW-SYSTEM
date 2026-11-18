@@ -206,7 +206,10 @@ async fn grant_options(
 ) -> ApiResult<Json<serde_json::Value>> {
     admin.require(Permission::ClientsWrite)?;
     let tariffs = state.services.clients().grant_options().await?;
-    Ok(Json(serde_json::json!({ "tariffs": tariffs })))
+    Ok(Json(serde_json::json!({
+        "tariffs": tariffs,
+        "multi_subscriptions": state.services.settings().multi_subscriptions,
+    })))
 }
 
 async fn grant(

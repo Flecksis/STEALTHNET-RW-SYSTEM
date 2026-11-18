@@ -256,3 +256,52 @@ async fn новая_подписка_в_боте_спрашивает_доп_у�
     );
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn бот_показывает_лесенку_и_скидку_за_доп_устройства() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    options_on(&services).await;
+    let standard = with_extra(&db, "Обычный", "Стандарт", 5).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.tariffs()
+            .set_device_discounts(
+                standard.id,
+                &[
+                    sn_domain::tariff::DeviceDiscount {
+                        from: 2,
+                        percent: 10,
+                    },
+                    sn_domain::tariff::DeviceDiscount {
+                        from: 4,
+                        percent: 20,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+    }
+    handle_update(&ctx, text_update(1, 782, "/start")).await;
+    handle_update(&ctx, callback_update(2, 782, "buy")).await;
+    handle_update(&ctx, callback_update(3, 782, &format!("t:{}", standard.id))).await;
+    handle_update(
+        &ctx,
+        callback_update(4, 782, &format!("p:{}", standard.periods[0].id)),
+    )
+    .await;
+    let screen = last_text(&server).await;
+    assert!(
+        screen.contains("Скидка за доп. устройства: от 2\u{a0}доп. устройств — 10%, от 4 — 20%."),
+        "{screen}"
+    );
+    handle_update(&ctx, callback_update(5, 782, "d:2")).await;
+    let summary = last_text(&server).await;
+    assert!(
+        summary.contains("Скидка за 2\u{a0}доп. устройства, −10% — -$0.20"),
+        "{summary}"
+    );
+    assert!(summary.contains("$4.79"), "{summary}");
+    db.cleanup().await;
+}

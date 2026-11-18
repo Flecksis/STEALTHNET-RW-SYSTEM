@@ -1943,6 +1943,7 @@ async fn тариф_из_админки_проверяет_сквады_в_remna
                 name: "Основные".into(),
                 sort: 0,
                 visible: true,
+                subscription_limit: None,
             },
             admin,
         )
@@ -1972,6 +1973,7 @@ async fn тариф_из_админки_проверяет_сквады_в_remna
             sort: 0,
             active: true,
         }],
+        device_discounts: Vec::new(),
     };
     assert_eq!(
         code(services.tariffs().create(&input, admin).await),
