@@ -81,4 +81,15 @@ if [ "$dry" = 1 ]; then
     exit 0
 fi
 
-gh release create "$tag" --target "$commit" --title "$title" --notes-file "$body" --latest
+for attempt in 1 2 3; do
+    if gh release create "$tag" --target "$commit" --title "$title" --notes-file "$body" --latest; then
+        exit 0
+    fi
+    sleep $((attempt * 20))
+    if gh release view "$tag" >/dev/null 2>&1; then
+        echo "релиз $tag уже создан"
+        exit 0
+    fi
+    echo "релиз $tag не создан, попытка $attempt из 3" >&2
+done
+exit 1
