@@ -18,6 +18,8 @@ const TEST_MODE: &str = "test_mode";
 const WINDOW_SECONDS: i64 = 15 * 60;
 const DRIFT_WARN_SECONDS: i64 = 5 * 60;
 const KEY_MAX: usize = 512;
+const HOOK_LABEL: &str = "callback_url";
+const PLACEHOLDER_HOST: &str = "example.com";
 const NONCE_REUSED: &str = "RollyPay отклонила запрос как повторный (X-Nonce), повторите попытку";
 const SBP: PayMethod = PayMethod::new("sbp", "СБП", "Через приложение банка");
 const CARD: PayMethod = PayMethod::new("card", "Карта", "Карты российских банков");
@@ -217,6 +219,33 @@ fn key_ok(value: &str) -> bool {
     value.len() <= KEY_MAX && value.bytes().all(|b| b.is_ascii_graphic())
 }
 
+fn placeholder(address: &str) -> bool {
+    reqwest::Url::parse(address)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == PLACEHOLDER_HOST)
+}
+
+fn terminal_hook(terminal: &Json, expected: &str) -> HookCheck {
+    let hook = |state, address: Option<String>, note: Option<String>| HookCheck {
+        label: HOOK_LABEL.to_string(),
+        state,
+        address,
+        note,
+    };
+    match text(terminal, "callback_url") {
+        None => hook(HookState::Off, None, None),
+        Some(address) if same_hook(expected, address) => hook(HookState::Same, None, None),
+        Some(address) => hook(
+            HookState::Other,
+            Some(hook_address(address)),
+            placeholder(address).then(|| {
+                "Это заглушка новой кассы: уведомления до панели не дойдут, оплаты засчитаются только опросом и с задержкой".to_string()
+            }),
+        ),
+    }
+}
+
 struct Answer {
     reply: util::Reply,
     date: Option<DateTime<Utc>>,
@@ -315,6 +344,22 @@ impl RollyPay {
             return Err(util::bad("RollyPay вернула другой платёж"));
         }
         Ok(parsed)
+    }
+
+    async fn terminal(&self, config: &ProviderConfig, terminal: &str) -> Option<Json> {
+        let id = util::safe_id(terminal).ok()?;
+        let reply = self
+            .call(
+                config,
+                reqwest::Method::GET,
+                &format!("/api/v1/terminals/{id}"),
+                None,
+            )
+            .await
+            .ok()?
+            .reply;
+        let parsed = reply.is_success().then(|| reply.json().ok()).flatten()?;
+        parsed.get("callback_url").is_some().then_some(parsed)
     }
 }
 
@@ -550,21 +595,35 @@ impl PaymentProvider for RollyPay {
             Err(err) => return ConnectionCheck::failed(&err),
         };
         let mut check = ConnectionCheck::ok("API-ключ принят RollyPay");
-        if let Some(terminal) = text(&balance, "terminal_id") {
-            check = check.detail(format!(
-                "Ключ относится к кассе {}",
-                util::clip(terminal, 64)
-            ));
+        let terminal = text(&balance, "terminal_id").map(|t| util::clip(t, 64));
+        if let Some(terminal) = &terminal {
+            check = check.detail(format!("Ключ относится к кассе {terminal}"));
         }
         if config.flag(TEST_MODE) {
             check = check.detail(
                 "Включён тестовый режим: счета создаются тестовыми, деньги не списываются. Перед приёмом настоящих оплат выключите его",
             );
         }
-        if context.webhook_url.is_none() {
-            check = check.detail(
-                "Адрес панели не задан в основных настройках: RollyPay некуда присылать уведомления",
-            );
+        match context.webhook_url.as_deref() {
+            None => {
+                check = check.detail(
+                    "Адрес панели не задан в основных настройках: RollyPay некуда присылать уведомления",
+                );
+            }
+            Some(expected) => {
+                let found = match terminal.as_deref() {
+                    Some(terminal) => self.terminal(config, terminal).await,
+                    None => None,
+                };
+                match found {
+                    Some(found) => check.hooks.push(terminal_hook(&found, expected)),
+                    None => {
+                        check = check.detail(
+                            "Адрес уведомлений из кассы RollyPay прочитать не удалось. Проверьте поле callback_url в настройках кассы: у новой кассы там стоит заглушка example.com",
+                        );
+                    }
+                }
+            }
         }
         if let Some(date) = answer.date {
             let drift = Utc::now().signed_duration_since(date).num_seconds();

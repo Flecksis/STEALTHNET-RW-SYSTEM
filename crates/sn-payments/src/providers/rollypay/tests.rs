@@ -1041,3 +1041,117 @@ fn настройки_и_способы_rollypay() {
     let label = provider.client_label(Currency::Rub, &settings());
     assert_eq!((label.title, label.hint), ("СБП", "Через приложение банка"));
 }
+
+const TERMINAL: &str = "d290f1ee-6c54-4b01-90e6-d701748f0851";
+const PANEL_HOOK: &str = "https://panel.example.com/api/webhooks/pay/rollypay";
+
+async fn terminal_api(callback: Option<serde_json::Value>) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/balance"))
+        .and(header("X-API-Key", KEY))
+        .respond_with(balance())
+        .mount(&server)
+        .await;
+    if let Some(callback) = callback {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/terminals/{TERMINAL}")))
+            .and(header("X-API-Key", KEY))
+            .and(header_exists("X-Nonce"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": TERMINAL, "name": "VPN", "callback_url": callback,
+                "success_redirect_url": "", "conversion_mode": "instant"
+            })))
+            .mount(&server)
+            .await;
+    }
+    server
+}
+
+async fn hooks_of(server: &MockServer) -> ConnectionCheck {
+    RollyPay::with_api_base(server.uri())
+        .check_connection(
+            &settings(),
+            &CheckContext {
+                webhook_url: Some(PANEL_HOOK.into()),
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn проверка_подключения_сверяет_адрес_уведомлений_кассы() {
+    let same = hooks_of(&terminal_api(Some(json!(format!("{PANEL_HOOK}/")))).await).await;
+    assert_eq!(same.status, CheckStatus::Ok, "{}", same.summary);
+    assert_eq!(
+        same.hooks,
+        [HookCheck {
+            label: "callback_url".into(),
+            state: HookState::Same,
+            address: None,
+            note: None,
+        }]
+    );
+    assert!(!same.details.iter().any(|d| d.contains("callback_url")));
+    let factory =
+        hooks_of(&terminal_api(Some(json!("https://example.com/payments/callback"))).await).await;
+    assert_eq!(factory.status, CheckStatus::Ok);
+    assert_eq!(factory.hooks[0].state, HookState::Other);
+    assert_eq!(
+        factory.hooks[0].address.as_deref(),
+        Some("https://example.com/payments/callback")
+    );
+    assert!(
+        factory.hooks[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("заглушка")),
+        "{:?}",
+        factory.hooks[0]
+    );
+    let foreign = hooks_of(
+        &terminal_api(Some(json!(
+            "https://old-panel.example.org/api/webhooks/rollypay?key=secret"
+        )))
+        .await,
+    )
+    .await;
+    assert_eq!(foreign.hooks[0].state, HookState::Other);
+    assert_eq!(
+        foreign.hooks[0].address.as_deref(),
+        Some("https://old-panel.example.org/api/webhooks/rollypay")
+    );
+    assert_eq!(foreign.hooks[0].note, None);
+    for empty in [json!(""), json!(null)] {
+        let off = hooks_of(&terminal_api(Some(empty.clone())).await).await;
+        assert_eq!(off.hooks[0].state, HookState::Off, "{empty}");
+        assert_eq!(off.hooks[0].address, None, "{empty}");
+    }
+    let hidden = terminal_api(None).await;
+    let unknown = hooks_of(&hidden).await;
+    assert_eq!(unknown.status, CheckStatus::Ok);
+    assert!(unknown.hooks.is_empty());
+    assert!(
+        unknown
+            .details
+            .iter()
+            .any(|d| d.contains("callback_url") && d.contains("example.com")),
+        "{:?}",
+        unknown.details
+    );
+    for request in hidden.received_requests().await.unwrap() {
+        assert_eq!(request.method, wiremock::http::Method::GET);
+    }
+    let silent = RollyPay::with_api_base(hidden.uri())
+        .check_connection(&settings(), &CheckContext::default())
+        .await;
+    assert!(silent.hooks.is_empty());
+    let calls = hidden.received_requests().await.unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|r| r.url.path().starts_with("/api/v1/terminals"))
+            .count(),
+        1
+    );
+}
