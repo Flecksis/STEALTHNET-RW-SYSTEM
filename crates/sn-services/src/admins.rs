@@ -8,7 +8,7 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sn_domain::access::{AdminRole, Permission, is_allowed};
 use sn_domain::ids::AdminId;
-use sn_store::{AdminRecord, Db, NewAdmin};
+use sn_store::{AdminLoginMethod, AdminRecord, Db, NewAdmin};
 use std::collections::HashMap;
 
 const PASSWORD_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -25,6 +25,7 @@ pub struct AdminView {
     pub must_change_password: bool,
     pub created_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
+    pub last_login_method: Option<AdminLoginMethod>,
     pub remna_sync: bool,
     pub backups: bool,
 }
@@ -78,10 +79,14 @@ fn clean_email(raw: &str) -> ServiceResult<String> {
     }
 }
 
-fn view(admin: AdminRecord, logins: &HashMap<AdminId, DateTime<Utc>>) -> AdminView {
+type LastLogins = HashMap<AdminId, (DateTime<Utc>, Option<AdminLoginMethod>)>;
+
+fn view(admin: AdminRecord, logins: &LastLogins) -> AdminView {
+    let last = logins.get(&admin.id);
     AdminView {
         id: admin.id,
-        last_login_at: logins.get(&admin.id).copied(),
+        last_login_at: last.map(|(at, _)| *at),
+        last_login_method: last.and_then(|(_, method)| *method),
         email: admin.email,
         role: admin.role,
         two_factor: admin.totp.is_some(),

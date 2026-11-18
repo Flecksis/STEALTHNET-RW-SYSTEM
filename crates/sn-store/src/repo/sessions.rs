@@ -11,6 +11,30 @@ pub struct NewSession {
     pub user_agent: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminLoginMethod {
+    Password,
+    Totp,
+}
+
+impl AdminLoginMethod {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AdminLoginMethod::Password => "password",
+            AdminLoginMethod::Totp => "totp",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<AdminLoginMethod> {
+        match raw {
+            "password" => Some(AdminLoginMethod::Password),
+            "totp" => Some(AdminLoginMethod::Totp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionChannel {
     Cabinet,
@@ -101,17 +125,35 @@ impl<'c> SessionsRepo<'c> {
         &mut self,
         admin_id: AdminId,
         session: &NewSession,
+        method: Option<AdminLoginMethod>,
     ) -> StoreResult<i64> {
         Ok(sqlx::query_scalar(
-            "INSERT INTO admin_sessions (admin_id, token_hash, expires_at, ip, user_agent) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            "INSERT INTO admin_sessions (admin_id, token_hash, expires_at, ip, user_agent, method) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
         )
         .bind(admin_id.0)
         .bind(&session.token_hash)
         .bind(session.expires_at)
         .bind(&session.ip)
         .bind(&session.user_agent)
+        .bind(method.map(AdminLoginMethod::as_str))
         .fetch_one(&mut *self.conn)
         .await?)
+    }
+
+    pub async fn latest_admin_method(
+        &mut self,
+        admin_id: AdminId,
+    ) -> StoreResult<Option<AdminLoginMethod>> {
+        let method: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT method FROM admin_sessions WHERE admin_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(admin_id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(method
+            .flatten()
+            .as_deref()
+            .and_then(AdminLoginMethod::parse))
     }
 
     pub async fn admin_by_token(

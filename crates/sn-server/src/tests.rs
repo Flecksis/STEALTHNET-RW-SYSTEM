@@ -554,6 +554,9 @@ async fn вход_администратора_и_переключение_мо�
 async fn вход_по_коду_totp_и_смена_пароля_через_http() {
     let Some(h) = http().await else { return };
     let token = h.owner().await;
+    let last_method = |admins: &Value| admins[0]["last_login_method"].clone();
+    let (_, admins) = h.get("/api/admin/admins", &token).await;
+    assert_eq!(last_method(&admins), "password");
     let (status, setup) = h
         .write(Method::POST, "/api/admin/auth/2fa/setup", &token, json!({}))
         .await;
@@ -592,6 +595,10 @@ async fn вход_по_коду_totp_и_смена_пароля_через_http(
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, admins) = h
+        .get("/api/admin/admins", body["token"].as_str().unwrap())
+        .await;
+    assert_eq!(last_method(&admins), "totp");
     let cookie = headers[header::SET_COOKIE].to_str().unwrap().to_string();
     assert!(cookie.starts_with("sn_admin="));
     assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
@@ -615,6 +622,8 @@ async fn вход_по_коду_totp_и_смена_пароля_через_http(
     let (status, me) = h.get("/api/admin/me", &renewed).await;
     assert_eq!(status, StatusCode::OK);
     assert!(me["permissions"].as_array().unwrap().len() >= 11);
+    let (_, admins) = h.get("/api/admin/admins", &renewed).await;
+    assert_eq!(last_method(&admins), "totp");
     let (status, security) = h.get("/api/admin/auth/security", &renewed).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(security["totp_enabled"], true);

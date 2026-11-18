@@ -18,6 +18,7 @@ type AdminItem = {
   must_change_password: boolean;
   created_at: string;
   last_login_at: string | null;
+  last_login_method?: 'password' | 'totp' | null;
   remna_sync: boolean;
   backups: boolean;
 };
@@ -52,8 +53,17 @@ function statusLine(item: AdminItem): { text: string; tone: 'bad' | 'warn' | 'mu
   if (item.must_change_password) {
     return { text: item.last_login_at ? 'Ждём смены временного пароля' : 'Входа ещё не было, пароль временный', tone: 'warn' };
   }
-  return { text: item.last_login_at ? `Последний вход: ${dateTime(item.last_login_at)}` : 'Входа ещё не было', tone: 'muted' };
+  if (!item.last_login_at) {
+    return { text: 'Входа ещё не было', tone: 'muted' };
+  }
+  const how = item.last_login_method ? `, ${LOGIN_METHOD[item.last_login_method]}` : '';
+  return { text: `Последний вход: ${dateTime(item.last_login_at)}${how}`, tone: 'muted' };
 }
+
+const LOGIN_METHOD: Record<'password' | 'totp', string> = {
+  password: 'по паролю',
+  totp: 'по паролю и коду',
+};
 
 function CopyPassword({ issued, onDone }: { issued: Issued; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
@@ -184,7 +194,7 @@ export function SettingsAdmins() {
                   </span>
                   <span className={`adm-status ${status.tone}`}>
                     {status.text}
-                    {item.two_factor ? <span className="muted"> · вход по коду</span> : null}
+                    {item.two_factor ? <span className="muted"> · вход по коду включён</span> : null}
                   </span>
                 </span>
                 <label className="adm-role">

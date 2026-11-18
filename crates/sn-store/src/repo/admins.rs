@@ -1,5 +1,6 @@
 use crate::crypto::SealedSecret;
 use crate::error::{StoreError, StoreResult};
+use crate::repo::sessions::AdminLoginMethod;
 use chrono::{DateTime, Utc};
 use sn_domain::access::{AdminRole, Permission};
 use sn_domain::ids::AdminId;
@@ -218,13 +219,24 @@ impl<'c> AdminsRepo<'c> {
         Ok(ids.len() as i64)
     }
 
-    pub async fn last_logins(&mut self) -> StoreResult<HashMap<AdminId, DateTime<Utc>>> {
-        let rows: Vec<(i64, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT admin_id, max(created_at) FROM admin_sessions GROUP BY admin_id",
+    pub async fn last_logins(
+        &mut self,
+    ) -> StoreResult<HashMap<AdminId, (DateTime<Utc>, Option<AdminLoginMethod>)>> {
+        let rows: Vec<(i64, DateTime<Utc>, Option<String>)> = sqlx::query_as(
+            "SELECT DISTINCT ON (admin_id) admin_id, created_at, method FROM admin_sessions \
+             ORDER BY admin_id, created_at DESC, id DESC",
         )
         .fetch_all(&mut *self.conn)
         .await?;
-        Ok(rows.into_iter().map(|(id, at)| (AdminId(id), at)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, at, method)| {
+                (
+                    AdminId(id),
+                    (at, method.as_deref().and_then(AdminLoginMethod::parse)),
+                )
+            })
+            .collect())
     }
 
     pub async fn remember_login_address(

@@ -14,7 +14,10 @@ use sn_domain::access::{AdminPrincipal, AdminRole, ClientChannel, ClientPrincipa
 use sn_domain::client::{RegistrationSource, TelegramProfile};
 use sn_domain::ids::{AdminId, ClientId};
 use sn_modules::catalog::utm::clicks::ClickChannel;
-use sn_store::{AdminRecord, Db, NewAdmin, NewSession, SealedSecret, SessionChannel, SessionScope};
+use sn_store::{
+    AdminLoginMethod, AdminRecord, Db, NewAdmin, NewSession, SealedSecret, SessionChannel,
+    SessionScope,
+};
 use std::net::IpAddr;
 
 pub const ADMIN_SESSION_DAYS: i64 = 14;
@@ -603,6 +606,11 @@ impl<'a> Auth<'a> {
         let (token, hash) = new_token();
         let expires_at = now + Duration::days(ADMIN_SESSION_DAYS);
         let mut tx = self.services.store().begin().await?;
+        let method = if admin.totp.is_some() {
+            AdminLoginMethod::Totp
+        } else {
+            AdminLoginMethod::Password
+        };
         let session_id = tx
             .sessions()
             .create_admin(
@@ -613,6 +621,7 @@ impl<'a> Auth<'a> {
                     ip: meta.ip.clone(),
                     user_agent: meta.user_agent.clone(),
                 },
+                Some(method),
             )
             .await?;
         if let Some(network) = &network {
@@ -794,6 +803,7 @@ impl<'a> Auth<'a> {
         let expires_at = self.services.now() + Duration::days(ADMIN_SESSION_DAYS);
         let mut tx = self.services.store().begin().await?;
         tx.admins().set_password(admin_id, &hash, false).await?;
+        let method = tx.sessions().latest_admin_method(admin_id).await?;
         tx.sessions().revoke_all_admin(admin_id).await?;
         let session_id = tx
             .sessions()
@@ -805,6 +815,7 @@ impl<'a> Auth<'a> {
                     ip: meta.ip.clone(),
                     user_agent: meta.user_agent.clone(),
                 },
+                method,
             )
             .await?;
         tx.audit()
