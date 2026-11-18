@@ -12,7 +12,7 @@ use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_services::ServiceError;
 use sn_services::legacy::runs::{RunView, StartOptions};
-use sn_services::legacy::{ImportView, MAX_UPLOAD, Source, import_dir};
+use sn_services::legacy::{ImportView, MAX_UPLOAD, Source, UPLOAD_RESERVE, free_space, import_dir};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -70,7 +70,24 @@ fn too_big() -> ApiError {
     ApiError::new(
         StatusCode::PAYLOAD_TOO_LARGE,
         "import.too_large",
-        "Файл больше 2 ГБ. Нужна выгрузка базы, а не архив сервера целиком",
+        "Файл больше 20 ГБ. Нужна выгрузка базы, а не архив сервера целиком. Сожмите её в .sql.gz: так она станет в 5–10 раз меньше",
+    )
+}
+
+fn size_text(bytes: u64) -> String {
+    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    format!("{gib:.1} ГБ").replace('.', ",")
+}
+
+fn no_room(size: u64, free: u64) -> ApiError {
+    ApiError::new(
+        StatusCode::INSUFFICIENT_STORAGE,
+        "import.no_space",
+        format!(
+            "На диске сервера свободно {}, а файл весит {}. Освободите место или сожмите выгрузку в .sql.gz",
+            size_text(free),
+            size_text(size)
+        ),
     )
 }
 
@@ -108,6 +125,11 @@ async fn upload(
             "папка для выгрузки не создаётся: {err}"
         )))
     })?;
+    if let (Some(size), Some(free)) = (declared, free_space(&dir))
+        && size.saturating_add(UPLOAD_RESERVE) > free
+    {
+        return Err(no_room(size, free));
+    }
     let path = dir.join(format!("{}.upload", Uuid::new_v4().simple()));
     let mut file = tokio::fs::File::create(&path).await.map_err(|err| {
         ApiError::from(ServiceError::Internal(format!(

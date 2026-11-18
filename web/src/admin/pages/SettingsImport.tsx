@@ -211,7 +211,7 @@ function DropZone({ ctx }: { ctx: Ctx }) {
     >
       <span className="strong">Перетащите файл выгрузки сюда</span>
       <span className="cap">
-        {FILES[source]} до 2{NBSP}ГБ
+        {FILES[source]} до 20{NBSP}ГБ. Большую выгрузку сожмите в .sql.gz: она станет в 5–10 раз меньше
       </span>
       <button type="button" className="btn-line hov" onClick={() => input.current?.click()}>
         Выбрать файл
@@ -924,7 +924,7 @@ export function SettingsImport() {
 
   const upload = (file: File) => {
     if (file.size > MAX_UPLOAD) {
-      setError('Файл больше 2 ГБ. Нужна выгрузка базы, а не архив сервера целиком');
+      setError('Файл больше 20 ГБ. Нужна выгрузка базы, а не архив сервера целиком. Сожмите её в .sql.gz: так она станет в 5–10 раз меньше');
       return;
     }
     if (file.size === 0) {

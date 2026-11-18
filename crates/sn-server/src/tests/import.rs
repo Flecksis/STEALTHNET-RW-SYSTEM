@@ -31,6 +31,29 @@ async fn upload(h: &Http, token: &str, path: &str, bytes: Vec<u8>) -> (StatusCod
     (status, body_json(response).await)
 }
 
+#[tokio::test]
+async fn выгрузка_больше_двадцати_гигабайт_отклоняется_до_загрузки() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/admin/import/upload?source=stealthnet")
+        .header(header::AUTHORIZATION, format!("Bearer {owner}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_LENGTH,
+            (21u64 * 1024 * 1024 * 1024).to_string(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = router(h.state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert!(body.to_string().contains("20 ГБ"), "{body}");
+    h.db.cleanup().await;
+}
+
 async fn wait(h: &Http, token: &str, id: &str, states: &[&str]) -> Value {
     for _ in 0..1200 {
         let (status, run) = h.get(&format!("/api/admin/import/{id}"), token).await;

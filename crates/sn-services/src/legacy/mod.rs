@@ -44,7 +44,8 @@ use std::sync::Arc;
 use table::{Dump, Table};
 use uuid::Uuid;
 
-pub const MAX_UPLOAD: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_UPLOAD: u64 = 20 * 1024 * 1024 * 1024;
+pub const UPLOAD_RESERVE: u64 = 512 * 1024 * 1024;
 pub const IMPORT_DIR_ENV: &str = "SN_IMPORT_DIR";
 
 pub fn wanted(table: &str) -> bool {
@@ -54,6 +55,11 @@ pub fn wanted(table: &str) -> bool {
         || chill::TABLES.contains(&table)
         || remnashop::TABLES.contains(&table)
         || minishop::TABLES.contains(&table)
+}
+
+pub fn free_space(path: &Path) -> Option<u64> {
+    let stat = rustix::fs::statvfs(path).ok()?;
+    Some(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
 pub fn import_dir() -> PathBuf {

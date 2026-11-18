@@ -148,7 +148,7 @@ export function countLabels(counts: Counts) {
   return COUNT_LABELS.filter((c) => !c.optional || (counts[c.key] ?? 0) > 0);
 }
 
-export const MAX_UPLOAD = 2 * 1024 * 1024 * 1024;
+export const MAX_UPLOAD = 20 * 1024 * 1024 * 1024;
 
 export const ACCEPT: Record<Source, string> = {
   stealthnet: '.sql,.gz',
