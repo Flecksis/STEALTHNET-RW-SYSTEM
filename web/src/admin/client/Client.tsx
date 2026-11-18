@@ -17,11 +17,12 @@ import { SubscriptionBlock } from './SubscriptionBlock';
 import type { ClientCard, HistoryPage, SubscriptionDetails } from './types';
 import './client.css';
 import { Avatar } from '../Avatar';
+import { ExtendDialog } from './ExtendDialog';
 
 const FIRST_PAGE = 5;
 const MORE_PAGE = 20;
 
-type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'delete-sub' | 'delete-client' | 'reset-2fa' | 'password';
+type Dialogs = '' | 'message' | 'balance-add' | 'balance-edit' | 'block' | 'grant' | 'change' | 'extend' | 'delete-sub' | 'delete-client' | 'reset-2fa' | 'password';
 
 function fingerprint(card: ClientCard): string {
   return JSON.stringify(card.subscriptions.map((s) => [s.id, s.tariff_id, s.mirror.expire_at, s.ended_at, s.period_days]));
@@ -324,7 +325,7 @@ function ClientDesktop() {
         </div>
         <div className="cc-btns" style={{ gap: 8 }}>
           {writable && sub && !sub.ended_at ? (
-            <button type="button" className="btn-main btn" onClick={() => void extendRef.current?.(30)}>
+            <button type="button" className="btn-main btn" onClick={() => setDialog('extend')}>
               Продлить
             </button>
           ) : null}
@@ -631,6 +632,9 @@ function ClientDesktop() {
             refreshHistory();
           }}
         />
+      ) : null}
+      {dialog === 'extend' && sub ? (
+        <ExtendDialog until={sub.mirror.expire_at} onExtend={(n) => extendRef.current?.(n) ?? Promise.resolve()} onClose={() => setDialog('')} />
       ) : null}
       {dialog === 'grant' || dialog === 'change' ? (
         <GrantDialog

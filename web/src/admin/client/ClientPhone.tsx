@@ -17,10 +17,11 @@ import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './typ
 import '../home/phone.css';
 import './phone.css';
 import { Avatar } from '../Avatar';
+import { ExtendDialog } from './ExtendDialog';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
-type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password';
+type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'extend' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 type SheetItem = { key: Dialogs; icon: IconName; label: string };
@@ -522,7 +523,7 @@ export function ClientPhone() {
 
       <div className="pc-actions">
         {writable && sub ? (
-          <button type="button" className="pc-main press" onClick={() => void extend(30)} disabled={busy}>
+          <button type="button" className="pc-main press" onClick={() => setDialog('extend')} disabled={busy}>
             Продлить
           </button>
         ) : writable && !blocked ? (
@@ -859,6 +860,9 @@ export function ClientPhone() {
             void loadHistory();
           }}
         />
+      ) : null}
+      {dialog === 'extend' && sub ? (
+        <ExtendDialog until={sub.mirror.expire_at} onExtend={(n) => extend(n)} onClose={() => setDialog('')} />
       ) : null}
       {dialog === 'grant' || dialog === 'change' ? (
         <GrantDialog
