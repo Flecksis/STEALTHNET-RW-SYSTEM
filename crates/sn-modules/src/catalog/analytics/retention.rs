@@ -11,7 +11,7 @@ use sn_store::StoreResult;
 pub const COLUMNS: usize = 12;
 
 type IslandRow = (i64, DateTime<Utc>, i32, DateTime<Utc>, DateTime<Utc>);
-type MoneyRow = (i64, DateTime<Utc>, i32, DateTime<Utc>, DateTime<Utc>, i64);
+type MoneyRow = (NaiveDate, i32, i64);
 
 pub struct Cohorts {
     pub rows: Vec<CohortRow>,
@@ -43,10 +43,15 @@ pub async fn cohorts(c: &Ctx<'_>, last: NaiveDate, count: usize) -> StoreResult<
          FROM analytics_islands f JOIN analytics_islands i ON i.client_id = f.client_id \
          WHERE f.seq = 1 AND f.starts_at >= {s} AND f.starts_at < {e} AND {f} ORDER BY f.client_id, i.seq"
     );
+    let shift = sql.int(i64::from(offset.local_minus_utc()));
+    let span = sql.int(MONTH_DAYS * 86_400);
     let money_text = format!(
-        "SELECT f.client_id, f.starts_at, 0, p.paid_at, p.paid_at, (p.amount_minor - p.refunded_minor) \
+        "SELECT date_trunc('month', f.starts_at + make_interval(secs => {shift}))::date, \
+           greatest(1, floor(extract(epoch FROM p.paid_at - f.starts_at) / {span})::int + 1), \
+           sum(p.amount_minor - p.refunded_minor)::bigint \
          FROM analytics_islands f JOIN analytics_payments p ON p.client_id = f.client_id \
-         WHERE f.seq = 1 AND f.starts_at >= {s} AND f.starts_at < {e} AND NOT p.stars AND p.provider <> 'balance' AND {f}"
+         WHERE f.seq = 1 AND f.starts_at >= {s} AND f.starts_at < {e} AND NOT p.stars AND p.provider <> 'balance' AND {f} \
+         GROUP BY 1, 2"
     );
     let mut conn = c.store.conn().await?;
     let islands: Vec<IslandRow> = rows(&mut conn, &sql, &text).await?;
@@ -92,21 +97,18 @@ pub async fn cohorts(c: &Ctx<'_>, last: NaiveDate, count: usize) -> StoreResult<
             *cell = Some(cell.unwrap_or(0) + i64::from(hit));
         }
     }
-    for (_, first_at, _, paid_at, _, amount) in &money {
-        let Some(i) = index(*first_at) else {
+    for (cohort, from_k, amount) in &money {
+        let Some(i) = starts.iter().position(|m| m == cohort) else {
             continue;
         };
+        let from_k = usize::try_from(*from_k).unwrap_or(1);
         for k in 1..=COLUMNS {
             let step = i32::try_from(k).unwrap_or(i32::MAX);
             if cutoff(i) + month * step > now {
                 break;
             }
             let cell = &mut out[i].money[k - 1];
-            let add = if *paid_at < *first_at + month * step {
-                *amount
-            } else {
-                0
-            };
+            let add = if k >= from_k { *amount } else { 0 };
             *cell = Some(cell.unwrap_or(0) + add);
         }
     }
@@ -223,17 +225,18 @@ async fn expiring(c: &Ctx<'_>) -> StoreResult<Expiring> {
     let d30 = sql.time(c.range.now + Duration::days(30));
     let t = c.filters.tariff_cond(&mut sql, "sb.tariff_id");
     let f = c.filters.client(&mut sql, "sb.client_id");
-    let price = "COALESCE((SELECT o.total_minor FROM orders o WHERE o.subscription_id = sb.id \
-                 AND o.kind IN ('new', 'renewal', 'change') AND o.paid_at IS NOT NULL ORDER BY o.paid_at DESC LIMIT 1), 0)";
     let text = format!(
         "SELECT 0, \
            count(*) FILTER (WHERE sb.expire_at <= {d7} AND sb.autorenew_enabled)::float8, \
            count(*) FILTER (WHERE sb.expire_at <= {d7} AND NOT sb.autorenew_enabled)::float8, \
            count(*) FILTER (WHERE sb.autorenew_enabled)::float8, \
            count(*) FILTER (WHERE NOT sb.autorenew_enabled)::float8, \
-           COALESCE(sum({price}) FILTER (WHERE sb.expire_at <= {d7}), 0)::float8, \
-           COALESCE(sum({price}), 0)::float8 \
-         FROM subscriptions sb WHERE sb.kind = 'paid' AND sb.ended_at IS NULL \
+           COALESCE(sum(last.price) FILTER (WHERE sb.expire_at <= {d7}), 0)::float8, \
+           COALESCE(sum(last.price), 0)::float8 \
+         FROM subscriptions sb \
+         LEFT JOIN LATERAL (SELECT o.total_minor AS price FROM orders o WHERE o.subscription_id = sb.id \
+           AND o.kind IN ('new', 'renewal', 'change') AND o.paid_at IS NOT NULL ORDER BY o.id DESC LIMIT 1) last ON true \
+         WHERE sb.kind = 'paid' AND sb.ended_at IS NULL \
            AND sb.expire_at > {now} AND sb.expire_at <= {d30} AND {t} AND {f}"
     );
     let mut conn = c.store.conn().await?;

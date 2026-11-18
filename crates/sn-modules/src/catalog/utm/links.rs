@@ -230,7 +230,7 @@ pub async fn page(
             stray: Vec::new(),
         });
     }
-    analytics::spans::refresh(&ctx.store, currency, None).await?;
+    analytics::spans::refresh_if_stale(&ctx.store, currency).await?;
     let found = stats(
         &ctx.store,
         midnight(from, offset),

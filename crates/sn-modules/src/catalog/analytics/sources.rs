@@ -75,26 +75,22 @@ pub async fn stats(
     let f = filters.source_cond(&mut sql, "ac");
     let text = format!(
         "WITH cohort AS ( \
-           SELECT ac.client_id, ac.source_type, ac.source_key, ac.utm_medium, ac.utm_campaign, ac.first_paid_at \
+           SELECT ac.client_id, ac.source_type, ac.source_key, ac.utm_medium, ac.utm_campaign, ac.first_paid_at, \
+             ac.trial_at, ac.first_island_at, ac.kept30 \
            FROM analytics_clients ac WHERE ac.created_at >= {s} AND ac.created_at < {e} AND NOT ac.deleted AND {f}), \
          money AS ( \
            SELECT p.client_id, \
              COALESCE(sum(p.amount_minor - p.refunded_minor) FILTER (WHERE p.paid_at >= {s} AND p.paid_at < {e}), 0) AS in_range, \
              COALESCE(sum(p.amount_minor - p.refunded_minor), 0) AS total \
            FROM analytics_payments p JOIN cohort USING (client_id) \
-           WHERE NOT p.stars AND p.provider <> 'balance' GROUP BY p.client_id), \
-         first AS ( \
-           SELECT i.client_id, i.starts_at FROM analytics_islands i JOIN cohort USING (client_id) WHERE i.seq = 1) \
+           WHERE NOT p.stars AND p.provider <> 'balance' GROUP BY p.client_id) \
          SELECT c.source_type, c.source_key, c.utm_medium, c.utm_campaign, count(*)::bigint, \
-           count(*) FILTER (WHERE EXISTS (SELECT 1 FROM orders o WHERE o.client_id = c.client_id \
-             AND o.kind = 'trial' AND o.paid_at IS NOT NULL))::bigint, \
+           count(c.trial_at)::bigint, \
            count(*) FILTER (WHERE c.first_paid_at IS NOT NULL)::bigint, \
            COALESCE(sum(m.in_range), 0)::bigint, COALESCE(sum(m.total), 0)::bigint, \
-           count(*) FILTER (WHERE fi.starts_at <= {n})::bigint, \
-           count(*) FILTER (WHERE fi.starts_at <= {n} AND EXISTS (SELECT 1 FROM analytics_islands x \
-             WHERE x.client_id = c.client_id AND x.starts_at <= fi.starts_at + interval '30 days' \
-             AND x.ends_at > fi.starts_at + interval '30 days'))::bigint \
-         FROM cohort c LEFT JOIN money m USING (client_id) LEFT JOIN first fi USING (client_id) \
+           count(*) FILTER (WHERE c.first_island_at <= {n})::bigint, \
+           count(*) FILTER (WHERE c.first_island_at <= {n} AND c.kept30)::bigint \
+         FROM cohort c LEFT JOIN money m USING (client_id) \
          GROUP BY 1, 2, 3, 4"
     );
     let mut conn = store.conn().await?;

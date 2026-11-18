@@ -1,22 +1,22 @@
-use super::clients::median;
 use super::labels;
 use super::metric::{Bar, Column, Detail, Group, ListRef, Metric, Row, Unit, num, share};
 use super::query::{Arg, Dim, Sql, rows};
 use super::tab::{Ctx, both, prev_points, prev_total};
-use chrono::{DateTime, Utc};
 use sn_store::StoreResult;
 
 const APPLIES: [Dim; 4] = [Dim::Provider, Dim::Method, Dim::Channel, Dim::Source];
 
+const PAID: &str = "p.status IN ('paid', 'partially_refunded', 'refunded')";
+
 fn cond(c: &Ctx<'_>, sql: &mut Sql) -> String {
-    let mut parts = vec!["p.provider NOT IN ('balance', 'manual')".to_string()];
+    let mut parts = Vec::new();
     if let Some(pr) = &c.filters.provider {
         let v = sql.arg(Arg::Text(pr.clone()));
         parts.push(format!("p.provider = {v}"));
     }
     if let Some(m) = &c.filters.method {
         let v = sql.arg(Arg::Text(m.clone()));
-        parts.push(format!("COALESCE(p.pay_method, '') = {v}"));
+        parts.push(format!("p.method = {v}"));
     }
     if let Some(ch) = &c.filters.channel {
         let v = sql.arg(Arg::Text(if ch == "unknown" {
@@ -24,38 +24,88 @@ fn cond(c: &Ctx<'_>, sql: &mut Sql) -> String {
         } else {
             ch.clone()
         }));
-        parts.push(format!(
-            "COALESCE((SELECT o.channel FROM orders o WHERE o.id = p.order_id), '') = {v}"
-        ));
+        parts.push(format!("p.channel = {v}"));
     }
     parts.push(c.filters.client(sql, "p.client_id"));
     parts.join(" AND ")
 }
 
-type InvoiceRow = (
-    String,
-    Option<String>,
-    String,
-    DateTime<Utc>,
-    Option<DateTime<Utc>>,
-    Option<DateTime<Utc>>,
-    i64,
-    i64,
-    Option<String>,
-    String,
-);
-
-async fn invoices(c: &Ctx<'_>) -> StoreResult<Vec<InvoiceRow>> {
-    let mut sql = Sql::default();
+fn period(c: &Ctx<'_>, sql: &mut Sql) -> String {
     let s = sql.time(c.range.start());
     let e = sql.time(c.range.end());
-    let cur = sql.text(c.currency.code());
-    let f = cond(c, &mut sql);
+    let f = cond(c, sql);
+    format!("p.created_at >= {s} AND p.created_at < {e} AND {f}")
+}
+
+type LineRow = (
+    Option<String>,
+    Option<String>,
+    i32,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+);
+
+const GROUPS: &str = "GROUP BY GROUPING SETS ((p.provider, p.method), (p.provider), ())";
+
+async fn lines(c: &Ctx<'_>) -> StoreResult<Vec<LineRow>> {
+    let mut sql = Sql::default();
+    let now = sql.time(c.range.now);
+    let w = period(c, &mut sql);
     let text = format!(
-        "SELECT p.provider, p.pay_method, p.status, p.created_at, p.paid_at, p.expires_at, \
-           CASE WHEN p.currency = {cur} THEN p.amount_minor ELSE 0 END, \
-           CASE WHEN p.currency = {cur} THEN p.refunded_minor ELSE 0 END, p.failure_reason, p.currency \
-         FROM payments p WHERE p.created_at >= {s} AND p.created_at < {e} AND {f}"
+        "SELECT p.provider, p.method, GROUPING(p.provider, p.method)::int, count(*)::float8, \
+           count(*) FILTER (WHERE {PAID})::float8, \
+           count(*) FILTER (WHERE p.status = 'canceled' OR (p.status = 'pending' AND p.expires_at < {now}))::float8, \
+           count(*) FILTER (WHERE p.status = 'failed')::float8, \
+           COALESCE(sum(p.refunded_minor) FILTER (WHERE {PAID}), 0)::float8, \
+           COALESCE(sum(p.amount_minor) FILTER (WHERE {PAID}), 0)::float8 \
+         FROM analytics_attempts p WHERE {w} {GROUPS}"
+    );
+    let mut conn = c.store.conn().await?;
+    rows(&mut conn, &sql, &text).await
+}
+
+type WaitRow = (
+    Option<String>,
+    Option<String>,
+    i32,
+    Option<f64>,
+    Option<f64>,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+);
+
+async fn waits(c: &Ctx<'_>) -> StoreResult<Vec<WaitRow>> {
+    let mut sql = Sql::default();
+    let w = period(c, &mut sql);
+    let text = format!(
+        "SELECT p.provider, p.method, GROUPING(p.provider, p.method)::int, \
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.wait_seconds), \
+           percentile_disc(0.9) WITHIN GROUP (ORDER BY p.wait_seconds)::float8, \
+           count(*) FILTER (WHERE p.wait_seconds < 60)::float8, \
+           count(*) FILTER (WHERE p.wait_seconds >= 60 AND p.wait_seconds < 300)::float8, \
+           count(*) FILTER (WHERE p.wait_seconds >= 300 AND p.wait_seconds < 900)::float8, \
+           count(*) FILTER (WHERE p.wait_seconds >= 900 AND p.wait_seconds < 3600)::float8, \
+           count(*) FILTER (WHERE p.wait_seconds >= 3600)::float8 \
+         FROM analytics_attempts p WHERE {w} AND p.wait_seconds IS NOT NULL {GROUPS}"
+    );
+    let mut conn = c.store.conn().await?;
+    rows(&mut conn, &sql, &text).await
+}
+
+async fn reasons(c: &Ctx<'_>) -> StoreResult<Vec<(String, String, f64)>> {
+    let mut sql = Sql::default();
+    let w = period(c, &mut sql);
+    let text = format!(
+        "SELECT p.provider, COALESCE(p.reason, 'Без причины'), count(*)::float8 \
+         FROM analytics_attempts p WHERE {w} AND p.status = 'failed' \
+         GROUP BY 1, 2 ORDER BY 3 DESC, 2 LIMIT 30"
     );
     let mut conn = c.store.conn().await?;
     rows(&mut conn, &sql, &text).await
@@ -92,31 +142,26 @@ struct Line {
     paid: f64,
     abandoned: f64,
     failed: f64,
-    waits: Vec<i64>,
-    revenue: f64,
+    wait: Option<f64>,
     refunded: f64,
+    revenue: f64,
     disputes: f64,
 }
 
 impl Line {
-    fn add(&mut self, r: &InvoiceRow, now: DateTime<Utc>, money: bool) {
-        let (_, _, status, created, paid_at, expires, amount, refunded, _, _) = r;
-        self.invoices += 1.0;
-        match status.as_str() {
-            "paid" | "partially_refunded" | "refunded" => {
-                self.paid += 1.0;
-                if let Some(p) = paid_at {
-                    self.waits.push((*p - *created).num_seconds().max(0));
-                }
-                if money {
-                    self.revenue += num(*amount);
-                    self.refunded += num(*refunded);
-                }
-            }
-            "failed" => self.failed += 1.0,
-            "canceled" => self.abandoned += 1.0,
-            "pending" if expires.is_some_and(|x| x < now) => self.abandoned += 1.0,
-            _ => {}
+    fn from_row(r: &LineRow, waits: &[WaitRow]) -> Line {
+        Line {
+            invoices: r.3,
+            paid: r.4,
+            abandoned: r.5,
+            failed: r.6,
+            wait: waits
+                .iter()
+                .find(|w| w.2 == r.2 && w.0 == r.0 && w.1 == r.1)
+                .and_then(|w| w.3),
+            refunded: r.7,
+            revenue: r.8,
+            disputes: 0.0,
         }
     }
 
@@ -130,7 +175,7 @@ impl Line {
                 share(self.paid, self.invoices),
                 Some(self.abandoned),
                 Some(self.failed),
-                median(&self.waits),
+                self.wait,
                 Some(self.refunded),
                 Some(self.disputes),
                 Some(self.revenue),
@@ -144,81 +189,43 @@ impl Line {
 
 type ProviderLines = (String, Line, Vec<(String, Line)>);
 
-fn p90(values: &[i64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut v = values.to_vec();
-    v.sort_unstable();
-    let i = ((v.len() as f64) * 0.9).ceil() as usize;
-    Some(num(v[i.saturating_sub(1).min(v.len() - 1)]))
-}
-
 pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
-    let paid_cond = |sql: &mut Sql| {
-        format!(
-            "p.status IN ('paid', 'partially_refunded', 'refunded') AND {}",
-            cond(c, sql)
-        )
-    };
-    let (rows_now, disp, rej, (inv, inv_prev), (paid_s, paid_prev)) = tokio::try_join!(
-        invoices(c),
+    let (found, wait, reasons, disp, rej, (inv, inv_prev)) = tokio::try_join!(
+        lines(c),
+        waits(c),
+        reasons(c),
         disputes(c),
         rejected(c),
         both(
             c,
-            "payments p",
+            "analytics_attempts p",
             "p.created_at",
             |sql| cond(c, sql),
             &[
                 "count(*)",
                 "count(*) FILTER (WHERE p.status = 'canceled' OR (p.status = 'pending' AND p.expires_at < now()))",
-                "count(*) FILTER (WHERE p.status = 'failed')"
+                "count(*) FILTER (WHERE p.status = 'failed')",
+                "count(*) FILTER (WHERE p.status IN ('paid', 'partially_refunded', 'refunded'))"
             ]
         ),
-        both(c, "payments p", "p.created_at", paid_cond, &["count(*)"]),
     )?;
-    let now = c.range.now;
-    let cur = c.currency.code();
     let mut total = Line::default();
     let mut providers: Vec<ProviderLines> = Vec::new();
-    let mut reasons: Vec<(String, String, f64)> = Vec::new();
-    for r in &rows_now {
-        let money = r.9 == cur;
-        total.add(r, now, money);
-        let provider = r.0.clone();
-        let method = r.1.clone().unwrap_or_default();
-        let idx = match providers.iter().position(|p| p.0 == provider) {
-            Some(i) => i,
-            None => {
-                providers.push((provider.clone(), Line::default(), Vec::new()));
-                providers.len() - 1
-            }
-        };
-        let entry = &mut providers[idx];
-        entry.1.add(r, now, money);
-        match entry.2.iter_mut().find(|m| m.0 == method) {
-            Some(m) => m.1.add(r, now, money),
-            None => {
-                let mut l = Line::default();
-                l.add(r, now, money);
-                entry.2.push((method, l));
-            }
+    for r in &found {
+        match r.2 {
+            3 => total = Line::from_row(r, &wait),
+            1 => providers.push((
+                r.0.clone().unwrap_or_default(),
+                Line::from_row(r, &wait),
+                Vec::new(),
+            )),
+            _ => {}
         }
-        if r.2 == "failed" {
-            let reason =
-                r.8.clone()
-                    .map(|x| x.trim().to_string())
-                    .filter(|x| !x.is_empty())
-                    .unwrap_or_else(|| "Без причины".into());
-            let reason: String = reason.chars().take(120).collect();
-            match reasons
-                .iter_mut()
-                .find(|x| x.0 == provider && x.1 == reason)
-            {
-                Some(x) => x.2 += 1.0,
-                None => reasons.push((provider.clone(), reason, 1.0)),
-            }
+    }
+    for r in found.iter().filter(|r| r.2 == 0) {
+        let provider = r.0.clone().unwrap_or_default();
+        if let Some(p) = providers.iter_mut().find(|p| p.0 == provider) {
+            p.2.push((r.1.clone().unwrap_or_default(), Line::from_row(r, &wait)));
         }
     }
     for (prov, n) in &disp {
@@ -232,7 +239,9 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             .total_cmp(&a.1.revenue)
             .then(b.1.invoices.total_cmp(&a.1.invoices))
     });
-    reasons.sort_by(|a, b| b.2.total_cmp(&a.2));
+    for p in &mut providers {
+        p.2.sort_by(|a, b| b.1.invoices.total_cmp(&a.1.invoices).then(a.0.cmp(&b.0)));
+    }
     let (from, to) = (c.range.dates.from, c.range.dates.to);
     let table_rows: Vec<Row> = providers
         .iter()
@@ -325,20 +334,21 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
         "paid_share",
         "Доля оплаченных",
         Unit::Percent,
-        share(paid_s.total(0), inv.total(0)),
+        share(inv.total(3), inv.total(0)),
     )
-    .prev(match (&paid_prev, &inv_prev) {
-        (Some(p), Some(i)) => share(p.total(0), i.total(0)),
-        _ => None,
-    })
+    .prev(
+        inv_prev
+            .as_ref()
+            .and_then(|i| share(i.total(3), i.total(0))),
+    )
     .note(format!(
         "{} из {}",
-        paid_s.total(0) as i64,
+        inv.total(3) as i64,
         inv.total(0) as i64
     ))
     .detail(Detail::Series {
-        points: paid_s.points(0),
-        prev: prev_points(&paid_prev, 0),
+        points: inv.points(3),
+        prev: prev_points(&inv_prev, 3),
         breakdowns: Vec::new(),
         list: None,
     });
@@ -375,39 +385,35 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
                 .collect(),
             note: Some("Причины — как их прислала платёжка".into()),
         });
-    let minute = 60;
+    let (p90, quick, few, quarter, hour, longer) = wait
+        .iter()
+        .find(|w| w.2 == 3)
+        .map_or((None, 0.0, 0.0, 0.0, 0.0, 0.0), |w| {
+            (w.4, w.5, w.6, w.7, w.8, w.9)
+        });
     let wait_bars = [
-        ("До минуты", 0, minute),
-        ("1–5 минут", minute, 5 * minute),
-        ("5–15 минут", 5 * minute, 15 * minute),
-        ("15–60 минут", 15 * minute, 60 * minute),
-        ("Дольше часа", 60 * minute, i64::MAX),
+        ("До минуты", quick),
+        ("1–5 минут", few),
+        ("5–15 минут", quarter),
+        ("15–60 минут", hour),
+        ("Дольше часа", longer),
     ]
-    .iter()
-    .map(|(label, lo, hi)| Bar {
-        label: (*label).into(),
-        value: num(total
-            .waits
-            .iter()
-            .filter(|w| **w >= *lo && **w < *hi)
-            .count() as i64),
+    .into_iter()
+    .map(|(label, value)| Bar {
+        label: label.into(),
+        value,
         list: None,
     })
     .collect();
-    let waits = Metric::new(
-        "time_to_pay",
-        "Время до оплаты",
-        Unit::Seconds,
-        median(&total.waits),
-    )
-    .note(match p90(&total.waits) {
-        Some(v) => format!("90 % — до {}", labels::duration(v as i64)),
-        None => "медиана".into(),
-    })
-    .detail(Detail::Bars {
-        bars: wait_bars,
-        note: Some("От создания счёта до оплаты".into()),
-    });
+    let waits = Metric::new("time_to_pay", "Время до оплаты", Unit::Seconds, total.wait)
+        .note(match p90 {
+            Some(v) => format!("90 % — до {}", labels::duration(v as i64)),
+            None => "медиана".into(),
+        })
+        .detail(Detail::Bars {
+            bars: wait_bars,
+            note: Some("От создания счёта до оплаты".into()),
+        });
     let rejected_total: f64 = rej.iter().map(|r| num(r.2)).sum();
     let rejected_metric = Metric::new(
         "rejected",

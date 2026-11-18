@@ -1,38 +1,93 @@
-use super::clients::median;
 use super::labels;
 use super::metric::{BRow, Bar, Breakdown, Column, Detail, Group, Metric, Row, Unit, num, share};
-use super::query::{CLIENT_DIMS, Sql, rows};
+use super::query::{CLIENT_DIMS, Sql, rows, single};
 use super::tab::{Ctx, both, prev_points, prev_total};
-use chrono::{DateTime, Utc};
 use sn_store::StoreResult;
 
-type TicketRow = (
-    i64,
-    String,
-    DateTime<Utc>,
-    Option<DateTime<Utc>>,
-    Option<String>,
-    Option<DateTime<Utc>>,
-    Option<DateTime<Utc>>,
-    bool,
-    bool,
-);
+const MINUTE: i64 = 60;
 
-async fn tickets(c: &Ctx<'_>) -> StoreResult<Vec<TicketRow>> {
+const EDGES: [(&str, i64, i64); 5] = [
+    ("До 5 минут", 0, 5 * MINUTE),
+    ("5–30 минут", 5 * MINUTE, 30 * MINUTE),
+    ("30 минут – 2 часа", 30 * MINUTE, 120 * MINUTE),
+    ("2–12 часов", 120 * MINUTE, 720 * MINUTE),
+    ("Дольше 12 часов", 720 * MINUTE, i64::MAX),
+];
+
+fn bars_sql(column: &str) -> String {
+    EDGES
+        .iter()
+        .map(|(_, lo, hi)| {
+            if *hi == i64::MAX {
+                format!("count(*) FILTER (WHERE x.{column} >= {lo})::float8")
+            } else {
+                format!("count(*) FILTER (WHERE x.{column} >= {lo} AND x.{column} < {hi})::float8")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+struct Stats {
+    reply: Option<f64>,
+    reply_p90: Option<f64>,
+    reply_bars: Vec<f64>,
+    close: Option<f64>,
+    close_bars: Vec<f64>,
+    answered: f64,
+    by_ai: f64,
+}
+
+async fn stats(c: &Ctx<'_>) -> StoreResult<Stats> {
+    let mut sql = Sql::default();
+    let s = sql.time(c.range.start());
+    let e = sql.time(c.range.end());
+    let f = c.filters.client(&mut sql, "t.client_id");
+    let reply_bars = bars_sql("reply");
+    let close_bars = bars_sql("close");
+    let text = format!(
+        "WITH x AS MATERIALIZED (SELECT \
+           CASE WHEN t.closed_at IS NOT NULL \
+             THEN greatest(0, floor(extract(epoch FROM t.closed_at - t.created_at)))::bigint END AS close, \
+           (SELECT greatest(0, floor(extract(epoch FROM min(m.created_at) - fc.at)))::bigint FROM ticket_messages m \
+              WHERE m.ticket_id = t.id AND m.author IN ('support', 'ai') AND m.created_at >= fc.at) AS reply, \
+           EXISTS (SELECT 1 FROM ticket_messages m WHERE m.ticket_id = t.id AND m.author = 'support') AS human, \
+           EXISTS (SELECT 1 FROM ticket_messages m WHERE m.ticket_id = t.id AND m.author = 'ai') AS ai \
+         FROM tickets t \
+         LEFT JOIN LATERAL (SELECT min(m.created_at) AS at FROM ticket_messages m \
+           WHERE m.ticket_id = t.id AND m.author = 'client') fc ON true \
+         WHERE t.created_at >= {s} AND t.created_at < {e} AND {f}) \
+         SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x.reply), \
+           percentile_disc(0.9) WITHIN GROUP (ORDER BY x.reply)::float8, {reply_bars}, \
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY x.close), {close_bars}, \
+           count(*) FILTER (WHERE x.human OR x.ai)::float8, \
+           count(*) FILTER (WHERE x.ai AND NOT x.human)::float8 \
+         FROM x"
+    );
+    let mut conn = c.store.conn().await?;
+    let v = single(&mut conn, &sql, &text).await?;
+    let at = |i: usize| v.get(i).copied().flatten();
+    let zero = |i: usize| at(i).unwrap_or(0.0);
+    Ok(Stats {
+        reply: at(0),
+        reply_p90: at(1),
+        reply_bars: (2..7).map(zero).collect(),
+        close: at(7),
+        close_bars: (8..13).map(zero).collect(),
+        answered: zero(13),
+        by_ai: zero(14),
+    })
+}
+
+async fn groups(c: &Ctx<'_>) -> StoreResult<Vec<(i32, Option<String>, Option<String>, f64)>> {
     let mut sql = Sql::default();
     let s = sql.time(c.range.start());
     let e = sql.time(c.range.end());
     let f = c.filters.client(&mut sql, "t.client_id");
     let text = format!(
-        "SELECT t.id, t.channel, t.created_at, t.closed_at, t.ai_reason, fc.at, \
-           (SELECT min(m.created_at) FROM ticket_messages m WHERE m.ticket_id = t.id \
-              AND m.author IN ('support', 'ai') AND m.created_at >= fc.at), \
-           EXISTS (SELECT 1 FROM ticket_messages m WHERE m.ticket_id = t.id AND m.author = 'support'), \
-           EXISTS (SELECT 1 FROM ticket_messages m WHERE m.ticket_id = t.id AND m.author = 'ai') \
-         FROM tickets t \
-         LEFT JOIN LATERAL (SELECT min(m.created_at) AS at FROM ticket_messages m \
-           WHERE m.ticket_id = t.id AND m.author = 'client') fc ON true \
-         WHERE t.created_at >= {s} AND t.created_at < {e} AND {f}"
+        "SELECT GROUPING(t.channel, t.ai_reason)::int, t.channel, t.ai_reason, count(*)::float8 \
+         FROM tickets t WHERE t.created_at >= {s} AND t.created_at < {e} AND {f} \
+         GROUP BY GROUPING SETS ((t.channel), (t.ai_reason))"
     );
     let mut conn = c.store.conn().await?;
     rows(&mut conn, &sql, &text).await
@@ -80,51 +135,25 @@ fn reason(code: &str) -> &'static str {
     }
 }
 
-fn p90(values: &[i64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut v = values.to_vec();
-    v.sort_unstable();
-    let i = ((v.len() as f64) * 0.9).ceil() as usize;
-    Some(num(v[i.saturating_sub(1).min(v.len() - 1)]))
-}
-
 pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     let cond = |sql: &mut Sql| c.filters.client(sql, "t.client_id");
-    let (list, (series, prev), (tokens, paying)) = tokio::try_join!(
-        tickets(c),
+    let (st, found, (series, prev), (tokens, paying)) = tokio::try_join!(
+        stats(c),
+        groups(c),
         both(c, "tickets t", "t.created_at", cond, &["count(*)"]),
         extra(c),
     )?;
     let note = c.filters.ignored(&CLIENT_DIMS);
     let mut by_channel: Vec<(String, f64)> = Vec::new();
-    let mut replies: Vec<i64> = Vec::new();
-    let mut closes: Vec<i64> = Vec::new();
-    let (mut answered, mut by_ai) = (0.0, 0.0);
     let mut reasons: Vec<(String, f64)> = Vec::new();
-    for (_, ch, created, closed, ai_reason, first_client, first_reply, human, ai) in &list {
-        match by_channel.iter_mut().find(|x| x.0 == *ch) {
-            Some(x) => x.1 += 1.0,
-            None => by_channel.push((ch.clone(), 1.0)),
-        }
-        if let (Some(a), Some(b)) = (first_client, first_reply) {
-            replies.push((*b - *a).num_seconds().max(0));
-        }
-        if let Some(cl) = closed {
-            closes.push((*cl - *created).num_seconds().max(0));
-        }
-        if *human || *ai {
-            answered += 1.0;
-            if *ai && !*human {
-                by_ai += 1.0;
-            }
-        }
-        if let Some(r) = ai_reason {
+    for (g, ch, ai_reason, n) in &found {
+        if *g == 1 {
+            by_channel.push((ch.clone().unwrap_or_default(), *n));
+        } else if let Some(r) = ai_reason {
             let label = reason(r).to_string();
             match reasons.iter_mut().find(|x| x.0 == label) {
-                Some(x) => x.1 += 1.0,
-                None => reasons.push((label, 1.0)),
+                Some(x) => x.1 += n,
+                None => reasons.push((label, *n)),
             }
         }
     }
@@ -154,45 +183,42 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             }],
             list: None,
         });
-    let reply_bars = |values: &[i64]| {
-        let m = 60;
-        [
-            ("До 5 минут", 0, 5 * m),
-            ("5–30 минут", 5 * m, 30 * m),
-            ("30 минут – 2 часа", 30 * m, 120 * m),
-            ("2–12 часов", 120 * m, 720 * m),
-            ("Дольше 12 часов", 720 * m, i64::MAX),
-        ]
-        .iter()
-        .map(|(label, lo, hi)| Bar {
-            label: (*label).into(),
-            value: num(values.iter().filter(|v| **v >= *lo && **v < *hi).count() as i64),
-            list: None,
-        })
-        .collect::<Vec<_>>()
+    let to_bars = |values: &[f64]| {
+        EDGES
+            .iter()
+            .zip(values)
+            .map(|((label, _, _), value)| Bar {
+                label: (*label).into(),
+                value: *value,
+                list: None,
+            })
+            .collect::<Vec<_>>()
     };
-    let first_reply = Metric::new("first_reply", "Первый ответ", Unit::Seconds, median(&replies))
-        .note(match p90(&replies) {
+    let first_reply = Metric::new("first_reply", "Первый ответ", Unit::Seconds, st.reply)
+        .note(match st.reply_p90 {
             Some(v) => format!("90 % — до {}", labels::duration(v as i64)),
             None => "медиана".into(),
         })
         .detail(Detail::Bars {
-            bars: reply_bars(&replies),
+            bars: to_bars(&st.reply_bars),
             note: Some("От первого сообщения клиента до первого ответа поддержки или ИИ, без учёта рабочих часов".into()),
         });
-    let close = Metric::new("close_time", "До закрытия", Unit::Seconds, median(&closes))
+    let close = Metric::new("close_time", "До закрытия", Unit::Seconds, st.close)
         .note("медиана")
         .detail(Detail::Bars {
-            bars: reply_bars(&closes),
+            bars: to_bars(&st.close_bars),
             note: None,
         });
     let ai_share = Metric::new(
         "ai_share",
         "Закрыл ИИ-чат",
         Unit::Percent,
-        share(by_ai, answered),
+        share(st.by_ai, st.answered),
     )
-    .note(format!("{} из {} с ответом", by_ai as i64, answered as i64))
+    .note(format!(
+        "{} из {} с ответом",
+        st.by_ai as i64, st.answered as i64
+    ))
     .hint("Обращения, где ответил только ИИ, без человека")
     .detail(Detail::Table {
         columns: vec![Column {

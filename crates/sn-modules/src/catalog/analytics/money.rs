@@ -248,27 +248,26 @@ pub async fn mrr_moves(c: &Ctx<'_>, t0: DateTime<Utc>, t1: DateTime<Utc>) -> Sto
     let a = sql.time(t0);
     let b = sql.time(t1);
     let fa = c.filters.spans(&mut sql, "s");
-    let earlier = format!(
-        "EXISTS (SELECT 1 FROM analytics_spans x WHERE x.client_id = j.client_id AND x.starts_at < {a})"
-    );
     let text = format!(
         "WITH a AS (SELECT s.client_id, sum(s.monthly_minor) AS m FROM analytics_spans s \
                     WHERE s.starts_at < {a} AND s.ends_at >= {a} AND {fa} GROUP BY 1), \
               b AS (SELECT s.client_id, sum(s.monthly_minor) AS m FROM analytics_spans s \
                     WHERE s.starts_at < {b} AND s.ends_at >= {b} AND {fa} GROUP BY 1), \
-              j AS (SELECT COALESCE(a.client_id, b.client_id) AS client_id, COALESCE(a.m, 0) AS m0, \
-                    COALESCE(b.m, 0) AS m1 FROM a FULL JOIN b ON a.client_id = b.client_id) \
+              j AS MATERIALIZED (SELECT COALESCE(a.m, 0) AS m0, COALESCE(b.m, 0) AS m1, \
+                    (COALESCE(a.m, 0) = 0 AND COALESCE(b.m, 0) > 0 AND EXISTS (SELECT 1 FROM analytics_spans x \
+                      WHERE x.client_id = b.client_id AND x.starts_at < {a})) AS back \
+                    FROM a FULL JOIN b ON a.client_id = b.client_id) \
          SELECT 0, \
-           COALESCE(sum(j.m1) FILTER (WHERE j.m0 = 0 AND j.m1 > 0 AND NOT {earlier}), 0)::float8, \
-           count(*) FILTER (WHERE j.m0 = 0 AND j.m1 > 0 AND NOT {earlier})::float8, \
+           COALESCE(sum(j.m1) FILTER (WHERE j.m0 = 0 AND j.m1 > 0 AND NOT j.back), 0)::float8, \
+           count(*) FILTER (WHERE j.m0 = 0 AND j.m1 > 0 AND NOT j.back)::float8, \
            COALESCE(sum(j.m1 - j.m0) FILTER (WHERE j.m0 > 0 AND j.m1 > j.m0), 0)::float8, \
            count(*) FILTER (WHERE j.m0 > 0 AND j.m1 > j.m0)::float8, \
            COALESCE(sum(j.m0 - j.m1) FILTER (WHERE j.m1 > 0 AND j.m1 < j.m0), 0)::float8, \
            count(*) FILTER (WHERE j.m1 > 0 AND j.m1 < j.m0)::float8, \
            COALESCE(sum(j.m0) FILTER (WHERE j.m0 > 0 AND j.m1 = 0), 0)::float8, \
            count(*) FILTER (WHERE j.m0 > 0 AND j.m1 = 0)::float8, \
-           COALESCE(sum(j.m1) FILTER (WHERE j.m0 = 0 AND j.m1 > 0 AND {earlier}), 0)::float8, \
-           count(*) FILTER (WHERE j.m0 = 0 AND j.m1 > 0 AND {earlier})::float8 \
+           COALESCE(sum(j.m1) FILTER (WHERE j.back), 0)::float8, \
+           count(*) FILTER (WHERE j.back)::float8 \
          FROM j"
     );
     let mut conn = c.store.conn().await?;

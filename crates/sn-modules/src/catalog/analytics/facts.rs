@@ -75,11 +75,39 @@ const PAYMENT_INSERT: &str = "INSERT INTO analytics_payments (payment_id, client
      WHERE p.status IN ('paid', 'partially_refunded', 'refunded') AND p.paid_at IS NOT NULL \
        AND (p.currency = 'XTR' OR p.currency = $CUR)";
 
+const ATTEMPT_INSERT: &str = "INSERT INTO analytics_attempts (payment_id, client_id, created_at, provider, method, \
+       channel, status, expires_at, wait_seconds, amount_minor, refunded_minor, reason) \
+     SELECT p.id, p.client_id, p.created_at, p.provider, COALESCE(p.pay_method, ''), COALESCE(o.channel, ''), \
+       p.status, p.expires_at, \
+       CASE WHEN p.status IN ('paid', 'partially_refunded', 'refunded') AND p.paid_at IS NOT NULL \
+         THEN greatest(0, floor(extract(epoch FROM p.paid_at - p.created_at)))::bigint END, \
+       CASE WHEN p.currency = $CUR THEN p.amount_minor ELSE 0 END, \
+       CASE WHEN p.currency = $CUR THEN p.refunded_minor ELSE 0 END, \
+       CASE WHEN p.status = 'failed' THEN left(NULLIF(btrim(p.failure_reason), ''), 120) END \
+     FROM payments p \
+     LEFT JOIN orders o ON o.id = p.order_id \
+     WHERE p.provider NOT IN ('balance', 'manual')";
+
+const TRIALS: &str = "UPDATE analytics_clients ac SET trial_at = t.first \
+     FROM (SELECT o.client_id, min(o.paid_at) AS first FROM orders o \
+           WHERE o.kind = 'trial' AND o.paid_at IS NOT NULL AND $FILTER GROUP BY 1) t \
+     WHERE ac.client_id = t.client_id";
+
+const FIRST_ISLANDS: &str = "UPDATE analytics_clients ac SET first_island_at = f.starts_at, kept30 = f.kept \
+     FROM (SELECT c.id AS client_id, i.starts_at, COALESCE(EXISTS (SELECT 1 FROM analytics_islands x \
+             WHERE x.client_id = c.id AND x.starts_at <= i.starts_at + interval '30 days' \
+               AND x.ends_at > i.starts_at + interval '30 days'), false) AS kept \
+           FROM $CLIENTS LEFT JOIN analytics_islands i ON i.client_id = c.id AND i.seq = 1) f \
+     WHERE ac.client_id = f.client_id";
+
 pub async fn rebuild_all(db: &mut impl Db, currency: Currency) -> StoreResult<()> {
     sqlx::query("DELETE FROM analytics_clients")
         .execute(db.conn())
         .await?;
     sqlx::query("DELETE FROM analytics_payments")
+        .execute(db.conn())
+        .await?;
+    sqlx::query("DELETE FROM analytics_attempts")
         .execute(db.conn())
         .await?;
     sqlx::query(&format!(
@@ -91,6 +119,10 @@ pub async fn rebuild_all(db: &mut impl Db, currency: Currency) -> StoreResult<()
         .bind(currency.code())
         .execute(db.conn())
         .await?;
+    sqlx::query(&ATTEMPT_INSERT.replace("$CUR", "$1"))
+        .bind(currency.code())
+        .execute(db.conn())
+        .await?;
     sqlx::query(
         "UPDATE analytics_clients ac SET first_paid_at = f.first \
          FROM (SELECT client_id, min(paid_at) AS first FROM analytics_payments \
@@ -99,7 +131,16 @@ pub async fn rebuild_all(db: &mut impl Db, currency: Currency) -> StoreResult<()
     )
     .execute(db.conn())
     .await?;
-    sqlx::query("ANALYZE analytics_clients, analytics_payments")
+    sqlx::query(&TRIALS.replace("$FILTER", "true"))
+        .execute(db.conn())
+        .await?;
+    sqlx::query(&FIRST_ISLANDS.replace(
+        "$CLIENTS",
+        "(SELECT DISTINCT client_id AS id FROM analytics_islands) c",
+    ))
+    .execute(db.conn())
+    .await?;
+    sqlx::query("ANALYZE analytics_clients, analytics_payments, analytics_attempts")
         .execute(db.conn())
         .await?;
     Ok(())
@@ -109,6 +150,7 @@ pub async fn refresh_since(
     db: &mut impl Db,
     since: DateTime<Utc>,
     currency: Currency,
+    islands: &[i64],
 ) -> StoreResult<usize> {
     sqlx::query(&format!(
         "{CLIENT_UPSERT}{CLIENT_SELECT} WHERE c.created_at > $1 - interval '25 hours' OR c.updated_at > $1{CLIENT_CONFLICT}"
@@ -116,6 +158,19 @@ pub async fn refresh_since(
     .bind(since)
     .execute(db.conn())
     .await?;
+    sqlx::query(&TRIALS.replace(
+        "$FILTER",
+        "o.client_id IN (SELECT client_id FROM orders WHERE kind = 'trial' AND updated_at > $1)",
+    ))
+    .bind(since)
+    .execute(db.conn())
+    .await?;
+    if !islands.is_empty() {
+        sqlx::query(&FIRST_ISLANDS.replace("$CLIENTS", "unnest($1::bigint[]) c(id)"))
+            .bind(islands)
+            .execute(db.conn())
+            .await?;
+    }
     let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM payments WHERE updated_at > $1")
         .bind(since)
         .fetch_all(db.conn())
@@ -127,6 +182,18 @@ pub async fn refresh_since(
         .bind(&ids)
         .execute(db.conn())
         .await?;
+    sqlx::query("DELETE FROM analytics_attempts WHERE payment_id = ANY($1)")
+        .bind(&ids)
+        .execute(db.conn())
+        .await?;
+    sqlx::query(&format!(
+        "{} AND p.id = ANY($1)",
+        ATTEMPT_INSERT.replace("$CUR", "$2")
+    ))
+    .bind(&ids)
+    .bind(currency.code())
+    .execute(db.conn())
+    .await?;
     sqlx::query(&format!(
         "{} AND p.id = ANY($1)",
         PAYMENT_INSERT.replace("$CUR", "$2")

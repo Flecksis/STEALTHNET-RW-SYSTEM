@@ -4,7 +4,7 @@ use sn_store::{Db, Store, StoreResult};
 
 pub const GRACE_DAYS: i64 = 3;
 pub const MONTH_DAYS: i64 = 30;
-pub const VERSION: i32 = 2;
+pub const VERSION: i32 = 3;
 const LOCK: i64 = 7_240_001;
 const OVERLAP_MINUTES: i64 = 10;
 const CHUNK: usize = 2_000;
@@ -312,6 +312,21 @@ async fn state(db: &mut impl Db) -> StoreResult<Option<State>> {
     .await?)
 }
 
+pub async fn refresh_if_stale(store: &Store, currency: Currency) -> StoreResult<()> {
+    let fresh: bool = {
+        let mut conn = store.conn().await?;
+        sqlx::query_scalar(
+            "SELECT COALESCE((SELECT refreshed_at > now() - interval '30 seconds' FROM analytics_state WHERE id), false)",
+        )
+        .fetch_one(conn.conn())
+        .await?
+    };
+    if !fresh {
+        refresh(store, currency, None).await?;
+    }
+    Ok(())
+}
+
 pub async fn refresh(
     store: &Store,
     currency: Currency,
@@ -384,7 +399,7 @@ pub async fn refresh(
     }
     match since {
         Some((since, _)) => {
-            super::facts::refresh_since(&mut tx, since, currency).await?;
+            super::facts::refresh_since(&mut tx, since, currency, &clients).await?;
         }
         None => super::facts::rebuild_all(&mut tx, currency).await?,
     }

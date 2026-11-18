@@ -256,18 +256,18 @@ async fn invoices(
     let mut sql = Sql::default();
     let s = sql.time(start);
     let e = sql.time(end);
-    let fc = q.filters().client(&mut sql, "p.client_id");
+    let fc = q.filters().client(&mut sql, "a.client_id");
     let state = match q.set.as_str() {
         "invoices" => "true",
-        "abandoned" => "(p.status = 'canceled' OR (p.status = 'pending' AND p.expires_at < now()))",
+        "abandoned" => "(a.status = 'canceled' OR (a.status = 'pending' AND a.expires_at < now()))",
         _ => return Err(bad("Такого списка нет")),
     };
     let slice = match q.slice.as_deref().and_then(|s| s.split_once(':')) {
-        Some(("provider", p)) => format!("p.provider = {}", sql.text(p)),
+        Some(("provider", p)) => format!("a.provider = {}", sql.text(p)),
         Some(("method", v)) => {
             let (p, m) = v.split_once('/').unwrap_or((v, ""));
             format!(
-                "p.provider = {} AND COALESCE(p.pay_method, '') = {}",
+                "a.provider = {} AND a.method = {}",
                 sql.text(p),
                 sql.text(m)
             )
@@ -276,14 +276,16 @@ async fn invoices(
     };
     let limit = sql.int(PAGE);
     let skip = sql.int(page * PAGE);
+    let found_in = format!(
+        "analytics_attempts a WHERE a.created_at >= {s} AND a.created_at < {e} AND {state} AND {slice} AND {fc}"
+    );
     let text = format!(
-        "WITH x AS (SELECT p.client_id, p.created_at, p.status, p.provider, COALESCE(p.pay_method, '') AS method, \
-             p.amount_minor, p.currency, p.failure_reason FROM payments p \
-           WHERE p.created_at >= {s} AND p.created_at < {e} AND p.provider NOT IN ('balance', 'manual') \
-             AND {state} AND {slice} AND {fc}) \
-         SELECT x.client_id, {NAME}, x.created_at, x.status, x.provider, x.method, x.amount_minor, x.currency, \
-           x.failure_reason, count(*) OVER ()::bigint \
-         FROM x {NAME_JOIN} ORDER BY x.created_at DESC LIMIT {limit} OFFSET {skip}"
+        "WITH x AS (SELECT a.payment_id, a.client_id, a.created_at, a.status, a.provider, a.method FROM {found_in} \
+           ORDER BY a.created_at DESC, a.payment_id DESC LIMIT {limit} OFFSET {skip}) \
+         SELECT x.client_id, {NAME}, x.created_at, x.status, x.provider, x.method, p.amount_minor, p.currency, \
+           p.failure_reason, (SELECT count(*) FROM {found_in})::bigint \
+         FROM x JOIN payments p ON p.id = x.payment_id {NAME_JOIN} \
+         ORDER BY x.created_at DESC, x.payment_id DESC"
     );
     let mut conn = ctx.store.conn().await?;
     let found: Vec<InvoiceRow> = rows(&mut conn, &sql, &text).await?;

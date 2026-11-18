@@ -50,7 +50,7 @@ async fn downtime(c: &Ctx<'_>) -> StoreResult<Vec<(String, i64, i64)>> {
     let mut conn = c.store.conn().await?;
     let events: Vec<NodeEvent> = sqlx::query_as(
         "SELECT subject_id, payload #>> '{data,name}', event, occurred_at FROM remna_events \
-         WHERE scope = 'node' AND event IN ('node.connection_lost', 'node.connection_restored') \
+         WHERE subject_kind = 'node' AND scope = 'node' AND event IN ('node.connection_lost', 'node.connection_restored') \
            AND occurred_at >= $1 AND occurred_at < $2 ORDER BY occurred_at",
     )
     .bind(c.range.start() - chrono::Duration::days(30))

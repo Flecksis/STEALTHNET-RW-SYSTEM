@@ -109,10 +109,35 @@ pub fn fit_step(dates: Dates, wanted: Option<Step>) -> Step {
     }
 }
 
+fn month_number(day: NaiveDate) -> u32 {
+    u32::try_from(day.year()).unwrap_or(0) * 12 + day.month0()
+}
+
+fn month_end(day: NaiveDate) -> Option<NaiveDate> {
+    day.with_day(1)?
+        .checked_add_months(Months::new(1))?
+        .pred_opt()
+}
+
 pub fn previous(dates: Dates, compare: Compare) -> Option<Dates> {
     match compare {
         Compare::None => None,
         Compare::Prev => {
+            if dates.from.day() == 1 {
+                let months = month_number(dates.to) - month_number(dates.from) + 1;
+                if month_end(dates.to) == Some(dates.to) {
+                    return Some(Dates {
+                        from: dates.from.checked_sub_months(Months::new(months))?,
+                        to: dates.from.pred_opt()?,
+                    });
+                }
+                if months == 1 {
+                    return Some(Dates {
+                        from: dates.from.checked_sub_months(Months::new(1))?,
+                        to: dates.to.checked_sub_months(Months::new(1))?,
+                    });
+                }
+            }
             let len = Days::new(u64::try_from(dates.days()).unwrap_or(1));
             let to = dates.from.checked_sub_days(Days::new(1))?;
             let from = dates.from.checked_sub_days(len)?;
@@ -143,7 +168,13 @@ impl Range {
     }
 
     pub fn prev_bounds(&self) -> Option<Vec<DateTime<Utc>>> {
-        self.prev.map(|p| bounds_of(p, self.step, self.offset))
+        let (_, cap) = self.prev_window()?;
+        self.prev.map(|p| {
+            bounds_of(p, self.step, self.offset)
+                .into_iter()
+                .map(|b| b.min(cap))
+                .collect()
+        })
     }
 
     pub fn prev_labels(&self) -> Option<Vec<NaiveDate>> {
@@ -160,10 +191,13 @@ impl Range {
 
     pub fn prev_window(&self) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
         self.prev.map(|p| {
-            (
-                midnight(p.from, self.offset),
-                bound_after(p.to, self.offset),
-            )
+            let start = midnight(p.from, self.offset);
+            let end = bound_after(p.to, self.offset);
+            if !self.live() {
+                return (start, end);
+            }
+            let left = (self.end() - self.now).max(chrono::Duration::zero());
+            (start, (end - left).max(start))
         })
     }
 }
@@ -493,6 +527,22 @@ pub async fn grid(
     Ok(out)
 }
 
+pub async fn single(
+    db: &mut impl sn_store::Db,
+    sql: &Sql,
+    text: &str,
+) -> sn_store::StoreResult<Vec<Option<f64>>> {
+    use sqlx::Row;
+    let row = bind_query(sqlx::query(text), &sql.args)
+        .fetch_one(db.conn())
+        .await?;
+    let mut out = Vec::with_capacity(row.len());
+    for i in 0..row.len() {
+        out.push(row.try_get::<Option<f64>, _>(i)?);
+    }
+    Ok(out)
+}
+
 pub fn spread(n: usize, rows: &[(i32, Vec<f64>)], column: usize) -> Vec<f64> {
     let mut out = vec![0.0; n];
     for (bucket, cells) in rows {
@@ -555,7 +605,51 @@ mod tests {
     }
 
     #[test]
-    fn прошлый_период_той_же_длины_и_прошлый_год() {
+    fn текущий_месяц_сравнивается_с_прошлым_на_тот_же_момент() {
+        let offset = FixedOffset::east_opt(3 * 3600).unwrap();
+        let dates = Dates {
+            from: d(2026, 11, 1),
+            to: d(2026, 11, 18),
+        };
+        let utc = |m: u32, day: u32, h: u32, min: u32| {
+            Utc.with_ymd_and_hms(2026, m, day, h, min, 0).unwrap()
+        };
+        let live = Range {
+            offset,
+            dates,
+            step: Step::Day,
+            prev: previous(dates, Compare::Prev),
+            today: d(2026, 11, 18),
+            now: utc(11, 18, 17, 50),
+        };
+        assert_eq!(
+            live.prev,
+            Some(Dates {
+                from: d(2026, 10, 1),
+                to: d(2026, 10, 18)
+            })
+        );
+        assert_eq!(
+            live.prev_window(),
+            Some((utc(9, 30, 21, 0), utc(10, 18, 17, 50)))
+        );
+        let bounds = live.prev_bounds().unwrap();
+        assert_eq!(bounds.len(), 19);
+        assert_eq!(bounds[17], utc(10, 17, 21, 0));
+        assert_eq!(bounds[18], utc(10, 18, 17, 50));
+        let closed = Range {
+            today: d(2026, 11, 19),
+            now: utc(11, 19, 9, 0),
+            ..live
+        };
+        assert_eq!(
+            closed.prev_window(),
+            Some((utc(9, 30, 21, 0), utc(10, 18, 21, 0)))
+        );
+    }
+
+    #[test]
+    fn прошлый_период_по_календарю_той_же_длины_и_прошлый_год() {
         let october = Dates {
             from: d(2026, 10, 1),
             to: d(2026, 10, 31),
@@ -563,7 +657,51 @@ mod tests {
         assert_eq!(
             previous(october, Compare::Prev),
             Some(Dates {
-                from: d(2026, 8, 31),
+                from: d(2026, 9, 1),
+                to: d(2026, 9, 30)
+            })
+        );
+        let quarter = Dates {
+            from: d(2026, 7, 1),
+            to: d(2026, 9, 30),
+        };
+        assert_eq!(
+            previous(quarter, Compare::Prev),
+            Some(Dates {
+                from: d(2026, 4, 1),
+                to: d(2026, 6, 30)
+            })
+        );
+        let so_far = Dates {
+            from: d(2026, 3, 1),
+            to: d(2026, 3, 30),
+        };
+        assert_eq!(
+            previous(so_far, Compare::Prev),
+            Some(Dates {
+                from: d(2026, 2, 1),
+                to: d(2026, 2, 28)
+            })
+        );
+        let week = Dates {
+            from: d(2026, 11, 12),
+            to: d(2026, 11, 18),
+        };
+        assert_eq!(
+            previous(week, Compare::Prev),
+            Some(Dates {
+                from: d(2026, 11, 5),
+                to: d(2026, 11, 11)
+            })
+        );
+        let across = Dates {
+            from: d(2026, 10, 1),
+            to: d(2026, 11, 18),
+        };
+        assert_eq!(
+            previous(across, Compare::Prev),
+            Some(Dates {
+                from: d(2026, 8, 13),
                 to: d(2026, 9, 30)
             })
         );

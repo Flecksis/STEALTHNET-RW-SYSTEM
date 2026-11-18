@@ -201,7 +201,7 @@ pub async fn report(
             preparing: true,
         });
     }
-    spans::refresh(&ctx.store, currency, None).await?;
+    spans::refresh_if_stale(&ctx.store, currency).await?;
     let c = Ctx {
         store: &ctx.store,
         range,
@@ -243,9 +243,12 @@ pub async fn report(
 async fn channel_since(store: &Store) -> StoreResult<Option<DateTime<Utc>>> {
     let mut conn = store.conn().await?;
     Ok(
-        sqlx::query_scalar("SELECT min(created_at) FROM orders WHERE channel IS NOT NULL")
-            .fetch_one(conn.conn())
-            .await?,
+        sqlx::query_scalar(
+            "SELECT m.installed_on FROM _sqlx_migrations m WHERE m.version = 410 AND m.success \
+             AND m.installed_on > (SELECT min(f.installed_on) FROM _sqlx_migrations f WHERE f.success) + interval '1 hour'",
+        )
+        .fetch_optional(conn.conn())
+        .await?,
     )
 }
 

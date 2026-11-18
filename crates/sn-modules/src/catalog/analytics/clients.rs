@@ -92,30 +92,46 @@ fn reg_breakdowns(c: &Ctx<'_>, now: &[GroupRow], before: Option<&Vec<GroupRow>>)
 pub struct Trials {
     pub total: f64,
     pub bought: f64,
-    pub waits: Vec<i64>,
+    pub wait: Option<f64>,
+    pub bars: [f64; 5],
 }
+
+type TrialRow = (f64, f64, Option<f64>, f64, f64, f64, f64, f64);
 
 pub async fn trials(c: &Ctx<'_>, start: DateTime<Utc>, end: DateTime<Utc>) -> StoreResult<Trials> {
     let mut sql = Sql::default();
     let s = sql.time(start);
     let e = sql.time(end);
     let f = c.filters.client(&mut sql, "o.client_id");
+    let day = 86_400;
     let text = format!(
-        "SELECT o.paid_at, (SELECT min(sp.paid_at) FROM analytics_spans sp \
-           WHERE sp.client_id = o.client_id AND sp.paid_at >= o.paid_at) \
-         FROM orders o WHERE o.kind = 'trial' AND o.status IN ('paid', 'fulfilled', 'review') \
-           AND o.paid_at >= {s} AND o.paid_at < {e} AND {f}"
+        "SELECT count(*)::float8, count(x.w)::float8, percentile_cont(0.5) WITHIN GROUP (ORDER BY x.w), \
+           count(*) FILTER (WHERE x.w < {day})::float8, \
+           count(*) FILTER (WHERE x.w >= {day} AND x.w < {d4})::float8, \
+           count(*) FILTER (WHERE x.w >= {d4} AND x.w < {d8})::float8, \
+           count(*) FILTER (WHERE x.w >= {d8} AND x.w < {d31})::float8, \
+           count(*) FILTER (WHERE x.w >= {d31})::float8 \
+         FROM (SELECT floor(extract(epoch FROM b.at - o.paid_at))::bigint AS w \
+           FROM orders o \
+           LEFT JOIN LATERAL (SELECT min(sp.paid_at) AS at FROM analytics_spans sp \
+             WHERE sp.client_id = o.client_id AND sp.paid_at >= o.paid_at) b ON true \
+           WHERE o.kind = 'trial' AND o.status IN ('paid', 'fulfilled', 'review') \
+             AND o.paid_at >= {s} AND o.paid_at < {e} AND {f}) x",
+        d4 = 4 * day,
+        d8 = 8 * day,
+        d31 = 31 * day
     );
     let mut conn = c.store.conn().await?;
-    let found: Vec<(DateTime<Utc>, Option<DateTime<Utc>>)> = rows(&mut conn, &sql, &text).await?;
-    let waits: Vec<i64> = found
-        .iter()
-        .filter_map(|(t, b)| b.map(|b| (b - *t).num_seconds()))
-        .collect();
+    let found: Vec<TrialRow> = rows(&mut conn, &sql, &text).await?;
+    let (total, bought, wait, a, b, d, g, h) = found
+        .into_iter()
+        .next()
+        .unwrap_or((0.0, 0.0, None, 0.0, 0.0, 0.0, 0.0, 0.0));
     Ok(Trials {
-        total: num(i64::try_from(found.len()).unwrap_or(0)),
-        bought: num(i64::try_from(waits.len()).unwrap_or(0)),
-        waits,
+        total,
+        bought,
+        wait,
+        bars: [a, b, d, g, h],
     })
 }
 
@@ -133,20 +149,13 @@ pub fn median(values: &[i64]) -> Option<f64> {
     })
 }
 
-fn wait_bars(waits: &[i64]) -> Vec<Bar> {
-    let day = 86_400;
-    let edges: [(&str, i64, i64); 5] = [
-        ("В тот же день", 0, day),
-        ("1–3 дня", day, 4 * day),
-        ("4–7 дней", 4 * day, 8 * day),
-        ("8–30 дней", 8 * day, 31 * day),
-        ("Позже", 31 * day, i64::MAX),
-    ];
-    edges
+fn wait_bars(counts: &[f64; 5]) -> Vec<Bar> {
+    ["В тот же день", "1–3 дня", "4–7 дней", "8–30 дней", "Позже"]
         .iter()
-        .map(|(label, lo, hi)| Bar {
+        .zip(counts)
+        .map(|(label, value)| Bar {
             label: (*label).into(),
-            value: num(waits.iter().filter(|w| **w >= *lo && **w < *hi).count() as i64),
+            value: *value,
             list: None,
         })
         .collect()
@@ -198,16 +207,18 @@ async fn wallets(c: &Ctx<'_>) -> StoreResult<Wallets> {
     let fb = c.filters.client(&mut sql, "b.client_id");
     let fc = c.filters.client(&mut sql, "cl.id");
     let text = format!(
-        "SELECT 0, \
-           (SELECT COALESCE(sum(b.amount_minor), 0) FROM client_balances b WHERE b.wallet = 'main' AND b.currency = {cur} AND {fb})::float8, \
-           (SELECT count(*) FROM client_balances b WHERE b.wallet = 'main' AND b.currency = {cur} AND b.amount_minor > 0 AND {fb})::float8, \
-           (SELECT COALESCE(sum(b.amount_minor), 0) FROM client_balances b WHERE b.wallet = 'referral' AND b.currency = {cur} AND {fb})::float8, \
-           (SELECT count(*) FROM client_balances b WHERE b.wallet = 'referral' AND b.currency = {cur} AND b.amount_minor > 0 AND {fb})::float8, \
-           (SELECT count(*) FROM clients cl WHERE cl.status = 'blocked' AND cl.deleted_at IS NULL AND {fc})::float8, \
-           (SELECT count(*) FROM clients cl WHERE cl.blocked_at >= {s} AND cl.blocked_at < {e} AND {fc})::float8, \
-           (SELECT count(*) FROM clients cl WHERE cl.bot_unreachable AND cl.deleted_at IS NULL AND {fc})::float8, \
-           (SELECT count(*) FROM clients cl WHERE cl.locale = 'en' AND cl.deleted_at IS NULL AND {fc})::float8, \
-           (SELECT count(*) FROM clients cl WHERE cl.locale = 'ru' AND cl.deleted_at IS NULL AND {fc})::float8"
+        "SELECT 0, w.*, k.* FROM \
+           (SELECT COALESCE(sum(b.amount_minor) FILTER (WHERE b.wallet = 'main'), 0)::float8, \
+              count(*) FILTER (WHERE b.wallet = 'main' AND b.amount_minor > 0)::float8, \
+              COALESCE(sum(b.amount_minor) FILTER (WHERE b.wallet = 'referral'), 0)::float8, \
+              count(*) FILTER (WHERE b.wallet = 'referral' AND b.amount_minor > 0)::float8 \
+            FROM client_balances b WHERE b.currency = {cur} AND {fb}) w, \
+           (SELECT count(*) FILTER (WHERE cl.status = 'blocked' AND cl.deleted_at IS NULL)::float8, \
+              count(*) FILTER (WHERE cl.blocked_at >= {s} AND cl.blocked_at < {e})::float8, \
+              count(*) FILTER (WHERE cl.bot_unreachable AND cl.deleted_at IS NULL)::float8, \
+              count(*) FILTER (WHERE cl.locale = 'en' AND cl.deleted_at IS NULL)::float8, \
+              count(*) FILTER (WHERE cl.locale = 'ru' AND cl.deleted_at IS NULL)::float8 \
+            FROM clients cl WHERE {fc}) k"
     );
     let mut conn = c.store.conn().await?;
     let r = grid(&mut conn, &sql, &text, 9).await?;
@@ -333,22 +344,17 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
     .note(format!("{} из {}", trial.bought as i64, trial.total as i64))
     .sub()
     .detail(Detail::Bars {
-        bars: wait_bars(&trial.waits),
+        bars: wait_bars(&trial.bars),
         note: Some("Сколько прошло от пробного периода до первой покупки".into()),
     });
-    let wait = Metric::new(
-        "trial_wait",
-        "Время до покупки",
-        Unit::Seconds,
-        median(&trial.waits),
-    )
-    .prev(trial_before.as_ref().and_then(|t| median(&t.waits)))
-    .note("медиана")
-    .sub()
-    .detail(Detail::Bars {
-        bars: wait_bars(&trial.waits),
-        note: Some("Сколько прошло от пробного периода до первой покупки".into()),
-    });
+    let wait = Metric::new("trial_wait", "Время до покупки", Unit::Seconds, trial.wait)
+        .prev(trial_before.as_ref().and_then(|t| t.wait))
+        .note("медиана")
+        .sub()
+        .detail(Detail::Bars {
+            bars: wait_bars(&trial.bars),
+            note: Some("Сколько прошло от пробного периода до первой покупки".into()),
+        });
     let mut by_kind: Vec<(String, f64)> = Vec::new();
     let mut by_tariff: Vec<(Option<i64>, f64, f64)> = Vec::new();
     let mut per_client: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
