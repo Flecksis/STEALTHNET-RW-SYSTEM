@@ -10,6 +10,10 @@ pub trait RemnawaveApi: Send + Sync {
     async fn configuration(&self) -> RemnaResult<SystemConfiguration>;
     async fn stats(&self) -> RemnaResult<SystemStats>;
 
+    async fn auth_status(&self) -> RemnaResult<()> {
+        Err(RemnaError::Unsupported("auth.status"))
+    }
+
     async fn get_user(&self, id: RemnaUserId) -> RemnaResult<RemnaUser>;
     async fn get_user_by_username(&self, username: &str) -> RemnaResult<RemnaUser>;
     async fn get_user_by_short_uuid(&self, short_uuid: &str) -> RemnaResult<RemnaUser>;

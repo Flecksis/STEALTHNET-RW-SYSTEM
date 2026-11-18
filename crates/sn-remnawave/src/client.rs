@@ -2,7 +2,7 @@ use crate::api::RemnawaveApi;
 use crate::error::{RemnaError, RemnaResult};
 use crate::models::*;
 use async_trait::async_trait;
-use reqwest::header::{ACCEPT, COOKIE};
+use reqwest::header::{ACCEPT, COOKIE, LOCATION};
 use reqwest::{Method, RequestBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ pub struct RemnaConfig {
     pub base_url: String,
     pub token: String,
     pub cookie: Option<String>,
+    pub api_key: Option<String>,
     pub forwarded_headers: Option<bool>,
     pub timeout: Duration,
     pub connect_timeout: Duration,
@@ -26,6 +27,7 @@ impl RemnaConfig {
             base_url: base_url.into(),
             token: token.into(),
             cookie: None,
+            api_key: None,
             forwarded_headers: None,
             timeout: Duration::from_secs(12),
             connect_timeout: Duration::from_secs(5),
@@ -39,6 +41,7 @@ pub struct RemnawaveClient {
     base: String,
     token: String,
     cookie: Option<String>,
+    api_key: Option<String>,
     forwarded: bool,
 }
 
@@ -53,16 +56,147 @@ struct RestartNodeBody {
     force_restart: bool,
 }
 
+pub const API_KEY_HEADER: &str = "x-api-key";
+
+const COOKIE_ATTRIBUTES: [&str; 9] = [
+    "path",
+    "domain",
+    "expires",
+    "max-age",
+    "samesite",
+    "secure",
+    "httponly",
+    "partitioned",
+    "priority",
+];
+
 pub fn normalize_cookie(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
-    if raw.contains('=') {
-        return Some(raw.to_string());
+    if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}'))
+        && start < end
+        && let Some(pairs) = cookie_from_json(&raw[start..=end])
+    {
+        return Some(pairs);
     }
-    raw.split_once(':')
-        .map(|(name, value)| format!("{}={}", name.trim(), value.trim()))
+    let text = first_quoted(raw).unwrap_or(raw);
+    let (text, separator) = match text.split_once('?') {
+        Some((_, query)) => (query.split('#').next().unwrap_or_default(), '&'),
+        None => (text, ';'),
+    };
+    let text = text.trim();
+    let text = match text.get(..7) {
+        Some(head) if head.eq_ignore_ascii_case("cookie:") => &text[7..],
+        _ => text,
+    };
+    let mut pairs = Vec::new();
+    for part in text.split(separator) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (name, value) = match part.split_once('=') {
+            Some((left, right)) => {
+                let left = left.trim_end();
+                (
+                    left.rsplit(char::is_whitespace).next().unwrap_or(left),
+                    right,
+                )
+            }
+            None if cookie_attribute(part) => continue,
+            None if part.contains(char::is_whitespace) || part.contains("//") => return None,
+            None => part.split_once(':')?,
+        };
+        let name = name
+            .trim()
+            .trim_start_matches("~*")
+            .trim_start_matches('~')
+            .trim_matches('*');
+        let value = value.trim().trim_end_matches('*');
+        if cookie_attribute(name) {
+            continue;
+        }
+        if !cookie_name(name) || !cookie_value(value) {
+            return None;
+        }
+        pairs.push(format!("{name}={value}"));
+    }
+    (!pairs.is_empty()).then(|| pairs.join("; "))
+}
+
+pub fn normalize_api_key(raw: &str) -> Option<String> {
+    let mut text = raw.trim().trim_end_matches(',').trim();
+    if let Some((name, rest)) = text.split_once(':')
+        && name
+            .trim()
+            .trim_matches('"')
+            .eq_ignore_ascii_case(API_KEY_HEADER)
+    {
+        text = rest.trim();
+    }
+    let text = text.trim_matches('"').trim();
+    let valid = !text.is_empty()
+        && text.len() <= 4096
+        && text.bytes().all(|b| b.is_ascii_graphic() || b == b' ');
+    valid.then(|| text.to_string())
+}
+
+fn cookie_from_json(raw: &str) -> Option<String> {
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(raw).ok()?;
+    let mut pairs = Vec::new();
+    for (name, value) in &map {
+        let value = value.as_str()?.trim();
+        if !cookie_name(name) || !cookie_value(value) {
+            return None;
+        }
+        pairs.push(format!("{name}={value}"));
+    }
+    (!pairs.is_empty()).then(|| pairs.join("; "))
+}
+
+fn first_quoted(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once('"')?;
+    let (inside, _) = rest.split_once('"')?;
+    Some(inside)
+}
+
+fn cookie_attribute(name: &str) -> bool {
+    COOKIE_ATTRIBUTES
+        .iter()
+        .any(|attribute| name.eq_ignore_ascii_case(attribute))
+}
+
+fn cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+}
+
+fn cookie_value(value: &str) -> bool {
+    let bare = value
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(value);
+    !bare.is_empty()
+        && bare
+            .bytes()
+            .all(|b| matches!(b, 0x21 | 0x23..=0x2B | 0x2D..=0x3A | 0x3C..=0x5B | 0x5D..=0x7E))
+}
+
+fn guard_value(
+    raw: Option<&str>,
+    parse: fn(&str) -> Option<String>,
+    problem: &str,
+) -> RemnaResult<Option<String>> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(raw) => parse(raw)
+            .map(Some)
+            .ok_or_else(|| RemnaError::NotConfigured(problem.into())),
+    }
 }
 
 fn segment(value: &str) -> String {
@@ -88,6 +222,56 @@ fn transport(err: reqwest::Error) -> RemnaError {
     }
 }
 
+fn unanswered(err: reqwest::Error) -> RemnaError {
+    if !err.is_connect() && !err.is_timeout() && closed_without_answer(&err) {
+        RemnaError::Dropped
+    } else {
+        transport(err)
+    }
+}
+
+fn closed_without_answer(err: &reqwest::Error) -> bool {
+    use std::io::ErrorKind;
+    let mut source = std::error::Error::source(err);
+    while let Some(inner) = source {
+        if let Some(io) = inner.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                ErrorKind::UnexpectedEof
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+            )
+        {
+            return true;
+        }
+        if inner
+            .to_string()
+            .starts_with("connection closed before message completed")
+        {
+            return true;
+        }
+        source = inner.source();
+    }
+    false
+}
+
+fn redirect_location(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|location| response.url().join(location.trim()).ok())
+        .map(|mut target| {
+            target.set_query(None);
+            target.set_fragment(None);
+            let _ = target.set_password(None);
+            let _ = target.set_username("");
+            target.to_string()
+        })
+        .unwrap_or_default()
+}
+
 impl RemnawaveClient {
     pub fn new(config: RemnaConfig) -> RemnaResult<Self> {
         let base = config.base_url.trim().trim_end_matches('/').to_string();
@@ -99,6 +283,16 @@ impl RemnawaveClient {
         if config.token.trim().is_empty() {
             return Err(RemnaError::NotConfigured("не задан API-токен".into()));
         }
+        let cookie = guard_value(
+            config.cookie.as_deref(),
+            normalize_cookie,
+            "кука защиты панели записана неверно",
+        )?;
+        let api_key = guard_value(
+            config.api_key.as_deref(),
+            normalize_api_key,
+            "ключ защиты панели записан неверно",
+        )?;
         let http = reqwest::Client::builder()
             .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)
@@ -113,7 +307,8 @@ impl RemnawaveClient {
             http,
             base,
             token: config.token.trim().to_string(),
-            cookie: config.cookie.as_deref().and_then(normalize_cookie),
+            cookie,
+            api_key,
             forwarded,
         })
     }
@@ -131,6 +326,9 @@ impl RemnawaveClient {
         if let Some(cookie) = &self.cookie {
             builder = builder.header(COOKIE, cookie);
         }
+        if let Some(key) = &self.api_key {
+            builder = builder.header(API_KEY_HEADER, key);
+        }
         if self.forwarded {
             builder = builder
                 .header("x-forwarded-for", "127.0.0.1")
@@ -140,8 +338,11 @@ impl RemnawaveClient {
     }
 
     async fn send(&self, builder: RequestBuilder) -> RemnaResult<String> {
-        let response = builder.send().await.map_err(transport)?;
+        let response = builder.send().await.map_err(unanswered)?;
         let status = response.status();
+        if status.is_redirection() {
+            return Err(RemnaError::Redirected(redirect_location(&response)));
+        }
         let body = response.text().await.map_err(transport)?;
         if status.is_success() {
             Ok(body)
@@ -246,6 +447,12 @@ impl RemnawaveApi for RemnawaveClient {
 
     async fn stats(&self) -> RemnaResult<SystemStats> {
         self.get("/api/system/stats").await
+    }
+
+    async fn auth_status(&self) -> RemnaResult<()> {
+        self.send(self.request(Method::GET, "/api/auth/status"))
+            .await
+            .map(|_| ())
     }
 
     async fn get_user(&self, id: RemnaUserId) -> RemnaResult<RemnaUser> {
@@ -725,6 +932,286 @@ mod tests {
             Some("name=value")
         );
         assert_eq!(normalize_cookie("  "), None);
+    }
+
+    #[test]
+    fn кука_из_ссылки_входа_строки_nginx_и_других_форм() {
+        let forms = [
+            "zIdejKtN=MWbLrRzx",
+            "zIdejKtN:MWbLrRzx",
+            " zIdejKtN = MWbLrRzx ",
+            "https://panel.example.com/auth/login?zIdejKtN=MWbLrRzx",
+            "panel.example.com/auth/login?zIdejKtN=MWbLrRzx#top",
+            r#""~*zIdejKtN=MWbLrRzx" 1;"#,
+            "map $http_cookie $auth_cookie {\n    default 0;\n    \"~*zIdejKtN=MWbLrRzx\" 1;\n}",
+            r#"{"zIdejKtN":"MWbLrRzx"}"#,
+            r#"COOKIES={"zIdejKtN":"MWbLrRzx"}"#,
+            "Cookie: zIdejKtN=MWbLrRzx",
+            r#"curl -b "zIdejKtN=MWbLrRzx" -H "Authorization: Bearer t" https://panel.example.com/api/nodes"#,
+            "not header Cookie *zIdejKtN=MWbLrRzx*",
+            "query zIdejKtN=MWbLrRzx",
+            r#"header +Set-Cookie "zIdejKtN=MWbLrRzx; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000""#,
+        ];
+        for form in forms {
+            assert_eq!(
+                normalize_cookie(form).as_deref(),
+                Some("zIdejKtN=MWbLrRzx"),
+                "{form}"
+            );
+        }
+        assert_eq!(normalize_cookie("a=b; c=d").as_deref(), Some("a=b; c=d"));
+    }
+
+    #[test]
+    fn мусор_вместо_куки_не_принимается() {
+        let garbage = [
+            "просто текст",
+            "https://panel.example.com/auth/login",
+            "name=",
+            "=value",
+            "name=val ue",
+            "name=знач",
+            "X-Api-Key: Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+            r#"{"name": 1}"#,
+            "map $http_cookie $auth_cookie { default 0; }",
+        ];
+        for raw in garbage {
+            assert_eq!(normalize_cookie(raw), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn ключ_защиты_берётся_как_есть() {
+        assert_eq!(
+            normalize_api_key(" Basic dXNlcm5hbWU6cGFzc3dvcmQ= ").as_deref(),
+            Some("Basic dXNlcm5hbWU6cGFzc3dvcmQ=")
+        );
+        assert_eq!(
+            normalize_api_key("X-Api-Key: portal-key-123").as_deref(),
+            Some("portal-key-123")
+        );
+        assert_eq!(
+            normalize_api_key(r#""X-Api-Key": "Basic dXNlcm5hbWU6cGFzc3dvcmQ=","#).as_deref(),
+            Some("Basic dXNlcm5hbWU6cGFzc3dvcmQ=")
+        );
+        assert_eq!(normalize_api_key("   "), None);
+        assert_eq!(normalize_api_key("ключ"), None);
+        assert_eq!(normalize_api_key("a\nb"), None);
+    }
+
+    #[test]
+    fn неверная_кука_или_ключ_не_дают_собрать_клиент() {
+        let mut config = RemnaConfig::new("https://panel.example.com", "t");
+        config.cookie = Some("просто текст".into());
+        assert_eq!(
+            RemnawaveClient::new(config).unwrap_err(),
+            RemnaError::NotConfigured("кука защиты панели записана неверно".into())
+        );
+        let mut config = RemnaConfig::new("https://panel.example.com", "t");
+        config.api_key = Some("ключ\n".into());
+        assert!(RemnawaveClient::new(config).is_err());
+        let mut config = RemnaConfig::new("https://panel.example.com", "t");
+        config.cookie = Some("  ".into());
+        config.api_key = Some(String::new());
+        assert!(RemnawaveClient::new(config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn кука_и_ключ_защиты_уходят_вместе_с_токеном() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/system/metadata"))
+            .and(header("authorization", "Bearer token-123"))
+            .and(header("cookie", "zIdejKtN=MWbLrRzx"))
+            .and(header("x-api-key", "Basic dXNlcm5hbWU6cGFzc3dvcmQ="))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"response": {"version": "3.4.11"}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = RemnaConfig::new(server.uri(), "token-123");
+        config.cookie = Some("https://panel.example.com/auth/login?zIdejKtN=MWbLrRzx".into());
+        config.api_key = Some("Basic dXNlcm5hbWU6cGFzc3dvcmQ=".into());
+        let metadata = RemnawaveClient::new(config)
+            .unwrap()
+            .metadata()
+            .await
+            .unwrap();
+        assert_eq!(metadata.version, "3.4.11");
+    }
+
+    #[tokio::test]
+    async fn ключ_портала_уходит_как_есть_без_куки() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/auth/status"))
+            .and(header("authorization", "Bearer token-123"))
+            .and(header("x-api-key", "portal-key-123"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"response": {}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut config = RemnaConfig::new(server.uri(), "token-123");
+        config.api_key = Some("portal-key-123".into());
+        let client = RemnawaveClient::new(config).unwrap();
+        client.auth_status().await.unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests[0].headers.get("cookie").is_none());
+    }
+
+    async fn closing_server() -> String {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut seen = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(read) = socket.read(&mut chunk).await {
+                        if read == 0 {
+                            break;
+                        }
+                        seen.extend_from_slice(&chunk[..read]);
+                        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn соединение_закрытое_без_ответа_распознаётся() {
+        let client = RemnawaveClient::new(RemnaConfig::new(closing_server().await, "t")).unwrap();
+        let err = client.metadata().await.unwrap_err();
+        assert_eq!(err, RemnaError::Dropped);
+        assert!(err.outcome_unknown());
+    }
+
+    const TEST_CA: &str = include_str!("../../sn-payments/src/providers/overpay/testdata/ca.pem");
+    const TEST_CERT: &str =
+        include_str!("../../sn-payments/src/providers/overpay/testdata/server.crt");
+    const TEST_KEY: &str =
+        include_str!("../../sn-payments/src/providers/overpay/testdata/server.key");
+
+    async fn closing_tls_server(close_notify: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::rustls;
+        use tokio_rustls::rustls::pki_types::pem::PemObject;
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from_pem_slice(TEST_CERT.as_bytes()).unwrap()],
+                PrivateKeyDer::from_pem_slice(TEST_KEY.as_bytes()).unwrap(),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let mut seen = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(read) = tls.read(&mut chunk).await {
+                        if read == 0 {
+                            break;
+                        }
+                        seen.extend_from_slice(&chunk[..read]);
+                        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    if close_notify {
+                        let _ = tls.shutdown().await;
+                    }
+                });
+            }
+        });
+        format!("https://127.0.0.1:{port}")
+    }
+
+    #[tokio::test]
+    async fn обрыв_по_https_без_ответа_тоже_распознаётся() {
+        let ca = reqwest::Certificate::from_pem(TEST_CA.as_bytes()).unwrap();
+        let http = reqwest::Client::builder()
+            .add_root_certificate(ca)
+            .build()
+            .unwrap();
+        for close_notify in [false, true] {
+            let url = closing_tls_server(close_notify).await;
+            let err = http
+                .get(format!("{url}/api/system/metadata"))
+                .send()
+                .await
+                .unwrap_err();
+            assert_eq!(
+                unanswered(err),
+                RemnaError::Dropped,
+                "close_notify: {close_notify}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn отказ_в_соединении_не_путается_с_защитой() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client =
+            RemnawaveClient::new(RemnaConfig::new(format!("http://{address}"), "t")).unwrap();
+        let err = client.metadata().await.unwrap_err();
+        assert!(matches!(err, RemnaError::Unavailable(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn редирект_на_страницу_входа_не_выполняется() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/system/metadata"))
+            .respond_with(ResponseTemplate::new(302).insert_header(
+                "location",
+                "https://auth.example.com/login?redirect_uri=https%3A%2F%2Fpanel.example.com%2Fapi",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/system/configuration"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "/r?redirect_url=%2Fapi"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/r"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        assert_eq!(
+            api.metadata().await.unwrap_err(),
+            RemnaError::Redirected("https://auth.example.com/login".into())
+        );
+        assert_eq!(
+            api.configuration().await.unwrap_err(),
+            RemnaError::Redirected(format!("{}/r", server.uri()))
+        );
     }
 
     #[test]

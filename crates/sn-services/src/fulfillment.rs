@@ -354,7 +354,7 @@ fn remna_halt(context: &str, err: RemnaError) -> Halt {
     if err.is_retryable()
         || matches!(
             err,
-            RemnaError::Unauthorized(_) | RemnaError::NotConfigured(_)
+            RemnaError::Unauthorized(_) | RemnaError::NotConfigured(_) | RemnaError::Redirected(_)
         )
     {
         Halt::Retry(reason)

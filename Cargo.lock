@@ -2323,6 +2323,7 @@ dependencies = [
  "sn-domain",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "uuid",
  "wiremock",

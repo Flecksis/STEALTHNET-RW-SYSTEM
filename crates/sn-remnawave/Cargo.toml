@@ -25,6 +25,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tokio-rustls.workspace = true
 wiremock.workspace = true
 
 [lints]

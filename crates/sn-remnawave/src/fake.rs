@@ -443,6 +443,10 @@ impl RemnawaveApi for FakeRemnawave {
         })
     }
 
+    async fn auth_status(&self) -> RemnaResult<()> {
+        self.run("auth_status", Value::Null, |_| Ok(()))
+    }
+
     async fn configuration(&self) -> RemnaResult<SystemConfiguration> {
         self.run("configuration", Value::Null, |_| {
             let mut config = SystemConfiguration::default();

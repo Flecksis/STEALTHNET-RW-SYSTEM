@@ -32,7 +32,17 @@ pub struct RemnaConnection {
     pub url: String,
     pub token: String,
     pub cookie: Option<String>,
+    pub api_key: Option<String>,
     pub webhook_secret: Option<String>,
+}
+
+impl RemnaConnection {
+    pub fn client_config(&self) -> RemnaConfig {
+        let mut config = RemnaConfig::new(&self.url, &self.token);
+        config.cookie = self.cookie.clone();
+        config.api_key = self.api_key.clone();
+        config
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -266,9 +276,7 @@ impl Services {
             if remna.url.is_empty() || remna.token.is_empty() {
                 None
             } else {
-                let mut config = RemnaConfig::new(&remna.url, &remna.token);
-                config.cookie = remna.cookie.clone();
-                match RemnawaveClient::new(config) {
+                match RemnawaveClient::new(remna.client_config()) {
                     Ok(client) => Some(Arc::new(GuardedRemnawave::new(client))),
                     Err(err) => {
                         tracing::warn!(error = %err, "подключение к Remnawave не настроено");

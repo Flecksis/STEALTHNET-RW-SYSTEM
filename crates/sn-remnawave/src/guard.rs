@@ -67,7 +67,9 @@ fn verdict<T>(result: &RemnaResult<T>) -> Verdict {
             | RemnaError::Unauthorized(_)
             | RemnaError::RateLimited
             | RemnaError::Timeout
-            | RemnaError::Unavailable(_),
+            | RemnaError::Unavailable(_)
+            | RemnaError::Dropped
+            | RemnaError::Redirected(_),
         ) => Verdict::Failure,
         Err(RemnaError::NotFound { .. } | RemnaError::BadRequest { .. }) => Verdict::Success,
         Err(RemnaError::Decode(_) | RemnaError::NotConfigured(_) | RemnaError::Unsupported(_)) => {
@@ -179,7 +181,10 @@ impl<T: RemnawaveApi> GuardedRemnawave<T> {
     {
         self.admit()?;
         let mut result = call().await;
-        if matches!(result, Err(RemnaError::Unavailable(_))) {
+        if matches!(
+            result,
+            Err(RemnaError::Unavailable(_) | RemnaError::Dropped)
+        ) {
             result = call().await;
         }
         self.settle(verdict(&result));
@@ -195,6 +200,10 @@ impl<T: RemnawaveApi> RemnawaveApi for GuardedRemnawave<T> {
 
     async fn configuration(&self) -> RemnaResult<SystemConfiguration> {
         self.read(|| self.inner.configuration()).await
+    }
+
+    async fn auth_status(&self) -> RemnaResult<()> {
+        self.read(|| self.inner.auth_status()).await
     }
 
     async fn stats(&self) -> RemnaResult<SystemStats> {
@@ -753,6 +762,7 @@ mod tests {
         };
         let checks = vec![
             ("metadata", unsupported(g.metadata().await)),
+            ("auth_status", unsupported(g.auth_status().await)),
             ("configuration", unsupported(g.configuration().await)),
             ("stats", unsupported(g.stats().await)),
             ("get_user", unsupported(g.get_user(id).await)),
@@ -1084,7 +1094,7 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert!(missing.is_empty(), "не проброшены: {missing:?}");
-        assert_eq!(checks.len(), 80);
+        assert_eq!(checks.len(), 81);
         let created = g
             .create_user(&CreateUserRequest {
                 username: "sn_new".into(),

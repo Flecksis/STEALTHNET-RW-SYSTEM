@@ -1,6 +1,7 @@
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::{EnvFallbacks, RemnaConnection, Services};
+use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -25,9 +26,10 @@ use sn_payments::{
     CheckContext, CheckRecord, CheckStatus, ConnectionCheck, InboxTrace, PaymentProvider,
     ProviderConfig, ProviderKind, ProviderRegistry, ProviderState, ProviderView, RegistrySnapshot,
 };
+use sn_remnawave::client::{normalize_api_key, normalize_cookie};
 use sn_remnawave::{
-    CustomRemarks, HwidSettings, RemnaConfig, RemnawaveApi, RemnawaveClient, SubscriptionSettings,
-    UpdateSubscriptionSettingsRequest,
+    CustomRemarks, HwidSettings, RemnaError, RemnaResult, RemnawaveApi, RemnawaveClient,
+    SubscriptionSettings, UpdateSubscriptionSettingsRequest,
 };
 use sn_store::{Db, ModuleStateRow, SecretBox};
 use std::collections::HashMap;
@@ -217,6 +219,7 @@ pub async fn remna_connection(
     env: &EnvFallbacks,
 ) -> ServiceResult<RemnaConnection> {
     let fallback = env.remna.clone().unwrap_or_default();
+    let guard = stored_guard(db, secrets, &fallback).await?;
     let url = db
         .settings()
         .get_as::<String>(keys::REMNA_URL)
@@ -226,7 +229,6 @@ pub async fn remna_connection(
     let token = read_secret(db, secrets, secret_keys::REMNA_TOKEN)
         .await?
         .unwrap_or(fallback.token);
-    let cookie = secret_or(db, secrets, secret_keys::REMNA_COOKIE, fallback.cookie).await?;
     let webhook_secret = secret_or(
         db,
         secrets,
@@ -237,9 +239,281 @@ pub async fn remna_connection(
     Ok(RemnaConnection {
         url,
         token,
-        cookie,
+        cookie: guard.cookie,
+        api_key: guard.api_key,
         webhook_secret,
     })
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelGuard {
+    #[default]
+    #[serde(rename = "none")]
+    Off,
+    Cookie,
+    Tinyauth,
+    Portal,
+}
+
+impl PanelGuard {
+    pub fn of(cookie: Option<&str>, api_key: Option<&str>) -> Self {
+        match (cookie, api_key) {
+            (_, Some(key)) if basic_key(key) => PanelGuard::Tinyauth,
+            (_, Some(_)) => PanelGuard::Portal,
+            (Some(_), None) => PanelGuard::Cookie,
+            (None, None) => PanelGuard::Off,
+        }
+    }
+}
+
+fn basic_key(key: &str) -> bool {
+    key.get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("basic "))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoredGuard {
+    pub mode: PanelGuard,
+    pub cookie: Option<String>,
+    pub api_key: Option<String>,
+    pub from_env: bool,
+}
+
+pub async fn stored_guard(
+    db: &mut impl Db,
+    secrets: Option<&SecretBox>,
+    env: &RemnaConnection,
+) -> ServiceResult<StoredGuard> {
+    let chosen = db
+        .settings()
+        .get_as::<PanelGuard>(keys::REMNA_GUARD)
+        .await?;
+    let saved_cookie = read_secret(db, secrets, secret_keys::REMNA_COOKIE).await?;
+    let saved_key = read_secret(db, secrets, secret_keys::REMNA_API_KEY).await?;
+    let cookie_env = saved_cookie.is_none() && env.cookie.is_some();
+    let key_env = saved_key.is_none() && env.api_key.is_some();
+    let cookie = saved_cookie.or_else(|| env.cookie.clone());
+    let api_key = saved_key.or_else(|| env.api_key.clone());
+    let (cookie, api_key) = match chosen {
+        None => (cookie, api_key),
+        Some(PanelGuard::Off) => (None, None),
+        Some(PanelGuard::Cookie) => (cookie, None),
+        Some(PanelGuard::Tinyauth | PanelGuard::Portal) => (None, api_key),
+    };
+    let mode = chosen.unwrap_or_else(|| PanelGuard::of(cookie.as_deref(), api_key.as_deref()));
+    let from_env = match mode {
+        PanelGuard::Off => false,
+        PanelGuard::Cookie => cookie_env && cookie.is_some(),
+        PanelGuard::Tinyauth | PanelGuard::Portal => key_env && api_key.is_some(),
+    };
+    Ok(StoredGuard {
+        mode,
+        cookie,
+        api_key,
+        from_env,
+    })
+}
+
+const COOKIE_FIELD: &str = "Кука";
+const LOGIN_FIELD: &str = "Логин TinyAuth";
+const PASSWORD_FIELD: &str = "Пароль TinyAuth";
+const KEY_FIELD: &str = "Ключ портала";
+const GUARD_TEXT_MAX: usize = 200;
+
+pub fn tinyauth_key(login: &str, password: &str) -> ServiceResult<String> {
+    let (login, password) = (login.trim(), password.trim());
+    if login.is_empty()
+        || login.contains(':')
+        || login.chars().any(char::is_control)
+        || login.chars().count() > GUARD_TEXT_MAX
+    {
+        return Err(field_error(
+            LOGIN_FIELD,
+            "логин без двоеточия и переносов строк, до 200 символов",
+        ));
+    }
+    if password.is_empty()
+        || password.chars().any(char::is_control)
+        || password.chars().count() > GUARD_TEXT_MAX
+    {
+        return Err(field_error(
+            PASSWORD_FIELD,
+            "пароль без переносов строк, до 200 символов",
+        ));
+    }
+    let pair = format!("{login}:{password}");
+    Ok(format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(pair.as_bytes())
+    ))
+}
+
+enum GuardSecret {
+    Keep,
+    Set(String),
+    Clear,
+}
+
+impl GuardSecret {
+    fn apply(self, current: Option<String>) -> Option<String> {
+        match self {
+            GuardSecret::Keep => current,
+            GuardSecret::Set(value) => Some(value),
+            GuardSecret::Clear => None,
+        }
+    }
+}
+
+struct GuardChange {
+    cookie: GuardSecret,
+    api_key: GuardSecret,
+}
+
+fn guard_change(update: &GuardUpdate, current: &StoredGuard) -> ServiceResult<GuardChange> {
+    let same = current.mode == update.mode();
+    Ok(match update {
+        GuardUpdate::Off => GuardChange {
+            cookie: GuardSecret::Clear,
+            api_key: GuardSecret::Clear,
+        },
+        GuardUpdate::Cookie { cookie } => {
+            let cookie = match optional_text(cookie.as_deref()) {
+                Some(raw) => GuardSecret::Set(normalize_cookie(&raw).ok_or_else(|| {
+                    field_error(
+                        COOKIE_FIELD,
+                        "не похоже на куку. Вставьте ссылку входа из установщика eGames или пару ИМЯ=ЗНАЧЕНИЕ",
+                    )
+                })?),
+                None if same && current.cookie.is_some() => GuardSecret::Keep,
+                None => return Err(field_error(COOKIE_FIELD, "вставьте куку")),
+            };
+            GuardChange {
+                cookie,
+                api_key: GuardSecret::Clear,
+            }
+        }
+        GuardUpdate::Tinyauth { login, password } => {
+            let api_key = match (
+                optional_text(login.as_deref()),
+                optional_text(password.as_deref()),
+            ) {
+                (Some(login), Some(password)) => GuardSecret::Set(tinyauth_key(&login, &password)?),
+                (None, None) if same && current.api_key.is_some() => GuardSecret::Keep,
+                (None, _) => return Err(field_error(LOGIN_FIELD, "укажите логин")),
+                (Some(_), None) => return Err(field_error(PASSWORD_FIELD, "укажите пароль")),
+            };
+            GuardChange {
+                cookie: GuardSecret::Clear,
+                api_key,
+            }
+        }
+        GuardUpdate::Portal { key } => {
+            let api_key = match optional_text(key.as_deref()) {
+                Some(raw) => GuardSecret::Set(normalize_api_key(&raw).ok_or_else(|| {
+                    field_error(KEY_FIELD, "ключ без русских букв и переносов строк")
+                })?),
+                None if same && current.api_key.is_some() => GuardSecret::Keep,
+                None => return Err(field_error(KEY_FIELD, "вставьте ключ")),
+            };
+            GuardChange {
+                cookie: GuardSecret::Clear,
+                api_key,
+            }
+        }
+    })
+}
+
+async fn write_change(
+    db: &mut impl Db,
+    secrets: Option<&SecretBox>,
+    key: &str,
+    change: GuardSecret,
+    admin: AdminId,
+) -> ServiceResult<()> {
+    match change {
+        GuardSecret::Keep => Ok(()),
+        GuardSecret::Set(value) => write_secret(db, secrets, key, Some(&value), Some(admin)).await,
+        GuardSecret::Clear => write_secret(db, secrets, key, None, None).await,
+    }
+}
+
+const COOKIE_HINT_NONE: &str = "Так отвечает панель, поставленная скриптом eGames, когда в запросе нет куки. Выберите «Кука» в строке «Защита панели» и вставьте ссылку входа из установщика";
+const COOKIE_HINT_WRONG: &str = "Кука не подошла. Сверьте её со ссылкой входа из установщика eGames или со строкой map $http_cookie в /opt/remnawave/nginx.conf";
+const COOKIE_HINT_OTHER: &str = "Так отвечает защита eGames по куке, а не страница входа. Выберите «Кука» в строке «Защита панели» и вставьте ссылку входа из установщика";
+const LOGIN_HINT_NONE: &str = "Панель закрыта страницей входа. Выберите в строке «Защита панели» «Логин и пароль TinyAuth» или «Ключ портала (Caddy)»";
+const LOGIN_HINT_TINYAUTH: &str =
+    "Логин и пароль TinyAuth не подошли. Установщик eGames показывает их в конце установки";
+const LOGIN_HINT_PORTAL: &str =
+    "Ключ портала не подошёл. Создайте новый на странице входа панели, в разделе API Keys";
+const PROXY_HINT_NONE: &str = "Если панель ставили скриптом eGames со страницей входа, выберите в строке «Защита панели» «Логин и пароль TinyAuth» или «Ключ портала (Caddy)»";
+const TOKEN_HINT: &str = "Проверьте, что токен не удалён в панели Remnawave, раздел «API-токены»";
+
+fn check_problem(
+    err: &RemnaError,
+    guard: PanelGuard,
+    url: &str,
+    probe: Option<&RemnaResult<()>>,
+) -> (String, Option<String>) {
+    let login_hint = match guard {
+        PanelGuard::Tinyauth => LOGIN_HINT_TINYAUTH,
+        PanelGuard::Portal => LOGIN_HINT_PORTAL,
+        PanelGuard::Off | PanelGuard::Cookie => LOGIN_HINT_NONE,
+    };
+    match err {
+        RemnaError::Dropped => {
+            let hint = match guard {
+                PanelGuard::Off => COOKIE_HINT_NONE,
+                PanelGuard::Cookie => COOKIE_HINT_WRONG,
+                PanelGuard::Tinyauth | PanelGuard::Portal => COOKIE_HINT_OTHER,
+            };
+            (
+                "Панель закрыла соединение, не ответив".into(),
+                Some(hint.into()),
+            )
+        }
+        RemnaError::Redirected(location) if https_upgrade(url, location) => (
+            "Панель перенаправляет на https".into(),
+            Some("Укажите адрес панели, начиная с https://".into()),
+        ),
+        RemnaError::Redirected(location) => {
+            let error = match redirect_host(location) {
+                Some(host) => format!("Панель отправляет на страницу входа {host}"),
+                None => "Панель отправляет на страницу входа".into(),
+            };
+            (error, Some(login_hint.into()))
+        }
+        RemnaError::Unauthorized(status) => match probe {
+            Some(Err(RemnaError::Unauthorized(_))) => {
+                let hint = match guard {
+                    PanelGuard::Off | PanelGuard::Cookie => PROXY_HINT_NONE,
+                    PanelGuard::Tinyauth | PanelGuard::Portal => login_hint,
+                };
+                (
+                    format!("Защита перед панелью не пропустила запрос (HTTP {status})"),
+                    Some(hint.into()),
+                )
+            }
+            _ => (err.to_string(), Some(TOKEN_HINT.into())),
+        },
+        _ => (err.to_string(), None),
+    }
+}
+
+fn https_upgrade(url: &str, location: &str) -> bool {
+    match (reqwest::Url::parse(url), reqwest::Url::parse(location)) {
+        (Ok(from), Ok(to)) => {
+            from.scheme() == "http" && to.scheme() == "https" && from.host_str() == to.host_str()
+        }
+        _ => false,
+    }
+}
+
+fn redirect_host(location: &str) -> Option<String> {
+    reqwest::Url::parse(location)
+        .ok()?
+        .host_str()
+        .map(str::to_string)
 }
 
 pub fn clean_methods(
@@ -668,11 +942,54 @@ pub struct RemnaSettingsView {
     pub token_set: bool,
     pub token_from_env: bool,
     pub cookie_set: bool,
+    pub api_key_set: bool,
+    pub guard: PanelGuard,
+    pub guard_from_env: bool,
     pub webhook_secret_set: bool,
     pub webhook_secret_hint: Option<String>,
     pub webhook_url: Option<String>,
     pub env: Option<String>,
     pub utc_offset_minutes: i32,
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum GuardUpdate {
+    #[serde(rename = "none")]
+    Off,
+    Cookie {
+        #[serde(default)]
+        cookie: Option<String>,
+    },
+    Tinyauth {
+        #[serde(default)]
+        login: Option<String>,
+        #[serde(default)]
+        password: Option<String>,
+    },
+    Portal {
+        #[serde(default)]
+        key: Option<String>,
+    },
+}
+
+impl GuardUpdate {
+    pub const fn mode(&self) -> PanelGuard {
+        match self {
+            GuardUpdate::Off => PanelGuard::Off,
+            GuardUpdate::Cookie { .. } => PanelGuard::Cookie,
+            GuardUpdate::Tinyauth { .. } => PanelGuard::Tinyauth,
+            GuardUpdate::Portal { .. } => PanelGuard::Portal,
+        }
+    }
+}
+
+impl std::fmt::Debug for GuardUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuardUpdate")
+            .field("mode", &self.mode())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -686,6 +1003,8 @@ pub struct RemnaUpdate {
     #[serde(default)]
     pub clear_cookie: bool,
     #[serde(default)]
+    pub guard: Option<GuardUpdate>,
+    #[serde(default)]
     pub webhook_secret: Option<String>,
 }
 
@@ -697,6 +1016,8 @@ pub struct RemnaCheckRequest {
     pub token: Option<String>,
     #[serde(default)]
     pub cookie: Option<String>,
+    #[serde(default)]
+    pub guard: Option<GuardUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -709,6 +1030,7 @@ pub struct RemnaCheck {
     pub usage_records: Option<bool>,
     pub request_history: Option<bool>,
     pub error: Option<String>,
+    pub hint: Option<String>,
     pub checked_at: DateTime<Utc>,
 }
 
@@ -1655,7 +1977,7 @@ impl<'a> SettingsOps<'a> {
             .filter(|u| !u.trim().is_empty());
         let secrets = self.services.secrets();
         let token = read_secret(&mut conn, secrets, secret_keys::REMNA_TOKEN).await?;
-        let cookie = read_secret(&mut conn, secrets, secret_keys::REMNA_COOKIE).await?;
+        let guard = stored_guard(&mut conn, secrets, &env).await?;
         drop(conn);
         let webhook = self.services.remna_webhook_secret();
         let public_url = self.services.settings().public_url.clone();
@@ -1665,7 +1987,10 @@ impl<'a> SettingsOps<'a> {
             url,
             token_set: token.is_some() || !env.token.trim().is_empty(),
             token_from_env: token.is_none() && !env.token.trim().is_empty(),
-            cookie_set: cookie.is_some() || env.cookie.is_some(),
+            cookie_set: guard.cookie.is_some(),
+            api_key_set: guard.api_key.is_some(),
+            guard: guard.mode,
+            guard_from_env: guard.from_env,
             webhook_secret_set: webhook.is_some(),
             webhook_secret_hint: webhook.as_deref().map(mask_secret),
             webhook_url: public_url
@@ -1722,20 +2047,39 @@ impl<'a> SettingsOps<'a> {
             .await?;
             changed.push("token");
         }
-        if update.clear_cookie {
-            write_secret(&mut tx, secrets, secret_keys::REMNA_COOKIE, None, None).await?;
-            changed.push("cookie");
-        } else if let Some(cookie) = optional_text(update.cookie.as_deref()) {
-            let cookie = sn_remnawave::client::normalize_cookie(&cookie)
-                .ok_or_else(|| field_error("cookie", "кука в виде имя=значение"))?;
-            write_secret(
+        let guard = match (&update.guard, optional_text(update.cookie.as_deref())) {
+            (Some(guard), _) => Some(guard.clone()),
+            (None, Some(cookie)) => Some(GuardUpdate::Cookie {
+                cookie: Some(cookie),
+            }),
+            (None, None) => None,
+        };
+        if let Some(guard) = guard {
+            let env = self.services.env().remna.clone().unwrap_or_default();
+            let current = stored_guard(&mut tx, secrets, &env).await?;
+            let change = guard_change(&guard, &current)?;
+            write_change(
                 &mut tx,
                 secrets,
                 secret_keys::REMNA_COOKIE,
-                Some(&cookie),
-                Some(admin),
+                change.cookie,
+                admin,
             )
             .await?;
+            write_change(
+                &mut tx,
+                secrets,
+                secret_keys::REMNA_API_KEY,
+                change.api_key,
+                admin,
+            )
+            .await?;
+            tx.settings()
+                .set_as(keys::REMNA_GUARD, &guard.mode(), Some(admin))
+                .await?;
+            changed.push("guard");
+        } else if update.clear_cookie {
+            write_secret(&mut tx, secrets, secret_keys::REMNA_COOKIE, None, None).await?;
             changed.push("cookie");
         }
         if let Some(secret) = optional_text(update.webhook_secret.as_deref()) {
@@ -1797,32 +2141,60 @@ impl<'a> SettingsOps<'a> {
     }
 
     pub async fn check_remnawave(&self, request: &RemnaCheckRequest) -> ServiceResult<RemnaCheck> {
-        let custom = request.url.is_some() || request.token.is_some() || request.cookie.is_some();
+        let secrets = self.services.secrets();
+        let env = self.services.env().remna.clone().unwrap_or_default();
+        let mut conn = self.services.store().conn().await?;
+        let mut target = remna_connection(&mut conn, secrets, self.services.env()).await?;
+        let current = stored_guard(&mut conn, secrets, &env).await?;
+        drop(conn);
+        let custom = request.url.is_some()
+            || request.token.is_some()
+            || request.cookie.is_some()
+            || request.guard.is_some();
+        if let Some(url) = optional_text(request.url.as_deref()) {
+            target.url = remna_url(&url)?;
+        }
+        if let Some(token) = optional_text(request.token.as_deref()) {
+            target.token = token;
+        }
+        if let Some(cookie) = optional_text(request.cookie.as_deref()) {
+            target.cookie = Some(cookie);
+        }
+        if let Some(guard) = &request.guard {
+            let change = guard_change(guard, &current)?;
+            target.cookie = change.cookie.apply(current.cookie.clone());
+            target.api_key = change.api_key.apply(current.api_key.clone());
+        }
         let api: Arc<dyn RemnawaveApi> = if custom {
-            let mut conn = self.services.store().conn().await?;
-            let stored =
-                remna_connection(&mut conn, self.services.secrets(), self.services.env()).await?;
-            drop(conn);
-            let url = match optional_text(request.url.as_deref()) {
-                Some(url) => remna_url(&url)?,
-                None => stored.url,
-            };
-            let token = optional_text(request.token.as_deref()).unwrap_or(stored.token);
-            let mut config = RemnaConfig::new(url, token);
-            config.cookie = optional_text(request.cookie.as_deref()).or(stored.cookie);
-            match RemnawaveClient::new(config) {
+            match RemnawaveClient::new(target.client_config()) {
                 Ok(client) => Arc::new(client),
-                Err(err) => return Ok(self.failed_check(err.to_string())),
+                Err(err) => return Ok(self.failed_check(err.to_string(), None)),
             }
         } else {
             match self.services.remna() {
                 Ok(api) => api,
-                Err(err) => return Ok(self.failed_check(err.to_string())),
+                Err(err) => {
+                    let broken = if target.url.is_empty() || target.token.is_empty() {
+                        None
+                    } else {
+                        RemnawaveClient::new(target.client_config()).err()
+                    };
+                    let reason = broken.map_or_else(|| err.to_string(), |e| e.to_string());
+                    return Ok(self.failed_check(reason, None));
+                }
             }
         };
+        let guard = PanelGuard::of(target.cookie.as_deref(), target.api_key.as_deref());
         let metadata = match api.metadata().await {
             Ok(metadata) => metadata,
-            Err(err) => return Ok(self.failed_check(err.to_string())),
+            Err(err) => {
+                let probe = match err {
+                    RemnaError::Unauthorized(_) => Some(api.auth_status().await),
+                    _ => None,
+                };
+                let (error, hint) = check_problem(&err, guard, &target.url, probe.as_ref());
+                return Ok(self.failed_check(error, hint));
+            }
         };
         let configuration = api.configuration().await;
         let supported = metadata.version == sn_remnawave::SUPPORTED_VERSION;
@@ -1836,6 +2208,7 @@ impl<'a> SettingsOps<'a> {
                 usage_records: Some(!configuration.service.disable_user_usage_records),
                 request_history: Some(!configuration.service.disable_srh_records),
                 error: None,
+                hint: None,
                 checked_at: self.services.now(),
             },
             Err(err) => RemnaCheck {
@@ -1843,12 +2216,12 @@ impl<'a> SettingsOps<'a> {
                 supported,
                 version: Some(metadata.version),
                 error: Some(err.to_string()),
-                ..self.failed_check(String::new())
+                ..self.failed_check(String::new(), None)
             },
         })
     }
 
-    fn failed_check(&self, error: String) -> RemnaCheck {
+    fn failed_check(&self, error: String, hint: Option<String>) -> RemnaCheck {
         RemnaCheck {
             ok: false,
             version: None,
@@ -1858,6 +2231,7 @@ impl<'a> SettingsOps<'a> {
             usage_records: None,
             request_history: None,
             error: Some(error),
+            hint,
             checked_at: self.services.now(),
         }
     }

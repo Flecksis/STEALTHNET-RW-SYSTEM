@@ -41,6 +41,7 @@ mod digest;
 mod limits;
 mod mail;
 mod nodes;
+mod remna_guard;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 

@@ -26,6 +26,10 @@ pub enum RemnaError {
     Timeout,
     #[error("Remnawave недоступна: {0}")]
     Unavailable(String),
+    #[error("панель закрыла соединение, не ответив")]
+    Dropped,
+    #[error("панель отвечает перенаправлением{}", redirect_target(.0))]
+    Redirected(String),
     #[error("не удалось разобрать ответ Remnawave: {0}")]
     Decode(String),
     #[error("метод Remnawave пока не поддержан: {0}")]
@@ -40,7 +44,10 @@ impl RemnaError {
     pub const fn outcome_unknown(&self) -> bool {
         matches!(
             self,
-            RemnaError::Timeout | RemnaError::Server { .. } | RemnaError::Unavailable(_)
+            RemnaError::Timeout
+                | RemnaError::Server { .. }
+                | RemnaError::Unavailable(_)
+                | RemnaError::Dropped
         )
     }
 
@@ -50,6 +57,7 @@ impl RemnaError {
             RemnaError::Timeout
                 | RemnaError::Server { .. }
                 | RemnaError::Unavailable(_)
+                | RemnaError::Dropped
                 | RemnaError::RateLimited
         )
     }
@@ -79,6 +87,14 @@ impl RemnaError {
     }
 }
 
+fn redirect_target(location: &str) -> String {
+    if location.is_empty() {
+        String::new()
+    } else {
+        format!(" на {location}")
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorBody {
@@ -105,6 +121,23 @@ mod tests {
         assert_eq!(
             RemnaError::from_status(401, ""),
             RemnaError::Unauthorized(401)
+        );
+    }
+
+    #[test]
+    fn обрыв_без_ответа_это_неизвестный_исход_а_редирект_нет() {
+        assert!(RemnaError::Dropped.outcome_unknown());
+        assert!(RemnaError::Dropped.is_retryable());
+        let redirect = RemnaError::Redirected("https://auth.example.com/login".into());
+        assert!(!redirect.outcome_unknown());
+        assert!(!redirect.is_retryable());
+        assert_eq!(
+            redirect.to_string(),
+            "панель отвечает перенаправлением на https://auth.example.com/login"
+        );
+        assert_eq!(
+            RemnaError::Redirected(String::new()).to_string(),
+            "панель отвечает перенаправлением"
         );
     }
 }

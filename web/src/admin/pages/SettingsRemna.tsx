@@ -5,11 +5,17 @@ import '../form.css';
 import { Switch } from '../ui';
 import { SettingsLayout } from './SettingsLayout';
 
+type Guard = 'none' | 'cookie' | 'tinyauth' | 'portal';
+
 type RemnaView = {
   url: string | null;
   url_from_env: boolean;
   token_set: boolean;
   token_from_env: boolean;
+  cookie_set: boolean;
+  api_key_set: boolean;
+  guard: Guard;
+  guard_from_env: boolean;
   webhook_secret_set: boolean;
   env: string | null;
 };
@@ -23,6 +29,7 @@ type Check = {
   usage_records: boolean | null;
   request_history: boolean | null;
   error: string | null;
+  hint: string | null;
   checked_at: string;
 };
 
@@ -55,9 +62,28 @@ const REMARKS: Array<[RemKey, string]> = [
   ['emptyHosts', 'Нет серверов'],
 ];
 
+const GUARDS: Array<[Guard, string]> = [
+  ['none', 'Нет'],
+  ['cookie', 'Кука'],
+  ['tinyauth', 'Логин и пароль TinyAuth'],
+  ['portal', 'Ключ портала (Caddy)'],
+];
+
+const GUARD_NOTE: Record<Guard, string> = {
+  none: 'Нужна, если панель ставили скриптом eGames, а STEALTHNET стоит на другом сервере. На том же сервере укажите адрес http://remnawave:3000: запросы пойдут к панели напрямую, без защиты',
+  cookie: 'Вариант eGames по умолчанию: без куки панель закрывает соединение, ничего не ответив',
+  tinyauth: 'Страница входа TinyAuth, вариант eGames для nginx',
+  portal: 'Страница входа с MFA, вариант eGames для Caddy',
+};
+
 type Work = {
   addr: string;
   token: string | null;
+  guard: Guard;
+  cookie: string;
+  login: string;
+  password: string;
+  key: string;
   devOn: boolean;
   devLimit: string;
   devMsg: string;
@@ -84,6 +110,11 @@ function workFrom(data: Loaded): Work {
   return {
     addr: data.remna.url ?? '',
     token: null,
+    guard: data.remna.guard,
+    cookie: '',
+    login: '',
+    password: '',
+    key: '',
     devOn: hwid?.enabled ?? false,
     devLimit: String(hwid?.fallbackDeviceLimit ?? 1),
     devMsg: hwid?.maxDevicesAnnounce ?? '',
@@ -98,6 +129,58 @@ function limitBad(value: string): boolean {
   return !/^\d+$/.test(value) || +value < 1 || +value > 99;
 }
 
+function guardSet(view: RemnaView, guard: Guard): boolean {
+  return guard === 'cookie' ? view.cookie_set : guard === 'none' ? false : view.api_key_set;
+}
+
+function guardFilled(work: Work): boolean {
+  switch (work.guard) {
+    case 'cookie':
+      return !!work.cookie.trim();
+    case 'tinyauth':
+      return !!work.login.trim() && !!work.password.trim();
+    case 'portal':
+      return !!work.key.trim();
+    default:
+      return true;
+  }
+}
+
+function guardTouched(work: Work): boolean {
+  switch (work.guard) {
+    case 'cookie':
+      return !!work.cookie.trim();
+    case 'tinyauth':
+      return !!work.login.trim() || !!work.password.trim();
+    case 'portal':
+      return !!work.key.trim();
+    default:
+      return false;
+  }
+}
+
+function guardBody(work: Work): Record<string, string> {
+  switch (work.guard) {
+    case 'none':
+      return { mode: 'none' };
+    case 'cookie':
+      return { mode: 'cookie', cookie: work.cookie.trim() };
+    case 'tinyauth':
+      return { mode: 'tinyauth', login: work.login.trim(), password: work.password };
+    default:
+      return { mode: 'portal', key: work.key.trim() };
+  }
+}
+
+function keysPage(addr: string): string | null {
+  try {
+    const url = new URL(addr.trim());
+    return url.protocol === 'https:' ? `${url.origin}/r/settings/apikeys` : null;
+  } catch {
+    return null;
+  }
+}
+
 function maskEnv(env: string): string {
   return env.replace(/(WEBHOOK_SECRET_HEADER=)(.+)$/m, (_, key: string, secret: string) =>
     secret.length > 8 && !secret.includes('…') ? `${key}${secret.slice(0, 4)}…${secret.slice(-4)}` : `${key}${secret}`,
@@ -109,6 +192,8 @@ export function SettingsRemna() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [work, setWork] = useState<Work | null>(null);
   const [tokenEdit, setTokenEdit] = useState(false);
+  const [guardEdit, setGuardEdit] = useState(false);
+  const [tried, setTried] = useState(false);
   const [note, setNote] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -130,6 +215,8 @@ export function SettingsRemna() {
       setData(loaded);
       setWork(workFrom(loaded));
       setTokenEdit(false);
+      setGuardEdit(false);
+      setTried(false);
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить настройки');
@@ -166,13 +253,16 @@ export function SettingsRemna() {
   };
   const remChanged = work.remOn !== base.remOn || REMARKS.some(([key]) => work.rem[key] !== base.rem[key]);
   const devChanged = work.devOn !== base.devOn || work.devLimit !== base.devLimit || work.devMsg !== base.devMsg;
-  const linkChanged = work.addr.trim() !== base.addr.trim() || (work.token !== null && work.token.trim() !== '');
+  const guardKeep = work.guard === data.remna.guard && guardSet(data.remna, work.guard) && !guardEdit;
+  const guardChanged = work.guard !== data.remna.guard || (!guardKeep && guardTouched(work));
+  const guardBad = guardChanged && !guardKeep && !guardFilled(work);
+  const linkChanged = work.addr.trim() !== base.addr.trim() || (work.token !== null && work.token.trim() !== '') || guardChanged;
   const connectChanged = work.mode !== base.mode || (work.mode === 'remnawave' && work.look !== base.look);
   const dirty = remChanged || devChanged || linkChanged || connectChanged;
   const addrBad = noAddr;
   const remBad = work.remOn && REMARKS.some(([key]) => !work.rem[key].trim());
   const limBad = work.devOn && limitBad(work.devLimit);
-  const invalid = addrBad || remBad || limBad;
+  const invalid = addrBad || remBad || limBad || guardBad;
   const blocked = (!linkOk || subMissing) && (remChanged || devChanged) && !linkChanged;
 
   let statusText: string;
@@ -194,11 +284,18 @@ export function SettingsRemna() {
     if (noAddr) {
       return;
     }
+    if (guardBad) {
+      setTried(true);
+      return;
+    }
     setChecking(true);
     try {
-      const body: Record<string, string> = { url: work.addr.trim() };
+      const body: Record<string, unknown> = { url: work.addr.trim() };
       if (work.token && work.token.trim()) {
         body.token = work.token.trim();
+      }
+      if (guardChanged) {
+        body.guard = guardBody(work);
       }
       const result = await api<Check>('/api/admin/settings/remnawave/check', { method: 'POST', body });
       setData({ ...data, check: result });
@@ -214,6 +311,7 @@ export function SettingsRemna() {
           usage_records: null,
           request_history: null,
           error: err instanceof ApiError ? err.message : 'Проверка не прошла',
+          hint: null,
           checked_at: new Date().toISOString(),
         },
       });
@@ -223,6 +321,9 @@ export function SettingsRemna() {
   };
 
   const save = async () => {
+    if (guardBad) {
+      setTried(true);
+    }
     if (!dirty || invalid || blocked || busy) {
       return;
     }
@@ -230,9 +331,12 @@ export function SettingsRemna() {
     setSaveError(null);
     try {
       if (linkChanged) {
-        const body: Record<string, string> = { url: work.addr.trim() };
+        const body: Record<string, unknown> = { url: work.addr.trim() };
         if (work.token && work.token.trim()) {
           body.token = work.token.trim();
+        }
+        if (guardChanged) {
+          body.guard = guardBody(work);
         }
         await api('/api/admin/settings/remnawave', { method: 'PUT', body });
       }
@@ -321,10 +425,39 @@ export function SettingsRemna() {
     </div>
   );
 
+  const direct = /^http:\/\/remnawave(:\d+)?(\/|$)/i.test(work.addr.trim());
+  const guardErr =
+    tried && guardBad
+      ? work.guard === 'cookie'
+        ? 'Вставьте куку'
+        : work.guard === 'portal'
+          ? 'Вставьте ключ'
+          : !work.login.trim() && !work.password.trim()
+            ? 'Укажите логин и пароль'
+            : !work.login.trim()
+              ? 'Укажите логин'
+              : 'Укажите пароль'
+      : null;
+  const keys = keysPage(work.addr);
+  const secretNote =
+    work.guard === 'cookie'
+      ? 'Ссылка входа, которую установщик eGames показал в конце установки, или строка map $http_cookie из /opt/remnawave/nginx.conf. Подойдёт и пара ИМЯ=ЗНАЧЕНИЕ'
+      : work.guard === 'tinyauth'
+        ? 'Установщик eGames показывает их в конце установки, вместе с адресом страницы входа'
+        : keys
+          ? `Ключ создаётся на странице входа, в разделе API Keys: ${keys}`
+          : 'Ключ создаётся на странице входа панели, в разделе API Keys';
+  const secretDescribed = guardErr ? 'rw-sec-d rw-sec-e' : 'rw-sec-d';
+  const dropSecrets = () => {
+    setGuardEdit(false);
+    setTried(false);
+    edit({ cookie: '', login: '', password: '', key: '' });
+  };
+
   const saveText = blocked
     ? 'Нет связи с панелью: замените токен, чтобы сохранить'
     : invalid
-      ? addrBad || remBad || (work.devOn && !work.devLimit)
+      ? addrBad || remBad || guardBad || (work.devOn && !work.devLimit)
         ? 'Заполните пустые поля'
         : 'Исправьте лимит устройств'
       : saveError
@@ -347,6 +480,9 @@ export function SettingsRemna() {
             </span>
             {linkOk && data.check && !data.check.supported ? (
               <span className="warn-line">Система проверена с Remnawave 3.4.11, у этой панели другая версия</span>
+            ) : null}
+            {!linkOk && data.check?.hint ? (
+              <span style={{ color: 'var(--ink-2)', textWrap: 'pretty' }}>{data.check.hint}</span>
             ) : null}
             {!linkOk && !noAddr ? <span className="muted">Нет связи с панелью, часть настроек недоступна</span> : null}
           </div>
@@ -429,6 +565,143 @@ export function SettingsRemna() {
             </span>
           </div>
         </div>
+        <div className="row">
+          <label htmlFor="rw-guard" className="rl">
+            Защита панели
+          </label>
+          <div className="rc">
+            <select
+              id="rw-guard"
+              className="field"
+              value={work.guard}
+              aria-describedby="rw-guard-d"
+              style={{ maxWidth: 320 }}
+              onChange={(e) => {
+                setGuardEdit(false);
+                setTried(false);
+                edit({ guard: e.target.value as Guard });
+              }}
+            >
+              {GUARDS.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <span id="rw-guard-d" className="cap">
+              {GUARD_NOTE[work.guard]}
+            </span>
+            {direct && work.guard !== 'none' ? (
+              <span className="warn-line">Адрес http://remnawave:3000 ведёт к панели напрямую, защиту можно выключить</span>
+            ) : null}
+          </div>
+        </div>
+        {work.guard !== 'none' ? (
+          <div className="row">
+            {work.guard === 'tinyauth' ? (
+              <span id="rw-sec-l" className="rl">
+                Логин и пароль
+              </span>
+            ) : (
+              <label htmlFor="rw-sec" className="rl">
+                {work.guard === 'cookie' ? 'Кука' : 'Ключ портала'}
+              </label>
+            )}
+            <div className="rc">
+              {guardKeep ? (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    id="rw-sec"
+                    className="field mono"
+                    type="text"
+                    readOnly
+                    value="••••••••••••"
+                    aria-labelledby={work.guard === 'tinyauth' ? 'rw-sec-l' : undefined}
+                    aria-describedby="rw-sec-d"
+                    style={{ color: 'var(--ink-2)' }}
+                  />
+                  <button
+                    type="button"
+                    className="hov b2"
+                    aria-label={work.guard === 'cookie' ? 'Заменить куку' : work.guard === 'tinyauth' ? 'Заменить логин и пароль' : 'Заменить ключ портала'}
+                    onClick={() => setGuardEdit(true)}
+                  >
+                    Заменить
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {work.guard === 'tinyauth' ? (
+                    <>
+                      <input
+                        id="rw-sec"
+                        className="field"
+                        type="text"
+                        value={work.login}
+                        maxLength={200}
+                        placeholder="Логин"
+                        aria-label="Логин TinyAuth"
+                        aria-invalid={!!guardErr && !work.login.trim()}
+                        aria-describedby={secretDescribed}
+                        autoComplete="off"
+                        spellCheck={false}
+                        autoFocus={guardEdit}
+                        style={{ flex: '1 1 150px' }}
+                        onChange={(e) => edit({ login: e.target.value })}
+                      />
+                      <input
+                        id="rw-pass"
+                        className="field"
+                        type="password"
+                        value={work.password}
+                        maxLength={200}
+                        placeholder="Пароль"
+                        aria-label="Пароль TinyAuth"
+                        aria-invalid={!!guardErr && !work.password.trim()}
+                        aria-describedby={secretDescribed}
+                        autoComplete="new-password"
+                        style={{ flex: '1 1 150px' }}
+                        onChange={(e) => edit({ password: e.target.value })}
+                      />
+                    </>
+                  ) : (
+                    <input
+                      id="rw-sec"
+                      className="field mono"
+                      type="text"
+                      value={work.guard === 'cookie' ? work.cookie : work.key}
+                      maxLength={1000}
+                      placeholder={work.guard === 'cookie' ? 'Ссылка входа или ИМЯ=ЗНАЧЕНИЕ' : 'Ключ со страницы входа'}
+                      aria-invalid={!!guardErr}
+                      aria-describedby={secretDescribed}
+                      autoComplete="off"
+                      spellCheck={false}
+                      autoFocus={guardEdit}
+                      style={{ flex: '1 1 240px' }}
+                      onChange={(e) => edit(work.guard === 'cookie' ? { cookie: e.target.value } : { key: e.target.value })}
+                    />
+                  )}
+                  {guardEdit ? (
+                    <button type="button" className="hov b2" onClick={dropSecrets}>
+                      Отменить
+                    </button>
+                  ) : null}
+                </div>
+              )}
+              {guardErr ? (
+                <span id="rw-sec-e" className="err">
+                  {guardErr}
+                </span>
+              ) : null}
+              <span id="rw-sec-d" className="cap">
+                {secretNote}
+              </span>
+              {guardKeep && data.remna.guard_from_env ? (
+                <span className="cap">{work.guard === 'cookie' ? 'Кука взята из переменной REMNAWAVE_COOKIE' : 'Ключ взят из переменной REMNAWAVE_X_API_KEY'}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div className="row">
           <span className="rl" style={{ paddingTop: 0 }}>
             Домен подписки
@@ -671,6 +944,8 @@ export function SettingsRemna() {
           onClick={() => {
             setWork(base);
             setTokenEdit(false);
+            setGuardEdit(false);
+            setTried(false);
             setNote('');
             setSaveError(null);
           }}

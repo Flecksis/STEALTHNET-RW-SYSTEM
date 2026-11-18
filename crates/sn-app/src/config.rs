@@ -131,6 +131,7 @@ impl Config {
                     url: url.unwrap_or_default(),
                     token: token.unwrap_or_default(),
                     cookie: text(vars, "REMNAWAVE_COOKIE"),
+                    api_key: text(vars, "REMNAWAVE_X_API_KEY"),
                     webhook_secret: text(vars, "REMNAWAVE_WEBHOOK_SECRET"),
                 })
             }
@@ -297,6 +298,8 @@ mod tests {
             ("SN_RUN_BOT", "false"),
             ("REMNAWAVE_URL", "http://remnawave:3000"),
             ("REMNAWAVE_TOKEN", "token"),
+            ("REMNAWAVE_COOKIE", "zIdejKtN=MWbLrRzx"),
+            ("REMNAWAVE_X_API_KEY", "Basic dXNlcm5hbWU6cGFzc3dvcmQ="),
         ]))
         .unwrap();
         assert_eq!(
@@ -305,7 +308,13 @@ mod tests {
         );
         assert_eq!(config.server.trusted_proxies.len(), 2);
         assert!(!config.run_bot);
-        assert_eq!(config.env.remna.unwrap().url, "http://remnawave:3000");
+        let remna = config.env.remna.unwrap();
+        assert_eq!(remna.url, "http://remnawave:3000");
+        assert_eq!(remna.cookie.as_deref(), Some("zIdejKtN=MWbLrRzx"));
+        assert_eq!(
+            remna.api_key.as_deref(),
+            Some("Basic dXNlcm5hbWU6cGFzc3dvcmQ=")
+        );
         assert!(
             Config::from_vars(&vars(&[("DATABASE_URL", "x"), ("SN_RUN_BOT", "maybe")])).is_err()
         );

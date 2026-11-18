@@ -129,7 +129,12 @@ fn remna_down(err: &ServiceError) -> bool {
         ServiceError::RemnaNotConfigured(_) => true,
         ServiceError::Remna(err) => {
             err.outcome_unknown()
-                || matches!(err, RemnaError::Unauthorized(_) | RemnaError::RateLimited)
+                || matches!(
+                    err,
+                    RemnaError::Unauthorized(_)
+                        | RemnaError::RateLimited
+                        | RemnaError::Redirected(_)
+                )
         }
         _ => false,
     }

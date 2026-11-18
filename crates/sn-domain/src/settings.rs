@@ -598,6 +598,7 @@ pub mod keys {
     pub const SUPPORT_URL: &str = "core.support_url";
     pub const SUPPORT_MODE: &str = "core.support_mode";
     pub const REMNA_URL: &str = "remnawave.url";
+    pub const REMNA_GUARD: &str = "remnawave.guard";
     pub const REMNA_UTC_OFFSET: &str = "remnawave.utc_offset_minutes";
     pub const AUTORENEW: &str = "billing.autorenew";
     pub const TRIAL: &str = "billing.trial";
@@ -633,6 +634,7 @@ pub mod keys {
 pub mod secret_keys {
     pub const REMNA_TOKEN: &str = "remnawave.token";
     pub const REMNA_COOKIE: &str = "remnawave.cookie";
+    pub const REMNA_API_KEY: &str = "remnawave.x_api_key";
     pub const REMNA_WEBHOOK_SECRET: &str = "remnawave.webhook_secret";
     pub const BOT_TOKEN: &str = "bot.token";
 
