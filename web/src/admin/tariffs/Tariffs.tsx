@@ -1010,12 +1010,12 @@ function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads:
     const days = Number(daysRaw);
     const dev = Number(devices);
     const limit = gb.trim() ? Number(gb) : null;
-    if (!Number.isInteger(days) || days < 1 || days > 30) {
-      setError('Срок пробного периода: от 1 до 30 дней');
+    if (!Number.isInteger(days) || days < 1 || days > 90) {
+      setError('Срок пробного периода: от 1 до 90 дней');
       return;
     }
-    if (!Number.isInteger(dev) || dev < 1 || dev > 10) {
-      setError('Устройств: от 1 до 10');
+    if (!Number.isInteger(dev) || dev < 1 || dev > 100) {
+      setError('Устройств: от 1 до 100');
       return;
     }
     if (enabled && chosen.length === 0) {
@@ -1053,7 +1053,7 @@ function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads:
         </label>
         <label className="tf-field" htmlFor={`${ids}-v`}>
           <span>Устройств</span>
-          <input id={`${ids}-v`} className="field num" inputMode="numeric" value={devices} onChange={(e) => setDevices(e.target.value.replace(/\D/g, '').slice(0, 2))} style={{ width: 88 }} disabled={busy} />
+          <input id={`${ids}-v`} className="field num" inputMode="numeric" value={devices} onChange={(e) => setDevices(e.target.value.replace(/\D/g, '').slice(0, 3))} style={{ width: 88 }} disabled={busy} />
         </label>
         <label className="tf-field" htmlFor={`${ids}-g`}>
           <span>Трафик на весь срок</span>

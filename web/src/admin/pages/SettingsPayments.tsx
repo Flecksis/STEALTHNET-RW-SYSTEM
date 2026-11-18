@@ -211,6 +211,7 @@ const ACCEPTS: Record<string, string> = {
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'], pal24: ['', 'refund', 'chargeback'] };
 
 const OWN_HOOKS: Record<string, string> = {
+  heleket: 'Панель передаёт Heleket адрес для уведомлений вместе с каждым счётом, в кабинете Heleket его указывать не нужно.',
   cryptomus: 'Панель передаёт Cryptomus адрес для уведомлений вместе с каждым счётом, в кабинете Cryptomus его указывать не нужно.',
   overpay: 'Панель передаёт Overpay адрес для уведомлений вместе с каждым счётом, в кабинете Overpay его указывать не нужно.',
 };

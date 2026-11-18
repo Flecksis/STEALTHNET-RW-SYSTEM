@@ -1785,6 +1785,36 @@ async fn интерфейс_раздаётся_сервером_с_возвра�
 }
 
 #[tokio::test]
+async fn выключенный_лендинг_ведёт_с_главной_в_кабинет() {
+    let (state, dir) = web_state().await;
+    let landing = |enabled: bool| sn_store::ModuleStateRow {
+        module: "landing".into(),
+        enabled,
+        config: json!({}),
+        updated_at: Utc::now(),
+    };
+    state.services.modules().apply_rows(&[landing(false)]);
+    let (status, headers, _) = fetch(&state, Method::GET, "/?ref=ABCD1234").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(headers[header::LOCATION], "/cabinet?ref=ABCD1234");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let (status, headers, _) = fetch(&state, Method::GET, "/index.html").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(headers[header::LOCATION], "/cabinet");
+    let (status, _, body) = fetch(&state, Method::GET, "/cabinet").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("STEALTHNET"));
+    let (status, _, body) = fetch(&state, Method::GET, "/api/public/landing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("module.disabled"));
+    state.services.modules().apply_rows(&[landing(true)]);
+    let (status, _, body) = fetch(&state, Method::GET, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("STEALTHNET"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn без_каталога_интерфейса_любой_путь_отвечает_json_404() {
     let state = offline_state();
     let (status, headers, _) = fetch(&state, Method::GET, "/admin").await;

@@ -238,12 +238,12 @@ impl<'a> SubIssues<'a> {
             }
             Matched::Ambiguous(1) => (
                 "subscription_ambiguous",
-                "Подходящий пользователь Remnawave подходит и другой подписке — выберите вручную в карточке клиента".to_string(),
+                "Подходящий пользователь Remnawave подходит и другой подписке, поэтому подписка не перенесена".to_string(),
             ),
             Matched::Ambiguous(n) => (
                 "subscription_ambiguous",
                 format!(
-                    "Подходят сразу несколько пользователей Remnawave ({n}) — выберите вручную в карточке клиента"
+                    "Подходят сразу несколько пользователей Remnawave ({n}), поэтому подписка не перенесена"
                 ),
             ),
             Matched::Shared(i, other) => {
@@ -399,7 +399,7 @@ pub async fn preview(
                 skipped.push(super::model::Skip {
                     code: "subscription_ambiguous".into(),
                     count: plan.ambiguous,
-                    text: "подписок нельзя однозначно сопоставить с пользователями Remnawave. Их не привязываем: выберите вручную в карточке клиента, список в отчёте.".into(),
+                    text: "подписок нельзя однозначно сопоставить с пользователями Remnawave. Их не привязываем: клиенты переносятся без этих подписок, список в отчёте.".into(),
                 });
             }
             if plan.shared > 0 {

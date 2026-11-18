@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { Link } from 'react-router';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { count, money, NBSP } from '../lib/format';
 import { countriesIn, countryName, joinAnd } from '../lib/geo';
@@ -231,7 +231,11 @@ function LandingPage({ mode }: { mode: Mode }) {
           setBlocks(normalizeBlocks(landing.blocks));
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && err.code === 'module.disabled') {
+          window.location.replace(`/cabinet${window.location.search}`);
+          return;
+        }
         if (alive) {
           setBlocks((current) => current ?? defaultBlocks());
         }

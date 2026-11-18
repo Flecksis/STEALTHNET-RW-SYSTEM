@@ -6,6 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use sn_domain::module::ModuleId;
 use sn_domain::settings::SiteImage;
 use sn_services::branding::brand_initial;
 use sn_store::Db;
@@ -152,6 +153,9 @@ fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
 }
 
 async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.services.modules().is_enabled(ModuleId::Landing) {
+        return sn_modules::gate::disabled_response(ModuleId::Landing);
+    }
     let public = state.services.landing().public();
     let etag = format!("\"{}\"", public.version);
     let Ok(tag) = HeaderValue::from_str(&etag) else {

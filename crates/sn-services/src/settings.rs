@@ -1258,7 +1258,7 @@ fn remna_url(raw: &str) -> ServiceResult<String> {
     } else {
         Err(field_error(
             "url",
-            "адрес панели должен начинаться с https://",
+            "адрес панели должен начинаться с https:// или http:// и быть без пробелов",
         ))
     }
 }
@@ -1320,7 +1320,7 @@ impl<'a> SettingsOps<'a> {
             return Err(ServiceError::rejected(
                 "settings.currency_prices",
                 format!(
-                    "Сначала задайте цены в {}: {}",
+                    "Сначала задайте цены в {}: {}. Форма тарифа принимает цены в текущей валюте, поэтому снимите эти тарифы с продажи, смените валюту, задайте цены и верните тарифы в продажу",
                     to.code(),
                     missing.join("; ")
                 ),

@@ -249,7 +249,7 @@ async fn журнал_показывает_итог_каждого_уведом�
             reason: "Тело не сохраняется: уведомление не прошло проверку".into()
         }
     );
-    assert!(card.advice.unwrap().contains("Настройки → Платёжки"));
+    assert!(card.advice.unwrap().contains("Настройки → Оплата"));
     let card = kit
         .services
         .inbox()

@@ -995,6 +995,7 @@ async fn смена_валюты_требует_цен_и_подтвержден
     let err = ops.update_core(&to_rub, admin).await.unwrap_err();
     assert_eq!(err.code(), "settings.currency_prices");
     assert!(err.to_string().contains("«Стандарт» (90 дн.)"));
+    assert!(err.to_string().contains("снимите эти тарифы с продажи"));
     {
         let mut conn = services.store().conn().await.unwrap();
         let tariffs = conn.tariffs().list(true).await.unwrap();

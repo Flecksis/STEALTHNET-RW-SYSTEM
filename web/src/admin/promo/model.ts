@@ -294,7 +294,7 @@ export function buildBody(draft: Draft, currency: Currency, today = new Date()):
 }
 
 export function createdText(p: PromoCode): string {
-  return p.kind.type === 'days' ? 'Клиенты активируют его в боте или кабинете, дни добавятся к подписке.' : 'Клиенты вводят его при оплате.';
+  return p.kind.type === 'days' ? 'Клиенты активируют его в боте, в разделе «Промокод»: дни добавятся к подписке.' : 'Клиенты вводят его при оплате.';
 }
 
 export function offText(p: PromoCode): string {

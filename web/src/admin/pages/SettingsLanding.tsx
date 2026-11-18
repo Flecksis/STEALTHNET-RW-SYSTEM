@@ -43,6 +43,7 @@ import {
   type PublicCatalog,
   type SectionKind,
 } from '../../site/landingModel';
+import type { ModulesData, ModuleView } from '../modules/model';
 import { Switch } from '../ui';
 import {
   chars,
@@ -684,6 +685,9 @@ export function SettingsLanding() {
   const [drop, setDrop] = useState<Drop | null>(null);
   const [wrap, setWrap] = useState<HTMLDivElement | null>(null);
   const [sheetBody, setSheetBody] = useState<HTMLDivElement | null>(null);
+  const [module, setModule] = useState<ModuleView | null>(null);
+  const [enabling, setEnabling] = useState(false);
+  const [enableError, setEnableError] = useState<string | null>(null);
   const { width } = useSize(wrap);
   const sheetSize = useSize(sheetBody);
   const wide = !phone && width >= 860;
@@ -703,7 +707,22 @@ export function SettingsLanding() {
     api<PublicCatalog>('/api/public/catalog')
       .then(setCatalog)
       .catch(() => setCatalog(null));
+    api<ModulesData>('/api/admin/modules')
+      .then((list) => setModule(list.modules.find((m) => m.info.id === 'landing') ?? null))
+      .catch(() => setModule(null));
   }, [apply]);
+
+  const enableModule = async () => {
+    setEnabling(true);
+    setEnableError(null);
+    try {
+      setModule(await api<ModuleView>('/api/admin/modules/landing', { method: 'PATCH', body: { enabled: true } }));
+    } catch (err) {
+      setEnableError(err instanceof ApiError ? err.message : 'Модуль не включился');
+    } finally {
+      setEnabling(false);
+    }
+  };
 
   const clientTheme = site?.appearance.client_theme;
   useEffect(() => {
@@ -1032,6 +1051,22 @@ export function SettingsLanding() {
     <SettingsLayout>
       <div className="lde" ref={setWrap}>
         {head}
+        {module && !module.active ? (
+          <div className="card lde-off">
+            <span className="lde-off-text">
+              <span className="lde-off-title">Модуль «Лендинг» выключен</span>
+              <span className="muted">Главная страница сайта ведёт в кабинет. Лендинг можно готовить здесь, клиенты увидят его после включения.</span>
+              {enableError ? (
+                <span className="err" role="alert">
+                  {enableError}
+                </span>
+              ) : null}
+            </span>
+            <button type="button" className="b34 hov" onClick={() => void enableModule()} disabled={enabling}>
+              {enabling ? 'Включаем…' : 'Включить'}
+            </button>
+          </div>
+        ) : null}
         <div className={wide ? 'lde-grid' : 'lde-grid single'}>
           {list}
           {wide ? (

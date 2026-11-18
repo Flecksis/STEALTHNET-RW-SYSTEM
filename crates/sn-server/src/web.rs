@@ -3,8 +3,9 @@ use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use sn_domain::client::Locale;
+use sn_domain::module::ModuleId;
 use sn_domain::settings::CoreSettings;
 use sn_services::branding::{TabIcon, tab_icon, touch_icon};
 use std::path::Path;
@@ -262,6 +263,11 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
     if renders_page(&path) {
+        if Page::of(&path) == Page::Landing
+            && !state.services.modules().is_enabled(ModuleId::Landing)
+        {
+            return cabinet_instead(request.uri().query());
+        }
         if let Some(bot) = request
             .headers()
             .get(header::USER_AGENT)
@@ -274,6 +280,18 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         return page(&state, &dir, &path, wanted).await;
     }
     serve(&dir, &path, request).await
+}
+
+fn cabinet_instead(query: Option<&str>) -> Response {
+    let target = match query.filter(|q| !q.is_empty()) {
+        Some(query) => format!("/cabinet?{query}"),
+        None => "/cabinet".to_string(),
+    };
+    let mut response = Redirect::temporary(&target).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) -> Response {
