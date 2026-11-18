@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod llm;
+pub mod models;
 pub mod prompt;
 pub mod provider;
 mod routes;
@@ -42,7 +43,7 @@ const MAX_TOKENS_RANGE: (i64, i64) = (200, 8_000);
 const CLIENT_DAILY_RANGE: (i64, i64) = (1, 1_000);
 const DAILY_TOKENS_RANGE: (i64, i64) = (1_000, 1_000_000_000);
 
-const MODEL_HINT: &str = "Если оставить пустым, работает модель, подсказанная в поле. Кнопка «Проверить ключ» покажет модели провайдера.";
+const MODEL_HINT: &str = "Если оставить пустым, работает модель, подсказанная в поле.";
 
 const KEY_CASES: [FieldCase; 7] = [
     FieldCase::new("groq")
@@ -65,14 +66,14 @@ const MODEL_CASES: [FieldCase; 7] = [
     FieldCase::new("groq").placeholder("openai/gpt-oss-120b"),
     FieldCase::new("gemini")
         .placeholder("gemini-3.5-flash-lite")
-        .hint("Если оставить пустым, работает модель, подсказанная в поле. Кнопка «Проверить ключ» покажет модели провайдера. На бесплатном уровне Gemini API Google может использовать переписку для улучшения своих сервисов, и её могут читать проверяющие; на платном уровне — нет."),
+        .hint("Если оставить пустым, работает модель, подсказанная в поле. На бесплатном уровне Gemini API Google может использовать переписку для улучшения своих сервисов, и её могут читать проверяющие; на платном уровне — нет."),
     FieldCase::new("deepseek").placeholder("deepseek-flash"),
     FieldCase::new("openrouter")
         .placeholder("openai/gpt-oss-120b")
-        .hint("Если оставить пустым, работает модель, подсказанная в поле. Кнопка «Проверить ключ» покажет модели провайдера, бесплатные с :free — первыми. У бесплатных моделей мало запросов в сутки, а их провайдеры могут сохранять переписку и обучать на ней модели."),
+        .hint("Если оставить пустым, работает модель, подсказанная в поле. Бесплатные модели с :free в списке идут первыми. У бесплатных моделей мало запросов в сутки, а их провайдеры могут сохранять переписку и обучать на ней модели."),
     FieldCase::new("openai").placeholder("gpt-6-luna"),
     FieldCase::new("anthropic").placeholder("claude-haiku-5-5"),
-    FieldCase::new("custom").hint("Обязательно: имя модели так, как его ждёт ваш сервер. Кнопка «Проверить ключ» покажет модели, если сервер отдаёт их список."),
+    FieldCase::new("custom").hint("Обязательно: имя модели так, как его ждёт ваш сервер."),
 ];
 
 const URL_CASES: [FieldCase; 7] = [

@@ -20,7 +20,7 @@ pub const LABELS: [&str; 7] = [
     "Свой адрес, совместимый с OpenAI",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Groq,

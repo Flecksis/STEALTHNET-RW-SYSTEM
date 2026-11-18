@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Switch } from './ui';
 import './form.css';
 
@@ -19,6 +19,15 @@ export type SettingField = {
 };
 
 export type FieldValues = Record<string, string | boolean>;
+
+export type FieldSlot = {
+  id: string;
+  value: string;
+  placeholder?: string;
+  hint: ReactNode;
+  hintId?: string;
+  set: (value: string) => void;
+};
 
 export type SecretState = { clear: string[]; replacing: string[] };
 
@@ -102,10 +111,10 @@ type Props = {
   onSecrets: (secrets: SecretState) => void;
   busy: boolean;
   idPrefix: string;
-  after?: Partial<Record<string, ReactNode>>;
+  custom?: Partial<Record<string, (slot: FieldSlot) => ReactNode>>;
 };
 
-export function SchemaFields({ schema, config, values, onChange, secrets, onSecrets, busy, idPrefix, after }: Props) {
+export function SchemaFields({ schema, config, values, onChange, secrets, onSecrets, busy, idPrefix, custom }: Props) {
   const set = (key: string, value: string | boolean) => {
     const next: FieldValues = { ...values, [key]: value };
     const changer = schema.find((f) => f.key === key);
@@ -140,6 +149,17 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
         {hintText}
       </span>
     ) : null;
+    const own = custom?.[field.key];
+    if (own) {
+      return (
+        <div key={field.key} className="sf-field">
+          <label htmlFor={id} className="sf-label">
+            {field.label}
+          </label>
+          {own({ id, value: String(value ?? ''), placeholder, hint, hintId, set: (next) => set(field.key, next) })}
+        </div>
+      );
+    }
     if (field.kind.type === 'flag') {
       return (
         <div key={field.key} className="sf-flag">
@@ -231,16 +251,5 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
       </div>
     );
   };
-  return (
-    <>
-      {schema.map((field) =>
-        field.kind.type === 'list' ? null : (
-          <Fragment key={field.key}>
-            {render(field)}
-            {after?.[field.key] ?? null}
-          </Fragment>
-        ),
-      )}
-    </>
-  );
+  return <>{schema.map((field) => (field.kind.type === 'list' ? null : render(field)))}</>;
 }

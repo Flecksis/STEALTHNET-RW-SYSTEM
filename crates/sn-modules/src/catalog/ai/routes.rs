@@ -1,4 +1,5 @@
 use super::llm::{self, Llm, ModelOption, shortlist};
+use super::models::{Catalog, Listing, Loaded};
 use super::provider::Provider;
 use super::store::{self, LastError, Usage};
 use super::{Settings, day_start};
@@ -6,6 +7,7 @@ use crate::catalog::web::{Admin, WebError};
 use crate::context::ModuleContext;
 use crate::module::ModuleConfig;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -19,7 +21,7 @@ pub fn admin(ctx: ModuleContext) -> Router {
 }
 
 pub fn setup(ctx: ModuleContext) -> Router {
-    Router::new().route("/check", post(check)).with_state(ctx)
+    Router::new().route("/models", post(models)).with_state(ctx)
 }
 
 #[derive(Serialize)]
@@ -54,16 +56,18 @@ async fn overview(
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-pub(super) struct CheckRequest {
+pub(super) struct ModelsRequest {
     pub provider: Option<String>,
     pub api_url: Option<String>,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub refresh: bool,
 }
 
 #[derive(Serialize)]
-struct Check {
+struct ModelsView {
     ok: bool,
+    cached: bool,
     provider: &'static str,
     model: String,
     model_found: bool,
@@ -71,11 +75,25 @@ struct Check {
     error: Option<String>,
 }
 
+impl ModelsView {
+    fn failed(provider: &'static str, model: String, cached: bool, error: String) -> Self {
+        ModelsView {
+            ok: false,
+            cached,
+            provider,
+            model,
+            model_found: false,
+            models: Vec::new(),
+            error: Some(error),
+        }
+    }
+}
+
 fn filled(value: Option<&String>) -> Option<&str> {
     value.map(|v| v.trim()).filter(|v| !v.is_empty())
 }
 
-pub(super) fn form_settings(saved: &ModuleConfig, request: &CheckRequest) -> Settings {
+pub(super) fn form_settings(saved: &ModuleConfig, request: &ModelsRequest) -> Settings {
     let mut config = saved.clone();
     for (key, value) in [
         ("provider", &request.provider),
@@ -105,11 +123,11 @@ pub(super) fn check_key(
     }
 }
 
-async fn check(
+async fn models(
     State(ctx): State<ModuleContext>,
     admin: Admin,
-    Json(request): Json<CheckRequest>,
-) -> Result<Json<Check>, WebError> {
+    Json(request): Json<ModelsRequest>,
+) -> Result<Json<ModelsView>, WebError> {
     admin.require(Permission::Modules)?;
     let config = ctx.core.module_config(ModuleId::Ai);
     let saved = Settings::from_config(&config);
@@ -141,32 +159,38 @@ async fn check(
     let llm = match Llm::new(form.provider, &form.api_url, &key) {
         Ok(llm) => llm,
         Err(err) => {
-            return Ok(Json(Check {
-                ok: false,
+            return Ok(Json(ModelsView::failed(
                 provider,
-                model: form.model,
-                model_found: false,
-                models: Vec::new(),
-                error: Some(err.to_string()),
-            }));
+                form.model,
+                false,
+                err.to_string(),
+            )));
         }
     };
-    Ok(Json(match llm.models().await {
-        Ok(models) => Check {
+    let (listing, cached) = match Catalog::shared()
+        .load(admin.0.admin_id, &llm, request.refresh)
+        .await
+    {
+        Loaded::Fresh(listing) => (listing, false),
+        Loaded::Cached(listing) => (listing, true),
+        Loaded::Limited => {
+            return Err(WebError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "ai.models_rate",
+                "Список моделей запрашивали слишком часто: подождите минуту и нажмите «Обновить список»",
+            ));
+        }
+    };
+    Ok(Json(match listing {
+        Listing::Models(models) => ModelsView {
             ok: true,
+            cached,
             provider,
             model_found: models.iter().any(|m| m.id == form.model),
             models: shortlist(models),
             model: form.model,
             error: None,
         },
-        Err(err) => Check {
-            ok: false,
-            provider,
-            model: form.model,
-            model_found: false,
-            models: Vec::new(),
-            error: Some(err.to_string()),
-        },
+        Listing::Failed(error) => ModelsView::failed(provider, form.model, cached, error),
     }))
 }

@@ -10,7 +10,7 @@ use std::time::Duration;
 const TIMEOUT: Duration = Duration::from_secs(25);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DETAIL_MAX: usize = 300;
-pub const MODELS_MAX: usize = 100;
+pub const MODELS_MAX: usize = 1_000;
 const TEMPERATURE: f64 = 0.2;
 const NOT_CHAT: [&str; 24] = [
     "embed",
@@ -151,10 +151,16 @@ pub struct Completion {
     pub completion_tokens: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelOption {
     pub id: String,
     pub free: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_in: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_out: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -666,6 +672,20 @@ struct ModelEntry {
     pricing: Option<Pricing>,
     #[serde(default)]
     architecture: Option<Architecture>,
+    #[serde(default)]
+    context_length: Option<Value>,
+    #[serde(default)]
+    context_window: Option<Value>,
+    #[serde(default)]
+    max_input_tokens: Option<Value>,
+    #[serde(default)]
+    top_provider: Option<TopProvider>,
+}
+
+#[derive(Deserialize)]
+struct TopProvider {
+    #[serde(default)]
+    context_length: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -682,12 +702,39 @@ struct Architecture {
     output_modalities: Option<Vec<String>>,
 }
 
-fn zero(value: Option<&Value>) -> bool {
+fn number(value: Option<&Value>) -> Option<f64> {
     match value {
-        Some(Value::String(s)) => s.trim().parse::<f64>().is_ok_and(|n| n == 0.0),
-        Some(Value::Number(n)) => n.as_f64() == Some(0.0),
-        _ => false,
+        Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+        Some(Value::Number(n)) => n.as_f64(),
+        _ => None,
     }
+    .filter(|n| n.is_finite())
+}
+
+fn zero(value: Option<&Value>) -> bool {
+    number(value) == Some(0.0)
+}
+
+fn per_million(value: Option<&Value>) -> Option<f64> {
+    number(value)
+        .filter(|n| *n >= 0.0)
+        .map(|n| (n * 1_000_000.0 * 10_000.0).round() / 10_000.0)
+}
+
+fn context(entry: &ModelEntry) -> Option<u64> {
+    [
+        entry.context_length.as_ref(),
+        entry.context_window.as_ref(),
+        entry.max_input_tokens.as_ref(),
+        entry
+            .top_provider
+            .as_ref()
+            .and_then(|t| t.context_length.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(number)
+    .find(|n| *n >= 1.0)
+    .map(|n| n as u64)
 }
 
 fn chat_model(provider: Provider, entry: &ModelEntry, id: &str) -> bool {
@@ -722,18 +769,23 @@ pub fn model_options(provider: Provider, body: &str) -> Result<Vec<ModelOption>,
     if entries.iter().any(|(e, _)| e.created.is_some()) {
         entries.sort_by_key(|(e, _)| std::cmp::Reverse(e.created.unwrap_or(0)));
     }
+    let mut seen = std::collections::HashSet::new();
     let mut options: Vec<ModelOption> = Vec::new();
     for (entry, id) in entries {
-        if options.iter().any(|o| o.id == id) {
+        if !seen.insert(id.clone()) {
             continue;
         }
+        let pricing = entry.pricing.as_ref();
         let free = provider == Provider::OpenRouter
             && (id.ends_with(":free")
-                || entry
-                    .pricing
-                    .as_ref()
-                    .is_some_and(|p| zero(p.prompt.as_ref()) && zero(p.completion.as_ref())));
-        options.push(ModelOption { id, free });
+                || pricing.is_some_and(|p| zero(p.prompt.as_ref()) && zero(p.completion.as_ref())));
+        options.push(ModelOption {
+            context: context(&entry),
+            price_in: pricing.and_then(|p| per_million(p.prompt.as_ref())),
+            price_out: pricing.and_then(|p| per_million(p.completion.as_ref())),
+            id,
+            free,
+        });
     }
     options.sort_by_key(|o| !o.free);
     Ok(options)
@@ -826,6 +878,10 @@ impl Llm {
 
     pub const fn provider(&self) -> Provider {
         self.provider
+    }
+
+    pub fn source(&self) -> super::models::Source {
+        super::models::Source::new(self.provider, &self.base, &self.key)
     }
 
     pub const fn error(&self, fault: Fault) -> AiError {
@@ -1343,7 +1399,7 @@ mod tests {
 
         let router = model_options(
             Provider::OpenRouter,
-            r#"{"data":[{"id":"openai/gpt-oss-120b","created":1754414231,"pricing":{"prompt":"0.00000015","completion":"0.0000006"},"architecture":{"output_modalities":["text"]}},{"id":"google/gemma-4-31b-it:free","created":1775148486,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["text"]}},{"id":"openrouter/free","created":1769917427,"pricing":{"prompt":"0","completion":"0"}},{"id":"google/lyria-3-pro-preview","created":1790000000,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["audio"]}},{"id":"qwen/qwen3.7-flash","created":1785190561,"pricing":{"prompt":"0.00000003","completion":"0.00000013"}}]}"#,
+            r#"{"data":[{"id":"openai/gpt-oss-120b","created":1754414231,"context_length":131072,"pricing":{"prompt":"0.00000015","completion":"0.0000006"},"architecture":{"output_modalities":["text"]}},{"id":"google/gemma-4-31b-it:free","created":1775148486,"context_length":262144,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["text"]}},{"id":"openrouter/free","created":1769917427,"pricing":{"prompt":"0","completion":"0"},"top_provider":{"context_length":null}},{"id":"openrouter/auto","created":1700000000,"pricing":{"prompt":"-1","completion":"-1"}},{"id":"google/lyria-3-pro-preview","created":1790000000,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["audio"]}},{"id":"qwen/qwen3.7-flash","created":1785190561,"top_provider":{"context_length":65536},"pricing":{"prompt":"0.00000003","completion":"0.00000013"}}]}"#,
         )
         .unwrap();
         assert_eq!(
@@ -1352,10 +1408,25 @@ mod tests {
                 "google/gemma-4-31b-it:free",
                 "openrouter/free",
                 "qwen/qwen3.7-flash",
-                "openai/gpt-oss-120b"
+                "openai/gpt-oss-120b",
+                "openrouter/auto"
             ]
         );
         assert!(router[0].free && router[1].free && !router[2].free);
+        assert_eq!(router[0].context, Some(262_144));
+        assert_eq!(
+            (router[0].price_in, router[0].price_out),
+            (Some(0.0), Some(0.0))
+        );
+        assert_eq!(router[3].context, Some(131_072));
+        assert_eq!(
+            (router[3].price_in, router[3].price_out),
+            (Some(0.15), Some(0.6))
+        );
+        assert_eq!(router[2].context, Some(65_536));
+        assert_eq!(router[1].context, None);
+        assert_eq!((router[4].price_in, router[4].price_out), (None, None));
+        assert!(!router[4].free);
 
         let openai = model_options(
             Provider::OpenAi,
@@ -1367,29 +1438,41 @@ mod tests {
 
         let claude = model_options(
             Provider::Anthropic,
-            r#"{"data":[{"type":"model","id":"claude-haiku-5-5","display_name":"Claude Haiku 5.5","created_at":"2026-10-01T00:00:00Z"},{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5","created_at":"2026-09-01T00:00:00Z"}],"has_more":false}"#,
+            r#"{"data":[{"type":"model","id":"claude-haiku-5-5","display_name":"Claude Haiku 5.5","created_at":"2026-10-01T00:00:00Z","max_input_tokens":1000000,"max_tokens":128000},{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5","created_at":"2026-09-01T00:00:00Z"}],"has_more":false}"#,
         )
         .unwrap();
         assert_eq!(ids(&claude), ["claude-haiku-5-5", "claude-opus-5-5"]);
+        assert_eq!(claude[0].context, Some(1_000_000));
 
         let groq = model_options(
             Provider::Groq,
-            r#"{"data":[{"id":"openai/gpt-oss-120b","created":1754000000},{"id":"whisper-large-v3","created":1700000000},{"id":"meta-llama/llama-guard-4-12b","created":1750000000},{"id":"playai-tts","created":1740000000},{"id":"qwen/qwen3.8-27b","created":1790000000}]}"#,
+            r#"{"data":[{"id":"openai/gpt-oss-120b","created":1754000000,"context_window":131072},{"id":"whisper-large-v3","created":1700000000},{"id":"meta-llama/llama-guard-4-12b","created":1750000000},{"id":"playai-tts","created":1740000000},{"id":"qwen/qwen3.8-27b","created":1790000000}]}"#,
         )
         .unwrap();
         assert_eq!(ids(&groq), ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]);
+        assert_eq!(groq[1].context, Some(131_072));
+        assert!(groq.iter().all(|m| m.price_in.is_none() && !m.free));
 
         let deepseek = model_options(
             Provider::DeepSeek,
-            r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}"#,
+            r#"{"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","context_window":1048576},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}"#,
         )
         .unwrap();
         assert_eq!(ids(&deepseek), ["deepseek-flash", "deepseek-v4-pro"]);
+        assert_eq!(deepseek[0].context, Some(1_048_576));
+        assert!(
+            gemini
+                .iter()
+                .all(|m| m.context.is_none() && m.price_in.is_none())
+        );
 
-        let many: Vec<ModelOption> = (0..150)
+        let many: Vec<ModelOption> = (0..1_200)
             .map(|i| ModelOption {
                 id: format!("m{i}"),
                 free: false,
+                context: None,
+                price_in: None,
+                price_out: None,
             })
             .collect();
         assert_eq!(shortlist(many).len(), MODELS_MAX);
