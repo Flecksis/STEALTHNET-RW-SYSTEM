@@ -42,6 +42,7 @@ import { SettingsLanguages } from './pages/SettingsLanguages';
 import { ForcedPassword, Security } from './pages/Security';
 import { SettingsUpdates } from './pages/SettingsUpdates';
 import { SettingsImport } from './pages/SettingsImport';
+import { BugReport } from './report/BugReport';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
 import type { BuildSummary } from './version';
@@ -265,6 +266,7 @@ export function AdminApp() {
           <Route path="settings/languages" element={<SettingsLanguages />} />
           <Route path="settings/import" element={<SettingsImport />} />
           <Route path="security" element={<Security />} />
+          <Route path="bug-report" element={<BugReport />} />
           <Route path="settings" element={<Navigate to="/admin/settings/payments" replace />} />
           <Route
             path="settings/*"

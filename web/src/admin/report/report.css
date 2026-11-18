@@ -1,0 +1,78 @@
+.rep-lead {
+  max-width: 680px;
+  margin-top: -8px;
+  text-wrap: pretty;
+}
+
+.rep {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 760px;
+}
+
+.rep-text {
+  min-height: 300px;
+  line-height: 1.5;
+}
+
+.rep-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-top: 9px;
+  cursor: pointer;
+}
+
+.rep-check.off {
+  cursor: default;
+}
+
+.rep-check input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.rep-check > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 600;
+}
+
+.rep-check .cap {
+  font-weight: 400;
+}
+
+.rep-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.rep-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rep-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.adm[data-layout='phone'] .rep-text {
+  font-family: inherit;
+  font-size: 16px;
+}
+
+.adm[data-layout='phone'] .rep-actions > * {
+  flex: 1 1 160px;
+}

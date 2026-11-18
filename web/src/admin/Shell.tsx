@@ -5,6 +5,7 @@ import { BrandMark } from '../lib/brand';
 import { useMedia, usePhone } from '../lib/media';
 import { readStored, writeStored, type Theme } from '../lib/theme';
 import { isCurrent, navItems, type NavItem } from './nav';
+import { REPORT_PATH } from './report/text';
 import { ROLE_LABEL, useSession } from './session';
 import { BuildChip, VersionLine, type BuildSummary } from './version';
 import './shell.css';
@@ -140,6 +141,10 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
             <Icon name="user" size={18} />
             Безопасность
           </Link>
+          <Link to={REPORT_PATH} state={{ from: path }} className="hov" onClick={() => setWhoOpen(false)}>
+            <Icon name="flag" size={18} />
+            Сообщить об ошибке
+          </Link>
           <button type="button" className="hov" onClick={() => void logout()}>
             <Icon name="logout" size={18} />
             Выйти
@@ -239,6 +244,10 @@ function TopBar({ items, path, theme, onFlipTheme, build }: MenuProps) {
                   <Icon name="user" size={18} />
                   Безопасность
                 </Link>
+                <Link to={REPORT_PATH} state={{ from: path }} className="hov" onClick={() => setProfileOpen(false)}>
+                  <Icon name="flag" size={18} />
+                  Сообщить об ошибке
+                </Link>
                 <button type="button" className="hov" onClick={() => void logout()}>
                   <Icon name="logout" size={18} />
                   Выйти
@@ -295,6 +304,11 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
               <Link to="/admin/security" className="psheet-row press" aria-current={path === '/admin/security' ? 'page' : undefined}>
                 <Icon name="user" size={21} />
                 <span className="psheet-name">Безопасность</span>
+                <Icon name="chevron-right" size={16} />
+              </Link>
+              <Link to={REPORT_PATH} state={{ from: path }} className="psheet-row press" aria-current={path === REPORT_PATH ? 'page' : undefined}>
+                <Icon name="flag" size={21} />
+                <span className="psheet-name">Сообщить об ошибке</span>
                 <Icon name="chevron-right" size={16} />
               </Link>
               <button type="button" className="psheet-row press" onClick={onFlipTheme}>

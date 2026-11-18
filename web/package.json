@@ -8,6 +8,7 @@
     "build": "node scripts/i18n-check.mjs && tsc --noEmit && vite build",
     "i18n": "node scripts/i18n-check.mjs --report --loose",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test 'src/**/*.test.mjs'",
     "preview": "vite preview"
   },
   "dependencies": {
