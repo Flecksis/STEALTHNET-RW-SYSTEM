@@ -6,10 +6,12 @@ use sn_domain::events::DomainEvent;
 use sn_domain::ids::{ClientId, OrderId, SubscriptionId};
 use sn_domain::jobs::JobPayload;
 use sn_domain::ledger::NewLedgerEntry;
+use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
+use sn_domain::settings::CoreSettings;
 use sn_modules::{
     BalanceChange, BotSender, CoreApi, GrantPreview, GrantRefusal, GrantedOrder, Lifted,
-    MailSender, MethodTitle, ModuleError, Notification, PaymentTitle, Restricted,
+    MailSender, MethodTitle, ModuleConfig, ModuleError, Notification, PaymentTitle, Restricted,
     SubscriptionGrant, TrafficReading, TrafficRestriction,
 };
 use sn_payments::ProviderConfig;
@@ -248,6 +250,18 @@ impl CoreApi for Services {
                 }
             })
             .collect()
+    }
+
+    fn module_enabled(&self, module: ModuleId) -> bool {
+        self.modules().is_enabled(module)
+    }
+
+    fn module_config(&self, module: ModuleId) -> ModuleConfig {
+        self.modules().config(module)
+    }
+
+    fn core_settings(&self) -> Arc<CoreSettings> {
+        self.settings()
     }
 }
 

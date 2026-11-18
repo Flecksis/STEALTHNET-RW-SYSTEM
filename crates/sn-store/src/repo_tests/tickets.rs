@@ -14,6 +14,7 @@ async fn open(db: &mut impl Db, client: ClientId, body: &str) -> TicketId {
             channel: TicketChannel::Bot,
             subject: None,
             body: body.into(),
+            ai: false,
         })
         .await
         .unwrap()

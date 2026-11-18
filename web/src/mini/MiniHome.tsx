@@ -102,7 +102,9 @@ export function MiniHome() {
   rows.push({ label: 'Промокод', icon: 'percent', to: '/app/plans' });
   rows.push({ label: 'История оплат', icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });
   rows.push({ label: 'Инструкции', icon: 'book', to: '/app/connect' });
-  if (support) {
+  if (supportTickets(site) && site.support_ai?.miniapp) {
+    rows.push({ label: 'Поддержка', icon: 'chat', to: '/app/support' });
+  } else if (support) {
     rows.push({ label: 'Поддержка', icon: 'chat', run: () => openExternal(support) });
   }
 

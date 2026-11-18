@@ -23,8 +23,10 @@ rand.workspace = true
 sha2.workspace = true
 hex.workspace = true
 jsonwebtoken.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
+wiremock.workspace = true
 sn-store = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true

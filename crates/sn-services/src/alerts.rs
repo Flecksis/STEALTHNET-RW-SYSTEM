@@ -22,6 +22,7 @@ const LINK_KEY: &str = "alerts.link";
 const TEST_KEY: &str = "alerts.test";
 const TOPICS_KEY: &str = "alerts.topics";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
+const AI_HANDOFF_CURSOR: &str = "alerts.cursor.ai_handoffs";
 const AUTO_REFUND_CURSOR: &str = "alerts.cursor.auto_refunds";
 const PAYMENTS_CURSOR: &str = "alerts.cursor.payments";
 const TRAFFIC_CURSOR: &str = "alerts.cursor.traffic";
@@ -112,6 +113,16 @@ struct TrafficRow {
     window_end: DateTime<Utc>,
     restrict_note: Option<String>,
     warned_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct HandoffRow {
+    ticket_id: i64,
+    client_id: i64,
+    reason: Option<String>,
+    error: Option<String>,
+    subject: Option<String>,
+    body: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -523,6 +534,7 @@ impl<'a> AlertsOps<'a> {
     pub async fn collect(&self) -> ServiceResult<Vec<Alert>> {
         let config = self.config().await?;
         let mut out = self.support(&config).await?;
+        out.extend(self.ai_handoffs(&config).await?);
         out.extend(self.payments(&config).await?);
         for kind in [
             AlertKind::Orders,
@@ -717,14 +729,20 @@ impl<'a> AlertsOps<'a> {
         if newest <= cursor {
             return Ok(Vec::new());
         }
+        let ai_answers = self
+            .services
+            .modules()
+            .is_enabled(sn_domain::module::ModuleId::Ai);
         let rows: Vec<(i64, i64, String, Option<String>, i64, i64)> = sqlx::query_as(
             "SELECT m.id, m.ticket_id, m.body, t.subject, t.client_id, \
                     (SELECT min(f.id) FROM ticket_messages f WHERE f.ticket_id = m.ticket_id) \
              FROM ticket_messages m JOIN tickets t ON t.id = m.ticket_id \
-             WHERE m.author = 'client' AND m.id > $1 AND m.id <= $2 ORDER BY m.id",
+             WHERE m.author = 'client' AND m.id > $1 AND m.id <= $2 \
+               AND NOT ($3 AND t.ai_state IS NOT DISTINCT FROM 'active') ORDER BY m.id",
         )
         .bind(cursor)
         .bind(newest)
+        .bind(ai_answers)
         .fetch_all(conn.conn())
         .await?;
         let mut order: Vec<i64> = Vec::new();
@@ -775,6 +793,88 @@ impl<'a> AlertsOps<'a> {
         }
         drop(conn);
         self.put_state(SUPPORT_CURSOR, &serde_json::json!(newest))
+            .await?;
+        Ok(out)
+    }
+
+    async fn ai_handoffs(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        let cursor = self
+            .state(AI_HANDOFF_CURSOR)
+            .await?
+            .and_then(|v| v.as_i64());
+        let mut conn = self.services.store().conn().await?;
+        let newest: i64 = sqlx::query_scalar(
+            "SELECT coalesce(max(id), 0) FROM ai_support_log WHERE outcome = 'handoff'",
+        )
+        .fetch_one(conn.conn())
+        .await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(AI_HANDOFF_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<HandoffRow> = sqlx::query_as(
+            "SELECT l.ticket_id, l.client_id, l.reason, l.error, t.subject, \
+                    (SELECT m.body FROM ticket_messages m WHERE m.ticket_id = l.ticket_id \
+                     AND m.author = 'client' ORDER BY m.id DESC LIMIT 1) AS body \
+             FROM ai_support_log l JOIN tickets t ON t.id = l.ticket_id \
+             WHERE l.outcome = 'handoff' AND l.id > $1 AND l.id <= $2 ORDER BY l.id",
+        )
+        .bind(cursor)
+        .bind(newest)
+        .fetch_all(conn.conn())
+        .await?;
+        let mut out = Vec::new();
+        if config.route(AlertKind::Support).on {
+            for row in rows.iter().take(PER_KIND) {
+                let ticket = row.ticket_id;
+                let mut lines = vec![
+                    format!("<b>ИИ передал обращение №{ticket} оператору</b>"),
+                    format!(
+                        "Клиент: {}",
+                        escape(&client_label(&mut conn, row.client_id).await)
+                    ),
+                ];
+                if let Some(reason) = row
+                    .reason
+                    .as_deref()
+                    .and_then(|r| sn_domain::support::HandoffReason::parse(r).ok())
+                {
+                    lines.push(format!("Причина: {}", reason.title_ru()));
+                }
+                if let Some(error) = row.error.as_deref().filter(|e| !e.trim().is_empty()) {
+                    lines.push(format!("Ошибка: {}", escape(&cut(error, BODY_MAX))));
+                }
+                if let Some(subject) = row.subject.as_deref().filter(|s| !s.trim().is_empty()) {
+                    lines.push(format!("Тема: {}", escape(&cut(subject, 80))));
+                }
+                if let Some(body) = row.body.as_deref().filter(|b| !b.trim().is_empty()) {
+                    lines.push(format!("«{}»", escape(&cut(body, BODY_MAX))));
+                }
+                out.push(Alert {
+                    kind: AlertKind::Support,
+                    html: lines.join("\n"),
+                    path: format!("/admin/support?ticket={ticket}"),
+                });
+            }
+            if rows.len() > PER_KIND {
+                let rest = rows.len() - PER_KIND;
+                out.push(Alert {
+                    kind: AlertKind::Support,
+                    html: format!(
+                        "Ещё {rest} {} ИИ передал оператору",
+                        format::plural_ru(rest as u64, "обращение", "обращения", "обращений")
+                    ),
+                    path: "/admin/support".to_string(),
+                });
+            }
+        }
+        drop(conn);
+        self.put_state(AI_HANDOFF_CURSOR, &serde_json::json!(newest))
             .await?;
         Ok(out)
     }

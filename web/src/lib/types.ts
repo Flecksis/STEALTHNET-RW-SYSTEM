@@ -19,6 +19,7 @@ export type Site = {
   currency: Currency;
   support_url: string | null;
   support_tickets?: boolean;
+  support_ai?: { cabinet: boolean; miniapp: boolean };
   bot_username: string | null;
   appearance: Appearance;
   connect?: { mode: 'ours' | 'remnawave'; page_config: string | null };

@@ -82,6 +82,11 @@ async fn site(State(state): State<AppState>) -> Response {
         "currency": settings.currency,
         "support_url": settings.support_link(),
         "support_tickets": settings.support_tickets(),
+        "support_ai": if settings.support_tickets() {
+            sn_modules::catalog::ai::channels(state.services.modules())
+        } else {
+            sn_modules::catalog::ai::Channels::default()
+        },
         "bot_username": bot_username,
         "appearance": settings.appearance,
         "connect": settings.connect,

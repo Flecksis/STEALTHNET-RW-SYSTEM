@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{ClientId, SubscriptionId, TicketId};
 use sn_domain::jobs::JobPayload;
+use sn_domain::module::ModuleId;
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::support::{
-    MAX_OPEN_TICKETS, MessageAuthor, ReplyTarget, Ticket, TicketChannel, TicketFilter,
-    TicketMessage, TicketStatus,
+    HandoffReason, MAX_OPEN_TICKETS, MessageAuthor, ReplyTarget, Ticket, TicketAi, TicketChannel,
+    TicketFilter, TicketMessage, TicketStatus,
 };
+use sn_modules::catalog::ai;
 use sn_store::{Db, NewReply, NewTicket};
 
 pub const MAX_MESSAGE_CHARS: usize = 4_000;
@@ -50,6 +52,7 @@ pub struct TicketThread {
     pub ticket: Ticket,
     pub messages: Vec<TicketMessage>,
     pub admins: Vec<AdminName>,
+    pub ai: Option<TicketAi>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -128,6 +131,7 @@ impl<'a> SupportOps<'a> {
                 "открыто слишком много обращений, дождитесь ответа",
             ));
         }
+        let answered_by_ai = ai::takes_ticket(self.services.modules(), request.channel);
         let id = tx
             .tickets()
             .open(&NewTicket {
@@ -136,8 +140,12 @@ impl<'a> SupportOps<'a> {
                 channel: request.channel,
                 subject,
                 body,
+                ai: answered_by_ai,
             })
             .await?;
+        if answered_by_ai {
+            tx.jobs().enqueue(&ai::wake_job(id), None).await?;
+        }
         tx.events()
             .push(&DomainEvent::TicketOpened {
                 ticket_id: id,
@@ -265,6 +273,10 @@ impl<'a> SupportOps<'a> {
             conn.tickets().mark_read(id).await?;
         }
         let messages = conn.tickets().messages(id).await?;
+        let ai = conn.tickets().ai(id).await?.map(|ai| match actor {
+            Actor::Admin(_) | Actor::System => ai,
+            Actor::Client(_) => ai.for_client(),
+        });
         let admins =
             if matches!(actor, Actor::Admin(_)) && messages.iter().any(|m| m.admin_id.is_some()) {
                 conn.admins()
@@ -283,13 +295,40 @@ impl<'a> SupportOps<'a> {
             ticket,
             messages,
             admins,
+            ai,
         })
+    }
+
+    pub async fn ask_operator(&self, id: TicketId, actor: Actor) -> ServiceResult<()> {
+        let mut tx = self.services.store().begin().await?;
+        let ticket = self.ticket_for(&mut tx, id, actor).await?;
+        if ticket.status == TicketStatus::Closed {
+            return Err(ServiceError::rejected(
+                "support.closed",
+                "обращение закрыто, создайте новое",
+            ));
+        }
+        if tx.tickets().ai(id).await?.is_some_and(|ai| ai.answering()) {
+            ai::store::hand_off(
+                &mut tx,
+                id,
+                HandoffReason::Human,
+                &ai::store::Spent::NONE,
+                None,
+            )
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn reopen(&self, id: TicketId, actor: Actor) -> ServiceResult<()> {
         let mut conn = self.services.store().conn().await?;
         self.ticket_for(&mut conn, id, actor).await?;
         conn.tickets().reopen(id).await?;
+        if matches!(actor, Actor::Admin(_)) {
+            conn.tickets().take_over(id).await?;
+        }
         Ok(())
     }
 
@@ -302,6 +341,7 @@ impl<'a> SupportOps<'a> {
         let body = message_body(&request.body)?;
         let mut tx = self.services.store().begin().await?;
         let ticket = self.ticket_for(&mut tx, id, actor).await?;
+        let answering = tx.tickets().ai(id).await?.is_some_and(|ai| ai.answering());
         let (author, admin_id, close) = match actor {
             Actor::Client(_) => {
                 if ticket.status == TicketStatus::Closed {
@@ -325,6 +365,17 @@ impl<'a> SupportOps<'a> {
                 close,
             })
             .await?;
+        if answering {
+            match actor {
+                Actor::Client(_) if self.services.modules().is_enabled(ModuleId::Ai) => {
+                    tx.jobs().enqueue(&ai::wake_job(id), None).await?;
+                }
+                Actor::Admin(_) => {
+                    tx.tickets().take_over(id).await?;
+                }
+                _ => {}
+            }
+        }
         if author != MessageAuthor::Client {
             for target in ticket.channel.reply_targets() {
                 match target {

@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod analytics;
 pub mod antibot;
 pub mod broadcast;
@@ -43,6 +44,7 @@ pub fn all() -> Vec<Arc<dyn Module>> {
         Arc::new(roulette::RouletteModule),
         Arc::new(analytics::AnalyticsModule),
         Arc::new(oauth::OauthModule),
+        Arc::new(ai::AiModule),
     ]
 }
 
@@ -117,7 +119,8 @@ mod tests {
                 ModuleId::Contests,
                 ModuleId::Roulette,
                 ModuleId::Analytics,
-                ModuleId::Oauth
+                ModuleId::Oauth,
+                ModuleId::Ai
             ]
         );
         let registry = ModuleRegistry::new(modules).unwrap();

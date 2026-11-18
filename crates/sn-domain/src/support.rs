@@ -71,6 +71,115 @@ pub enum MessageAuthor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AiState {
+    Active,
+    HandedOff,
+}
+
+impl AiState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AiState::Active => "active",
+            AiState::HandedOff => "handed_off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        match value {
+            "active" => Ok(AiState::Active),
+            "handed_off" => Ok(AiState::HandedOff),
+            other => Err(DomainError::unknown("ai_state", other)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffReason {
+    Human,
+    Money,
+    Unsure,
+    Groq,
+    ClientLimit,
+    Budget,
+    Operator,
+    Disabled,
+}
+
+impl HandoffReason {
+    pub const ALL: [HandoffReason; 8] = [
+        HandoffReason::Human,
+        HandoffReason::Money,
+        HandoffReason::Unsure,
+        HandoffReason::Groq,
+        HandoffReason::ClientLimit,
+        HandoffReason::Budget,
+        HandoffReason::Operator,
+        HandoffReason::Disabled,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            HandoffReason::Human => "human",
+            HandoffReason::Money => "money",
+            HandoffReason::Unsure => "unsure",
+            HandoffReason::Groq => "groq",
+            HandoffReason::ClientLimit => "client_limit",
+            HandoffReason::Budget => "budget",
+            HandoffReason::Operator => "operator",
+            HandoffReason::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        HandoffReason::ALL
+            .into_iter()
+            .find(|r| r.as_str() == value)
+            .ok_or_else(|| DomainError::unknown("handoff_reason", value))
+    }
+
+    pub const fn title_ru(self) -> &'static str {
+        match self {
+            HandoffReason::Human => "клиент попросил оператора",
+            HandoffReason::Money => "вопрос про оплату, деньги или возврат",
+            HandoffReason::Unsure => "ИИ не уверен в ответе",
+            HandoffReason::Groq => "Groq не ответил",
+            HandoffReason::ClientLimit => "клиент исчерпал ответы ИИ на сегодня",
+            HandoffReason::Budget => "дневной бюджет ИИ закончился",
+            HandoffReason::Operator => "оператор ответил сам",
+            HandoffReason::Disabled => "ИИ-чат выключен",
+        }
+    }
+
+    pub const fn alerts(self) -> bool {
+        !matches!(self, HandoffReason::Operator | HandoffReason::Disabled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketAi {
+    pub state: AiState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<HandoffReason>,
+    pub handoff_at: Option<DateTime<Utc>>,
+}
+
+impl TicketAi {
+    pub const fn answering(&self) -> bool {
+        matches!(self.state, AiState::Active)
+    }
+
+    pub const fn for_client(self) -> Self {
+        TicketAi {
+            state: self.state,
+            reason: None,
+            handoff_at: self.handoff_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TicketFilter {
     Waiting,
     Answered,
@@ -135,5 +244,25 @@ mod tests {
         ticket.status = TicketStatus::Closed;
         assert_eq!(ticket.filter(), TicketFilter::Closed);
         assert_eq!(TicketChannel::Bot.reply_targets(), [ReplyTarget::Telegram]);
+    }
+
+    #[test]
+    fn причины_передачи_оператору_читаются_обратно() {
+        for reason in HandoffReason::ALL {
+            assert_eq!(HandoffReason::parse(reason.as_str()).unwrap(), reason);
+            assert!(!reason.title_ru().is_empty());
+        }
+        assert!(HandoffReason::parse("other").is_err());
+        assert_eq!(AiState::parse("handed_off").unwrap(), AiState::HandedOff);
+        let at = Utc.with_ymd_and_hms(2026, 11, 18, 9, 0, 0).unwrap();
+        let ai = TicketAi {
+            state: AiState::HandedOff,
+            reason: Some(HandoffReason::Money),
+            handoff_at: Some(at),
+        };
+        let client = serde_json::to_value(ai.for_client()).unwrap();
+        assert_eq!(client["state"], "handed_off");
+        assert!(client.get("reason").is_none());
+        assert!(!ai.answering());
     }
 }

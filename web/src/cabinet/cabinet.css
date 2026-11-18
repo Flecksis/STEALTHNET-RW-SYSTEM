@@ -1818,6 +1818,14 @@ a.cb-card[id] {
   line-height: 1.45;
 }
 
+.cb-chat-note {
+  align-self: center;
+  max-width: 86%;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
 .cb-reply,
 .cb-thread-end {
   display: flex;

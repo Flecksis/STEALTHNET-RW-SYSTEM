@@ -10,6 +10,7 @@ export type SettingField = {
   kind: FieldKind;
   required: boolean;
   default: string | null;
+  large?: boolean;
 };
 
 export type FieldValues = Record<string, string | boolean>;
@@ -152,7 +153,17 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
             <label htmlFor={id} className="sf-label">
               {field.label}
             </label>
-            {field.kind.type === 'select' ? (
+            {field.kind.type === 'text' && field.large ? (
+              <textarea
+                id={id}
+                className="field"
+                rows={8}
+                value={String(value ?? '')}
+                onChange={(e) => set(field.key, e.target.value)}
+                aria-describedby={hintId}
+                disabled={busy}
+              />
+            ) : field.kind.type === 'select' ? (
               <select id={id} className="field" value={String(value ?? '')} onChange={(e) => set(field.key, e.target.value)} aria-describedby={hintId} disabled={busy}>
                 {field.required ? null : <option value="">Не выбрано</option>}
                 {field.kind.options.map((option) => (

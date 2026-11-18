@@ -9,6 +9,7 @@ use sn_domain::ledger::{LedgerKind, Wallet};
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::plan::PlanKind;
+use sn_domain::settings::CoreSettings;
 use sn_domain::subscription::{SubscriptionKind, SubscriptionStatus};
 use sn_domain::traffic::TrafficPolicy;
 use sn_store::{Store, Tx};
@@ -270,6 +271,18 @@ pub trait CoreApi: Send + Sync {
 
     fn payment_titles(&self) -> Vec<PaymentTitle> {
         Vec::new()
+    }
+
+    fn module_enabled(&self, _module: ModuleId) -> bool {
+        false
+    }
+
+    fn module_config(&self, _module: ModuleId) -> crate::module::ModuleConfig {
+        crate::module::ModuleConfig::default()
+    }
+
+    fn core_settings(&self) -> Arc<CoreSettings> {
+        Arc::new(CoreSettings::default())
     }
 }
 

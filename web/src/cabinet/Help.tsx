@@ -4,23 +4,10 @@ import { api, ApiError } from '../lib/api';
 import { dateLong, dateTime } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
+import { AI_NAME, aiAnswering, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
 import { Card, useCabinet } from './CabinetApp';
 
-export type TicketBrief = {
-  id: number;
-  status: 'open' | 'closed';
-  subject: string | null;
-  last_author: 'client' | 'support' | 'ai' | 'system';
-  created_at: string;
-  updated_at: string;
-  closed_at: string | null;
-};
-
-type Message = { author: 'client' | 'support' | 'ai' | 'system'; body: string; created_at: string };
-
-type Thread = { ticket: TicketBrief; messages: Message[] };
-
-const MAX_BODY = 4000;
+export type { TicketBrief };
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -58,10 +45,10 @@ export function HelpPage() {
   }
   const link = supportLink(site);
   const tickets = supportTickets(site);
-  return <TicketsPage link={link} tickets={tickets} />;
+  return <TicketsPage link={link} tickets={tickets} ai={tickets && site.support_ai?.cabinet === true} />;
 }
 
-function TicketsPage({ link, tickets }: { link: string | null; tickets: boolean }) {
+function TicketsPage({ link, tickets, ai }: { link: string | null; tickets: boolean; ai: boolean }) {
   const navigate = useNavigate();
   const [list, setList] = useState<TicketBrief[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -109,9 +96,11 @@ function TicketsPage({ link, tickets }: { link: string | null; tickets: boolean 
         <h1 className="cb-title">Помощь</h1>
         <p className="cb-lead muted">
           {tickets
-            ? link
-              ? 'Напишите здесь — ответ появится на этой странице. Или откройте чат поддержки.'
-              : 'Опишите вопрос — ответ появится на этой странице.'
+            ? ai
+              ? `Опишите вопрос — сначала ответит ${AI_NAME}. Если он не справится или вы попросите, подключится оператор.`
+              : link
+                ? 'Напишите здесь — ответ появится на этой странице. Или откройте чат поддержки.'
+                : 'Опишите вопрос — ответ появится на этой странице.'
             : 'Поддержка отвечает в чате — кнопка ниже откроет его.'}
         </p>
       </header>
@@ -153,7 +142,7 @@ function TicketsPage({ link, tickets }: { link: string | null; tickets: boolean 
                 <li key={t.id} className="cb-payrow cb-ticketrow">
                   <Link to={`/cabinet/help/${t.id}`} className="cb-ticketlink">
                     <span className="cb-payrow-main">
-                      <strong>{t.subject?.trim() || `Обращение №${t.id}`}</strong>
+                      <strong>{ticketTitle(t)}</strong>
                       <span className="cb-small cb-muted">{dateTime(t.status === 'closed' && t.closed_at ? t.closed_at : t.updated_at)}</span>
                     </span>
                     <span className="cb-payrow-side">
@@ -172,17 +161,18 @@ function TicketsPage({ link, tickets }: { link: string | null; tickets: boolean 
 
 function TicketPage({ id }: { id: number }) {
   const { site } = useCabinet();
-  const [thread, setThread] = useState<Thread | null>(null);
+  const [thread, setThread] = useState<ChatThread | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [ask, setAsk] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const seen = useRef(0);
+  const typing = aiTyping(thread);
 
   const load = useCallback(async () => {
     try {
-      setThread(await api<Thread>(`/api/client/support/tickets/${id}`));
+      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`));
       setError(null);
     } catch (err) {
       setError(failText(err, 'Обращение не загрузилось'));
@@ -191,21 +181,27 @@ function TicketPage({ id }: { id: number }) {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void load();
-      }
-    }, 15_000);
-    return () => window.clearInterval(timer);
   }, [load]);
 
   useEffect(() => {
-    const count = thread?.messages.length ?? 0;
+    const timer = window.setInterval(
+      () => {
+        if (document.visibilityState === 'visible') {
+          void load();
+        }
+      },
+      typing ? 2_500 : 15_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [load, typing]);
+
+  useEffect(() => {
+    const count = (thread?.messages.length ?? 0) + (typing ? 1 : 0);
     if (count > seen.current) {
       seen.current = count;
       bottom.current?.scrollIntoView({ block: 'end' });
     }
-  }, [thread]);
+  }, [thread, typing]);
 
   const reply = async () => {
     const text = body.trim();
@@ -215,10 +211,22 @@ function TicketPage({ id }: { id: number }) {
     setBusy(true);
     setError(null);
     try {
-      setThread(await api<Thread>(`/api/client/support/tickets/${id}`, { method: 'POST', body: { body: text } }));
+      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`, { method: 'POST', body: { body: text } }));
       setBody('');
     } catch (err) {
       setError(failText(err, 'Сообщение не отправилось'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const callOperator = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}/operator`, { method: 'POST', body: {} }));
+    } catch (err) {
+      setError(failText(err, 'Не получилось позвать оператора'));
     } finally {
       setBusy(false);
     }
@@ -240,8 +248,15 @@ function TicketPage({ id }: { id: number }) {
   const ticket = thread?.ticket ?? null;
   const st = ticket ? ticketState(ticket) : null;
   const closed = ticket?.status === 'closed';
-  const messages = (thread?.messages ?? []).filter((m) => m.author !== 'system');
+  const messages = visibleMessages(thread);
+  const handoff = handoffAfter(thread);
+  const answering = aiAnswering(thread);
   const link = supportLink(site);
+  const handoffNote = (
+    <li key="handoff" className="cb-chat-note">
+      Вопрос передан оператору. Ответ придёт сюда.
+    </li>
+  );
 
   return (
     <div className="cb-history">
@@ -268,14 +283,21 @@ function TicketPage({ id }: { id: number }) {
           <ol className="cb-msgs">
             {messages.map((m, i) => {
               const mine = m.author === 'client';
-              return (
+              return [
+                handoff === i ? handoffNote : null,
                 <li key={`${m.created_at}-${i}`} className={mine ? 'cb-msg mine' : 'cb-msg'}>
-                  <span className="cb-msg-who cb-small">{mine ? 'Вы' : 'Поддержка'}</span>
+                  <span className="cb-msg-who cb-small">{authorName(m.author)}</span>
                   <span className="cb-msg-body">{m.body}</span>
                   <span className="cb-msg-at cb-small cb-muted">{dateTime(m.created_at)}</span>
-                </li>
-              );
+                </li>,
+              ];
             })}
+            {handoff !== null && handoff >= messages.length ? handoffNote : null}
+            {typing ? (
+              <li className="cb-chat-note" aria-live="polite">
+                {AI_NAME} пишет ответ…
+              </li>
+            ) : null}
           </ol>
           <div ref={bottom} />
           {closed ? (
@@ -302,6 +324,11 @@ function TicketPage({ id }: { id: number }) {
                 <button type="button" className="cb-main" onClick={() => void reply()} disabled={busy || !body.trim()}>
                   {busy ? 'Отправляем…' : 'Отправить'}
                 </button>
+                {answering ? (
+                  <button type="button" className="cb-text" onClick={() => void callOperator()} disabled={busy}>
+                    Позвать оператора
+                  </button>
+                ) : null}
                 {!ask ? (
                   <button type="button" className="cb-text" onClick={() => setAsk(true)} disabled={busy}>
                     Вопрос решён, закрыть

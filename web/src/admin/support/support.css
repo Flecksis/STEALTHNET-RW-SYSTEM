@@ -148,6 +148,26 @@
   font-weight: 600;
 }
 
+.sp-subj-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sp-ai {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.sp-ai-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
 .sp-prev {
   font-size: 13px;
   color: var(--muted);
@@ -217,6 +237,7 @@
   align-self: center;
   font-size: 12.5px;
   color: var(--muted);
+  text-align: center;
 }
 
 .sp-msg {
@@ -245,6 +266,13 @@
   border-radius: 12px 12px 4px 12px;
   background: var(--btn);
   color: var(--btn-ink);
+}
+
+.sp-msg.mine.ai .sp-bubble {
+  padding: 9px 13px;
+  border: 1px solid var(--btn);
+  background: transparent;
+  color: var(--ink);
 }
 
 .sp-attach {

@@ -10,6 +10,7 @@ import type { ClientCard, Device, SubscriptionDetails } from '../client/types';
 import { minutesSince, spanText } from '../home/model';
 import './support.css';
 import { Avatar } from '../Avatar';
+import type { HandoffReason, TicketAi } from '../../lib/supportChat';
 
 type Filter = 'waiting' | 'answered' | 'closed';
 
@@ -35,13 +36,14 @@ type ListItem = {
   preview: string | null;
   last_author: string | null;
   unread: boolean;
+  ai: TicketAi | null;
 };
 
 type Counts = { waiting: number; answered: number; closed: number };
 
 type Message = { author: 'client' | 'support' | 'ai' | 'system'; admin_id: number | null; body: string; attachments: unknown[]; created_at: string };
 
-type Thread = { ticket: Ticket; messages: Message[]; admins: Array<{ id: number; email: string }> };
+type Thread = { ticket: Ticket; messages: Message[]; admins: Array<{ id: number; email: string }>; ai: TicketAi | null };
 
 const FILTERS: Array<[Filter, string, keyof Counts]> = [
   ['waiting', 'Ждут ответа', 'waiting'],
@@ -54,6 +56,34 @@ const TEMPLATES: Array<[string, string]> = [
   ['Подключитесь заново', 'Отключили все устройства. Обновите подписку в приложении и подключитесь заново. Если не поможет, напишите, разберёмся.'],
   ['Дата и время', 'Проверьте дату и время на телефоне. Если не поможет, напишите, разберёмся.'],
 ];
+
+const HANDOFF_WORD: Record<HandoffReason, string> = {
+  human: 'клиент попросил оператора',
+  money: 'вопрос про оплату, деньги или возврат',
+  unsure: 'ИИ не уверен в ответе',
+  groq: 'Groq не ответил',
+  client_limit: 'клиент исчерпал ответы ИИ на сегодня',
+  budget: 'дневной бюджет ИИ закончился',
+  operator: 'оператор ответил сам',
+  disabled: 'ИИ-чат выключен',
+};
+
+function aiMark(ai: TicketAi | null, status: Ticket['status'], lastAuthor: string | null): string | null {
+  if (!ai || status === 'closed') {
+    return null;
+  }
+  if (ai.state === 'active') {
+    return lastAuthor === 'client' ? 'ИИ отвечает' : 'Ответил ИИ';
+  }
+  return ai.reason && ai.reason !== 'operator' && ai.reason !== 'disabled' ? 'От ИИ' : null;
+}
+
+function handoffLine(ai: TicketAi | null): string | null {
+  if (!ai || ai.state !== 'handed_off' || !ai.handoff_at) {
+    return null;
+  }
+  return ai.reason ? `ИИ передал обращение оператору: ${HANDOFF_WORD[ai.reason]}` : 'ИИ передал обращение оператору';
+}
 
 const CHANNEL_WORD: Record<Ticket['channel'], string> = {
   bot: 'через бота',
@@ -70,9 +100,12 @@ function itemName(item: ListItem): string {
   return item.client_name ?? (item.telegram_username ? `@${item.telegram_username}` : (item.email ?? `Клиент ${item.ticket.client_id}`));
 }
 
-function ticketState(ticket: Ticket): { text: string; color: string } {
+function ticketState(ticket: Ticket, ai: TicketAi | null): { text: string; color: string } {
   if (ticket.status === 'closed') {
     return { text: 'Закрыто', color: 'var(--muted)' };
+  }
+  if (ai?.state === 'active') {
+    return ticket.last_author === 'client' ? { text: 'ИИ отвечает', color: 'var(--ink-2)' } : { text: 'Ответил ИИ', color: 'var(--ink-2)' };
   }
   if (ticket.last_author === 'client') {
     return { text: 'Ждёт ответа', color: 'var(--warn)' };
@@ -222,7 +255,10 @@ export function Support() {
 
   const listed = items?.find((i) => i.ticket.id === selected) ?? null;
   const adminEmail = useMemo(() => new Map((thread?.admins ?? []).map((a) => [a.id, a.email])), [thread]);
-  const state = thread ? ticketState(thread.ticket) : null;
+  const state = thread ? ticketState(thread.ticket, thread.ai) : null;
+  const handoff = thread ? handoffLine(thread.ai) : null;
+  const handoffAt = thread?.ai?.handoff_at ? Date.parse(thread.ai.handoff_at) : null;
+  const handoffIndex = handoff && handoffAt !== null && thread ? thread.messages.filter((m) => Date.parse(m.created_at) <= handoffAt).length : null;
 
   return (
     <div className="sp">
@@ -254,7 +290,8 @@ export function Support() {
               const waitColor =
                 filter === 'waiting' && minutes !== null ? (minutes >= 120 ? 'var(--bad)' : minutes >= 30 ? 'var(--warn)' : 'var(--muted)') : 'var(--muted)';
               const time = filter === 'waiting' && minutes !== null ? spanText(minutes) : item.last_message_at ? shortWhen(item.last_message_at) : '';
-              const preview = item.preview ? `${item.last_author === 'support' ? 'Вы: ' : ''}${item.preview}` : '';
+              const preview = item.preview ? `${item.last_author === 'support' ? 'Вы: ' : item.last_author === 'ai' ? 'ИИ: ' : ''}${item.preview}` : '';
+              const mark = aiMark(item.ai, item.ticket.status, item.last_author);
               return (
                 <button key={item.ticket.id} type="button" className="sp-item" aria-pressed={item.ticket.id === selected} onClick={() => pick(item.ticket.id)}>
                   <Avatar id={item.ticket.client_id} name={name} className="sp-ava" />
@@ -265,7 +302,10 @@ export function Support() {
                         {time}
                       </span>
                     </span>
-                    <span className="sp-ell sp-subj">{item.ticket.subject ?? 'Без темы'}</span>
+                    <span className="sp-subj-row">
+                      <span className="sp-ell sp-subj">{item.ticket.subject ?? 'Без темы'}</span>
+                      {mark ? <span className="sp-ai">{mark}</span> : null}
+                    </span>
                     <span className="sp-ell sp-prev">{preview}</span>
                   </span>
                   {item.unread ? (
@@ -307,6 +347,7 @@ export function Support() {
               <div className="sp-feed" ref={feedRef}>
                 {thread.messages.map((m, index) => {
                   const prev = thread.messages[index - 1];
+                  const handoffHere = handoff && handoffIndex === index;
                   const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
                   const mine = m.author === 'support' || m.author === 'ai';
                   const who =
@@ -323,6 +364,7 @@ export function Support() {
                   const stamp = `${fresh ? 'сейчас' : timeHM(m.created_at)}${who ? ` · ${who}` : ''}`;
                   return (
                     <div key={`${m.created_at}-${index}`} className="sp-msg-wrap">
+                      {handoffHere ? <span className="sp-day">{handoff}</span> : null}
                       {newDay ? (
                         <span className="sp-day">
                           {dayLabel(m.created_at)}
@@ -332,7 +374,7 @@ export function Support() {
                       {m.author === 'system' ? (
                         <span className="sp-day">{m.body}</span>
                       ) : (
-                        <div className={mine ? 'sp-msg mine' : 'sp-msg'}>
+                        <div className={m.author === 'ai' ? 'sp-msg mine ai' : mine ? 'sp-msg mine' : 'sp-msg'}>
                           <div className="sp-bubble">{m.body}</div>
                           {m.attachments.length ? (
                             <div className="sp-attach">
@@ -346,8 +388,12 @@ export function Support() {
                     </div>
                   );
                 })}
+                {handoff && handoffIndex !== null && handoffIndex >= thread.messages.length ? <span className="sp-day">{handoff}</span> : null}
               </div>
               <div className="sp-reply">
+                {thread.ai?.state === 'active' && thread.ticket.status === 'open' ? (
+                  <p className="sp-ai-note">Сейчас отвечает ИИ. Если ответите сами, ИИ в этом обращении замолчит.</p>
+                ) : null}
                 <div role="group" aria-label="Шаблоны ответов" className="sp-templates">
                   {TEMPLATES.map(([label, text]) => (
                     <button key={label} type="button" className="hov" onClick={() => setReply(text)}>
@@ -368,7 +414,9 @@ export function Support() {
                   placeholder={
                     thread.ticket.channel === 'bot'
                       ? 'Ответ уйдёт клиенту в Telegram'
-                      : me.menu.some((m) => m.module === 'mail')
+                      : thread.ticket.channel === 'miniapp'
+                        ? 'Ответ появится в мини-приложении и придёт клиенту в Telegram'
+                        : me.menu.some((m) => m.module === 'mail')
                         ? 'Ответ уйдёт клиенту в кабинет и на почту'
                         : 'Ответ появится у клиента в кабинете'
                   }

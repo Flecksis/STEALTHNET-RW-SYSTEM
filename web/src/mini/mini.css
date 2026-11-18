@@ -998,6 +998,25 @@
   border-color: var(--accent);
 }
 
+.mn-field textarea {
+  min-height: 96px;
+  padding: 10px 12px;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.45;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.mn-field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .mn-field input[aria-invalid='true'] {
   border-color: var(--bad);
 }
@@ -1431,4 +1450,77 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+}
+
+.mn-ticket {
+  min-height: 64px;
+}
+
+.mn-ticket-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+}
+
+.mn-ticket-text .mn-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-ticket-text .mn-tone {
+  font-size: 13px;
+}
+
+.mn-chat {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mn-msg {
+  align-self: flex-start;
+  max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.mn-msg.mine {
+  align-self: flex-end;
+  background: var(--accent-soft);
+}
+
+.mn-msg-who {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.mn-msg-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.mn-msg-at {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mn-chat-note {
+  align-self: center;
+  max-width: 88%;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
 }

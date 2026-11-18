@@ -4,6 +4,7 @@ import { api, ApiError } from '../../lib/api';
 import { useSession } from '../session';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import { Switch } from '../ui';
+import { AiUsage } from './AiUsage';
 import type { ModuleConfig, ModulesData, ModuleView } from './model';
 import { OauthSetup } from './OauthSetup';
 import '../form.css';
@@ -28,6 +29,7 @@ export function ModulePage() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(0);
 
   const apply = (next: ModuleConfig) => {
     setCfg(next);
@@ -90,6 +92,7 @@ export function ModulePage() {
       apply(await api<ModuleConfig>(`/api/admin/modules/${id}/config`, { method: 'PUT', body: { config, clear } }));
       const list = await api<ModulesData>('/api/admin/modules');
       setView(list.modules.find((m) => m.info.id === id) ?? view);
+      setSaved((n) => n + 1);
       setNote('Настройки сохранены');
     } catch (err) {
       setError(failText(err, 'Настройки не сохранились'));
@@ -147,6 +150,7 @@ export function ModulePage() {
         </div>
         <Switch on={view.active} onToggle={() => void toggle()} label={view.info.title} disabled={busy || view.locked !== null} />
       </section>
+      {view.info.id === 'ai' && view.active ? <AiUsage version={saved} /> : null}
       {section && view.active ? (
         <Link to={`/admin/m/${view.info.id}`} className="md-back">
           Открыть раздел «{section}»

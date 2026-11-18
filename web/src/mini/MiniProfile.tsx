@@ -21,7 +21,8 @@ export function MiniProfile() {
   }, []);
 
   const link = supportLink(site);
-  const ticketsBot = supportTickets(site) ? site.bot_username : null;
+  const chat = supportTickets(site) && site.support_ai?.miniapp === true;
+  const ticketsBot = supportTickets(site) && !chat ? site.bot_username : null;
 
   const copy = async (text: string, key: string) => {
     try {
@@ -90,6 +91,13 @@ export function MiniProfile() {
           {me.payments_count ? <span className="mn-row-val num">{me.payments_count}</span> : null}
           <Icon name="chevron-right" size={16} />
         </Link>
+        {chat ? (
+          <Link to="/app/support" className="mn-row press">
+            <Icon name="chat" size={21} />
+            <span className="mn-row-name">{link ? 'Написать в поддержку' : 'Поддержка'}</span>
+            <Icon name="chevron-right" size={16} />
+          </Link>
+        ) : null}
         {ticketsBot ? (
           <button type="button" className="mn-row press" onClick={() => openExternal(`https://t.me/${ticketsBot}?start=support`)}>
             <Icon name="chat" size={21} />
@@ -100,7 +108,7 @@ export function MiniProfile() {
         {link ? (
           <button type="button" className="mn-row press" onClick={() => openExternal(link)}>
             <Icon name="chat" size={21} />
-            <span className="mn-row-name">{ticketsBot ? 'Чат поддержки' : 'Поддержка'}</span>
+            <span className="mn-row-name">{ticketsBot || chat ? 'Чат поддержки' : 'Поддержка'}</span>
             <Icon name="chevron-right" size={16} />
           </button>
         ) : null}

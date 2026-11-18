@@ -4,7 +4,8 @@ use chrono::{DateTime, Utc};
 use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::support::{
-    MessageAuthor, Ticket, TicketChannel, TicketFilter, TicketMessage, TicketStatus,
+    AiState, HandoffReason, MessageAuthor, Ticket, TicketAi, TicketChannel, TicketFilter,
+    TicketMessage, TicketStatus,
 };
 use sqlx::PgConnection;
 use sqlx::types::Json;
@@ -16,6 +17,7 @@ pub struct NewTicket {
     pub channel: TicketChannel,
     pub subject: Option<String>,
     pub body: String,
+    pub ai: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +41,7 @@ pub struct TicketListItem {
     pub preview: Option<String>,
     pub last_author: Option<String>,
     pub unread: bool,
+    pub ai: Option<TicketAi>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -75,6 +78,28 @@ fn parse_author(value: &str) -> StoreResult<MessageAuthor> {
         "system" => Ok(MessageAuthor::System),
         other => Err(StoreError::Decode(format!("автор сообщения: {other}"))),
     }
+}
+
+type AiRow = (Option<String>, Option<String>, Option<DateTime<Utc>>);
+
+pub fn ticket_ai(
+    state: Option<&str>,
+    reason: Option<&str>,
+    handoff_at: Option<DateTime<Utc>>,
+) -> StoreResult<Option<TicketAi>> {
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let state = AiState::parse(state).map_err(|e| StoreError::Decode(e.to_string()))?;
+    let reason = reason
+        .map(HandoffReason::parse)
+        .transpose()
+        .map_err(|e| StoreError::Decode(e.to_string()))?;
+    Ok(Some(TicketAi {
+        state,
+        reason,
+        handoff_at,
+    }))
 }
 
 fn parse_status(value: &str) -> StoreResult<TicketStatus> {
@@ -167,6 +192,9 @@ struct ViewRow {
     preview: Option<String>,
     preview_author: Option<String>,
     unread: bool,
+    ai_state: Option<String>,
+    ai_reason: Option<String>,
+    ai_handoff_at: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -218,13 +246,14 @@ impl<'c> TicketsRepo<'c> {
     pub async fn open(&mut self, ticket: &NewTicket) -> StoreResult<TicketId> {
         let mut tx = sqlx::Connection::begin(&mut *self.conn).await?;
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO tickets (client_id, subscription_id, channel, subject, last_author) \
-             VALUES ($1, $2, $3, $4, 'client') RETURNING id",
+            "INSERT INTO tickets (client_id, subscription_id, channel, subject, last_author, ai_state) \
+             VALUES ($1, $2, $3, $4, 'client', CASE WHEN $5 THEN 'active' END) RETURNING id",
         )
         .bind(ticket.client_id.0)
         .bind(ticket.subscription_id.map(|s| s.0))
         .bind(ticket.channel.as_str())
         .bind(&ticket.subject)
+        .bind(ticket.ai)
         .fetch_one(&mut *tx)
         .await?;
         let message: i64 = sqlx::query_scalar(
@@ -261,7 +290,7 @@ impl<'c> TicketsRepo<'c> {
     ) -> StoreResult<Option<TicketId>> {
         let id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM tickets \
-             WHERE client_id = $1 AND status = 'open' AND channel IN ('bot', 'unknown') \
+             WHERE client_id = $1 AND status = 'open' AND (channel IN ('bot', 'unknown') OR id = $2) \
              ORDER BY id = $2 DESC, updated_at DESC, id DESC LIMIT 1",
         )
         .bind(client_id.0)
@@ -297,6 +326,28 @@ impl<'c> TicketsRepo<'c> {
         .execute(&mut *self.conn)
         .await?;
         Ok(())
+    }
+
+    pub async fn ai(&mut self, id: TicketId) -> StoreResult<Option<TicketAi>> {
+        let row: Option<AiRow> =
+            sqlx::query_as("SELECT ai_state, ai_reason, ai_handoff_at FROM tickets WHERE id = $1")
+                .bind(id.0)
+                .fetch_optional(&mut *self.conn)
+                .await?;
+        let (state, reason, at) = row.ok_or(StoreError::NotFound("обращение"))?;
+        ticket_ai(state.as_deref(), reason.as_deref(), at)
+    }
+
+    pub async fn take_over(&mut self, id: TicketId) -> StoreResult<bool> {
+        Ok(sqlx::query(
+            "UPDATE tickets SET ai_state = 'handed_off', ai_reason = 'operator', ai_handoff_at = now(), \
+             ai_claimed_until = NULL WHERE id = $1 AND ai_state = 'active'",
+        )
+        .bind(id.0)
+        .execute(&mut *self.conn)
+        .await?
+        .rows_affected()
+            > 0)
     }
 
     pub async fn get(&mut self, id: TicketId) -> StoreResult<Ticket> {
@@ -355,7 +406,8 @@ impl<'c> TicketsRepo<'c> {
              lm.created_at AS last_message_at, left(lm.body, {PREVIEW_CHARS}) AS preview, \
              lm.author AS preview_author, \
              EXISTS (SELECT 1 FROM ticket_messages um WHERE um.ticket_id = t.id AND um.author = 'client' \
-                 AND um.read_at IS NULL) AS unread \
+                 AND um.read_at IS NULL) AS unread, \
+             t.ai_state, t.ai_reason, t.ai_handoff_at \
              FROM tickets t \
              LEFT JOIN ticket_messages wm ON wm.id = t.waiting_message_id \
              LEFT JOIN ticket_messages lm ON lm.id = t.last_message_id \
@@ -394,6 +446,11 @@ impl<'c> TicketsRepo<'c> {
                         preview: row.preview,
                         last_author: row.preview_author,
                         unread: row.unread,
+                        ai: ticket_ai(
+                            row.ai_state.as_deref(),
+                            row.ai_reason.as_deref(),
+                            row.ai_handoff_at,
+                        )?,
                     },
                 ))
             })

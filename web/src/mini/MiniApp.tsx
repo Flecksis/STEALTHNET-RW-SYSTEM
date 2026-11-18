@@ -19,6 +19,7 @@ import { MiniProfile } from './MiniProfile';
 import { MiniTopUp } from './MiniTopUp';
 import { MiniRoulette } from './MiniRoulette';
 import { MiniWithdraw } from './MiniWithdraw';
+import { MiniSupport, MiniTicket } from './MiniSupport';
 import './mini.css';
 
 const TOKEN_KEY = 'sn.mini.token';
@@ -255,6 +256,8 @@ export function MiniApp() {
           <Route path="gifts" element={<MiniGifts />} />
           <Route path="roulette" element={<MiniRoulette />} />
           <Route path="withdraw" element={<MiniWithdraw />} />
+          <Route path="support" element={<MiniSupport />} />
+          <Route path="support/:id" element={<MiniTicket />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />
@@ -300,10 +303,10 @@ export function ThemeCirc() {
   );
 }
 
-export function BackHead({ title }: { title: string }) {
+export function BackHead({ title, to = '/app' }: { title: string; to?: string }) {
   return (
     <header className="mn-head">
-      <Link to="/app" className="mn-circ press back" aria-label="Назад">
+      <Link to={to} className="mn-circ press back" aria-label="Назад">
         <Icon name="chevron-left" size={20} />
       </Link>
       <h1 className="mn-h1">{title}</h1>

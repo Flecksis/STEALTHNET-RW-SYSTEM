@@ -63,6 +63,7 @@ pub fn routes() -> Router<AppState> {
         .route("/support/tickets", get(tickets).post(open_ticket))
         .route("/support/tickets/{id}", get(ticket).post(reply))
         .route("/support/tickets/{id}/close", post(close_ticket))
+        .route("/support/tickets/{id}/operator", post(ask_operator))
 }
 
 fn channel(client: &CurrentClient) -> Channel {
@@ -885,6 +886,17 @@ async fn reply(
     Ok(Json(support.thread(TicketId(id), client.actor()).await?))
 }
 
+async fn ask_operator(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<TicketThread>> {
+    client.require_full()?;
+    let support = state.services.support();
+    support.ask_operator(TicketId(id), client.actor()).await?;
+    Ok(Json(support.thread(TicketId(id), client.actor()).await?))
+}
+
 async fn close_ticket(
     client: CurrentClient,
     State(state): State<AppState>,
@@ -1602,6 +1614,71 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        db.cleanup().await;
+    }
+    #[tokio::test]
+    async fn ии_чат_виден_сайту_и_клиент_зовёт_оператора() {
+        let Some((db, state)) = promo_state().await else {
+            return;
+        };
+        state
+            .services
+            .modules()
+            .apply_rows(&[sn_store::ModuleStateRow {
+                module: "ai".into(),
+                enabled: true,
+                config: json!({ "api_key": "gsk_server_test", "miniapp": false }),
+                updated_at: chrono::Utc::now(),
+            }]);
+        let (status, _, site) = send(&state, Method::GET, "/api/public/site", &[], None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            site["support_ai"],
+            json!({ "cabinet": true, "miniapp": false })
+        );
+        let (_, token) = cabinet_client(&state).await;
+        let bearer = format!("Bearer {token}");
+        let (status, _, body) = send(
+            &state,
+            Method::POST,
+            "/api/client/support/tickets",
+            &[("authorization", &bearer)],
+            Some(json!({ "body": "Не подключается ноутбук" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id = body["ticket_id"].as_i64().unwrap();
+        let path = format!("/api/client/support/tickets/{id}");
+        let (_, _, thread) = send(
+            &state,
+            Method::GET,
+            &path,
+            &[("authorization", &bearer)],
+            None,
+        )
+        .await;
+        assert_eq!(thread["ai"]["state"], "active", "{thread}");
+        let (status, _, thread) = send(
+            &state,
+            Method::POST,
+            &format!("{path}/operator"),
+            &[("authorization", &bearer)],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{thread}");
+        assert_eq!(thread["ai"]["state"], "handed_off");
+        assert!(thread["ai"].get("reason").is_none(), "{thread}");
+        let full = state
+            .services
+            .support()
+            .thread(TicketId(id), Actor::System)
+            .await
+            .unwrap();
+        assert_eq!(
+            full.ai.and_then(|a| a.reason),
+            Some(sn_domain::support::HandoffReason::Human)
+        );
         db.cleanup().await;
     }
 }
