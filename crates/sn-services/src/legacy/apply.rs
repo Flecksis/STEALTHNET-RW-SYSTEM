@@ -227,6 +227,9 @@ impl<'a> Applier<'a> {
         self.referrals().await?;
         self.flush_issues().await?;
         self.tickets().await?;
+        self.flush_issues().await?;
+        self.extras().await?;
+        self.flush_issues().await?;
         self.finish().await?;
         self.flush_issues().await?;
         Ok(self.outcome)
@@ -1403,6 +1406,33 @@ impl<'a> Applier<'a> {
             .await?;
         }
         Ok(())
+    }
+
+    async fn extras(&mut self) -> ServiceResult<()> {
+        self.progress(Stage::Extras, 0, 1).await?;
+        let mut extras = super::extras::Extras {
+            services: self.services,
+            legacy: self.legacy,
+            admin: self.admin,
+            run_id: self.run_id,
+            clients: &self.clients,
+            tariffs: &self.tariffs,
+            tariff_names: &self.tariff_names,
+            periods_by_days: &self.periods_by_days,
+            issues: Vec::new(),
+            done: super::extras::Done::default(),
+        };
+        extras.run().await?;
+        let (issues, done) = (extras.issues, extras.done);
+        self.issues.extend(issues);
+        let counts = &mut self.outcome.counts;
+        counts.settings = done.settings;
+        counts.admins = done.admins;
+        counts.gifts = done.gifts;
+        counts.auto_rules = done.rules;
+        counts.withdrawals = done.withdrawals;
+        self.outcome.providers = done.providers;
+        self.progress(Stage::Extras, 1, 1).await
     }
 
     async fn finish(&mut self) -> ServiceResult<()> {

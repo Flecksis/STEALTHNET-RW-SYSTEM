@@ -470,6 +470,11 @@ pub async fn preview(
             referrals: legacy.referrals() as u64,
             payments: legacy.payments.len() as u64,
             tickets: legacy.tickets.len() as u64,
+            admins: legacy.admins.len() as u64,
+            gifts: legacy.gifts.len() as u64,
+            auto_rules: legacy.auto_rules.len() as u64,
+            withdrawals: legacy.withdrawals.len() as u64,
+            settings: legacy.settings.len() as u64,
         },
         balances: Balances {
             clients: positive.len() as u64,

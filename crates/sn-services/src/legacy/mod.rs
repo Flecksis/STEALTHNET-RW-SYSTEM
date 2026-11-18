@@ -2,6 +2,7 @@ pub mod apply;
 pub mod archive;
 pub mod bedolaga;
 pub mod check;
+pub mod extras;
 pub mod json_dump;
 pub mod matcher;
 pub mod model;
@@ -632,6 +633,24 @@ fn print_preview(preview: &runs::Preview, out: &dyn Fn(&str)) {
         }
     } else {
         out("Remnawave не подключена — подписки не проверены.");
+    }
+    let extras: Vec<String> = [
+        (c.admins, "админов"),
+        (c.gifts, "подарочных кодов"),
+        (c.withdrawals, "заявок на вывод"),
+        (c.auto_rules, "авторассылок (выключенными)"),
+    ]
+    .iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{what} {n}"))
+    .collect();
+    if c.settings > 0 || !extras.is_empty() {
+        let mut parts = Vec::new();
+        if c.settings > 0 {
+            parts.push("настройки бота и ключи платёжек (при первом переносе)".to_string());
+        }
+        parts.extend(extras);
+        out(&format!("Ещё перенесутся: {}.", parts.join(", ")));
     }
     if preview.currency.switch {
         out(&format!(

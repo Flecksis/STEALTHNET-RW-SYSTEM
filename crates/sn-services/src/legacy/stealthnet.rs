@@ -24,6 +24,13 @@ pub const TABLES: &[&str] = &[
     "proxy_slots",
     "singbox_slots",
     "gift_codes",
+    "admins",
+    "auto_broadcast_rules",
+    "broadcast_history",
+    "gift_history",
+    "contests",
+    "roulette_spins",
+    "roulette_tickets",
 ];
 
 pub fn looks_like(dump: &Dump) -> bool {
@@ -339,6 +346,7 @@ fn tariffs(dump: &Dump, legacy: &mut Legacy) -> HashMap<String, u32> {
 }
 
 fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
+    let coded = parked_by_code(dump);
     let mut gifts = 0u64;
     let mut hidden = 0u64;
     let now = legacy.dumped_at.unwrap_or_else(chrono::Utc::now);
@@ -353,7 +361,9 @@ fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
                 "GIFT_RESERVED" | "GIFT_CODE_ACTIVE"
             )
         }) {
-            gifts += 1;
+            if !coded.contains(&old_id) {
+                gifts += 1;
+            }
             continue;
         }
         with_sub.insert(owner.clone());
@@ -430,7 +440,7 @@ fn subscriptions(dump: &Dump, legacy: &mut Legacy) {
     legacy.skip(
         "gift_unclaimed",
         gifts,
-        "подарочных подписок ещё не активировали. Их нет у получателей — после переключения выдайте вручную.",
+        "подарочных подписок отложены без действующего кода. Их нет у получателей — после переключения выдайте вручную.",
     );
     legacy.skip(
         "subscription_hidden",
@@ -689,47 +699,226 @@ fn leftovers(dump: &Dump, legacy: &mut Legacy) {
         slots,
         "прокси и sing-box: в новой системе этих товаров нет. Оплаты за них останутся в истории.",
     );
-    let pending: Vec<(String, i64)> = dump
-        .rows("withdrawal_requests")
-        .filter(|r| {
-            r.text("status")
-                .is_some_and(|s| s.eq_ignore_ascii_case("PENDING"))
-        })
-        .filter_map(|r| {
-            Some((
-                r.string("client_id")?,
-                r.f64("amount").and_then(minor_from_float).unwrap_or(0),
-            ))
-        })
-        .collect();
-    for (client, amount) in &pending {
-        legacy.problem(
-            "withdrawal_pending",
-            "client",
-            Some(client.clone()),
-            None,
-            format!(
-                "Заявка на вывод {} не решена в старой панели",
-                format_minor(*amount)
-            ),
-        );
-    }
-    legacy.skip(
-        "withdrawal_pending",
-        pending.len() as u64,
-        "заявок на вывод реферальных денег ждут решения. Решите их в старой панели до переключения.",
-    );
-    let gifts = dump
-        .rows("gift_codes")
+}
+
+fn parked_by_code(dump: &Dump) -> HashSet<String> {
+    dump.rows("gift_codes")
         .filter(|r| {
             r.text("status")
                 .is_some_and(|s| s.eq_ignore_ascii_case("ACTIVE"))
         })
-        .count() as u64;
+        .filter_map(|r| r.string("secondary_subscription_id"))
+        .collect()
+}
+
+fn withdrawals(dump: &Dump, legacy: &mut Legacy) {
+    for row in dump.rows("withdrawal_requests") {
+        let (Some(old_id), Some(client)) = (row.string("id"), row.string("client_id")) else {
+            continue;
+        };
+        let amount = row.f64("amount").and_then(minor_from_float).unwrap_or(0);
+        let state = match row.text("status").map(str::to_ascii_uppercase).as_deref() {
+            Some("PENDING") => WithdrawalState::Pending,
+            Some("APPROVED" | "PAID" | "COMPLETED") => WithdrawalState::Paid,
+            Some("REJECTED" | "DECLINED" | "CANCELED" | "CANCELLED") => WithdrawalState::Rejected,
+            _ => continue,
+        };
+        let details = row
+            .string("wallet_trc20")
+            .or_else(|| row.string("details"))
+            .unwrap_or_default();
+        if amount <= 0 || details.is_empty() {
+            legacy.problem(
+                "withdrawal_broken",
+                "client",
+                Some(client),
+                None,
+                format!(
+                    "Заявка на вывод {} без суммы или реквизитов — не перенесена",
+                    format_minor(amount)
+                ),
+            );
+            continue;
+        }
+        legacy.withdrawals.push(LWithdrawal {
+            old_id,
+            client_old_id: client,
+            amount_minor: amount,
+            details,
+            state,
+            comment: row.string("admin_comment"),
+            created_at: row.time("created_at"),
+            decided_at: row.time("processed_at"),
+        });
+    }
+}
+
+fn gifts(dump: &Dump, legacy: &mut Legacy) {
+    let now = legacy.dumped_at.unwrap_or_else(chrono::Utc::now);
+    let parked: HashMap<String, (Option<String>, Option<chrono::DateTime<chrono::Utc>>)> = dump
+        .rows("subscriptions")
+        .filter_map(|r| {
+            Some((
+                r.string("id")?,
+                (r.string("tariff_id"), r.time("expire_at")),
+            ))
+        })
+        .collect();
+    let mut stale = 0u64;
+    for row in dump.rows("gift_codes") {
+        if !row
+            .text("status")
+            .is_some_and(|s| s.eq_ignore_ascii_case("ACTIVE"))
+        {
+            continue;
+        }
+        let (Some(old_id), Some(code), Some(giver)) = (
+            row.string("id"),
+            row.string("code"),
+            row.string("creator_id"),
+        ) else {
+            continue;
+        };
+        let expires_at = row.time("expires_at");
+        let (tariff, until) = row
+            .string("secondary_subscription_id")
+            .and_then(|s| parked.get(&s).cloned())
+            .unwrap_or((None, None));
+        let by_tariff = || {
+            let tariff = tariff.as_ref()?;
+            legacy
+                .tariffs
+                .iter()
+                .find(|t| &t.old_id == tariff)?
+                .periods
+                .iter()
+                .map(|p| p.days)
+                .min()
+        };
+        let days = match until {
+            Some(at) => Some((at - now).num_seconds()).filter(|s| *s > 0).map(|s| {
+                u32::try_from((s + 86_399) / 86_400)
+                    .unwrap_or(u32::MAX)
+                    .min(3650)
+            }),
+            None => by_tariff(),
+        };
+        match days {
+            Some(days) if expires_at.is_none_or(|at| at > now) => {
+                legacy.gifts.push(LGift {
+                    old_id,
+                    code: code.trim().to_ascii_uppercase(),
+                    giver_old_id: giver,
+                    tariff_old_id: tariff,
+                    days,
+                    expires_at,
+                    created_at: row.time("created_at"),
+                });
+            }
+            _ => stale += 1,
+        }
+    }
     legacy.skip(
-        "gift_codes",
-        gifts,
-        "подарочных кодов не активировали. Подарков в новой системе пока нет.",
+        "gift_codes_stale",
+        stale,
+        "подарочных кодов уже истекли или их подписка закончилась. Не переносим.",
+    );
+    let history = dump.count("gift_history") as u64;
+    legacy.skip(
+        "gift_history",
+        history,
+        "записей истории подарков. Подаренные подписки уже у получателей, а сама история остаётся в старой панели.",
+    );
+}
+
+fn admins(dump: &Dump, legacy: &mut Legacy) {
+    for row in dump.rows("admins") {
+        let (Some(old_id), Some(email)) = (row.string("id"), row.string("email")) else {
+            continue;
+        };
+        let Some(hash) = password_hash(row.text("password_hash")) else {
+            legacy.problem(
+                "admin_password",
+                "admin",
+                Some(old_id),
+                Some(email),
+                "Пароль админа сохранён в непонятном виде — админ не перенесён, создайте его заново",
+            );
+            continue;
+        };
+        let full_access = row
+            .text("role")
+            .is_none_or(|r| r.eq_ignore_ascii_case("ADMIN"));
+        let sections = row.list("allowed_sections");
+        let sections = if sections.is_empty() {
+            row.text("allowed_sections")
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            sections
+        };
+        legacy.admins.push(LAdmin {
+            old_id,
+            email: email.trim().to_string(),
+            password_hash: hash,
+            full_access,
+            sections,
+        });
+    }
+}
+
+fn auto_rules(dump: &Dump, legacy: &mut Legacy) {
+    for row in dump.rows("auto_broadcast_rules") {
+        let (Some(old_id), Some(trigger), Some(text)) = (
+            row.string("id"),
+            row.string("trigger_type"),
+            row.string("message"),
+        ) else {
+            continue;
+        };
+        let mut buttons = Vec::new();
+        for (label, url) in [
+            ("button_text", "button_url"),
+            ("button2_text", "button2_url"),
+        ] {
+            if let (Some(label), Some(url)) = (row.string(label), row.string(url)) {
+                buttons.push((label, url));
+            }
+        }
+        legacy.auto_rules.push(LAutoRule {
+            old_id,
+            name: row.string("name"),
+            trigger: trigger.to_ascii_lowercase(),
+            days: row.i64("delay_days").unwrap_or(0),
+            channel: row
+                .string("channel")
+                .unwrap_or_else(|| "telegram".into())
+                .to_ascii_lowercase(),
+            subject: row.string("subject"),
+            text,
+            buttons,
+            enabled: row.flag("enabled"),
+        });
+    }
+    legacy.skip(
+        "broadcast_history",
+        dump.count("broadcast_history") as u64,
+        "разовых рассылок в истории. Они уже отправлены — история остаётся в старой панели.",
+    );
+    legacy.skip(
+        "contests",
+        dump.count("contests") as u64,
+        "конкурсов. В новой системе у конкурсов свои условия и призы — заведите нужные в «Модули → Конкурсы».",
+    );
+    legacy.skip(
+        "roulette",
+        (dump.count("roulette_spins") + dump.count("roulette_tickets")) as u64,
+        "записей рулетки. Неиспользованные вращения выдайте вручную в «Модули → Рулетка».",
     );
 }
 
@@ -745,5 +934,10 @@ pub fn map(dump: &Dump) -> Legacy {
     promos(dump, &mut legacy);
     tickets(dump, &mut legacy);
     leftovers(dump, &mut legacy);
+    withdrawals(dump, &mut legacy);
+    gifts(dump, &mut legacy);
+    admins(dump, &mut legacy);
+    auto_rules(dump, &mut legacy);
+    legacy.settings = settings.into_iter().collect();
     legacy
 }

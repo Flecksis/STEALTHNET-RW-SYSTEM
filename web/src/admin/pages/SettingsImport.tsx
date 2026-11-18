@@ -5,7 +5,7 @@ import { count, dateTime, groupDigits, money, NBSP } from '../../lib/format';
 import { usePhone } from '../../lib/media';
 import '../form.css';
 import './import.css';
-import { ACCEPT, ACTIVE, COUNT_LABELS, MAX_UPLOAD, SOURCES, STAGES, type ImportView, type Run, type Source } from './importModel';
+import { ACCEPT, ACTIVE, MAX_UPLOAD, SOURCES, STAGES, countLabels, type ImportView, type Outcome, type Run, type Source } from './importModel';
 import { SettingsLayout } from './SettingsLayout';
 
 function size(bytes: number): string {
@@ -249,10 +249,10 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
         </div>
       ) : null}
       <dl className="imp-counts">
-        {COUNT_LABELS.map((c) => (
+        {countLabels(p.counts).map((c) => (
           <div key={c.key}>
             <dt>{c.label}</dt>
-            <dd>{groupDigits(p.counts[c.key])}</dd>
+            <dd>{groupDigits(p.counts[c.key] ?? 0)}</dd>
           </div>
         ))}
       </dl>
@@ -304,6 +304,12 @@ function CheckView({ ctx, run }: { ctx: Ctx; run: Run }) {
           </li>
         ) : null}
         {p.currency.blocked ? <li className="imp-warn-line">{p.currency.blocked}</li> : null}
+        {(p.counts.settings ?? 0) > 0 ? (
+          <li>
+            Перенесутся настройки старой панели: название и поддержка, пробный период, документы, тексты и кнопки бота, проценты рефералки и
+            ключи платёжных систем — платёжки сразу включатся. Это только при первом переносе: повторный не затрёт ваши правки.
+          </li>
+        ) : null}
         {p.tariff_mode === 'classic' ? (
           <li>
             В старом боте продавали без тарифов. Подписки разложим по тарифам «серверы и трафик», они будут сняты с продажи — цены задайте сами в
@@ -353,8 +359,9 @@ function RunningView({ run }: { run: Run }) {
   );
 }
 
-function NextSteps({ ctx }: { ctx: Ctx }) {
+function NextSteps({ ctx, outcome }: { ctx: Ctx; outcome: Outcome }) {
   const bot = ctx.view.bot;
+  const providers = outcome.providers ?? [];
   return (
     <ol className="imp-next">
       <li>
@@ -384,10 +391,32 @@ function NextSteps({ ctx }: { ctx: Ctx }) {
       </li>
       <li>
         <span className="strong">Проверьте оплату.</span>
-        <span>
-          В <Link to="/admin/settings/payments">«Настройки → Оплата»</Link> подключите платёжные системы и проведите пробную оплату.
-        </span>
+        {providers.length ? (
+          <span>
+            Перенесены и включены: {providers.join(', ')}. В кабинетах этих платёжных систем замените адрес уведомлений на новый — он есть в{' '}
+            <Link to="/admin/settings/payments">«Настройки → Оплата»</Link>. Затем проведите пробную оплату.
+          </span>
+        ) : (
+          <span>
+            В <Link to="/admin/settings/payments">«Настройки → Оплата»</Link> подключите платёжные системы и проведите пробную оплату.
+          </span>
+        )}
       </li>
+      {(outcome.counts.auto_rules ?? 0) > 0 ? (
+        <li>
+          <span className="strong">Включите авторассылки.</span>
+          <span>
+            Они перенесены выключенными, чтобы клиенты не получили письма дважды, пока работает старый бот. После переключения включите нужные в{' '}
+            <Link to="/admin/modules/broadcast">«Модули → Рассылки»</Link>.
+          </span>
+        </li>
+      ) : null}
+      {(outcome.counts.admins ?? 0) > 0 ? (
+        <li>
+          <span className="strong">Предупредите админов.</span>
+          <span>Они входят по прежней почте и паролю, двухфакторный вход каждый настраивает заново.</span>
+        </li>
+      ) : null}
     </ol>
   );
 }
@@ -400,10 +429,10 @@ function DoneView({ ctx, run }: { ctx: Ctx; run: Run }) {
   return (
     <div className="imp-check">
       <dl className="imp-counts">
-        {COUNT_LABELS.map((c) => (
+        {countLabels(o.counts).map((c) => (
           <div key={c.key}>
             <dt>{c.label}</dt>
-            <dd>{groupDigits(o.counts[c.key])}</dd>
+            <dd>{groupDigits(o.counts[c.key] ?? 0)}</dd>
           </div>
         ))}
       </dl>
@@ -425,7 +454,7 @@ function DoneView({ ctx, run }: { ctx: Ctx; run: Run }) {
         </li>
       </ul>
       <h3 className="strong">Что сделать дальше</h3>
-      <NextSteps ctx={ctx} />
+      <NextSteps ctx={ctx} outcome={o} />
       <p className="cap">Перед самым переключением можно загрузить свежую выгрузку: перенесётся только новое, дублей не будет.</p>
     </div>
   );

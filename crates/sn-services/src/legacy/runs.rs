@@ -61,6 +61,16 @@ pub struct Counts {
     pub referrals: u64,
     pub payments: u64,
     pub tickets: u64,
+    #[serde(default)]
+    pub admins: u64,
+    #[serde(default)]
+    pub gifts: u64,
+    #[serde(default)]
+    pub auto_rules: u64,
+    #[serde(default)]
+    pub withdrawals: u64,
+    #[serde(default)]
+    pub settings: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +139,7 @@ pub enum Stage {
     Promo,
     Referrals,
     Tickets,
+    Extras,
     Finish,
 }
 
@@ -148,6 +159,8 @@ pub struct Outcome {
     pub issues: u64,
     pub currency_switched: bool,
     pub balance_total_minor: i64,
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

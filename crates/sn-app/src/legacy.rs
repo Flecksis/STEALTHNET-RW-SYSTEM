@@ -34,6 +34,7 @@ fn stage_word(stage: Stage) -> &'static str {
         Stage::Promo => "промокоды",
         Stage::Referrals => "рефералы",
         Stage::Tickets => "обращения",
+        Stage::Extras => "настройки, админы, подарки и рассылки",
         Stage::Finish => "сверка",
     }
 }
@@ -123,6 +124,18 @@ pub async fn import(
                 c.payments,
                 c.tickets
             );
+            if c.settings + c.admins + c.gifts + c.withdrawals + c.auto_rules > 0 {
+                println!(
+                    "Ещё: настроек {}, админов {}, подарочных кодов {}, заявок на вывод {}, авторассылок {} (выключены).",
+                    c.settings, c.admins, c.gifts, c.withdrawals, c.auto_rules
+                );
+            }
+            if !outcome.providers.is_empty() {
+                println!(
+                    "Платёжки включены: {}. Смените в их кабинетах адрес уведомлений на новый.",
+                    outcome.providers.join(", ")
+                );
+            }
             if outcome.issues > 0 {
                 println!(
                     "Проблем: {} — список в админке: «Настройки → Перенос из другого бота», «Скачать отчёт».",

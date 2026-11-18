@@ -258,6 +258,58 @@ pub struct Problem {
 }
 
 #[derive(Debug, Clone)]
+pub struct LAdmin {
+    pub old_id: String,
+    pub email: String,
+    pub password_hash: String,
+    pub full_access: bool,
+    pub sections: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawalState {
+    Pending,
+    Paid,
+    Rejected,
+}
+
+#[derive(Debug, Clone)]
+pub struct LWithdrawal {
+    pub old_id: String,
+    pub client_old_id: String,
+    pub amount_minor: i64,
+    pub details: String,
+    pub state: WithdrawalState,
+    pub comment: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub decided_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LGift {
+    pub old_id: String,
+    pub code: String,
+    pub giver_old_id: String,
+    pub tariff_old_id: Option<String>,
+    pub days: u32,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LAutoRule {
+    pub old_id: String,
+    pub name: Option<String>,
+    pub trigger: String,
+    pub days: i64,
+    pub channel: String,
+    pub subject: Option<String>,
+    pub text: String,
+    pub buttons: Vec<(String, String)>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct Legacy {
     pub source: Source,
     pub dumped_at: Option<DateTime<Utc>>,
@@ -271,6 +323,11 @@ pub struct Legacy {
     pub promos: Vec<LPromo>,
     pub promo_uses: Vec<LPromoUse>,
     pub tickets: Vec<LTicket>,
+    pub settings: std::collections::BTreeMap<String, String>,
+    pub admins: Vec<LAdmin>,
+    pub withdrawals: Vec<LWithdrawal>,
+    pub gifts: Vec<LGift>,
+    pub auto_rules: Vec<LAutoRule>,
     pub skipped: Vec<Skip>,
     pub problems: Vec<Problem>,
 }
@@ -290,6 +347,11 @@ impl Legacy {
             promos: Vec::new(),
             promo_uses: Vec::new(),
             tickets: Vec::new(),
+            settings: std::collections::BTreeMap::new(),
+            admins: Vec::new(),
+            withdrawals: Vec::new(),
+            gifts: Vec::new(),
+            auto_rules: Vec::new(),
             skipped: Vec::new(),
             problems: Vec::new(),
         }

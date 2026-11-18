@@ -21,6 +21,11 @@ export type Counts = {
   referrals: number;
   payments: number;
   tickets: number;
+  admins?: number;
+  gifts?: number;
+  auto_rules?: number;
+  withdrawals?: number;
+  settings?: number;
 };
 
 export type Skip = { code: string; count: number; text: string };
@@ -45,7 +50,7 @@ export type Preview = {
   skipped: Skip[];
 };
 
-export type Stage = 'read' | 'tariffs' | 'clients' | 'subscriptions' | 'payments' | 'promo' | 'referrals' | 'tickets' | 'finish';
+export type Stage = 'read' | 'tariffs' | 'clients' | 'subscriptions' | 'payments' | 'promo' | 'referrals' | 'tickets' | 'extras' | 'finish';
 
 export type Progress = { stage: Stage; done: number; total: number };
 
@@ -57,6 +62,7 @@ export type Outcome = {
   issues: number;
   currency_switched: boolean;
   balance_total_minor: number;
+  providers?: string[];
 };
 
 export type Run = {
@@ -100,10 +106,11 @@ export const STAGES: Array<{ key: Stage; label: string }> = [
   { key: 'promo', label: 'Промокоды' },
   { key: 'referrals', label: 'Рефералы' },
   { key: 'tickets', label: 'Обращения' },
+  { key: 'extras', label: 'Настройки, админы, подарки' },
   { key: 'finish', label: 'Сверка' },
 ];
 
-export const COUNT_LABELS: Array<{ key: keyof Counts; label: string }> = [
+export const COUNT_LABELS: Array<{ key: keyof Counts; label: string; optional?: boolean }> = [
   { key: 'clients', label: 'Клиенты' },
   { key: 'subscriptions', label: 'Подписки' },
   { key: 'tariffs', label: 'Тарифы' },
@@ -111,7 +118,15 @@ export const COUNT_LABELS: Array<{ key: keyof Counts; label: string }> = [
   { key: 'referrals', label: 'Рефералы' },
   { key: 'payments', label: 'Платежи' },
   { key: 'tickets', label: 'Обращения' },
+  { key: 'admins', label: 'Админы', optional: true },
+  { key: 'gifts', label: 'Подарочные коды', optional: true },
+  { key: 'withdrawals', label: 'Заявки на вывод', optional: true },
+  { key: 'auto_rules', label: 'Авторассылки', optional: true },
 ];
+
+export function countLabels(counts: Counts) {
+  return COUNT_LABELS.filter((c) => !c.optional || (counts[c.key] ?? 0) > 0);
+}
 
 export const MAX_UPLOAD = 2 * 1024 * 1024 * 1024;
 

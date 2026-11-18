@@ -716,8 +716,14 @@ fn stealthnet_dump(fresh: bool) -> Vec<u8> {
     );
     sql += &copy(
         "withdrawal_requests",
-        &["id", "client_id", "amount", "status"],
-        &[&[Some("w1"), Some("c1"), Some("50"), Some("PENDING")]],
+        &["id", "client_id", "amount", "status", "wallet_trc20"],
+        &[&[
+            Some("w1"),
+            Some("c1"),
+            Some("50"),
+            Some("PENDING"),
+            Some("TXwallet"),
+        ]],
     );
     sql += &copy(
         "proxy_slots",
@@ -810,7 +816,6 @@ async fn stealthnet_переносится_целиком_без_изменен�
         "payments_free",
         "gift_unclaimed",
         "subscription_missing",
-        "withdrawal_pending",
         "products_absent",
         "promo_invalid",
     ] {
@@ -827,6 +832,7 @@ async fn stealthnet_переносится_целиком_без_изменен�
     assert_eq!(outcome.counts.referrals, 1);
     assert_eq!(outcome.counts.tickets, 1);
     assert_eq!(outcome.balance_total_minor, 17_050);
+    assert_eq!(outcome.counts.withdrawals, 1);
     let calls = env.remna.calls();
     assert!(
         calls
@@ -963,7 +969,10 @@ async fn stealthnet_переносится_целиком_без_изменен�
     let text = String::from_utf8(bytes).unwrap();
     assert!(text.contains("не найден"), "{text}");
     assert!(text.contains("и в рублях, и в долларах"), "{text}");
-    assert!(text.contains("Заявка на вывод"), "{text}");
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM referral_withdrawals WHERE status = 'pending' AND details = 'TXwallet'").await,
+        1
+    );
 }
 
 #[tokio::test]
@@ -1691,4 +1700,468 @@ async fn пустая_или_чужая_remnawave_даёт_понятное_пр
     assert!(text.contains("пользователей в ней: 1"), "{text}");
     seed_stealthnet_remna(&env.remna);
     assert_eq!(wrong_panel(&check().await), None);
+}
+
+fn extras_dump(approved: bool) -> Vec<u8> {
+    let mut sql = String::from("-- Created at: 2026-11-17T09:00:00.000Z\n\n");
+    let buttons = r#"[{"id":"topup","visible":false,"label":"💳 Пополнить","style":"success"},{"id":"tariffs","visible":true,"label":"🚀 Купить VPN","style":"primary"},{"id":"proxy","visible":true,"label":"Прокси"}]"#;
+    let texts = r#"{"welcomeGreeting":"Привет, {{STAR}}!","balancePrefix":"💰 Баланс:"}"#;
+    let settings: Vec<[Option<&str>; 3]> = vec![
+        [Some("s1"), Some("default_currency"), Some("rub")],
+        [Some("s2"), Some("service_name"), Some("Тест VPN")],
+        [Some("s3"), Some("support_link"), Some("@help_bot")],
+        [Some("s4"), Some("tickets_enabled"), Some("true")],
+        [Some("s5"), Some("trial_days"), Some("3")],
+        [Some("s6"), Some("trial_squad_uuid"), Some(S1)],
+        [Some("s7"), Some("trial_device_limit"), Some("2")],
+        [Some("s8"), Some("trial_traffic_limit"), Some("10737418240")],
+        [
+            Some("s9"),
+            Some("offer_link"),
+            Some("https://example.com/offer"),
+        ],
+        [
+            Some("s10"),
+            Some("agreement_link"),
+            Some("https://example.com/terms"),
+        ],
+        [Some("s11"), Some("bot_buttons"), Some(buttons)],
+        [Some("s12"), Some("bot_buttons_per_row"), Some("2")],
+        [Some("s13"), Some("bot_menu_texts"), Some(texts)],
+        [Some("s14"), Some("bot_emojis"), Some(r#"{"STAR":"⭐"}"#)],
+        [Some("s15"), Some("default_referral_percent"), Some("25")],
+        [Some("s16"), Some("referral_percent_level_2"), Some("5")],
+        [
+            Some("s17"),
+            Some("cryptopay_api_token"),
+            Some("123:TESTTOKEN"),
+        ],
+        [Some("s18"), Some("cryptopay_testnet"), Some("true")],
+        [Some("s19"), Some("yookassa_shop_id"), Some("123456")],
+        [
+            Some("s20"),
+            Some("bot_welcome_text"),
+            Some("<b>Добро пожаловать</b>"),
+        ],
+        [
+            Some("s21"),
+            Some("gift_subscriptions_enabled"),
+            Some("true"),
+        ],
+    ];
+    let settings: Vec<&[Option<&str>]> = settings.iter().map(|r| r.as_slice()).collect();
+    sql += &copy("system_settings", &["id", "key", "value"], &settings);
+    sql += &copy(
+        "tariff_categories",
+        &["id", "name", "sort_order"],
+        &[&[Some("cat1"), Some("Все"), Some("0")]],
+    );
+    sql += &copy(
+        "tariffs",
+        &[
+            "id",
+            "category_id",
+            "name",
+            "duration_days",
+            "price",
+            "currency",
+        ],
+        &[&[
+            Some("t1"),
+            Some("cat1"),
+            Some("Месяц"),
+            Some("30"),
+            Some("300"),
+            Some("rub"),
+        ]],
+    );
+    sql += &copy(
+        "tariff_price_options",
+        &["id", "tariff_id", "duration_days", "price", "sort_order"],
+        &[&[Some("o1"), Some("t1"), Some("30"), Some("300"), Some("0")]],
+    );
+    sql += &copy(
+        "clients",
+        &["id", "role", "balance", "telegram_id", "telegram_username"],
+        &[
+            &[
+                Some("g1"),
+                Some("CLIENT"),
+                Some("0"),
+                Some("3001"),
+                Some("giver"),
+            ],
+            &[Some("g2"), Some("CLIENT"), Some("0"), Some("3002"), None],
+        ],
+    );
+    sql += &copy(
+        "subscriptions",
+        &[
+            "id",
+            "owner_id",
+            "remnawave_uuid",
+            "subscription_index",
+            "tariff_id",
+            "gift_status",
+            "expire_at",
+        ],
+        &[
+            &[
+                Some("p1"),
+                Some("g1"),
+                Some("6f1c2f3e-0000-4000-8000-0000000000aa"),
+                Some("1"),
+                Some("t1"),
+                Some("GIFT_CODE_ACTIVE"),
+                Some("2026-12-07 09:00:00"),
+            ],
+            &[
+                Some("p2"),
+                Some("g1"),
+                Some("6f1c2f3e-0000-4000-8000-0000000000bb"),
+                Some("2"),
+                Some("t1"),
+                Some("GIFT_RESERVED"),
+                None,
+            ],
+        ],
+    );
+    sql += &copy(
+        "gift_codes",
+        &[
+            "id",
+            "code",
+            "creator_id",
+            "secondary_subscription_id",
+            "status",
+            "expires_at",
+            "created_at",
+        ],
+        &[
+            &[
+                Some("gc1"),
+                Some("ABCD-EFGH-JKLM"),
+                Some("g1"),
+                Some("p1"),
+                Some("ACTIVE"),
+                Some("2026-11-27 09:00:00"),
+                Some("2026-11-10 09:00:00"),
+            ],
+            &[
+                Some("gc2"),
+                Some("MNPQ-RSTU-VWXY"),
+                Some("g1"),
+                Some("p2"),
+                Some("ACTIVE"),
+                Some("2026-12-01 09:00:00"),
+                Some("2026-11-11 09:00:00"),
+            ],
+        ],
+    );
+    let first = if approved { "APPROVED" } else { "PENDING" };
+    sql += &copy(
+        "withdrawal_requests",
+        &[
+            "id",
+            "client_id",
+            "amount",
+            "wallet_trc20",
+            "status",
+            "admin_comment",
+            "processed_at",
+            "created_at",
+        ],
+        &[
+            &[
+                Some("w1"),
+                Some("g2"),
+                Some("500"),
+                Some("TXwallet1"),
+                Some(first),
+                None,
+                approved.then_some("2026-11-17 08:00:00"),
+                Some("2026-11-12 09:00:00"),
+            ],
+            &[
+                Some("w2"),
+                Some("g2"),
+                Some("300"),
+                Some("TXwallet1"),
+                Some("REJECTED"),
+                Some("неверный кошелёк"),
+                Some("2026-11-11 10:00:00"),
+                Some("2026-11-10 09:00:00"),
+            ],
+        ],
+    );
+    let hash = "$2b$10$abcdefghijklmnopqrstuuOdGq1xQmB0PZ5d4fN4m0wE1gVyZcH3W";
+    sql += &copy(
+        "admins",
+        &["id", "email", "password_hash", "role", "allowed_sections"],
+        &[
+            &[
+                Some("a1"),
+                Some("boss@example.com"),
+                Some(hash),
+                Some("ADMIN"),
+                None,
+            ],
+            &[
+                Some("a2"),
+                Some("man@example.com"),
+                Some(hash),
+                Some("MANAGER"),
+                Some(r#"["clients","tickets"]"#),
+            ],
+            &[
+                Some("a3"),
+                Some("owner@example.com"),
+                Some(hash),
+                Some("ADMIN"),
+                None,
+            ],
+        ],
+    );
+    sql += &copy(
+        "auto_broadcast_rules",
+        &[
+            "id",
+            "name",
+            "trigger_type",
+            "delay_days",
+            "channel",
+            "message",
+            "button_text",
+            "button_url",
+            "enabled",
+        ],
+        &[
+            &[
+                Some("r1"),
+                Some("Скоро конец"),
+                Some("subscription_ending_soon"),
+                Some("3"),
+                Some("telegram"),
+                Some("Подписка кончается, промокод {{PROMOCODE}}"),
+                Some("Продлить"),
+                Some("menu:tariffs"),
+                Some("t"),
+            ],
+            &[
+                Some("r2"),
+                Some("Привет"),
+                Some("welcome"),
+                Some("0"),
+                Some("telegram"),
+                Some("Добро пожаловать"),
+                None,
+                None,
+                Some("t"),
+            ],
+        ],
+    );
+    sql.into_bytes()
+}
+
+#[tokio::test]
+async fn настройки_админы_подарки_выводы_и_авторассылки_переносятся() {
+    let Some(env) = env().await else { return };
+    let admin = owner(&env.services).await;
+    let (preview, outcome) = import(&env, &extras_dump(false), Some(admin)).await;
+    assert_eq!(preview.counts.admins, 3);
+    assert_eq!(preview.counts.gifts, 2);
+    assert_eq!(preview.counts.withdrawals, 2);
+    assert_eq!(preview.counts.auto_rules, 2);
+    assert_eq!(outcome.counts.admins, 2);
+    assert_eq!(outcome.counts.gifts, 2);
+    assert_eq!(outcome.counts.withdrawals, 2);
+    assert_eq!(outcome.counts.auto_rules, 1);
+    assert_eq!(outcome.providers, ["Crypto Pay"]);
+
+    let s = &env.services;
+    let core = s.settings();
+    assert_eq!(core.brand_name, "Тест VPN");
+    assert_eq!(core.support_url.as_deref(), Some("https://t.me/help_bot"));
+    assert_eq!(core.trial.days, 3);
+    assert_eq!(core.trial.devices, 2);
+    assert_eq!(
+        core.trial.traffic.limit_bytes,
+        Some(10 * 1024 * 1024 * 1024)
+    );
+    let setting = |key: &'static str| async move {
+        let mut conn = s.store().conn().await.unwrap();
+        sqlx::query_scalar::<_, serde_json::Value>("SELECT value FROM settings WHERE key = $1")
+            .bind(key)
+            .fetch_one(sn_store::Db::conn(&mut conn))
+            .await
+            .unwrap()
+    };
+    let docs = setting("bot.documents").await;
+    assert_eq!(docs.as_array().map(Vec::len), Some(2), "{docs}");
+    let content = setting("bot.content").await;
+    assert_eq!(content["menu_columns"], 2, "{content}");
+    assert_eq!(content["buttons"]["menu.btn.balance"]["hidden"], true);
+    assert_eq!(content["buttons"]["menu.btn.buy"]["text"], "🚀 Купить VPN");
+    assert_eq!(content["buttons"]["menu.btn.buy"]["style"], "primary");
+    assert_eq!(content["texts"]["menu.greeting"], "Привет, ⭐!");
+    assert_eq!(content["texts"]["menu.balance"], "💰 Баланс: {balance}");
+    assert!(
+        setting("payments.cryptopay").await["enabled"] == true,
+        "Crypto Pay включена"
+    );
+    assert!(setting("payments.yookassa").await["enabled"] == false);
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM admins WHERE email IN ('boss@example.com', 'man@example.com')"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM admins WHERE email = 'man@example.com' AND role = 'readonly' AND permissions @> ARRAY['clients_write', 'support']").await,
+        1
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM gifts WHERE code = 'ABCD-EFGH-JKLM' AND status = 'active' AND days = 20").await,
+        1
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM gifts WHERE code = 'MNPQ-RSTU-VWXY' AND days = 30"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM referral_withdrawals WHERE status = 'pending' AND held_at IS NOT NULL AND released_at IS NULL AND amount_minor = 50000").await,
+        1
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM referral_withdrawals WHERE status = 'rejected' AND released_at IS NOT NULL").await,
+        1
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM balance_entries WHERE idempotency_key LIKE 'withdrawal:%'"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM auto_broadcasts WHERE NOT enabled").await,
+        1
+    );
+    let run = scalar(s, "SELECT max(id) FROM import_runs").await;
+    let mut conn = s.store().conn().await.unwrap();
+    let issues = runs::issues(&mut conn, run).await.unwrap();
+    drop(conn);
+    let codes: Vec<&str> = issues.iter().map(|i| i.code.as_str()).collect();
+    for code in [
+        "admin_exists",
+        "provider_off",
+        "rule_skipped",
+        "rule_changed",
+        "setting_text",
+    ] {
+        assert!(codes.contains(&code), "нет {code} в {codes:?}");
+    }
+    assert!(
+        issues.iter().all(|i| !i.details.contains("TESTTOKEN")),
+        "ключи платёжек в отчёт не попадают"
+    );
+
+    let (_, again) = import(&env, &extras_dump(true), Some(admin)).await;
+    assert_eq!(again.counts.admins, 0);
+    assert_eq!(again.counts.gifts, 0);
+    assert_eq!(again.counts.auto_rules, 0);
+    assert_eq!(scalar(s, "SELECT count(*) FROM gifts").await, 2);
+    assert_eq!(scalar(s, "SELECT count(*) FROM auto_broadcasts").await, 1);
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM referral_withdrawals").await,
+        2
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM referral_withdrawals WHERE status = 'paid' AND decided_at IS NOT NULL").await,
+        1
+    );
+    let run = scalar(s, "SELECT max(id) FROM import_runs").await;
+    let mut conn = s.store().conn().await.unwrap();
+    let issues = runs::issues(&mut conn, run).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.code == "settings_kept"),
+        "{issues:?}"
+    );
+}
+
+#[tokio::test]
+async fn настройки_новой_панели_не_затираются_переносом() {
+    let Some(env) = env().await else { return };
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+    s.settings_ops()
+        .update_core(
+            &crate::settings::CoreUpdate {
+                brand_name: Some("Новое имя".into()),
+                ..Default::default()
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    let mut texts = std::collections::BTreeMap::new();
+    texts.insert(
+        "menu.greeting".to_string(),
+        Some("Своё приветствие".to_string()),
+    );
+    s.bot_content_ops()
+        .update_content(
+            &crate::bot_content::ContentUpdate {
+                texts,
+                ..Default::default()
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    let mut config = serde_json::Map::new();
+    config.insert("api_token".into(), serde_json::json!("999:OWN"));
+    s.settings_ops()
+        .update_provider(
+            "cryptopay",
+            &crate::settings::ProviderUpdate {
+                enabled: Some(false),
+                config,
+                clear: Vec::new(),
+                channels: None,
+                methods: None,
+                label: None,
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    s.set_remna(Some(env.remna.clone()));
+    let (_, outcome) = import(&env, &extras_dump(false), Some(admin)).await;
+    assert_eq!(s.settings().brand_name, "Новое имя");
+    assert_eq!(
+        s.settings().support_url.as_deref(),
+        Some("https://t.me/help_bot")
+    );
+    let content = s.bot_content().content.config().clone();
+    assert_eq!(
+        content.texts.get("menu.greeting").map(String::as_str),
+        Some("Своё приветствие")
+    );
+    assert!(content.buttons.contains_key("menu.btn.buy"));
+    assert!(!outcome.providers.contains(&"Crypto Pay".to_string()));
+    let run = scalar(s, "SELECT max(id) FROM import_runs").await;
+    let mut conn = s.store().conn().await.unwrap();
+    let issues = runs::issues(&mut conn, run).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.code == "provider_kept"),
+        "{issues:?}"
+    );
 }
