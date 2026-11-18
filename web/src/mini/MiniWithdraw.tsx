@@ -133,7 +133,13 @@ export function MiniWithdraw() {
         <p className={status.bad ? 'mn-error' : 'mn-note'} role={status.bad ? 'alert' : 'status'}>
           {status.text}
         </p>
-      ) : null}
+      ) : (
+        <p className="mn-notes">
+          {data?.withdrawals_enabled && methods.length > 0
+            ? t('Выводить пока нечего: деньги появятся, когда приглашённые друзья оплатят подписку.')
+            : t('Вывод заработанного сейчас не принимается.')}
+        </p>
+      )}
       {withdrawals.length > 0 ? (
         <ul className="mn-list mn-payrows" aria-label={t('Заявки на вывод')}>
           {withdrawals.map((w) => {

@@ -100,6 +100,7 @@ export const MINI: Record<string, string> = {
   'Можно вывести {amount}. Заявку проверяют вручную, обычно за день-два.': 'You can withdraw {amount}. Requests are reviewed manually, usually within a day or two.',
   'Сумма вывода': 'Withdrawal amount',
   'Вывести всё': 'Withdraw all',
+  'Выводить пока нечего: деньги появятся, когда приглашённые друзья оплатят подписку.': 'Nothing to withdraw yet: money shows up once invited friends pay for a subscription.',
   'Куда вывести': 'Withdrawal method',
   'Отменить заявку': 'Cancel request',
   'Я не робот': 'I\'m not a robot',
