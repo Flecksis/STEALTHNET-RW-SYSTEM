@@ -329,10 +329,10 @@ fn walk(value: &mut Value, parent: Option<&str>, depth: u8) -> bool {
         Value::Object(map) => {
             let mut changed = false;
             for (key, item) in map.iter_mut() {
-                if let Some(rule) = rule(parent, key)
-                    && !matches!(item, Value::Object(_) | Value::Array(_))
-                {
-                    if let Some(masked) = masked_value(rule, item) {
+                if let Some(rule) = rule(parent, key) {
+                    if matches!(item, Value::Object(_) | Value::Array(_)) {
+                        changed |= mask_all(item, key, rule);
+                    } else if let Some(masked) = masked_value(rule, item) {
                         *item = masked;
                         changed = true;
                     }
@@ -358,6 +358,78 @@ fn walk(value: &mut Value, parent: Option<&str>, depth: u8) -> bool {
         },
         _ => false,
     }
+}
+
+fn mask_all(value: &mut Value, parent: &str, rule: Rule) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut changed = false;
+            for (key, item) in map.iter_mut() {
+                let inner = self::rule(Some(parent), key).unwrap_or(rule);
+                changed |= mask_all(item, key, inner);
+            }
+            changed
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items.iter_mut() {
+                changed |= mask_all(item, parent, rule);
+            }
+            changed
+        }
+        _ => match masked_value(rule, value) {
+            Some(masked) => {
+                *value = masked;
+                true
+            }
+            None => false,
+        },
+    }
+}
+
+fn percent_decode_loose(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut pos = 0;
+    while let Some(&byte) = bytes.get(pos) {
+        let hex = bytes
+            .get(pos + 1..pos + 3)
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match (byte, hex) {
+            (b'+', _) => {
+                out.push(b' ');
+                pos += 1;
+            }
+            (b'%', Some(decoded)) => {
+                out.push(decoded);
+                pos += 3;
+            }
+            (other, _) => {
+                out.push(other);
+                pos += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn loose_pairs(text: &str) -> Option<Vec<(String, String)>> {
+    if !text.contains('=') {
+        return None;
+    }
+    let pairs: Vec<(String, String)> = text
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (percent_decode_loose(key), percent_decode_loose(value))
+        })
+        .collect();
+    pairs
+        .iter()
+        .any(|(key, _)| rule(None, key).is_some())
+        .then_some(pairs)
 }
 
 fn percent_decode(raw: &str) -> Option<String> {
@@ -436,8 +508,16 @@ fn clip(text: &str) -> String {
 
 pub fn mask_body(body: &[u8]) -> (MaskedBody, bool) {
     let Ok(text) = std::str::from_utf8(body) else {
-        return (MaskedBody::Binary(body.len()), false);
+        let lossy = String::from_utf8_lossy(body);
+        return match mask_text(&lossy) {
+            (masked, true) => (masked, true),
+            _ => (MaskedBody::Binary(body.len()), false),
+        };
     };
+    mask_text(text)
+}
+
+fn mask_text(text: &str) -> (MaskedBody, bool) {
     let trimmed = text.trim_start();
     if (trimmed.starts_with('{') || trimmed.starts_with('['))
         && let Ok(mut value) = serde_json::from_str::<Value>(text)
@@ -445,13 +525,18 @@ pub fn mask_body(body: &[u8]) -> (MaskedBody, bool) {
         let changed = walk(&mut value, None, 0);
         return (MaskedBody::Json(value), changed);
     }
-    if let Some(mut pairs) = sn_payments::form::multipart(body) {
+    if let Some(mut pairs) = sn_payments::form::multipart(text.as_bytes()) {
         mask_pairs(&mut pairs);
         return (MaskedBody::Form(pairs), true);
     }
     if let Some(mut pairs) = form_pairs(text.trim()) {
         let changed = mask_pairs(&mut pairs);
         return (MaskedBody::Form(pairs), changed);
+    }
+    if let Some(mut pairs) = loose_pairs(text.trim())
+        && mask_pairs(&mut pairs)
+    {
+        return (MaskedBody::Form(pairs), true);
     }
     (MaskedBody::Text(clip(text)), false)
 }
@@ -789,5 +874,39 @@ mod tests {
             prepare(mulen.as_bytes(), None).event.as_deref(),
             Some("success")
         );
+    }
+
+    #[test]
+    fn маскируются_массивы_и_объекты_под_секретными_ключами() {
+        let body = br#"{"token":["tk_live_1"],"emails":["anna.ivanova@example.com"],"signature":{"value":"abcdef123456"},"amount":100}"#;
+        let masked = json_of(body).to_string();
+        assert!(!masked.contains("tk_live_1"), "{masked}");
+        assert!(!masked.contains("anna.ivanova"), "{masked}");
+        assert!(!masked.contains("abcdef123456"), "{masked}");
+        assert!(masked.contains("100"), "{masked}");
+    }
+
+    #[test]
+    fn форма_с_битой_последовательностью_и_пробелом_маскируется() {
+        let body = b"sha1_hash=ac13833bd6ba9eff&email=ivan%40example.com&comment=50%off today";
+        let stored = prepare(body, None).body;
+        let text = String::from_utf8_lossy(&stored).to_string();
+        assert!(!text.contains("ac13833bd6ba9eff"), "{text}");
+        assert!(!text.contains("ivan%40example"), "{text}");
+        assert!(!text.contains("ivan@example"), "{text}");
+        assert_ne!(stored.as_slice(), body.as_slice());
+    }
+
+    #[test]
+    fn тело_не_в_utf8_тоже_маскируется() {
+        let mut body = b"label=".to_vec();
+        body.extend_from_slice(&[0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]);
+        body.extend_from_slice(b"&sha1_hash=ac13833bd6ba9eff&email=ivan%40example.com");
+        let stored = prepare(&body, None).body;
+        let text = String::from_utf8_lossy(&stored).to_string();
+        assert!(!text.contains("ac13833bd6ba9eff"), "{text}");
+        assert!(!text.contains("ivan"), "{text}");
+        let plain = [0xcf_u8, 0xf0, 0xe8];
+        assert_eq!(prepare(&plain, None).body, plain.to_vec());
     }
 }
