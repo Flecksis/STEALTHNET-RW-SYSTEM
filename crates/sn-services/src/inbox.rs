@@ -2859,8 +2859,10 @@ impl<'a> PaymentInbox<'a> {
         else {
             return Ok(PollResult::Pending);
         };
-        if outcome.status == ProviderStatus::Pending {
-            self.track_pending(payment.id, &txid).await?;
+        if matches!(
+            outcome.status,
+            ProviderStatus::Pending | ProviderStatus::Failed | ProviderStatus::Canceled
+        ) {
             return Ok(PollResult::Pending);
         }
         self.settle_polled(provider.as_ref(), payment.id, &txid, outcome)

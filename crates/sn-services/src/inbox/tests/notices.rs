@@ -516,10 +516,7 @@ async fn опрос_без_номера_транзакции_ищет_платё
         kassa.lookups.lock().unwrap().clone(),
         vec![payment.public_id.to_string()]
     );
-    assert_eq!(
-        reload(&kit, &payment).await.provider_txid.as_deref(),
-        Some("k-777")
-    );
+    assert_eq!(reload(&kit, &payment).await.provider_txid, None);
     *kassa.status.lock().unwrap() = Some(WebhookOutcome {
         provider_txid: Some("k-777".into()),
         ..with(&payment, ProviderStatus::Paid, "k-777:paid")
@@ -528,10 +525,12 @@ async fn опрос_без_номера_транзакции_ищет_платё
         inbox.poll_payment(payment.id).await.unwrap(),
         PollResult::Settled
     );
-    assert_eq!(reload(&kit, &payment).await.status, PaymentStatus::Paid);
+    let paid = reload(&kit, &payment).await;
+    assert_eq!(paid.status, PaymentStatus::Paid);
+    assert_eq!(paid.provider_txid.as_deref(), Some("k-777"));
     assert_eq!(
         kassa.lookups.lock().unwrap().last().map(String::as_str),
-        Some("k-777")
+        Some(payment.public_id.to_string().as_str())
     );
     let other = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
     *kassa.finds_by_payment.lock().unwrap() = false;
@@ -896,4 +895,30 @@ async fn check_cloudpayments_сверяется_с_платежом_в_базе(
         .collect();
     assert!(keys.iter().all(|key| key.starts_with("check:")), "{keys:?}");
     kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn оплата_другой_картой_после_отказа_первой_засчитывается() {
+    for first in [ProviderStatus::Failed, ProviderStatus::Pending] {
+        let kassa = Arc::new(Kassa::default());
+        *kassa.finds_by_payment.lock().unwrap() = true;
+        let Some(kit) = kassa_kit(kassa.clone()).await else {
+            return;
+        };
+        let client_id = client(&kit.services, 8120).await;
+        let tariff = standard(&kit.services).await;
+        let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+        let inbox = kit.services.inbox();
+        *kassa.status.lock().unwrap() = Some(WebhookOutcome {
+            provider_txid: Some("k-1".into()),
+            ..with(&payment, first, "k-1:first")
+        });
+        inbox.poll_payment(payment.id).await.unwrap();
+        let second = inbox.apply_outcome(KASSA, &paid_by(&payment, "k-2")).await;
+        assert!(second.is_ok(), "{first:?}: {second:?}");
+        let after = reload(&kit, &payment).await;
+        assert_eq!(after.status, PaymentStatus::Paid, "{first:?}");
+        assert_eq!(after.provider_txid.as_deref(), Some("k-2"), "{first:?}");
+        kit.db.cleanup().await;
+    }
 }
