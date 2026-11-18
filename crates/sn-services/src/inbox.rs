@@ -107,7 +107,10 @@ fn dedupe_key(request: &WebhookRequest) -> String {
         .map(str::trim)
         .filter(|kind| !kind.is_empty())
     {
-        Some(kind) => format!("{}:{digest}", clip(&kind.to_ascii_lowercase(), 32)),
+        Some(kind) => match masking::route_event(Some(&kind.to_ascii_lowercase())) {
+            Some(event) => format!("{event}:{digest}"),
+            None => format!("route-{}:{digest}", clip(&digest_hex(kind.as_bytes()), 16)),
+        },
         None => digest,
     }
 }

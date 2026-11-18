@@ -961,3 +961,27 @@ async fn счёт_с_зачисленной_недоплатой_нельзя_о
     assert_eq!(reload(&kit, &other).await.status, PaymentStatus::Paid);
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn токен_из_пути_уведомления_не_попадает_в_ключ_дублей() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let body = serde_json::json!({ "event": "tok", "status": "waiting" });
+    let token = "c2d9a17e4b6f40f3a0e85d1b7c3e9f21";
+    let mut hook = kassa_hook(KASSA_SECRET, &body);
+    hook.request.route_suffix = Some(token.into());
+    kit.services.inbox().handle(hook).await.unwrap();
+    let mut again = kassa_hook(KASSA_SECRET, &body);
+    again.request.route_suffix = Some(token.into());
+    kit.services.inbox().handle(again).await.unwrap();
+    let keys: Vec<String> = inbox_rows(&kit)
+        .await
+        .into_iter()
+        .map(|row| row.dedupe_key)
+        .collect();
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(!keys[0].contains(token), "{}", keys[0]);
+    assert!(keys[0].starts_with("route-"), "{}", keys[0]);
+    kit.db.cleanup().await;
+}
