@@ -82,6 +82,7 @@ def samples(dsn):
         WHERE meta ? 'last_name' ORDER BY id DESC LIMIT 1 OFFSET (SELECT count(*) * 4000 / 300000 FROM clients)""")
     s["open_ticket"] = one(dsn, "SELECT id FROM tickets WHERE status = 'open' ORDER BY id DESC LIMIT 1")
     s["payment"] = one(dsn, "SELECT id FROM payments WHERE status = 'paid' ORDER BY id DESC LIMIT 1 OFFSET (SELECT count(*) * 100 / 300000 FROM clients)")
+    s["payment_public"] = one(dsn, "SELECT public_id FROM payments WHERE status = 'paid' ORDER BY id DESC LIMIT 1 OFFSET (SELECT count(*) * 100 / 300000 FROM clients)")
     s["txid"] = one(dsn, "SELECT provider_txid FROM payments WHERE provider_txid IS NOT NULL ORDER BY id DESC LIMIT 1 OFFSET (SELECT count(*) * 300 / 300000 FROM clients)")
     s["webhook"] = one(dsn, "SELECT id FROM webhook_inbox ORDER BY id DESC LIMIT 1 OFFSET (SELECT count(*) * 50 / 300000 FROM clients)")
     s["contest"] = one(dsn, "SELECT contest_id FROM contest_entries GROUP BY contest_id ORDER BY count(*) DESC LIMIT 1")
@@ -145,6 +146,10 @@ def admin_scenarios(s, months_ago):
     yield "Журнал платёжек", "за неделю", "GET", "@webhooks_week", None
     yield "Журнал платёжек", "поиск по номеру платежа", "GET", f"/api/admin/webhooks?limit=30&q={q(s['txid'])}", None
     yield "Журнал платёжек", "поиск: нет совпадений", "GET", f"/api/admin/webhooks?limit=30&q={q('nothing-like-this')}", None
+    yield "Журнал платёжек", "поиск по id платежа", "GET", f"/api/admin/webhooks?limit=30&q={s['payment']}", None
+    yield "Журнал платёжек", "поиск по UUID платежа", "GET", f"/api/admin/webhooks?limit=30&q={s['payment_public']}", None
+    yield "Журнал платёжек", "поиск: частое слово", "GET", f"/api/admin/webhooks?limit=30&q={q('succeeded')}", None
+    yield "Журнал платёжек", "поиск: короткая строка", "GET", f"/api/admin/webhooks?limit=30&q={q('zz9q')}", None
     yield "Журнал платёжек", "карточка уведомления", "GET", f"/api/admin/webhooks/{s['webhook']}", None
     yield "Поддержка", "ждут ответа", "GET", "/api/admin/support/tickets?filter=waiting&limit=50", None
     yield "Поддержка", "отвеченные", "GET", "/api/admin/support/tickets?filter=answered&limit=50", None
@@ -296,11 +301,13 @@ def heavy(api, dsn, runs, only):
             timings.append(ms)
         record("Аналитика", "полный пересчёт", timings, size, error)
 
-    if wanted("Рассылки", "создание и постановка в очередь"):
-        created, launched, size, error = [], [], 0, None
+    for label, audience in (("всем", {"kind": "all"}), ("закончившимся", {"kind": "expired"})):
+        if not wanted("Рассылки", f"создание и постановка в очередь {label}"):
+            continue
+        created, launched, size, error, total = [], [], 0, None, 0
         for _ in range(runs):
             status, payload, ms = api.call("POST", "/api/admin/m/broadcast/broadcasts",
-                                           {"text": "Проверка скорости рассылки", "audience": {"kind": "all"}})
+                                           {"text": "Проверка скорости рассылки", "audience": audience})
             if status >= 400:
                 error = f"HTTP {status}: {payload[:200].decode(errors='replace')}"
                 break
@@ -316,8 +323,8 @@ def heavy(api, dsn, runs, only):
             psql(dsn, f"DELETE FROM broadcasts WHERE id = {int(bid)}")
             if error:
                 break
-        record("Рассылки", "создание черновика", created, 0, error)
-        record("Рассылки", f"отправка всем: постановка в очередь {total} получателей" if not error else "отправка всем", launched, size, error)
+        record("Рассылки", f"создание черновика ({label})", created, 0, error)
+        record("Рассылки", f"отправка {label}: постановка в очередь {total} получателей" if not error else f"отправка {label}", launched, size, error)
     return results
 
 

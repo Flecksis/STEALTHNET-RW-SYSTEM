@@ -16,6 +16,9 @@ const COLUMNS: &str = "w.id, w.source, w.outcome, w.payment_id, p.client_id, w.e
      o.public_id AS order_public_id, w.legacy_path, w.legacy_invoice_id";
 const BODY_SEARCH_MIN: usize = 6;
 const MASKED_SINCE: &str = "COALESCE((SELECT m.installed_on FROM _sqlx_migrations m WHERE m.version = 290 AND m.success), '-infinity'::timestamptz)";
+const PROVIDERS: &str = "WITH RECURSIVE k (v) AS (SELECT min(provider) FROM payments \
+     UNION ALL SELECT (SELECT min(m.provider) FROM payments m WHERE m.provider > k.v) FROM k WHERE k.v IS NOT NULL) \
+     SELECT v FROM k WHERE v IS NOT NULL";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -501,6 +504,28 @@ impl<'c> WebhooksRepo<'c> {
         let wide = search.filter(|q| q.chars().count() >= BODY_SEARCH_MIN);
         let outcomes: Option<Vec<&str>> = (!filter.outcomes.is_empty())
             .then(|| filter.outcomes.iter().map(|o| o.as_str()).collect());
+        let body = if wide.is_some() {
+            format!(
+                " OR (w.body IS NOT NULL AND w.received_at >= {MASKED_SINCE} \
+                 AND position(convert_to($10, 'UTF8') in w.body) > 0 \
+                 AND encode(w.body, 'escape') LIKE '%' || replace(replace(replace(\
+                 encode(convert_to($10, 'UTF8'), 'escape'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%')"
+            )
+        } else {
+            String::new()
+        };
+        let found = if search.is_some() {
+            format!(
+                "AND (w.payment_id = ANY(ARRAY(SELECT $7 WHERE $7 IS NOT NULL \
+                 UNION ALL SELECT q.id FROM payments q WHERE q.public_id = $8 \
+                 UNION ALL SELECT q.id FROM payments q JOIN orders r ON r.id = q.order_id WHERE r.public_id = $8 \
+                 UNION ALL SELECT q.id FROM payments q WHERE q.provider_txid = $6 AND q.provider IN ({PROVIDERS}))) \
+                 OR w.parsed->>'provider_txid' = $6 OR w.parsed->>'event_key' = $6 \
+                 OR w.parsed->'payment'->>'value' = $6{body}) "
+            )
+        } else {
+            String::new()
+        };
         let rows: Vec<JournalRowData> = sqlx::query_as(&format!(
             "SELECT {COLUMNS} FROM webhook_inbox w \
              LEFT JOIN payments p ON p.id = w.payment_id \
@@ -510,13 +535,9 @@ impl<'c> WebhooksRepo<'c> {
              AND ($3::timestamptz IS NULL OR w.received_at >= $3) \
              AND ($4::timestamptz IS NULL OR w.received_at < $4) \
              AND ($5::bigint IS NULL OR w.id < $5) \
-             AND ($6::text IS NULL OR w.payment_id = $7 OR p.public_id = $8 OR o.public_id = $8 \
-             OR p.provider_txid = $6 OR w.parsed->>'provider_txid' = $6 OR w.parsed->>'event_key' = $6 \
-             OR w.parsed->'payment'->>'value' = $6 \
-             OR ($10::text IS NOT NULL AND w.received_at >= {MASKED_SINCE} \
-             AND position(convert_to($10, 'UTF8') in w.body) > 0)) \
-             ORDER BY w.id DESC LIMIT $9"
+             {found}ORDER BY w.id DESC LIMIT $9"
         ))
+        .persistent(search.is_none())
         .bind(filter.source.as_deref())
         .bind(outcomes)
         .bind(filter.since)
@@ -819,6 +840,71 @@ mod tests {
                 ),
             ]
         );
+        drop(conn);
+        db.cleanup().await;
+    }
+
+    async fn found(db: &mut impl Db, q: &str) -> Vec<i64> {
+        let filter = JournalFilter {
+            search: Some(q.into()),
+            ..JournalFilter::default()
+        };
+        db.webhooks()
+            .journal(&filter, None, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn поиск_по_телу_ищет_строку_буквально() {
+        let Some(db) = test_store().await else { return };
+        let mut conn = db.store.conn().await.unwrap();
+        let bodies: [(&str, &[u8]); 4] = [
+            ("ru", "{\"description\":\"Оплата заказа №5\"}".as_bytes()),
+            ("signs", br#"{"note":"50%_off\path"}"#),
+            ("raw", b"\xc0\xff\x00marker-123456\x80"),
+            ("plain", b"{\"id\":\"pay-777777\"}"),
+        ];
+        let mut ids = Vec::new();
+        for (key, body) in bodies {
+            ids.push(
+                conn.webhooks()
+                    .record(&hook(key, Some(body)))
+                    .await
+                    .unwrap()
+                    .id,
+            );
+        }
+        let [ru, signs, raw, plain] = ids[..] else {
+            panic!("ожидалось четыре уведомления");
+        };
+        let mut fields = hook("fields", None);
+        fields.parsed = Some(serde_json::json!({
+            "provider_txid": "tx-1",
+            "event_key": "ev:1",
+            "payment": { "type": "public_id", "value": "v-9" }
+        }));
+        let with_fields = conn.webhooks().record(&fields).await.unwrap().id;
+
+        assert_eq!(found(&mut conn, "Оплата заказа").await, vec![ru]);
+        assert_eq!(found(&mut conn, "заказа №5").await, vec![ru]);
+        assert!(found(&mut conn, "оплата заказа").await.is_empty());
+        assert_eq!(found(&mut conn, "50%_off\\path").await, vec![signs]);
+        assert!(found(&mut conn, "50%off").await.is_empty());
+        assert!(found(&mut conn, "5_%_off").await.is_empty());
+        assert!(found(&mut conn, "off\\\\path").await.is_empty());
+        assert_eq!(found(&mut conn, "marker-123456").await, vec![raw]);
+        assert_eq!(found(&mut conn, "pay-777777").await, vec![plain]);
+        assert_eq!(found(&mut conn, "\"pay-777").await, vec![plain]);
+        assert!(found(&mut conn, "y-777").await.is_empty());
+        assert_eq!(found(&mut conn, "tx-1").await, vec![with_fields]);
+        assert_eq!(found(&mut conn, "ev:1").await, vec![with_fields]);
+        assert_eq!(found(&mut conn, " v-9 ").await, vec![with_fields]);
+        assert!(found(&mut conn, "tx-").await.is_empty());
+        assert!(found(&mut conn, "ничего такого").await.is_empty());
         drop(conn);
         db.cleanup().await;
     }

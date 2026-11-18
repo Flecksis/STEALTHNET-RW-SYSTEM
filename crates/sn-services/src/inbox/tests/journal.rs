@@ -799,6 +799,50 @@ async fn поиск_не_заглядывает_в_тела_сохранённы
 }
 
 #[tokio::test]
+async fn поиск_находит_уведомление_по_заказу_и_номеру_счёта_в_кассе() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let client_id = client(&kit.services, 9105).await;
+    let paid = kassa_topup(&kit, client_id, 1_500).await;
+    let txid = paid.provider_txid.clone().unwrap();
+    kit.services
+        .inbox()
+        .handle(kassa_hook(
+            KASSA_SECRET,
+            &kassa_body("e-1", Some(paid.public_id), None, 1_500),
+        ))
+        .await
+        .unwrap();
+    let ids = all_ids(&kit).await;
+    assert_eq!(ids.len(), 1);
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let (written, order): (Option<String>, Uuid) = sqlx::query_as(
+        "SELECT w.parsed ->> 'provider_txid', o.public_id FROM webhook_inbox w \
+         JOIN orders o ON o.id = $2 WHERE w.id = $1",
+    )
+    .bind(ids[0])
+    .bind(paid.order_id.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    assert_eq!(written, None);
+    let find = |q: &str| JournalQuery {
+        q: Some(q.into()),
+        ..JournalQuery::default()
+    };
+    assert_eq!(search(&kit, find(&txid)).await, ids);
+    assert_eq!(search(&kit, find(&order.to_string())).await, ids);
+    assert!(
+        search(&kit, find(&Uuid::new_v4().to_string()))
+            .await
+            .is_empty()
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn карта_сохраняется_по_повтору_кассы_после_ручной_обработки() {
     let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
         return;

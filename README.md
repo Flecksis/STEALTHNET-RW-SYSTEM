@@ -132,7 +132,7 @@ sudo stealthnet update
 
 ## Запуск без Docker
 
-Нужны Rust 1.94 (версия закреплена в `rust-toolchain.toml`), Node.js 22 и PostgreSQL 16.
+Нужны Rust 1.94 (версия закреплена в `rust-toolchain.toml`), Node.js 22 и PostgreSQL 16. Для быстрого поиска в журнале уведомлений платёжек миграция включает расширение `pg_trgm`: оно есть в обычных сборках PostgreSQL, нужен только пользователь — владелец базы. Если расширения нет, панель работает так же, а поиск по журналу просто идёт медленнее.
 
 ```sh
 cargo build --release -p sn-app

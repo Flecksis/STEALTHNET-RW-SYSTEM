@@ -1030,6 +1030,8 @@ SELECT p.provider, 'notice-' || p.id, CASE WHEN p.id % 2 = 0 THEN 'dispute' ELSE
        'Платёжка сообщила о споре по платежу', p.paid_at + interval '5 days'
 FROM perf_gen.paid p WHERE p.id % 5003 = 11 AND p.provider NOT IN ('balance') ORDER BY p.id;
 
+UPDATE _sqlx_migrations SET installed_on = :'t0'::timestamptz - interval '90 days' WHERE version = 290;
+
 DO $$
 DECLARE
     t record;

@@ -459,6 +459,14 @@ fn status_of(alias: &str) -> String {
     )
 }
 
+fn rank_of(alias: &str) -> String {
+    format!(
+        "CASE {} WHEN 'active' THEN 0 WHEN 'limited' THEN 1 WHEN 'disabled' THEN 2 \
+         WHEN 'expired' THEN 3 ELSE 4 END",
+        status_of(alias)
+    )
+}
+
 fn condition(audience: Audience) -> String {
     let s = status_of("s");
     match audience {
@@ -468,7 +476,15 @@ fn condition(audience: Audience) -> String {
             format!("{s} = 'active' AND s.expire_at > $1 AND s.expire_at <= $2")
         }
         Audience::Expired => format!(
-            "({s} = 'expired' OR (s.id IS NULL AND EXISTS (SELECT 1 FROM subscriptions h WHERE h.client_id = c.id)))"
+            "EXISTS (SELECT 1 FROM subscriptions h WHERE h.client_id = c.id) \
+             AND NOT EXISTS (SELECT 1 FROM subscriptions h WHERE h.client_id = c.id \
+             AND h.ended_at IS NULL AND h.remna_missing_at IS NULL AND {h} < 3) \
+             AND NOT EXISTS (SELECT 1 FROM subscriptions h WHERE h.client_id = c.id \
+             AND h.ended_at IS NULL AND h.remna_missing_at IS NULL AND {h} = 4 \
+             AND NOT EXISTS (SELECT 1 FROM subscriptions g WHERE g.client_id = h.client_id \
+             AND g.ended_at IS NULL AND g.remna_missing_at IS NULL AND {g} = 3))",
+            h = rank_of("h"),
+            g = rank_of("g")
         ),
         Audience::NeverConnected => format!("{s} = 'active' AND s.first_connected_at IS NULL"),
         Audience::Trial => format!("{s} = 'active' AND s.kind = 'trial'"),
@@ -502,17 +518,6 @@ fn identity(lane: Lane, value: bool) -> String {
     }
 }
 
-const fn by_subscription(audience: Audience) -> bool {
-    matches!(
-        audience,
-        Audience::Active
-            | Audience::Expiring { .. }
-            | Audience::Expired
-            | Audience::NeverConnected
-            | Audience::Trial
-    )
-}
-
 const fn active_only(audience: Audience) -> bool {
     matches!(
         audience,
@@ -522,6 +527,10 @@ const fn active_only(audience: Audience) -> bool {
 
 const fn needs_value(lane: Lane) -> bool {
     matches!(lane, Lane::Email)
+}
+
+const fn checks_identity(lane: Lane, value: bool) -> bool {
+    !value || matches!(lane, Lane::Email)
 }
 
 fn excluded(lane: Lane) -> &'static str {
@@ -534,12 +543,19 @@ fn excluded(lane: Lane) -> &'static str {
 }
 
 fn audience_from(audience: Audience, lane: Lane, value: bool) -> String {
-    let x = status_of("x");
-    let subscription = if by_subscription(audience) {
+    let subscription = if active_only(audience) {
         format!(
             "LEFT JOIN LATERAL (SELECT x.* FROM subscriptions x WHERE x.client_id = c.id AND x.ended_at IS NULL \
-             AND x.remna_missing_at IS NULL ORDER BY CASE {x} WHEN 'active' THEN 0 WHEN 'limited' THEN 1 \
-             WHEN 'disabled' THEN 2 WHEN 'expired' THEN 3 ELSE 4 END, x.expire_at DESC NULLS LAST, x.id DESC LIMIT 1) s ON true"
+             AND x.remna_missing_at IS NULL ORDER BY {}, x.expire_at DESC NULLS LAST, x.id DESC LIMIT 1) s ON true",
+            rank_of("x")
+        )
+    } else {
+        String::new()
+    };
+    let reachable = if checks_identity(lane, value) {
+        format!(
+            "AND EXISTS (SELECT 1 FROM client_identities i WHERE i.client_id = c.id AND {}) ",
+            identity_match(lane)
         )
     } else {
         String::new()
@@ -556,10 +572,8 @@ fn audience_from(audience: Audience, lane: Lane, value: bool) -> String {
     format!(
         "FROM clients c {} {subscription} \
          WHERE c.deleted_at IS NULL AND c.status = 'active' \
-         AND EXISTS (SELECT 1 FROM client_identities i WHERE i.client_id = c.id AND {}) \
-         {active}AND {}",
+         {reachable}{active}AND {}",
         identity(lane, value),
-        identity_match(lane),
         condition(audience)
     )
 }

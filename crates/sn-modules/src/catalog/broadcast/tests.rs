@@ -767,6 +767,128 @@ async fn аудитории_совпадают_с_ожиданием() {
 }
 
 #[tokio::test]
+async fn закончившаяся_подписка_определяется_по_главной_подписке() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context(store, None);
+    let latest = |status: &str| {
+        format!(
+            "UPDATE subscriptions SET status = '{status}' \
+             WHERE id = (SELECT max(id) FROM subscriptions WHERE client_id = $1)"
+        )
+    };
+    let no_date = "UPDATE subscriptions SET expire_at = NULL \
+                   WHERE id = (SELECT max(id) FROM subscriptions WHERE client_id = $1)";
+    let missing = "UPDATE subscriptions SET remna_missing_at = now() WHERE client_id = $1";
+
+    let only_expired = tg_client(store, 4001).await;
+    subscribe(store, only_expired, Sub { days: -3, ..PAID }).await;
+    let ended = tg_client(store, 4002).await;
+    subscribe(
+        store,
+        ended,
+        Sub {
+            days: -40,
+            ended: true,
+            ..PAID
+        },
+    )
+    .await;
+    let disabled = tg_client(store, 4003).await;
+    subscribe(store, disabled, Sub { days: -5, ..PAID }).await;
+    subscribe(store, disabled, Sub { days: 10, ..PAID }).await;
+    exec(store, &latest("disabled"), disabled.0).await;
+    let limited = tg_client(store, 4004).await;
+    subscribe(store, limited, Sub { days: 10, ..PAID }).await;
+    exec(store, &latest("limited"), limited.0).await;
+    let undated = tg_client(store, 4005).await;
+    subscribe(store, undated, PAID).await;
+    exec(store, no_date, undated.0).await;
+    let undated_and_expired = tg_client(store, 4006).await;
+    subscribe(store, undated_and_expired, PAID).await;
+    exec(store, no_date, undated_and_expired.0).await;
+    subscribe(store, undated_and_expired, Sub { days: -1, ..PAID }).await;
+    let gone = tg_client(store, 4007).await;
+    subscribe(store, gone, PAID).await;
+    exec(store, missing, gone.0).await;
+    let gone_and_active = tg_client(store, 4008).await;
+    subscribe(store, gone_and_active, Sub { days: -3, ..PAID }).await;
+    exec(store, missing, gone_and_active.0).await;
+    subscribe(store, gone_and_active, PAID).await;
+    let marked_expired = tg_client(store, 4009).await;
+    subscribe(store, marked_expired, PAID).await;
+    exec(store, &latest("expired"), marked_expired.0).await;
+    let marked_active = tg_client(store, 4010).await;
+    subscribe(store, marked_active, Sub { days: -3, ..PAID }).await;
+    exec(store, &latest("active"), marked_active.0).await;
+    tg_client(store, 4011).await;
+    let ended_and_active = tg_client(store, 4012).await;
+    subscribe(
+        store,
+        ended_and_active,
+        Sub {
+            days: -40,
+            ended: true,
+            ..PAID
+        },
+    )
+    .await;
+    subscribe(store, ended_and_active, PAID).await;
+
+    let mut conn = store.conn().await.unwrap();
+    for (client, email) in [
+        (only_expired, "first@example.com"),
+        (disabled, "disabled@example.com"),
+        (gone, "gone@example.com"),
+    ] {
+        conn.clients()
+            .add_identity(
+                client,
+                &NewIdentity {
+                    kind: IdentityKind::Email,
+                    value: email.into(),
+                    verified: true,
+                    meta: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    drop(conn);
+
+    let reach = reach(&ctx, Audience::Expired).await.unwrap();
+    assert_eq!((reach.recipients, reach.stopped), (5, 0));
+    assert_eq!((reach.emails, reach.unsubscribed), (2, 0));
+
+    let created = create(&ctx, &draft("Возвращайтесь", Audience::Expired), None)
+        .await
+        .unwrap();
+    let started = start(&ctx, created.id, None, None).await.unwrap();
+    assert_eq!(started.progress.total, 5);
+    let mut conn = store.conn().await.unwrap();
+    let recipients: Vec<i64> = sqlx::query_scalar(
+        "SELECT client_id FROM broadcast_recipients WHERE broadcast_id = $1 ORDER BY client_id",
+    )
+    .bind(created.id)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    let mut expected = vec![
+        only_expired.0,
+        ended.0,
+        undated_and_expired.0,
+        gone.0,
+        marked_expired.0,
+    ];
+    expected.sort_unstable();
+    assert_eq!(recipients, expected);
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn рассылка_уходит_всем_и_отмечает_остановивших_бота() {
     let Some(db) = test_store().await else {
         return;
