@@ -107,6 +107,7 @@ usage() {
     printf '  %s\n      указать или сменить домен панели\n' "$(command_for domain)"
     printf '  %s\n      сменить почту владельца\n' "$(command_for owner-email)"
     printf '  %s\n      выдать владельцу новый пароль\n' "$(command_for reset-password)"
+    printf '  %s\n      снять блокировку входа владельца, если его почту подбирают;\n      с --ip вход с этого адреса не закроется, даже пока подбор идёт\n' "$(command_for 'unlock-login [--ip адрес]')"
     printf '  %s\n      скачать новую версию и обновить систему\n' "$(command_for update)"
     printf '  %s\n      показать версию, состояние и итог последнего обновления\n' "$(command_for status)"
     printf '  %s\n      разрешить или запретить обновление из админки\n' "$(command_for 'helper on|off')"
@@ -749,6 +750,57 @@ reset_password() {
     printf '\n  Почта владельца:   %s\n' "$OWNER_EMAIL"
     printf '  Пароль владельца:  %s\n' "$OWNER_PASSWORD"
     printf '\n%sПароль показан один раз — сохраните его.%s\n' "$BOLD" "$RESET"
+}
+
+valid_ip() {
+    case "$1" in
+        ""|*[!0-9A-Fa-f.:]*) return 1 ;;
+        *[.:]*) return 0 ;;
+    esac
+    return 1
+}
+
+unlock_login() {
+    printf '%sSTEALTHNET RW SYSTEM — снять блокировку входа владельца%s\n\n' "$BOLD" "$RESET"
+    need_installed
+    left=$#
+    while [ "$left" -gt 0 ]; do
+        arg=$1
+        shift
+        left=$((left - 1))
+        case "$arg" in
+            --ip)
+                if [ "$left" -eq 0 ]; then
+                    die "после --ip нужен адрес" "Например: $(command_for unlock-login) --ip 203.0.113.7"
+                fi
+                address=$1
+                shift
+                left=$((left - 1))
+                ;;
+            --ip=*) address=${arg#--ip=} ;;
+            *)
+                die "не понял «$arg»" \
+                    "Снять блокировку: $(command_for unlock-login)" \
+                    "И сделать свой адрес привычным: $(command_for unlock-login) --ip 203.0.113.7"
+                ;;
+        esac
+        if ! valid_ip "$address"; then
+            die "«$address» не похоже на IP-адрес" "Нужен вид 203.0.113.7 или 2001:db8::7"
+        fi
+        set -- "$@" --ip "$address"
+    done
+    wait_healthy
+    step "Владелец"
+    find_owner
+    if [ -z "$EXISTING_OWNER" ]; then
+        die "владелец ещё не создан" "Запустите $(command_for install)"
+    fi
+    if ! report=$(compose exec -T app stealthnet unlock-login --email "$EXISTING_OWNER" "$@"); then
+        die "не удалось снять блокировку" "Журнал: cd $DEPLOY && docker compose logs app"
+    fi
+    printf '%s\n' "$report" | while IFS= read -r line; do
+        printf '  %s\n' "$line"
+    done
 }
 
 change_domain() {
@@ -1949,6 +2001,7 @@ case "${1:-}" in
     domain|--domain) change_domain ;;
     owner-email|--owner-email) change_owner_email ;;
     reset-password|--reset-password) reset_password ;;
+    unlock-login|--unlock-login) shift; unlock_login "$@" ;;
     update|--update) update ;;
     status|--status) show_status ;;
     helper|--helper) helper_command "${2:-}" ;;

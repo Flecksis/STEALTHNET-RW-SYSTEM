@@ -372,6 +372,35 @@ fn has_host_bits(address: IpAddr, prefix: u8) -> bool {
     }
 }
 
+const fn v4_net(a: u8, b: u8, prefix: u8) -> ProxyNet {
+    ProxyNet {
+        network: IpAddr::V4(Ipv4Addr::new(a, b, 0, 0)),
+        prefix,
+    }
+}
+
+const fn v6_net(first: u16, prefix: u8) -> ProxyNet {
+    ProxyNet {
+        network: IpAddr::V6(Ipv6Addr::new(first, 0, 0, 0, 0, 0, 0, 0)),
+        prefix,
+    }
+}
+
+const PRIVATE_NETS: [ProxyNet; 9] = [
+    v4_net(10, 0, 8),
+    v4_net(172, 16, 12),
+    v4_net(192, 168, 16),
+    v4_net(100, 64, 10),
+    v4_net(127, 0, 8),
+    v4_net(169, 254, 16),
+    v6_net(0xfc00, 7),
+    v6_net(0xfe80, 10),
+    ProxyNet {
+        network: IpAddr::V6(Ipv6Addr::LOCALHOST),
+        prefix: ProxyNet::V6_BITS,
+    },
+];
+
 impl ProxyNet {
     pub const V4_BITS: u8 = 32;
     pub const V6_BITS: u8 = 128;
@@ -420,6 +449,16 @@ impl ProxyNet {
 
     pub const fn is_host(&self) -> bool {
         self.prefix == Self::bits(self.network)
+    }
+
+    pub const fn is_everyone(&self) -> bool {
+        self.prefix == 0
+    }
+
+    pub fn is_private(&self) -> bool {
+        PRIVATE_NETS
+            .iter()
+            .any(|range| range.prefix <= self.prefix && range.contains(self.network))
     }
 
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -483,11 +522,69 @@ impl FromStr for ProxyNet {
     }
 }
 
-pub fn parse_proxy_list(raw: &str) -> Result<Vec<ProxyNet>, ProxyNetError> {
-    raw.split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|item| !item.is_empty())
-        .map(str::parse)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyList {
+    pub networks: Vec<ProxyNet>,
+    pub widened: Vec<(String, ProxyNet)>,
+}
+
+impl ProxyList {
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .widened
+            .iter()
+            .map(|(value, network)| {
+                let address = value
+                    .split_once('/')
+                    .map_or(value.as_str(), |(address, _)| address);
+                format!(
+                    "SN_TRUSTED_PROXIES: «{value}» — это адрес внутри сети, поэтому доверяем всей частной сети {network}. \
+                     Если доверять нужно одному адресу, запишите {address} без длины префикса"
+                )
+            })
+            .collect();
+        let everyone = trusts_everyone(&self.networks);
+        if !everyone.is_empty() {
+            let listed = everyone
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" и ");
+            out.push(format!(
+                "SN_TRUSTED_PROXIES: {listed} — доверие всем адресам. X-Forwarded-For принимается от любого источника, \
+                 поэтому любой клиент может выдать себя за другой адрес: обойти ограничения попыток по IP и оставить в журнале чужой адрес. \
+                 Оставьте в списке только адреса своих прокси"
+            ));
+        }
+        out
+    }
+}
+
+pub fn trusts_everyone(networks: &[ProxyNet]) -> Vec<ProxyNet> {
+    networks
+        .iter()
+        .copied()
+        .filter(ProxyNet::is_everyone)
         .collect()
+}
+
+pub fn parse_proxy_list(raw: &str) -> Result<ProxyList, ProxyNetError> {
+    let mut list = ProxyList::default();
+    for item in raw
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|item| !item.is_empty())
+    {
+        let network = match item.parse::<ProxyNet>() {
+            Ok(network) => network,
+            Err(ProxyNetError::HostBits { value, network }) if network.is_private() => {
+                list.widened.push((value, network));
+                network
+            }
+            Err(err) => return Err(err),
+        };
+        list.networks.push(network);
+    }
+    Ok(list)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1194,7 +1291,11 @@ mod tests {
         let listed =
             parse_proxy_list("10.0.0.2, 172.18.0.0/16,fd00:1::/32 ::1\n2001:db8::7,").unwrap();
         assert_eq!(
-            listed.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            listed
+                .networks
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
             [
                 "10.0.0.2",
                 "172.18.0.0/16",
@@ -1203,7 +1304,8 @@ mod tests {
                 "2001:db8::7"
             ]
         );
-        assert_eq!(parse_proxy_list("  ").unwrap(), []);
+        assert!(listed.warnings().is_empty());
+        assert_eq!(parse_proxy_list("  ").unwrap(), ProxyList::default());
         assert_eq!(net(" 172.18.0.0/16 ").to_string(), "172.18.0.0/16");
         assert_eq!(
             ProxyNet::new(ip("172.18.0.1"), 16),
@@ -1313,6 +1415,108 @@ mod tests {
                 .to_string(),
             "«proxy»: ожидается IP-адрес или сеть в записи CIDR, например 10.0.0.2, 172.18.0.0/16 или fd00::/8"
         );
+    }
+
+    #[test]
+    fn частными_считаются_только_сети_целиком_внутри_частных_диапазонов() {
+        for private in [
+            "10.0.0.0/8",
+            "10.1.0.0/16",
+            "172.16.0.0/12",
+            "172.31.0.0/16",
+            "192.168.1.0/24",
+            "100.64.0.0/10",
+            "127.0.0.1",
+            "169.254.0.0/16",
+            "fc00::/7",
+            "fd00::/8",
+            "fe80::/10",
+            "::1",
+        ] {
+            assert!(net(private).is_private(), "{private}");
+        }
+        for public in [
+            "0.0.0.0/0",
+            "8.0.0.0/7",
+            "172.0.0.0/11",
+            "192.168.0.0/15",
+            "203.0.113.7",
+            "::/0",
+            "fc00::/6",
+            "2001:db8::/32",
+        ] {
+            assert!(!net(public).is_private(), "{public}");
+        }
+    }
+
+    #[test]
+    fn адрес_внутри_частной_сети_принимается_как_вся_сеть_с_предупреждением() {
+        let list =
+            parse_proxy_list("172.18.0.1/16, 10.0.0.2, fd00::1/8 ::ffff:10.0.0.1/104").unwrap();
+        assert_eq!(
+            list.networks,
+            [
+                net("172.18.0.0/16"),
+                net("10.0.0.2"),
+                net("fd00::/8"),
+                net("10.0.0.0/8")
+            ]
+        );
+        assert_eq!(
+            list.widened,
+            [
+                ("172.18.0.1/16".to_string(), net("172.18.0.0/16")),
+                ("fd00::1/8".to_string(), net("fd00::/8")),
+                ("::ffff:10.0.0.1/104".to_string(), net("10.0.0.0/8")),
+            ]
+        );
+        let warnings = list.warnings();
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert_eq!(
+            warnings[0],
+            "SN_TRUSTED_PROXIES: «172.18.0.1/16» — это адрес внутри сети, поэтому доверяем всей частной сети 172.18.0.0/16. \
+             Если доверять нужно одному адресу, запишите 172.18.0.1 без длины префикса"
+        );
+        assert!(warnings[1].contains("запишите fd00::1 без длины префикса"));
+        for public in [
+            "203.0.113.7/24",
+            "10.0.0.1/0",
+            "172.16.0.1/11",
+            "2001:db8::1/32",
+        ] {
+            assert!(
+                matches!(
+                    parse_proxy_list(public),
+                    Err(ProxyNetError::HostBits { .. })
+                ),
+                "{public}"
+            );
+        }
+    }
+
+    #[test]
+    fn доверие_всем_адресам_разрешено_но_с_предупреждением() {
+        let list = parse_proxy_list("0.0.0.0/0, 10.0.0.2, ::/0").unwrap();
+        assert_eq!(list.networks.len(), 3);
+        assert_eq!(
+            trusts_everyone(&list.networks),
+            [net("0.0.0.0/0"), net("::/0")]
+        );
+        let warnings = list.warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("SN_TRUSTED_PROXIES: 0.0.0.0/0 и ::/0 — доверие всем адресам"),
+            "{}",
+            warnings[0]
+        );
+        assert_eq!(
+            trusts_everyone(&parse_proxy_list("::ffff:0.0.0.0/96").unwrap().networks),
+            [net("0.0.0.0/0")]
+        );
+        assert!(trusts_everyone(&[net("10.0.0.0/8"), net("0.0.0.0/1")]).is_empty());
+        let proxies = TrustedProxies::from_config(&list.networks);
+        assert!(proxies.contains(ip("203.0.113.7")));
+        assert!(proxies.contains(ip("2001:db8::1")));
     }
 
     #[test]

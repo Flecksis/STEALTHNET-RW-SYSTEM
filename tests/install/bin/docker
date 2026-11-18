@@ -208,6 +208,10 @@ case "$*" in
         printf '%s' "$pw" > "$STATE/password.txt"
         echo "Владелец создан"
         exit 0 ;;
+    "compose exec -T app stealthnet unlock-login --email "*)
+        [ "${FAKE_UNLOCK_EXIT:-0}" -eq 0 ] || exit "${FAKE_UNLOCK_EXIT}"
+        echo "Вход для $(cat "$STATE/owner.txt") с новых адресов был закрыт из-за подбора пароля. Блокировка снята."
+        exit 0 ;;
     "compose exec -T caddy find "*)
         if [ "${FAKE_CERT:-1}" = "1" ]; then echo "/data/caddy/certificates/acme/site/site.crt"; fi
         exit 0 ;;

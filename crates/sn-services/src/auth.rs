@@ -1,5 +1,5 @@
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::{RateRule, Strike, address_key, network_key, rules};
+use crate::limits::{RateRule, Strike, address_key, ip_key, network_key, rules};
 use crate::services::Services;
 use crate::totp;
 use argon2::Argon2;
@@ -14,6 +14,7 @@ use sn_domain::access::{AdminPrincipal, AdminRole, ClientChannel, ClientPrincipa
 use sn_domain::client::{RegistrationSource, TelegramProfile};
 use sn_domain::ids::{AdminId, ClientId};
 use sn_store::{AdminRecord, Db, NewAdmin, NewSession, SealedSecret, SessionChannel, SessionScope};
+use std::net::IpAddr;
 
 pub const ADMIN_SESSION_DAYS: i64 = 14;
 pub const CLIENT_SESSION_DAYS: i64 = 30;
@@ -51,6 +52,16 @@ pub struct AdminSecurity {
     pub email: String,
     pub totp_enabled: bool,
     pub must_change_password: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LoginUnlock {
+    pub admin_id: AdminId,
+    pub email: String,
+    pub password_failures: u32,
+    pub password_locked: bool,
+    pub totp_locked: bool,
+    pub addresses: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -333,6 +344,95 @@ impl<'a> Auth<'a> {
         tx.commit().await?;
         self.forget_totp_failures(result.0).await?;
         Ok(result)
+    }
+
+    pub async fn unlock_admin_login(
+        &self,
+        email: &str,
+        addresses: &[IpAddr],
+    ) -> ServiceResult<LoginUnlock> {
+        let admin = {
+            let mut conn = self.services.store().conn().await?;
+            conn.admins().by_email(email).await?
+        };
+        let Some(admin) = admin else {
+            return Err(ServiceError::rejected(
+                "auth.unknown_admin",
+                format!("Администратора с почтой {} нет", email.trim()),
+            ));
+        };
+        if admin.disabled_at.is_some() {
+            return Err(ServiceError::rejected(
+                "auth.admin_disabled",
+                format!(
+                    "Администратор {} отключён: войти он сможет, когда его включат в «Настройки → Администраторы»",
+                    admin.email
+                ),
+            ));
+        }
+        let limits = self.services.limits();
+        let id = admin.id.to_string();
+        let password_failures = limits
+            .failures(rules::ADMIN_LOGIN_ACCOUNT, &admin.email)
+            .await?;
+        let totp_locked = limits.failures(rules::ADMIN_TOTP_FAILURES, &id).await?
+            >= rules::ADMIN_TOTP_FAILURES.limit
+            || limits.failures(rules::ADMIN_TOTP_FAILURES_DAY, &id).await?
+                >= rules::ADMIN_TOTP_FAILURES_DAY.limit;
+        limits
+            .forget(rules::ADMIN_LOGIN_ACCOUNT, &admin.email)
+            .await?;
+        self.forget_totp_failures(admin.id).await?;
+        let mut networks: Vec<String> = Vec::new();
+        for ip in addresses {
+            let raw = ip.to_string();
+            limits
+                .forget(
+                    rules::ADMIN_LOGIN_ACCOUNT_IP,
+                    &account_identity(&admin.email, Some(&raw)),
+                )
+                .await?;
+            limits
+                .forget(rules::ADMIN_LOGIN_IP, &address_key(Some(&raw)))
+                .await?;
+            let network = ip_key(*ip);
+            if !networks.contains(&network) {
+                networks.push(network);
+            }
+        }
+        let now = self.services.now();
+        let mut tx = self.services.store().begin().await?;
+        for network in &networks {
+            tx.admins()
+                .remember_login_address(
+                    admin.id,
+                    network,
+                    now,
+                    now - Duration::days(KNOWN_ADDRESS_DAYS),
+                )
+                .await?;
+        }
+        tx.audit()
+            .record(&crate::Actor::System.audit(
+                "admin.login_unlocked",
+                "admin",
+                Some(admin.id.0),
+                serde_json::json!({
+                    "password_failures": password_failures,
+                    "totp_locked": totp_locked,
+                    "addresses": networks,
+                }),
+            ))
+            .await?;
+        tx.commit().await?;
+        Ok(LoginUnlock {
+            admin_id: admin.id,
+            email: admin.email,
+            password_failures,
+            password_locked: password_failures >= rules::ADMIN_LOGIN_ACCOUNT.limit,
+            totp_locked,
+            addresses: networks,
+        })
     }
 
     pub(crate) async fn forgive(&self, strikes: &[Strike]) -> ServiceResult<()> {
@@ -1647,6 +1747,147 @@ mod tests {
         assert_eq!(
             limits.strike(rule, "8", "перебор").await.unwrap().failures,
             1
+        );
+        env.db.cleanup().await;
+    }
+
+    fn ips(list: &[&str]) -> Vec<IpAddr> {
+        list.iter().map(|ip| ip.parse().unwrap()).collect()
+    }
+
+    #[tokio::test]
+    async fn команда_снимает_блокировку_входа_с_новых_адресов() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        let admin = auth.upsert_owner(EMAIL, PASSWORD).await.unwrap().0;
+        let mut unauthorized = 0;
+        for attacker in ["198.51.100.1", "198.51.100.2"] {
+            unauthorized += guess_passwords(&env, attacker, 10).await;
+        }
+        assert_eq!(unauthorized, rules::ADMIN_LOGIN_ACCOUNT.limit);
+        let laptop = from("192.0.2.50");
+        assert_eq!(
+            rejected_code(auth.admin_login(EMAIL, PASSWORD, None, &laptop).await),
+            crate::limits::RATE_LIMITED
+        );
+        let unlock = auth
+            .unlock_admin_login("  OWNER@example.com ", &[])
+            .await
+            .unwrap();
+        assert_eq!(unlock.admin_id, admin);
+        assert_eq!(unlock.email, EMAIL);
+        assert_eq!(unlock.password_failures, rules::ADMIN_LOGIN_ACCOUNT.limit);
+        assert!(unlock.password_locked);
+        assert!(!unlock.totp_locked);
+        assert!(unlock.addresses.is_empty());
+        auth.admin_login(EMAIL, PASSWORD, None, &laptop)
+            .await
+            .unwrap();
+        assert!(
+            audit_actions(&env, admin)
+                .await
+                .contains(&"admin.login_unlocked".to_string())
+        );
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn адрес_из_команды_не_закрывается_пока_идёт_подбор() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        auth.upsert_owner(EMAIL, PASSWORD).await.unwrap();
+        assert_eq!(
+            guess_passwords(&env, "203.0.113.7", 12).await,
+            rules::ADMIN_LOGIN_ACCOUNT_IP.limit
+        );
+        let unlock = auth
+            .unlock_admin_login(
+                EMAIL,
+                &ips(&["203.0.113.7", "2001:db8:aaaa:1::10", "2001:db8:aaaa:1::20"]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unlock.addresses, ["203.0.113.7", "2001:db8:aaaa:1::/64"]);
+        assert_eq!(unlock.password_failures, 10);
+        assert!(!unlock.password_locked);
+        fill_account_limit(&env).await;
+        auth.admin_login(EMAIL, PASSWORD, None, &from("203.0.113.7"))
+            .await
+            .unwrap();
+        auth.admin_login(EMAIL, PASSWORD, None, &from("2001:db8:aaaa:1::99"))
+            .await
+            .unwrap();
+        assert_eq!(
+            rejected_code(
+                auth.admin_login(EMAIL, PASSWORD, None, &from("192.0.2.50"))
+                    .await
+            ),
+            crate::limits::RATE_LIMITED
+        );
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn команда_снимает_блокировку_входа_по_коду() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        let (_, secret) = totp_owner(&env).await;
+        let office = from("203.0.113.7");
+        let wrong = wrong_code(&secret, start());
+        for _ in 0..rules::ADMIN_TOTP_FAILURES.limit {
+            assert_eq!(
+                rejected_code(
+                    auth.admin_login(EMAIL, PASSWORD, Some(&wrong), &office)
+                        .await
+                ),
+                TOTP_INVALID
+            );
+        }
+        let later = start() + Duration::seconds(30);
+        env.clock.set(later);
+        let code = code_at(&secret, later);
+        assert_eq!(
+            rejected_code(
+                auth.admin_login(EMAIL, PASSWORD, Some(&code), &office)
+                    .await
+            ),
+            crate::limits::RATE_LIMITED
+        );
+        let unlock = auth.unlock_admin_login(EMAIL, &[]).await.unwrap();
+        assert!(unlock.totp_locked);
+        assert!(!unlock.password_locked);
+        assert_eq!(unlock.password_failures, 0);
+        auth.admin_login(EMAIL, PASSWORD, Some(&code), &office)
+            .await
+            .unwrap();
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn снять_блокировку_нельзя_неизвестному_и_отключённому_админу() {
+        let Some(env) = env().await else { return };
+        let auth = env.services.auth();
+        let admin = auth.upsert_owner(EMAIL, PASSWORD).await.unwrap().0;
+        assert_eq!(
+            rejected_code(auth.unlock_admin_login("nobody@example.com", &[]).await),
+            "auth.unknown_admin"
+        );
+        {
+            let mut conn = env.services.store().conn().await.unwrap();
+            sqlx::query("UPDATE admins SET disabled_at = now() WHERE id = $1")
+                .bind(admin.0)
+                .execute(conn.conn())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            rejected_code(auth.unlock_admin_login(EMAIL, &[]).await),
+            "auth.admin_disabled"
+        );
+        assert!(
+            !audit_actions(&env, admin)
+                .await
+                .contains(&"admin.login_unlocked".to_string())
         );
         env.db.cleanup().await;
     }

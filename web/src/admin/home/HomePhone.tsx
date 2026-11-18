@@ -12,6 +12,7 @@ import { agoLong, minutesSince, orderLine, personName, spanText, type PaymentIte
 import './phone.css';
 import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
+import { ConfigWarnings } from './ConfigWarnings';
 
 type Withdrawal = { id: number; amount: Money; status: string; created_at: string };
 
@@ -140,6 +141,7 @@ export function HomePhone() {
         </button>
       </PhoneHeader>
 
+      <ConfigWarnings compact />
       <ImportHint compact />
 
       <form role="search" onSubmit={search}>

@@ -505,6 +505,21 @@
   justify-content: center;
 }
 
+.hm-config {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 20px;
+}
+
+.hm-config .section-title {
+  color: var(--warn);
+}
+
+.hm-config.is-compact {
+  padding: 14px 16px;
+}
+
 .hm-side {
   flex: 1 1 320px;
   min-width: 0;

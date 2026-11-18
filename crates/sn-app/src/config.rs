@@ -26,6 +26,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub env: EnvFallbacks,
     pub updates: UpdateConfig,
+    pub warnings: Vec<String>,
 }
 
 const TELEGRAM_API: &str = "https://api.telegram.org";
@@ -98,9 +99,9 @@ impl Config {
         {
             bail!("SN_PUBLIC_URL должен начинаться с https://");
         }
-        let trusted_proxies =
-            parse_proxy_list(&text(vars, "SN_TRUSTED_PROXIES").unwrap_or_default())
-                .map_err(|err| anyhow!("SN_TRUSTED_PROXIES: {err}"))?;
+        let proxies = parse_proxy_list(&text(vars, "SN_TRUSTED_PROXIES").unwrap_or_default())
+            .map_err(|err| anyhow!("SN_TRUSTED_PROXIES: {err}"))?;
+        let warnings = proxies.warnings();
         let db_max_connections = text(vars, "SN_DB_MAX_CONNECTIONS")
             .map(|v| {
                 v.parse::<u32>()
@@ -148,7 +149,7 @@ impl Config {
             server: ServerConfig {
                 bind,
                 public_url: public_url.clone(),
-                trusted_proxies,
+                trusted_proxies: proxies.networks,
                 cors_origins: list(vars, "SN_CORS_ORIGINS"),
                 web_dir: text(vars, "SN_WEB_DIR").map(std::path::PathBuf::from),
                 ..ServerConfig::default()
@@ -159,6 +160,7 @@ impl Config {
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
             },
             updates: updates(vars)?,
+            warnings,
         })
     }
 }
@@ -236,6 +238,54 @@ mod tests {
             .to_string(),
             "SN_TRUSTED_PROXIES: «172.18.0.0/33»: длина префикса сети должна быть от 0 до 32"
         );
+        assert!(config.warnings.is_empty());
+    }
+
+    #[test]
+    fn адрес_шлюза_docker_с_маской_принимается_с_предупреждением() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_TRUSTED_PROXIES", "172.18.0.1/16"),
+        ]))
+        .unwrap();
+        assert_eq!(config.server.trusted_proxies.len(), 1);
+        assert_eq!(
+            config.server.trusted_proxies[0].to_string(),
+            "172.18.0.0/16"
+        );
+        assert_eq!(config.warnings.len(), 1);
+        assert!(
+            config.warnings[0].contains("доверяем всей частной сети 172.18.0.0/16"),
+            "{}",
+            config.warnings[0]
+        );
+        assert_eq!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_TRUSTED_PROXIES", "203.0.113.7/24")
+            ]))
+            .unwrap_err()
+            .to_string(),
+            "SN_TRUSTED_PROXIES: «203.0.113.7/24»: это адрес внутри сети, а не сама сеть: укажите 203.0.113.0/24 или один адрес без длины префикса"
+        );
+    }
+
+    #[test]
+    fn доверие_всем_адресам_запускается_с_предупреждением() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_TRUSTED_PROXIES", "0.0.0.0/0"),
+        ]))
+        .unwrap();
+        assert_eq!(config.server.trusted_proxies.len(), 1);
+        assert_eq!(config.warnings.len(), 1);
+        assert!(
+            config.warnings[0].contains("0.0.0.0/0 — доверие всем адресам"),
+            "{}",
+            config.warnings[0]
+        );
+        let quiet = Config::from_vars(&vars(&[("DATABASE_URL", "postgres://sn@db/sn")])).unwrap();
+        assert!(quiet.warnings.is_empty());
     }
 
     #[test]

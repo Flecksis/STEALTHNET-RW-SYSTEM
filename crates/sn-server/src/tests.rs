@@ -33,6 +33,7 @@ mod bot_content;
 mod channels;
 mod client_access;
 mod client_payments;
+mod config_warnings;
 mod gram;
 mod hosts;
 mod import;

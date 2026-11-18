@@ -316,6 +316,21 @@ impl<'a> RateLimits<'a> {
             .await?;
         Ok(())
     }
+
+    pub async fn failures(&self, rule: RateRule, identity: &str) -> ServiceResult<u32> {
+        let start = window_start(rule, self.services.now());
+        let mut conn = self.services.store().conn().await?;
+        let total: i64 = sqlx::query_scalar(
+            "SELECT coalesce(sum(hits), 0)::bigint FROM auth_rate_limits \
+             WHERE bucket = $1 AND window_start IN ($2, $3)",
+        )
+        .bind(bucket(rule, identity))
+        .bind(start)
+        .bind(start - window(rule))
+        .fetch_one(conn.conn())
+        .await?;
+        Ok(u32::try_from(total).unwrap_or(u32::MAX))
+    }
 }
 
 #[cfg(test)]

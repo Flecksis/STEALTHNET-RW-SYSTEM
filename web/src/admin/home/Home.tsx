@@ -34,6 +34,7 @@ import {
 import './home.css';
 import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
+import { ConfigWarnings } from './ConfigWarnings';
 import { PanelServer } from './PanelServer';
 
 export function useOverview() {
@@ -288,6 +289,7 @@ function MainBoard() {
         ) : null}
       </header>
 
+      <ConfigWarnings />
       <ImportHint />
 
       {error && !dashboard ? (
@@ -445,6 +447,7 @@ function Daylight() {
         ) : null}
       </header>
 
+      <ConfigWarnings />
       <ImportHint />
 
       <section aria-label="Сводка за сегодня" className="hm-col" style={{ gap: 6 }}>

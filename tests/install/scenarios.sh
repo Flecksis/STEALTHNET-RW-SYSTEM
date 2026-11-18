@@ -625,6 +625,33 @@ run FAKE_INFO_EXIT=1 "$SHELL_BIN" "$R/install.sh" start > "$WORK/start2.txt" 2>&
 env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help.txt" 2>&1 </dev/null
 grep -q '^  stealthnet restart$' "$WORK/help.txt" && grep -q '^  stealthnet logs$' "$WORK/help.txt" && check ok "новые команды есть в справке" || check no "в справке нет новых команд"
 
+echo "=== AU. снятие блокировки входа владельца"
+fresh
+run "$SHELL_BIN" "$R/install.sh" unlock-login > "$WORK/out.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'ещё не установлена' "$WORK/out.txt" && check ok "до установки снимать нечего" || check no "снятие блокировки до установки"
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=panel.test "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" unlock-login > "$WORK/unlock.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 0 ] && grep -q '^compose exec -T app stealthnet unlock-login --email owner@example.com$' "$S/calls.log"; then check ok "блокировка снята у владельца"; else check no "снятие блокировки: код $code, $(tail -2 "$WORK/unlock.txt")"; fi
+grep -q '^  Вход для owner@example.com с новых адресов был закрыт' "$WORK/unlock.txt" && check ok "ответ системы показан" || check no "ответ системы не показан"
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" unlock-login --ip 203.0.113.7 --ip=2001:db8::7 > "$WORK/unlock2.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 0 ] && grep -q '^compose exec -T app stealthnet unlock-login --email owner@example.com --ip 203.0.113.7 --ip 2001:db8::7$' "$S/calls.log"; then check ok "адреса переданы системе"; else check no "адреса: код $code, $(grep unlock-login "$S/calls.log")"; fi
+: > "$S/calls.log"
+run "$SHELL_BIN" "$R/install.sh" unlock-login --ip 'not an ip' > "$WORK/unlock3.txt" 2>&1 </dev/null
+code=$?
+if [ "$code" -eq 1 ] && grep -q 'не похоже на IP-адрес' "$WORK/unlock3.txt" && ! grep -q 'unlock-login' "$S/calls.log"; then check ok "неверный адрес отклонён до обращения к системе"; else check no "неверный адрес: код $code"; fi
+run "$SHELL_BIN" "$R/install.sh" unlock-login --ip > "$WORK/unlock4.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'после --ip нужен адрес' "$WORK/unlock4.txt" && check ok "--ip без адреса объяснён" || check no "--ip без адреса"
+run "$SHELL_BIN" "$R/install.sh" unlock-login --force > "$WORK/unlock5.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'не понял «--force»' "$WORK/unlock5.txt" && check ok "лишний аргумент объяснён" || check no "лишний аргумент"
+run FAKE_UNLOCK_EXIT=1 "$SHELL_BIN" "$R/install.sh" unlock-login > "$WORK/unlock6.txt" 2>&1 </dev/null
+[ $? -eq 1 ] && grep -q 'не удалось снять блокировку' "$WORK/unlock6.txt" && check ok "сбой команды объяснён" || check no "сбой команды"
+env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help.txt" 2>&1 </dev/null
+grep -q '^  stealthnet unlock-login \[--ip адрес\]$' "$WORK/help.txt" && check ok "команда есть в справке" || check no "в справке нет команды"
+
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi
 exit "$fail"

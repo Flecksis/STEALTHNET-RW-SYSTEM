@@ -1,12 +1,12 @@
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{ApiJson, CurrentAdmin, Meta};
+use crate::extract::{ApiJson, CurrentAdmin, Meta, trusts_everyone};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sn_domain::access::Permission;
 use sn_services::ServiceError;
 use sn_services::updates::{
@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/system", get(overview))
         .route("/system/summary", get(summary))
+        .route("/system/warnings", get(warnings))
         .route("/system/check", post(check))
         .route("/system/settings", put(settings))
         .route("/system/update", post(request).delete(cancel))
@@ -39,6 +40,28 @@ fn mapped(err: ServiceError) -> ApiError {
         api.status = status;
     }
     api
+}
+
+#[derive(Serialize)]
+struct ConfigWarning {
+    kind: &'static str,
+    networks: Vec<String>,
+}
+
+async fn warnings(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Settings)?;
+    let mut warnings = Vec::new();
+    let everyone = trusts_everyone(&state.config.trusted_proxies);
+    if !everyone.is_empty() {
+        warnings.push(ConfigWarning {
+            kind: "trusted_proxies_everyone",
+            networks: everyone.iter().map(ToString::to_string).collect(),
+        });
+    }
+    Ok(Json(serde_json::json!({ "warnings": warnings })))
 }
 
 async fn summary(

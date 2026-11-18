@@ -115,6 +115,9 @@ async fn wait_for_shutdown() {
 }
 
 async fn serve(config: Config, store: Store) -> Result<()> {
+    for warning in &config.warnings {
+        tracing::warn!("{warning}");
+    }
     if config.migrate_on_start {
         store.migrate().await.context("миграции не применились")?;
     } else if store.pending_migrations().await? > 0 {
@@ -236,6 +239,20 @@ async fn run(command: Command) -> Result<()> {
                 println!("Владелец создан: {email} (id {id})");
             } else {
                 println!("Пароль владельца {email} обновлён, старые сессии закрыты");
+            }
+            Ok(())
+        }
+        Command::UnlockLogin { email, addresses } => {
+            if store.pending_migrations().await? > 0 {
+                bail!("сначала выполните `stealthnet migrate`");
+            }
+            let services = build_services(&config, store)?;
+            let unlock = services
+                .auth()
+                .unlock_admin_login(&email, &addresses)
+                .await?;
+            for line in cli::unlock_report(&unlock) {
+                println!("{line}");
             }
             Ok(())
         }
