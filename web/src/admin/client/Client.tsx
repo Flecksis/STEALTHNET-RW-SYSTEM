@@ -516,7 +516,7 @@ function ClientDesktop() {
             </div>
             <div className="cc-prof">
               <span className="muted">Приглашённые</span>
-              <span>{stats.referrals_count > 0 ? count(stats.referrals_count, 'друга', 'друзей', 'друзей') : 'никого'}</span>
+              <span>{stats.referrals_count > 0 ? count(stats.referrals_count, 'друг', 'друга', 'друзей') : 'никого'}</span>
             </div>
             {stats.referrer ? (
               <div className="cc-prof">
