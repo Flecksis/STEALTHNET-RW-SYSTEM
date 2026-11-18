@@ -4,12 +4,13 @@ import { api } from '../../lib/api';
 import { dateTime } from '../../lib/format';
 import { useSession } from '../session';
 import { ANTIBOT, exceedState, failText, LIMITS, reasonsText, usageText, type ClientMark, type Exceed, type Page } from './model';
+import { protectSections } from './sections';
 import './protect.css';
 
 type Props = { clientId: number; phone?: boolean; onChanged?: () => void };
 
 export function ClientProtect({ clientId, phone, onChanged }: Props) {
-  const { can } = useSession();
+  const { me, can } = useSession();
   const [mark, setMark] = useState<ClientMark | null>(null);
   const [limited, setLimited] = useState<Exceed[]>([]);
   const [asking, setAsking] = useState<'mark' | number | null>(null);
@@ -18,17 +19,21 @@ export function ClientProtect({ clientId, phone, onChanged }: Props) {
   const writable = can('clients_write');
   const readable = can('clients_read');
 
+  const { antibot, limits } = protectSections(me.modules, readable);
+
   const load = useCallback(async () => {
-    if (!readable) {
+    if (!antibot && !limits) {
+      setMark(null);
+      setLimited([]);
       return;
     }
     const [found, page] = await Promise.all([
-      api<ClientMark>(`${ANTIBOT}/marks/${clientId}`).catch(() => null),
-      api<Page<Exceed>>(`${LIMITS}/exceeds?state=current&client=${clientId}&limit=20`).catch(() => null),
+      antibot ? api<ClientMark>(`${ANTIBOT}/marks/${clientId}`).catch(() => null) : null,
+      limits ? api<Page<Exceed>>(`${LIMITS}/exceeds?state=current&client=${clientId}&limit=20`).catch(() => null) : null,
     ]);
     setMark(found);
     setLimited((page?.items ?? []).filter((e) => exceedState(e).active));
-  }, [clientId, readable]);
+  }, [clientId, antibot, limits]);
 
   useEffect(() => {
     void load();

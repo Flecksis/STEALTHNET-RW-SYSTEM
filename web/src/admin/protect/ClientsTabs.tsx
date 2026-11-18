@@ -1,44 +1,18 @@
-import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router';
-import { api } from '../../lib/api';
-import { ANTIBOT, LIMITS } from './model';
+import { useSession } from '../session';
+import { protectSections, type Sections } from './sections';
 import '../pages/bot.css';
 import './protect.css';
 
-type Available = { antibot: boolean; limits: boolean };
-
-let known: Available | null = null;
-
-async function reachable(path: string): Promise<boolean> {
-  try {
-    await api(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function useProtectSections(): Available | null {
-  const [available, setAvailable] = useState<Available | null>(known);
-  useEffect(() => {
-    let alive = true;
-    void Promise.all([reachable(`${ANTIBOT}/summary`), reachable(`${LIMITS}/summary`)]).then(([antibot, limits]) => {
-      known = { antibot, limits };
-      if (alive) {
-        setAvailable(known);
-      }
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return available;
+export function useProtectSections(): Sections {
+  const { me, can } = useSession();
+  return protectSections(me.modules, can('clients_read'));
 }
 
 export function ClientsTabs() {
   const available = useProtectSections();
   const { pathname } = useLocation();
-  if (!available || (!available.antibot && !available.limits)) {
+  if (!available.antibot && !available.limits) {
     return null;
   }
   const here = (path: string) => (pathname === path ? 'page' : undefined);
