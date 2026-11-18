@@ -227,16 +227,18 @@ impl Module for MailModule {
             SettingField::select(
                 "transport",
                 "Отправка писем",
-                "none — письма не отправляются; smtp — через ваш почтовый сервер; resend — через Resend",
+                "«Не отправлять» — письма не уходят; «SMTP» — через ваш почтовый сервер; «Resend API» — через сервис Resend",
                 TRANSPORT_OPTIONS,
             )
+            .labels(&["Не отправлять", "SMTP", "Resend API"])
             .with_default("none"),
             SettingField::select(
                 "login",
                 "Вход на сайт по почте",
-                "password — по паролю; code — по коду из письма, нужна отправка писем",
+                "«По паролю» — клиент входит с паролем; «По коду из письма» — пароль не нужен, нужна отправка писем",
                 LOGIN_OPTIONS,
             )
+            .labels(&["По паролю", "По коду из письма"])
             .optional(),
             SettingField::flag(
                 "letter_expiring",
@@ -268,6 +270,7 @@ impl Module for MailModule {
                 "STARTTLS для порта 587, TLS для порта 465",
                 SECURITY_OPTIONS,
             )
+            .labels(&["STARTTLS", "TLS", "Без шифрования"])
             .with_default("starttls"),
             SettingField::number("smtp_port", "Порт", "Пусто — 587 для STARTTLS, 465 для TLS"),
             SettingField::text(

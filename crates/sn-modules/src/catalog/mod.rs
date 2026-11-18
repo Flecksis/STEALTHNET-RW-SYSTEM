@@ -133,6 +133,35 @@ mod tests {
     }
 
     #[test]
+    fn у_каждого_поля_выбора_встроенного_модуля_есть_подписи() {
+        for module in all() {
+            for field in module.settings_schema() {
+                if let sn_domain::settings::FieldKind::Select { options } = field.kind {
+                    let labels = field.labels.unwrap_or_else(|| {
+                        panic!("{:?}: у поля {} нет подписей", module.id(), field.key)
+                    });
+                    assert_eq!(
+                        labels.len(),
+                        options.len(),
+                        "{:?}: {}",
+                        module.id(),
+                        field.key
+                    );
+                    for (option, label) in options.iter().zip(labels) {
+                        assert!(
+                            !field.hint.contains(&format!("{option} —")),
+                            "{:?}: {}",
+                            module.id(),
+                            field.key
+                        );
+                        assert_ne!(option, label, "{:?}: {}", module.id(), field.key);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn числа_и_флаги_из_настроек_модуля() {
         let config = ModuleConfig::from_value(&serde_json::json!({
             "a": 30, "b": " 12 ", "c": "x", "d": true, "e": "false"
