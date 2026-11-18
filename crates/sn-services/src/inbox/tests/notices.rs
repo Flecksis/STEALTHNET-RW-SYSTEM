@@ -922,3 +922,42 @@ async fn оплата_другой_картой_после_отказа_перв
         kit.db.cleanup().await;
     }
 }
+
+#[tokio::test]
+async fn счёт_с_зачисленной_недоплатой_нельзя_отметить_оплаченным() {
+    let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8121).await;
+    let tariff = standard(&kit.services).await;
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let inbox = kit.services.inbox();
+    let under = with(
+        &payment,
+        ProviderStatus::Underpaid { received: usd(950) },
+        "u-9:wrong_amount",
+    );
+    inbox.apply_outcome(KASSA, &under).await.unwrap();
+    assert_eq!(balance(&kit.services, client_id).await, 950);
+    match inbox
+        .mark_paid(payment.id, admin, Some("клиент доплатил"))
+        .await
+    {
+        Err(ServiceError::Rejected { code, message }) => {
+            assert_eq!(code, "payment.underpaid_credited");
+            assert!(message.contains("$9.50"), "{message}");
+        }
+        other => panic!("ожидали отказ: {other:?}"),
+    }
+    assert_eq!(reload(&kit, &payment).await.status, PaymentStatus::Failed);
+    assert_eq!(
+        order(&kit.services, payment.order_id).await.status,
+        OrderStatus::Canceled
+    );
+    assert_eq!(balance(&kit.services, client_id).await, 950);
+    let other = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    inbox.mark_paid(other.id, admin, None).await.unwrap();
+    assert_eq!(reload(&kit, &other).await.status, PaymentStatus::Paid);
+    kit.db.cleanup().await;
+}

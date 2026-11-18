@@ -2784,6 +2784,16 @@ impl<'a> PaymentInbox<'a> {
             }
             _ => {}
         }
+        let underpaid = format!("{}:payment:{}", Received::Underpaid.key(), payment.id);
+        if let Some(credited) = tx.ledger().credited_by_key(&underpaid).await? {
+            return Err(ServiceError::rejected(
+                "payment.underpaid_credited",
+                format!(
+                    "Полученные по этому счёту {} уже зачислены клиенту на баланс. Отмечать счёт оплаченным нельзя: клиент оплатит заказ с баланса",
+                    amount_text(credited.into())
+                ),
+            ));
+        }
         let result = self.settle_paid(&mut tx, payment, None, None).await?;
         tx.audit()
             .record(&AuditEntry {

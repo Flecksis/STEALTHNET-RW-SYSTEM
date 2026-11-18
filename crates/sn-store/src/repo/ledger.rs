@@ -167,6 +167,18 @@ impl<'c> LedgerRepo<'c> {
         }
     }
 
+    pub async fn credited_by_key(&mut self, key: &str) -> StoreResult<Option<Money>> {
+        let found: Option<(i64, String)> = sqlx::query_as(
+            "SELECT delta_minor, currency FROM balance_entries WHERE idempotency_key = $1",
+        )
+        .bind(key)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        found
+            .map(|(minor, currency)| Ok(Money::new(minor, Currency::parse(&currency)?)))
+            .transpose()
+    }
+
     async fn existing(&mut self, entry: &NewLedgerEntry) -> StoreResult<Option<LedgerAppend>> {
         let Some(key) = &entry.idempotency_key else {
             return Ok(None);
