@@ -12,13 +12,16 @@ export type NavItem = {
   badge?: number;
   badgeLabel?: string;
   dot?: boolean;
+  exclude?: string[];
 };
 
-const CORE: Array<{ key: string; label: string; icon: IconName; to: string; need?: Permission }> = [
+const PAYMENT_EVENTS = '/admin/money/webhooks';
+
+const CORE: Array<{ key: string; label: string; icon: IconName; to: string; need?: Permission; exclude?: string[] }> = [
   { key: 'home', label: 'Главная', icon: 'home', to: '/admin' },
   { key: 'clients', label: 'Клиенты', icon: 'users', to: '/admin/clients', need: 'clients_read' },
   { key: 'support', label: 'Поддержка', icon: 'chat', to: '/admin/support', need: 'support' },
-  { key: 'money', label: 'Деньги', icon: 'card', to: '/admin/money', need: 'money' },
+  { key: 'money', label: 'Деньги', icon: 'card', to: '/admin/money', need: 'money', exclude: [PAYMENT_EVENTS] },
   { key: 'tariffs', label: 'Тарифы', icon: 'tag', to: '/admin/tariffs', need: 'tariffs' },
   { key: 'infra', label: 'Инфраструктура', icon: 'server', to: '/admin/infra', need: 'infrastructure' },
 ];
@@ -38,6 +41,7 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
     group: 'core',
     badge: badges[item.key] || undefined,
     badgeLabel: BADGE_LABEL[item.key],
+    exclude: item.exclude,
   }));
   for (const entry of [...me.menu].sort((a, b) => a.order - b.order)) {
     if (!menuAllowed(entry.module, can)) {
@@ -57,6 +61,9 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
   if (can('audit_log')) {
     items.push({ key: 'audit', label: 'Журнал действий', icon: 'book', to: '/admin/audit', group: 'system' });
   }
+  if (can('money')) {
+    items.push({ key: 'payment-events', label: 'Уведомления платёжек', icon: 'receipt', to: PAYMENT_EVENTS, group: 'system' });
+  }
   if (can('settings')) {
     items.push({ key: 'settings', label: 'Настройки', icon: 'sliders', to: '/admin/settings', group: 'system', dot: updateDot || undefined });
   }
@@ -64,6 +71,9 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
 }
 
 export function isCurrent(item: NavItem, path: string): boolean {
+  if (item.exclude?.some((p) => path === p || path.startsWith(`${p}/`))) {
+    return false;
+  }
   if (item.to === '/admin') {
     return path === '/admin' || path === '/admin/';
   }
