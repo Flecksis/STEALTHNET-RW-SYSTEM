@@ -69,6 +69,13 @@ test('адреса серверов, телефоны, номера и ники 
   assert.equal(clean('telegram id 1234567890, ник @ivan_petrov'), `telegram id ${HIDDEN}, ник @${HIDDEN}`);
 });
 
+test('домен без пути после него тоже скрывается', () => {
+  assert.equal(clean('Панель отправляет на страницу входа auth.example.com'), `Панель отправляет на страницу входа ${HIDDEN}`);
+  assert.equal(clean('сайт vpn-service.ru не открывается, а panel.vpn.example:8443 отвечает'), `сайт ${HIDDEN} не открывается, а ${HIDDEN} отвечает`);
+  assert.equal(clean('домен Магазин.рф'), `домен ${HIDDEN}`);
+  assert.equal(clean('файл backup.json и config.toml, т.е. всё'), 'файл backup.json и config.toml, т.е. всё');
+});
+
 test('версии, время и обычный текст остаются как есть', () => {
   const text =
     'Версия v0.1.160 (a2a5cf8), Remnawave 2.3.1, время 15:42:10, 18.11.2026, файл 2026-11-18-bug-reports.md, код admin_2fa_required_for_settings, serde::de::Error, Цена 1 490 ₽. Почему?';

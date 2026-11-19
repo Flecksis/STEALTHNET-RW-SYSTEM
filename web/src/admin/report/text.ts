@@ -35,6 +35,16 @@ const SECRET_PAIR_RE =
 const QUERY_RE = /\?[^\s?#=]*=[^\s#]*/g;
 const FRAGMENT_RE = /#[\w-]+=[^\s]*/g;
 const HOST_RE = /(?<![\p{L}\p{N}@.-])(?:[\p{L}\p{N}-]+\.)+\p{L}{2,}(?::\d{2,5})?(?=\/)/gu;
+const BARE_HOST_RE = /(?<![\p{L}\p{N}@._/-])(?:[\p{L}\p{N}-]+\.)+(\p{L}{2,})(?::\d{2,5})?(?![\p{L}\p{N}_/-]|\.[\p{L}\p{N}])/gu;
+const HOST_ZONES = new Set([
+  'com', 'net', 'org', 'ru', 'su', 'рф', 'io', 'app', 'dev', 'xyz', 'pro', 'online', 'site', 'me', 'tech', 'cc', 'top', 'info',
+  'store', 'shop', 'link', 'live', 'space', 'website', 'host', 'cloud', 'vip', 'club', 'biz', 'us', 'uk', 'de', 'nl', 'fi', 'kz',
+  'by', 'ua', 'eu', 'world', 'network', 'one', 'tv', 'to', 'ws',
+]);
+
+function bareHost(found: string, zone: string): string {
+  return found.split('.').length >= 3 || HOST_ZONES.has(zone.toLowerCase()) ? HIDDEN : found;
+}
 const IPV6_FULL_RE = /(?<![\w:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![\w:])/gi;
 const IPV6_SHORT_RE = /(?<![\w:])(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?(?![\w:])/gi;
 const IPV4_RE = /(?<![\w./])(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?(?![\w]|\.\d)/g;
@@ -88,6 +98,7 @@ function cleanPlain(text: string): string {
     .replace(QUERY_RE, `?${HIDDEN}`)
     .replace(FRAGMENT_RE, `#${HIDDEN}`)
     .replace(HOST_RE, HIDDEN)
+    .replace(BARE_HOST_RE, (found: string, zone: string) => bareHost(found, zone))
     .replace(IPV6_FULL_RE, HIDDEN)
     .replace(IPV6_SHORT_RE, HIDDEN)
     .replace(IPV4_RE, HIDDEN)
