@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/backups/s3/check", post(check_s3))
         .route("/backups/run", post(run))
         .route("/backups/files/{name}", get(download).delete(remove))
+        .route("/backups/files/{name}/ticket", post(ticket))
         .route("/backups/files/{name}/send", post(resend))
         .route(
             "/backups/upload",
@@ -237,17 +238,58 @@ async fn run(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Re
     Ok((StatusCode::ACCEPTED, Json(serde_json::json!({ "id": id }))).into_response())
 }
 
+async fn ticket(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ApiJson(body): ApiJson<Confirm>,
+) -> ApiResult<Json<serde_json::Value>> {
+    allowed(&admin)?;
+    let ticket = state
+        .services
+        .backups()
+        .download_ticket(&name, admin.0.admin_id, body.pair())
+        .await
+        .map_err(mapped)?;
+    Ok(Json(serde_json::json!({
+        "url": format!(
+            "/api/admin/backups/files/{}?ticket={ticket}",
+            urlencoding(&name)
+        ),
+    })))
+}
+
+fn urlencoding(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TicketQuery {
+    #[serde(default)]
+    ticket: String,
+}
+
 async fn download(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Meta(meta): Meta,
     Path(name): Path<String>,
+    ApiQuery(query): ApiQuery<TicketQuery>,
 ) -> ApiResult<Response> {
     allowed(&admin)?;
     let (path, size) = state
         .services
         .backups()
-        .download(&name, admin.0.admin_id, &meta)
+        .download(&name, admin.0.admin_id, &query.ticket, &meta)
         .await
         .map_err(mapped)?;
     let file = tokio::fs::File::open(&path)

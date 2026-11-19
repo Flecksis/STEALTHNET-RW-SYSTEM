@@ -270,7 +270,10 @@ export function SettingsAdmins() {
               ) : null}
               {item.role === 'admin' && !self && !item.disabled ? (
                 <div className="row adm-grant">
-                  <span className="cap">Резервные копии: делать, скачивать и восстанавливать базу из копии</span>
+                  <span className="cap">
+                    Резервные копии: делать, скачивать и восстанавливать базу из копии. В копии есть ключ ко всем секретам панели: токенам, ключам
+                    платёжек и паролям, поэтому давайте это право только тем, кому доверяете как себе
+                  </span>
                   <Switch
                     on={item.backups}
                     onToggle={() => void act(item.id, 'backups', { on: !item.backups })}

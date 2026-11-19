@@ -68,14 +68,41 @@ async fn копии_видит_только_владелец_или_админ_�
         .make_now(RunKind::Manual, None)
         .await
         .unwrap();
-    let (status, headers, bytes) = raw(
-        &h,
-        Method::GET,
-        &format!("/api/admin/backups/files/{}", made.name),
-        &admin,
-        Vec::new(),
-    )
-    .await;
+    let file = format!("/api/admin/backups/files/{}", made.name);
+    let (status, _, _) = raw(&h, Method::GET, &file, &admin, Vec::new()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "без подтверждения паролем копия не скачивается"
+    );
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("{file}/ticket"),
+            &admin,
+            json!({ "password": "не-тот-пароль-1" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "auth.wrong_password");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("{file}/ticket"),
+            &admin,
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let link = body["url"].as_str().unwrap().to_string();
+    assert!(link.starts_with(&format!("{file}?ticket=")), "{link}");
+    let (status, _, _) = raw(&h, Method::GET, &link, &owner, Vec::new()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "разрешение одного администратора не подходит другому"
+    );
+    let (status, headers, bytes) = raw(&h, Method::GET, &link, &admin, Vec::new()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, std::fs::read(&made.path).unwrap());
     let disposition = headers
@@ -95,6 +122,12 @@ async fn копии_видит_только_владелец_или_админ_�
         .unwrap()
     };
     assert_eq!(downloads, 1);
+    let (status, _, _) = raw(&h, Method::GET, &link, &admin, Vec::new()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "разрешение на скачивание одноразовое"
+    );
     for bad in [
         "/api/admin/backups/files/..%2F..%2Fetc%2Fpasswd",
         "/api/admin/backups/files/backup.json",

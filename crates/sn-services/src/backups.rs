@@ -148,14 +148,33 @@ pub struct Job {
     pub watch: Option<String>,
 }
 
+pub const DOWNLOAD_CONFIRM: &str = "backups.download_confirm";
+pub const DOWNLOAD_TICKET_SECONDS: i64 = 120;
+
+#[derive(Debug, Clone)]
+struct DownloadTicket {
+    token: String,
+    name: String,
+    admin: AdminId,
+    expires_at: DateTime<Utc>,
+}
+
 #[derive(Default)]
 pub struct Runtime {
     lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     job: Mutex<Option<Job>>,
     wake: tokio::sync::Notify,
+    tickets: Mutex<Vec<DownloadTicket>>,
 }
 
 impl Runtime {
+    fn tickets(&self) -> std::sync::MutexGuard<'_, Vec<DownloadTicket>> {
+        match self.tickets.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     fn set_job(&self, job: Option<Job>) {
         match self.job.lock() {
             Ok(mut guard) => *guard = job,
@@ -2065,13 +2084,67 @@ impl<'a> BackupOps<'a> {
         Ok(path)
     }
 
+    pub async fn download_ticket(
+        &self,
+        name: &str,
+        admin: AdminId,
+        confirm: (&str, Option<&str>),
+    ) -> ServiceResult<String> {
+        let path = self.file_path(name)?;
+        tokio::fs::metadata(&path)
+            .await
+            .map_err(|_| ServiceError::NotFound("копия"))?;
+        self.confirm(admin, confirm.0, confirm.1).await?;
+        let token = hex::encode(rand::random::<[u8; 16]>());
+        let now = self.services.now();
+        let mut tickets = self.runtime().tickets();
+        tickets.retain(|t| t.expires_at > now);
+        tickets.push(DownloadTicket {
+            token: token.clone(),
+            name: name.to_string(),
+            admin,
+            expires_at: now + chrono::Duration::seconds(DOWNLOAD_TICKET_SECONDS),
+        });
+        Ok(token)
+    }
+
+    fn take_ticket(&self, name: &str, admin: AdminId, token: &str) -> bool {
+        let now = self.services.now();
+        let mut tickets = self.runtime().tickets();
+        tickets.retain(|t| t.expires_at > now);
+        let found = tickets.iter().position(|t| {
+            t.admin == admin
+                && t.name == name
+                && t.token.len() == token.len()
+                && t.token
+                    .bytes()
+                    .zip(token.bytes())
+                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                    == 0
+        });
+        match found {
+            Some(at) => {
+                tickets.remove(at);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub async fn download(
         &self,
         name: &str,
         admin: AdminId,
+        ticket: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<(PathBuf, u64)> {
         let path = self.file_path(name)?;
+        if !self.take_ticket(name, admin, ticket) {
+            return Err(rejected(
+                DOWNLOAD_CONFIRM,
+                "Скачивание копии подтверждается паролем: нажмите «Скачать» ещё раз",
+            ));
+        }
         let size = tokio::fs::metadata(&path).await.map_err(internal)?.len();
         self.audit(audit_entry(
             Actor::Admin(admin),

@@ -360,7 +360,33 @@ function CopiesTab({
 }) {
   const [all, setAll] = useState(false);
   const [asking, setAsking] = useState<string | null>(null);
+  const [fetching, setFetching] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<Confirm>({ password: '', code: '' });
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetchBusy, setFetchBusy] = useState(false);
   const shown = all ? view.copies : view.copies.slice(0, SHOWN);
+  const openFetch = (name: string) => {
+    setFetching(fetching === name ? null : name);
+    setConfirm({ password: '', code: '' });
+    setFetchError(null);
+  };
+  const download = async (name: string) => {
+    setFetchBusy(true);
+    setFetchError(null);
+    try {
+      const res = await api<{ url: string }>(`/api/admin/backups/files/${encodeURIComponent(name)}/ticket`, {
+        method: 'POST',
+        body: confirmBody(confirm, view.totp_required),
+      });
+      setFetching(null);
+      setConfirm({ password: '', code: '' });
+      window.location.assign(res.url);
+    } catch (err) {
+      setFetchError(failText(err, 'Копия не скачалась'));
+    } finally {
+      setFetchBusy(false);
+    }
+  };
   if (!view.copies.length) {
     return (
       <div className="bk-empty">
@@ -408,6 +434,28 @@ function CopiesTab({
                       {p}
                     </span>
                   ))}
+                  {fetching === copy.name ? (
+                    <span className="bk-ask">
+                      <span>В копии лежат данные клиентов и ключ к секретам панели. Подтвердите скачивание паролем.</span>
+                      <ConfirmFields totp={view.totp_required} value={confirm} onChange={setConfirm} busy={fetchBusy} />
+                      {fetchError ? (
+                        <span className="cap bad" role="alert">
+                          {fetchError}
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="bk-link"
+                        disabled={fetchBusy || !confirm.password || (view.totp_required && confirm.code.length !== 6)}
+                        onClick={() => void download(copy.name)}
+                      >
+                        {fetchBusy ? 'Проверяем…' : 'Скачать'}
+                      </button>
+                      <button type="button" className="bk-link" onClick={() => setFetching(null)}>
+                        Отменить
+                      </button>
+                    </span>
+                  ) : null}
                   {asking === copy.name ? (
                     <span className="bk-ask">
                       <span>Удалить копию с сервера? Копии в Telegram и S3 останутся.</span>
@@ -421,9 +469,9 @@ function CopiesTab({
                   ) : null}
                 </span>
                 <span className="bk-acts">
-                  <a className="bk-link" href={`/api/admin/backups/files/${encodeURIComponent(copy.name)}`} download={copy.name}>
+                  <button type="button" className="bk-link" disabled={busy !== null} aria-expanded={fetching === copy.name} onClick={() => openFetch(copy.name)}>
                     Скачать
-                  </a>
+                  </button>
                   <button type="button" className="bk-link" disabled={busy !== null} onClick={() => onRestore(copy.name)}>
                     Восстановить
                   </button>
