@@ -506,6 +506,10 @@ impl Services {
         crate::bot_content::BotContentOps::new(self)
     }
 
+    pub fn bot_layout(&self) -> crate::bot_layout::BotLayoutOps<'_> {
+        crate::bot_layout::BotLayoutOps::new(self)
+    }
+
     pub fn stars_review(&self) -> StarsReview<'_> {
         StarsReview::new(self)
     }

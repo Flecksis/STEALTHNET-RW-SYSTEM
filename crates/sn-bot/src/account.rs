@@ -1,10 +1,11 @@
 use crate::BotError;
 use crate::handler::{Screen, Turn, live, status_text, subscription_names, tariff_name};
 use crate::session::{Awaiting, DevicePick};
-use crate::telegram::Keyboard;
+use crate::telegram::{Button, Keyboard};
 use crate::text;
 use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
+use sn_domain::bot_layout::{Screen as LayoutScreen, SubscriptionFacts, arrange};
 use sn_domain::client::Client;
 use sn_domain::ids::{SubscriptionId, TicketId};
 use sn_domain::lang;
@@ -209,12 +210,12 @@ pub async fn subscription(
         },
         &[],
     ));
-    let mut keyboard = Keyboard::new();
+    let mut connect = None;
     match (&view.subscription_url, &link_error) {
         (Some(url), _) => {
             lines.add(ui::text(c, "sub.link", &[("url", Text(url))]));
             if url.starts_with("http") {
-                keyboard = keyboard.push(ui::link(c, "sub.btn.connect", &[], url.clone()));
+                connect = Some(url.clone());
             }
         }
         (None, Some(err)) => {
@@ -226,15 +227,33 @@ pub async fn subscription(
         }
         (None, None) => {}
     }
-    if sub.remna.is_some() {
-        keyboard = keyboard.push(ui::button(c, "sub.btn.devices", &[], format!("dev:{id}")));
-        if turn.services().settings().client_access.self_reissue {
-            keyboard = keyboard.push(ui::button(c, "sub.btn.reissue", &[], format!("rei:{id}")));
-        }
-    }
-    keyboard = keyboard
-        .push(ui::button(c, "sub.btn.extend", &[], format!("buy:{id}")))
-        .pair(ui::button(c, "sub.btn.all", &[], "subs"), ui::menu(c));
+    let facts = SubscriptionFacts {
+        link: connect.is_some(),
+        remna: sub.remna.is_some(),
+        reissue: settings.client_access.self_reissue,
+    };
+    let present: Vec<(&str, Button)> = facts
+        .keys()
+        .into_iter()
+        .filter_map(|key| {
+            let button = match key {
+                "sub.btn.connect" => connect
+                    .as_ref()
+                    .and_then(|url| ui::link(c, key, &[], url.clone())),
+                "sub.btn.devices" => ui::button(c, key, &[], format!("dev:{id}")),
+                "sub.btn.reissue" => ui::button(c, key, &[], format!("rei:{id}")),
+                "sub.btn.extend" => ui::button(c, key, &[], format!("buy:{id}")),
+                "sub.btn.all" => ui::button(c, key, &[], "subs"),
+                "common.btn.menu" => ui::menu(c),
+                _ => None,
+            };
+            button.map(|button| (key, button))
+        })
+        .collect();
+    let keyboard = Keyboard::new().rows(arrange(
+        &c.content.layout(LayoutScreen::Subscription),
+        present,
+    ));
     Ok(Screen::new(lines.text())
         .keyboard(keyboard)
         .section(Section::Subscription))

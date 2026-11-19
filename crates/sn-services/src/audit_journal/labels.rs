@@ -541,6 +541,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Settings,
     ),
     a(
+        "settings.bot_layout",
+        "Изменён порядок кнопок бота",
+        Area::Settings,
+    ),
+    a(
         "settings.bot_takeover",
         "Бот забран у другого сайта",
         Area::Settings,
@@ -1143,6 +1148,9 @@ const FIELDS: &[(&str, &str)] = &[
     ("en_texts", "Тексты на английском"),
     ("en_buttons", "Кнопки на английском"),
     ("menu_columns", "Колонок в меню"),
+    ("screens", "Экраны с новым порядком кнопок"),
+    ("reset", "Экраны, где вернули порядок как было"),
+    ("shown", "Снова показаны"),
     ("titles", "Названия"),
     ("width", "Ширина"),
     ("height", "Высота"),

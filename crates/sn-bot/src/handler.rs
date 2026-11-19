@@ -9,6 +9,7 @@ use crate::{
     BotError, account, buy, consent, contests, email, extras, gifts, gram_wallet, login, media,
 };
 use sn_domain::bot_content::Section;
+use sn_domain::bot_layout::{Screen as LayoutScreen, arrange, pack};
 use sn_domain::client::{Client, IdentityKind, Locale, RegistrationSource, TelegramProfile};
 use sn_domain::ids::{SubscriptionId, TariffId};
 use sn_domain::lang;
@@ -21,6 +22,7 @@ use sn_modules::catalog::{broadcast, gifts as gift_module, options, promo, promo
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
 use sn_services::bot_content::{BotContent, Document};
+use sn_services::bot_layout::Install;
 use sn_services::subscriptions::SubscriptionView;
 use sn_store::Db;
 use std::sync::Arc;
@@ -743,32 +745,35 @@ async fn trial_available(services: &Services, client: &Client) -> Result<bool, B
     Ok(!conn.trials().was_claimed(&identities).await?)
 }
 
-pub fn module_buttons(services: &Services) -> Vec<&'static str> {
-    let mut entries: Vec<_> = services
-        .modules()
-        .enabled()
-        .iter()
-        .flat_map(|m| m.bot_entries())
-        .filter(|e| {
-            matches!(
-                e.key,
-                promo::BOT_ENTRY
-                    | referral::BOT_ENTRY
-                    | options::BOT_ENTRY
-                    | gift_module::BOT_ENTRY
-            )
-        })
-        .collect();
-    entries.sort_by_key(|e| e.order);
-    entries.into_iter().map(|e| e.key).collect()
-}
-
-fn module_button_key(entry: &str) -> Option<&'static str> {
-    match entry {
-        promo::BOT_ENTRY => Some("menu.btn.promo"),
-        referral::BOT_ENTRY => Some("menu.btn.referral"),
-        options::BOT_ENTRY => Some("menu.btn.options"),
-        gift_module::BOT_ENTRY => Some("menu.btn.gifts"),
+fn menu_button(c: &BotContent, install: &Install, key: &'static str) -> Option<Button> {
+    let entry = |name: &str| format!("x:{name}");
+    match key {
+        "menu.btn.app" => install
+            .miniapp
+            .as_ref()
+            .and_then(|url| ui::web_app(c, key, url.clone())),
+        "menu.btn.subscription" => ui::button(c, key, &[], "subs"),
+        "menu.btn.trial" => ui::button(c, key, &[], "trial"),
+        "menu.btn.buy" | "menu.btn.extend" => ui::button(c, key, &[], "buy"),
+        "menu.btn.balance" => ui::button(c, key, &[], "bal"),
+        "menu.btn.promo" => ui::button(c, key, &[], entry(promo::BOT_ENTRY)),
+        "menu.btn.options" => ui::button(c, key, &[], entry(options::BOT_ENTRY)),
+        "menu.btn.gifts" => ui::button(c, key, &[], entry(gift_module::BOT_ENTRY)),
+        "menu.btn.referral" => ui::button(c, key, &[], entry(referral::BOT_ENTRY)),
+        "menu.btn.contests" => {
+            ui::button(c, key, &[], entry(sn_modules::catalog::contests::BOT_ENTRY))
+        }
+        "menu.btn.roulette" => install
+            .miniapp
+            .as_ref()
+            .and_then(|url| ui::web_app(c, key, format!("{url}/roulette"))),
+        "menu.btn.documents" => ui::button(c, key, &[], "docs"),
+        "menu.btn.support" => match &install.support {
+            Some(url) => ui::link(c, key, &[], url.clone()),
+            None => ui::button(c, key, &[], "sup"),
+        },
+        "menu.btn.email" => ui::button(c, key, &[], email::CALLBACK),
+        "menu.btn.language" => ui::button(c, key, &[], "lang"),
         _ => None,
     }
 }
@@ -941,74 +946,23 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
             }
         }
     }
-    let mut buttons = Vec::new();
-    if let Some(url) = settings.miniapp_url() {
-        buttons.extend(ui::web_app(c, "menu.btn.app", url));
-    }
-    if !subscriptions.is_empty() {
-        buttons.extend(ui::button(c, "menu.btn.subscription", &[], "subs"));
-    }
-    if subscriptions.is_empty() && trial_available(services, client).await? {
-        buttons.extend(ui::button(c, "menu.btn.trial", &[], "trial"));
-    }
-    buttons.extend(ui::button(
-        c,
-        if subscriptions.is_empty() {
-            "menu.btn.buy"
-        } else {
-            "menu.btn.extend"
-        },
-        &[],
-        "buy",
-    ));
-    if services.payments().balance_enabled() || has_balance(services, client).await? {
-        buttons.extend(ui::button(c, "menu.btn.balance", &[], "bal"));
-    }
-    for entry in module_buttons(services) {
-        if let Some(key) = module_button_key(entry) {
-            buttons.extend(ui::button(c, key, &[], format!("x:{entry}")));
-        }
-    }
-    if contests::has_open(services).await {
-        buttons.extend(ui::button(
-            c,
-            "menu.btn.contests",
-            &[],
-            format!("x:{}", sn_modules::catalog::contests::BOT_ENTRY),
-        ));
-    }
-    if services
-        .modules()
-        .is_enabled(sn_domain::module::ModuleId::Roulette)
-        && let Some(url) = settings.miniapp_url()
-        && sn_modules::catalog::roulette::ready(&services.module_context())
-            .await
-            .unwrap_or(false)
-    {
-        buttons.extend(ui::web_app(
-            c,
-            "menu.btn.roulette",
-            format!("{url}/roulette"),
-        ));
-    }
-    if !c.documents.is_empty() {
-        buttons.extend(ui::button(c, "menu.btn.documents", &[], "docs"));
-    }
-    let settings = services.settings();
-    match support_link(&settings) {
-        Some(url) if !settings.support_tickets() => {
-            buttons.extend(ui::link(c, "menu.btn.support", &[], url));
-        }
-        _ => buttons.extend(ui::button(c, "menu.btn.support", &[], "sup")),
-    }
-    if email::offered(services) {
-        buttons.extend(ui::button(c, "menu.btn.email", &[], email::CALLBACK));
-    }
-    if settings.languages.several() {
-        buttons.extend(ui::button(c, "menu.btn.language", &[], "lang"));
-    }
+    let install = Install::load(services).await;
+    let subscribed = !subscriptions.is_empty();
+    let trial_left = !subscribed && install.trial && trial_available(services, client).await?;
+    let money = !install.balance && has_balance(services, client).await?;
+    let facts = install.menu(subscribed, trial_left, money);
+    let present: Vec<(&str, Button)> = facts
+        .keys()
+        .into_iter()
+        .filter_map(|key| menu_button(c, &install, key).map(|button| (key, button)))
+        .collect();
+    let rows = if c.content.has_own_layout(LayoutScreen::Menu) {
+        arrange(&c.content.layout(LayoutScreen::Menu), present)
+    } else {
+        pack(present, c.content.menu_columns())
+    };
     Ok(Screen::new(lines.text())
-        .keyboard(Keyboard::new().grid(buttons, c.content.menu_columns()))
+        .keyboard(Keyboard::new().rows(rows))
         .section(Section::Menu))
 }
 

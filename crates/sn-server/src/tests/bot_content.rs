@@ -380,3 +380,74 @@ async fn документы_сохраняются_и_видны_на_сайте
     assert_eq!(status, StatusCode::FORBIDDEN);
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn порядок_кнопок_бота_правится_из_админки() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let (status, view) = h.get("/api/admin/bot/layout", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["row_max"], 3);
+    assert_eq!(view["screens"][0]["key"], "menu");
+    assert_eq!(view["screens"][0]["custom"], false);
+    assert_eq!(view["screens"][0]["packed"], 1);
+    assert_eq!(view["screens"][1]["key"], "subscription");
+    let (status, _) = h.get("/api/admin/bot/layout", &support).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &support,
+            json!({ "layouts": { "menu": [["menu.btn.support"]] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &owner,
+            json!({ "layouts": { "menu": [["menu.btn.support", "menu.btn.buy"], ["menu.btn.app"]] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let menu = &saved["screens"][0];
+    assert_eq!(menu["custom"], true);
+    assert!(menu["packed"].is_null());
+    assert_eq!(menu["rows"][0], json!(["menu.btn.support", "menu.btn.buy"]));
+    assert_eq!(menu["rows"][1], json!(["menu.btn.app"]));
+
+    let (status, error) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &owner,
+            json!({ "layouts": { "subscription": [["sub.btn.extend", "sub.btn.all", "common.btn.menu", "sub.btn.devices"]] } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+    assert_eq!(error["error"]["code"], "bot_layout.invalid");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("не больше 3")
+    );
+
+    let (status, reset) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &owner,
+            json!({ "layouts": { "menu": null } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reset}");
+    assert_eq!(reset["screens"][0]["custom"], false);
+    assert_eq!(reset["screens"][0]["rows"][0], json!(["menu.btn.app"]));
+    let (_, content) = h.get("/api/admin/bot/content", &owner).await;
+    assert_eq!(content["menu_columns"], 1);
+}

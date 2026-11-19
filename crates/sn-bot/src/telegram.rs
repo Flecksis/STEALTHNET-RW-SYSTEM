@@ -474,6 +474,13 @@ impl Keyboard {
         self.row(left.into_iter().chain(right).collect())
     }
 
+    pub fn rows(mut self, rows: Vec<Vec<Button>>) -> Self {
+        for row in rows {
+            self = self.row(row);
+        }
+        self
+    }
+
     pub fn grid(mut self, buttons: Vec<Button>, columns: usize) -> Self {
         for chunk in buttons.chunks(columns.max(1)) {
             self = self.row(chunk.to_vec());

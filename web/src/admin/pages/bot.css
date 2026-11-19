@@ -141,10 +141,9 @@
   flex: 1 0 100%;
 }
 
-.bt-columns {
+.bt-order {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
 }
 
 .bt-entry .rl {

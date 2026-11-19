@@ -13,6 +13,7 @@ use sn_domain::bot_content::ImageMode;
 use sn_services::bot_content::{
     ContentUpdate, ContentView, DocumentsUpdate, DocumentsView, ImagesView,
 };
+use sn_services::bot_layout::{LayoutUpdate, LayoutView};
 use sn_store::BOT_IMAGE_MAX_BYTES;
 
 const UPLOAD_LIMIT: usize = BOT_IMAGE_MAX_BYTES + 64 * 1024;
@@ -20,6 +21,7 @@ const UPLOAD_LIMIT: usize = BOT_IMAGE_MAX_BYTES + 64 * 1024;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/bot/content", get(content).put(update_content))
+        .route("/bot/layout", get(layout).put(update_layout))
         .route("/bot/images", get(images))
         .route(
             "/bot/images/{slot}",
@@ -51,6 +53,26 @@ async fn update_content(
             .services
             .bot_content_ops()
             .update_content(&body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn layout(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<LayoutView>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.bot_layout().view().await?))
+}
+
+async fn update_layout(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<LayoutUpdate>,
+) -> ApiResult<Json<LayoutView>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state
+            .services
+            .bot_layout()
+            .update(&body, admin.0.admin_id)
             .await?,
     ))
 }

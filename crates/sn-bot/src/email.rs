@@ -25,9 +25,7 @@ pub fn cabinet_url(services: &Services) -> Option<String> {
 }
 
 pub fn offered(services: &Services) -> bool {
-    services.settings().client_access.site_login
-        && services.mail().available()
-        && cabinet_url(services).is_some()
+    sn_services::bot_layout::email_offered(services)
 }
 
 fn by_password(services: &Services) -> bool {

@@ -36,6 +36,7 @@ import { SettingsGeneral } from './pages/SettingsGeneral';
 import { SettingsBot } from './pages/SettingsBot';
 import { SettingsBotImages } from './pages/SettingsBotImages';
 import { SettingsBotTexts } from './pages/SettingsBotTexts';
+import { SettingsBotLayout } from './botlayout/BotLayout';
 import { SettingsDocuments } from './pages/SettingsDocuments';
 import { SettingsLanding } from './pages/SettingsLanding';
 import { SettingsAdmins } from './pages/SettingsAdmins';
@@ -271,6 +272,7 @@ export function AdminApp() {
             <Route path="updates" element={<SettingsUpdates />} />
             <Route path="backups" element={<SettingsBackups />} />
             <Route path="bot/texts" element={<SettingsBotTexts />} />
+            <Route path="bot/layout" element={<SettingsBotLayout />} />
             <Route path="bot/images" element={<SettingsBotImages />} />
             <Route path="documents" element={<SettingsDocuments />} />
             <Route path="landing" element={<SettingsLanding />} />

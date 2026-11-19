@@ -30,6 +30,7 @@ mod email_link;
 mod gifts;
 mod gram_wallet;
 mod languages;
+mod layout;
 mod miniapp;
 mod photos;
 mod referral_login;

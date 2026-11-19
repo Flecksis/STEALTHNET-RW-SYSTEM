@@ -2,6 +2,7 @@ pub mod access;
 pub mod alerts;
 pub mod bot_content;
 pub mod bot_content_en;
+pub mod bot_layout;
 pub mod client;
 pub mod connect;
 pub mod error;

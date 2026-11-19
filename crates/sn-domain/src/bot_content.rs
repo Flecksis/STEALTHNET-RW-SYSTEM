@@ -3153,6 +3153,8 @@ pub struct ContentConfig {
     pub buttons: BTreeMap<String, ButtonOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub menu_columns: Option<u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layouts: BTreeMap<String, crate::bot_layout::Rows>,
     #[serde(default, skip_serializing_if = "Translation::is_empty")]
     pub en: Translation,
 }
@@ -3313,6 +3315,17 @@ impl Content {
             Some(2) => 2,
             _ => 1,
         }
+    }
+
+    pub fn layout(&self, screen: crate::bot_layout::Screen) -> crate::bot_layout::Rows {
+        match self.config.layouts.get(screen.as_str()) {
+            Some(rows) => rows.clone(),
+            None => screen.standard(self.menu_columns()),
+        }
+    }
+
+    pub fn has_own_layout(&self, screen: crate::bot_layout::Screen) -> bool {
+        self.config.layouts.contains_key(screen.as_str())
     }
 
     pub fn template(&self, key: &str) -> &str {

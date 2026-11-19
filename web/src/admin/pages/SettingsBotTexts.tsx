@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { dateLong } from '../../lib/format';
 import { useSession } from '../session';
@@ -228,7 +229,6 @@ export function SettingsBotTexts() {
   const [textsEn, setTextsEn] = useState<Record<string, string>>({});
   const [labelsEn, setLabelsEn] = useState<Record<string, string>>({});
   const [lang, setLang] = useState<Lang>('ru');
-  const [columns, setColumns] = useState(1);
   const [section, setSection] = useState('menu');
   const [query, setQuery] = useState('');
   const [active, setActive] = useState<string | null>(null);
@@ -238,7 +238,6 @@ export function SettingsBotTexts() {
 
   const apply = useCallback((data: View) => {
     setView(data);
-    setColumns(data.menu_columns);
     const nextTexts: Record<string, string> = {};
     const nextButtons: Record<string, ButtonDraft> = {};
     const nextTextsEn: Record<string, string> = {};
@@ -331,8 +330,7 @@ export function SettingsBotTexts() {
     );
   }
 
-  const columnsChanged = columns !== view.menu_columns;
-  const unsaved = changedRu.length + changedEn.length + (columnsChanged ? 1 : 0);
+  const unsaved = changedRu.length + changedEn.length;
   const dirty = unsaved > 0;
   const english = lang === 'en';
   const needle = query.trim().toLowerCase();
@@ -416,7 +414,6 @@ export function SettingsBotTexts() {
     const body: {
       texts: Record<string, string | null>;
       buttons: Record<string, ButtonOverride | null>;
-      menu_columns?: number;
       en?: { texts: Record<string, string | null>; buttons: Record<string, string | null> };
     } = {
       texts: {},
@@ -450,9 +447,6 @@ export function SettingsBotTexts() {
               hidden: draft.hidden || undefined,
             };
       }
-    }
-    if (columnsChanged) {
-      body.menu_columns = columns;
     }
     setBusy(true);
     setStatus(null);
@@ -568,17 +562,10 @@ export function SettingsBotTexts() {
               <h3 id={`bt-s-${info.key}`} className="section-title">
                 {info.title}
               </h3>
-              {info.key === 'menu' ? (
-                <span className="bt-columns">
-                  <span className="muted">Кнопок в ряд</span>
-                  <span className="segs" role="group" aria-label="Кнопок в ряд в главном меню">
-                    {[1, 2].map((n) => (
-                      <button key={n} type="button" aria-pressed={columns === n} onClick={() => setColumns(n)}>
-                        {n}
-                      </button>
-                    ))}
-                  </span>
-                </span>
+              {info.key === 'menu' || info.key === 'subscription' ? (
+                <Link to="/admin/settings/bot/layout" className="bt-reset hov bt-order">
+                  Порядок кнопок
+                </Link>
               ) : null}
               {image ? <span className="cap">Сообщения раздела уходят с картинкой: текст до {view.caption_max} знаков, длиннее — без картинки.</span> : null}
             </div>

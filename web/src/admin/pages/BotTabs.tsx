@@ -4,6 +4,7 @@ import './bot.css';
 const TABS = [
   { to: '/admin/settings/bot', label: 'Подключение' },
   { to: '/admin/settings/bot/texts', label: 'Тексты и кнопки' },
+  { to: '/admin/settings/bot/layout', label: 'Порядок кнопок' },
   { to: '/admin/settings/bot/images', label: 'Картинки' },
 ];
 
