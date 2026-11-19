@@ -147,7 +147,7 @@ export type AutoOptions = {
 export type Options = {
   bot: boolean;
   bot_username: string | null;
-  mail: { ready: boolean; reason: string | null };
+  mail: { ready: boolean; reason: string | null; site?: boolean };
   sections: Array<{ key: Section; title: string; available: boolean }>;
   tariffs: Array<{ id: number; name: string }>;
   limits: Limits;

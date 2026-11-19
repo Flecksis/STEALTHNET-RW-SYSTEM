@@ -74,6 +74,8 @@ pub enum MailDelivery {
     Off(String),
 }
 
+pub const NO_SITE_ADDRESS: &str = "у панели не задан адрес сервиса, а без него в письме не будет ссылки «Отписаться». Адрес задаётся на сервере командой stealthnet domain";
+
 #[async_trait]
 pub trait MailSender: Send + Sync {
     fn site(&self) -> Result<MailSite, String>;

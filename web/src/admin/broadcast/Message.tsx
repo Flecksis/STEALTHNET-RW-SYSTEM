@@ -275,7 +275,8 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
             </span>
             {!options.mail.ready ? (
               <span className={`bc-channel-note ${mailOff ? 'warn-line' : 'cap'}`}>
-                {options.mail.reason ?? 'Почта не отправляет'}. <Link to="/admin/settings/mail">Настройки почты</Link>
+                {options.mail.reason ?? 'Почта не отправляет'}.{' '}
+                {options.mail.site ? <Link to="/admin/settings/general">Адрес сервиса</Link> : <Link to="/admin/settings/mail">Настройки почты</Link>}
               </span>
             ) : hasEmail(channel) ? (
               <span className="cap">Письмо соберётся из того же текста, картинки и кнопок. Внизу будет ссылка «Отписаться от рассылок».</span>

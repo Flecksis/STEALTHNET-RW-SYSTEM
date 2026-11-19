@@ -456,10 +456,7 @@ impl MailSender for MailBridge {
             .as_deref()
             .map(|u| u.trim().trim_end_matches('/'))
             .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
-            .ok_or_else(|| {
-                "не указан адрес сайта, а без него в письме не будет ссылки «Отписаться»"
-                    .to_string()
-            })?;
+            .ok_or_else(|| sn_modules::sender::NO_SITE_ADDRESS.to_string())?;
         Ok(MailSite {
             base_url: base.to_string(),
             brand: core.brand_name.clone(),

@@ -1129,6 +1129,7 @@ pub const LIMITS: Limits = Limits {
 pub struct MailState {
     pub ready: bool,
     pub reason: Option<String>,
+    pub site: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1156,14 +1157,21 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
         .core
         .bot_sender()
         .is_some_and(|sender| sender.bot_id().is_some());
+    let site = ctx
+        .core
+        .mail_sender()
+        .and_then(|sender| sender.site().err())
+        .is_some_and(|reason| reason == crate::sender::NO_SITE_ADDRESS);
     let mail = match mail_site(ctx) {
         Ok(_) => MailState {
             ready: true,
             reason: None,
+            site: false,
         },
         Err(err) => MailState {
             ready: false,
             reason: Some(err.to_string()),
+            site,
         },
     };
     Ok(Options {

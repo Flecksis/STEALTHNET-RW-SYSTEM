@@ -226,10 +226,23 @@ export function SettingsGeneral() {
         <div className="row">
           <span className="rl">Адрес сервиса</span>
           <div className="rc">
-            <span className="mono" style={{ paddingTop: 10 }}>
-              {core.public_url ?? window.location.origin}
-            </span>
-            <span className="cap">Задаётся при установке вместе с сертификатом</span>
+            {core.public_url ? (
+              <>
+                <span className="mono" style={{ paddingTop: 10 }}>
+                  {core.public_url}
+                </span>
+                <span className="cap">Задаётся при установке вместе с сертификатом, сменить — командой stealthnet domain на сервере</span>
+              </>
+            ) : (
+              <>
+                <span className="warn-line" style={{ paddingTop: 10 }}>
+                  Не задан
+                </span>
+                <span className="cap">
+                  Без него в письмах нет ссылки «Отписаться», а платёжки не получат адрес для уведомлений. Задайте домен на сервере командой stealthnet domain
+                </span>
+              </>
+            )}
           </div>
         </div>
       </section>

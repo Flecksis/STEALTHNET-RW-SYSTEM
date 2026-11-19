@@ -1870,6 +1870,12 @@ async fn почта_считает_адреса_и_отписки_а_оба_ка
     let options = options(&ctx).await.unwrap();
     assert!(!options.mail.ready);
     assert!(options.mail.reason.unwrap().contains("выключен"));
+    assert!(!options.mail.site);
+    *mail.ready.lock().unwrap() = Err(crate::sender::NO_SITE_ADDRESS.into());
+    let no_site = super::options(&ctx).await.unwrap();
+    assert!(!no_site.mail.ready);
+    assert!(no_site.mail.site);
+    assert!(no_site.mail.reason.unwrap().contains("stealthnet domain"));
     *mail.ready.lock().unwrap() = Ok(MailSite {
         base_url: "https://vpn.example.com".into(),
         brand: "Тест".into(),
