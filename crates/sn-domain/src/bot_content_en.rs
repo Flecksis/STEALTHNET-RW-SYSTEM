@@ -341,7 +341,7 @@ pub fn default(key: &str) -> Option<&'static str> {
             "Gift activated: “{tariff}” for {term}. The subscription will be ready in a minute, we'll message you."
         }
         "pl.done" => {
-            "Done! A subscription for {days} is set up. We'll message you as soon as it's working."
+            "A subscription for {days} is set up. We'll message you as soon as it's working."
         }
         "pl.not_found" => "This promo link doesn't exist. Check the link.",
         "pl.disabled" => "This promo link no longer works.",

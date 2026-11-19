@@ -466,7 +466,7 @@ async fn промо_ссылка_в_боте_выдаёт_подписку_од�
     assert!(
         last_text(&server)
             .await
-            .contains("Готово! Подписка на 7\u{a0}дней оформлена"),
+            .contains("Подписка на 7\u{a0}дней оформлена"),
         "{}",
         last_text(&server).await
     );
@@ -667,10 +667,7 @@ async fn промо_ссылка_в_боте_просит_кнопку_у_отм
     }
     handle_update(&ctx, callback_update(4, 761, &button)).await;
     let done = last_text(&server).await;
-    assert!(
-        done.contains("Готово! Подписка на 7\u{a0}дней оформлена"),
-        "{done}"
-    );
+    assert!(done.contains("Подписка на 7\u{a0}дней оформлена"), "{done}");
     assert!(
         orders_of(&db, marked)
             .await
