@@ -15,6 +15,7 @@ import { InfraNodes } from './infra/InfraNodes';
 import { InfraSquads } from './infra/InfraSquads';
 import { InfraHosts } from './infra/InfraHosts';
 import { InfraBilling } from './infra/InfraBilling';
+import { Audit } from './audit/Audit';
 import { ExtInstall } from './modules/ExtInstall';
 import { ExtModule } from './modules/ExtModule';
 import { ExtPage } from './modules/ExtPage';
@@ -251,6 +252,8 @@ export function AdminApp() {
           <Route path="infra/squads" element={<InfraSquads />} />
           <Route path="infra/hosts" element={<InfraHosts />} />
           <Route path="infra/billing" element={<InfraBilling />} />
+          <Route path="audit" element={<Audit />} />
+          <Route path="audit/:id" element={<Audit />} />
           <Route path="modules" element={<Modules />} />
           <Route path="modules/install" element={<ExtInstall />} />
           <Route path="modules/ext/:id" element={<ExtModule />} />

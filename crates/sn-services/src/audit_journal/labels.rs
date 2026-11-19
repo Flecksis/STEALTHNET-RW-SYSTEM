@@ -1,0 +1,1207 @@
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Area {
+    Clients,
+    Subscriptions,
+    Money,
+    Tariffs,
+    Settings,
+    Modules,
+    Marketing,
+    Admins,
+    Keys,
+    Infra,
+    System,
+    Sync,
+}
+
+impl Area {
+    pub const ALL: [Area; 12] = [
+        Area::Clients,
+        Area::Subscriptions,
+        Area::Money,
+        Area::Tariffs,
+        Area::Settings,
+        Area::Modules,
+        Area::Marketing,
+        Area::Admins,
+        Area::Keys,
+        Area::Infra,
+        Area::System,
+        Area::Sync,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Area::Clients => "clients",
+            Area::Subscriptions => "subscriptions",
+            Area::Money => "money",
+            Area::Tariffs => "tariffs",
+            Area::Settings => "settings",
+            Area::Modules => "modules",
+            Area::Marketing => "marketing",
+            Area::Admins => "admins",
+            Area::Keys => "keys",
+            Area::Infra => "infra",
+            Area::System => "system",
+            Area::Sync => "sync",
+        }
+    }
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Area::Clients => "Клиенты",
+            Area::Subscriptions => "Подписки",
+            Area::Money => "Оплаты и возвраты",
+            Area::Tariffs => "Тарифы",
+            Area::Settings => "Настройки",
+            Area::Modules => "Модули",
+            Area::Marketing => "Рассылки и маркетинг",
+            Area::Admins => "Администраторы и вход",
+            Area::Keys => "Ключи API и внешние модули",
+            Area::Infra => "Инфраструктура",
+            Area::System => "Резервные копии и обновления",
+            Area::Sync => "Перенос и синхронизация",
+        }
+    }
+
+    pub const fn fallback(self) -> &'static str {
+        match self {
+            Area::Clients => "Действие с клиентом",
+            Area::Subscriptions => "Действие с подпиской",
+            Area::Money => "Действие с оплатой",
+            Area::Tariffs => "Действие с тарифами",
+            Area::Settings => "Изменены настройки",
+            Area::Modules => "Действие с модулем",
+            Area::Marketing => "Действие в рассылках и маркетинге",
+            Area::Admins => "Действие с администраторами",
+            Area::Keys => "Действие с ключами API или внешними модулями",
+            Area::Infra => "Действие с инфраструктурой",
+            Area::System => "Действие с копиями или обновлениями",
+            Area::Sync => "Действие с переносом или синхронизацией",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Area> {
+        Area::ALL.into_iter().find(|area| area.as_str() == value)
+    }
+}
+
+pub struct ActionLabel {
+    pub code: &'static str,
+    pub title: &'static str,
+    pub area: Area,
+}
+
+const fn a(code: &'static str, title: &'static str, area: Area) -> ActionLabel {
+    ActionLabel { code, title, area }
+}
+
+pub const ACTIONS: &[ActionLabel] = &[
+    a("client.block", "Клиент заблокирован", Area::Clients),
+    a("client.unblock", "Клиент разблокирован", Area::Clients),
+    a("client.deleted", "Клиент удалён", Area::Clients),
+    a("client.note", "Изменена заметка о клиенте", Area::Clients),
+    a(
+        "client.message",
+        "Отправлено сообщение в бот",
+        Area::Clients,
+    ),
+    a("client.grant", "Выдана подписка", Area::Clients),
+    a(
+        "client.email_changed",
+        "Изменена почта клиента",
+        Area::Clients,
+    ),
+    a(
+        "client.email_set",
+        "Почта клиента указана администратором",
+        Area::Clients,
+    ),
+    a(
+        "client.email_removed",
+        "Почта клиента отвязана",
+        Area::Clients,
+    ),
+    a(
+        "client.password_issued",
+        "Выдан пароль для сайта",
+        Area::Clients,
+    ),
+    a(
+        "client.password_reset",
+        "Пароль восстановлен по коду из письма",
+        Area::Clients,
+    ),
+    a(
+        "client.password_changed",
+        "Пароль изменён в кабинете",
+        Area::Clients,
+    ),
+    a(
+        "client.telegram_login_confirmed",
+        "Вход в кабинет через Telegram",
+        Area::Clients,
+    ),
+    a(
+        "client.totp_enabled",
+        "Вход по коду из приложения включён в кабинете",
+        Area::Clients,
+    ),
+    a(
+        "client.totp_disabled",
+        "Вход по коду из приложения выключен в кабинете",
+        Area::Clients,
+    ),
+    a(
+        "client.totp_reset",
+        "Сброшен вход по коду из приложения",
+        Area::Clients,
+    ),
+    a(
+        "client.oauth_login",
+        "Вход через Google или Apple",
+        Area::Clients,
+    ),
+    a(
+        "client.oauth_registered",
+        "Регистрация через Google или Apple",
+        Area::Clients,
+    ),
+    a(
+        "client.oauth_linked",
+        "Привязан вход через Google или Apple",
+        Area::Clients,
+    ),
+    a(
+        "client.oauth_unlinked",
+        "Отвязан вход через Google или Apple",
+        Area::Clients,
+    ),
+    a(
+        "client.oauth_unlinked_on_confirm",
+        "Вход через Google или Apple отвязан при подтверждении почты",
+        Area::Clients,
+    ),
+    a(
+        "ticket.deleted",
+        "Обращение в поддержку удалено",
+        Area::Clients,
+    ),
+    a(
+        "subscription.add_days",
+        "Добавлены дни к подписке",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.add_days_undone",
+        "Отменено добавление дней",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.change_limits",
+        "Изменены лимиты подписки",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.reset_traffic",
+        "Сброшен трафик",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.reissue_link",
+        "Выпущена новая ссылка подписки",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.disconnect_all_devices",
+        "Отключены все устройства",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.disconnect_device",
+        "Отключено устройство",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.release_devices",
+        "Освобождены места для устройств",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.block_access",
+        "Доступ к подписке закрыт",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.restore_access",
+        "Доступ к подписке открыт",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.deleted",
+        "Подписка удалена",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.ended",
+        "Подписка закончилась",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.blocked_delivery",
+        "Выдача остановлена: клиент заблокирован",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.device_addon",
+        "Докуплены устройства",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.traffic_addon",
+        "Докуплен трафик",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.extra_traffic_settled",
+        "Учтён докупленный трафик",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.traffic_restricted",
+        "Подписка ограничена за превышение трафика",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.traffic_lifted",
+        "Ограничение по трафику снято",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.module_grant",
+        "Подписка выдана модулем",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.remna_linked",
+        "Подписка привязана к пользователю Remnawave",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.remna_added",
+        "Добавлена подписка из Remnawave",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.refund_action",
+        "Действие с подпиской после возврата",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.refund_action_closed",
+        "Действие после возврата закрыто вручную",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.refund_action_failed",
+        "Действие после возврата не выполнено",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.refund_action_retry",
+        "Действие после возврата повторено",
+        Area::Subscriptions,
+    ),
+    a("order.redeliver", "Заказ выдан повторно", Area::Money),
+    a("order.recalculate", "Заказ пересчитан", Area::Money),
+    a(
+        "order.mark_fulfilled",
+        "Заказ отмечен выданным",
+        Area::Money,
+    ),
+    a("order.review", "Заказ отправлен на проверку", Area::Money),
+    a("order.replaced", "Счёт заменён новым", Area::Money),
+    a(
+        "order.attached",
+        "Оплата зачтена в текущую подписку: у клиента может быть только одна",
+        Area::Money,
+    ),
+    a(
+        "payment.mark_paid",
+        "Платёж отмечен оплаченным вручную",
+        Area::Money,
+    ),
+    a("payment.refund", "Оформлен возврат", Area::Money),
+    a("payment.refund_requested", "Запрошен возврат", Area::Money),
+    a(
+        "payment.refund_confirmed",
+        "Возврат подтверждён",
+        Area::Money,
+    ),
+    a(
+        "payment.refund_confirmed_manually",
+        "Возврат подтверждён вручную",
+        Area::Money,
+    ),
+    a("payment.refund_declined", "Возврат отклонён", Area::Money),
+    a("payment.refund_canceled", "Возврат отменён", Area::Money),
+    a(
+        "payment.refund_outside",
+        "Возврат отмечен сделанным вне панели",
+        Area::Money,
+    ),
+    a(
+        "payment.refund_blocked",
+        "Деньги заблокированного клиента возвращены",
+        Area::Money,
+    ),
+    a(
+        "payment.refund_blocked_requested",
+        "Запрошен возврат денег заблокированного клиента",
+        Area::Money,
+    ),
+    a(
+        "payment.refund_blocked_unconfirmed",
+        "Возврат денег заблокированного клиента не подтверждён",
+        Area::Money,
+    ),
+    a(
+        "payment.underpaid_credited",
+        "Оплата пришла не полностью, полученное зачислено на баланс",
+        Area::Money,
+    ),
+    a(
+        "payment.underpaid_review",
+        "Оплата пришла не полностью, деньги ждут ручного зачисления",
+        Area::Money,
+    ),
+    a(
+        "payment.overpaid_credited",
+        "Излишек оплаты зачислен на баланс",
+        Area::Money,
+    ),
+    a(
+        "payment.overpaid_review",
+        "Излишек оплаты ждёт ручного зачисления",
+        Area::Money,
+    ),
+    a(
+        "payment.repeat_credited",
+        "Повторная оплата зачислена на баланс",
+        Area::Money,
+    ),
+    a(
+        "payment.repeat_review",
+        "Повторная оплата ждёт ручной проверки",
+        Area::Money,
+    ),
+    a(
+        "payment.saved_method_revoked",
+        "Автосписание отозвано, сохранённая карта снята",
+        Area::Money,
+    ),
+    a(
+        "payment.autorenew_unclear",
+        "Исход списания с карты неизвестен",
+        Area::Money,
+    ),
+    a(
+        "payment.autorenew_blocked",
+        "Списание с карты у заблокированного клиента",
+        Area::Money,
+    ),
+    a(
+        "payment.notice_closed",
+        "Уведомление платёжки закрыто",
+        Area::Money,
+    ),
+    a(
+        "payment.webhook_retry_started",
+        "Уведомление платёжки обрабатывается ещё раз",
+        Area::Money,
+    ),
+    a(
+        "payment.webhook_retried",
+        "Уведомление платёжки обработано ещё раз",
+        Area::Money,
+    ),
+    a(
+        "payment.stars_review",
+        "Оплата звёздами ждёт проверки",
+        Area::Money,
+    ),
+    a(
+        "payment.stars_review_refunded",
+        "Звёзды возвращены после проверки",
+        Area::Money,
+    ),
+    a(
+        "payment.stars_review_closed",
+        "Проверка оплаты звёздами закрыта",
+        Area::Money,
+    ),
+    a(
+        "payment.stars_review_refund_failed",
+        "Звёзды вернуть не удалось",
+        Area::Money,
+    ),
+    a(
+        "payment.stars_review_retried",
+        "Оплата звёздами проверена ещё раз",
+        Area::Money,
+    ),
+    a(
+        "refund.topup_shortfall",
+        "Возврат пополнения: на балансе не хватило денег",
+        Area::Money,
+    ),
+    a("tariff.create", "Создан тариф", Area::Tariffs),
+    a("tariff.update", "Изменён тариф", Area::Tariffs),
+    a(
+        "tariff.apply",
+        "Изменения тарифа применены к подпискам",
+        Area::Tariffs,
+    ),
+    a("tariff.on_sale", "Изменена продажа тарифа", Area::Tariffs),
+    a(
+        "tariff.channels",
+        "Изменены каналы продажи тарифа",
+        Area::Tariffs,
+    ),
+    a("tariff.delete", "Тариф удалён", Area::Tariffs),
+    a(
+        "category.create",
+        "Создана категория тарифов",
+        Area::Tariffs,
+    ),
+    a(
+        "category.update",
+        "Изменена категория тарифов",
+        Area::Tariffs,
+    ),
+    a(
+        "category.delete",
+        "Категория тарифов удалена",
+        Area::Tariffs,
+    ),
+    a("settings.core", "Изменены общие настройки", Area::Settings),
+    a("settings.appearance", "Изменено оформление", Area::Settings),
+    a(
+        "settings.site",
+        "Изменены название и описание сайта",
+        Area::Settings,
+    ),
+    a("settings.logo", "Изменён логотип", Area::Settings),
+    a("settings.favicon", "Изменён значок сайта", Area::Settings),
+    a("settings.trial", "Изменён пробный период", Area::Settings),
+    a(
+        "settings.client_access",
+        "Изменён доступ клиентов",
+        Area::Settings,
+    ),
+    a("settings.languages", "Изменены языки", Area::Settings),
+    a(
+        "settings.multi_subscriptions",
+        "Изменена настройка нескольких подписок",
+        Area::Settings,
+    ),
+    a(
+        "settings.autorenew",
+        "Изменено автопродление",
+        Area::Settings,
+    ),
+    a(
+        "settings.payment_order",
+        "Изменён порядок способов оплаты",
+        Area::Settings,
+    ),
+    a(
+        "settings.provider",
+        "Изменены настройки платёжки",
+        Area::Settings,
+    ),
+    a(
+        "settings.provider_check",
+        "Проверено подключение платёжки",
+        Area::Settings,
+    ),
+    a("settings.currency", "Изменена валюта", Area::Settings),
+    a("settings.bot", "Изменены настройки бота", Area::Settings),
+    a(
+        "settings.bot_content",
+        "Изменены тексты и кнопки бота",
+        Area::Settings,
+    ),
+    a(
+        "settings.bot_image",
+        "Изменена картинка бота",
+        Area::Settings,
+    ),
+    a(
+        "settings.bot_takeover",
+        "Бот забран у другого сайта",
+        Area::Settings,
+    ),
+    a("settings.documents", "Изменены документы", Area::Settings),
+    a("settings.landing", "Изменён лендинг", Area::Settings),
+    a(
+        "settings.landing_image",
+        "Изменена картинка лендинга",
+        Area::Settings,
+    ),
+    a(
+        "settings.connect",
+        "Изменена страница подключения",
+        Area::Settings,
+    ),
+    a(
+        "settings.connect_apps",
+        "Изменены приложения на странице подключения",
+        Area::Settings,
+    ),
+    a(
+        "settings.connect_app_icon",
+        "Изменён значок приложения",
+        Area::Settings,
+    ),
+    a(
+        "settings.connect_apps_import",
+        "Приложения для страницы подключения загружены из Remnawave",
+        Area::Settings,
+    ),
+    a(
+        "settings.remnawave",
+        "Изменено подключение к Remnawave",
+        Area::Settings,
+    ),
+    a(
+        "settings.remnawave_subscription",
+        "Изменены настройки подписки в Remnawave",
+        Area::Settings,
+    ),
+    a(
+        "settings.remnawave_webhook_secret",
+        "Создан секрет уведомлений Remnawave",
+        Area::Settings,
+    ),
+    a("mail.letters", "Изменены письма клиентам", Area::Settings),
+    a(
+        "modules.toggle",
+        "Модуль включён или выключен",
+        Area::Modules,
+    ),
+    a("modules.config", "Изменены настройки модуля", Area::Modules),
+    a(
+        "broadcast.scheduled",
+        "Рассылка запланирована",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.unscheduled",
+        "Запланированная рассылка отменена",
+        Area::Marketing,
+    ),
+    a("broadcast.started", "Рассылка запущена", Area::Marketing),
+    a(
+        "broadcast.canceled",
+        "Рассылка остановлена",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.test",
+        "Отправлена проверка рассылки",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.unsubscribed",
+        "Отписка от рассылок",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.resubscribed",
+        "Подписка на рассылки возвращена",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.auto_created",
+        "Создана авторассылка",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.auto_updated",
+        "Изменена авторассылка",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.auto_enabled",
+        "Авторассылка включена",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.auto_disabled",
+        "Авторассылка выключена",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.auto_deleted",
+        "Авторассылка удалена",
+        Area::Marketing,
+    ),
+    a(
+        "broadcast.auto_preset_added",
+        "Добавлены стандартные авторассылки",
+        Area::Marketing,
+    ),
+    a(
+        "promo.over_limit",
+        "Промокод применён сверх лимита",
+        Area::Marketing,
+    ),
+    a(
+        "promolinks.created",
+        "Создана промо-ссылка",
+        Area::Marketing,
+    ),
+    a(
+        "promolinks.enabled",
+        "Промо-ссылка включена",
+        Area::Marketing,
+    ),
+    a(
+        "promolinks.disabled",
+        "Промо-ссылка выключена",
+        Area::Marketing,
+    ),
+    a(
+        "gifts.settings",
+        "Изменены настройки подарков",
+        Area::Marketing,
+    ),
+    a("contest.created", "Создан конкурс", Area::Marketing),
+    a("contest.updated", "Изменён конкурс", Area::Marketing),
+    a("contest.canceled", "Конкурс отменён", Area::Marketing),
+    a("contest.deleted", "Конкурс удалён", Area::Marketing),
+    a("contest.drawn", "Конкурс разыгран", Area::Marketing),
+    a(
+        "contest.prize_retry",
+        "Приз конкурса выдан повторно",
+        Area::Marketing,
+    ),
+    a("roulette.saved", "Изменены призы рулетки", Area::Marketing),
+    a("admin.created", "Добавлен администратор", Area::Admins),
+    a(
+        "admin.role_changed",
+        "Изменена роль администратора",
+        Area::Admins,
+    ),
+    a(
+        "admin.permission_changed",
+        "Изменены права администратора",
+        Area::Admins,
+    ),
+    a("admin.disabled", "Администратор отключён", Area::Admins),
+    a("admin.enabled", "Администратор снова включён", Area::Admins),
+    a(
+        "admin.password_reset",
+        "Администратору выдан временный пароль",
+        Area::Admins,
+    ),
+    a(
+        "admin.password_changed",
+        "Пароль администратора изменён",
+        Area::Admins,
+    ),
+    a(
+        "admin.totp_enabled",
+        "Включён вход по коду из приложения",
+        Area::Admins,
+    ),
+    a(
+        "admin.totp_disabled",
+        "Выключен вход по коду из приложения",
+        Area::Admins,
+    ),
+    a(
+        "admin.totp_reset",
+        "Администратору сброшен вход по коду",
+        Area::Admins,
+    ),
+    a(
+        "admin.totp_locked",
+        "Вход по коду заблокирован после неверных кодов",
+        Area::Admins,
+    ),
+    a(
+        "admin.login_unlocked",
+        "Вход администратора разблокирован",
+        Area::Admins,
+    ),
+    a("api_key.created", "Создан ключ API", Area::Keys),
+    a("api_key.revoked", "Ключ API отозван", Area::Keys),
+    a(
+        "ext_module.installed",
+        "Установлен внешний модуль",
+        Area::Keys,
+    ),
+    a("ext_module.updated", "Внешний модуль обновлён", Area::Keys),
+    a("ext_module.enabled", "Внешний модуль включён", Area::Keys),
+    a("ext_module.disabled", "Внешний модуль выключен", Area::Keys),
+    a("ext_module.removed", "Внешний модуль удалён", Area::Keys),
+    a(
+        "ext_module.settings",
+        "Изменены настройки внешнего модуля",
+        Area::Keys,
+    ),
+    a(
+        "ext_module.credentials",
+        "Внешнему модулю выпущены новые ключ и секрет",
+        Area::Keys,
+    ),
+    a(
+        "ext_module.retry",
+        "Внешнему модулю повторно отправлены события",
+        Area::Keys,
+    ),
+    a(
+        "module.event_retry",
+        "Событие повторно отправлено внешнему модулю",
+        Area::Keys,
+    ),
+    a(
+        "module.event_review",
+        "Внешний модуль не принял событие, нужна проверка",
+        Area::Keys,
+    ),
+    a("node.create", "Добавлена нода", Area::Infra),
+    a("node.update", "Изменена нода", Area::Infra),
+    a("node.restart", "Нода перезапущена", Area::Infra),
+    a("node.enable", "Нода включена", Area::Infra),
+    a("node.disable", "Нода выключена", Area::Infra),
+    a("node.reset_traffic", "Сброшен трафик ноды", Area::Infra),
+    a("node.delete", "Нода удалена", Area::Infra),
+    a("host.create", "Добавлен хост", Area::Infra),
+    a("host.update", "Изменён хост", Area::Infra),
+    a("host.enable", "Хост включён", Area::Infra),
+    a("host.disable", "Хост выключен", Area::Infra),
+    a("host.delete", "Хост удалён", Area::Infra),
+    a("host.reorder", "Изменён порядок хостов", Area::Infra),
+    a("squad.create", "Создан сквад", Area::Infra),
+    a("squad.update", "Изменён сквад", Area::Infra),
+    a("provider.create", "Добавлен хостинг-провайдер", Area::Infra),
+    a("provider.update", "Изменён хостинг-провайдер", Area::Infra),
+    a("infra.billing_paid", "Отмечена оплата сервера", Area::Infra),
+    a(
+        "backups.settings_changed",
+        "Изменено расписание резервных копий",
+        Area::System,
+    ),
+    a(
+        "backups.password_set",
+        "Задан пароль резервных копий",
+        Area::System,
+    ),
+    a(
+        "backups.password_removed",
+        "Снят пароль резервных копий",
+        Area::System,
+    ),
+    a(
+        "backups.telegram_changed",
+        "Изменена отправка копий в Telegram",
+        Area::System,
+    ),
+    a(
+        "backups.s3_changed",
+        "Изменено хранилище копий S3",
+        Area::System,
+    ),
+    a(
+        "backups.downloaded",
+        "Скачана резервная копия",
+        Area::System,
+    ),
+    a("backups.deleted", "Удалена резервная копия", Area::System),
+    a(
+        "backups.restore_started",
+        "Начато восстановление из копии",
+        Area::System,
+    ),
+    a(
+        "backups.restored",
+        "База восстановлена из копии",
+        Area::System,
+    ),
+    a(
+        "system.settings_changed",
+        "Изменены настройки обновлений",
+        Area::System,
+    ),
+    a(
+        "system.update_requested",
+        "Запрошено обновление панели",
+        Area::System,
+    ),
+    a(
+        "system.update_canceled",
+        "Обновление панели отменено",
+        Area::System,
+    ),
+    a(
+        "system.update_denied",
+        "Обновление панели не разрешено",
+        Area::System,
+    ),
+    a("system.update_finished", "Панель обновлена", Area::System),
+    a(
+        "system.update_failed",
+        "Обновление панели не удалось",
+        Area::System,
+    ),
+    a(
+        "system.update_rolled_back",
+        "Обновление панели отменено, версия возвращена",
+        Area::System,
+    ),
+    a(
+        "system.update_attention",
+        "Обновление панели требует внимания",
+        Area::System,
+    ),
+    a(
+        "import.done",
+        "Перенос из другой панели завершён",
+        Area::Sync,
+    ),
+    a(
+        "remna.transfer.started",
+        "Начат перенос в Remnawave",
+        Area::Sync,
+    ),
+    a(
+        "remna.transfer.finished",
+        "Перенос в Remnawave закончен",
+        Area::Sync,
+    ),
+    a(
+        "remna.transfer.notified",
+        "Клиентам отправлены новые ссылки подписки",
+        Area::Sync,
+    ),
+];
+
+const PREFIX_AREAS: &[(&str, Area)] = &[
+    ("client.", Area::Clients),
+    ("ticket.", Area::Clients),
+    ("subscription.", Area::Subscriptions),
+    ("order.", Area::Money),
+    ("payment.", Area::Money),
+    ("refund.", Area::Money),
+    ("tariff.", Area::Tariffs),
+    ("category.", Area::Tariffs),
+    ("settings.", Area::Settings),
+    ("mail.", Area::Settings),
+    ("modules.", Area::Modules),
+    ("broadcast.", Area::Marketing),
+    ("promo.", Area::Marketing),
+    ("promolinks.", Area::Marketing),
+    ("gifts.", Area::Marketing),
+    ("contest.", Area::Marketing),
+    ("roulette.", Area::Marketing),
+    ("admin.", Area::Admins),
+    ("api_key.", Area::Keys),
+    ("ext_module.", Area::Keys),
+    ("module.", Area::Keys),
+    ("node.", Area::Infra),
+    ("host.", Area::Infra),
+    ("squad.", Area::Infra),
+    ("provider.", Area::Infra),
+    ("infra.", Area::Infra),
+    ("backups.", Area::System),
+    ("system.", Area::System),
+    ("import.", Area::Sync),
+    ("remna.", Area::Sync),
+];
+
+pub fn label(code: &str) -> Option<&'static ActionLabel> {
+    ACTIONS.iter().find(|label| label.code == code)
+}
+
+pub fn area_of(code: &str) -> Option<Area> {
+    label(code).map(|label| label.area).or_else(|| {
+        PREFIX_AREAS
+            .iter()
+            .find(|(prefix, _)| code.starts_with(prefix))
+            .map(|(_, area)| *area)
+    })
+}
+
+pub fn title_of(code: &str) -> &'static str {
+    match label(code) {
+        Some(label) => label.title,
+        None => area_of(code).map_or("Действие в панели", Area::fallback),
+    }
+}
+
+pub fn codes_in(area: Area) -> Vec<String> {
+    ACTIONS
+        .iter()
+        .filter(|label| label.area == area)
+        .map(|label| label.code.to_string())
+        .collect()
+}
+
+fn fold(text: &str) -> String {
+    text.to_lowercase().replace('ё', "е")
+}
+
+pub fn codes_matching(text: &str) -> Vec<String> {
+    let needle = fold(text.trim());
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    ACTIONS
+        .iter()
+        .filter(|label| fold(label.title).contains(&needle))
+        .map(|label| label.code.to_string())
+        .collect()
+}
+
+const FIELDS: &[(&str, &str)] = &[
+    ("reason", "Причина"),
+    ("comment", "Комментарий"),
+    ("note", "Заметка"),
+    ("text", "Текст"),
+    ("days", "Дней"),
+    ("module", "Модуль"),
+    ("name", "Название"),
+    ("title", "Название"),
+    ("label", "Подпись"),
+    ("description", "Описание"),
+    ("provider", "Платёжка"),
+    ("method", "Способ оплаты"),
+    ("methods", "Способы оплаты"),
+    ("password", "Пароль"),
+    ("token", "Токен"),
+    ("bot_token", "Токен бота"),
+    ("secret", "Секрет"),
+    ("secret_key", "Секретный ключ"),
+    ("api_key_value", "Ключ API"),
+    ("amount", "Сумма"),
+    ("currency", "Валюта"),
+    ("client_id", "Клиент №"),
+    ("payment_id", "Платёж №"),
+    ("order_id", "Заказ №"),
+    ("subscription_id", "Подписка №"),
+    ("request_id", "Запрос на возврат №"),
+    ("refund_id", "Возврат №"),
+    ("provider_refund_id", "Возврат в платёжке"),
+    ("provider_txid", "Номер платежа в платёжке"),
+    ("tariff", "Тариф"),
+    ("tariff_id", "Тариф №"),
+    ("plan", "Что выдано"),
+    ("previous_plan", "Что было"),
+    ("email", "Почта"),
+    ("previous", "Прежнее значение"),
+    ("role", "Роль"),
+    ("permission", "Право"),
+    ("permissions", "Права"),
+    ("on", "Включено"),
+    ("enabled", "Включено"),
+    ("on_sale", "В продаже"),
+    ("channels", "Каналы"),
+    ("version", "Версия"),
+    ("events", "События"),
+    ("webhook", "Адрес для событий"),
+    ("page", "Страница модуля"),
+    ("api_key", "Ключ API №"),
+    ("revoked_key", "Отозван ключ №"),
+    ("api_key_revoked", "Ключ отозван"),
+    ("keys", "Поля"),
+    ("fields", "Изменены поля"),
+    ("secrets", "Заменены секреты"),
+    ("changed", "Что изменено"),
+    ("file", "Файл"),
+    ("size", "Размер, байт"),
+    ("source", "Откуда"),
+    ("user_agent", "Браузер"),
+    ("error", "Ошибка"),
+    ("attempts", "Попыток"),
+    ("event", "Событие"),
+    ("status", "Статус"),
+    ("state", "Состояние"),
+    ("kind", "Вид"),
+    ("host", "Хост"),
+    ("node", "Нода"),
+    ("node_name", "Нода"),
+    ("address", "Адрес"),
+    ("port", "Порт"),
+    ("remark", "Название"),
+    ("squad", "Сквад"),
+    ("inbound", "Подключение"),
+    ("inbounds", "Подключения"),
+    ("city", "Город"),
+    ("remna_user_id", "Пользователь Remnawave №"),
+    ("remna_username", "Пользователь Remnawave"),
+    ("short_uuid", "Короткий идентификатор"),
+    ("expire_at", "Действует до"),
+    ("ends_at", "Окончание"),
+    ("send_at", "Отправка"),
+    ("at", "Когда"),
+    ("audience", "Кому"),
+    ("total", "Всего"),
+    ("failed", "Не удалось"),
+    ("stopped", "Остановлено"),
+    ("winners", "Победители"),
+    ("prize", "Приз"),
+    ("entries", "Участников"),
+    ("max_uses", "Лимит использований"),
+    ("used", "Использовано"),
+    ("per_client", "На одного клиента"),
+    ("code", "Код"),
+    ("max_activations", "Лимит активаций"),
+    ("revoked_sessions", "Закрыто сессий"),
+    ("via", "Через"),
+    ("ip", "Адрес"),
+    ("one_time", "Одноразовый"),
+    ("canceled_payments", "Отменено счетов"),
+    ("canceled_orders", "Отменено заказов"),
+    ("ended_subscriptions", "Закончено подписок"),
+    ("identities", "Способы входа"),
+    ("password_removed", "Пароль для сайта снят"),
+    ("recalculated", "Пересчитан"),
+    ("notified", "Клиенту сообщили"),
+    ("review_reason", "Почему на проверке"),
+    ("order_status", "Статус заказа"),
+    ("order_kind", "Вид заказа"),
+    ("requested_by", "Кто запросил"),
+    ("subscription_action", "Что сделать с подпиской"),
+    ("held", "Удержано"),
+    ("refunded", "Возвращено"),
+    ("debited", "Списано"),
+    ("traffic_limit", "Лимит трафика"),
+    ("traffic_limit_before", "Лимит трафика был"),
+    ("hwid_limit", "Устройств"),
+    ("hwid_limit_before", "Устройств было"),
+    ("apps", "Приложений"),
+    ("icons", "Значков"),
+    ("count", "Количество"),
+    ("telegram", "Telegram"),
+    ("endpoint", "Адрес хранилища"),
+    ("bucket", "Бакет"),
+    ("prefix", "Папка"),
+    ("amount_minor", "Сумма"),
+    ("billed_at", "Оплачено"),
+    ("next_billing_at", "Следующая оплата"),
+    ("indexing", "Индексация"),
+    ("check_enabled", "Проверка обновлений"),
+    ("direction", "Направление"),
+    ("presets", "Стандартные правила"),
+    ("preset", "Правило"),
+    ("result", "Итог"),
+    ("password_failures", "Неверных паролей"),
+    ("totp_locked", "Вход по коду был заблокирован"),
+    ("addresses", "Адреса"),
+    ("failures", "Неудачных попыток"),
+    ("hidden", "Скрыто"),
+    ("replaced_by", "Заменён счётом №"),
+    ("promo", "Промокод"),
+    ("released", "Освобождено"),
+    ("missing", "Не найдено"),
+    ("subscription_limit", "Лимит подписок"),
+    ("standard", "Стандартный набор"),
+    ("tag", "Метка"),
+    ("page_config", "Настройки страницы"),
+    ("consent", "Согласие"),
+    ("texts", "Тексты"),
+    ("buttons", "Кнопки"),
+    ("en_texts", "Тексты на английском"),
+    ("en_buttons", "Кнопки на английском"),
+    ("menu_columns", "Колонок в меню"),
+    ("titles", "Названия"),
+    ("width", "Ширина"),
+    ("height", "Высота"),
+    ("sha256", "Контрольная сумма"),
+    ("removed_icons", "Удалено значков"),
+    ("removed_images", "Удалено картинок"),
+    ("event_key", "Ключ события"),
+    ("original_payment_id", "Исходный платёж №"),
+    ("hold_entry_id", "Удержание №"),
+    ("billing_node", "Нода в оплате серверов"),
+    ("rule", "Правило"),
+    ("window_seconds", "Окно, секунд"),
+    ("ended_after_days", "Через дней после окончания"),
+    ("created_at", "Создано"),
+    ("app", "Приложение"),
+    ("before", "Было"),
+    ("previous_status", "Прежний статус"),
+    ("cleared", "Очищено"),
+    ("kept_autorenew_payments", "Сохранено автосписаний"),
+    ("panel_user_missing", "Пользователя нет в Remnawave"),
+    ("panel", "Remnawave"),
+    ("reference", "Основание"),
+    ("providers", "Способы входа"),
+    ("job_id", "Задача №"),
+    ("scheduled", "Запланировано"),
+    ("sectors", "Секторов"),
+    ("promo_id", "Промокод №"),
+    ("channel", "Канал"),
+    ("order", "Порядок"),
+    ("report", "Итог"),
+    ("from", "Было"),
+    ("to", "Стало"),
+];
+
+const ACTION_FIELDS: &[(&str, &str, &str)] = &[
+    ("settings.appearance", "admin", "Дизайн админки"),
+    ("settings.appearance", "admin_theme", "Тема админки"),
+    (
+        "settings.appearance",
+        "client",
+        "Дизайн кабинета и мини-приложения",
+    ),
+    ("settings.appearance", "client_theme", "Тема для клиентов"),
+];
+
+const VALUES: &[(&str, &str, &str)] = &[
+    ("admin", "side", "Боковое меню"),
+    ("admin", "top", "Верхнее меню"),
+    ("admin_theme", "dark", "Тёмная"),
+    ("admin_theme", "light", "Светлая"),
+    ("admin_theme", "system", "Как в системе"),
+    ("client", "accent", "Акцент"),
+    ("client", "mono", "Монохром"),
+    ("client_theme", "dark", "Тёмная"),
+    ("client_theme", "light", "Светлая"),
+    ("client_theme", "client", "Клиент выбирает сам"),
+    ("channels", "bot", "бот"),
+    ("channels", "cabinet", "кабинет"),
+    ("channels", "miniapp", "мини-приложение"),
+    ("channel", "bot", "бот"),
+    ("channel", "cabinet", "кабинет"),
+    ("channel", "miniapp", "мини-приложение"),
+];
+
+pub fn field_label_in(action: &str, key: &str) -> Option<&'static str> {
+    ACTION_FIELDS
+        .iter()
+        .find(|(a, k, _)| *a == action && *k == key)
+        .map(|(_, _, label)| *label)
+        .or_else(|| field_label(key))
+}
+
+pub fn value_label(key: &str, value: &str) -> Option<&'static str> {
+    VALUES
+        .iter()
+        .find(|(k, v, _)| *k == key && *v == value)
+        .map(|(_, _, label)| *label)
+}
+
+pub fn field_label(key: &str) -> Option<&'static str> {
+    FIELDS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, label)| *label)
+}

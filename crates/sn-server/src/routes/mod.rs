@@ -8,7 +8,7 @@ pub mod support_files;
 pub mod system;
 pub mod webhooks;
 
-use crate::extract::{require_admin, require_client, with_client_address};
+use crate::extract::{api_key_scope, require_admin, require_client, with_client_address};
 use crate::state::AppState;
 use axum::Router;
 use axum::body::Body;
@@ -119,7 +119,9 @@ pub fn router(state: AppState) -> Router {
         .merge(support_files::public_routes())
         .nest(
             "/api/admin",
-            admin::routes().merge(support_files::admin_routes()),
+            admin::routes()
+                .merge(support_files::admin_routes())
+                .layer(from_fn_with_state(state.clone(), api_key_scope)),
         )
         .nest(
             "/api/client",

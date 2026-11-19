@@ -23,6 +23,7 @@ const NEED_TITLE: Record<Permission, string> = {
   clients_login: 'Вход за клиента',
   remna_sync: 'Синхронизация с Remnawave',
   backups: 'Резервные копии',
+  audit_log: 'Журнал действий',
 };
 
 function needText(need: Permission[]): string {

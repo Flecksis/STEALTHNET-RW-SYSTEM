@@ -57,6 +57,21 @@ pub struct AuditRecord {
 const COLUMNS: &str =
     "id, actor_kind, actor_id, action, entity_kind, entity_id, details, created_at";
 
+tokio::task_local! {
+    static VIA_API_KEY: i64;
+}
+
+pub async fn with_api_key<F: std::future::Future>(key: Option<i64>, future: F) -> F::Output {
+    match key {
+        Some(key) => VIA_API_KEY.scope(key, future).await,
+        None => future.await,
+    }
+}
+
+pub fn current_api_key() -> Option<i64> {
+    VIA_API_KEY.try_with(|key| *key).ok()
+}
+
 pub struct AuditRepo<'c> {
     conn: &'c mut PgConnection,
 }
@@ -68,8 +83,9 @@ impl<'c> AuditRepo<'c> {
 
     pub async fn record(&mut self, entry: &AuditEntry) -> StoreResult<i64> {
         Ok(sqlx::query_scalar(
-            "INSERT INTO audit_log (actor_kind, actor_id, action, entity_kind, entity_id, details, ip) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            "INSERT INTO audit_log (actor_kind, actor_id, action, entity_kind, entity_id, details, ip, \
+             api_key_id, ext_module) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
+             (SELECT m.id FROM ext_modules m WHERE m.api_key_id = $8)) RETURNING id",
         )
         .bind(entry.actor_kind.as_str())
         .bind(entry.actor_id)
@@ -78,6 +94,7 @@ impl<'c> AuditRepo<'c> {
         .bind(entry.entity_id)
         .bind(&entry.details)
         .bind(&entry.ip)
+        .bind(current_api_key())
         .fetch_one(&mut *self.conn)
         .await?)
     }

@@ -933,10 +933,38 @@ pub async fn require_admin(
     let principal = admin_principal(&state, request.method(), request.headers()).await;
     match principal {
         Ok(principal) => {
+            let key = principal.api_key;
             request.extensions_mut().insert(principal);
-            next.run(request).await
+            sn_store::with_api_key(key, next.run(request)).await
         }
         Err(err) => axum::response::IntoResponse::into_response(err),
+    }
+}
+
+pub async fn api_key_scope(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let credential = request_credential(&state, request.method(), request.headers(), ADMIN_COOKIE)
+        .ok()
+        .flatten()
+        .filter(|c| !c.from_cookie() && sn_services::api_keys::is_api_token(c.token()));
+    let Some(credential) = credential else {
+        return next.run(request).await;
+    };
+    match state
+        .services
+        .api_keys()
+        .principal(credential.token())
+        .await
+    {
+        Ok(principal) => {
+            let key = principal.api_key;
+            request.extensions_mut().insert(principal);
+            sn_store::with_api_key(key, next.run(request)).await
+        }
+        Err(_) => next.run(request).await,
     }
 }
 

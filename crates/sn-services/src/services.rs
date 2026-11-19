@@ -321,6 +321,10 @@ impl Services {
         crate::api_keys::ApiKeysOps::new(self)
     }
 
+    pub fn audit_journal(&self) -> crate::audit_journal::AuditJournalOps<'_> {
+        crate::audit_journal::AuditJournalOps::new(self)
+    }
+
     pub fn ext_modules(&self) -> crate::ext_modules::ExtModulesOps<'_> {
         crate::ext_modules::ExtModulesOps::new(self)
     }

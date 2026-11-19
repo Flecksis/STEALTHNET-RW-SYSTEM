@@ -21,6 +21,7 @@ type AdminItem = {
   last_login_method?: 'password' | 'totp' | null;
   remna_sync: boolean;
   backups: boolean;
+  audit_log: boolean;
 };
 
 type Issued = { admin: AdminItem; password: string };
@@ -274,6 +275,17 @@ export function SettingsAdmins() {
                     on={item.backups}
                     onToggle={() => void act(item.id, 'backups', { on: !item.backups })}
                     label={`Резервные копии для ${item.email}`}
+                    disabled={busy !== null}
+                  />
+                </div>
+              ) : null}
+              {item.role === 'admin' && !self && !item.disabled ? (
+                <div className="row adm-grant">
+                  <span className="cap">Журнал действий: кто, что и когда менял в панели</span>
+                  <Switch
+                    on={item.audit_log}
+                    onToggle={() => void act(item.id, 'audit-log', { on: !item.audit_log })}
+                    label={`Журнал действий для ${item.email}`}
                     disabled={busy !== null}
                   />
                 </div>

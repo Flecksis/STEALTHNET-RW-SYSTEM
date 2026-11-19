@@ -15,6 +15,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admins/{id}/role", post(set_role))
         .route("/admins/{id}/remna-sync", post(set_remna_sync))
         .route("/admins/{id}/backups", post(set_backups))
+        .route("/admins/{id}/audit-log", post(set_audit_log))
         .route("/admins/{id}/disable", post(disable))
         .route("/admins/{id}/enable", post(enable))
         .route("/admins/{id}/password", post(reset_password))
@@ -100,6 +101,23 @@ async fn set_backups(
             .services
             .admins()
             .set_backups(admin.0.admin_id, AdminId(id), body.on)
+            .await?,
+    ))
+}
+
+async fn set_audit_log(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<GrantBody>,
+) -> ApiResult<Json<AdminView>> {
+    admin.require(Permission::Admins)?;
+    admin.require_session()?;
+    Ok(Json(
+        state
+            .services
+            .admins()
+            .set_audit_log(admin.0.admin_id, AdminId(id), body.on)
             .await?,
     ))
 }

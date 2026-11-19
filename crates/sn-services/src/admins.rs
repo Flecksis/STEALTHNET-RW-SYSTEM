@@ -28,6 +28,7 @@ pub struct AdminView {
     pub last_login_method: Option<AdminLoginMethod>,
     pub remna_sync: bool,
     pub backups: bool,
+    pub audit_log: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -95,6 +96,7 @@ fn view(admin: AdminRecord, logins: &LastLogins) -> AdminView {
         created_at: admin.created_at,
         remna_sync: is_allowed(admin.role, &admin.permissions, Permission::RemnaSync),
         backups: is_allowed(admin.role, &admin.permissions, Permission::Backups),
+        audit_log: is_allowed(admin.role, &admin.permissions, Permission::AuditLog),
     }
 }
 
@@ -239,6 +241,15 @@ impl<'a> AdminsOps<'a> {
         on: bool,
     ) -> ServiceResult<AdminView> {
         self.grant(actor, id, Permission::Backups, on).await
+    }
+
+    pub async fn set_audit_log(
+        &self,
+        actor: AdminId,
+        id: AdminId,
+        on: bool,
+    ) -> ServiceResult<AdminView> {
+        self.grant(actor, id, Permission::AuditLog, on).await
     }
 
     async fn grant(

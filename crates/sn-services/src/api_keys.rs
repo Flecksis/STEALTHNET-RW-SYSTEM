@@ -138,6 +138,12 @@ impl<'a> ApiKeysOps<'a> {
                 "Ключу нельзя дать доступ к резервным копиям",
             ));
         }
+        if permissions.contains(&Permission::AuditLog) {
+            return Err(rejected(
+                "api_keys.permissions",
+                "Ключу нельзя дать доступ к журналу действий",
+            ));
+        }
         if permissions.iter().any(|p| !actor.can(*p)) {
             return Err(rejected(
                 "api_keys.permissions",
@@ -225,8 +231,10 @@ impl<'a> ApiKeysOps<'a> {
             .iter()
             .copied()
             .filter(|p| {
-                !matches!(*p, Permission::Admins | Permission::Backups)
-                    && is_allowed(owner.role, &owner.admin_permissions, *p)
+                !matches!(
+                    *p,
+                    Permission::Admins | Permission::Backups | Permission::AuditLog
+                ) && is_allowed(owner.role, &owner.admin_permissions, *p)
             })
             .collect();
         Ok(AdminPrincipal {

@@ -245,6 +245,10 @@ pub trait Db: Send {
         AuditRepo::new(self.conn())
     }
 
+    fn audit_journal(&mut self) -> AuditJournalRepo<'_> {
+        AuditJournalRepo::new(self.conn())
+    }
+
     fn tickets(&mut self) -> TicketsRepo<'_> {
         TicketsRepo::new(self.conn())
     }

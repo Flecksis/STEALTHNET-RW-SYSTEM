@@ -28,10 +28,11 @@ pub enum Permission {
     ClientsLogin,
     RemnaSync,
     Backups,
+    AuditLog,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 14] = [
+    pub const ALL: [Permission; 15] = [
         Permission::ClientsRead,
         Permission::ClientsWrite,
         Permission::Money,
@@ -46,6 +47,7 @@ impl Permission {
         Permission::ClientsLogin,
         Permission::RemnaSync,
         Permission::Backups,
+        Permission::AuditLog,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -64,6 +66,7 @@ impl Permission {
             Permission::ClientsLogin => "clients_login",
             Permission::RemnaSync => "remna_sync",
             Permission::Backups => "backups",
+            Permission::AuditLog => "audit_log",
         }
     }
 
@@ -104,7 +107,10 @@ impl AdminRole {
             AdminRole::Owner => true,
             AdminRole::Admin => !matches!(
                 permission,
-                Permission::Admins | Permission::RemnaSync | Permission::Backups
+                Permission::Admins
+                    | Permission::RemnaSync
+                    | Permission::Backups
+                    | Permission::AuditLog
             ),
             AdminRole::Support => matches!(
                 permission,
@@ -196,5 +202,18 @@ mod tests {
             &[Permission::Backups],
             Permission::Backups
         ));
+        assert!(AdminRole::Owner.allows(Permission::AuditLog));
+        assert!(!AdminRole::Admin.allows(Permission::AuditLog));
+        assert!(!AdminRole::Support.allows(Permission::AuditLog));
+        assert!(!AdminRole::ReadOnly.allows(Permission::AuditLog));
+        assert!(is_allowed(
+            AdminRole::Admin,
+            &[Permission::AuditLog],
+            Permission::AuditLog
+        ));
+        assert_eq!(
+            Permission::parse("audit_log").unwrap(),
+            Permission::AuditLog
+        );
     }
 }

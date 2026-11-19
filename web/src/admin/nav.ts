@@ -54,6 +54,9 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
   if (can('modules')) {
     items.push({ key: 'modules', label: 'Модули', icon: 'blocks', to: '/admin/modules', group: 'system' });
   }
+  if (can('audit_log')) {
+    items.push({ key: 'audit', label: 'Журнал действий', icon: 'book', to: '/admin/audit', group: 'system' });
+  }
   if (can('settings')) {
     items.push({ key: 'settings', label: 'Настройки', icon: 'sliders', to: '/admin/settings', group: 'system', dot: updateDot || undefined });
   }

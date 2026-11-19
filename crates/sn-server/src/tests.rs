@@ -28,6 +28,7 @@ mod admins;
 mod alerts;
 mod analytics;
 mod api_keys;
+mod audit_journal;
 mod backups;
 mod balance_off;
 mod bot_content;
