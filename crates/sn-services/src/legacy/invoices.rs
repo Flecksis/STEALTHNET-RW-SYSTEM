@@ -17,7 +17,7 @@ pub struct LegacyMatch {
 
 fn paths(provider: &str) -> &'static [&'static str] {
     match provider {
-        "yookassa" => &["/object/metadata/payment_id", "/object/id"],
+        "yookassa" => &["/object/id"],
         "cryptopay" => &["/payload/payload", "/payload/invoice_id"],
         "heleket" => &["/order_id", "/additional_data", "/uuid"],
         "lava" => &["/contractId", "/parentContractId", "/id"],
@@ -392,7 +392,11 @@ mod tests {
             &outcome(Some(PaymentRef::ProviderTxid("2f1".into())), Some("2f1")),
             &request(r#"{"object":{"id":"2f1","metadata":{"payment_id":"cmold1"}}}"#),
         );
-        assert_eq!(refs, ["2f1", "cmold1"]);
+        assert_eq!(
+            refs,
+            ["2f1"],
+            "тело уведомления ЮKassa не подписано: номер счёта из него не берётся"
+        );
         let refs = references(
             "yoomoney",
             &outcome(None, None),
