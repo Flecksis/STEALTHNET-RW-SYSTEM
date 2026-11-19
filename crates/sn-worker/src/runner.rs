@@ -1,5 +1,6 @@
 use crate::handlers::{CoreHandlers, JobHandler, JobResult};
 use chrono::{DateTime, Utc};
+use futures_util::FutureExt;
 use sn_domain::jobs::{JobKind, JobPayload};
 use sn_domain::order::OrderStatus;
 use sn_domain::payment::PaymentStatus;
@@ -193,6 +194,17 @@ pub struct Worker {
     by_kind: HashMap<JobKind, Arc<dyn JobHandler>>,
 }
 
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "без описания".to_string())
+        .chars()
+        .take(300)
+        .collect()
+}
+
 impl Worker {
     pub fn new(services: Services, config: WorkerConfig) -> Self {
         Worker {
@@ -291,17 +303,27 @@ impl Worker {
             Ok(payload) => payload,
             Err(err) => return JobResult::Fail(format!("задача не разобрана: {err}")),
         };
-        let mut work = std::pin::pin!(self.handler_for(payload.kind()).handle(
-            &self.services,
-            &payload,
-            job.attempts
-        ));
+        let mut work = std::pin::pin!(
+            std::panic::AssertUnwindSafe(self.handler_for(payload.kind()).handle(
+                &self.services,
+                &payload,
+                job.attempts
+            ))
+            .catch_unwind()
+        );
         let every = (self.config.lease / 3).max(MIN_HEARTBEAT);
         let mut heartbeat = interval_at(Instant::now() + every, every);
         heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                result = &mut work => return result,
+                result = &mut work => return match result {
+                    Ok(result) => result,
+                    Err(panic) => {
+                        let text = panic_text(panic.as_ref());
+                        tracing::error!(job = %job.id, kind = %job.kind, panic = %text, "задача упала с паникой, воркер продолжает работу");
+                        JobResult::Fail(format!("задача упала: {text}"))
+                    }
+                },
                 _ = heartbeat.tick() => self.prolong(job).await,
             }
         }

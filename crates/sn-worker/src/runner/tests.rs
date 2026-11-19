@@ -1756,3 +1756,44 @@ async fn долгая_задача_модуля_не_держит_выдачу_�
     assert!(blocker.finished.load(std::sync::atomic::Ordering::SeqCst));
     setup.db.cleanup().await;
 }
+
+struct Broken;
+
+#[async_trait]
+impl JobHandler for Broken {
+    async fn handle(
+        &self,
+        _services: &Services,
+        _payload: &JobPayload,
+        _attempt: u32,
+    ) -> JobResult {
+        panic!("сломанная задача");
+    }
+}
+
+#[tokio::test]
+async fn паника_задачи_не_останавливает_воркер() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    {
+        let mut conn = setup.services.store().conn().await.unwrap();
+        for event_id in [1, 2] {
+            conn.jobs()
+                .enqueue(&JobPayload::ProcessRemnaEvent { event_id }, None)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+    let worker =
+        Worker::new(setup.services.clone(), WorkerConfig::default()).with_handler(Arc::new(Broken));
+    assert_eq!(worker.tick().await.unwrap(), 2);
+    let counts = job_counts(&setup.services).await;
+    assert!(
+        counts.iter().all(|(status, _)| status != "done"),
+        "{counts:?}"
+    );
+    assert_eq!(counts.iter().map(|(_, n)| *n).sum::<i64>(), 2, "{counts:?}");
+    setup.db.cleanup().await;
+}
