@@ -4,6 +4,7 @@ import './styles/base.css';
 import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Route, Routes } from 'react-router';
+import { reloadOnStaleChunks } from './lib/chunks';
 import { guessLang, t, useApplied } from './lib/i18n';
 import { captureReferral } from './lib/referral';
 import { useSite } from './lib/site';
@@ -44,6 +45,7 @@ function App() {
   );
 }
 
+reloadOnStaleChunks();
 captureReferral();
 captureUtm();
 

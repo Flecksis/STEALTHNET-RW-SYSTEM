@@ -1,14 +1,16 @@
+import { lazy } from 'react';
 import { useParams } from 'react-router';
-import { Analytics } from '../analytics/Analytics';
-import { Broadcasts } from '../broadcast/Broadcasts';
-import { Gifts } from '../gifts/Gifts';
-import { Contests } from '../contests/Contests';
 import { Pending } from '../pages/Pending';
-import { Promo } from '../promo/Promo';
-import { PromoLinks } from '../promolinks/PromoLinks';
-import { Referral } from '../referral/Referral';
-import { Roulette } from '../roulette/Roulette';
-import { Utm } from '../utm/Utm';
+
+const Analytics = lazy(() => import('../analytics/Analytics').then((m) => ({ default: m.Analytics })));
+const Broadcasts = lazy(() => import('../broadcast/Broadcasts').then((m) => ({ default: m.Broadcasts })));
+const Gifts = lazy(() => import('../gifts/Gifts').then((m) => ({ default: m.Gifts })));
+const Contests = lazy(() => import('../contests/Contests').then((m) => ({ default: m.Contests })));
+const Promo = lazy(() => import('../promo/Promo').then((m) => ({ default: m.Promo })));
+const PromoLinks = lazy(() => import('../promolinks/PromoLinks').then((m) => ({ default: m.PromoLinks })));
+const Referral = lazy(() => import('../referral/Referral').then((m) => ({ default: m.Referral })));
+const Roulette = lazy(() => import('../roulette/Roulette').then((m) => ({ default: m.Roulette })));
+const Utm = lazy(() => import('../utm/Utm').then((m) => ({ default: m.Utm })));
 
 export function ModuleScreen() {
   const { module = '' } = useParams();
