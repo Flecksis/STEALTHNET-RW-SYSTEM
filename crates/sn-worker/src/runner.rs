@@ -308,12 +308,19 @@ impl Worker {
     }
 
     pub async fn tick(&self) -> Result<usize, ServiceError> {
+        self.tick_lane(None).await
+    }
+
+    async fn tick_lane(&self, modules: Option<bool>) -> Result<usize, ServiceError> {
         let limit = usize::try_from(self.config.batch.max(1)).unwrap_or(1);
         let mut processed = 0usize;
         while processed < limit {
             let job = {
                 let mut conn = self.services.store().conn().await?;
-                conn.jobs().claim(1, self.config.lease).await?.pop()
+                conn.jobs()
+                    .claim_lane(1, self.config.lease, modules)
+                    .await?
+                    .pop()
             };
             let Some(job) = job else {
                 break;
@@ -633,12 +640,38 @@ impl Worker {
             let cancel = cancel.clone();
             async move { worker.periodic_loop(&cancel).await }
         });
+        let modules = tokio::spawn({
+            let worker = worker.clone();
+            let cancel = cancel.clone();
+            async move { worker.module_loop(&cancel).await }
+        });
         tracing::info!("фоновые задачи запущены");
         worker.queue_loop(&cancel).await;
         if let Err(err) = periodic.await {
             tracing::error!(error = %err, "периодические работы остановились с ошибкой");
         }
+        if let Err(err) = modules.await {
+            tracing::error!(error = %err, "задачи модулей остановились с ошибкой");
+        }
         tracing::info!("фоновые задачи остановлены");
+    }
+
+    async fn module_loop(&self, cancel: &CancellationToken) {
+        let mut jobs = interval(self.config.poll_interval);
+        jobs.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = jobs.tick() => {
+                    let Some(_work) = self.services.pause_gate().try_enter() else {
+                        continue;
+                    };
+                    if let Err(err) = self.tick_lane(Some(true)).await {
+                        tracing::warn!(error = %err, "очередь задач модулей недоступна");
+                    }
+                }
+            }
+        }
     }
 
     async fn queue_loop(&self, cancel: &CancellationToken) {
@@ -654,7 +687,7 @@ impl Worker {
                     let Some(_work) = self.services.pause_gate().try_enter() else {
                         continue;
                     };
-                    if let Err(err) = self.tick().await {
+                    if let Err(err) = self.tick_lane(Some(false)).await {
                         tracing::warn!(error = %err, "очередь задач недоступна");
                     }
                 }

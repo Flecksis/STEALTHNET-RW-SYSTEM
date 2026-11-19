@@ -136,10 +136,20 @@ impl<'c> JobsRepo<'c> {
     }
 
     pub async fn claim(&mut self, limit: i64, lease: Duration) -> StoreResult<Vec<JobRecord>> {
+        self.claim_lane(limit, lease, None).await
+    }
+
+    pub async fn claim_lane(
+        &mut self,
+        limit: i64,
+        lease: Duration,
+        modules: Option<bool>,
+    ) -> StoreResult<Vec<JobRecord>> {
         let rows: Vec<JobRow> = sqlx::query_as(
             "WITH picked AS ( \
                 SELECT id FROM jobs \
-                WHERE (status = 'queued' AND run_at <= now()) OR (status = 'running' AND locked_until < now()) \
+                WHERE ((status = 'queued' AND run_at <= now()) OR (status = 'running' AND locked_until < now())) \
+                  AND ($3::boolean IS NULL OR (kind = 'module_task') = $3) \
                 ORDER BY run_at LIMIT $1 FOR UPDATE SKIP LOCKED \
              ) \
              UPDATE jobs j SET status = 'running', attempts = j.attempts + 1, \
@@ -149,6 +159,7 @@ impl<'c> JobsRepo<'c> {
         )
         .bind(limit)
         .bind(lease.as_secs_f64())
+        .bind(modules)
         .fetch_all(&mut *self.conn)
         .await?;
         rows.into_iter().map(TryInto::try_into).collect()

@@ -1640,3 +1640,119 @@ async fn задания_выполняются_пока_идёт_долгая_с
     assert!(state.last_success_at.is_some());
     setup.db.cleanup().await;
 }
+
+struct Blocker {
+    started: std::sync::atomic::AtomicBool,
+    finished: std::sync::atomic::AtomicBool,
+    release: tokio::sync::Semaphore,
+}
+
+#[async_trait]
+impl Module for Blocker {
+    fn id(&self) -> ModuleId {
+        ModuleId::Broadcast
+    }
+
+    fn tasks(&self) -> Vec<ScheduledTask> {
+        vec![ScheduledTask {
+            name: "slow",
+            every: Duration::from_secs(3_600),
+        }]
+    }
+
+    async fn run_task(&self, _ctx: &ModuleContext, _task: &str) -> Result<(), ModuleError> {
+        self.started
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let _permit = self.release.acquire().await;
+        self.finished
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn долгая_задача_модуля_не_держит_выдачу_заказов() {
+    let blocker = Arc::new(Blocker {
+        started: std::sync::atomic::AtomicBool::new(false),
+        finished: std::sync::atomic::AtomicBool::new(false),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let Some(setup) = setup(vec![blocker.clone()]).await else {
+        return;
+    };
+    let services = &setup.services;
+    let buyer = client(services, 703).await;
+    let tariff = tariff(services).await;
+    services
+        .change_balance(BalanceChange {
+            client_id: buyer,
+            wallet: Wallet::Main,
+            amount: Money::new(500, Currency::Usd),
+            kind: LedgerKind::TopUp,
+            comment: None,
+            idempotency_key: "test:topup:703".into(),
+            order_id: None,
+            payment_id: None,
+        })
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let config = WorkerConfig {
+        poll_interval: Duration::from_millis(50),
+        ..WorkerConfig::default()
+    };
+    let running = tokio::spawn(Worker::new(services.clone(), config).run(cancel.clone()));
+    let until = Instant::now() + Duration::from_secs(10);
+    while !blocker.started.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(Instant::now() < until, "задача модуля не началась");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    services
+        .checkout()
+        .start(
+            buyer,
+            &CheckoutRequest {
+                cart: CartRequest {
+                    tariff_id: tariff.id,
+                    period_id: tariff.periods[0].id,
+                    extra_devices: 0,
+                    subscription_id: None,
+                    promo_code: None,
+                },
+                provider: providers::BALANCE.into(),
+                method: None,
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let issued = {
+            let mut conn = services.store().conn().await.unwrap();
+            conn.subscriptions()
+                .by_client(buyer)
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.remna.is_some())
+        };
+        if issued {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "заказ не выдан, пока идёт задача модуля"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    blocker.release.add_permits(1);
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(blocker.finished.load(std::sync::atomic::Ordering::SeqCst));
+    setup.db.cleanup().await;
+}
