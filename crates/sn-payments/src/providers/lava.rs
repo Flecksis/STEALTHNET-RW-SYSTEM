@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 const API: &str = "https://gate.lava.top";
 const KEY_HEADER: &str = "x-api-key";
+const WEBHOOK_KEY_MIN: usize = 16;
 const WEBHOOK_KEY_MAX: usize = 80;
 const SALE_PAGES: u32 = 5;
 const PRODUCT_PAGES: u32 = 10;
@@ -574,7 +575,7 @@ impl PaymentProvider for Lava {
             SettingField::secret(
                 "webhook_key",
                 "Ключ вебхука",
-                "Придумайте ключ до 80 латинских букв и цифр. В Lava: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
+                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
             ),
         ]
     }
@@ -595,6 +596,14 @@ impl PaymentProvider for Lava {
         }) {
             return Err(PaymentError::NotConfigured(
                 "ключ вебхука: до 80 латинских букв, цифр и знаков без пробелов, иначе Lava.top его не примет".into(),
+            ));
+        }
+        if config
+            .get("webhook_key")
+            .is_some_and(|key| key.len() < WEBHOOK_KEY_MIN)
+        {
+            return Err(PaymentError::NotConfigured(
+                "ключ вебхука слишком короткий: придумайте ключ хотя бы из 16 латинских букв и цифр".into(),
             ));
         }
         Ok(())
@@ -1770,14 +1779,19 @@ mod tests {
             "k".repeat(81),
             "ключ-вебхука".to_string(),
             "two words".to_string(),
+            "k".to_string(),
+            "k".repeat(15),
         ] {
             let mut bad = settings();
             bad.set("webhook_key", json!(key));
             assert!(lava.validate_settings(&bad).is_err(), "{key}");
+            assert!(lava.is_configured(&bad), "{key}");
         }
-        let mut longest = settings();
-        longest.set("webhook_key", json!("k".repeat(80)));
-        assert!(lava.validate_settings(&longest).is_ok());
+        for length in [16, 80] {
+            let mut good = settings();
+            good.set("webhook_key", json!("k".repeat(length)));
+            assert!(lava.validate_settings(&good).is_ok(), "{length}");
+        }
         let schema = lava.settings_schema();
         let field = schema.iter().find(|f| f.key == "webhook_key").unwrap();
         assert!(field.required && field.is_secret());
@@ -1786,7 +1800,7 @@ mod tests {
             "Успешный возврат",
             "чарджбэк",
             "Basic",
-            "80",
+            "от 16 до 80",
         ] {
             assert!(field.hint.contains(needle), "{needle}");
         }
