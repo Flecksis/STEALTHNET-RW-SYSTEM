@@ -261,6 +261,7 @@ fn listing(zip: &mut zip::ZipArchive<BufReader<File>>) -> Result<Vec<Member>, Op
             Ok(Member {
                 name: raw
                     .name()
+                    .map_err(zip_error)?
                     .replace('\\', "/")
                     .trim_start_matches("./")
                     .to_ascii_lowercase(),
@@ -334,7 +335,7 @@ fn open_zip(path: &Path, password: Option<&str>, reader: &mut Reader<'_>) -> Res
             (
                 raw.encrypted(),
                 raw.is_dir(),
-                raw.name().to_ascii_lowercase(),
+                raw.name().map_err(zip_error)?.to_ascii_lowercase(),
             )
         };
         let wanted = zip_name_wanted(&name);
@@ -407,7 +408,7 @@ pub fn extract_zip(
             (
                 raw.encrypted(),
                 raw.is_dir(),
-                raw.name().to_ascii_lowercase(),
+                raw.name().map_err(zip_error)?.to_ascii_lowercase(),
             )
         };
         let wanted = zip_name_wanted(&name);
