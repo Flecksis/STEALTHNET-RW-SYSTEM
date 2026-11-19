@@ -59,7 +59,7 @@ SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com STEALTHNET-RW-SYSTEM/inst
 | `stealthnet reset-password` | Выдать владельцу новый пароль, все его сессии закрываются |
 | `stealthnet unlock-login`, `stealthnet unlock-login --ip <адрес>` | Снять блокировку входа владельца, если его почту подбирают. С `--ip` вход с этого адреса не закроется 30 дней, даже пока подбор идёт |
 | `stealthnet update` | Скачать новую версию и обновить систему |
-| `stealthnet status` | Показать версию, состояние панели и итог последнего обновления |
+| `stealthnet status` | Показать версию, адрес панели (или что он не задан), состояние панели и итог последнего обновления |
 | `stealthnet helper on`, `stealthnet helper off` | Разрешить или запретить обновление из админки |
 | `stealthnet start`, `stealthnet restart`, `stealthnet stop` | Запустить (например, после перезагрузки сервера), перезапустить или остановить систему |
 | `stealthnet logs`, `stealthnet logs -f` | Последние строки журнала панели; с `-f` — следить |

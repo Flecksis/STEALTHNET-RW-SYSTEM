@@ -2133,6 +2133,12 @@ show_status() {
     else
         printf '  Версия:            %s\n' "$(image_name "${image:-stealthnet:local}")"
     fi
+    url=$(env_value SN_PUBLIC_URL)
+    if [ -n "$url" ]; then
+        printf '  Адрес панели:      %s\n' "$url"
+    else
+        printf '  Адрес панели:      не задан (указать: %s)\n' "$(command_for domain)"
+    fi
     id=$(compose ps -q app 2>/dev/null || true)
     state=""
     if [ -n "$id" ]; then

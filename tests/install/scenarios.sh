@@ -481,6 +481,16 @@ run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN= "$SHELL_BIN" "$R/install.sh" > "
 run "$SHELL_BIN" "$R/install.sh" cert > "$WORK/out2.txt" 2>&1 </dev/null
 [ $? -eq 1 ] && grep -q 'домен не задан' "$WORK/out2.txt" && check ok "без домена сказано, что делать" || check no "без домена: $(tail -2 "$WORK/out2.txt")"
 
+echo "=== AG7. адрес панели в состоянии"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=example.com "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+run "$SHELL_BIN" "$R/install.sh" status > "$WORK/status.txt" 2>&1 </dev/null
+grep -q '^  Адрес панели:      https://example.com$' "$WORK/status.txt" && check ok "состояние показывает адрес панели" || check no "нет адреса: $(grep -i адрес "$WORK/status.txt")"
+fresh
+run SN_OWNER_EMAIL=owner@example.com SN_DOMAIN= "$SHELL_BIN" "$R/install.sh" > "$WORK/out1.txt" 2>&1 </dev/null
+run "$SHELL_BIN" "$R/install.sh" status > "$WORK/status.txt" 2>&1 </dev/null
+grep -q 'Адрес панели:      не задан (указать: ' "$WORK/status.txt" && check ok "без адреса состояние подсказывает команду" || check no "нет подсказки: $(grep -i адрес "$WORK/status.txt")"
+
 echo "=== AG6. файрвол закрывает порты"
 fresh
 run FAKE_UFW='Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere' SN_OWNER_EMAIL=owner@example.com SN_DOMAIN=shop.example.org "$SHELL_BIN" "$R/install.sh" > "$WORK/out.txt" 2>&1 </dev/null
