@@ -405,6 +405,34 @@ async fn тестовые_оплаты_засчитываются_только_�
 }
 
 #[tokio::test]
+async fn уведомление_с_признаком_теста_вне_тестового_режима_не_засчитывается() {
+    let number = inv();
+    for flag in ["1", "true"] {
+        let marked = notification("1500.000000", &number, PASS2, &[("IsTest", flag)]);
+        let outcome = parse(&settings(), marked.clone()).await.unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Pending, "{flag}");
+        assert_eq!(outcome.payment, None, "{flag}");
+        assert_eq!(outcome.amount, None, "{flag}");
+        assert_eq!(
+            outcome.reply,
+            WebhookReply::Text {
+                status: 200,
+                body: format!("OK{number}")
+            }
+        );
+        assert_eq!(
+            parse(&testing(), marked).await.unwrap().status,
+            ProviderStatus::Paid
+        );
+    }
+    let live = notification("1500.000000", &number, PASS2, &[("IsTest", "0")]);
+    assert_eq!(
+        parse(&settings(), live).await.unwrap().status,
+        ProviderStatus::Paid
+    );
+}
+
+#[tokio::test]
 async fn сумма_не_сошлась_и_дробные_копейки() {
     let number = inv();
     let outcome = parse(
@@ -864,6 +892,14 @@ fn настройки_и_способы_robokassa() {
             .is_err()
     );
     assert!(provider.validate_settings(&testing()).is_ok());
+    let same = with(testing(), &[("test_password2", json!(PASS2))]);
+    assert!(matches!(
+        provider.validate_settings(&same),
+        Err(PaymentError::NotConfigured(_))
+    ));
+    assert!(provider.is_configured(&same));
+    let unused = with(settings(), &[("test_password2", json!(PASS2))]);
+    assert!(provider.validate_settings(&unused).is_err());
     let schema = provider.settings_schema();
     let secrets: Vec<&str> = schema
         .iter()

@@ -549,6 +549,34 @@ impl Robokassa {
         }
         Ok(None)
     }
+
+    fn usable(&self, config: &ProviderConfig) -> PaymentResult<()> {
+        util::require_fields(&self.settings_schema(), config)?;
+        Algorithm::of(config)?;
+        let fields = [
+            (MERCHANT, "Идентификатор магазина"),
+            (PASSWORD1, "Пароль №1"),
+            (PASSWORD2, "Пароль №2"),
+            (PASSWORD3, "Пароль №3"),
+            (TEST_PASSWORD1, "Тестовый пароль №1"),
+            (TEST_PASSWORD2, "Тестовый пароль №2"),
+        ];
+        for (key, title) in fields {
+            if config.get(key).is_some_and(|v| !passable(v)) {
+                return Err(PaymentError::NotConfigured(format!(
+                    "{title} Robokassa вставлен с лишними символами: нужны латинские буквы, цифры и знаки без пробелов и двоеточий"
+                )));
+            }
+        }
+        if config.flag(TEST_MODE)
+            && (config.get(TEST_PASSWORD1).is_none() || config.get(TEST_PASSWORD2).is_none())
+        {
+            return Err(PaymentError::NotConfigured(
+                "для тестового режима Robokassa заполните тестовые пароли №1 и №2".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -640,32 +668,16 @@ impl PaymentProvider for Robokassa {
     }
 
     fn is_configured(&self, config: &ProviderConfig) -> bool {
-        self.validate_settings(config).is_ok()
+        self.usable(config).is_ok()
     }
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
-        util::require_fields(&self.settings_schema(), config)?;
-        Algorithm::of(config)?;
-        let fields = [
-            (MERCHANT, "Идентификатор магазина"),
-            (PASSWORD1, "Пароль №1"),
-            (PASSWORD2, "Пароль №2"),
-            (PASSWORD3, "Пароль №3"),
-            (TEST_PASSWORD1, "Тестовый пароль №1"),
-            (TEST_PASSWORD2, "Тестовый пароль №2"),
-        ];
-        for (key, title) in fields {
-            if config.get(key).is_some_and(|v| !passable(v)) {
-                return Err(PaymentError::NotConfigured(format!(
-                    "{title} Robokassa вставлен с лишними символами: нужны латинские буквы, цифры и знаки без пробелов и двоеточий"
-                )));
-            }
-        }
-        if config.flag(TEST_MODE)
-            && (config.get(TEST_PASSWORD1).is_none() || config.get(TEST_PASSWORD2).is_none())
+        self.usable(config)?;
+        if config.get(TEST_PASSWORD2).is_some()
+            && config.get(TEST_PASSWORD2) == config.get(PASSWORD2)
         {
             return Err(PaymentError::NotConfigured(
-                "для тестового режима Robokassa заполните тестовые пароли №1 и №2".into(),
+                "тестовый пароль №2 Robokassa совпадает с боевым паролем №2: задайте в Robokassa разные пароли".into(),
             ));
         }
         Ok(())
@@ -689,7 +701,7 @@ impl PaymentProvider for Robokassa {
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
         util::require_currency(request.amount, PayCurrency::Rub)?;
-        self.validate_settings(config)?;
+        self.usable(config)?;
         let chosen = label(request.method.as_deref())?;
         let login = config.require(MERCHANT)?;
         let test = config.flag(TEST_MODE);
@@ -772,6 +784,16 @@ impl PaymentProvider for Robokassa {
             )));
         }
         let inv = invoice_id(inv)?;
+        let reply = WebhookReply::Text {
+            status: 200,
+            body: format!("OK{inv}"),
+        };
+        let flagged = field(&pairs, "IsTest")
+            .map(str::trim)
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        if flagged && !config.flag(TEST_MODE) {
+            return Ok(util::skipped(format!("test:{inv}"), None, None, reply));
+        }
         let amount = sum(out_sum)?;
         Ok(WebhookOutcome {
             event_key: format!("paid:{inv}"),
@@ -780,10 +802,7 @@ impl PaymentProvider for Robokassa {
             status: ProviderStatus::Paid,
             amount: Some(amount),
             saved_method: None,
-            reply: WebhookReply::Text {
-                status: 200,
-                body: format!("OK{inv}"),
-            },
+            reply,
             signal: None,
         })
     }
