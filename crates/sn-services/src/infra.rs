@@ -816,6 +816,7 @@ impl<'a> InfraOps<'a> {
         request.provider_uuid = input.provider_uuid;
         request.is_traffic_tracking_active = Some(false);
         let created = remna.create_node(&request).await?;
+        self.services.forget_squad_countries();
         let uuid = created.node.uuid;
         if let Some(city) = input
             .city
@@ -880,6 +881,7 @@ impl<'a> InfraOps<'a> {
                 None
             }
         };
+        self.services.forget_squad_countries();
         let mut conn = self.services.store().conn().await?;
         conn.audit()
             .record(&Actor::Admin(admin).audit(
@@ -1226,6 +1228,7 @@ impl<'a> InfraOps<'a> {
         request.address = Some(address.to_string());
         request.country_code = country_code(input.country_code.as_deref());
         let updated = remna.update_node(&request).await?;
+        self.services.forget_squad_countries();
         if meta.city() != city {
             meta.set_city(city);
             remna.set_node_metadata(uuid, &meta).await?;
@@ -1291,6 +1294,7 @@ impl<'a> InfraOps<'a> {
                     .await?
             }
         };
+        self.services.forget_squad_countries();
         let mut changed_hosts = Vec::new();
         for change in &input.hosts {
             let Some(host) = hosts.iter().find(|h| h.uuid == change.uuid) else {
@@ -2074,6 +2078,21 @@ mod tests {
             .collect();
         assert_eq!(actions, ["host.delete"]);
         drop(conn);
+
+        let asked = || remna.calls_of("squad_accessible_nodes").len();
+        let before = asked();
+        assert_eq!(
+            services.squad_countries(&[MAIN]).await[&MAIN],
+            vec!["DE".to_string(), "NL".to_string()]
+        );
+        services.squad_countries(&[MAIN]).await;
+        assert_eq!(asked(), before + 1);
+        infra
+            .node_action(NL, NodeAction::Disable, ADMIN)
+            .await
+            .unwrap();
+        services.squad_countries(&[MAIN]).await;
+        assert_eq!(asked(), before + 2);
         db.cleanup().await;
     }
 }

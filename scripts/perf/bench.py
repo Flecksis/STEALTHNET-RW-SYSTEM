@@ -359,6 +359,7 @@ def main():
     parser.add_argument("--only", default=None)
     parser.add_argument("--part", choices=["admin", "client", "all"], default="all")
     parser.add_argument("--out", default=None)
+    parser.add_argument("--skip-heavy", action="store_true")
     args = parser.parse_args()
     if not args.email or not args.password:
         sys.exit("нужны --email и --password (или PERF_EMAIL и PERF_PASSWORD)")
@@ -372,7 +373,8 @@ def main():
             sys.exit(f"вход не удался: {status} {body[:200]!r}")
         api.token = json.loads(body)["token"]
         results += measure(api, admin_scenarios(s, 12), args.runs, args.warmup, args.only)
-        results += heavy(api, args.dsn, max(1, min(3, args.runs)), args.only)
+        if not args.skip_heavy:
+            results += heavy(api, args.dsn, max(1, min(3, args.runs)), args.only)
     if args.part in ("client", "all"):
         for channel in ["cabinet", "miniapp"]:
             api = Client(args.base)
