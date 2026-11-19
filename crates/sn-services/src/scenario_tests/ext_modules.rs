@@ -6,6 +6,8 @@ use crate::ext_modules::{
 use base64::Engine;
 use sn_domain::access::{AdminPrincipal, AdminRole, Permission};
 use sn_domain::events::DomainEvent;
+use sn_domain::ids::{OrderId, PaymentId};
+use sn_domain::money::{Amount, PayCurrency};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -83,6 +85,26 @@ fn registered(client: i64) -> DomainEvent {
         source: RegistrationSource::Bot,
         start_param: Some("ref_7".into()),
     }
+}
+
+fn paid(client: i64) -> DomainEvent {
+    DomainEvent::PaymentPaid {
+        payment_id: PaymentId(client),
+        order_id: OrderId(client),
+        client_id: ClientId(client),
+        order_kind: OrderKind::New,
+        amount: Amount::new(69_900, PayCurrency::Rub),
+        provider: ProviderId::from("yookassa"),
+    }
+}
+
+async fn run_sql(services: &Services, sql: &str, admin: AdminId) {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query(sql)
+        .bind(admin.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
 }
 
 async fn queued(env: &Env) -> i64 {
@@ -976,6 +998,138 @@ async fn адрес_на_этом_же_сервере_закрыт_без_раз
     let card = services.ext_modules().card("hello").await.unwrap();
     assert!(card.warning.is_none(), "{:?}", card.warning);
     open.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn события_не_уходят_модулю_без_действующего_ключа_и_права() {
+    let Some(env) = local_env().await else { return };
+    let services = &env.services;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let owner = owner(services).await;
+    let by_owner = session(owner, AdminRole::Owner, &[]);
+    let member = services
+        .admins()
+        .create(
+            owner,
+            &NewAdminRequest {
+                email: "money@example.com".into(),
+                role: AdminRole::Support,
+            },
+        )
+        .await
+        .unwrap()
+        .admin
+        .id;
+    run_sql(
+        services,
+        "UPDATE admins SET permissions = '{money}' WHERE id = $1",
+        member,
+    )
+    .await;
+    let installer = session(
+        member,
+        AdminRole::Support,
+        &[Permission::Modules, Permission::Settings, Permission::Money],
+    );
+    let source = manifest(
+        &format!("{}/events", server.uri()),
+        &["clients_read", "money"],
+        &["client_registered", "payment_paid"],
+    );
+    let credentials = install(services, &installer, &source)
+        .await
+        .credentials
+        .unwrap();
+    push(services, paid(5)).await;
+    assert_eq!(queued(&env).await, 1);
+    run_sql(
+        services,
+        "UPDATE admins SET permissions = '{}' WHERE id = $1",
+        member,
+    )
+    .await;
+    push(services, paid(6)).await;
+    push(services, registered(6)).await;
+    assert_eq!(queued(&env).await, 2);
+    let deliverer = Deliverer::new(services.clone());
+    assert_eq!(deliverer.round().await.unwrap(), 2);
+    let kinds = |requests: Vec<wiremock::Request>| -> Vec<String> {
+        requests
+            .iter()
+            .map(|r| {
+                verify(&credentials, r)["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(
+        kinds(server.received_requests().await.unwrap()),
+        ["client_registered"]
+    );
+    let journal = services
+        .ext_modules()
+        .journal(&by_owner, "hello")
+        .await
+        .unwrap();
+    let held = journal
+        .attempts
+        .iter()
+        .find(|a| a.kind == "payment_paid")
+        .unwrap();
+    assert_eq!(held.status, "skipped");
+    assert_eq!(held.http_status, None);
+    assert!(held.error.as_deref().unwrap().contains("«Деньги»"));
+    for (client, (stop, back, reason)) in (10..).zip([
+        (
+            "UPDATE api_keys SET revoked_at = now() WHERE created_by = $1",
+            "UPDATE api_keys SET revoked_at = NULL WHERE created_by = $1",
+            "отозван",
+        ),
+        (
+            "UPDATE api_keys SET expires_at = '2026-11-15T00:00:00Z' WHERE created_by = $1",
+            "UPDATE api_keys SET expires_at = NULL WHERE created_by = $1",
+            "истёк",
+        ),
+        (
+            "UPDATE admins SET disabled_at = now() WHERE id = $1",
+            "UPDATE admins SET disabled_at = NULL WHERE id = $1",
+            "отключён",
+        ),
+    ]) {
+        push(services, registered(client)).await;
+        let before = queued(&env).await;
+        run_sql(services, stop, member).await;
+        push(services, registered(client + 100)).await;
+        assert_eq!(queued(&env).await, before, "{reason}");
+        assert_eq!(deliverer.round().await.unwrap(), 1, "{reason}");
+        let journal = services
+            .ext_modules()
+            .journal(&by_owner, "hello")
+            .await
+            .unwrap();
+        let last = &journal.attempts[0];
+        assert_eq!(last.status, "skipped", "{reason}");
+        assert!(
+            last.error.as_deref().unwrap().contains(reason),
+            "{reason}: {:?}",
+            last.error
+        );
+        run_sql(services, back, member).await;
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    push(services, registered(50)).await;
+    assert_eq!(deliverer.round().await.unwrap(), 1);
+    assert_eq!(
+        kinds(server.received_requests().await.unwrap()),
+        ["client_registered", "client_registered"]
+    );
+    env.db.cleanup().await;
 }
 
 #[tokio::test]

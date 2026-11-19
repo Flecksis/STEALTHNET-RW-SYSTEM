@@ -1,4 +1,5 @@
-use super::store::{self, Claimed, Outcome};
+use super::manifest::{event_info, permission_title};
+use super::store::{self, Access, Claimed, KeyState, Outcome};
 use super::{address, secret_key, signing};
 use crate::error::ServiceResult;
 use crate::services::Services;
@@ -199,6 +200,23 @@ pub async fn send(target: &Target, delivery: &Claimed, now: DateTime<Utc>) -> Se
     }
 }
 
+pub fn withheld(access: &Access, kind: &str) -> Option<String> {
+    let needs = event_info(kind)?.needs;
+    let reason = match access.state {
+        KeyState::Active if access.granted.contains(&needs) => return None,
+        KeyState::Active => format!(
+            "у администратора, который выпустил ключ модуля, нет права «{}»",
+            permission_title(needs)
+        ),
+        KeyState::Missing | KeyState::Revoked => "ключ API модуля отозван".to_string(),
+        KeyState::Expired => "срок ключа API модуля истёк".to_string(),
+        KeyState::OwnerDisabled => {
+            "администратор, который выпустил ключ модуля, отключён".to_string()
+        }
+    };
+    Some(format!("{reason}: событие не отправлено"))
+}
+
 pub fn outcome(attempts: u32, sent: Sent, now: DateTime<Utc>, retries: bool) -> Outcome {
     let (status, next_attempt_at) = if sent.ok() {
         ("done", None)
@@ -269,28 +287,37 @@ impl Deliverer {
             return Ok(0);
         }
         let now = self.services.now();
-        let batch = {
+        let (batch, access) = {
             let mut conn = self.services.store().conn().await?;
-            store::claim(
+            let batch = store::claim(
                 &mut conn,
                 module,
                 now,
                 now + Duration::seconds(LEASE_SECONDS),
                 BATCH,
             )
-            .await?
+            .await?;
+            if batch.is_empty() {
+                return Ok(0);
+            }
+            (batch, store::access(&mut conn, module, now).await?)
         };
-        if batch.is_empty() {
-            return Ok(0);
-        }
         let count = batch.len();
+        let mut held: Vec<(Claimed, String)> = Vec::new();
+        let mut ready: Vec<Claimed> = Vec::with_capacity(count);
+        for delivery in batch {
+            match withheld(&access, &delivery.kind) {
+                Some(reason) => held.push((delivery, reason)),
+                None => ready.push(delivery),
+            }
+        }
         let mut results: Vec<(Claimed, Sent)> = match target {
-            Err(message) => batch
+            Err(message) => ready
                 .into_iter()
                 .map(|d| (d, Sent::failed(message.clone())))
                 .collect(),
             Ok(target) => {
-                let mut pending = batch.into_iter();
+                let mut pending = ready.into_iter();
                 let mut set = JoinSet::new();
                 let mut results = Vec::with_capacity(count);
                 for delivery in pending.by_ref().take(IN_FLIGHT) {
@@ -321,6 +348,26 @@ impl Deliverer {
         results.sort_by_key(|(delivery, _)| delivery.id);
         let at = self.services.now();
         let mut conn = self.services.store().conn().await?;
+        if let Some((_, reason)) = held.first() {
+            tracing::warn!(
+                module,
+                count = held.len(),
+                reason = reason.as_str(),
+                "события внешнему модулю не отправлены"
+            );
+        }
+        for (delivery, reason) in held {
+            let result = Outcome {
+                status: "skipped",
+                attempts: delivery.attempts.saturating_add(1),
+                next_attempt_at: None,
+                http_status: None,
+                duration_ms: 0,
+                error: Some(reason),
+                response: None,
+            };
+            store::record(&mut conn, module, delivery.id, at, &result).await?;
+        }
         for (delivery, sent) in results {
             let attempts = delivery.attempts.saturating_add(1);
             if !sent.ok() {

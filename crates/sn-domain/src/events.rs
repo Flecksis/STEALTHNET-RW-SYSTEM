@@ -1,3 +1,4 @@
+use crate::access::Permission;
 use crate::client::RegistrationSource;
 use crate::ids::{ClientId, OrderId, PaymentId, SubscriptionId, TariffId, TicketId};
 use crate::ledger::{LedgerKind, Wallet};
@@ -97,6 +98,25 @@ impl DomainEvent {
             DomainEvent::BalanceChanged { .. } => "balance_changed",
             DomainEvent::TicketOpened { .. } => "ticket_opened",
             DomainEvent::TicketAnswered { .. } => "ticket_answered",
+        }
+    }
+
+    pub const fn permission(&self) -> Permission {
+        match self {
+            DomainEvent::PaymentPaid { .. }
+            | DomainEvent::PaymentRefunded { .. }
+            | DomainEvent::BalanceChanged { .. } => Permission::Money,
+            DomainEvent::TicketOpened { .. } | DomainEvent::TicketAnswered { .. } => {
+                Permission::Support
+            }
+            DomainEvent::ClientRegistered { .. }
+            | DomainEvent::ClientBlocked { .. }
+            | DomainEvent::ClientUnblocked { .. }
+            | DomainEvent::OrderFulfilled { .. }
+            | DomainEvent::SubscriptionCreated { .. }
+            | DomainEvent::SubscriptionRenewed { .. }
+            | DomainEvent::TariffChanged { .. }
+            | DomainEvent::SubscriptionStatusChanged { .. } => Permission::ClientsRead,
         }
     }
 

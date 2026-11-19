@@ -1,5 +1,6 @@
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
+use sn_domain::access::AdminRole;
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{ClientId, EventId};
 use sn_domain::module::ModuleId;
@@ -116,17 +117,29 @@ impl<'c> EventsRepo<'c> {
     }
 
     pub async fn push(&mut self, event: &DomainEvent) -> StoreResult<EventId> {
+        let needs = event.permission();
+        let roles: Vec<&str> = AdminRole::ALL
+            .into_iter()
+            .filter(|role| role.allows(needs))
+            .map(AdminRole::as_str)
+            .collect();
         let id: i64 = sqlx::query_scalar(
             "WITH e AS (INSERT INTO domain_events (kind, client_id, payload) VALUES ($1, $2, $3) \
              RETURNING id, occurred_at), \
              queued AS (INSERT INTO ext_module_deliveries (module_id, event_id, kind, payload, occurred_at) \
-             SELECT m.id, e.id, $1, $3, e.occurred_at FROM ext_modules m, e \
-             WHERE m.enabled AND $1 = ANY (m.events)) \
+             SELECT m.id, e.id, $1, $3, e.occurred_at FROM e CROSS JOIN ext_modules m \
+             JOIN api_keys k ON k.id = m.api_key_id JOIN admins a ON a.id = k.created_by \
+             WHERE m.enabled AND $1 = ANY (m.events) \
+             AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > e.occurred_at) \
+             AND a.disabled_at IS NULL AND $4 = ANY (k.permissions) \
+             AND (a.role = ANY ($5) OR $4 = ANY (a.permissions))) \
              SELECT id FROM e",
         )
         .bind(event.kind())
         .bind(event.client_id().0)
         .bind(Json(event))
+        .bind(needs.as_str())
+        .bind(&roles)
         .fetch_one(&mut *self.conn)
         .await?;
         Ok(EventId(id))

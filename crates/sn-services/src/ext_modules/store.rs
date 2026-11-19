@@ -3,6 +3,7 @@ use crate::error::{ServiceError, ServiceResult};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Map, Value};
+use sn_domain::access::{AdminRole, Permission, is_allowed};
 use sn_domain::ids::AdminId;
 use sn_store::Db;
 use sqlx::types::Json;
@@ -258,7 +259,21 @@ pub async fn key_info(
     let Some((prefix, revoked_at, expires_at, last_used_at, owner, disabled_at)) = raw else {
         return Ok(missing);
     };
-    let state = if revoked_at.is_some() {
+    Ok(KeyInfo {
+        prefix: Some(prefix),
+        state: key_state(revoked_at, expires_at, disabled_at, now),
+        owner: Some(owner),
+        last_used_at,
+    })
+}
+
+fn key_state(
+    revoked_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+    disabled_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> KeyState {
+    if revoked_at.is_some() {
         KeyState::Revoked
     } else if expires_at.is_some_and(|at| at <= now) {
         KeyState::Expired
@@ -266,12 +281,52 @@ pub async fn key_info(
         KeyState::OwnerDisabled
     } else {
         KeyState::Active
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Access {
+    pub state: KeyState,
+    pub granted: Vec<Permission>,
+}
+
+pub async fn access(db: &mut impl Db, module: &str, now: DateTime<Utc>) -> ServiceResult<Access> {
+    type Raw = (
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+        Vec<String>,
+        String,
+        Vec<String>,
+        Option<DateTime<Utc>>,
+    );
+    let raw: Option<Raw> = sqlx::query_as(
+        "SELECT k.revoked_at, k.expires_at, k.permissions, a.role, a.permissions, a.disabled_at \
+         FROM ext_modules m JOIN api_keys k ON k.id = m.api_key_id JOIN admins a ON a.id = k.created_by \
+         WHERE m.id = $1",
+    )
+    .bind(module)
+    .fetch_optional(db.conn())
+    .await?;
+    let Some((revoked_at, expires_at, key_rights, role, admin_rights, disabled_at)) = raw else {
+        return Ok(Access {
+            state: KeyState::Missing,
+            granted: Vec::new(),
+        });
     };
-    Ok(KeyInfo {
-        prefix: Some(prefix),
-        state,
-        owner: Some(owner),
-        last_used_at,
+    let role = AdminRole::parse(&role)?;
+    let parse = |rights: &[String]| -> Vec<Permission> {
+        rights
+            .iter()
+            .filter_map(|p| Permission::parse(p).ok())
+            .collect()
+    };
+    let extra = parse(&admin_rights);
+    Ok(Access {
+        state: key_state(revoked_at, expires_at, disabled_at, now),
+        granted: parse(&key_rights)
+            .into_iter()
+            .filter(|p| is_allowed(role, &extra, *p))
+            .collect(),
     })
 }
 

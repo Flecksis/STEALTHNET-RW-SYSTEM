@@ -278,3 +278,131 @@ fn тело_события_без_служебного_типа_внутри_д�
     };
     assert_eq!(delivery::message_id(&service), "msg_9");
 }
+
+#[test]
+fn права_событий_модулей_совпадают_с_правами_событий_панели() {
+    use sn_domain::client::RegistrationSource;
+    use sn_domain::events::DomainEvent;
+    use sn_domain::ids::{ClientId, OrderId, PaymentId, SubscriptionId, TariffId, TicketId};
+    use sn_domain::ledger::{LedgerKind, Wallet};
+    use sn_domain::money::{Amount, Currency, Money, PayCurrency};
+    use sn_domain::order::OrderKind;
+    use sn_domain::payment::ProviderId;
+    use sn_domain::subscription::{SubscriptionKind, SubscriptionStatus};
+    let client_id = ClientId(1);
+    let subscription_id = SubscriptionId(2);
+    let events = [
+        DomainEvent::ClientRegistered {
+            client_id,
+            source: RegistrationSource::Bot,
+            start_param: None,
+        },
+        DomainEvent::ClientBlocked {
+            client_id,
+            reason: None,
+        },
+        DomainEvent::ClientUnblocked { client_id },
+        DomainEvent::PaymentPaid {
+            payment_id: PaymentId(3),
+            order_id: OrderId(4),
+            client_id,
+            order_kind: OrderKind::New,
+            amount: Amount::new(699, PayCurrency::Rub),
+            provider: ProviderId::from("yookassa"),
+        },
+        DomainEvent::PaymentRefunded {
+            payment_id: PaymentId(3),
+            order_id: OrderId(4),
+            client_id,
+            amount: Amount::new(699, PayCurrency::Rub),
+        },
+        DomainEvent::OrderFulfilled {
+            order_id: OrderId(4),
+            client_id,
+            order_kind: OrderKind::New,
+            subscription_id: Some(subscription_id),
+        },
+        DomainEvent::SubscriptionCreated {
+            subscription_id,
+            client_id,
+            kind: SubscriptionKind::Paid,
+        },
+        DomainEvent::SubscriptionRenewed {
+            subscription_id,
+            client_id,
+            expire_at: Utc.with_ymd_and_hms(2026, 12, 18, 12, 0, 0).unwrap(),
+        },
+        DomainEvent::TariffChanged {
+            subscription_id,
+            client_id,
+            from: None,
+            to: TariffId(5),
+        },
+        DomainEvent::SubscriptionStatusChanged {
+            subscription_id,
+            client_id,
+            from: None,
+            to: SubscriptionStatus::Active,
+        },
+        DomainEvent::BalanceChanged {
+            client_id,
+            wallet: Wallet::Main,
+            kind: LedgerKind::TopUp,
+            delta: Money::new(100, Currency::Rub),
+        },
+        DomainEvent::TicketOpened {
+            ticket_id: TicketId(6),
+            client_id,
+        },
+        DomainEvent::TicketAnswered {
+            ticket_id: TicketId(6),
+            client_id,
+        },
+    ];
+    assert_eq!(events.len(), manifest::EVENTS.len());
+    for event in &events {
+        assert_eq!(
+            manifest::event_info(event.kind()).map(|info| info.needs),
+            Some(event.permission()),
+            "{}",
+            event.kind()
+        );
+    }
+}
+
+#[test]
+fn событие_не_отправляется_без_действующего_ключа_и_права() {
+    use super::delivery::withheld;
+    use super::store::{Access, KeyState};
+    let full = Access {
+        state: KeyState::Active,
+        granted: vec![Permission::ClientsRead, Permission::Money],
+    };
+    assert_eq!(withheld(&full, "payment_paid"), None);
+    assert_eq!(withheld(&full, "ping"), None);
+    assert_eq!(withheld(&full, "settings_changed"), None);
+    let narrowed = Access {
+        state: KeyState::Active,
+        granted: vec![Permission::ClientsRead],
+    };
+    assert_eq!(withheld(&narrowed, "client_registered"), None);
+    assert!(
+        withheld(&narrowed, "payment_paid")
+            .unwrap()
+            .contains("нет права «Деньги»")
+    );
+    for (state, part) in [
+        (KeyState::Revoked, "отозван"),
+        (KeyState::Missing, "отозван"),
+        (KeyState::Expired, "истёк"),
+        (KeyState::OwnerDisabled, "отключён"),
+    ] {
+        let access = Access {
+            state,
+            granted: full.granted.clone(),
+        };
+        let reason = withheld(&access, "client_registered").unwrap();
+        assert!(reason.contains(part), "{reason}");
+        assert_eq!(withheld(&access, "ping"), None);
+    }
+}
