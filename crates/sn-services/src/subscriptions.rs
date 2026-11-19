@@ -1,6 +1,6 @@
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
-use crate::remna_sync::{same_user, store_user};
+use crate::remna_sync::{mirror_outdated, same_user, store_user};
 use crate::services::Services;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ use sn_remnawave::{
 use sn_store::{ActorKind, AuditEntry, Db, LockSpace, PurchaseApplied, StoreError};
 use std::collections::BTreeSet;
 use std::future::Future;
+use uuid::Uuid;
 
 mod addons;
 pub mod traffic;
@@ -512,8 +513,20 @@ impl<'a> SubscriptionOps<'a> {
         user: Option<&RemnaUser>,
         countries: Vec<String>,
     ) -> ServiceResult<SubscriptionView> {
+        let subscription = {
+            let mut conn = self.services.store().conn().await?;
+            conn.subscriptions().get(id).await?
+        };
+        self.view_from(subscription, user, countries).await
+    }
+
+    async fn view_from(
+        &self,
+        subscription: Subscription,
+        user: Option<&RemnaUser>,
+        countries: Vec<String>,
+    ) -> ServiceResult<SubscriptionView> {
         let mut conn = self.services.store().conn().await?;
-        let subscription = conn.subscriptions().get(id).await?;
         let client = conn.clients().get(subscription.client_id).await?;
         let now = self.services.now();
         let tariff = tariff_brief(&mut conn, subscription.tariff_id).await?;
@@ -527,20 +540,6 @@ impl<'a> SubscriptionOps<'a> {
             tariff,
             subscription,
         })
-    }
-
-    async fn countries(&self, remna: &dyn RemnawaveApi, user_id: RemnaUserId) -> Vec<String> {
-        match remna.user_accessible_nodes(user_id).await {
-            Ok(nodes) => nodes
-                .country_codes()
-                .into_iter()
-                .filter(|code| !code.eq_ignore_ascii_case("XX"))
-                .collect(),
-            Err(err) => {
-                tracing::warn!(error = %err, "страны серверов подписки не получены");
-                Vec::new()
-            }
-        }
     }
 
     async fn cut_devices(&self, remna: &dyn RemnawaveApi, user_id: RemnaUserId) -> DevicesCut {
@@ -591,23 +590,33 @@ impl<'a> SubscriptionOps<'a> {
         refresh: bool,
     ) -> ServiceResult<SubscriptionView> {
         let subscription = self.owned(id, actor).await?;
-        let mut fresh = None;
-        let mut countries = Vec::new();
-        if refresh && let Some(link) = &subscription.remna {
-            let remna = self.services.remna()?;
-            match remna.get_user(link.user_id).await {
-                Ok(user) => {
-                    let mut tx = self.services.store().begin().await?;
-                    store_user(&mut tx, id, &user, None, self.services.now()).await?;
-                    tx.commit().await?;
-                    countries = self.countries(&*remna, link.user_id).await;
-                    fresh = Some(user);
-                }
-                Err(err) if err.is_not_found() => self.mark_missing(id).await?,
-                Err(err) => return Err(err.into()),
+        let link = match &subscription.remna {
+            Some(link) if refresh => link.clone(),
+            _ => return self.view_from(subscription, None, Vec::new()).await,
+        };
+        let remna = self.services.remna()?;
+        let user = match remna.get_user(link.user_id).await {
+            Ok(user) => user,
+            Err(err) if err.is_not_found() => {
+                self.mark_missing(id).await?;
+                return self.view_of(id, None, Vec::new()).await;
             }
+            Err(err) => return Err(err.into()),
+        };
+        let squads: Vec<Uuid> = user
+            .active_internal_squads
+            .iter()
+            .map(|squad| squad.uuid)
+            .collect();
+        let countries =
+            crate::squad_countries::union(&squads, &self.services.squad_countries(&squads).await);
+        if !mirror_outdated(&subscription, &user, self.services.now()) {
+            return self.view_from(subscription, Some(&user), countries).await;
         }
-        self.view_of(id, fresh.as_ref(), countries).await
+        let mut tx = self.services.store().begin().await?;
+        store_user(&mut tx, id, &user, None, self.services.now()).await?;
+        tx.commit().await?;
+        self.view_of(id, Some(&user), countries).await
     }
 
     pub async fn admin_view(
@@ -2788,17 +2797,69 @@ pub(crate) mod tests {
         env.finish().await;
     }
 
+    fn squad_with_nodes(env: &Env, squad: Uuid, nodes: &[(u128, &str, &str)]) {
+        let inbound = sn_remnawave::Inbound {
+            uuid: Uuid::from_u128(squad.as_u128() ^ 0xA),
+            profile_uuid: None,
+            tag: format!("IN-{squad}"),
+            kind: "vless".into(),
+            network: Some("tcp".into()),
+            security: Some("reality".into()),
+            port: Some(443),
+        };
+        let mut squads: Vec<sn_remnawave::InternalSquad> = env
+            .fake
+            .squads()
+            .into_iter()
+            .filter(|s| s.uuid != squad)
+            .collect();
+        squads.push(sn_remnawave::InternalSquad {
+            uuid: squad,
+            name: format!("squad-{squad}"),
+            view_position: 0,
+            info: sn_remnawave::SquadInfo::default(),
+            inbounds: vec![inbound.clone()],
+        });
+        env.fake.set_squads(squads);
+        let mut details = env.fake.node_details();
+        for (uuid, name, country) in nodes {
+            let mut detail =
+                sn_remnawave::NodeDetails::from(sample_node(Uuid::from_u128(*uuid), name, country));
+            detail.config_profile = Some(sn_remnawave::NodeConfigProfile {
+                active_config_profile_uuid: None,
+                active_inbounds: vec![inbound.clone()],
+            });
+            details.push(detail);
+        }
+        env.fake.set_node_details(details);
+    }
+
+    fn in_squad(mut user: RemnaUser, squad: Uuid) -> RemnaUser {
+        user.active_internal_squads = vec![sn_remnawave::SquadRef {
+            uuid: squad,
+            name: format!("squad-{squad}"),
+        }];
+        user
+    }
+
     #[tokio::test]
     async fn карточка_подписки_показывает_страны_серверов() {
         let Some(env) = env().await else { return };
         let client = env.client().await;
-        env.fake.set_nodes(vec![
-            sample_node(Uuid::from_u128(1), "NL-1", "NL"),
-            sample_node(Uuid::from_u128(2), "DE-1", "DE"),
-            sample_node(Uuid::from_u128(3), "NL-2", "NL"),
-            sample_node(Uuid::from_u128(4), "XX-1", "XX"),
-        ]);
-        let subscription = env.linked(client.id, sample_user(1, "sn_view")).await;
+        let squad = Uuid::from_u128(0x51);
+        squad_with_nodes(
+            &env,
+            squad,
+            &[
+                (1, "NL-1", "NL"),
+                (2, "DE-1", "de"),
+                (3, "NL-2", "NL"),
+                (4, "XX-1", "XX"),
+            ],
+        );
+        let subscription = env
+            .linked(client.id, in_squad(sample_user(1, "sn_view"), squad))
+            .await;
         let ops = env.services.subscriptions();
         let view = ops
             .view(subscription.id, Actor::Client(client.id), true)
@@ -2819,6 +2880,51 @@ pub(crate) mod tests {
             code(&ops.add_days(subscription.id, 7, ADMIN).await.unwrap_err()),
             "not_found"
         );
+        env.finish().await;
+    }
+
+    #[tokio::test]
+    async fn повторный_просмотр_подписки_не_пишет_в_базу_и_не_спрашивает_страны() {
+        let Some(env) = env().await else { return };
+        let client = env.client().await;
+        let squad = Uuid::from_u128(0x52);
+        squad_with_nodes(&env, squad, &[(11, "FI-1", "FI")]);
+        let subscription = env
+            .linked(client.id, in_squad(sample_user(5, "sn_again"), squad))
+            .await;
+        let ops = env.services.subscriptions();
+        let me = Actor::Client(client.id);
+        let first = ops.view(subscription.id, me, true).await.unwrap();
+        assert_eq!(first.countries, vec!["FI".to_string()]);
+        let synced = env.subscription(subscription.id).await.mirror.synced_at;
+        assert!(synced.is_some());
+        let before = env.fake.calls();
+        let again = ops.view(subscription.id, me, true).await.unwrap();
+        assert_eq!(again.countries, vec!["FI".to_string()]);
+        assert_eq!(again.subscription, first.subscription);
+        assert_eq!(
+            again.subscription_url.as_deref(),
+            Some("https://sub.example.com/short5")
+        );
+        let calls: Vec<String> = env.fake.calls().split_off(before.len());
+        assert_eq!(calls, vec!["get_user".to_string()]);
+        assert_eq!(
+            env.subscription(subscription.id).await.mirror.synced_at,
+            synced
+        );
+        let mut used = UpdateUserRequest::new(RemnaUserId(5));
+        used.traffic_limit_bytes = Some(50 * GIB as i64);
+        env.fake.update_user(&used).await.unwrap();
+        let changed = ops.view(subscription.id, me, true).await.unwrap();
+        assert_eq!(
+            changed.subscription.mirror.traffic_limit_bytes,
+            Some(50 * GIB)
+        );
+        assert_ne!(
+            env.subscription(subscription.id).await.mirror.synced_at,
+            synced
+        );
+        assert!(env.fake.calls_of("user_accessible_nodes").is_empty());
         env.finish().await;
     }
 

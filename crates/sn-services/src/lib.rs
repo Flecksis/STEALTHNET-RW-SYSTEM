@@ -41,6 +41,7 @@ pub mod remna_transfer;
 pub mod server_load;
 pub mod services;
 pub mod settings;
+pub mod squad_countries;
 pub mod stars_ledger;
 pub mod stars_review;
 pub mod subscriptions;

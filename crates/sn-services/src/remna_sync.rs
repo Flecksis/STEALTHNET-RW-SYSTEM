@@ -74,6 +74,17 @@ fn mirror_changed(old: &RemnaMirror, new: &RemnaMirror) -> bool {
         || old.last_node != new.last_node
 }
 
+pub(crate) fn mirror_outdated(current: &Subscription, user: &RemnaUser, now: DateTime<Utc>) -> bool {
+    let Some(link) = &current.remna else {
+        return true;
+    };
+    let short_uuid = Some(user.short_uuid.as_str()).filter(|s| !s.is_empty());
+    !same_user(link, user)
+        || link.username != user.username
+        || (short_uuid.is_some() && link.short_uuid.as_deref() != short_uuid)
+        || mirror_changed(&current.mirror, &user.mirror(None, now))
+}
+
 pub(crate) fn same_user(link: &RemnaLink, user: &RemnaUser) -> bool {
     link.username == user.username
         || link

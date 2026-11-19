@@ -89,6 +89,7 @@ struct Inner {
     bot_updates: tokio::sync::Notify,
     pause: crate::pause::PauseGate,
     backups: crate::backups::Runtime,
+    squad_countries: crate::squad_countries::SquadCountries,
 }
 
 #[derive(Clone)]
@@ -134,6 +135,7 @@ impl Services {
                 bot_updates: tokio::sync::Notify::new(),
                 pause: crate::pause::PauseGate::default(),
                 backups: crate::backups::Runtime::default(),
+                squad_countries: crate::squad_countries::SquadCountries::default(),
             }),
         }
     }
@@ -251,6 +253,25 @@ impl Services {
 
     pub fn set_oauth_endpoints(&self, endpoints: crate::oauth::OauthEndpoints) {
         self.write(|r| r.oauth_endpoints = Arc::new(endpoints));
+    }
+
+    pub async fn squad_countries(
+        &self,
+        squads: &[Uuid],
+    ) -> std::collections::HashMap<Uuid, Vec<String>> {
+        match self.remna() {
+            Ok(remna) => {
+                self.inner
+                    .squad_countries
+                    .of(&*remna, squads, std::time::Instant::now())
+                    .await
+            }
+            Err(_) => std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn forget_squad_countries(&self) {
+        self.inner.squad_countries.forget();
     }
 
     pub fn module_context(&self) -> ModuleContext {

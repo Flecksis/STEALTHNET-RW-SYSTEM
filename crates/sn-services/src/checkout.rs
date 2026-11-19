@@ -31,7 +31,6 @@ use sn_payments::{
     PaymentProvider, ProviderKind, ProviderRegistry, Unavailable,
 };
 use sn_store::{Db, InvoiceUpdate, LockSpace, StatusChange, StoreError, Tx, audit_entity};
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -174,12 +173,6 @@ pub struct PublicOffer {
     pub periods: Vec<PeriodOffer>,
     pub countries: Vec<String>,
 }
-
-const COUNTRIES_TTL: std::time::Duration = std::time::Duration::from_secs(600);
-
-type CountryCache = std::sync::Mutex<Option<(std::time::Instant, HashMap<Uuid, Vec<String>>)>>;
-
-static SQUAD_COUNTRIES: CountryCache = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRequest {
@@ -795,42 +788,6 @@ impl<'a> Checkout<'a> {
         self.catalog_in(None).await
     }
 
-    async fn squad_countries(&self, squads: &[Uuid]) -> HashMap<Uuid, Vec<String>> {
-        if let Ok(guard) = SQUAD_COUNTRIES.lock()
-            && let Some((at, map)) = guard.as_ref()
-            && at.elapsed() < COUNTRIES_TTL
-            && squads.iter().all(|s| map.contains_key(s))
-        {
-            return map.clone();
-        }
-        let mut map = HashMap::new();
-        if let Ok(remna) = self.services.remna() {
-            for squad in squads {
-                let codes = match remna.squad_accessible_nodes(*squad).await {
-                    Ok(nodes) => {
-                        let mut codes: Vec<String> = Vec::new();
-                        for node in nodes.accessible_nodes {
-                            let code = node.country_code.to_uppercase();
-                            if !code.is_empty() && code != "XX" && !codes.contains(&code) {
-                                codes.push(code);
-                            }
-                        }
-                        codes
-                    }
-                    Err(err) => {
-                        tracing::warn!(squad = %squad, error = %err, "страны сквада не получены");
-                        Vec::new()
-                    }
-                };
-                map.insert(*squad, codes);
-            }
-        }
-        if let Ok(mut guard) = SQUAD_COUNTRIES.lock() {
-            *guard = Some((std::time::Instant::now(), map.clone()));
-        }
-        map
-    }
-
     pub async fn public_catalog(&self) -> ServiceResult<Vec<PublicOffer>> {
         let offers = self
             .catalog_in(Some(sn_domain::access::ClientChannel::Cabinet))
@@ -843,18 +800,12 @@ impl<'a> Checkout<'a> {
                 }
             }
         }
-        let countries = self.squad_countries(&squads).await;
+        let countries = self.services.squad_countries(&squads).await;
         Ok(offers
             .into_iter()
             .map(|offer| {
-                let mut codes: Vec<String> = Vec::new();
-                for squad in &offer.tariff.squads {
-                    for code in countries.get(&squad.0).into_iter().flatten() {
-                        if !codes.contains(code) {
-                            codes.push(code.clone());
-                        }
-                    }
-                }
+                let squads: Vec<Uuid> = offer.tariff.squads.iter().map(|s| s.0).collect();
+                let codes = crate::squad_countries::union(&squads, &countries);
                 PublicOffer {
                     category: offer.category,
                     tariff: PublicTariff {
