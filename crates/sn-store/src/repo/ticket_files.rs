@@ -212,6 +212,24 @@ impl<'c> TicketFilesRepo<'c> {
         .await?)
     }
 
+    pub async fn client_bytes(&mut self, client_id: ClientId) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COALESCE(sum(size), 0)::bigint FROM ticket_files \
+             WHERE client_id = $1 AND author = 'client' AND data IS NOT NULL",
+        )
+        .bind(client_id.0)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn stored_bytes(&mut self) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COALESCE(sum(size), 0)::bigint FROM ticket_files WHERE data IS NOT NULL",
+        )
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn pending(
         &mut self,
         owner: FileOwner,

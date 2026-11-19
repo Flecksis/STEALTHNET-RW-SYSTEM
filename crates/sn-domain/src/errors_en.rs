@@ -114,6 +114,9 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "support.body" => "The message is empty or too long.",
         "support.closed" => "This request is closed. Please open a new one.",
         "support.too_many" => "You have too many open requests. Please wait for a reply.",
+        "support.files_quota" => {
+            "There's no room for more files. Please describe the issue in text."
+        }
         "tariff.period_not_found" => "This period isn't available.",
         "tariff.period_inactive" => "This period isn't on sale.",
         "tariff.not_on_sale" => "This plan isn't on sale.",
@@ -164,6 +167,7 @@ mod tests {
             "trial.used",
             "payment.error",
             "support.closed",
+            "support.files_quota",
             "remnawave.error",
         ] {
             let text = by_code(code).unwrap();

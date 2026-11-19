@@ -21,10 +21,16 @@ use sn_store::Db;
 use std::time::Duration;
 
 pub const MB: i64 = 1024 * 1024;
+pub const GB: i64 = 1024 * MB;
 pub const DEFAULT_MAX_MB: i64 = 10;
 pub const MAX_MB: i64 = 20;
 pub const DEFAULT_MAX_FILES: i64 = 5;
 pub const MAX_FILES: i64 = 10;
+pub const DEFAULT_CLIENT_MB: i64 = 100;
+pub const MAX_CLIENT_MB: i64 = 10_000;
+pub const DEFAULT_TOTAL_GB: i64 = 5;
+pub const MAX_TOTAL_GB: i64 = 1_000;
+pub const DEFAULT_KEEP_DAYS: i64 = 180;
 pub const MAX_KEEP_DAYS: i64 = 3650;
 pub const TELEGRAM_DOWNLOAD_LIMIT: i64 = 20 * MB;
 pub const PENDING_HOURS: i64 = 24;
@@ -35,6 +41,10 @@ pub struct Limits {
     pub max_bytes: i64,
     pub max_files: usize,
     #[serde(skip)]
+    pub client_bytes: i64,
+    #[serde(skip)]
+    pub total_bytes: i64,
+    #[serde(skip)]
     pub keep_days: i64,
 }
 
@@ -43,7 +53,9 @@ impl Default for Limits {
         Limits {
             max_bytes: DEFAULT_MAX_MB * MB,
             max_files: DEFAULT_MAX_FILES as usize,
-            keep_days: 0,
+            client_bytes: DEFAULT_CLIENT_MB * MB,
+            total_bytes: DEFAULT_TOTAL_GB * GB,
+            keep_days: DEFAULT_KEEP_DAYS,
         }
     }
 }
@@ -84,10 +96,32 @@ impl Limits {
             (1, MAX_FILES),
             "Файлов в сообщении",
         )?;
-        let keep_days = bounded(config, "keep_days", 0, (0, MAX_KEEP_DAYS), "Срок хранения")?;
+        let client_mb = bounded(
+            config,
+            "client_mb",
+            DEFAULT_CLIENT_MB,
+            (1, MAX_CLIENT_MB),
+            "Место для файлов одного клиента",
+        )?;
+        let total_gb = bounded(
+            config,
+            "total_gb",
+            DEFAULT_TOTAL_GB,
+            (1, MAX_TOTAL_GB),
+            "Место для всех файлов",
+        )?;
+        let keep_days = bounded(
+            config,
+            "keep_days",
+            DEFAULT_KEEP_DAYS,
+            (0, MAX_KEEP_DAYS),
+            "Срок хранения",
+        )?;
         Ok(Limits {
             max_bytes: max_mb * MB,
             max_files: usize::try_from(max_files).unwrap_or(1),
+            client_bytes: client_mb * MB,
+            total_bytes: total_gb * GB,
             keep_days,
         })
     }
@@ -128,11 +162,23 @@ impl Module for TicketFilesModule {
             )
             .with_default("5"),
             SettingField::number(
+                "client_mb",
+                "Место для файлов одного клиента, МБ",
+                "От 1 до 10000. Когда файлы клиента займут столько, новые от него не принимаются, пока старые не удалятся по сроку хранения",
+            )
+            .with_default("100"),
+            SettingField::number(
+                "total_gb",
+                "Место для всех файлов обращений, ГБ",
+                "От 1 до 1000. Когда файлы займут столько, клиенты не смогут прикладывать новые, пока старые не удалятся. Файлы поддержки принимаются",
+            )
+            .with_default("5"),
+            SettingField::number(
                 "keep_days",
                 "Хранить файлы закрытых обращений, дней",
                 "0 — хранить бессрочно. Через столько дней после закрытия обращения его файлы удаляются, переписка остаётся",
             )
-            .with_default("0"),
+            .with_default("180"),
         ]
     }
 

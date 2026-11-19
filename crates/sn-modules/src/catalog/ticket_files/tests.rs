@@ -221,21 +221,35 @@ fn настройки_модуля_проверяются_и_берут_умол
     assert_eq!(limits, Limits::default());
     assert_eq!(limits.max_bytes, 10 * MB);
     assert_eq!(limits.max_files, 5);
-    assert_eq!(limits.keep_days, 0);
+    assert_eq!(limits.client_bytes, 100 * MB);
+    assert_eq!(limits.total_bytes, 5 * 1024 * MB);
+    assert_eq!(limits.keep_days, 180);
     let custom = ModuleConfig::from_value(&serde_json::json!({
-        "max_mb": "20", "max_files": 1, "keep_days": 30
+        "max_mb": "20", "max_files": 1, "keep_days": 30, "client_mb": "50", "total_gb": 2
     }));
     let parsed = Limits::parse(&custom).unwrap();
     assert_eq!(
         (parsed.max_mb(), parsed.max_files, parsed.keep_days),
         (20, 1, 30)
     );
+    assert_eq!(
+        (parsed.client_bytes, parsed.total_bytes),
+        (50 * MB, 2 * 1024 * MB)
+    );
+    let forever = ModuleConfig::from_value(&serde_json::json!({ "keep_days": 0 }));
+    assert_eq!(Limits::parse(&forever).unwrap().keep_days, 0);
+    let blank = ModuleConfig::from_value(&serde_json::json!({ "keep_days": "" }));
+    assert_eq!(Limits::parse(&blank).unwrap().keep_days, 180);
     for bad in [
         serde_json::json!({ "max_mb": 21 }),
         serde_json::json!({ "max_mb": 0 }),
         serde_json::json!({ "max_files": 11 }),
         serde_json::json!({ "keep_days": -1 }),
         serde_json::json!({ "max_mb": "много" }),
+        serde_json::json!({ "client_mb": 0 }),
+        serde_json::json!({ "client_mb": 10_001 }),
+        serde_json::json!({ "total_gb": 0 }),
+        serde_json::json!({ "total_gb": 1_001 }),
     ] {
         assert!(
             Limits::parse(&ModuleConfig::from_value(&bad)).is_err(),
@@ -244,6 +258,6 @@ fn настройки_модуля_проверяются_и_берут_умол
     }
     let module = TicketFilesModule;
     assert!(module.validate_config(&custom).is_ok());
-    assert_eq!(module.settings_schema().len(), 3);
+    assert_eq!(module.settings_schema().len(), 5);
     assert_eq!(module.cleanup_tasks()[0].name, PURGE_TASK);
 }

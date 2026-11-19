@@ -52,6 +52,10 @@ pub fn too_big(limits: &Limits) -> ServiceError {
     )
 }
 
+fn no_room(text: &str) -> ServiceError {
+    ServiceError::rejected("support.files_quota", text)
+}
+
 const fn owner_of(actor: Actor) -> Option<FileOwner> {
     match actor {
         Actor::Client(id) => Some(FileOwner::Client(id)),
@@ -151,13 +155,36 @@ impl SupportOps<'_> {
         })?;
         let name = ticket_files::file_name(name, file_type);
         let mut conn = self.services.store().conn().await?;
-        if let FileOwner::Client(client_id) = owner
-            && conn.ticket_files().uploaded_today(client_id).await? >= limits.daily_files()
-        {
-            return Err(ServiceError::rejected(
-                "support.files_daily",
-                "Сегодня отправлено слишком много файлов, попробуйте завтра",
-            ));
+        if let FileOwner::Client(client_id) = owner {
+            if conn.ticket_files().uploaded_today(client_id).await? >= limits.daily_files() {
+                return Err(ServiceError::rejected(
+                    "support.files_daily",
+                    "Сегодня отправлено слишком много файлов, попробуйте завтра",
+                ));
+            }
+            let size = i64::try_from(cleaned.bytes.len()).unwrap_or(i64::MAX);
+            if conn
+                .ticket_files()
+                .client_bytes(client_id)
+                .await?
+                .saturating_add(size)
+                > limits.client_bytes
+            {
+                return Err(no_room(
+                    "Место для ваших файлов закончилось: опишите вопрос текстом",
+                ));
+            }
+            if conn
+                .ticket_files()
+                .stored_bytes()
+                .await?
+                .saturating_add(size)
+                > limits.total_bytes
+            {
+                return Err(no_room(
+                    "Место для файлов в поддержке закончилось: опишите вопрос текстом",
+                ));
+            }
         }
         Ok(conn
             .ticket_files()

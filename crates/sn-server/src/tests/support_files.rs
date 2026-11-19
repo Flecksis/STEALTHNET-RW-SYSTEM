@@ -485,3 +485,93 @@ async fn лимиты_и_срок_хранения_файлов_берутся_�
     assert_eq!(body["error"]["code"], "support.files_off");
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn место_для_файлов_ограничено_на_клиента_и_на_всю_установку() {
+    let Some(h) = files_http().await else { return };
+    let owner = h.owner().await;
+    let alice = h.client(5_200_031).await;
+    let bob = h.client(5_200_032).await;
+    let alice_token = h.client_token(alice).await;
+    let bob_token = h.client_token(bob).await;
+    let files = "/api/client/support/files";
+    let text = |kb: usize| vec![b'x'; kb * 1024];
+    let config = "/api/admin/modules/ticket_files/config";
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            config,
+            &owner,
+            json!({ "config": { "client_mb": 0 } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            config,
+            &owner,
+            json!({ "config": { "client_mb": 1, "total_gb": 1 } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = upload(&h, files, &alice_token, "a.txt", "text/plain", text(700)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = upload(&h, files, &alice_token, "b.txt", "text/plain", text(400)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "support.files_quota");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ваших файлов")
+    );
+    let (status, body) = upload(&h, files, &bob_token, "c.txt", "text/plain", text(400)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO ticket_files (author, name, mime, size, data) \
+             VALUES ('support', 'archive.pdf', 'application/pdf', $1, $2)",
+        )
+        .bind(1_073_741_824_i32 - 500 * 1024)
+        .bind(vec![0_u8])
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let (status, body) = upload(&h, files, &bob_token, "d.txt", "text/plain", text(400)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "support.files_quota");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("в поддержке")
+    );
+    let (status, body) = upload(
+        &h,
+        "/api/admin/support/files",
+        &owner,
+        "answer.txt",
+        "text/plain",
+        text(400),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE ticket_files SET data = NULL, purged_at = now() WHERE name = 'archive.pdf'",
+        )
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let (status, body) = upload(&h, files, &bob_token, "e.txt", "text/plain", text(400)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.db.cleanup().await;
+}
