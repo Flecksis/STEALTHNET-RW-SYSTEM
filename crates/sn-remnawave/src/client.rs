@@ -213,7 +213,9 @@ fn segment(value: &str) -> String {
 
 fn transport(err: reqwest::Error) -> RemnaError {
     let err = err.without_url();
-    if err.is_timeout() {
+    if let Some(ip) = crate::address::refused_in(&err) {
+        RemnaError::NotConfigured(crate::address::refused_text(ip))
+    } else if err.is_timeout() {
         RemnaError::Timeout
     } else if err.is_decode() {
         RemnaError::Decode(err.to_string())
@@ -280,6 +282,19 @@ impl RemnawaveClient {
                 "адрес панели должен начинаться с http:// или https://".into(),
             ));
         }
+        if let Some(ip) = reqwest::Url::parse(&base)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .and_then(|host| {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .filter(|ip| crate::address::forbidden(*ip))
+        {
+            return Err(RemnaError::NotConfigured(crate::address::refused_text(ip)));
+        }
         if config.token.trim().is_empty() {
             return Err(RemnaError::NotConfigured("не задан API-токен".into()));
         }
@@ -297,6 +312,7 @@ impl RemnawaveClient {
             .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)
             .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(std::sync::Arc::new(crate::address::Screened))
             .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| RemnaError::NotConfigured(e.to_string()))?;
@@ -1223,6 +1239,34 @@ mod tests {
     fn адрес_без_схемы_не_принимается() {
         assert!(RemnawaveClient::new(RemnaConfig::new("panel.example.com", "t")).is_err());
         assert!(RemnawaveClient::new(RemnaConfig::new("https://panel.example.com/", "")).is_err());
+    }
+
+    #[test]
+    fn служебный_адрес_облака_не_принимается_как_адрес_панели() {
+        for bad in [
+            "http://169.254.169.254/latest",
+            "http://[fe80::1]:3000",
+            "http://100.100.100.200",
+            "http://[::ffff:169.254.169.254]",
+        ] {
+            match RemnawaveClient::new(RemnaConfig::new(bad, "t")) {
+                Err(RemnaError::NotConfigured(text)) => {
+                    assert!(text.contains("служебный адрес"), "{bad}: {text}")
+                }
+                other => panic!("{bad}: {:?}", other.map(|c| c.base_url().to_string())),
+            }
+        }
+        for good in [
+            "http://remnawave:3000",
+            "http://10.0.0.5:3000",
+            "http://127.0.0.1:3000",
+            "https://panel.example.com",
+        ] {
+            assert!(
+                RemnawaveClient::new(RemnaConfig::new(good, "t")).is_ok(),
+                "{good}"
+            );
+        }
     }
 
     #[tokio::test]

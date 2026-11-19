@@ -13,6 +13,7 @@ fake = []
 sn-domain.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
@@ -24,7 +25,6 @@ hex.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 tokio-rustls.workspace = true
 wiremock.workspace = true
 

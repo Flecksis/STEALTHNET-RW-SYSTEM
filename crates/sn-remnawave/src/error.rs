@@ -2,6 +2,9 @@ use serde::Deserialize;
 
 pub type RemnaResult<T> = Result<T, RemnaError>;
 
+pub const NOT_JSON: &str = "ответ не в формате JSON";
+pub const NO_MESSAGE: &str = "без описания";
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RemnaError {
     #[error("Remnawave не настроена: {0}")]
@@ -74,9 +77,11 @@ impl RemnaError {
     pub fn from_status(status: u16, body: &str) -> Self {
         let parsed: Option<ErrorBody> = serde_json::from_str(body).ok();
         let code = parsed.as_ref().and_then(|b| b.error_code.clone());
-        let message = parsed
-            .and_then(|b| b.message)
-            .unwrap_or_else(|| body.chars().take(300).collect());
+        let message = match parsed {
+            Some(answer) => answer.message.unwrap_or_else(|| NO_MESSAGE.to_string()),
+            None if body.trim().is_empty() => NO_MESSAGE.to_string(),
+            None => NOT_JSON.to_string(),
+        };
         match status {
             404 => RemnaError::NotFound { code, message },
             400 | 409 | 422 => RemnaError::BadRequest { code, message },
@@ -118,6 +123,10 @@ mod tests {
             RemnaError::from_status(404, r#"{"message":"User not found","errorCode":"A063"}"#);
         assert!(missing.is_not_found());
         assert!(RemnaError::from_status(502, "bad gateway").outcome_unknown());
+        assert_eq!(
+            RemnaError::from_status(500, "<html>внутренний сервис: секрет</html>").to_string(),
+            format!("ошибка Remnawave HTTP 500: {NOT_JSON}")
+        );
         assert_eq!(
             RemnaError::from_status(401, ""),
             RemnaError::Unauthorized(401)
