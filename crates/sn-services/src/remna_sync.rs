@@ -2,6 +2,7 @@ use crate::error::{ServiceError, ServiceResult};
 use crate::remna_transfer::snapshot;
 use crate::services::Services;
 use chrono::{DateTime, Duration, Utc};
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{RemnaUserId, SubscriptionId};
@@ -11,9 +12,11 @@ use sn_remnawave::webhook::{RemnaEvent, WebhookError, events, scopes, verify_and
 use sn_remnawave::{RemnaError, RemnaUser};
 use sn_store::{Db, NewRemnaEvent, RemnaEventRecord, Tx};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RECONCILE_STALE_AFTER_MINUTES: i64 = 15;
 pub const RECONCILE_BATCH: usize = 50;
+pub const RECONCILE_PARALLEL: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -74,7 +77,11 @@ fn mirror_changed(old: &RemnaMirror, new: &RemnaMirror) -> bool {
         || old.last_node != new.last_node
 }
 
-pub(crate) fn mirror_outdated(current: &Subscription, user: &RemnaUser, now: DateTime<Utc>) -> bool {
+pub(crate) fn mirror_outdated(
+    current: &Subscription,
+    user: &RemnaUser,
+    now: DateTime<Utc>,
+) -> bool {
     let Some(link) = &current.remna else {
         return true;
     };
@@ -439,24 +446,48 @@ impl<'a> RemnaSync<'a> {
             if fresh.is_empty() {
                 break;
             }
-            for subscription in fresh {
+            let down = AtomicBool::new(false);
+            let outcomes: Vec<(SubscriptionId, Option<ServiceResult<Refreshed>>)> =
+                stream::iter(fresh)
+                    .map(|subscription| {
+                        let down = &down;
+                        async move {
+                            if down.load(Ordering::Relaxed) {
+                                return (subscription.id, None);
+                            }
+                            let result = self.refresh(&subscription).await;
+                            if let Err(err) = &result
+                                && remna_down(err)
+                            {
+                                down.store(true, Ordering::Relaxed);
+                            }
+                            (subscription.id, Some(result))
+                        }
+                    })
+                    .buffer_unordered(RECONCILE_PARALLEL)
+                    .collect()
+                    .await;
+            for (id, outcome) in outcomes {
+                let Some(outcome) = outcome else {
+                    continue;
+                };
                 report.checked += 1;
-                match self.refresh(&subscription).await {
+                match outcome {
                     Ok(Refreshed::Changed) => report.updated += 1,
                     Ok(Refreshed::Missing) => report.missing += 1,
                     Ok(Refreshed::Unchanged | Refreshed::NotLinked) => {}
                     Err(err) => {
                         report.failed += 1;
                         tracing::warn!(
-                            subscription = subscription.id.0,
+                            subscription = id.0,
                             error = %err,
                             "сверка подписки с Remnawave не удалась"
                         );
-                        if remna_down(&err) {
-                            return Ok(report);
-                        }
                     }
                 }
+            }
+            if down.load(Ordering::Relaxed) {
+                return Ok(report);
             }
         }
         Ok(report)
@@ -570,6 +601,31 @@ mod tests {
         assert!(env.subscription(same.id).await.mirror.synced_at.is_some());
         assert!(env.subscription(gone.id).await.remna.is_some());
         let again = sync.reconcile(10).await.unwrap();
+        assert_eq!(again.checked, 0);
+        env.finish().await;
+    }
+
+    #[tokio::test]
+    async fn параллельная_сверка_проходит_каждую_подписку_один_раз() {
+        let Some(env) = env().await else { return };
+        let client = env.client().await;
+        let mut ids = Vec::new();
+        for id in 1..=20 {
+            let subscription = env
+                .linked(client.id, sample_user(id, &format!("sn_many_{id}")))
+                .await;
+            ids.push(subscription.id);
+        }
+        let report = env.services.remna_sync().reconcile(100).await.unwrap();
+        assert_eq!(report.checked, 20);
+        assert_eq!(report.failed, 0);
+        let calls = env.fake.calls();
+        assert_eq!(calls.iter().filter(|c| *c == "get_user").count(), 20);
+        assert_eq!(calls.iter().filter(|c| *c == "user_devices").count(), 20);
+        for id in ids {
+            assert!(env.subscription(id).await.mirror.synced_at.is_some());
+        }
+        let again = env.services.remna_sync().reconcile(100).await.unwrap();
         assert_eq!(again.checked, 0);
         env.finish().await;
     }
