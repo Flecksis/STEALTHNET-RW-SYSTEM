@@ -23,7 +23,7 @@ sn-domain ← sn-remnawave
 | Крейт | Отвечает за | Не делает |
 |---|---|---|
 | `sn-domain` | Типы и правила: `Money`, `Stars`, `Tariff`, `quote`, `plan`, статусы заказа и платежа, `DomainEvent`, `ModuleId` и каталог | Ввод-вывод, время берёт аргументом |
-| `sn-remnawave` | `RemnawaveApi` (типаж), `RemnawaveClient` (HTTP; адрес и ответы DNS проверяет `address`: link-local и служебные адреса облака запрещены, частные сети и loopback разрешены; тело ошибки не в JSON в текст ошибки не попадает), модели, `webhook` (подпись, разбор, удаление секретов), `fake::FakeRemnawave` для тестов | Знает о наших заказах |
+| `sn-remnawave` | `RemnawaveApi` (типаж), `RemnawaveClient` (HTTP; адрес и ответы DNS проверяет `address`: link-local и служебные адреса облака запрещены, частные сети и loopback разрешены; тело ошибки не в JSON в текст ошибки не попадает; ответ больше 64 МБ не читается — `BODY_MAX`), модели, `webhook` (подпись, разбор, удаление секретов), `fake::FakeRemnawave` для тестов | Знает о наших заказах |
 | `sn-store` | `Store`, `Db` (общий для соединения и транзакции), репозитории, миграции, `SecretBox` | Бизнес-решения: принимает готовые данные и проверяет переходы статусов |
 | `sn-payments` | `PaymentProvider`, `ProviderRegistry`, провайдеры | Ходит в базу |
 | `sn-modules` | `Module`, `ModuleRegistry`, `CoreApi` (что ядро даёт модулям), закрытие маршрутов выключенного модуля | Ходит в Remnawave |

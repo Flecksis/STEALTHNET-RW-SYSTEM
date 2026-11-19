@@ -43,6 +43,30 @@ pub struct RemnawaveClient {
     cookie: Option<String>,
     api_key: Option<String>,
     forwarded: bool,
+    body_max: usize,
+}
+
+pub const BODY_MAX: usize = 64 * 1024 * 1024;
+
+fn too_big(max: usize) -> RemnaError {
+    RemnaError::Decode(format!("ответ Remnawave больше {} КБ", (max / 1024).max(1)))
+}
+
+async fn read_body(mut response: reqwest::Response, max: usize) -> RemnaResult<String> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > max as u64)
+    {
+        return Err(too_big(max));
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if body.len() + chunk.len() > max {
+            return Err(too_big(max));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
 
 #[derive(Deserialize)]
@@ -326,7 +350,13 @@ impl RemnawaveClient {
             cookie,
             api_key,
             forwarded,
+            body_max: BODY_MAX,
         })
+    }
+
+    pub fn with_body_max(mut self, max: usize) -> Self {
+        self.body_max = max;
+        self
     }
 
     pub fn base_url(&self) -> &str {
@@ -359,7 +389,7 @@ impl RemnawaveClient {
         if status.is_redirection() {
             return Err(RemnaError::Redirected(redirect_location(&response)));
         }
-        let body = response.text().await.map_err(transport)?;
+        let body = read_body(response, self.body_max).await?;
         if status.is_success() {
             Ok(body)
         } else {
@@ -1239,6 +1269,26 @@ mod tests {
     fn адрес_без_схемы_не_принимается() {
         assert!(RemnawaveClient::new(RemnaConfig::new("panel.example.com", "t")).is_err());
         assert!(RemnawaveClient::new(RemnaConfig::new("https://panel.example.com/", "")).is_err());
+    }
+
+    #[tokio::test]
+    async fn слишком_большой_ответ_remnawave_не_читается_целиком() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/users/42"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"response": user_json(42)})),
+            )
+            .mount(&server)
+            .await;
+        let small = client(&server).with_body_max(64);
+        assert!(matches!(
+            small.get_user(RemnaUserId(42)).await,
+            Err(RemnaError::Decode(_))
+        ));
+        let user = client(&server).get_user(RemnaUserId(42)).await.unwrap();
+        assert_eq!(user.id, RemnaUserId(42));
     }
 
     #[test]
