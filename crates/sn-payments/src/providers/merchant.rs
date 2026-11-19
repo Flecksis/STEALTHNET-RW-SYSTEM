@@ -175,6 +175,14 @@ pub(crate) fn outcome(info: &Json, refund_note: &str) -> PaymentResult<WebhookOu
     })
 }
 
+pub(crate) fn requested(info: Json, uuid: &str, brand: &str) -> PaymentResult<Json> {
+    if info.get("uuid").and_then(Json::as_str).map(str::trim) == Some(uuid) {
+        Ok(info)
+    } else {
+        Err(util::bad(format!("{brand} вернул сведения о другом счёте")))
+    }
+}
+
 pub(crate) fn skipped_type(body: &Json, kind: &str) -> WebhookOutcome {
     util::skipped(
         format!(

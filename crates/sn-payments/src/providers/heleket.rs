@@ -345,6 +345,7 @@ impl PaymentProvider for Heleket {
                 &Json::object([("uuid", Json::from(uuid))]),
             )
             .await?;
+        let result = merchant::requested(result, uuid, "Heleket")?;
         Ok(Some(
             self.explained(config, merchant::outcome(&result, REFUND_NOTE)?)
                 .await,
@@ -1013,6 +1014,25 @@ mod tests {
         assert_eq!(outcome.amount, Some(usd(699)));
         let sent = server.received_requests().await.unwrap();
         assert_eq!(sent[0].body, br#"{"uuid":"26109ba0"}"#);
+        let other = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/info"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": "ffff0000", "order_id": PAYMENT.to_string(), "amount": "6.99",
+                    "currency": "USD", "payment_status": "paid", "is_final": true
+                }
+            })))
+            .mount(&other)
+            .await;
+        assert!(matches!(
+            Heleket::with_api_base(other.uri())
+                .fetch_status(&settings(), "26109ba0")
+                .await,
+            Err(PaymentError::BadPayload(_))
+        ));
     }
 
     #[test]

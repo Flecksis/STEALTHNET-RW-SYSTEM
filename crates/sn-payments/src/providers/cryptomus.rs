@@ -427,7 +427,7 @@ impl PaymentProvider for Cryptomus {
                 &Json::object([("uuid", Json::from(uuid))]),
             )
             .await?;
-        read(&result).map(Some)
+        read(&merchant::requested(result, uuid, BRAND)?).map(Some)
     }
 
     async fn check_connection(

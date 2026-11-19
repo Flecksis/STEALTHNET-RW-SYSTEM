@@ -727,6 +727,34 @@ async fn статус_счёта_запрашивается_по_uuid() {
 }
 
 #[tokio::test]
+async fn опрос_не_принимает_ответ_о_другом_счёте() {
+    for answered in [json!("ffff0000"), json!(null)] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/info"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": answered, "order_id": PAYMENT.to_string(), "amount": "6.99",
+                    "currency": "USD", "payment_status": "paid", "status": "paid", "is_final": true
+                }
+            })))
+            .mount(&server)
+            .await;
+        assert!(
+            matches!(
+                Cryptomus::with_api_base(server.uri())
+                    .fetch_status(&settings(), "26109ba0")
+                    .await,
+                Err(PaymentError::BadPayload(_))
+            ),
+            "{answered}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn проверка_подключения_по_списку_монет() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
