@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
+import { pathPart } from '../../lib/apiPath';
 import { extLink, type ExtCard, type PageToken } from './ext';
 import './modules.css';
 import './ext.css';
@@ -21,7 +22,7 @@ export function ExtPage() {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([api<ExtCard>(`/api/admin/ext-modules/${id}`), api<PageToken>(`/api/admin/ext-modules/${id}/page-token`, { method: 'POST', body: {} })])
+    Promise.all([api<ExtCard>(`/api/admin/ext-modules/${pathPart(id)}`), api<PageToken>(`/api/admin/ext-modules/${pathPart(id)}/page-token`, { method: 'POST', body: {} })])
       .then(([nextCard, nextPage]) => {
         if (alive) {
           setCard(nextCard);
@@ -52,7 +53,7 @@ export function ExtPage() {
         return;
       }
       try {
-        const fresh = await api<PageToken>(`/api/admin/ext-modules/${id}/page-token`, { method: 'POST', body: {} });
+        const fresh = await api<PageToken>(`/api/admin/ext-modules/${pathPart(id)}/page-token`, { method: 'POST', body: {} });
         target.postMessage({ type: TOKEN_MESSAGE, token: fresh.token, expires_at: fresh.expires_at }, page.origin);
       } catch {
         target.postMessage({ type: TOKEN_MESSAGE, token: null, expires_at: null }, page.origin);

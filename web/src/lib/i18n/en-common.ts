@@ -6,6 +6,7 @@ export const COMMON: Record<string, string> = {
   'из': 'of',
   'и': 'and',
   'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз': 'No connection to the server. Check your internet and try again',
+  'Неверный адрес запроса': 'Invalid request address',
   'Ошибка {status}': 'Error {status}',
   'Текущая подписка ({current}) будет удалена, новая станет доступна сразу после оплаты. Оставшиеся дни не переносятся, ссылка подписки останется прежней.': 'Your current subscription ({current}) will be removed, and the new one starts right after payment. Remaining days don\'t carry over, and your subscription link stays the same.',
   'без тарифа': 'no plan',

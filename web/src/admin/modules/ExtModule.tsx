@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
+import { pathPart } from '../../lib/apiPath';
 import { dateLong, dateTime, timeHM } from '../../lib/format';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import { useSession } from '../session';
@@ -47,7 +48,7 @@ function Settings({ id, onSaved }: { id: string; onSaved: () => void }) {
   };
 
   useEffect(() => {
-    api<ExtConfig>(`/api/admin/ext-modules/${id}/config`)
+    api<ExtConfig>(`/api/admin/ext-modules/${pathPart(id)}/config`)
       .then(apply)
       .catch((err) => setError(failText(err, 'Настройки не загрузились')));
   }, [id]);
@@ -66,7 +67,7 @@ function Settings({ id, onSaved }: { id: string; onSaved: () => void }) {
     setNote(null);
     try {
       apply(
-        await api<ExtConfig>(`/api/admin/ext-modules/${id}/config`, {
+        await api<ExtConfig>(`/api/admin/ext-modules/${pathPart(id)}/config`, {
           method: 'PUT',
           body: { config: changedConfig(cfg.schema, cfg.config, values), clear: secrets.clear },
         }),
@@ -131,7 +132,7 @@ function DeliveryLog({ id, version }: { id: string; version: number }) {
   const load = useCallback(async () => {
     setBusy('load');
     try {
-      setJournal(await api<Journal>(`/api/admin/ext-modules/${id}/deliveries`));
+      setJournal(await api<Journal>(`/api/admin/ext-modules/${pathPart(id)}/deliveries`));
       setError(null);
     } catch (err) {
       setError(failText(err, 'Журнал не загрузился'));
@@ -147,7 +148,7 @@ function DeliveryLog({ id, version }: { id: string; version: number }) {
   const retryAll = async () => {
     setBusy('all');
     try {
-      await api(`/api/admin/ext-modules/${id}/deliveries/retry-failed`, { method: 'POST', body: {} });
+      await api(`/api/admin/ext-modules/${pathPart(id)}/deliveries/retry-failed`, { method: 'POST', body: {} });
       await load();
     } catch (err) {
       setError(failText(err, 'События не поставились в очередь'));
@@ -159,7 +160,7 @@ function DeliveryLog({ id, version }: { id: string; version: number }) {
   const retry = async (a: Attempt) => {
     setBusy(a.id);
     try {
-      await api(`/api/admin/ext-modules/${id}/deliveries/${a.delivery_id}/retry`, { method: 'POST', body: {} });
+      await api(`/api/admin/ext-modules/${pathPart(id)}/deliveries/${a.delivery_id}/retry`, { method: 'POST', body: {} });
       await load();
     } catch (err) {
       setError(failText(err, 'Событие не поставилось в очередь'));
@@ -265,7 +266,7 @@ export function ExtModule() {
 
   const load = useCallback(async () => {
     try {
-      setCard(await api<ExtCard>(`/api/admin/ext-modules/${id}`));
+      setCard(await api<ExtCard>(`/api/admin/ext-modules/${pathPart(id)}`));
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
@@ -287,7 +288,7 @@ export function ExtModule() {
     setBusy('toggle');
     setNote(null);
     try {
-      setCard(await api<ExtCard>(`/api/admin/ext-modules/${id}`, { method: 'PATCH', body: { enabled: !card.enabled } }));
+      setCard(await api<ExtCard>(`/api/admin/ext-modules/${pathPart(id)}`, { method: 'PATCH', body: { enabled: !card.enabled } }));
     } catch (err) {
       setError(failText(err, 'Модуль не переключился'));
     } finally {
@@ -300,7 +301,7 @@ export function ExtModule() {
     setPing(null);
     setError(null);
     try {
-      setPing(await api<PingResult>(`/api/admin/ext-modules/${id}/ping`, { method: 'POST', body: {} }));
+      setPing(await api<PingResult>(`/api/admin/ext-modules/${pathPart(id)}/ping`, { method: 'POST', body: {} }));
       setVersion((n) => n + 1);
       await load();
     } catch (err) {
@@ -314,7 +315,7 @@ export function ExtModule() {
     setBusy('reissue');
     setError(null);
     try {
-      setIssued(await api<Credentials>(`/api/admin/ext-modules/${id}/credentials`, { method: 'POST', body: {} }));
+      setIssued(await api<Credentials>(`/api/admin/ext-modules/${pathPart(id)}/credentials`, { method: 'POST', body: {} }));
       setAsking(null);
       await load();
     } catch (err) {
@@ -328,7 +329,7 @@ export function ExtModule() {
     setBusy('remove');
     setError(null);
     try {
-      await api(`/api/admin/ext-modules/${id}`, { method: 'DELETE' });
+      await api(`/api/admin/ext-modules/${pathPart(id)}`, { method: 'DELETE' });
       navigate('/admin/modules');
     } catch (err) {
       setError(failText(err, 'Модуль не удалился'));

@@ -1,3 +1,4 @@
+import { leavesPath } from './apiPath';
 import { lang, t } from './i18n';
 
 export class ApiError extends Error {
@@ -35,6 +36,12 @@ function errorFrom(status: number, data: unknown): ApiError {
   return new ApiError(status, `http.${status}`, t('Ошибка {status}', { status }));
 }
 
+function checkPath(path: string): void {
+  if (leavesPath(path)) {
+    throw new ApiError(0, 'path', t('Неверный адрес запроса'));
+  }
+}
+
 let bearer: string | null = null;
 
 export function setBearer(token: string | null): void {
@@ -42,6 +49,7 @@ export function setBearer(token: string | null): void {
 }
 
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
+  checkPath(path);
   const headers: Record<string, string> = { accept: 'application/json' };
   if (bearer && path.startsWith('/api/client')) {
     headers.authorization = `Bearer ${bearer}`;
@@ -100,6 +108,7 @@ function clientHeaders(path: string, headers: Record<string, string>): Record<st
 }
 
 export async function upload<T>(path: string, file: Blob): Promise<T> {
+  checkPath(path);
   let response: Response;
   try {
     response = await fetch(path, {
@@ -115,6 +124,7 @@ export async function upload<T>(path: string, file: Blob): Promise<T> {
 }
 
 export async function fetchBlob(path: string): Promise<Blob> {
+  checkPath(path);
   let response: Response;
   try {
     response = await fetch(path, { headers: clientHeaders(path, {}), credentials: 'same-origin' });

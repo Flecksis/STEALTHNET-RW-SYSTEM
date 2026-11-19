@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
+import { pathPart } from '../../lib/apiPath';
 import { useSession } from '../session';
 import { PAYOUT_KEY, PayoutMethods, payoutItems, payoutProblem, payoutRows, type PayoutRow } from '../referral/PayoutMethods';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
@@ -49,7 +50,7 @@ export function ModulePage() {
 
   const load = useCallback(async () => {
     try {
-      const [list, config] = await Promise.all([api<ModulesData>('/api/admin/modules'), api<ModuleConfig>(`/api/admin/modules/${id}/config`)]);
+      const [list, config] = await Promise.all([api<ModulesData>('/api/admin/modules'), api<ModuleConfig>(`/api/admin/modules/${pathPart(id)}/config`)]);
       const found = list.modules.find((m) => m.info.id === id) ?? null;
       setMissing(found === null);
       setView(found);
@@ -75,7 +76,7 @@ export function ModulePage() {
     setBusy(true);
     setNote(null);
     try {
-      setView(await api<ModuleView>(`/api/admin/modules/${id}`, { method: 'PATCH', body: { enabled: !view.active } }));
+      setView(await api<ModuleView>(`/api/admin/modules/${pathPart(id)}`, { method: 'PATCH', body: { enabled: !view.active } }));
       await reload();
     } catch (err) {
       setError(failText(err, 'Модуль не переключился'));
@@ -110,7 +111,7 @@ export function ModulePage() {
     setError(null);
     setNote(null);
     try {
-      apply(await api<ModuleConfig>(`/api/admin/modules/${id}/config`, { method: 'PUT', body: { config, clear } }));
+      apply(await api<ModuleConfig>(`/api/admin/modules/${pathPart(id)}/config`, { method: 'PUT', body: { config, clear } }));
       const list = await api<ModulesData>('/api/admin/modules');
       setView(list.modules.find((m) => m.info.id === id) ?? view);
       setSaved((n) => n + 1);
