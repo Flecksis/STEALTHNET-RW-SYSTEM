@@ -230,6 +230,24 @@ fn foreign(base: WebhookOutcome, what: &str, buyer: Option<i64>, sum: &str) -> W
     )
 }
 
+fn unpaid(base: WebhookOutcome, what: &str, buyer: Option<i64>) -> WebhookOutcome {
+    let from = match buyer {
+        Some(telegram_id) => format!("от Telegram ID {telegram_id}"),
+        None => "без Telegram ID покупателя".to_string(),
+    };
+    WebhookOutcome {
+        amount: None,
+        ..base
+    }
+    .with_notice(
+        NoticeKind::ManualCredit,
+        format!(
+            "Tribute прислал оплату ({what}) {from} с нулевой суммой. Тариф не выдан и на баланс \
+             ничего не зачислено: если это пробный период или подарок, выдайте подписку вручную"
+        ),
+    )
+}
+
 fn purchase(payload: &Json, allowed: &HashSet<i64>) -> PaymentResult<WebhookOutcome> {
     let purchase = integer(payload.get("purchase_id"))
         .filter(|id| *id > 0)
@@ -286,10 +304,8 @@ fn subscription(payload: &Json, renewed: bool) -> PaymentResult<WebhookOutcome> 
     let period = integer(payload.get("period_id"))
         .filter(|id| *id > 0)
         .ok_or_else(|| util::bad("нет номера срока подписки period_id"))?;
-    let (minor, currency) = paid(payload, "price")
-        .filter(|(minor, _)| *minor > 0)
-        .or_else(|| paid(payload, "amount"))
-        .ok_or_else(|| util::bad("нет цены или валюты подписки"))?;
+    let (minor, currency) =
+        paid(payload, "amount").ok_or_else(|| util::bad("нет суммы или валюты подписки"))?;
     let expires = payload
         .get("expires_at")
         .and_then(Json::as_str)
@@ -319,6 +335,9 @@ fn subscription(payload: &Json, renewed: bool) -> PaymentResult<WebhookOutcome> 
         },
         text(payload, "subscription_name", 80)
     );
+    if minor == 0 {
+        return Ok(unpaid(base, &what, buyer));
+    }
     match (buyer, known) {
         (Some(telegram_id), Some(_)) => Ok(WebhookOutcome {
             payment: Some(PaymentRef::Buyer(Buyer {

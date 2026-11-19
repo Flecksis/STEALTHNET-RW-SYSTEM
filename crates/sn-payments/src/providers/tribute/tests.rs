@@ -278,7 +278,7 @@ async fn подписка_ведёт_к_привязке_срока_и_кажд�
     .await
     .unwrap();
     assert_eq!(first.status, ProviderStatus::Paid);
-    assert_eq!(first.amount, Some(rub(19_900)));
+    assert_eq!(first.amount, Some(rub(17_910)));
     assert_eq!(
         first.payment,
         Some(PaymentRef::Buyer(Buyer {
@@ -334,6 +334,44 @@ async fn подписка_ведёт_к_привязке_срока_и_кажд�
     );
     assert_eq!(provider.plan_binding(&settings(), "1548"), None);
     assert_eq!(provider.plan_binding(&settings(), "abc"), None);
+}
+
+#[tokio::test]
+async fn подписка_засчитывается_на_уплаченную_сумму_а_без_оплаты_ждёт_решения() {
+    let body = |amount: Option<i64>, telegram: Option<i64>| {
+        let mut value: serde_json::Value = serde_json::from_str(&subscription_body(
+            "new_subscription",
+            "2026-12-18T10:00:00Z",
+            telegram,
+        ))
+        .unwrap();
+        match amount {
+            Some(minor) => value["payload"]["amount"] = json!(minor),
+            None => {
+                value["payload"].as_object_mut().unwrap().remove("amount");
+            }
+        }
+        value.to_string()
+    };
+    let discounted = parse(signed(&body(Some(990), Some(5_093_118_422))))
+        .await
+        .unwrap();
+    assert_eq!(discounted.status, ProviderStatus::Paid);
+    assert_eq!(discounted.amount, Some(rub(990)));
+    for telegram in [Some(5_093_118_422), None] {
+        let free = parse(signed(&body(Some(0), telegram))).await.unwrap();
+        assert_eq!(free.status, ProviderStatus::Pending, "{telegram:?}");
+        assert_eq!(free.payment, None, "{telegram:?}");
+        assert_eq!(free.amount, None, "{telegram:?}");
+        let notice = free.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::ManualCredit);
+        assert!(notice.text.contains("нулевой суммой"), "{}", notice.text);
+        assert!(notice.text.contains("№1644"), "{}", notice.text);
+    }
+    assert!(matches!(
+        parse(signed(&body(None, Some(5_093_118_422)))).await,
+        Err(PaymentError::BadPayload(_))
+    ));
 }
 
 #[tokio::test]

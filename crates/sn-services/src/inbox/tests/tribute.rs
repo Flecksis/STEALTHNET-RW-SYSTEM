@@ -469,7 +469,36 @@ async fn tribute_подписка_выдаёт_тариф_продлевает_�
         order(&kit.services, topup.order_id).await.kind,
         OrderKind::TopUp
     );
-    assert_eq!(balance(&kit.services, client_id).await, 450);
+    assert_eq!(topup.amount, Amount::new(420, PayCurrency::Usd));
+    assert_eq!(balance(&kit.services, client_id).await, 420);
+    assert_eq!(paid.amount, Amount::new(269, PayCurrency::Usd));
+
+    let mut free: serde_json::Value = serde_json::from_str(&subscription_event(
+        "new_subscription",
+        1547,
+        "2026-12-25T10:00:00Z",
+        299,
+    ))
+    .unwrap();
+    free["payload"]["amount"] = serde_json::json!(0);
+    assert_eq!(status(&kit, &free.to_string()).await, 200);
+    assert_eq!(
+        by_txid(
+            &kit,
+            providers::TRIBUTE,
+            "sub:1644:5093118422:2026-12-25T10:00:00Z"
+        )
+        .await,
+        None
+    );
+    assert_eq!(balance(&kit.services, client_id).await, 420);
+    let waiting = kit.services.decisions().credits(10).await.unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert!(
+        waiting[0].text.contains("нулевой суммой"),
+        "{}",
+        waiting[0].text
+    );
     kit.db.cleanup().await;
 }
 
