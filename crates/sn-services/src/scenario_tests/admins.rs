@@ -167,3 +167,86 @@ async fn отключение_и_сброс_закрывают_сессии() {
     assert!(!ops.reset_two_factor(owner, id).await.unwrap().two_factor);
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn старые_хеши_bcrypt_заменяются_на_argon2_при_входе() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let auth = services.auth();
+    let legacy = bcrypt::hash("старый-пароль-админа", 4).unwrap();
+    let admin = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.admins()
+            .create(&sn_store::NewAdmin {
+                email: "legacy@example.com".into(),
+                password_hash: legacy,
+                role: AdminRole::Admin,
+                must_change_password: false,
+            })
+            .await
+            .unwrap()
+            .id
+    };
+    auth.admin_login(
+        "legacy@example.com",
+        "старый-пароль-админа",
+        None,
+        &meta("203.0.113.71"),
+    )
+    .await
+    .unwrap();
+    let stored = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.admins().get(admin).await.unwrap().password_hash
+    };
+    assert!(stored.starts_with("$argon2"), "{stored}");
+    auth.admin_login(
+        "legacy@example.com",
+        "старый-пароль-админа",
+        None,
+        &meta("203.0.113.71"),
+    )
+    .await
+    .unwrap();
+
+    auth.email_register(
+        "legacy-client@example.com",
+        "пароль-клиента-1",
+        &meta("203.0.113.72"),
+    )
+    .await
+    .unwrap();
+    let client = {
+        let mut conn = services.store().conn().await.unwrap();
+        let client = conn
+            .clients()
+            .find_by_identity(IdentityKind::Email, "legacy-client@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query("UPDATE client_passwords SET password_hash = $2 WHERE client_id = $1")
+            .bind(client.id.0)
+            .bind(bcrypt::hash("старый-пароль-клиента", 4).unwrap())
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        client.id
+    };
+    auth.email_password_login(
+        "legacy-client@example.com",
+        "старый-пароль-клиента",
+        &meta("203.0.113.72"),
+    )
+    .await
+    .unwrap();
+    let stored: String = {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query_scalar("SELECT password_hash FROM client_passwords WHERE client_id = $1")
+            .bind(client.0)
+            .fetch_one(conn.conn())
+            .await
+            .unwrap()
+    };
+    assert!(stored.starts_with("$argon2"), "{stored}");
+    env.db.cleanup().await;
+}

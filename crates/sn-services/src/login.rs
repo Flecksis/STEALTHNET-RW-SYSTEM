@@ -617,6 +617,9 @@ impl<'a> Auth<'a> {
             (client, stored)
         };
         let must_change = hash.as_ref().is_some_and(|(_, must_change)| *must_change);
+        let legacy = hash
+            .as_ref()
+            .is_some_and(|(hash, _)| crate::auth::legacy_hash(hash));
         let valid = check_password(password, hash.map(|(hash, _)| hash)).await?;
         let Some(client) = client.filter(|_| valid) else {
             return Err(ServiceError::rejected(
@@ -627,8 +630,16 @@ impl<'a> Auth<'a> {
         if client.is_blocked() {
             return Err(ServiceError::Forbidden);
         }
+        let fresh = if legacy {
+            hash_password_async(password).await.ok()
+        } else {
+            None
+        };
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
+        if let Some(fresh) = fresh {
+            store_password(&mut tx, client.id, &fresh, must_change).await?;
+        }
         let login = cabinet_session_for(&mut tx, client.id, now, meta, false, must_change).await?;
         tx.commit().await?;
         Ok(login)

@@ -118,6 +118,10 @@ pub fn hash_password(password: &str) -> ServiceResult<String> {
         .map_err(|e| ServiceError::Internal(e.to_string()))
 }
 
+pub fn legacy_hash(hash: &str) -> bool {
+    hash.starts_with("$2a$") || hash.starts_with("$2b$") || hash.starts_with("$2y$")
+}
+
 pub fn verify_password(password: &str, hash: &str) -> bool {
     if hash.starts_with("$argon2") {
         PasswordHash::new(hash)
@@ -613,6 +617,15 @@ impl<'a> Auth<'a> {
             return Err(ServiceError::Unauthorized);
         };
         self.forgive(&attempt).await?;
+        if legacy_hash(&admin.password_hash) {
+            let fresh = hash_password_async(password).await;
+            if let Ok(fresh) = fresh {
+                let mut conn = self.services.store().conn().await?;
+                conn.admins()
+                    .set_password(admin.id, &fresh, admin.must_change_password)
+                    .await?;
+            }
+        }
         if let Some(sealed) = &admin.totp {
             let Some(code) = totp_code.map(str::trim).filter(|c| !c.is_empty()) else {
                 return Err(ServiceError::rejected(
