@@ -314,6 +314,17 @@ impl<'a> Auth<'a> {
         secret: &str,
         code: &str,
     ) -> ServiceResult<TwoFactor> {
+        self.client_totp_enable_in(client_id, secret, code, None)
+            .await
+    }
+
+    pub async fn client_totp_enable_in(
+        &self,
+        client_id: ClientId,
+        secret: &str,
+        code: &str,
+        session: Option<i64>,
+    ) -> ServiceResult<TwoFactor> {
         self.client_security_hit(client_id).await?;
         let secret = normalize_secret(secret)?;
         let now = self.services.now();
@@ -328,12 +339,16 @@ impl<'a> Auth<'a> {
         }
         tx.clients().enable_totp(client_id, &sealed, now).await?;
         tx.clients().use_totp_step(client_id, step).await?;
+        let revoked = match session {
+            Some(keep) => tx.sessions().revoke_client_others(client_id, keep).await?,
+            None => 0,
+        };
         tx.audit()
             .record(&Actor::Client(client_id).audit(
                 "client.totp_enabled",
                 "client",
                 Some(client_id.0),
-                serde_json::json!({}),
+                serde_json::json!({ "revoked_sessions": revoked }),
             ))
             .await?;
         tx.commit().await?;

@@ -196,6 +196,17 @@ impl<'c> SessionsRepo<'c> {
         Ok(done.rows_affected() > 0)
     }
 
+    pub async fn revoke_admin_others(&mut self, admin_id: AdminId, keep: i64) -> StoreResult<u64> {
+        let done = sqlx::query(
+            "UPDATE admin_sessions SET revoked_at = now() WHERE admin_id = $1 AND revoked_at IS NULL AND id <> $2",
+        )
+        .bind(admin_id.0)
+        .bind(keep)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     pub async fn revoke_all_admin(&mut self, admin_id: AdminId) -> StoreResult<u64> {
         let done = sqlx::query(
             "UPDATE admin_sessions SET revoked_at = now() WHERE admin_id = $1 AND revoked_at IS NULL",
@@ -273,6 +284,21 @@ impl<'c> SessionsRepo<'c> {
         )
         .bind(client_id.0)
         .bind(channel.as_str())
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    pub async fn revoke_client_others(
+        &mut self,
+        client_id: ClientId,
+        keep: i64,
+    ) -> StoreResult<u64> {
+        let done = sqlx::query(
+            "UPDATE client_sessions SET revoked_at = now() WHERE client_id = $1 AND revoked_at IS NULL AND id <> $2",
+        )
+        .bind(client_id.0)
+        .bind(keep)
         .execute(&mut *self.conn)
         .await?;
         Ok(done.rows_affected())

@@ -363,7 +363,12 @@ async fn totp_enable(
         state
             .services
             .auth()
-            .client_totp_enable(client.0.client_id, &body.secret, &body.code)
+            .client_totp_enable_in(
+                client.0.client_id,
+                &body.secret,
+                &body.code,
+                client.0.session_id,
+            )
             .await?,
     ))
 }

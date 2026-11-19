@@ -133,7 +133,13 @@ async fn totp_enable(
     state
         .services
         .auth()
-        .admin_totp_enable(admin.0.admin_id, &body.secret, &body.code, &body.password)
+        .admin_totp_enable_in(
+            admin.0.admin_id,
+            &body.secret,
+            &body.code,
+            &body.password,
+            Some(admin.0.session_id),
+        )
         .await?;
     Ok(Json(serde_json::json!({ "totp_enabled": true })))
 }

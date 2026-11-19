@@ -722,6 +722,18 @@ impl<'a> Auth<'a> {
         code: &str,
         password: &str,
     ) -> ServiceResult<()> {
+        self.admin_totp_enable_in(admin_id, secret, code, password, None)
+            .await
+    }
+
+    pub async fn admin_totp_enable_in(
+        &self,
+        admin_id: AdminId,
+        secret: &str,
+        code: &str,
+        password: &str,
+        session: Option<i64>,
+    ) -> ServiceResult<()> {
         let admin = self.admin_for_security(admin_id).await?;
         if admin.totp.is_some() {
             return Err(ServiceError::rejected(
@@ -755,12 +767,16 @@ impl<'a> Auth<'a> {
         let mut tx = self.services.store().begin().await?;
         tx.admins().set_totp(admin_id, Some(&sealed)).await?;
         tx.admins().use_totp_step(admin_id, step).await?;
+        let revoked = match session {
+            Some(keep) => tx.sessions().revoke_admin_others(admin_id, keep).await?,
+            None => 0,
+        };
         tx.audit()
             .record(&crate::Actor::Admin(admin_id).audit(
                 "admin.totp_enabled",
                 "admin",
                 Some(admin_id.0),
-                serde_json::json!({}),
+                serde_json::json!({ "revoked_sessions": revoked }),
             ))
             .await?;
         tx.commit().await?;

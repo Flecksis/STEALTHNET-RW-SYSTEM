@@ -99,3 +99,60 @@ async fn администраторы_через_http_только_у_владе
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn включение_2fa_закрывает_остальные_сессии() {
+    let Some(h) = http().await else { return };
+    let first = h.owner().await;
+    let second = h.login("owner@example.com").await;
+    let (status, setup) = h
+        .write(Method::POST, "/api/admin/auth/2fa/setup", &first, json!({}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{setup}");
+    let secret = setup["secret"].as_str().unwrap().to_string();
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/auth/2fa/enable",
+            &first,
+            json!({ "secret": secret, "code": totp_code(&secret, start()), "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(h.get("/api/admin/me", &first).await.0, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/admin/me", &second).await.0,
+        StatusCode::UNAUTHORIZED,
+        "другая сессия администратора закрыта"
+    );
+
+    let client = h.client(5_093_118_640).await;
+    let mine = h.client_token(client).await;
+    let other = h.client_token(client).await;
+    let (status, setup) = h
+        .write(
+            Method::POST,
+            "/api/client/security/totp/setup",
+            &mine,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{setup}");
+    let secret = setup["secret"].as_str().unwrap().to_string();
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/client/security/totp/enable",
+            &mine,
+            json!({ "secret": secret, "code": totp_code(&secret, start()) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(h.get("/api/client/me", &mine).await.0, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/client/me", &other).await.0,
+        StatusCode::UNAUTHORIZED,
+        "другая сессия клиента закрыта"
+    );
+    h.db.cleanup().await;
+}
