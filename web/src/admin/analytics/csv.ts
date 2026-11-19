@@ -1,15 +1,8 @@
 import type { Currency } from '../../lib/types';
+import { csvCell } from './csvCell';
 import { format, shareOf, type Metric, type TabReport } from './model';
 
 type Cell = string | number | null;
-
-function cell(value: Cell): string {
-  if (value === null) {
-    return '';
-  }
-  const text = String(value);
-  return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
 
 function plain(value: number | null | undefined, unit: Metric['unit'], currency: Currency): string {
   if (value === null || value === undefined) {
@@ -26,7 +19,7 @@ function plain(value: number | null | undefined, unit: Metric['unit'], currency:
 }
 
 export function downloadRows(title: string, rows: Cell[][]): void {
-  const text = `﻿${rows.map((r) => r.map(cell).join(';')).join('\r\n')}\r\n`;
+  const text = `﻿${rows.map((r) => r.map(csvCell).join(';')).join('\r\n')}\r\n`;
   const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
