@@ -78,7 +78,7 @@ export const MINI: Record<string, string> = {
   'пусто': 'no prize',
   'Шансы: {list}.': 'Odds: {list}.',
   'Рулетка сейчас выключена': 'Lucky spin is off right now',
-  'Рулетка скоро заработает — загляните позже.': 'Lucky spin is coming soon. Check back later.',
+  'Рулетка ещё не настроена.': 'The lucky spin isn\'t set up yet.',
   'В этот раз пусто': 'No prize this time',
   'Повезёт в следующий раз': 'Better luck next time',
   'Промокод {code} — введите при оплате': 'Promo code {code}: enter it at checkout',

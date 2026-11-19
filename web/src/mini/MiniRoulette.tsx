@@ -296,7 +296,7 @@ export function MiniRoulette() {
     return (
       <main className="mn-page mr-page">
         <BackHead title={t('Рулетка')} />
-        <p className="mn-note">{t('Рулетка скоро заработает — загляните позже.')}</p>
+        <p className="mn-note">{t('Рулетка ещё не настроена.')}</p>
       </main>
     );
   }
