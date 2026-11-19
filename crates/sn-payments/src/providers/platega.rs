@@ -272,7 +272,7 @@ fn transaction_outcome(tx: &Json, id: &str) -> PaymentResult<WebhookOutcome> {
         .and_then(Json::as_str)
         .ok_or_else(|| util::bad("нет статуса транзакции"))?;
     let status = match status_text {
-        "CONFIRMED" | "PARTIALLY_REFUNDED" => ProviderStatus::Paid,
+        "CONFIRMED" => ProviderStatus::Paid,
         "CANCELED" => ProviderStatus::Canceled,
         "CHARGEBACKED" => ProviderStatus::Refunded,
         _ => ProviderStatus::Pending,
@@ -956,7 +956,7 @@ mod tests {
     async fn статусы_platega() {
         for (status, expected) in [
             ("CONFIRMED", ProviderStatus::Paid),
-            ("PARTIALLY_REFUNDED", ProviderStatus::Paid),
+            ("PARTIALLY_REFUNDED", ProviderStatus::Pending),
             ("CANCELED", ProviderStatus::Canceled),
             ("CHARGEBACKED", ProviderStatus::Refunded),
             ("DISPUTED", ProviderStatus::Pending),
@@ -991,6 +991,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(subscription.payment, None);
+    }
+
+    #[tokio::test]
+    async fn частично_возвращённая_транзакция_не_засчитывается_оплатой() {
+        let server = api("PARTIALLY_REFUNDED", json!(499), "RUB").await;
+        let late = parse(&server, &headers(), callback("CONFIRMED"))
+            .await
+            .unwrap();
+        assert_eq!(late.status, ProviderStatus::Pending);
+        assert_eq!(late.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        assert_eq!(late.event_key, format!("{TX}:PARTIALLY_REFUNDED"));
+        assert_eq!(late.signal, None);
+        let polled = Platega::with_api_base(server.uri())
+            .fetch_status(&settings(), TX)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(polled.status, ProviderStatus::Pending);
     }
 
     #[tokio::test]
