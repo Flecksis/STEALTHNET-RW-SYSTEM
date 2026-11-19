@@ -67,7 +67,7 @@ struct TariffRow {
     device_discounts: Json<Vec<DeviceDiscount>>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, serde::Deserialize)]
 struct PeriodRow {
     id: i64,
     tariff_id: i64,
@@ -86,6 +86,25 @@ const TARIFF_COLUMNS: &str = "id, category_id, name, description, on_sale, sort,
 
 const PERIOD_COLUMNS: &str =
     "id, tariff_id, days, price_usd_minor, price_rub_minor, stars, sort, active";
+
+#[derive(sqlx::FromRow)]
+struct FullTariffRow {
+    #[sqlx(flatten)]
+    tariff: TariffRow,
+    periods: Json<Vec<PeriodRow>>,
+    squads: Vec<Uuid>,
+}
+
+const FULL_TARIFF: &str = "SELECT id, category_id, name, description, on_sale, sort, devices_included, \
+     extra_devices_enabled, extra_devices_max, extra_device_usd_minor, extra_device_rub_minor, extra_device_stars, \
+     traffic_limit_bytes, traffic_reset, external_squad_uuid, traffic_addon, device_discounts, \
+     COALESCE((SELECT jsonb_agg(jsonb_build_object('id', p.id, 'tariff_id', p.tariff_id, 'days', p.days, \
+         'price_usd_minor', p.price_usd_minor, 'price_rub_minor', p.price_rub_minor, 'stars', p.stars, \
+         'sort', p.sort, 'active', p.active) ORDER BY p.sort, p.days) \
+       FROM tariff_periods p WHERE p.tariff_id = t.id), '[]'::jsonb) AS periods, \
+     COALESCE((SELECT array_agg(q.squad_uuid ORDER BY q.position, q.squad_uuid) \
+       FROM tariff_squads q WHERE q.tariff_id = t.id), '{}'::uuid[]) AS squads \
+     FROM tariffs t WHERE t.id = $1 AND t.deleted_at IS NULL";
 
 fn period_from(row: PeriodRow) -> StoreResult<TariffPeriod> {
     Ok(TariffPeriod {
@@ -394,16 +413,19 @@ impl<'c> TariffsRepo<'c> {
     }
 
     pub async fn get(&mut self, id: TariffId) -> StoreResult<Tariff> {
-        let rows: Vec<TariffRow> = sqlx::query_as(&format!(
-            "SELECT {TARIFF_COLUMNS} FROM tariffs WHERE id = $1 AND deleted_at IS NULL"
-        ))
-        .bind(id.0)
-        .fetch_all(&mut *self.conn)
-        .await?;
-        self.assemble(rows)
+        let row: FullTariffRow = sqlx::query_as(FULL_TARIFF)
+            .bind(id.0)
+            .fetch_optional(&mut *self.conn)
             .await?
-            .pop()
-            .ok_or(StoreError::NotFound("тариф"))
+            .ok_or(StoreError::NotFound("тариф"))?;
+        let periods = row
+            .periods
+            .0
+            .into_iter()
+            .map(period_from)
+            .collect::<StoreResult<Vec<_>>>()?;
+        let squads = row.squads.into_iter().map(SquadId).collect();
+        tariff_from(row.tariff, periods, squads)
     }
 
     pub async fn create(&mut self, tariff: &NewTariff) -> StoreResult<Tariff> {

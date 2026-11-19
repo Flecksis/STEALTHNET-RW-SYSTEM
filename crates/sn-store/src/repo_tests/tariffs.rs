@@ -286,3 +286,46 @@ async fn лимит_подписок_категории_и_лесенка_ски
     drop(conn);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn тариф_по_номеру_читается_так_же_как_в_списке() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let cat = category(&mut conn, "Основные").await;
+    let created = conn
+        .tariffs()
+        .create(&tariff(
+            cat,
+            vec![
+                period(365, 2_990, 199_000, 1_400),
+                period(30, 349, 24_900, 175),
+                period(90, 899, 64_900, 450),
+            ],
+            &[7, 3, 5],
+        ))
+        .await
+        .unwrap();
+    let bare = conn
+        .tariffs()
+        .create(&tariff(cat, Vec::new(), &[]))
+        .await
+        .unwrap();
+    let listed = conn.tariffs().list(true).await.unwrap();
+    for id in [created.id, bare.id] {
+        let one = conn.tariffs().get(id).await.unwrap();
+        let same = listed.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(&one, same);
+    }
+    assert_eq!(created.periods.len(), 3);
+    conn.tariffs().soft_delete(bare.id).await.unwrap();
+    assert!(matches!(
+        conn.tariffs().get(bare.id).await,
+        Err(StoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        conn.tariffs().get(TariffId(987_654)).await,
+        Err(StoreError::NotFound(_))
+    ));
+    drop(conn);
+    db.cleanup().await;
+}
