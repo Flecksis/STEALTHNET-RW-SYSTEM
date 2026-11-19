@@ -92,6 +92,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                     settings.bot_updates = v;
                 }
             }
+            keys::BOT_FLOOD => {
+                if let Some(v) = parse::<sn_domain::settings::FloodSettings>(&key, value) {
+                    settings.bot_flood = v;
+                }
+            }
             keys::SUPPORT_URL => settings.support_url = parse(&key, value),
             keys::SUPPORT_MODE => support_mode = parse(&key, value),
             keys::REMNA_UTC_OFFSET => {
@@ -1165,6 +1170,13 @@ pub struct BotSettingsView {
     pub username: Option<String>,
     pub status: crate::BotState,
     pub updates: crate::bot_webhook::UpdatesView,
+    pub flood: FloodView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FloodView {
+    pub settings: sn_domain::settings::FloodSettings,
+    pub stats: Option<crate::bot_flood::FloodSnapshot>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -1175,6 +1187,8 @@ pub struct BotUpdate {
     pub username: Option<String>,
     #[serde(default)]
     pub updates: Option<sn_domain::settings::UpdatesMode>,
+    #[serde(default)]
+    pub flood: Option<sn_domain::settings::FloodSettings>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2518,6 +2532,12 @@ impl<'a> SettingsOps<'a> {
             .await?
             .filter(|u| !u.trim().is_empty());
         let env = self.services.env().bot_token.is_some();
+        let stats = conn
+            .bot_state()
+            .get(crate::bot_flood::STATE_KEY)
+            .await?
+            .filter(|v| !v.is_null())
+            .and_then(|v| serde_json::from_value(v).ok());
         drop(conn);
         Ok(BotSettingsView {
             token_set: stored.is_some() || env,
@@ -2525,6 +2545,10 @@ impl<'a> SettingsOps<'a> {
             username,
             status: self.services.bot_runtime().state(),
             updates: self.services.bot_webhook().view().await?,
+            flood: FloodView {
+                settings: self.services.settings().bot_flood,
+                stats,
+            },
         })
     }
 
@@ -2621,11 +2645,67 @@ impl<'a> SettingsOps<'a> {
             }
             None => false,
         };
+        let guarded = match &update.flood {
+            Some(flood) => self.save_flood(&mut tx, flood, admin).await?,
+            None => false,
+        };
         tx.commit().await?;
-        if !changed.is_empty() || switched {
+        if !changed.is_empty() || switched || guarded {
             self.saved().await?;
         }
         self.bot().await
+    }
+
+    async fn save_flood(
+        &self,
+        tx: &mut impl Db,
+        flood: &sn_domain::settings::FloodSettings,
+        admin: AdminId,
+    ) -> ServiceResult<bool> {
+        use sn_domain::settings::FloodSettings;
+        if let Some(field) = flood.invalid_field() {
+            let (min, max) = match field {
+                "start_interval_secs" => FloodSettings::START_INTERVAL,
+                "messages_per_minute" => FloodSettings::MESSAGES,
+                "block_after" => FloodSettings::BLOCK_AFTER,
+                "block_minutes" => FloodSettings::BLOCK_MINUTES,
+                _ => FloodSettings::REGISTRATIONS,
+            };
+            return Err(field_error(
+                field,
+                &format!("целое число от {min} до {max}"),
+            ));
+        }
+        let current = self.services.settings().bot_flood;
+        if current == *flood {
+            return Ok(false);
+        }
+        let value =
+            serde_json::to_value(flood).map_err(|e| ServiceError::Internal(e.to_string()))?;
+        tx.settings()
+            .set(keys::BOT_FLOOD, &value, Some(admin))
+            .await?;
+        let before =
+            serde_json::to_value(current).map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let mut details = Map::new();
+        if let (Value::Object(after), Value::Object(before)) = (&value, &before) {
+            for (key, now) in after {
+                let was = before.get(key).cloned().unwrap_or(Value::Null);
+                if *now != was {
+                    details.insert(key.clone(), now.clone());
+                    details.insert(format!("{key}_before"), was);
+                }
+            }
+        }
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                crate::bot_flood::SETTINGS_ACTION,
+                "settings",
+                None,
+                Value::Object(details),
+            ))
+            .await?;
+        Ok(true)
     }
 
     async fn switch_updates(

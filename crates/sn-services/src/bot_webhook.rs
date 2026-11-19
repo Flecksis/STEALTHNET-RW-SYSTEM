@@ -205,6 +205,7 @@ pub struct WebhookSnapshot {
 pub enum Inbound {
     Queued(i64),
     Duplicate(i64),
+    Sifted(i64),
     Malformed,
     Off,
     BadPath,
@@ -378,6 +379,15 @@ impl<'a> BotWebhook<'a> {
         else {
             return Ok(Inbound::Malformed);
         };
+        let probe = crate::bot_flood::Probe::from_json(&value);
+        let flood = self.services.settings().bot_flood;
+        if !self
+            .services
+            .bot_sieve()
+            .pass(&probe, &flood, std::time::Instant::now())
+        {
+            return Ok(Inbound::Sifted(update_id));
+        }
         let mut conn = self.services.store().conn().await?;
         let added: i64 = sqlx::query_scalar(
             "WITH added AS ( \

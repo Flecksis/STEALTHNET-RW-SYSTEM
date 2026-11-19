@@ -640,7 +640,10 @@ fn settings_place(action: &str) -> Option<TargetView> {
         | "settings.bot_updates"
         | "settings.bot_webhook_broken"
         | "settings.bot_webhook_restored"
-        | "settings.bot_webhook_fallback" => ("Бот", "/admin/settings/bot"),
+        | "settings.bot_webhook_fallback"
+        | "settings.bot_flood"
+        | "settings.bot_flood_blocked"
+        | "settings.bot_signups_limited" => ("Бот", "/admin/settings/bot"),
         "settings.bot_content" => ("Тексты бота", "/admin/settings/bot/texts"),
         "settings.bot_image" => ("Картинки бота", "/admin/settings/bot/images"),
         "settings.documents" => ("Документы", "/admin/settings/documents"),

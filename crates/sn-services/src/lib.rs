@@ -7,6 +7,7 @@ pub mod auth;
 pub mod autorenew;
 pub mod backups;
 pub mod bot_content;
+pub mod bot_flood;
 pub mod bot_layout;
 pub mod bot_runtime;
 pub mod bot_webhook;

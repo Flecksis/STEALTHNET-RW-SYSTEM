@@ -195,6 +195,28 @@ pub fn bot_webhook_text(action: &str, details: &serde_json::Value) -> String {
         )
     };
     match action {
+        crate::bot_flood::BLOCK_ACTION => flood_text(details, minutes),
+        crate::bot_flood::SIGNUPS_ACTION => {
+            let accepted = number("accepted").unwrap_or(0);
+            let refused = number("refused").unwrap_or(0);
+            let mut lines = vec!["<b>Наплыв новых аккаунтов в боте</b>".to_string()];
+            lines.push(format!(
+                "За минуту пытались зарегистрироваться {}, принято {accepted}, остальным бот предложил вернуться через минуту",
+                accepted + refused
+            ));
+            if let Some(limit) = number("limit") {
+                lines.push(format!(
+                    "Предел — {limit} новых в минуту, меняется в «Настройки → Бот»"
+                ));
+            }
+            if details.get("antibot").and_then(serde_json::Value::as_bool) == Some(true) {
+                lines.push(
+                    "Новых клиентов во время наплыва отмечает «Антибот»: пробный период и промо-ссылки — после проверки"
+                        .to_string(),
+                );
+            }
+            lines.join("\n")
+        }
         crate::bot_webhook::BROKEN_ACTION => {
             let mut lines = vec!["<b>Вебхук бота не получает обновления</b>".to_string()];
             let spell = number("minutes")
@@ -231,6 +253,60 @@ pub fn bot_webhook_text(action: &str, details: &serde_json::Value) -> String {
             )
         }
     }
+}
+
+fn flood_text(details: &serde_json::Value, minutes: impl Fn(i64) -> String) -> String {
+    let count = details
+        .get("blocked")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let length = details
+        .get("block_minutes")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(10);
+    let mut lines = vec![
+        "<b>Флуд в боте</b>".to_string(),
+        format!(
+            "За минуту бот заблокировал на {} {} {}: без ответа на сообщения, оплаты проходят",
+            minutes(length),
+            count,
+            format::plural_ru(count.unsigned_abs(), "аккаунт", "аккаунта", "аккаунтов")
+        ),
+    ];
+    let accounts = details
+        .get("accounts")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for account in &accounts {
+        let id = account.get("user").and_then(serde_json::Value::as_i64);
+        let Some(id) = id else {
+            continue;
+        };
+        let name = account
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|n| format!(" (@{})", escape(n)))
+            .unwrap_or_default();
+        let updates = account
+            .get("updates")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        lines.push(format!(
+            "id {id}{name}: заблокирован после {updates} {} за минуту",
+            format::plural_ru(
+                updates.unsigned_abs(),
+                "сообщения",
+                "сообщений",
+                "сообщений"
+            )
+        ));
+    }
+    let rest = count - accounts.len() as i64;
+    if rest > 0 {
+        lines.push(format!("…и ещё {rest}"));
+    }
+    lines.join("\n")
 }
 
 fn escape(raw: &str) -> String {
@@ -854,13 +930,15 @@ impl<'a> AlertsOps<'a> {
         }
         let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
             "SELECT action, details FROM audit_log \
-             WHERE id > $1 AND id <= $2 AND action IN ($3, $4, $5) ORDER BY id",
+             WHERE id > $1 AND id <= $2 AND action IN ($3, $4, $5, $6, $7) ORDER BY id",
         )
         .bind(cursor)
         .bind(newest)
         .bind(BROKEN_ACTION)
         .bind(RESTORED_ACTION)
         .bind(FALLBACK_ACTION)
+        .bind(crate::bot_flood::BLOCK_ACTION)
+        .bind(crate::bot_flood::SIGNUPS_ACTION)
         .fetch_all(conn.conn())
         .await?;
         drop(conn);
@@ -1733,5 +1811,37 @@ impl<'a> AlertsOps<'a> {
             out.push(more(rest));
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod bot_text_tests {
+    use super::*;
+
+    #[test]
+    fn уведомления_о_флуде_и_наплыве_читаются_по_русски() {
+        let blocked = bot_webhook_text(
+            crate::bot_flood::BLOCK_ACTION,
+            &serde_json::json!({
+                "blocked": 12,
+                "block_minutes": 10,
+                "accounts": [
+                    {"user": 6000001, "name": "spam<1>", "updates": 21},
+                    {"user": 6000002, "updates": 25}
+                ]
+            }),
+        );
+        assert_eq!(
+            blocked,
+            "<b>Флуд в боте</b>\nЗа минуту бот заблокировал на 10\u{a0}минут 12 аккаунтов: без ответа на сообщения, оплаты проходят\nid 6000001 (@spam&lt;1&gt;): заблокирован после 21 сообщения за минуту\nid 6000002: заблокирован после 25 сообщений за минуту\n…и ещё 10"
+        );
+        let signups = bot_webhook_text(
+            crate::bot_flood::SIGNUPS_ACTION,
+            &serde_json::json!({"accepted": 64, "refused": 1483, "limit": 300, "antibot": true}),
+        );
+        assert!(signups.starts_with("<b>Наплыв новых аккаунтов в боте</b>"));
+        assert!(signups.contains("пытались зарегистрироваться 1547, принято 64"));
+        assert!(signups.contains("Предел — 300 новых в минуту"));
+        assert!(signups.contains("«Антибот»"));
     }
 }

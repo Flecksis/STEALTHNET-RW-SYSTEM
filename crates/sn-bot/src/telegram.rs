@@ -1,6 +1,8 @@
+use crate::pacer::{Class, Pacer, SendLimits, sends};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sn_services::bot_webhook::ALLOWED_UPDATES;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub const DEFAULT_API: &str = "https://api.telegram.org";
@@ -329,6 +331,8 @@ pub struct Update {
     pub pre_checkout_query: Option<PreCheckoutQuery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget_query: Option<WidgetQuery>,
+    #[serde(skip)]
+    pub repeat: bool,
 }
 
 impl Update {
@@ -571,6 +575,7 @@ pub fn parse_update(value: serde_json::Value) -> Option<Update> {
                 callback_query: None,
                 pre_checkout_query: None,
                 widget_query: None,
+                repeat: false,
             })
         }
     }
@@ -580,7 +585,11 @@ pub struct TelegramApi {
     http: reqwest::Client,
     base: String,
     files: String,
+    pacer: Option<Arc<Pacer>>,
+    class: Class,
 }
+
+const PACED_RETRIES: u32 = 2;
 
 impl TelegramApi {
     pub fn new(api_base: &str, token: &str) -> Self {
@@ -593,7 +602,39 @@ impl TelegramApi {
                 .unwrap_or_default(),
             base: format!("{}/bot{}", api_base.trim_end_matches('/'), token),
             files: format!("{}/file/bot{}", api_base.trim_end_matches('/'), token),
+            pacer: None,
+            class: Class::Interactive,
         }
+    }
+
+    pub fn paced(api_base: &str, token: &str, limits: SendLimits) -> Self {
+        TelegramApi {
+            pacer: Some(crate::pacer::shared(api_base, token, limits)),
+            ..TelegramApi::new(api_base, token)
+        }
+    }
+
+    pub fn bulk(mut self) -> Self {
+        self.class = Class::Bulk;
+        self
+    }
+
+    pub fn pacer(&self) -> Option<&Arc<Pacer>> {
+        self.pacer.as_ref()
+    }
+
+    pub async fn send_spare(&self, chat_id: i64, text: &str) -> Result<bool, TelegramError> {
+        if let Some(pacer) = &self.pacer
+            && !pacer.try_acquire(Some(chat_id), self.class)
+        {
+            return Ok(false);
+        }
+        self.request::<Message>(
+            "sendMessage",
+            &Self::message_body(chat_id, &strip_tags(text), None, false),
+        )
+        .await
+        .map(|_| true)
     }
 
     pub async fn get_file(&self, file_id: &str) -> Result<FileInfo, TelegramError> {
@@ -668,10 +709,44 @@ impl TelegramApi {
         } else {
             "sendDocument"
         };
-        self.call_form(method, form).await
+        self.call_form(method, form, Some(chat_id)).await
     }
 
     pub async fn call<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        body: &serde_json::Value,
+    ) -> Result<T, TelegramError> {
+        let Some(pacer) = self.pacer.as_ref().filter(|_| sends(method)) else {
+            return self.request(method, body).await;
+        };
+        let chat = body.get("chat_id").and_then(serde_json::Value::as_i64);
+        let mut attempt = 0;
+        loop {
+            pacer.acquire(chat, self.class).await;
+            let result = self.request(method, body).await;
+            let wait = match &result {
+                Err(err) if attempt < PACED_RETRIES => err.retry_after(),
+                _ => None,
+            };
+            let Some(wait) = wait.map(Duration::from_secs) else {
+                return result;
+            };
+            if wait > pacer.max_pause() {
+                pacer.pause(wait);
+                return result;
+            }
+            tracing::warn!(
+                method,
+                wait_secs = wait.as_secs(),
+                "Telegram попросил подождать, повторим"
+            );
+            pacer.pause(wait);
+            attempt += 1;
+        }
+    }
+
+    async fn request<T: DeserializeOwned>(
         &self,
         method: &str,
         body: &serde_json::Value,
@@ -690,7 +765,11 @@ impl TelegramApi {
         &self,
         method: &str,
         form: reqwest::multipart::Form,
+        chat: Option<i64>,
     ) -> Result<T, TelegramError> {
+        if let Some(pacer) = self.pacer.as_ref().filter(|_| sends(method)) {
+            pacer.acquire(chat, self.class).await;
+        }
         let response = self
             .http
             .post(format!("{}/{method}", self.base))
@@ -751,7 +830,7 @@ impl TelegramApi {
                 if let Some(markup) = markup {
                     form = form.text("reply_markup", markup.to_string());
                 }
-                self.call_form("sendPhoto", form).await
+                self.call_form("sendPhoto", form, Some(chat_id)).await
             }
         }
     }
@@ -801,7 +880,8 @@ impl TelegramApi {
                 if let Some(markup) = markup {
                     form = form.text("reply_markup", markup.to_string());
                 }
-                self.call_form("editMessageMedia", form).await
+                self.call_form("editMessageMedia", form, Some(chat_id))
+                    .await
             }
         };
         match result {

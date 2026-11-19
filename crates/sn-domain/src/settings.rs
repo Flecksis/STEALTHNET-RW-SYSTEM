@@ -462,6 +462,85 @@ pub struct CoreSettings {
     pub languages: Languages,
     #[serde(default)]
     pub bot_updates: BotDelivery,
+    #[serde(default)]
+    pub bot_flood: FloodSettings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloodSettings {
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    #[serde(default = "FloodSettings::start_interval")]
+    pub start_interval_secs: u32,
+    #[serde(default = "FloodSettings::messages")]
+    pub messages_per_minute: u32,
+    #[serde(default = "FloodSettings::block_after")]
+    pub block_after: u32,
+    #[serde(default = "FloodSettings::block_minutes")]
+    pub block_minutes: u32,
+    #[serde(default = "FloodSettings::registrations")]
+    pub registrations_per_minute: u32,
+}
+
+impl FloodSettings {
+    pub const START_INTERVAL: (u32, u32) = (1, 60);
+    pub const MESSAGES: (u32, u32) = (5, 600);
+    pub const BLOCK_AFTER: (u32, u32) = (0, 1_000);
+    pub const BLOCK_MINUTES: (u32, u32) = (1, 1_440);
+    pub const REGISTRATIONS: (u32, u32) = (0, 100_000);
+
+    const fn start_interval() -> u32 {
+        3
+    }
+
+    const fn messages() -> u32 {
+        30
+    }
+
+    const fn block_after() -> u32 {
+        20
+    }
+
+    const fn block_minutes() -> u32 {
+        10
+    }
+
+    const fn registrations() -> u32 {
+        300
+    }
+
+    pub fn invalid_field(&self) -> Option<&'static str> {
+        let within = |value: u32, (min, max): (u32, u32)| (min..=max).contains(&value);
+        if !within(self.start_interval_secs, Self::START_INTERVAL) {
+            return Some("start_interval_secs");
+        }
+        if !within(self.messages_per_minute, Self::MESSAGES) {
+            return Some("messages_per_minute");
+        }
+        if !within(self.block_after, Self::BLOCK_AFTER) {
+            return Some("block_after");
+        }
+        if !within(self.block_minutes, Self::BLOCK_MINUTES) {
+            return Some("block_minutes");
+        }
+        if !within(self.registrations_per_minute, Self::REGISTRATIONS) {
+            return Some("registrations_per_minute");
+        }
+        None
+    }
+}
+
+impl Default for FloodSettings {
+    fn default() -> Self {
+        FloodSettings {
+            enabled: true,
+            start_interval_secs: Self::start_interval(),
+            messages_per_minute: Self::messages(),
+            block_after: Self::block_after(),
+            block_minutes: Self::block_minutes(),
+            registrations_per_minute: Self::registrations(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -584,6 +663,7 @@ impl Default for CoreSettings {
             client_access: ClientAccess::default(),
             languages: Languages::default(),
             bot_updates: BotDelivery::default(),
+            bot_flood: FloodSettings::default(),
         }
     }
 }
@@ -663,6 +743,7 @@ pub mod keys {
     pub const LANDING: &str = "core.landing";
     pub const LANGUAGES: &str = "core.languages";
     pub const BOT_UPDATES: &str = "bot.updates";
+    pub const BOT_FLOOD: &str = "bot.flood";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")

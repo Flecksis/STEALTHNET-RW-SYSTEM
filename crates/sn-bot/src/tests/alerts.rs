@@ -171,7 +171,7 @@ async fn уведомления_уходят_в_группу_по_темам() {
     assert!(
         checks
             .iter()
-            .any(|t| t.contains("Сюда будут приходить: сбои вебхука бота."))
+            .any(|t| t.contains("Сюда будут приходить: сбои вебхука и флуд в боте."))
     );
     assert!(checks.iter().all(|t| !t.contains("remnawave")));
     db.cleanup().await;

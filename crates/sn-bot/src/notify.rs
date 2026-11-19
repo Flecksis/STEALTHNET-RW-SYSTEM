@@ -526,6 +526,7 @@ pub fn render(
 
 pub struct NotifyHandler {
     api_base: String,
+    send: crate::SendLimits,
     cache: Mutex<Option<(String, Arc<TelegramApi>)>>,
 }
 
@@ -539,6 +540,7 @@ impl NotifyHandler {
     pub fn new(config: &BotConfig) -> Self {
         NotifyHandler {
             api_base: config.api_base.clone(),
+            send: config.send,
             cache: Mutex::new(None),
         }
     }
@@ -553,7 +555,7 @@ impl NotifyHandler {
         {
             return api.clone();
         }
-        let api = Arc::new(TelegramApi::new(&self.api_base, token));
+        let api = Arc::new(TelegramApi::paced(&self.api_base, token, self.send).bulk());
         *cache = Some((token.to_string(), api.clone()));
         api
     }

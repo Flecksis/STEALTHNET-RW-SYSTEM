@@ -32,7 +32,9 @@ impl TelegramSender {
         {
             return api.clone();
         }
-        let api = Arc::new(TelegramApi::new(&self.api_base, token));
+        let api = Arc::new(
+            TelegramApi::paced(&self.api_base, token, crate::SendLimits::default()).bulk(),
+        );
         *cache = Some((token.to_string(), api.clone()));
         api
     }

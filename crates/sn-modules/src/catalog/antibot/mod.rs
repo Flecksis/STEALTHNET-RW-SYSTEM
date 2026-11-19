@@ -973,6 +973,31 @@ pub async fn record_no_bonus(
     Ok(())
 }
 
+pub async fn note_surge(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    per_minute: u32,
+) -> Result<bool, ModuleError> {
+    let mut conn = ctx.store.conn().await?;
+    if active(&mut conn).await?.is_none() {
+        return Ok(false);
+    }
+    let premium = store::telegram(&mut conn, client_id)
+        .await?
+        .is_some_and(|telegram| telegram.premium);
+    if premium {
+        return Ok(false);
+    }
+    remember(
+        &mut conn,
+        client_id,
+        &[Signal::Surge],
+        &serde_json::json!({ "surge": per_minute }),
+    )
+    .await?;
+    Ok(true)
+}
+
 pub async fn on_registered(ctx: &ModuleContext, client_id: ClientId) -> Result<(), ModuleError> {
     let mut conn = ctx.store.conn().await?;
     let Some(settings) = active(&mut conn).await? else {

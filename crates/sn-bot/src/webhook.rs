@@ -287,6 +287,7 @@ pub async fn take_batch(services: &Services, bot: i64) -> Result<Vec<Update>, Bo
                 callback_query: None,
                 pre_checkout_query: None,
                 widget_query: None,
+                repeat: false,
             }))
         })
         .collect();

@@ -553,6 +553,12 @@ pub fn default(key: &str) -> Option<&'static str> {
         "common.btn.cancel" => "Cancel",
         "common.btn.subscription" => "Subscription",
         "common.blocked" => "Your account is blocked. Please contact support.",
+        "common.flood" => {
+            "Too many messages in a row. The bot will stop answering for a little while, please try again later."
+        }
+        "common.busy" => {
+            "Too many new users are coming to the bot right now. Please try again in a minute."
+        }
         _ => return None,
     })
 }

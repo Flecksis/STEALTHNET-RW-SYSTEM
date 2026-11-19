@@ -87,6 +87,8 @@ struct Inner {
     runtime: RwLock<Runtime>,
     bot: BotRuntime,
     bot_updates: tokio::sync::Notify,
+    flood: crate::bot_flood::FloodGate,
+    sieve: crate::bot_flood::Sieve,
     pause: crate::pause::PauseGate,
     backups: crate::backups::Runtime,
     squad_countries: crate::squad_countries::SquadCountries,
@@ -133,6 +135,8 @@ impl Services {
                 runtime: RwLock::new(runtime),
                 bot: BotRuntime::default(),
                 bot_updates: tokio::sync::Notify::new(),
+                flood: crate::bot_flood::FloodGate::default(),
+                sieve: crate::bot_flood::Sieve::default(),
                 pause: crate::pause::PauseGate::default(),
                 backups: crate::backups::Runtime::default(),
                 squad_countries: crate::squad_countries::SquadCountries::default(),
@@ -229,6 +233,14 @@ impl Services {
 
     pub fn bot_updates_signal(&self) -> &tokio::sync::Notify {
         &self.inner.bot_updates
+    }
+
+    pub fn bot_flood(&self) -> &crate::bot_flood::FloodGate {
+        &self.inner.flood
+    }
+
+    pub fn bot_sieve(&self) -> &crate::bot_flood::Sieve {
+        &self.inner.sieve
     }
 
     pub fn bot_webhook(&self) -> crate::bot_webhook::BotWebhook<'_> {

@@ -18,10 +18,13 @@ use sn_domain::money::Money;
 use sn_domain::settings::CoreSettings;
 use sn_domain::subscription::Subscription;
 use sn_modules::catalog::utm::clicks::ClickChannel;
-use sn_modules::catalog::{broadcast, gifts as gift_module, options, promo, promolinks, referral};
+use sn_modules::catalog::{
+    antibot, broadcast, gifts as gift_module, options, promo, promolinks, referral,
+};
 use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
 use sn_services::bot_content::{BotContent, Document};
+use sn_services::bot_flood::Signup;
 use sn_services::bot_layout::Install;
 use sn_services::subscriptions::SubscriptionView;
 use sn_store::Db;
@@ -40,6 +43,7 @@ pub struct Screen {
     pub keyboard: Keyboard,
     pub section: Option<Section>,
     pub menu: bool,
+    pub spare: bool,
 }
 
 impl Screen {
@@ -49,12 +53,20 @@ impl Screen {
             keyboard: Keyboard::new(),
             section: None,
             menu: false,
+            spare: false,
         }
     }
 
     pub fn keyboard(mut self, keyboard: Keyboard) -> Self {
         self.keyboard = keyboard;
         self
+    }
+
+    pub fn spare(text: impl Into<String>) -> Self {
+        Screen {
+            spare: true,
+            ..Screen::new(text)
+        }
     }
 
     pub fn notice(text: impl Into<String>) -> Self {
@@ -103,6 +115,7 @@ pub struct Turn<'a> {
     pub session: Session,
     pub locale: Locale,
     pub secret_left: bool,
+    pub repeat: bool,
 }
 
 impl Turn<'_> {
@@ -167,6 +180,7 @@ pub async fn handle_update(ctx: &BotCtx, update: Update) {
 }
 
 async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
+    let repeat = update.repeat;
     if let Some(query) = update.widget_query {
         return gram_wallet::on_query(ctx, query).await;
     }
@@ -234,7 +248,7 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
             None => Action::Text(text.trim().to_string()),
         },
     };
-    run_with(ctx, &user, target, session, action, secret_left).await
+    run_with(ctx, &user, target, session, action, (secret_left, repeat)).await
 }
 
 async fn forget(ctx: &BotCtx, chat_id: i64, message_id: i64) -> bool {
@@ -284,7 +298,7 @@ async fn run(
     session: Session,
     action: Action,
 ) -> Result<(), BotError> {
-    run_with(ctx, user, target, session, action, false).await
+    run_with(ctx, user, target, session, action, (false, false)).await
 }
 
 async fn run_with(
@@ -293,7 +307,7 @@ async fn run_with(
     target: Target,
     session: Session,
     action: Action,
-    secret_left: bool,
+    (secret_left, repeat): (bool, bool),
 ) -> Result<(), BotError> {
     let locale = user_locale(&ctx.services, user).await?;
     let mut turn = Turn {
@@ -303,8 +317,15 @@ async fn run_with(
         session,
         locale,
         secret_left,
+        repeat,
     };
     let screen = lang::scope(locale, process(&mut turn, action)).await?;
+    if screen.spare {
+        if let Err(err) = ctx.api.send_spare(target.chat_id, &screen.text).await {
+            tracing::debug!(error = %err, "ответ при наплыве не отправлен");
+        }
+        return Ok(());
+    }
     if !screen.text.is_empty() {
         ctx.show(target, &screen).await?;
     }
@@ -325,7 +346,7 @@ async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError
         Action::Start(param) => param.clone(),
         _ => None,
     };
-    if !replayed {
+    if !replayed && !turn.repeat {
         turn.services()
             .count_utm_click(ClickChannel::Bot, start_param.as_deref())
             .await;
@@ -411,14 +432,46 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
         .map(str::to_string)
         .or_else(|| turn.session.pending_start.take());
     turn.session.pending_start = None;
-    let (client, _) = services
+    let flood = services.settings().bot_flood;
+    let mut signup = None;
+    let entered = services
         .clients()
-        .ensure_telegram(
+        .ensure_telegram_admitted(
             &profile(turn.user),
             RegistrationSource::Bot,
             param.as_deref(),
+            || {
+                let verdict = services
+                    .bot_flood()
+                    .signup(&flood, std::time::Instant::now());
+                signup = Some(verdict);
+                verdict != Signup::Refused
+            },
         )
         .await?;
+    let Some((client, created)) = entered else {
+        return Ok(Gate::Stop(Screen::spare(ui::text(
+            &content,
+            "common.busy",
+            &[],
+        ))));
+    };
+    if created
+        && let Some(Signup::Allowed {
+            surge: true,
+            per_minute,
+        }) = signup
+    {
+        match antibot::note_surge(&services.module_context(), client.id, per_minute).await {
+            Ok(true) => tracing::info!(
+                client = client.id.0,
+                per_minute,
+                "новый клиент пришёл во время наплыва и отмечен антиботом"
+            ),
+            Ok(false) => {}
+            Err(err) => tracing::warn!(error = %err, "отметка наплыва не сохранена"),
+        }
+    }
     if client.is_blocked() {
         turn.session = Session::default();
         return Ok(Gate::Stop(Screen::new(ui::text(

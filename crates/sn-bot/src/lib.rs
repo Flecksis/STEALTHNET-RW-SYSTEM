@@ -9,9 +9,11 @@ mod extras;
 mod gifts;
 pub mod gram_wallet;
 pub mod handler;
+pub mod lanes;
 pub mod login;
 pub mod media;
 pub mod notify;
+pub mod pacer;
 pub mod photos;
 pub mod session;
 pub mod stars;
@@ -25,19 +27,21 @@ pub mod webhook;
 mod tests;
 
 use handler::BotCtx;
+use lanes::Lanes;
 use sn_domain::lang;
 use sn_domain::settings::keys;
 use sn_modules::ModuleError;
+use sn_services::bot_flood::{Kind, Probe, Refusal, Verdict};
 use sn_services::{BotProblem, BotState, ServiceError, Services};
 use sn_store::{Db, StoreError};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub use handler::handle_update;
 pub use notify::NotifyHandler;
+pub use pacer::SendLimits;
 pub use telegram::{BotUser, TelegramApi, TelegramError, Update};
 
 pub const OFFSET_KEY: &str = "telegram.offset";
@@ -51,6 +55,7 @@ const UNREACHABLE_AFTER: u32 = 2;
 const LEASE_CHECK: Duration = Duration::from_secs(30);
 const PURGE_EVERY: Duration = Duration::from_secs(600);
 const FIRST_CHECK: Duration = Duration::from_secs(20);
+const SIGNUPS_REPORT_EVERY: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub struct BotConfig {
@@ -65,6 +70,10 @@ pub struct BotConfig {
     pub webhook_alert_after: Duration,
     pub webhook_fallback_after: Duration,
     pub queue_recheck: Duration,
+    pub send: SendLimits,
+    pub queue_high: usize,
+    pub queue_low: usize,
+    pub flood_report_every: Duration,
 }
 
 impl Default for BotConfig {
@@ -81,6 +90,10 @@ impl Default for BotConfig {
             webhook_alert_after: Duration::from_secs(5 * 60),
             webhook_fallback_after: Duration::from_secs(10 * 60),
             queue_recheck: Duration::from_secs(2),
+            send: SendLimits::default(),
+            queue_high: 512,
+            queue_low: 64,
+            flood_report_every: Duration::from_secs(60),
         }
     }
 }
@@ -116,10 +129,7 @@ pub struct Bot {
     config: BotConfig,
 }
 
-pub fn shard_for(chat_key: i64, workers: usize) -> usize {
-    let workers = workers.max(1) as i64;
-    chat_key.rem_euclid(workers) as usize
-}
+pub use lanes::shard_for;
 
 fn is_webhook_conflict(description: &str) -> bool {
     description.to_ascii_lowercase().contains("webhook")
@@ -326,42 +336,69 @@ async fn sync_menu(api: &TelegramApi, services: &Services, applied: &mut Option<
     }
 }
 
-fn spawn_workers(ctx: &BotCtx, count: usize) -> (Vec<mpsc::Sender<Update>>, Vec<JoinHandle<()>>) {
-    let mut senders = Vec::with_capacity(count);
-    let mut handles = Vec::with_capacity(count);
-    for _ in 0..count.max(1) {
-        let (tx, mut rx) = mpsc::channel::<Update>(64);
-        let ctx = ctx.clone();
-        handles.push(tokio::spawn(async move {
-            while let Some(update) = rx.recv().await {
-                let _work = ctx.services.pause_gate().enter().await;
-                handle_update(&ctx, update).await;
-            }
-        }));
-        senders.push(tx);
-    }
-    (senders, handles)
+fn spawn_workers(ctx: &BotCtx, lanes: &Arc<Lanes>) -> Vec<JoinHandle<()>> {
+    (0..lanes.len())
+        .map(|index| {
+            let ctx = ctx.clone();
+            let lanes = lanes.clone();
+            tokio::spawn(async move {
+                while let Some(update) = lanes.next(index).await {
+                    let _work = ctx.services.pause_gate().enter().await;
+                    handle_update(&ctx, update).await;
+                }
+            })
+        })
+        .collect()
 }
 
-async fn dispatch(ctx: &BotCtx, senders: &[mpsc::Sender<Update>], update: Update) {
-    if update.pre_checkout_query.is_some() {
-        let ctx = ctx.clone();
-        tokio::spawn(async move {
-            let _work = ctx.services.pause_gate().enter().await;
-            handle_update(&ctx, update).await
-        });
-        return;
+pub fn probe(update: &Update) -> Probe {
+    let simple = |user: &BotUser, kind: Kind| Probe {
+        user: Some(user.id),
+        name: user.username.clone(),
+        kind,
+        start: None,
+    };
+    if let Some(query) = &update.pre_checkout_query {
+        return simple(&query.from, Kind::Payment);
     }
-    let shard = shard_for(update.chat_key(), senders.len());
-    if senders[shard].send(update).await.is_err() {
-        tracing::warn!("обработчик апдейтов остановился");
+    if let Some(callback) = &update.callback_query {
+        return simple(&callback.from, Kind::Button);
     }
+    if let Some(query) = &update.widget_query {
+        return simple(&query.from, Kind::Button);
+    }
+    let Some(message) = &update.message else {
+        return Probe {
+            user: None,
+            name: None,
+            kind: Kind::Command,
+            start: None,
+        };
+    };
+    if message.successful_payment.is_some() || message.refunded_payment.is_some() {
+        return Probe {
+            user: message.from.as_ref().map(|u| u.id),
+            name: None,
+            kind: Kind::Payment,
+            start: None,
+        };
+    }
+    Probe::message(
+        message
+            .from
+            .as_ref()
+            .map(|u| u.id)
+            .or(Some(message.chat.id)),
+        message.from.as_ref().and_then(|u| u.username.clone()),
+        message.text.as_deref(),
+        message.has_photo() || message.document.is_some(),
+    )
 }
 
 struct Live<'a> {
     api: Arc<TelegramApi>,
     ctx: BotCtx,
-    senders: Vec<mpsc::Sender<Update>>,
+    lanes: Arc<Lanes>,
     me: BotUser,
     queue: i64,
     token: &'a str,
@@ -370,6 +407,8 @@ struct Live<'a> {
     commands: Option<sn_domain::client::Languages>,
     next_lease: tokio::time::Instant,
     next_purge: tokio::time::Instant,
+    next_report: tokio::time::Instant,
+    signups_reported: Option<tokio::time::Instant>,
 }
 
 impl Live<'_> {
@@ -448,7 +487,11 @@ impl Bot {
     ) -> Result<Stop, BotError> {
         let runtime = self.services.bot_runtime();
         let takeover = runtime.take_takeover();
-        let api = Arc::new(TelegramApi::new(&self.config.api_base, token));
+        let api = Arc::new(TelegramApi::paced(
+            &self.config.api_base,
+            token,
+            self.config.send,
+        ));
         let me = api.get_me().await?;
         let previous = remembered_username(&self.services).await?;
         let same_bot = previous.is_some() && previous == me.username;
@@ -508,7 +551,12 @@ impl Bot {
             api: api.clone(),
             username: me.username.clone(),
         };
-        let (senders, handles) = spawn_workers(&ctx, self.config.workers);
+        let lanes = Arc::new(Lanes::new(
+            self.config.workers,
+            self.config.queue_high,
+            self.config.queue_low,
+        ));
+        let handles = spawn_workers(&ctx, &lanes);
         let keeper_stop = cancel.child_token();
         let keeper_guard = keeper_stop.clone().drop_guard();
         let keeper = tokio::spawn(
@@ -537,7 +585,7 @@ impl Bot {
         let mut live = Live {
             api,
             ctx,
-            senders,
+            lanes: lanes.clone(),
             me,
             queue,
             token,
@@ -546,6 +594,8 @@ impl Bot {
             commands,
             next_lease: now + LEASE_CHECK,
             next_purge: now,
+            next_report: now + self.config.flood_report_every,
+            signups_reported: None,
         };
         runtime.set(live.running(live.since));
         let outcome = match target {
@@ -559,6 +609,7 @@ impl Bot {
             }
         };
         drop(live);
+        lanes.close();
         drop(keeper_guard);
         drop(alerts_guard);
         for handle in handles {
@@ -591,7 +642,7 @@ impl Bot {
                 Ok(updates) => {
                     let count = updates.len();
                     for update in updates {
-                        dispatch(&live.ctx, &live.senders, update).await;
+                        self.dispatch(live, update).await;
                     }
                     total += count;
                     if count < webhook::BATCH as usize {
@@ -606,12 +657,148 @@ impl Bot {
         }
     }
 
+    async fn dispatch(&self, live: &Live<'_>, mut update: Update) {
+        if update.pre_checkout_query.is_some() {
+            let ctx = live.ctx.clone();
+            tokio::spawn(async move {
+                let _work = ctx.services.pause_gate().enter().await;
+                handle_update(&ctx, update).await
+            });
+            return;
+        }
+        let probe = probe(&update);
+        let settings = self.services.settings().bot_flood;
+        match self
+            .services
+            .bot_flood()
+            .check(&probe, &settings, std::time::Instant::now())
+        {
+            Verdict::Admit { lane, fresh } => {
+                update.repeat = !fresh;
+                live.lanes.push(update, lane).await;
+            }
+            Verdict::Refuse(Refusal::JustBlocked(blocked)) => {
+                tracing::info!(
+                    user = blocked.user,
+                    updates = blocked.updates,
+                    minutes = settings.block_minutes,
+                    "аккаунт временно заблокирован за флуд"
+                );
+                let private = update
+                    .message
+                    .as_ref()
+                    .map(|m| m.chat.is_private())
+                    .unwrap_or(true);
+                if private {
+                    let ctx = live.ctx.clone();
+                    let chat = blocked.user;
+                    tokio::spawn(async move {
+                        let content = ctx
+                            .services
+                            .bot_content_in(ctx.services.settings().languages.fallback());
+                        let text = ui::text(&content, "common.flood", &[]);
+                        if let Err(err) = ctx.api.send_spare(chat, &text).await {
+                            tracing::debug!(error = %err, "предупреждение о флуде не отправлено");
+                        }
+                    });
+                }
+            }
+            Verdict::Refuse(_) => {}
+        }
+    }
+
+    async fn report_flood(&self, live: &mut Live<'_>) {
+        let report = self.services.bot_flood().report(std::time::Instant::now());
+        let lanes = live.lanes.stats();
+        let settings = self.services.settings().bot_flood;
+        let hooks = self.services.bot_webhook();
+        if report.blocked_new > 0 {
+            let accounts: Vec<serde_json::Value> = report
+                .blocked
+                .iter()
+                .filter_map(|b| serde_json::to_value(b).ok())
+                .collect();
+            if let Err(err) = hooks
+                .incident(
+                    sn_services::bot_flood::BLOCK_ACTION,
+                    serde_json::json!({
+                        "blocked": report.blocked_new,
+                        "block_minutes": settings.block_minutes,
+                        "accounts": accounts,
+                    }),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "блокировки за флуд не записаны");
+            }
+        }
+        let now = tokio::time::Instant::now();
+        let quiet = live
+            .signups_reported
+            .is_none_or(|at| now.saturating_duration_since(at) >= SIGNUPS_REPORT_EVERY);
+        if report.refused > 0 && quiet {
+            live.signups_reported = Some(now);
+            let antibot = self
+                .services
+                .modules()
+                .is_enabled(sn_domain::module::ModuleId::Antibot);
+            if let Err(err) = hooks
+                .incident(
+                    sn_services::bot_flood::SIGNUPS_ACTION,
+                    serde_json::json!({
+                        "accepted": report.signups,
+                        "refused": report.refused,
+                        "limit": settings.registrations_per_minute,
+                        "antibot": antibot,
+                    }),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "наплыв регистраций не записан");
+            }
+        }
+        if report.dropped > 0 || report.refused > 0 || lanes.overflow > 0 {
+            tracing::info!(
+                admitted = report.admitted,
+                dropped = report.dropped,
+                overflow = lanes.overflow,
+                blocked_new = report.blocked_new,
+                blocked_now = report.blocked_now,
+                signups = report.signups,
+                refused = report.refused,
+                queue_peak = lanes.peak,
+                users = report.users,
+                "защита от флуда за минуту"
+            );
+        }
+        let mut snapshot = sn_services::bot_flood::FloodSnapshot::of(&report, self.services.now());
+        snapshot.dropped += lanes.overflow;
+        let saved = match serde_json::to_value(&snapshot) {
+            Ok(value) => match self.services.store().conn().await {
+                Ok(mut conn) => conn
+                    .bot_state()
+                    .set(sn_services::bot_flood::STATE_KEY, &value)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(err) => Err(err.to_string()),
+            },
+            Err(err) => Err(err.to_string()),
+        };
+        if let Err(err) = saved {
+            tracing::debug!(error = %err, "сводка защиты от флуда не сохранена");
+        }
+    }
+
     async fn upkeep(
         &self,
         live: &mut Live<'_>,
         lease: &mut webhook::Lease,
     ) -> Result<(), BotError> {
         let now = tokio::time::Instant::now();
+        if now >= live.next_report {
+            live.next_report = now + self.config.flood_report_every;
+            self.report_flood(live).await;
+        }
         if now >= live.next_lease {
             lease.alive().await?;
             live.next_lease = now + LEASE_CHECK;
@@ -688,7 +875,7 @@ impl Bot {
                     let mut next = offset.unwrap_or(0);
                     for update in updates {
                         next = next.max(update.update_id + 1);
-                        dispatch(&live.ctx, &live.senders, update).await;
+                        self.dispatch(live, update).await;
                     }
                     offset = Some(next);
                     if let Err(err) = save_offset(&self.services, live.me.id, next).await {

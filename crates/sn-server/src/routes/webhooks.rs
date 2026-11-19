@@ -312,6 +312,10 @@ async fn telegram_update(
             tracing::debug!(update_id, "повтор обновления Telegram пропущен");
             StatusCode::OK.into_response()
         }
+        Inbound::Sifted(update_id) => {
+            tracing::debug!(update_id, "обновление Telegram отброшено: флуд");
+            StatusCode::OK.into_response()
+        }
         Inbound::Malformed => {
             tracing::warn!(
                 bytes = body.len(),

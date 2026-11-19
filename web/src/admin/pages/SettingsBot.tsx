@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { NBSP, plural, timeHM } from '../../lib/format';
 import '../form.css';
+import { BotFlood, floodChanged, floodForm, floodInvalid, floodSettings, type FloodForm, type FloodSettings, type FloodStats } from './BotFlood';
 import { BotTabs } from './BotTabs';
 import { BotUpdates, type Updates, type UpdatesMode } from './BotUpdates';
 import { SettingsLayout } from './SettingsLayout';
@@ -15,7 +16,14 @@ type BotStatus =
   | { state: 'running'; username: string | null; since: string; last_ok_at: string }
   | { state: 'failed'; problem: Problem; detail: string | null; at: string; retry_at: string | null };
 
-type Bot = { token_set: boolean; token_from_env: boolean; username: string | null; status: BotStatus; updates: Updates };
+type Bot = {
+  token_set: boolean;
+  token_from_env: boolean;
+  username: string | null;
+  status: BotStatus;
+  updates: Updates;
+  flood: { settings: FloodSettings; stats: FloodStats | null };
+};
 
 type Tone = 'ok' | 'quiet' | 'bad' | 'warn';
 
@@ -136,6 +144,7 @@ export function SettingsBot() {
   const [replacing, setReplacing] = useState(false);
   const [username, setUsername] = useState('');
   const [mode, setMode] = useState<UpdatesMode>('polling');
+  const [flood, setFlood] = useState<FloodForm | null>(null);
   const [status, setStatus] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [askTakeOver, setAskTakeOver] = useState(false);
@@ -143,6 +152,7 @@ export function SettingsBot() {
   const [fastUntil, setFastUntil] = useState(0);
   const touched = useRef(false);
   const modeTouched = useRef(false);
+  const floodTouched = useRef(false);
 
   const apply = useCallback((data: Bot) => {
     setBot(data);
@@ -152,6 +162,9 @@ export function SettingsBot() {
     if (!modeTouched.current) {
       setMode(data.updates.mode);
     }
+    if (!floodTouched.current) {
+      setFlood(floodForm(data.flood.settings));
+    }
   }, []);
 
   const load = useCallback(async () => {
@@ -159,6 +172,7 @@ export function SettingsBot() {
       const data = await api<Bot>('/api/admin/settings/bot');
       touched.current = false;
       modeTouched.current = false;
+      floodTouched.current = false;
       apply(data);
       setToken('');
       setReplacing(false);
@@ -210,7 +224,9 @@ export function SettingsBot() {
   const nameBad = clean !== '' && !/^[A-Za-z0-9_]{5,32}$/.test(clean);
   const tokenBad = token.trim() !== '' && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(token.trim());
   const modeChanged = mode !== bot.updates.mode;
-  const dirty = token.trim() !== '' || clean !== (bot.username ?? '') || modeChanged;
+  const floodDirty = flood !== null && floodChanged(flood, bot.flood.settings);
+  const floodBad = flood !== null && floodInvalid(flood);
+  const dirty = token.trim() !== '' || clean !== (bot.username ?? '') || modeChanged || floodDirty;
   const editingToken = !bot.token_set || replacing;
   const shown = describe(bot.status);
 
@@ -218,14 +234,14 @@ export function SettingsBot() {
     if (!dirty || busy) {
       return;
     }
-    if (nameBad || tokenBad) {
+    if (nameBad || tokenBad || floodBad) {
       setStatus({ text: 'Исправьте поля, отмеченные красным', bad: true });
       return;
     }
     setBusy(true);
     setStatus(null);
     try {
-      const body: Record<string, string> = {};
+      const body: Record<string, unknown> = {};
       if (token.trim()) {
         body.token = token.trim();
       }
@@ -234,6 +250,9 @@ export function SettingsBot() {
       }
       if (modeChanged) {
         body.updates = mode;
+      }
+      if (flood && floodDirty) {
+        body.flood = floodSettings(flood);
       }
       await api('/api/admin/settings/bot', { method: 'PUT', body });
       setFastUntil(Date.now() + FAST_FOR_MS);
@@ -419,6 +438,19 @@ export function SettingsBot() {
         onDismiss={() => void dismiss()}
       />
 
+      {flood ? (
+        <BotFlood
+          form={flood}
+          stats={bot.flood.stats}
+          busy={busy}
+          onChange={(patch) => {
+            floodTouched.current = true;
+            setFlood((prev) => (prev ? { ...prev, ...patch } : prev));
+            setStatus(null);
+          }}
+        />
+      ) : null}
+
       <div className="save-row">
         <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
           {busy ? 'Сохраняем…' : 'Сохранить'}
@@ -430,10 +462,12 @@ export function SettingsBot() {
           onClick={() => {
             touched.current = false;
             modeTouched.current = false;
+            floodTouched.current = false;
             setToken('');
             setReplacing(false);
             setUsername(bot.username ?? '');
             setMode(bot.updates.mode);
+            setFlood(floodForm(bot.flood.settings));
             setStatus(null);
           }}
         >

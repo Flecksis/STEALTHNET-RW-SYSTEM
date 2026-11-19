@@ -19,10 +19,11 @@ pub enum Signal {
     EmailAlias,
     SelfInvite,
     MassInvites,
+    Surge,
 }
 
 impl Signal {
-    pub const ALL: [Signal; 8] = [
+    pub const ALL: [Signal; 9] = [
         Signal::YoungAccount,
         Signal::NoUsername,
         Signal::Burst,
@@ -31,6 +32,7 @@ impl Signal {
         Signal::EmailAlias,
         Signal::SelfInvite,
         Signal::MassInvites,
+        Signal::Surge,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -43,6 +45,7 @@ impl Signal {
             Signal::EmailAlias => "email_alias",
             Signal::SelfInvite => "self_invite",
             Signal::MassInvites => "mass_invites",
+            Signal::Surge => "surge",
         }
     }
 
@@ -56,6 +59,7 @@ impl Signal {
             Signal::EmailAlias => "почта — вариант адреса другого клиента",
             Signal::SelfInvite => "пригласил сам себя",
             Signal::MassInvites => "массовые приглашения с новых аккаунтов",
+            Signal::Surge => "регистрация во время наплыва новых аккаунтов",
         }
     }
 
@@ -70,7 +74,7 @@ impl Signal {
     pub const fn from_telegram(self) -> bool {
         matches!(
             self,
-            Signal::YoungAccount | Signal::NoUsername | Signal::Burst
+            Signal::YoungAccount | Signal::NoUsername | Signal::Burst | Signal::Surge
         )
     }
 }

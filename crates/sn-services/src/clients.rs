@@ -337,6 +337,18 @@ impl<'a> ClientOps<'a> {
         source: RegistrationSource,
         start_param: Option<&str>,
     ) -> ServiceResult<(Client, bool)> {
+        self.ensure_telegram_admitted(profile, source, start_param, || true)
+            .await?
+            .ok_or_else(|| ServiceError::Internal("регистрация не допущена".into()))
+    }
+
+    pub async fn ensure_telegram_admitted(
+        &self,
+        profile: &TelegramProfile,
+        source: RegistrationSource,
+        start_param: Option<&str>,
+        admit: impl FnOnce() -> bool + Send,
+    ) -> ServiceResult<Option<(Client, bool)>> {
         let identity = NewIdentity::telegram(profile);
         {
             let mut conn = self.services.store().conn().await?;
@@ -348,7 +360,7 @@ impl<'a> ClientOps<'a> {
                 conn.clients()
                     .update_identity_meta(IdentityKind::Telegram, &identity.value, &identity.meta)
                     .await?;
-                return Ok((client, false));
+                return Ok(Some((client, false)));
             }
         }
         let mut tx = self.services.store().begin().await?;
@@ -362,7 +374,11 @@ impl<'a> ClientOps<'a> {
                 .update_identity_meta(IdentityKind::Telegram, &identity.value, &identity.meta)
                 .await?;
             tx.commit().await?;
-            return Ok((client, false));
+            return Ok(Some((client, false)));
+        }
+        if !admit() {
+            tx.rollback().await?;
+            return Ok(None);
         }
         let client = tx
             .clients()
@@ -385,7 +401,7 @@ impl<'a> ClientOps<'a> {
             })
             .await?;
         tx.commit().await?;
-        Ok((client, true))
+        Ok(Some((client, true)))
     }
 
     pub async fn card(&self, id: ClientId) -> ServiceResult<ClientCard> {

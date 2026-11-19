@@ -291,3 +291,120 @@ async fn вебхук_не_включается_без_адреса_https_и_с_
     );
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn поток_от_одного_аккаунта_не_доходит_до_базы_а_оплаты_доходят() {
+    let Some(h) = hook_http(Some("https://panel.example.com"), None).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/bot",
+            &owner,
+            json!({ "updates": "webhook" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let keys = h.services().bot_webhook_keys().unwrap();
+    let (path, token) = (keys.path_segment(), keys.header_token());
+    let started = std::time::Instant::now();
+    for id in 1..=500 {
+        assert_eq!(
+            deliver(&h, &path, Some(&token), update(id)).await,
+            StatusCode::OK
+        );
+    }
+    let payment = json!({
+        "update_id": 1_000,
+        "message": {
+            "message_id": 1_000, "from": {"id": 9001, "is_bot": false, "first_name": "Ксения"},
+            "chat": {"id": 9001, "type": "private"}, "date": 1,
+            "successful_payment": {"currency": "XTR", "total_amount": 350,
+                "invoice_payload": "p", "telegram_payment_charge_id": "charge-1"}
+        }
+    });
+    assert_eq!(
+        deliver(&h, &path, Some(&token), payment.to_string().into_bytes()).await,
+        StatusCode::OK
+    );
+    let elapsed = started.elapsed().as_secs_f64();
+    let rows = queued(&h).await;
+    let allowed = sn_services::bot_flood::SIEVE_BURST + 3.0 * elapsed + 2.0;
+    assert!(
+        (rows.len() as f64) <= allowed,
+        "в очередь попало {} обновлений из 500 за {elapsed:.1} с",
+        rows.len()
+    );
+    assert!(rows.iter().any(|(_, id, _)| *id == 1_000), "оплата принята");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn защита_от_флуда_настраивается_в_пределах() {
+    let Some(h) = hook_http(Some("https://panel.example.com"), None).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    let (status, body) = h.get("/api/admin/settings/bot", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["flood"]["settings"],
+        json!({
+            "enabled": true, "start_interval_secs": 3, "messages_per_minute": 30,
+            "block_after": 20, "block_minutes": 10, "registrations_per_minute": 300
+        })
+    );
+    assert!(body["flood"]["stats"].is_null());
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/bot",
+            &owner,
+            json!({ "flood": {
+                "enabled": true, "start_interval_secs": 3, "messages_per_minute": 3,
+                "block_after": 20, "block_minutes": 10, "registrations_per_minute": 300
+            }}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("messages_per_minute")
+    );
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/bot",
+            &owner,
+            json!({ "flood": {
+                "enabled": true, "start_interval_secs": 5, "messages_per_minute": 60,
+                "block_after": 20, "block_minutes": 30, "registrations_per_minute": 0
+            }}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["flood"]["settings"]["messages_per_minute"], 60);
+    assert_eq!(h.services().settings().bot_flood.block_minutes, 30);
+    let mut conn = h.services().store().conn().await.unwrap();
+    let details: Value = sqlx::query_scalar(
+        "SELECT details FROM audit_log WHERE action = 'settings.bot_flood' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(
+        details,
+        json!({
+            "start_interval_secs": 5, "start_interval_secs_before": 3,
+            "messages_per_minute": 60, "messages_per_minute_before": 30,
+            "block_minutes": 30, "block_minutes_before": 10,
+            "registrations_per_minute": 0, "registrations_per_minute_before": 300
+        })
+    );
+    drop(conn);
+    h.db.cleanup().await;
+}

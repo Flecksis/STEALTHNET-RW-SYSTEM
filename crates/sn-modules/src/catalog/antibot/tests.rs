@@ -453,3 +453,56 @@ async fn журнал_принимает_все_виды_срабатывани�
     drop(conn);
     db.cleanup().await;
 }
+
+async fn telegram_client(store: &sn_store::Store, telegram_id: i64, premium: bool) -> ClientId {
+    let id = client(store).await;
+    let mut conn = store.conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            id,
+            &sn_domain::client::NewIdentity::telegram(&sn_domain::client::TelegramProfile {
+                id: telegram_id,
+                username: Some(format!("farm{telegram_id}")),
+                first_name: Some("Ферма".into()),
+                last_name: None,
+                language_code: Some("ru".into()),
+                is_premium: premium,
+            }),
+        )
+        .await
+        .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn наплыв_регистраций_отмечает_новых_только_при_включённом_модуле() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let early = telegram_client(&db.store, 6_100_001, false).await;
+    assert!(
+        !note_surge(&ctx, early, 400).await.unwrap(),
+        "модуль выключен"
+    );
+    enable(&db.store, serde_json::json!({ "mode": "confirm" })).await;
+    let newcomer = telegram_client(&db.store, 6_100_002, false).await;
+    let premium = telegram_client(&db.store, 6_100_003, true).await;
+    assert!(note_surge(&ctx, newcomer, 400).await.unwrap());
+    assert!(!note_surge(&ctx, premium, 400).await.unwrap());
+    let mut conn = db.store.conn().await.unwrap();
+    let mark = store::mark_of(&mut conn, newcomer).await.unwrap().unwrap();
+    assert_eq!(mark.reasons, [Signal::Surge]);
+    assert_eq!(mark.details["surge"], 400);
+    assert!(store::mark_of(&mut conn, premium).await.unwrap().is_none());
+    assert!(store::mark_of(&mut conn, early).await.unwrap().is_none());
+    drop(conn);
+    assert_eq!(trial_gate(&ctx, newcomer).await.unwrap(), Gate::Confirm);
+    assert_eq!(trial_gate(&ctx, premium).await.unwrap(), Gate::Allow);
+    assert_eq!(
+        Signal::Surge.title_ru(),
+        "регистрация во время наплыва новых аккаунтов"
+    );
+    db.cleanup().await;
+}

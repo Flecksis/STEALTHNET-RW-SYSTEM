@@ -76,7 +76,7 @@ impl AlertKind {
             AlertKind::Security => "Безопасность входа",
             AlertKind::Sync => "Перенос в Remnawave и обратно",
             AlertKind::Backups => "Резервные копии: сбои и восстановление",
-            AlertKind::Bot => "Сбои вебхука бота",
+            AlertKind::Bot => "Сбои вебхука и флуд в боте",
         }
     }
 
