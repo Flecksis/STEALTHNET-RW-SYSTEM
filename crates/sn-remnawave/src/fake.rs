@@ -21,6 +21,7 @@ pub enum Fault {
     ServerError,
     Unauthorized,
     RateLimited,
+    Redirected,
 }
 
 impl Fault {
@@ -34,6 +35,9 @@ impl Fault {
             },
             Fault::Unauthorized => RemnaError::Unauthorized(401),
             Fault::RateLimited => RemnaError::RateLimited,
+            Fault::Redirected => {
+                RemnaError::Redirected("https://panel.internal.example/login".into())
+            }
         }
     }
 

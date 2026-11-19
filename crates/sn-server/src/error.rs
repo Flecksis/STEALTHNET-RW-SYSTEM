@@ -11,6 +11,34 @@ use sn_store::StoreError;
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
+tokio::task_local! {
+    static CLIENT_FACING: bool;
+}
+
+pub async fn client_facing(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.uri().path().starts_with("/api/client") {
+        CLIENT_FACING.scope(true, next.run(request)).await
+    } else {
+        next.run(request).await
+    }
+}
+
+fn client_text(code: &str) -> Option<&'static str> {
+    if !CLIENT_FACING.try_with(|facing| *facing).unwrap_or(false) {
+        return None;
+    }
+    match code {
+        "remnawave.not_found" => Some("Не найдено."),
+        "remnawave.not_configured" | "remnawave.unavailable" | "remnawave.error" => {
+            Some("Сервис VPN сейчас недоступен. Попробуйте через несколько минут.")
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     pub status: StatusCode,
@@ -117,7 +145,9 @@ impl IntoResponse for ApiError {
             sn_domain::client::Locale::En => {
                 sn_domain::errors_en::message(self.code).unwrap_or(self.message)
             }
-            sn_domain::client::Locale::Ru => self.message,
+            sn_domain::client::Locale::Ru => client_text(self.code)
+                .map(str::to_string)
+                .unwrap_or(self.message),
         };
         (
             self.status,
