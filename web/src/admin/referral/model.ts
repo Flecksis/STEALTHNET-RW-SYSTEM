@@ -137,7 +137,7 @@ export function totalsText(s: Summary): string {
 export function queueText(s: Summary | null, queue: Withdrawal[] | null): string {
   const n = s?.pending_count ?? queue?.length ?? 0;
   if (!n) {
-    return 'Заявок на вывод нет';
+    return '';
   }
   const total = s ? s.pending : null;
   return `${count(n, 'заявка', 'заявки', 'заявок')} на вывод${total ? `, всего ${money(total)}` : ''}`;

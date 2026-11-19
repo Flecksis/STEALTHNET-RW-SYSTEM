@@ -97,6 +97,7 @@ export function ReferralPhone() {
   const queue = data.queue ?? [];
   const history = data.history ?? [];
   const referrers = data.referrers ?? [];
+  const summary = data.queue === null ? 'Загружаем…' : queueText(data.summary, data.queue);
 
   return (
     <div className="hp rf-phone">
@@ -107,9 +108,11 @@ export function ReferralPhone() {
           </span>
         </Link>
       </PhoneHeader>
-      <p className="np-sum" aria-live="polite">
-        {data.queue === null ? 'Загружаем…' : queueText(data.summary, data.queue)}
-      </p>
+      {summary ? (
+        <p className="np-sum" aria-live="polite">
+          {summary}
+        </p>
+      ) : null}
 
       {data.error ? (
         <p className="hp-quiet hp-card" role="alert">
