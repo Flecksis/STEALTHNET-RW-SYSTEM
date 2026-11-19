@@ -62,12 +62,22 @@ pub fn request_span(request: &Request<Body>) -> tracing::Span {
     )
 }
 
+const SECRET_PATHS: [&str; 5] = [
+    sn_services::bot_webhook::PATH_PREFIX,
+    "/api/webhooks/pay/overpay/",
+    "/api/public/support-files/",
+    "/api/public/m/broadcast/unsubscribe/",
+    "/api/public/m/broadcast/resubscribe/",
+];
+
 pub fn shown_path(path: &str) -> std::borrow::Cow<'_, str> {
-    let prefix = sn_services::bot_webhook::PATH_PREFIX;
-    match path.split_once(prefix) {
-        Some((head, _)) => std::borrow::Cow::Owned(format!("{head}{prefix}…")),
-        None => std::borrow::Cow::Borrowed(path),
-    }
+    SECRET_PATHS
+        .iter()
+        .find_map(|prefix| {
+            path.split_once(prefix)
+                .map(|(head, _)| std::borrow::Cow::Owned(format!("{head}{prefix}…")))
+        })
+        .unwrap_or(std::borrow::Cow::Borrowed(path))
 }
 
 const RESTORE_STATUS: &str = "/api/admin/backups/restore/status";
@@ -168,4 +178,41 @@ pub fn router(state: AppState) -> Router {
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
         .layer(CatchPanicLayer::new())
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shown_path;
+
+    #[test]
+    fn пути_с_секретами_скрываются_в_журнале() {
+        for (path, shown) in [
+            (
+                "/api/webhooks/pay/overpay/9f1c2e7d4b5a60718293a4b5c6d7e8f9",
+                "/api/webhooks/pay/overpay/…",
+            ),
+            (
+                "/api/public/support-files/a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+                "/api/public/support-files/…",
+            ),
+            (
+                "/api/public/m/broadcast/unsubscribe/0b9d77aa1c2d4e3f",
+                "/api/public/m/broadcast/unsubscribe/…",
+            ),
+            (
+                "/api/public/m/broadcast/resubscribe/0b9d77aa1c2d4e3f",
+                "/api/public/m/broadcast/resubscribe/…",
+            ),
+            ("/api/webhooks/telegram/abc", "/api/webhooks/telegram/…"),
+        ] {
+            assert_eq!(shown_path(path), shown, "{path}");
+        }
+        for path in [
+            "/api/webhooks/pay/cloudpayments/check",
+            "/api/admin/clients/5",
+            "/api/public/m/broadcast/images/k1",
+        ] {
+            assert_eq!(shown_path(path), path);
+        }
+    }
 }
