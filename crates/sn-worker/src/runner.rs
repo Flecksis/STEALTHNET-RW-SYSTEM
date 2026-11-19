@@ -627,31 +627,26 @@ impl Worker {
     }
 
     pub async fn run(self, cancel: CancellationToken) {
+        let worker = Arc::new(self);
+        let periodic = tokio::spawn({
+            let worker = worker.clone();
+            let cancel = cancel.clone();
+            async move { worker.periodic_loop(&cancel).await }
+        });
+        tracing::info!("фоновые задачи запущены");
+        worker.queue_loop(&cancel).await;
+        if let Err(err) = periodic.await {
+            tracing::error!(error = %err, "периодические работы остановились с ошибкой");
+        }
+        tracing::info!("фоновые задачи остановлены");
+    }
+
+    async fn queue_loop(&self, cancel: &CancellationToken) {
         let mut jobs = interval(self.config.poll_interval);
         let mut events = interval(self.config.events_interval);
-        let mut housekeeping = interval(self.config.housekeeping_interval);
-        let mut autorenew = interval(self.config.autorenew_interval);
-        let mut reconcile = interval(self.config.reconcile_interval);
-        let mut module_tasks = interval(self.config.module_tasks_interval);
-        let mut redeliver = interval(self.config.redeliver_interval);
-        let mut end_expired = interval(self.config.end_expired_interval);
-        let mut chain_watch = interval(self.config.chain_watch_interval);
-        let mut node_watch = interval(self.config.node_watch_interval);
-        for timer in [
-            &mut jobs,
-            &mut events,
-            &mut housekeeping,
-            &mut autorenew,
-            &mut reconcile,
-            &mut module_tasks,
-            &mut redeliver,
-            &mut end_expired,
-            &mut chain_watch,
-            &mut node_watch,
-        ] {
+        for timer in [&mut jobs, &mut events] {
             timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
         }
-        tracing::info!("фоновые задачи запущены");
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -671,6 +666,34 @@ impl Worker {
                         tracing::warn!(error = %err, "события не разосланы модулям");
                     }
                 }
+            }
+        }
+    }
+
+    async fn periodic_loop(&self, cancel: &CancellationToken) {
+        let mut housekeeping = interval(self.config.housekeeping_interval);
+        let mut autorenew = interval(self.config.autorenew_interval);
+        let mut reconcile = interval(self.config.reconcile_interval);
+        let mut module_tasks = interval(self.config.module_tasks_interval);
+        let mut redeliver = interval(self.config.redeliver_interval);
+        let mut end_expired = interval(self.config.end_expired_interval);
+        let mut chain_watch = interval(self.config.chain_watch_interval);
+        let mut node_watch = interval(self.config.node_watch_interval);
+        for timer in [
+            &mut housekeeping,
+            &mut autorenew,
+            &mut reconcile,
+            &mut module_tasks,
+            &mut redeliver,
+            &mut end_expired,
+            &mut chain_watch,
+            &mut node_watch,
+        ] {
+            timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        }
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
                 _ = housekeeping.tick() => self.periodic(Periodic::Housekeeping).await,
                 _ = autorenew.tick() => self.periodic(Periodic::AutoRenew).await,
                 _ = reconcile.tick() => self.periodic(Periodic::Reconcile).await,
@@ -681,6 +704,5 @@ impl Worker {
                 _ = node_watch.tick() => self.periodic(Periodic::NodeWatch).await,
             }
         }
-        tracing::info!("фоновые задачи остановлены");
     }
 }

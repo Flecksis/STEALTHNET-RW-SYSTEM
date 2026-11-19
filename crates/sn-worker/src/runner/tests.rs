@@ -1513,3 +1513,130 @@ async fn слежение_за_нодами_идёт_по_расписанию_�
     assert_eq!(skipped["skipped"], "not_configured");
     setup.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn задания_выполняются_пока_идёт_долгая_сверка() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let services = &setup.services;
+    let owner = client(services, 701).await;
+    setup
+        .remna
+        .insert_user(sn_remnawave::fake::sample_user(7001, "sn_7001"));
+    let held = {
+        let mut conn = services.store().conn().await.unwrap();
+        let created = conn
+            .subscriptions()
+            .create(&NewSubscription {
+                client_id: owner,
+                tariff_id: None,
+                kind: SubscriptionKind::Paid,
+                extra_devices: 0,
+                autorenew: AutoRenewState {
+                    enabled: false,
+                    period_id: None,
+                },
+            })
+            .await
+            .unwrap();
+        conn.subscriptions()
+            .link_remna(
+                created.id,
+                &sn_domain::subscription::RemnaLink {
+                    user_id: sn_domain::ids::RemnaUserId(7001),
+                    username: "sn_7001".into(),
+                    short_uuid: Some("short7001".into()),
+                },
+            )
+            .await
+            .unwrap();
+        created
+    };
+    let mut lock = services.store().begin().await.unwrap();
+    lock.subscriptions().lock(held.id).await.unwrap();
+    let buyer = client(services, 702).await;
+    let tariff = tariff(services).await;
+    services
+        .change_balance(BalanceChange {
+            client_id: buyer,
+            wallet: Wallet::Main,
+            amount: Money::new(500, Currency::Usd),
+            kind: LedgerKind::TopUp,
+            comment: None,
+            idempotency_key: "test:topup:702".into(),
+            order_id: None,
+            payment_id: None,
+        })
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let config = WorkerConfig {
+        poll_interval: Duration::from_millis(50),
+        ..WorkerConfig::default()
+    };
+    let running = tokio::spawn(Worker::new(services.clone(), config).run(cancel.clone()));
+    let until = Instant::now() + Duration::from_secs(10);
+    while periodic_state(services, Periodic::Reconcile)
+        .await
+        .unwrap()
+        .last_started_at
+        .is_none()
+    {
+        assert!(Instant::now() < until, "сверка не началась");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    services
+        .checkout()
+        .start(
+            buyer,
+            &CheckoutRequest {
+                cart: CartRequest {
+                    tariff_id: tariff.id,
+                    period_id: tariff.periods[0].id,
+                    extra_devices: 0,
+                    subscription_id: None,
+                    promo_code: None,
+                },
+                provider: providers::BALANCE.into(),
+                method: None,
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let issued = {
+            let mut conn = services.store().conn().await.unwrap();
+            conn.subscriptions()
+                .by_client(buyer)
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.remna.is_some())
+        };
+        if issued {
+            break;
+        }
+        assert!(Instant::now() < until, "заказ не выдан, пока сверка ждёт");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        periodic_state(services, Periodic::Reconcile)
+            .await
+            .unwrap()
+            .last_success_at
+            .is_none()
+    );
+    lock.rollback().await.unwrap();
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .unwrap()
+        .unwrap();
+    let state = periodic_state(services, Periodic::Reconcile).await.unwrap();
+    assert!(state.last_success_at.is_some());
+    setup.db.cleanup().await;
+}
