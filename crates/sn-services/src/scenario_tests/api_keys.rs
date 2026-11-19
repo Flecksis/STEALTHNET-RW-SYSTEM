@@ -133,3 +133,49 @@ async fn ключ_api_действует_в_пределах_прав_созда
     assert!(keys.principal("snk_не_ключ").await.is_err());
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn ключу_api_не_выдаются_вход_за_клиента_и_синхронизация() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let owner = owner(services).await;
+    let keys = services.api_keys();
+    let by_owner = session(owner, AdminRole::Owner);
+    for permission in [Permission::ClientsLogin, Permission::RemnaSync] {
+        assert_eq!(
+            code(
+                keys.create(
+                    &by_owner,
+                    &request("Интеграция", &[Permission::ClientsRead, permission], None)
+                )
+                .await
+            ),
+            "api_keys.permissions",
+            "{permission:?}"
+        );
+    }
+    let token = crate::api_keys::new_token();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.api_keys()
+            .create(&sn_store::NewApiKey {
+                name: "Старый ключ".into(),
+                token_prefix: token[..12].to_string(),
+                token_hash: crate::auth::token_hash(&token),
+                permissions: vec![
+                    Permission::ClientsRead,
+                    Permission::ClientsLogin,
+                    Permission::RemnaSync,
+                ],
+                created_by: owner,
+                expires_at: None,
+            })
+            .await
+            .unwrap();
+    }
+    let principal = keys.principal(&token).await.unwrap();
+    assert!(principal.can(Permission::ClientsRead));
+    assert!(!principal.can(Permission::ClientsLogin));
+    assert!(!principal.can(Permission::RemnaSync));
+    env.db.cleanup().await;
+}

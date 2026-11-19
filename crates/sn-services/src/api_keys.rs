@@ -144,6 +144,18 @@ impl<'a> ApiKeysOps<'a> {
                 "Ключу нельзя дать доступ к журналу действий",
             ));
         }
+        if permissions.contains(&Permission::ClientsLogin) {
+            return Err(rejected(
+                "api_keys.permissions",
+                "Ключу нельзя дать вход за клиента",
+            ));
+        }
+        if permissions.contains(&Permission::RemnaSync) {
+            return Err(rejected(
+                "api_keys.permissions",
+                "Ключу нельзя дать синхронизацию с Remnawave",
+            ));
+        }
         if permissions.iter().any(|p| !actor.can(*p)) {
             return Err(rejected(
                 "api_keys.permissions",
@@ -233,7 +245,11 @@ impl<'a> ApiKeysOps<'a> {
             .filter(|p| {
                 !matches!(
                     *p,
-                    Permission::Admins | Permission::Backups | Permission::AuditLog
+                    Permission::Admins
+                        | Permission::Backups
+                        | Permission::AuditLog
+                        | Permission::ClientsLogin
+                        | Permission::RemnaSync
                 ) && is_allowed(owner.role, &owner.admin_permissions, *p)
             })
             .collect();

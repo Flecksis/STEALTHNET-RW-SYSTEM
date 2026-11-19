@@ -38,6 +38,8 @@ const GRANTS: Array<[Permission, string]> = [
 
 const LABEL = Object.fromEntries(GRANTS) as Record<Permission, string>;
 
+const OFFERED = GRANTS.filter(([permission]) => permission !== 'clients_login');
+
 const TERMS: Array<[string, number | null]> = [
   ['Без срока', null],
   ['30 дней', 30],
@@ -157,7 +159,7 @@ export function SettingsApiKeys() {
     }
   };
 
-  const available = GRANTS.filter(([permission]) => can(permission));
+  const available = OFFERED.filter(([permission]) => can(permission));
 
   return (
     <SettingsLayout>

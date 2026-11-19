@@ -67,7 +67,17 @@ async fn key_with(h: &Http, owner: &str, permissions: Value) -> String {
 async fn ключ_api_не_меняет_почту_клиента() {
     let Some(h) = http().await else { return };
     let owner = h.owner().await;
-    let token = key_with(&h, &owner, json!(["clients_read", "clients_login"])).await;
+    let (status, refused) = h
+        .write(
+            Method::POST,
+            "/api/admin/api-keys",
+            &owner,
+            json!({ "name": "Вход", "permissions": ["clients_read", "clients_login"], "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "api_keys.permissions");
+    let token = key_with(&h, &owner, json!(["clients_read", "clients_write"])).await;
     let client = h.client(5_093_118_501).await;
     let path = format!("/api/admin/clients/{}/email", client.0);
     let (status, body) = h
