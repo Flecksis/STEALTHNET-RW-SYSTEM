@@ -19,6 +19,8 @@ use sn_store::{
     SessionScope,
 };
 use std::net::IpAddr;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub const ADMIN_SESSION_DAYS: i64 = 14;
 pub const CLIENT_SESSION_DAYS: i64 = 30;
@@ -150,13 +152,40 @@ pub fn admin_totp_context(id: AdminId) -> String {
 
 const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$ZmFrZWZha2VmYWtlZmFrZQ";
 
+const HASHING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn hashing_limit() -> usize {
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    (cores * 2).clamp(2, 16)
+}
+
+fn hashing_slots() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(hashing_limit())))
+}
+
+async fn hashing_slot() -> ServiceResult<OwnedSemaphorePermit> {
+    match tokio::time::timeout(HASHING_WAIT, hashing_slots().clone().acquire_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(err)) => Err(ServiceError::Internal(err.to_string())),
+        Err(_) => Err(crate::limits::rate_limited(
+            "Сейчас слишком много входов.",
+            Duration::minutes(1),
+        )),
+    }
+}
+
 pub async fn check_password(password: &str, hash: Option<String>) -> ServiceResult<bool> {
     let password = password.to_string();
-    tokio::task::spawn_blocking(move || match hash {
-        Some(hash) => verify_password(&password, &hash),
-        None => {
-            verify_password(&password, DUMMY_HASH);
-            false
+    let slot = hashing_slot().await?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        match hash {
+            Some(hash) => verify_password(&password, &hash),
+            None => {
+                verify_password(&password, DUMMY_HASH);
+                false
+            }
         }
     })
     .await
@@ -165,9 +194,13 @@ pub async fn check_password(password: &str, hash: Option<String>) -> ServiceResu
 
 pub async fn hash_password_async(password: &str) -> ServiceResult<String> {
     let password = password.to_string();
-    tokio::task::spawn_blocking(move || hash_password(&password))
-        .await
-        .map_err(|e| ServiceError::Internal(e.to_string()))?
+    let slot = hashing_slot().await?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        hash_password(&password)
+    })
+    .await
+    .map_err(|e| ServiceError::Internal(e.to_string()))?
 }
 
 const ADDRESS_LOCKED: &str = "Слишком много неверных попыток входа.";
@@ -1074,6 +1107,24 @@ mod tests {
     use super::*;
 
     const BOT: &str = "123456:TEST-token";
+
+    #[tokio::test]
+    async fn хеширование_паролей_идёт_не_больше_заданного_числа_сразу() {
+        let limit = u32::try_from(hashing_limit()).unwrap();
+        let held = hashing_slots()
+            .clone()
+            .acquire_many_owned(limit)
+            .await
+            .unwrap();
+        let check = tokio::spawn(check_password("пароль-для-проверки", None));
+        let hash = tokio::spawn(hash_password_async("пароль-для-проверки"));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!check.is_finished(), "проверка не ждёт свободного места");
+        assert!(!hash.is_finished(), "хеширование не ждёт свободного места");
+        drop(held);
+        assert!(!check.await.unwrap().unwrap());
+        assert!(hash.await.unwrap().unwrap().starts_with("$argon2"));
+    }
 
     fn init_data(auth_date: i64, tamper: bool) -> String {
         let user = r#"{"id":5093118422,"first_name":"Алексей","username":"morozov_a","language_code":"ru"}"#;
