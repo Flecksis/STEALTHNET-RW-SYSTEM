@@ -1087,3 +1087,146 @@ async fn первый_вход_по_коду_закрывает_доступ_з�
     drop(conn);
     env.db.cleanup().await;
 }
+
+fn wrong_code(real: &str) -> String {
+    real.chars()
+        .map(|c| if c == '9' { '0' } else { '9' })
+        .collect()
+}
+
+#[tokio::test]
+async fn неверные_коды_из_письма_ограничены_за_сутки_на_почту() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let auth = services.auth();
+    let (port, letters) = fake_smtp().await;
+    configure_with(
+        services,
+        admin,
+        port,
+        serde_json::json!({ "login": "code" }),
+    )
+    .await;
+    let rule = crate::limits::rules::EMAIL_CODE_FAILURES_DAY;
+    let per_window = crate::login::EMAIL_CODE_MAX_ATTEMPTS as u32;
+    let mut failures = 0;
+    let mut window = 0;
+    while failures < rule.limit {
+        env.clock
+            .set(start() + chrono::Duration::minutes(16 * window));
+        let who = meta(&format!("203.0.113.{}", 40 + window));
+        auth.email_login_start("lev@example.com", &who)
+            .await
+            .unwrap();
+        let sent = letters.lock().unwrap().len();
+        let real = code_in(&readable(&letters.lock().unwrap()[sent - 1]));
+        if window == 0 {
+            auth.email_login_verify("lev@example.com", &real, &who)
+                .await
+                .unwrap();
+            auth.email_login_start("lev@example.com", &who)
+                .await
+                .unwrap();
+        }
+        let sent = letters.lock().unwrap().len();
+        let real = code_in(&readable(&letters.lock().unwrap()[sent - 1]));
+        for _ in 0..per_window.min(rule.limit - failures) {
+            assert_eq!(
+                code(
+                    auth.email_login_verify("lev@example.com", &wrong_code(&real), &who)
+                        .await
+                ),
+                "auth.code_invalid"
+            );
+            failures += 1;
+        }
+        window += 1;
+    }
+    env.clock
+        .set(start() + chrono::Duration::minutes(16 * window));
+    let who = meta("198.51.100.77");
+    auth.email_login_start("lev@example.com", &who)
+        .await
+        .unwrap();
+    let sent = letters.lock().unwrap().len();
+    let real = code_in(&readable(&letters.lock().unwrap()[sent - 1]));
+    assert_eq!(
+        code(
+            auth.email_login_verify("lev@example.com", &real, &who)
+                .await
+        ),
+        crate::limits::RATE_LIMITED,
+        "после {} неверных кодов за сутки почта закрыта даже для верного кода",
+        rule.limit
+    );
+    env.clock
+        .set(start() + chrono::Duration::days(2) + chrono::Duration::minutes(16 * window));
+    auth.email_login_start("lev@example.com", &who)
+        .await
+        .unwrap();
+    let sent = letters.lock().unwrap().len();
+    let real = code_in(&readable(&letters.lock().unwrap()[sent - 1]));
+    auth.email_login_verify("lev@example.com", &real, &who)
+        .await
+        .unwrap();
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn смена_пароля_в_кабинете_ограничена_по_числу_попыток() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let auth = services.auth();
+    let who = meta("203.0.113.23");
+    auth.email_register("pavel@example.com", "пароль-павла-1", &who)
+        .await
+        .unwrap();
+    let client = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.clients()
+            .find_by_identity(IdentityKind::Email, "pavel@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    let principal = ClientPrincipal {
+        client_id: client.id,
+        channel: ClientChannel::Cabinet,
+        full_access: true,
+        session_id: None,
+    };
+    let rule = crate::limits::rules::CLIENT_SECURITY;
+    for n in 0..rule.limit {
+        assert_eq!(
+            code(
+                auth.change_password(
+                    &principal,
+                    Some(&format!("не-тот-пароль-{n}")),
+                    "новый-пароль-павла"
+                )
+                .await
+            ),
+            "auth.wrong_password"
+        );
+    }
+    assert_eq!(
+        code(
+            auth.change_password(&principal, Some("пароль-павла-1"), "новый-пароль-павла")
+                .await
+        ),
+        crate::limits::RATE_LIMITED
+    );
+    env.clock
+        .set(start() + chrono::Duration::seconds(2 * rule.window_seconds));
+    auth.change_password(&principal, Some("пароль-павла-1"), "новый-пароль-павла")
+        .await
+        .unwrap();
+    env.db.cleanup().await;
+}

@@ -4,7 +4,7 @@ use crate::auth::{
     token_hash,
 };
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::rules;
+use crate::limits::{RateLimits, Strike, rules};
 use crate::two_factor::{CabinetLogin, cabinet_session, cabinet_session_for};
 use crate::utm_tracking::site_start_param;
 use chrono::{DateTime, Duration, Utc};
@@ -701,6 +701,7 @@ impl<'a> Auth<'a> {
         if code.len() != EMAIL_CODE_DIGITS || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(code_invalid());
         }
+        let strike = code_strike(&limits, &email).await?;
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         let row: Option<LoginRow> = sqlx::query_as(&format!(
@@ -727,6 +728,7 @@ impl<'a> Auth<'a> {
             tx.commit().await?;
             return Err(code_invalid());
         }
+        limits.forgive(&strike).await?;
         let (client_id, created) = match tx
             .clients()
             .find_by_identity(IdentityKind::Email, &email)
@@ -836,6 +838,7 @@ impl<'a> Auth<'a> {
         if code.len() != EMAIL_CODE_DIGITS || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(code_invalid());
         }
+        let strike = code_strike(&limits, &email).await?;
         let hash = hash_password_async(password).await?;
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
@@ -863,6 +866,7 @@ impl<'a> Auth<'a> {
             tx.commit().await?;
             return Err(code_invalid());
         }
+        limits.forgive(&strike).await?;
         let client = match tx
             .clients()
             .find_by_identity(IdentityKind::Email, &email)
@@ -917,6 +921,10 @@ impl<'a> Auth<'a> {
         password: &str,
     ) -> ServiceResult<()> {
         let client_id = principal.client_id;
+        self.services
+            .limits()
+            .hit(rules::CLIENT_SECURITY, &client_id.to_string())
+            .await?;
         let existing: Option<(String, bool)> = {
             let mut conn = self.services.store().conn().await?;
             let email = conn
@@ -1053,6 +1061,16 @@ impl<'a> Auth<'a> {
 }
 
 pub const UNPROVEN_ACCESS_AUDIT: &str = "client.unproven_access_dropped";
+
+async fn code_strike(limits: &RateLimits<'_>, email: &str) -> ServiceResult<Strike> {
+    limits
+        .strike(
+            rules::EMAIL_CODE_FAILURES_DAY,
+            email,
+            "Слишком много неверных кодов для этой почты.",
+        )
+        .await
+}
 
 async fn email_unproven(tx: &mut Tx, client_id: ClientId, email: &str) -> ServiceResult<bool> {
     let verified: Option<bool> = sqlx::query_scalar(

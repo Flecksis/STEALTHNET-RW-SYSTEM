@@ -85,6 +85,11 @@ pub mod rules {
         limit: 10,
         window_seconds: 900,
     };
+    pub const EMAIL_CODE_FAILURES_DAY: RateRule = RateRule {
+        scope: "email_code_failures_day",
+        limit: 30,
+        window_seconds: 86_400,
+    };
     pub const CLIENT_TOTP_IP: RateRule = RateRule {
         scope: "client_totp_ip",
         limit: 30,
