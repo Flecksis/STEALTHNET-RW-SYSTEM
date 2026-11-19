@@ -159,6 +159,7 @@ async fn card(
         && let Some(object) = value.as_object_mut()
     {
         object.remove("balance");
+        object.remove("balance_held");
         object.remove("referral_balance");
         if let Some(stats) = object.get_mut("stats").and_then(|s| s.as_object_mut()) {
             stats.remove("paid_total");
@@ -378,6 +379,7 @@ async fn set_email(
     ApiJson(body): ApiJson<EmailRequest>,
 ) -> ApiResult<Response> {
     admin.require(Permission::ClientsLogin)?;
+    admin.require_session()?;
     let result = state
         .services
         .clients()

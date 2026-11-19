@@ -277,6 +277,7 @@ async fn webhook_env(
     State(state): State<AppState>,
 ) -> ApiResult<Json<serde_json::Value>> {
     admin.require(Permission::Settings)?;
+    admin.require_session()?;
     Ok(Json(
         serde_json::json!({ "env": state.services.settings_ops().webhook_env_full() }),
     ))

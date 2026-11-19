@@ -666,6 +666,7 @@ async fn поддержка_не_видит_деньги_а_наблюдател
     let (status, body) = h.get(&card, &support).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.get("balance").is_none() && body.get("referral_balance").is_none());
+    assert!(body.get("balance_held").is_none(), "{body}");
     assert!(body["stats"].get("paid_total").is_none());
     assert!(body["stats"].get("payments_count").is_none());
     assert_eq!(body["stats"]["referrals_count"], 0);

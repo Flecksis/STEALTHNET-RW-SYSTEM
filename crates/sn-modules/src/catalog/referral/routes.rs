@@ -186,7 +186,7 @@ async fn set_percent(
     Path(client_id): Path<ClientId>,
     Json(body): Json<PercentBody>,
 ) -> Result<Json<serde_json::Value>, WebError> {
-    admin.require(Permission::Marketing)?;
+    admin.require(Permission::Money)?;
     if body.percent.is_some_and(|p| p > 100) {
         return Err(WebError::rejected(
             "validation.invalid_value",

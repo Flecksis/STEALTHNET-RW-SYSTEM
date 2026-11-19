@@ -991,6 +991,73 @@ async fn админка_видит_очередь_историю_сводку_и
     db.cleanup().await;
 }
 
+async fn put_percent(
+    router: &axum::Router,
+    client: ClientId,
+    principal: &sn_domain::access::AdminPrincipal,
+    percent: u8,
+) -> axum::http::StatusCode {
+    use tower::ServiceExt;
+    router
+        .clone()
+        .oneshot(
+            axum::http::Request::put(format!("/referral/clients/{}/percent", client.0))
+                .header("content-type", "application/json")
+                .extension(principal.clone())
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "percent": percent }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn личный_процент_реферала_меняется_только_с_правом_денег() {
+    use axum::http::StatusCode;
+    use sn_domain::access::{AdminRole, Permission};
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let registry =
+        std::sync::Arc::new(crate::registry::ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.admin_router(ctx.clone());
+    let owner_id = owner(&db.store).await;
+    let partner = client(&db.store).await;
+    let marketing = sn_domain::access::AdminPrincipal {
+        permissions: vec![Permission::Marketing],
+        api_key: Some(1),
+        ..admin_as(owner_id, AdminRole::Owner)
+    };
+    assert_eq!(
+        put_percent(&router, partner, &marketing, 100).await,
+        StatusCode::FORBIDDEN
+    );
+    let percent = {
+        let mut conn = db.store.conn().await.unwrap();
+        store::personal_percent(&mut conn, partner).await.unwrap()
+    };
+    assert_eq!(percent, None);
+    let money = sn_domain::access::AdminPrincipal {
+        permissions: vec![Permission::Money],
+        ..marketing.clone()
+    };
+    assert_eq!(
+        put_percent(&router, partner, &money, 40).await,
+        StatusCode::OK
+    );
+    let percent = {
+        let mut conn = db.store.conn().await.unwrap();
+        store::personal_percent(&mut conn, partner).await.unwrap()
+    };
+    assert_eq!(percent, Some(40));
+    db.cleanup().await;
+}
+
 #[test]
 fn без_настроек_три_встроенных_способа_вывода() {
     let defaults = ReferralSettings::parse(&ModuleConfig::default(), Currency::Rub).unwrap();

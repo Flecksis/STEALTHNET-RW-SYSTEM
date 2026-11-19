@@ -95,6 +95,7 @@ async fn overview(
 
 async fn check(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<SystemView>> {
     admin.require(Permission::Settings)?;
+    admin.require_session()?;
     Ok(Json(
         state
             .services
@@ -116,6 +117,7 @@ async fn settings(
     ApiJson(body): ApiJson<SettingsRequest>,
 ) -> ApiResult<Json<SystemView>> {
     admin.require(Permission::Settings)?;
+    admin.require_session()?;
     let updates = state.services.updates();
     updates
         .set_check_enabled(admin.0.admin_id, admin.0.role, body.check_enabled)
@@ -144,6 +146,7 @@ async fn request(
     ApiJson(body): ApiJson<UpdateRequest>,
 ) -> ApiResult<Response> {
     admin.require(Permission::Settings)?;
+    admin.require_session()?;
     let id = state
         .services
         .updates()
@@ -162,6 +165,7 @@ async fn request(
 
 async fn cancel(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<StatusCode> {
     admin.require(Permission::Settings)?;
+    admin.require_session()?;
     state
         .services
         .updates()
