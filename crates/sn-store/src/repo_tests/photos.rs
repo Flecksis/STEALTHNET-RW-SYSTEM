@@ -127,3 +127,65 @@ async fn фото_клиентов_запрашиваются_хранятся_�
     drop(conn);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn проверка_свежего_фото_не_трогает_строку() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let alexey = client(
+        &mut conn,
+        &Person {
+            telegram: Some(5_093_118_429),
+            username: Some("morozov_b"),
+            ..Person::NOBODY
+        },
+    )
+    .await;
+    assert_eq!(
+        conn.client_photos()
+            .request_missing(&[alexey])
+            .await
+            .unwrap(),
+        1
+    );
+    conn.client_photos()
+        .save(
+            alexey,
+            Some(NewPhoto {
+                version: "AQADfresh",
+                content: JPEG,
+                content_type: "image/jpeg",
+            }),
+        )
+        .await
+        .unwrap();
+    async fn version(conn: &mut Conn, client: sn_domain::ids::ClientId) -> (String, String) {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT xmin::text, xmax::text FROM client_photos WHERE client_id = $1",
+        )
+        .bind(client.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+    }
+    let before = version(&mut conn, alexey).await;
+    for _ in 0..3 {
+        assert!(
+            !conn
+                .client_photos()
+                .request_if_stale(alexey, Duration::from_secs(3600))
+                .await
+                .unwrap()
+        );
+    }
+    assert_eq!(version(&mut conn, alexey).await, before);
+    assert!(
+        conn.client_photos()
+            .request_if_stale(alexey, Duration::ZERO)
+            .await
+            .unwrap()
+    );
+    assert_eq!(conn.client_photos().due(10).await.unwrap().len(), 1);
+    drop(conn);
+    db.cleanup().await;
+}

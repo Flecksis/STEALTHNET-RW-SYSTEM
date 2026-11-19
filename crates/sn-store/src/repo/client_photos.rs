@@ -86,6 +86,18 @@ impl<'c> ClientPhotosRepo<'c> {
         client_id: ClientId,
         older_than: Duration,
     ) -> StoreResult<bool> {
+        let settled: Option<bool> = sqlx::query_scalar(
+            "SELECT due_at IS NOT NULL \
+                    OR (checked_at IS NOT NULL AND checked_at >= now() - make_interval(secs => $2)) \
+             FROM client_photos WHERE client_id = $1",
+        )
+        .bind(client_id.0)
+        .bind(older_than.as_secs_f64())
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        if settled == Some(true) {
+            return Ok(false);
+        }
         let done = sqlx::query(
             "INSERT INTO client_photos (client_id, due_at) VALUES ($1, now()) \
              ON CONFLICT (client_id) DO UPDATE SET due_at = now() \
