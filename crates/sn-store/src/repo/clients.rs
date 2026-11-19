@@ -302,7 +302,8 @@ impl<'c> ClientsRepo<'c> {
         meta: &serde_json::Value,
     ) -> StoreResult<()> {
         sqlx::query(
-            "UPDATE client_identities SET meta = $3, search_text = $4 WHERE kind = $1 AND value = $2",
+            "UPDATE client_identities SET meta = $3, search_text = $4 WHERE kind = $1 AND value = $2 \
+             AND (meta IS DISTINCT FROM $3 OR search_text IS DISTINCT FROM $4)",
         )
         .bind(kind.as_str())
         .bind(value)

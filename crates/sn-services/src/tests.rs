@@ -94,6 +94,67 @@ async fn client(services: &Services) -> ClientId {
     client.id
 }
 
+async fn identity_version(services: &Services, telegram_id: i64) -> (String, serde_json::Value) {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query_as(
+        "SELECT xmin::text, meta FROM client_identities WHERE kind = 'telegram' AND value = $1",
+    )
+    .bind(telegram_id.to_string())
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn повторное_обновление_из_telegram_не_переписывает_тот_же_профиль() {
+    let Some((db, services)) = setup().await else {
+        return;
+    };
+    let mut profile = TelegramProfile {
+        id: 5_093_118_423,
+        username: Some("lebedeva_m".into()),
+        first_name: Some("Мария".into()),
+        last_name: None,
+        language_code: Some("ru".into()),
+        is_premium: false,
+    };
+    let (client, created) = services
+        .clients()
+        .ensure_telegram(&profile, RegistrationSource::Bot, None)
+        .await
+        .unwrap();
+    assert!(created);
+    let (version, _) = identity_version(&services, profile.id).await;
+    let (again, created) = services
+        .clients()
+        .ensure_telegram(&profile, RegistrationSource::Bot, None)
+        .await
+        .unwrap();
+    assert!(!created);
+    assert_eq!(again.id, client.id);
+    assert_eq!(identity_version(&services, profile.id).await.0, version);
+    profile.username = Some("maria_l".into());
+    services
+        .clients()
+        .ensure_telegram(&profile, RegistrationSource::Bot, None)
+        .await
+        .unwrap();
+    let (changed, meta) = identity_version(&services, profile.id).await;
+    assert_ne!(changed, version);
+    assert_eq!(meta["username"], "maria_l");
+    let mut conn = services.store().conn().await.unwrap();
+    let words: String = sqlx::query_scalar(
+        "SELECT search_text FROM client_identities WHERE kind = 'telegram' AND value = $1",
+    )
+    .bind(profile.id.to_string())
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    assert!(words.contains("maria_l"), "{words}");
+    db.cleanup().await;
+}
+
 async fn tariff(services: &Services, category: &str) -> Tariff {
     let mut tx = services.store().begin().await.unwrap();
     let category = tx

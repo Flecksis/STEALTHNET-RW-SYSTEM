@@ -338,6 +338,19 @@ impl<'a> ClientOps<'a> {
         start_param: Option<&str>,
     ) -> ServiceResult<(Client, bool)> {
         let identity = NewIdentity::telegram(profile);
+        {
+            let mut conn = self.services.store().conn().await?;
+            if let Some(client) = conn
+                .clients()
+                .find_by_identity(IdentityKind::Telegram, &identity.value)
+                .await?
+            {
+                conn.clients()
+                    .update_identity_meta(IdentityKind::Telegram, &identity.value, &identity.meta)
+                    .await?;
+                return Ok((client, false));
+            }
+        }
         let mut tx = self.services.store().begin().await?;
         tx.lock(LockSpace::Telegram, profile.id).await?;
         if let Some(client) = tx
