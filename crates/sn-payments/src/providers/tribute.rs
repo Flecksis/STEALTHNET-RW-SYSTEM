@@ -215,7 +215,22 @@ fn unmatched(base: WebhookOutcome, what: &str, buyer: Option<i64>, sum: &str) ->
     base.with_notice(NoticeKind::ManualCredit, text)
 }
 
-fn purchase(payload: &Json) -> PaymentResult<WebhookOutcome> {
+fn foreign(base: WebhookOutcome, what: &str, buyer: Option<i64>, sum: &str) -> WebhookOutcome {
+    let from = match buyer {
+        Some(telegram_id) => format!("от Telegram ID {telegram_id}"),
+        None => "без Telegram ID покупателя".to_string(),
+    };
+    base.with_notice(
+        NoticeKind::ManualCredit,
+        format!(
+            "Tribute прислал оплату ({what}) на {sum} {from}, но этого товара нет среди товаров \
+             для пополнения в настройках Tribute. Деньги на баланс не зачислены: если покупка \
+             относится к панели, зачислите их вручную"
+        ),
+    )
+}
+
+fn purchase(payload: &Json, allowed: &HashSet<i64>) -> PaymentResult<WebhookOutcome> {
     let purchase = integer(payload.get("purchase_id"))
         .filter(|id| *id > 0)
         .ok_or_else(|| util::bad("нет номера покупки purchase_id"))?;
@@ -242,6 +257,9 @@ fn purchase(payload: &Json) -> PaymentResult<WebhookOutcome> {
         "товар «{}» №{product}, покупка №{purchase}",
         text(payload, "product_name", 80)
     );
+    if !allowed.contains(&product) {
+        return Ok(foreign(base, &what, buyer, &amount_text(minor, &currency)));
+    }
     match (buyer, known) {
         (Some(telegram_id), Some(_)) => Ok(WebhookOutcome {
             payment: Some(PaymentRef::Buyer(Buyer {
@@ -343,7 +361,7 @@ fn refunded(payload: &Json) -> PaymentResult<WebhookOutcome> {
     })
 }
 
-fn event(raw: &[u8]) -> PaymentResult<WebhookOutcome> {
+fn event(config: &ProviderConfig, raw: &[u8]) -> PaymentResult<WebhookOutcome> {
     let body = Json::parse(raw).ok_or_else(|| util::bad("тело не JSON"))?;
     let name = body
         .get("name")
@@ -351,7 +369,10 @@ fn event(raw: &[u8]) -> PaymentResult<WebhookOutcome> {
         .unwrap_or_default()
         .trim();
     match (name, body.get("payload")) {
-        ("new_digital_product", Some(payload)) => purchase(payload),
+        ("new_digital_product", Some(payload)) => {
+            let allowed = products(config).iter().map(|product| product.id).collect();
+            purchase(payload, &allowed)
+        }
         ("digital_product_refunded", Some(payload)) => refunded(payload),
         ("new_subscription", Some(payload)) => subscription(payload, false),
         ("renewed_subscription", Some(payload)) => subscription(payload, true),
@@ -651,7 +672,7 @@ impl PaymentProvider for Tribute {
         if !signed(key, request) {
             return Err(PaymentError::BadSignature);
         }
-        event(&request.body)
+        event(config, &request.body)
     }
 
     async fn catalog(&self, config: &ProviderConfig) -> PaymentResult<Option<serde_json::Value>> {

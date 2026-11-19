@@ -40,6 +40,23 @@ async fn parse(request: WebhookRequest) -> PaymentResult<WebhookOutcome> {
     Tribute::new().parse_webhook(&settings(), &request).await
 }
 
+fn with_documented_product() -> ProviderConfig {
+    let mut current = settings();
+    let mut products = current.0["products"].as_array().unwrap().clone();
+    products.push(json!({
+        "id": 456, "name": "VPN Access - 1 Month", "amount": 500, "currency": "USD",
+        "link": "https://t.me/tribute/app?startapp=p456"
+    }));
+    current.set("products", json!(products));
+    current
+}
+
+async fn parse_documented(request: WebhookRequest) -> PaymentResult<WebhookOutcome> {
+    Tribute::new()
+        .parse_webhook(&with_documented_product(), &request)
+        .await
+}
+
 fn purchase_body(payload: serde_json::Value) -> String {
     json!({
         "name": "new_digital_product",
@@ -76,7 +93,7 @@ fn подпись_совпадает_с_эталоном() {
 
 #[tokio::test]
 async fn покупка_из_документации_пополняет_баланс_покупателя() {
-    let outcome = parse(hook(&[("trbt-signature", FULL_SIGNATURE)], FULL_BODY))
+    let outcome = parse_documented(hook(&[("trbt-signature", FULL_SIGNATURE)], FULL_BODY))
         .await
         .unwrap();
     assert_eq!(outcome.status, ProviderStatus::Paid);
@@ -105,11 +122,59 @@ async fn покупка_из_документации_пополняет_бал�
         )],
         FULL_BODY,
     );
-    assert_eq!(parse(upper).await.unwrap().status, ProviderStatus::Paid);
-    let short = parse(hook(&[("trbt-signature", DOC_SIGNATURE)], DOC_BODY)).await;
+    assert_eq!(
+        parse_documented(upper).await.unwrap().status,
+        ProviderStatus::Paid
+    );
+    let short = parse_documented(hook(&[("trbt-signature", DOC_SIGNATURE)], DOC_BODY)).await;
     assert!(
         matches!(short, Err(PaymentError::BadPayload(_))),
         "{short:?}"
+    );
+}
+
+#[tokio::test]
+async fn покупка_товара_не_для_пополнения_ждёт_решения() {
+    let outcome = parse(hook(&[("trbt-signature", FULL_SIGNATURE)], FULL_BODY))
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, ProviderStatus::Pending);
+    assert_eq!(outcome.payment, None);
+    assert_eq!(outcome.event_key, "purchase:78901");
+    assert_eq!(outcome.amount, Some(usd(500)));
+    let notice = outcome.notice().unwrap();
+    assert_eq!(notice.kind, NoticeKind::ManualCredit);
+    for needle in ["№456", "78901", "12321321", "товаров для пополнения"] {
+        assert!(notice.text.contains(needle), "{needle}: {}", notice.text);
+    }
+    let anonymous = purchase_body(json!({
+        "product_id": 99, "product_name": "Книга", "amount": 30_000, "currency": "rub",
+        "purchase_id": 904, "transaction_id": 7, "purchase_created_at": "2026-11-18T10:00:00Z"
+    }));
+    let outcome = parse(signed(&anonymous)).await.unwrap();
+    assert_eq!(outcome.payment, None);
+    assert_eq!(outcome.status, ProviderStatus::Pending);
+    let notice = outcome.notice().unwrap();
+    assert_eq!(notice.kind, NoticeKind::ManualCredit);
+    assert!(
+        notice.text.contains("без Telegram ID покупателя")
+            && notice.text.contains("товаров для пополнения"),
+        "{}",
+        notice.text
+    );
+    let bare = config(&[("api_key", json!(KEY))]);
+    let outcome = Tribute::new()
+        .parse_webhook(&bare, &signed(&purchase_body(json!({
+            "product_id": 12, "product_name": "Пополнение 500 ₽", "amount": 50_000, "currency": "rub",
+            "telegram_user_id": 5_093_118_422_i64, "purchase_id": 905, "transaction_id": 8,
+            "purchase_created_at": "2026-11-18T10:00:00Z"
+        }))))
+        .await
+        .unwrap();
+    assert_eq!(outcome.payment, None);
+    assert_eq!(
+        outcome.notice().map(|n| n.kind),
+        Some(NoticeKind::ManualCredit)
     );
 }
 
@@ -164,7 +229,7 @@ async fn повтор_покупки_даёт_тот_же_ключ() {
 #[tokio::test]
 async fn покупка_без_telegram_id_или_в_евро_уходит_админу() {
     let web = purchase_body(json!({
-        "product_id": 77, "product_name": "Пополнение", "amount": 1000, "currency": "usd",
+        "product_id": 13, "product_name": "Пополнение", "amount": 1000, "currency": "usd",
         "trb_user_id": "W-15408", "purchase_id": 902, "transaction_id": 5,
         "purchase_created_at": "2026-11-18T10:00:00Z"
     }));
@@ -177,7 +242,7 @@ async fn покупка_без_telegram_id_или_в_евро_уходит_ад�
     assert!(notice.text.contains("без Telegram ID"), "{}", notice.text);
     assert!(notice.text.contains("902"), "{}", notice.text);
     let euro = purchase_body(json!({
-        "product_id": 78, "product_name": "Пополнение", "amount": 1000, "currency": "eur",
+        "product_id": 11, "product_name": "Пополнение", "amount": 1000, "currency": "eur",
         "telegram_user_id": 42, "purchase_id": 903, "transaction_id": 6,
         "purchase_created_at": "2026-11-18T10:00:00Z"
     }));

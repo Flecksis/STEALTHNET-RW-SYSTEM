@@ -53,12 +53,16 @@ async fn notify(h: &Http, raw: &str, key: &str) -> StatusCode {
 }
 
 fn purchase(id: i64, telegram: i64, minor: i64) -> String {
+    purchase_of(11, id, telegram, minor)
+}
+
+fn purchase_of(product: i64, id: i64, telegram: i64, minor: i64) -> String {
     json!({
         "name": "new_digital_product",
         "created_at": "2026-11-18T10:00:00Z",
         "sent_at": "2026-11-18T10:00:01Z",
         "payload": {
-            "product_id": 11, "product_name": "Пополнение $5", "amount": minor, "currency": "usd",
+            "product_id": product, "product_name": "Пополнение $5", "amount": minor, "currency": "usd",
             "telegram_user_id": telegram, "purchase_id": id, "transaction_id": id * 10,
             "purchase_created_at": "2026-11-18T10:00:00Z"
         }
@@ -186,6 +190,22 @@ async fn tribute_настройки_каталог_пополнение_и_де�
     let (_, credits) = h.get("/api/admin/credits", &owner).await;
     assert_eq!(credits, json!([]));
 
+    assert_eq!(
+        notify(&h, &purchase_of(77, 907, BUYER, 500), KEY).await,
+        StatusCode::OK
+    );
+    let (_, options) = h.get("/api/client/topup", &token).await;
+    assert_eq!(options["balance"], json!({"minor": 500, "currency": "USD"}));
+    let (_, credits) = h.get("/api/admin/credits", &owner).await;
+    assert_eq!(credits.as_array().unwrap().len(), 1, "{credits}");
+    assert_eq!(credits[0]["provider"], "tribute");
+    assert!(
+        credits[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("товаров для пополнения")),
+        "{credits}"
+    );
+
     let mut conn = h.services().store().conn().await.unwrap();
     let journal: Vec<InboxOutcome> = conn
         .webhooks()
@@ -201,6 +221,7 @@ async fn tribute_настройки_каталог_пополнение_и_де�
         vec![
             InboxOutcome::RejectedSignature,
             InboxOutcome::Accepted,
+            InboxOutcome::Ignored,
             InboxOutcome::Ignored
         ]
     );
