@@ -922,6 +922,14 @@ impl<'a> Auth<'a> {
     }
 
     pub async fn admin_session(&self, token: &str) -> ServiceResult<AdminPrincipal> {
+        self.admin_session_with(token, true).await
+    }
+
+    pub async fn admin_session_with(
+        &self,
+        token: &str,
+        pending_ok: bool,
+    ) -> ServiceResult<AdminPrincipal> {
         let mut conn = self.services.store().conn().await?;
         let session = conn
             .sessions()
@@ -929,6 +937,12 @@ impl<'a> Auth<'a> {
             .await?
             .ok_or(ServiceError::Unauthorized)?;
         let admin = conn.admins().get(session.admin_id).await?;
+        if admin.must_change_password && !pending_ok {
+            return Err(ServiceError::rejected(
+                PASSWORD_CHANGE_REQUIRED,
+                "Сначала задайте свой пароль: выданный пароль одноразовый",
+            ));
+        }
         if self.services.now() - session.last_seen_at > Duration::minutes(5) {
             conn.sessions().touch_admin(session.id).await?;
         }

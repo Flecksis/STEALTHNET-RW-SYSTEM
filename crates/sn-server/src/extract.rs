@@ -226,10 +226,17 @@ pub fn request_credential(
     Ok(Some(credential))
 }
 
+const ADMIN_PASSWORD_PATHS: [&str; 3] = [
+    "/api/admin/me",
+    "/api/admin/auth/password",
+    "/api/admin/auth/logout",
+];
+
 async fn admin_principal(
     state: &AppState,
     method: &Method,
     headers: &HeaderMap,
+    path: Option<&str>,
 ) -> ApiResult<AdminPrincipal> {
     let credential = request_credential(state, method, headers, ADMIN_COOKIE)?
         .ok_or_else(ApiError::unauthorized)?;
@@ -240,10 +247,11 @@ async fn admin_principal(
             .principal(credential.token())
             .await?);
     }
+    let pending_ok = path.is_some_and(|path| ADMIN_PASSWORD_PATHS.contains(&path));
     Ok(state
         .services
         .auth()
-        .admin_session(credential.token())
+        .admin_session_with(credential.token(), pending_ok)
         .await?)
 }
 
@@ -851,8 +859,9 @@ impl FromRequestParts<AppState> for CurrentAdmin {
         if let Some(principal) = parts.extensions.get::<AdminPrincipal>() {
             return Ok(CurrentAdmin(principal.clone()));
         }
+        let path = full_path(parts);
         Ok(CurrentAdmin(
-            admin_principal(state, &parts.method, &parts.headers).await?,
+            admin_principal(state, &parts.method, &parts.headers, Some(&path)).await?,
         ))
     }
 }
@@ -930,7 +939,7 @@ pub async fn require_admin(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let principal = admin_principal(&state, request.method(), request.headers()).await;
+    let principal = admin_principal(&state, request.method(), request.headers(), None).await;
     match principal {
         Ok(principal) => {
             let key = principal.api_key;

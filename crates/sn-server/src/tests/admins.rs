@@ -37,6 +37,21 @@ async fn администраторы_через_http_только_у_владе
     let (status, me) = h.get("/api/admin/me", &olga).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["must_change_password"], true);
+    let (status, body) = h.get("/api/admin/clients", &olga).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "auth.password_change_required");
+    let (status, changed) = h
+        .write(
+            Method::POST,
+            "/api/admin/auth/password",
+            &olga,
+            json!({ "current": password, "new": "свой-пароль-ольги-1" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    let olga = changed["token"].as_str().unwrap().to_string();
+    let (status, body) = h.get("/api/admin/clients", &olga).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = h
         .write(
             Method::POST,
