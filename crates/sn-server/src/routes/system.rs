@@ -46,18 +46,56 @@ async fn robots(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-async fn catalog(State(state): State<AppState>) -> Response {
+fn tagged(headers: &HeaderMap, value: &serde_json::Value) -> Response {
+    let Ok(body) = serde_json::to_vec(value) else {
+        return Json(value).into_response();
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&body, &mut hasher);
+    let etag = format!(
+        "\"{:x}-{:016x}\"",
+        body.len(),
+        std::hash::Hasher::finish(&hasher)
+    );
+    let Ok(tag) = HeaderValue::from_str(&etag) else {
+        return ApiError::not_found().into_response();
+    };
+    let cache = HeaderValue::from_static(LANDING_CACHE);
+    if etag_matches(headers, &etag) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, tag), (header::CACHE_CONTROL, cache)],
+        )
+            .into_response();
+    }
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (header::ETAG, tag),
+            (header::CACHE_CONTROL, cache),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn catalog(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match state.services.checkout().public_catalog().await {
-        Ok(offers) => Json(serde_json::json!({
-            "currency": state.services.settings().currency,
-            "tariffs": offers,
-        }))
-        .into_response(),
+        Ok(offers) => tagged(
+            &headers,
+            &serde_json::json!({
+                "currency": state.services.settings().currency,
+                "tariffs": offers,
+            }),
+        ),
         Err(err) => ApiError::from(err).into_response(),
     }
 }
 
-async fn site(State(state): State<AppState>) -> Response {
+async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let settings = state.services.settings();
     let bot_username = match state.services.store().conn().await {
         Ok(mut conn) => conn
@@ -79,44 +117,46 @@ async fn site(State(state): State<AppState>) -> Response {
         Some("password")
     };
     let email_reset = email_auth == Some("password") && mail.available();
-    Json(serde_json::json!({
-        "brand_name": settings.brand_name,
-        "title": settings.site.title.as_deref().unwrap_or(&settings.brand_name),
-        "logo_url": settings.logo_url(),
-        "currency": settings.currency,
-        "support_url": settings.support_link(),
-        "support_tickets": settings.support_tickets(),
-        "support_ai": if settings.support_tickets() {
-            sn_modules::catalog::ai::channels(state.services.modules())
-        } else {
-            sn_modules::catalog::ai::Channels::default()
-        },
-        "support_files": if settings.support_tickets() {
-            state.services.support().file_limits()
-        } else {
-            None
-        },
-        "bot_username": bot_username,
-        "appearance": settings.appearance,
-        "connect": settings.connect,
-        "autorenew_days_before": settings.autorenew.charge_days_before,
-        "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
-        "documents": state.services.bot_content().documents,
-        "email_auth": email_auth,
-        "email_reset": email_reset,
-        "oauth": state.services.oauth().availability(),
-        "client_access": {
-            "miniapp": access.miniapp,
-            "site_login": access.site_login,
-            "devices": access.self_devices,
-            "reissue": access.self_reissue,
-        },
-        "languages": {
-            "list": settings.languages.enabled(),
-            "default": settings.languages.fallback(),
-        },
-    }))
-    .into_response()
+    tagged(
+        &headers,
+        &serde_json::json!({
+            "brand_name": settings.brand_name,
+            "title": settings.site.title.as_deref().unwrap_or(&settings.brand_name),
+            "logo_url": settings.logo_url(),
+            "currency": settings.currency,
+            "support_url": settings.support_link(),
+            "support_tickets": settings.support_tickets(),
+            "support_ai": if settings.support_tickets() {
+                sn_modules::catalog::ai::channels(state.services.modules())
+            } else {
+                sn_modules::catalog::ai::Channels::default()
+            },
+            "support_files": if settings.support_tickets() {
+                state.services.support().file_limits()
+            } else {
+                None
+            },
+            "bot_username": bot_username,
+            "appearance": settings.appearance,
+            "connect": settings.connect,
+            "autorenew_days_before": settings.autorenew.charge_days_before,
+            "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
+            "documents": state.services.bot_content().documents,
+            "email_auth": email_auth,
+            "email_reset": email_reset,
+            "oauth": state.services.oauth().availability(),
+            "client_access": {
+                "miniapp": access.miniapp,
+                "site_login": access.site_login,
+                "devices": access.self_devices,
+                "reissue": access.self_reissue,
+            },
+            "languages": {
+                "list": settings.languages.enabled(),
+                "default": settings.languages.fallback(),
+            },
+        }),
+    )
 }
 
 async fn image_file(state: &AppState, image: SiteImage, file: &str) -> Response {

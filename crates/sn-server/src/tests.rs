@@ -1737,6 +1737,73 @@ async fn открытый_каталог_без_входа_и_без_сквад�
     h.db.cleanup().await;
 }
 
+async fn public_get(h: &Http, path: &str, etag: Option<&str>) -> (StatusCode, HeaderMap, usize) {
+    let mut builder = Request::builder().method(Method::GET).uri(path);
+    if let Some(etag) = etag {
+        builder = builder.header(header::IF_NONE_MATCH, etag);
+    }
+    let response = router(h.state.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, body.len())
+}
+
+#[tokio::test]
+async fn каталог_и_данные_сайта_отдаются_с_etag_и_перепроверкой() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let tariff = h.tariff().await;
+    for path in ["/api/public/catalog", "/api/public/site"] {
+        let (status, headers, size) = public_get(&h, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(size > 0);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache", "{path}");
+        let etag = headers[header::ETAG].to_str().unwrap().to_string();
+        let (status, headers, size) = public_get(&h, path, Some(&etag)).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "{path}");
+        assert_eq!(size, 0);
+        assert_eq!(headers[header::ETAG].to_str().unwrap(), etag);
+        let (status, _, _) = public_get(&h, path, Some("\"old\"")).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+    }
+    let (_, headers, _) = public_get(&h, "/api/public/catalog", None).await;
+    let before = headers[header::ETAG].to_str().unwrap().to_string();
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        sqlx::query("UPDATE tariff_periods SET price_usd_minor = 799 WHERE tariff_id = $1")
+            .bind(tariff.id.0)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let (status, headers, _) = public_get(&h, "/api/public/catalog", Some(&before)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(headers[header::ETAG].to_str().unwrap(), before);
+    let (_, _, catalog) = h.send(Method::GET, "/api/public/catalog", None, None).await;
+    assert_eq!(catalog["tariffs"][0]["periods"][0]["price"]["minor"], 799);
+    let (_, headers, _) = public_get(&h, "/api/public/site", None).await;
+    let site_before = headers[header::ETAG].to_str().unwrap().to_string();
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/appearance",
+            &owner,
+            json!({ "admin": "top", "admin_theme": "system", "client": "mono", "client_theme": "light" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, headers, _) = public_get(&h, "/api/public/site", Some(&site_before)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(headers[header::ETAG].to_str().unwrap(), site_before);
+    h.db.cleanup().await;
+}
+
 #[tokio::test]
 async fn оформление_сохраняется_и_видно_без_входа() {
     let Some(h) = http().await else { return };
