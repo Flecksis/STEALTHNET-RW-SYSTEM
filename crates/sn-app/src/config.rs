@@ -173,6 +173,7 @@ impl Config {
                 remna,
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
                 telegram_api: custom_api,
+                ext_modules_loopback: flag(vars, "SN_EXT_MODULES_LOOPBACK", false)?,
             },
             updates: updates(vars)?,
             backup_dir: text(vars, "SN_BACKUP_DIR").map(std::path::PathBuf::from),
@@ -210,6 +211,24 @@ mod tests {
         assert!(config.secret_key.is_none());
         assert_eq!(config.telegram_api, "https://api.telegram.org");
         assert!(config.backup_dir.is_none());
+        assert!(!config.env.ext_modules_loopback);
+    }
+
+    #[test]
+    fn модули_на_этом_же_сервере_включаются_переменной() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_EXT_MODULES_LOOPBACK", "1"),
+        ]))
+        .unwrap();
+        assert!(config.env.ext_modules_loopback);
+        assert!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_EXT_MODULES_LOOPBACK", "может быть")
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

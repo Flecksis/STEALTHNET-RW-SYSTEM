@@ -52,6 +52,17 @@ fn confirm(source: &str) -> InstallRequest {
     }
 }
 
+async fn local_env() -> Option<Env> {
+    env_with_fallbacks(
+        ModuleRegistry::catalog_only(),
+        EnvFallbacks {
+            ext_modules_loopback: true,
+            ..EnvFallbacks::default()
+        },
+    )
+    .await
+}
+
 async fn install(services: &Services, actor: &AdminPrincipal, source: &str) -> InstallResult {
     services
         .ext_modules()
@@ -619,7 +630,7 @@ async fn выключенный_модуль_не_получает_событи�
 
 #[tokio::test]
 async fn события_уходят_модулю_с_подписью_и_журналом() {
-    let Some(env) = env().await else { return };
+    let Some(env) = local_env().await else { return };
     let services = &env.services;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -696,7 +707,7 @@ async fn события_уходят_модулю_с_подписью_и_жур�
 
 #[tokio::test]
 async fn повторы_с_паузами_до_предела_и_ручной_повтор() {
-    let Some(env) = env().await else { return };
+    let Some(env) = local_env().await else { return };
     let services = &env.services;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -768,7 +779,7 @@ async fn повторы_с_паузами_до_предела_и_ручной_п
 
 #[tokio::test]
 async fn перенаправления_и_внутренние_адреса_не_выполняются() {
-    let Some(env) = env().await else { return };
+    let Some(env) = local_env().await else { return };
     let services = &env.services;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -839,6 +850,132 @@ async fn перенаправления_и_внутренние_адреса_н�
     assert!(!ping.ok);
     assert!(ping.error.unwrap().contains("внутренней сети"));
     env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn адрес_на_этом_же_сервере_закрыт_без_разрешения() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("принято"))
+        .mount(&server)
+        .await;
+    let owner = owner(services).await;
+    let by_owner = session(owner, AdminRole::Owner, &[]);
+    let local = manifest(
+        &format!("{}/events", server.uri()),
+        &["clients_read"],
+        &["client_registered"],
+    );
+    let preview = services
+        .ext_modules()
+        .preview(&by_owner, &local, None)
+        .await
+        .unwrap();
+    assert!(preview.preview.is_none());
+    assert!(
+        preview
+            .errors
+            .iter()
+            .any(|p| p.path == "webhook" && p.message.contains("SN_EXT_MODULES_LOOPBACK")),
+        "{:?}",
+        preview.errors
+    );
+    let refused = services
+        .ext_modules()
+        .install(&by_owner, &confirm(&local))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "ext_modules.manifest");
+    assert!(refused.to_string().contains("SN_EXT_MODULES_LOOPBACK"));
+    let mut page = serde_json::from_str::<serde_json::Value>(&manifest(
+        "https://hello.example.com/events",
+        &["clients_read"],
+        &["client_registered"],
+    ))
+    .unwrap();
+    page["page"]["url"] = serde_json::json!("http://localhost:8090/admin");
+    let preview = services
+        .ext_modules()
+        .preview(&by_owner, &page.to_string(), None)
+        .await
+        .unwrap();
+    assert!(
+        preview.errors.iter().any(|p| p.path == "page.url"),
+        "{:?}",
+        preview.errors
+    );
+    install(
+        services,
+        &by_owner,
+        &manifest(
+            "https://hello.example.com/events",
+            &["clients_read"],
+            &["client_registered"],
+        ),
+    )
+    .await;
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query(
+        "UPDATE ext_modules SET manifest = jsonb_set(jsonb_set(manifest, '{webhook}', to_jsonb($1::text)), \
+         '{page,url}', to_jsonb($2::text))",
+    )
+    .bind(format!("{}/events", server.uri()))
+    .bind(format!("{}/admin", server.uri()))
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    push(services, registered(5)).await;
+    let deliverer = Deliverer::new(services.clone());
+    assert_eq!(deliverer.round().await.unwrap(), 1);
+    env.clock.set(start() + Duration::days(1));
+    assert_eq!(deliverer.round().await.unwrap(), 0);
+    let journal = services
+        .ext_modules()
+        .journal(&by_owner, "hello")
+        .await
+        .unwrap();
+    assert_eq!(journal.attempts.len(), 1);
+    let attempt = &journal.attempts[0];
+    assert_eq!(attempt.status, "failed");
+    assert_eq!(attempt.http_status, None);
+    assert!(
+        attempt
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("SN_EXT_MODULES_LOOPBACK")
+    );
+    assert!(attempt.can_retry);
+    let card = services.ext_modules().card("hello").await.unwrap();
+    assert!(card.warning.unwrap().contains("SN_EXT_MODULES_LOOPBACK"));
+    let ping = services
+        .ext_modules()
+        .ping(&by_owner, "hello")
+        .await
+        .unwrap();
+    assert!(!ping.ok);
+    assert!(ping.error.unwrap().contains("SN_EXT_MODULES_LOOPBACK"));
+    assert_eq!(
+        code(services.ext_modules().page_token(&by_owner, "hello").await),
+        "ext_modules.page"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+    env.db.cleanup().await;
+    let Some(open) = local_env().await else {
+        return;
+    };
+    let services = &open.services;
+    let by_owner = session(super::owner(services).await, AdminRole::Owner, &[]);
+    install(services, &by_owner, &local).await;
+    push(services, registered(5)).await;
+    assert_eq!(Deliverer::new(services.clone()).round().await.unwrap(), 1);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    let card = services.ext_modules().card("hello").await.unwrap();
+    assert!(card.warning.is_none(), "{:?}", card.warning);
+    open.db.cleanup().await;
 }
 
 #[tokio::test]
@@ -1010,7 +1147,7 @@ async fn настройки_модуля_сохраняются_и_доходя�
 
 #[tokio::test]
 async fn недоставленные_события_отправляются_снова_все_сразу() {
-    let Some(env) = env().await else { return };
+    let Some(env) = local_env().await else { return };
     let services = &env.services;
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -1103,7 +1240,7 @@ fn renamed(source: &str, id: &str, events: &[&str]) -> String {
 
 #[tokio::test]
 async fn медленный_модуль_не_задерживает_события_других_модулей() {
-    let Some(env) = env().await else { return };
+    let Some(env) = local_env().await else { return };
     let services = &env.services;
     let slow = MockServer::start().await;
     Mock::given(method("POST"))

@@ -67,6 +67,10 @@ fn meta(ip: &str) -> RequestMeta {
 }
 
 async fn env_with(modules: ModuleRegistry) -> Option<Env> {
+    env_with_fallbacks(modules, EnvFallbacks::default()).await
+}
+
+async fn env_with_fallbacks(modules: ModuleRegistry, fallbacks: EnvFallbacks) -> Option<Env> {
     let db = test_store().await?;
     let clock = Arc::new(FixedClock::new(start()));
     let services = Services::new(ServiceDeps {
@@ -75,7 +79,7 @@ async fn env_with(modules: ModuleRegistry) -> Option<Env> {
         modules: Arc::new(modules),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock: clock.clone(),
-        env: EnvFallbacks::default(),
+        env: fallbacks,
     });
     services.reload().await.unwrap();
     let remna = Arc::new(FakeRemnawave::new());

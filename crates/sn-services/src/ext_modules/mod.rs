@@ -397,7 +397,19 @@ pub fn kind_title(kind: &str) -> &'static str {
     }
 }
 
-fn warning(row: &ModuleRow, key: &KeyInfo, stats: &Stats) -> Option<String> {
+fn loopback_warning() -> String {
+    format!(
+        "Адрес модуля на этом же сервере закрыт: если модуль работает здесь, добавьте {}=1 в deploy/.env и перезапустите панель",
+        address::LOOPBACK_ENV
+    )
+}
+
+fn local_addresses(manifest: &Manifest) -> bool {
+    manifest.webhook.as_deref().is_some_and(address::local)
+        || page_url(manifest).is_some_and(address::local)
+}
+
+fn warning(row: &ModuleRow, key: &KeyInfo, stats: &Stats, loopback: bool) -> Option<String> {
     if !row.enabled {
         return None;
     }
@@ -413,6 +425,9 @@ fn warning(row: &ModuleRow, key: &KeyInfo, stats: &Stats) -> Option<String> {
     };
     if let Some(text) = key_text {
         return Some(text.to_string());
+    }
+    if !loopback && local_addresses(&row.manifest) {
+        return Some(loopback_warning());
     }
     if stats.failed > 0 {
         return Some(format!(
@@ -559,6 +574,24 @@ impl<'a> ExtModulesOps<'a> {
         ExtModulesOps { services }
     }
 
+    fn loopback(&self) -> bool {
+        self.services.env().ext_modules_loopback
+    }
+
+    fn local_problems(&self, manifest: &Manifest) -> Vec<Problem> {
+        if self.loopback() {
+            return Vec::new();
+        }
+        let mut problems = Vec::new();
+        if manifest.webhook.as_deref().is_some_and(address::local) {
+            problems.push(problem("webhook", address::loopback_closed()));
+        }
+        if page_url(manifest).is_some_and(address::local) {
+            problems.push(problem("page.url", address::loopback_closed()));
+        }
+        problems
+    }
+
     fn panel_origin_problems(&self, manifest: &Manifest) -> Vec<Problem> {
         let settings = self.services.settings();
         let Some(panel) = settings.public_url.as_deref() else {
@@ -630,6 +663,7 @@ impl<'a> ExtModulesOps<'a> {
             ));
         }
         errors.extend(self.panel_origin_problems(&manifest));
+        errors.extend(self.local_problems(&manifest));
         errors.extend(self.rights_problems(actor, &manifest));
         if !errors.is_empty() {
             return Ok(PreviewResult {
@@ -748,7 +782,12 @@ impl<'a> ExtModulesOps<'a> {
                 ),
             ));
         }
-        if let Some(first) = self.panel_origin_problems(&manifest).into_iter().next() {
+        if let Some(first) = self
+            .panel_origin_problems(&manifest)
+            .into_iter()
+            .chain(self.local_problems(&manifest))
+            .next()
+        {
             return Err(rejected("ext_modules.manifest", first.message));
         }
         if sorted(&request.permissions) != manifest.permissions
@@ -877,7 +916,7 @@ impl<'a> ExtModulesOps<'a> {
         for row in rows {
             let (key, stats) = self.view_parts(&row).await?;
             out.push(Summary {
-                warning: warning(&row, &key, &stats),
+                warning: warning(&row, &key, &stats, self.loopback()),
                 id: row.manifest.id.clone(),
                 name: row.manifest.name.clone(),
                 version: row.manifest.version.clone(),
@@ -895,7 +934,7 @@ impl<'a> ExtModulesOps<'a> {
         let row = self.row(id).await?;
         let (key, stats) = self.view_parts(&row).await?;
         Ok(Card {
-            warning: warning(&row, &key, &stats),
+            warning: warning(&row, &key, &stats, self.loopback()),
             events: events_diff(&row.manifest, None),
             permissions: permissions_diff(&row.manifest, None),
             page: page_view(&row.manifest),
@@ -1336,6 +1375,9 @@ impl<'a> ExtModulesOps<'a> {
                 "ext_modules.disabled",
                 "Модуль выключен: включите его, чтобы открыть страницу",
             ));
+        }
+        if !self.loopback() && address::local(&page.url) {
+            return Err(rejected("ext_modules.page", loopback_warning()));
         }
         if self
             .services

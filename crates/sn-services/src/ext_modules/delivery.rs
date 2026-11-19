@@ -64,6 +64,7 @@ pub struct Target {
     pub module: String,
     pub url: String,
     pub key: Vec<u8>,
+    pub loopback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,7 @@ pub struct Sent {
     pub duration_ms: u32,
     pub error: Option<String>,
     pub response: Option<String>,
+    pub retry: bool,
 }
 
 impl Sent {
@@ -85,6 +87,14 @@ impl Sent {
             duration_ms: 0,
             error: Some(cut(&message.into(), ERROR_MAX)),
             response: None,
+            retry: true,
+        }
+    }
+
+    fn refused(message: impl Into<String>) -> Self {
+        Sent {
+            retry: false,
+            ..Sent::failed(message)
         }
     }
 }
@@ -139,9 +149,9 @@ fn elapsed(started: Instant) -> u32 {
 }
 
 pub async fn send(target: &Target, delivery: &Claimed, now: DateTime<Utc>) -> Sent {
-    let url = match address::check(&target.url) {
+    let url = match address::check_with(&target.url, target.loopback) {
         Ok(url) => url,
-        Err(message) => return Sent::failed(message),
+        Err(message) => return Sent::refused(message),
     };
     let id = message_id(delivery);
     let timestamp = now.timestamp();
@@ -150,7 +160,7 @@ pub async fn send(target: &Target, delivery: &Claimed, now: DateTime<Utc>) -> Se
         return Sent::failed("секрет подписи не прочитан");
     };
     let started = Instant::now();
-    let result = address::client()
+    let result = address::client(target.loopback)
         .post(url)
         .header(CONTENT_TYPE, "application/json")
         .header("webhook-id", &id)
@@ -185,6 +195,7 @@ pub async fn send(target: &Target, delivery: &Claimed, now: DateTime<Utc>) -> Se
         duration_ms: elapsed(started),
         error,
         response: text,
+        retry: true,
     }
 }
 
@@ -192,7 +203,7 @@ pub fn outcome(attempts: u32, sent: Sent, now: DateTime<Utc>, retries: bool) -> 
     let (status, next_attempt_at) = if sent.ok() {
         ("done", None)
     } else {
-        match retry_delay(attempts).filter(|_| retries) {
+        match retry_delay(attempts).filter(|_| retries && sent.retry) {
             Some(delay) => ("pending", Some(now + delay)),
             None => ("failed", None),
         }
@@ -240,6 +251,7 @@ impl Deliverer {
                 module: module.to_string(),
                 url,
                 key,
+                loopback: self.services.env().ext_modules_loopback,
             })
             .ok_or_else(|| {
                 "секрет подписи не прочитан: проверьте, что SN_SECRET_KEY не менялся".to_string()

@@ -223,6 +223,7 @@ fn повторы_с_паузами_и_пределом() {
         duration_ms: 12,
         error: Some("модуль ответил кодом 500".into()),
         response: None,
+        retry: true,
     };
     let first = outcome(1, bad.clone(), now, true);
     assert_eq!(first.status, "pending");
@@ -230,12 +231,24 @@ fn повторы_с_паузами_и_пределом() {
     let last = outcome(MAX_ATTEMPTS, bad.clone(), now, true);
     assert_eq!(last.status, "failed");
     assert_eq!(last.next_attempt_at, None);
-    assert_eq!(outcome(1, bad, now, false).status, "failed");
+    assert_eq!(outcome(1, bad.clone(), now, false).status, "failed");
+    let refused = outcome(
+        1,
+        Sent {
+            retry: false,
+            ..bad
+        },
+        now,
+        true,
+    );
+    assert_eq!(refused.status, "failed");
+    assert_eq!(refused.next_attempt_at, None);
     let good = Sent {
         http_status: Some(204),
         duration_ms: 3,
         error: None,
         response: None,
+        retry: true,
     };
     assert_eq!(outcome(3, good, now, true).status, "done");
 }

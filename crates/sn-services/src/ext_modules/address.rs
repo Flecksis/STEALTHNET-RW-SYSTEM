@@ -9,6 +9,7 @@ use std::time::Duration;
 pub const URL_MAX: usize = 500;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+pub const LOOPBACK_ENV: &str = "SN_EXT_MODULES_LOOPBACK";
 
 fn v4_public(ip: Ipv4Addr) -> bool {
     let [a, b, c, _] = ip.octets();
@@ -87,8 +88,27 @@ pub fn this_server(url: &Url) -> bool {
         || host_ip(url).is_some_and(is_loopback)
 }
 
+fn local_name(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
+}
+
+pub fn on_this_server(url: &Url) -> bool {
+    url.host_str().is_some_and(local_name) || host_ip(url).is_some_and(is_loopback)
+}
+
+pub fn local(raw: &str) -> bool {
+    Url::parse(raw.trim()).is_ok_and(|url| on_this_server(&url))
+}
+
 pub fn blocked_message(ip: IpAddr) -> String {
     format!("адрес {ip} — из внутренней сети, такие адреса модулям запрещены")
+}
+
+pub fn loopback_closed() -> String {
+    format!(
+        "адрес на этом же сервере закрыт для модулей: если модуль работает здесь, добавьте {LOOPBACK_ENV}=1 в deploy/.env и перезапустите панель"
+    )
 }
 
 pub fn check(raw: &str) -> Result<Url, String> {
@@ -126,6 +146,14 @@ pub fn check(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+pub fn check_with(raw: &str, loopback: bool) -> Result<Url, String> {
+    let url = check(raw)?;
+    if !loopback && on_this_server(&url) {
+        return Err(loopback_closed());
+    }
+    Ok(url)
+}
+
 pub fn setting_url(raw: &str) -> bool {
     let raw = raw.trim();
     raw.chars().count() <= URL_MAX
@@ -138,23 +166,34 @@ pub struct Blocked(pub IpAddr);
 
 impl fmt::Display for Blocked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&blocked_message(self.0))
+        if is_loopback(self.0) {
+            f.write_str(&loopback_closed())
+        } else {
+            f.write_str(&blocked_message(self.0))
+        }
     }
 }
 
 impl Error for Blocked {}
 
-pub fn screen(addrs: &[SocketAddr]) -> Result<(), Blocked> {
-    match addrs.iter().map(SocketAddr::ip).find(|ip| !allowed(*ip)) {
+pub fn screen(addrs: &[SocketAddr], loopback: bool) -> Result<(), Blocked> {
+    match addrs
+        .iter()
+        .map(SocketAddr::ip)
+        .find(|ip| !allowed(*ip) || (!loopback && is_loopback(*ip)))
+    {
         Some(ip) => Err(Blocked(ip)),
         None => Ok(()),
     }
 }
 
-struct Guard;
+struct Guard {
+    loopback: bool,
+}
 
 impl Resolve for Guard {
     fn resolve(&self, name: Name) -> Resolving {
+        let loopback = self.loopback;
         Box::pin(async move {
             let host = name.as_str().to_string();
             let addrs: Vec<SocketAddr> =
@@ -165,17 +204,19 @@ impl Resolve for Guard {
                     format!("домен {host} не найден"),
                 )) as Box<dyn Error + Send + Sync>);
             }
-            screen(&addrs).map_err(|b| Box::new(b) as Box<dyn Error + Send + Sync>)?;
+            screen(&addrs, loopback).map_err(|b| Box::new(b) as Box<dyn Error + Send + Sync>)?;
             Ok(Box::new(addrs.into_iter()) as Addrs)
         })
     }
 }
 
-pub fn client() -> &'static reqwest::Client {
-    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    HTTP.get_or_init(|| {
+pub fn client(loopback: bool) -> &'static reqwest::Client {
+    static LOCAL: OnceLock<reqwest::Client> = OnceLock::new();
+    static REMOTE: OnceLock<reqwest::Client> = OnceLock::new();
+    let cell = if loopback { &LOCAL } else { &REMOTE };
+    cell.get_or_init(|| {
         reqwest::Client::builder()
-            .dns_resolver(Arc::new(Guard))
+            .dns_resolver(Arc::new(Guard { loopback }))
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
@@ -273,10 +314,47 @@ mod tests {
         let public: SocketAddr = "8.8.8.8:443".parse().unwrap();
         let inside: SocketAddr = "10.1.2.3:443".parse().unwrap();
         let local: SocketAddr = "127.0.0.1:443".parse().unwrap();
-        assert!(screen(&[public, local]).is_ok());
+        assert!(screen(&[public, local], true).is_ok());
         assert_eq!(
-            screen(&[public, inside]),
+            screen(&[public, inside], true),
             Err(Blocked("10.1.2.3".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn этот_же_сервер_только_с_разрешением_в_переменной() {
+        for raw in [
+            "http://127.0.0.1:8085/events",
+            "http://localhost:8085/events",
+            "http://[::1]:8085/events",
+            "http://[::ffff:127.0.0.1]:8085/events",
+            "https://127.0.0.1:8443/",
+            "https://localhost./events",
+            "https://module.localhost/events",
+        ] {
+            assert!(check_with(raw, true).is_ok(), "{raw}");
+            let message = check_with(raw, false).expect_err(raw);
+            assert!(message.contains(LOOPBACK_ENV), "{raw}: {message}");
+            assert!(local(raw), "{raw}");
+        }
+        assert!(check_with("https://hello.example.com/events", false).is_ok());
+        assert!(!local("https://hello.example.com/events"));
+        let public: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        let local_v4: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let local_v6: SocketAddr = "[::1]:443".parse().unwrap();
+        assert!(screen(&[public, local_v4, local_v6], true).is_ok());
+        assert!(screen(&[public], false).is_ok());
+        let blocked = screen(&[public, local_v4], false).unwrap_err();
+        assert_eq!(blocked, Blocked("127.0.0.1".parse().unwrap()));
+        assert!(blocked.to_string().contains(LOOPBACK_ENV));
+        assert_eq!(
+            screen(&[local_v6], false),
+            Err(Blocked("::1".parse().unwrap()))
+        );
+        assert!(
+            !Blocked("10.1.2.3".parse().unwrap())
+                .to_string()
+                .contains(LOOPBACK_ENV)
         );
     }
 }

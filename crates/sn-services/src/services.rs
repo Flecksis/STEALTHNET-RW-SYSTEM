@@ -51,6 +51,7 @@ pub struct EnvFallbacks {
     pub remna: Option<RemnaConnection>,
     pub bot_token: Option<String>,
     pub telegram_api: Option<String>,
+    pub ext_modules_loopback: bool,
 }
 
 pub struct ServiceDeps {
