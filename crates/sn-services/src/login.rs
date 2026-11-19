@@ -769,7 +769,11 @@ impl<'a> Auth<'a> {
         .execute(tx.conn())
         .await?;
         if !created {
+            let unproven = email_unproven(&mut tx, client_id, &email).await?;
             crate::oauth::confirm_email(&mut tx, client_id, &email).await?;
+            if unproven {
+                drop_unproven_access(&mut tx, client_id).await?;
+            }
         }
         let login = cabinet_session(&mut tx, client_id, now, meta, created).await?;
         tx.commit().await?;
@@ -1046,6 +1050,48 @@ impl<'a> Auth<'a> {
         }
         Ok(password)
     }
+}
+
+pub const UNPROVEN_ACCESS_AUDIT: &str = "client.unproven_access_dropped";
+
+async fn email_unproven(tx: &mut Tx, client_id: ClientId, email: &str) -> ServiceResult<bool> {
+    let verified: Option<bool> = sqlx::query_scalar(
+        "SELECT verified FROM client_identities WHERE client_id = $1 AND kind = 'email' AND value = $2",
+    )
+    .bind(client_id.0)
+    .bind(email)
+    .fetch_optional(tx.conn())
+    .await?;
+    Ok(verified == Some(false))
+}
+
+async fn drop_unproven_access(tx: &mut Tx, client_id: ClientId) -> ServiceResult<()> {
+    let revoked = tx
+        .sessions()
+        .revoke_client_channel(client_id, SessionChannel::Cabinet)
+        .await?;
+    let password_removed = sqlx::query("DELETE FROM client_passwords WHERE client_id = $1")
+        .bind(client_id.0)
+        .execute(tx.conn())
+        .await?
+        .rows_affected()
+        > 0;
+    if revoked == 0 && !password_removed {
+        return Ok(());
+    }
+    tx.audit()
+        .record(&Actor::Client(client_id).audit(
+            UNPROVEN_ACCESS_AUDIT,
+            "client",
+            Some(client_id.0),
+            serde_json::json!({
+                "revoked_sessions": revoked,
+                "password_removed": password_removed,
+            }),
+        ))
+        .await?;
+    tracing::warn!(client = %client_id, revoked, password_removed, "почту впервые подтвердили кодом: прежние сессии кабинета закрыты, пароль, заданный до подтверждения, удалён");
+    Ok(())
 }
 
 async fn store_password(

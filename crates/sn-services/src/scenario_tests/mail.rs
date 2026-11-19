@@ -998,3 +998,92 @@ async fn смена_сервера_smtp_без_пароля_не_сохраня�
     assert!(saved("password").is_none());
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn первый_вход_по_коду_закрывает_доступ_заданный_до_подтверждения_почты() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let auth = services.auth();
+    let early = meta("203.0.113.31");
+    auth.email_register("vera@example.com", "пароль-заранее-1", &early)
+        .await
+        .unwrap();
+    let CabinetLogin::Session(before) = auth
+        .email_password_login("vera@example.com", "пароль-заранее-1", &early)
+        .await
+        .unwrap()
+    else {
+        panic!("ожидался вход без второго фактора");
+    };
+    let client_id = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.clients()
+            .find_by_identity(IdentityKind::Email, "vera@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    };
+    assert!(auth.has_password(client_id).await.unwrap());
+    let (port, letters) = fake_smtp().await;
+    configure_with(
+        services,
+        admin,
+        port,
+        serde_json::json!({ "login": "code" }),
+    )
+    .await;
+    let owner_meta = meta("198.51.100.40");
+    auth.email_login_start("vera@example.com", &owner_meta)
+        .await
+        .unwrap();
+    let first_code = code_in(&readable(&letters.lock().unwrap()[0]));
+    let CabinetLogin::Session(proven) = auth
+        .email_login_verify("vera@example.com", &first_code, &owner_meta)
+        .await
+        .unwrap()
+    else {
+        panic!("ожидался вход без второго фактора");
+    };
+    assert!(
+        matches!(
+            auth.client_session(&before.token).await,
+            Err(ServiceError::Unauthorized)
+        ),
+        "сессия, открытая до подтверждения почты, закрыта"
+    );
+    assert!(
+        !auth.has_password(client_id).await.unwrap(),
+        "пароль, заданный до подтверждения почты, удалён"
+    );
+    assert_eq!(
+        auth.client_session(&proven.token).await.unwrap().client_id,
+        client_id
+    );
+    auth.email_login_start("vera@example.com", &owner_meta)
+        .await
+        .unwrap();
+    let second_code = code_in(&readable(&letters.lock().unwrap()[1]));
+    auth.email_login_verify("vera@example.com", &second_code, &owner_meta)
+        .await
+        .unwrap();
+    assert!(
+        auth.client_session(&proven.token).await.is_ok(),
+        "вход на уже подтверждённую почту чужие сессии не трогает"
+    );
+    let mut conn = services.store().conn().await.unwrap();
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'client.unproven_access_dropped' AND entity_id = $1",
+    )
+    .bind(client_id.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
+    drop(conn);
+    env.db.cleanup().await;
+}

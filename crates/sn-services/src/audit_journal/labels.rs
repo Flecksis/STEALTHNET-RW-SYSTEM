@@ -186,6 +186,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Clients,
     ),
     a(
+        "client.unproven_access_dropped",
+        "Прежние сессии и пароль сброшены при первом входе по коду из письма",
+        Area::Clients,
+    ),
+    a(
         "ticket.deleted",
         "Обращение в поддержку удалено",
         Area::Clients,
