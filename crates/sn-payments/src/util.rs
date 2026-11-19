@@ -4,8 +4,8 @@ use crate::provider::{
     InvoiceRequest, PaymentRef, ProviderConfig, ProviderStatus, WebhookOutcome, WebhookReply,
 };
 use bytes::Bytes;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use hmac::digest::CtOutput;
+use sha2::{Digest, Sha256};
 use sn_domain::money::{Amount, PayCurrency, parse_units};
 use sn_domain::settings::{SettingField, missing_required};
 use std::collections::HashSet;
@@ -55,18 +55,8 @@ pub(crate) fn require_currency(amount: Amount, currency: PayCurrency) -> Payment
 }
 
 pub(crate) fn secret_eq(expected: &str, received: &str) -> bool {
-    let tag = |key: &str| {
-        Hmac::<Sha256>::new_from_slice(key.as_bytes()).map(|mut mac| {
-            mac.update(b"stealthnet:secret-compare");
-            mac
-        })
-    };
-    match (tag(expected), tag(received)) {
-        (Ok(expected), Ok(received)) => received
-            .verify_slice(&expected.finalize().into_bytes())
-            .is_ok(),
-        _ => false,
-    }
+    let digest = |text: &str| CtOutput::<Sha256>::new(Sha256::digest(text.as_bytes()));
+    digest(expected) == digest(received)
 }
 
 pub(crate) fn hex_digest_eq(expected: &[u8], received: &str) -> bool {
@@ -296,6 +286,12 @@ mod tests {
         assert!(!secret_eq("abc", "abd"));
         assert!(!secret_eq("abc", ""));
         assert!(!secret_eq("abc", "abcd"));
+        assert!(!secret_eq("abc", "abc\0"));
+        assert!(!secret_eq("abc\0\0", "abc"));
+        assert!(secret_eq("", ""));
+        let long = "k".repeat(200);
+        assert!(secret_eq(&long, &long.clone()));
+        assert!(!secret_eq(&long, &format!("{long}\0")));
         assert!(hex_digest_eq(&[0xab, 0x01], "AB01"));
         assert!(!hex_digest_eq(&[0xab, 0x01], "ab02"));
     }
