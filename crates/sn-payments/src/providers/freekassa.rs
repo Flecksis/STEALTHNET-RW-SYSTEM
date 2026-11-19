@@ -558,6 +558,41 @@ impl Freekassa {
         };
         guard.insert(key, refund.to_string());
     }
+
+    fn usable(&self, config: &ProviderConfig) -> PaymentResult<()> {
+        util::require_fields(&self.settings_schema(), config)?;
+        shop_id(config)?;
+        let key_ok = config
+            .get(API_KEY)
+            .is_some_and(|k| k.len() <= 256 && k.bytes().all(|b| b.is_ascii_graphic()));
+        if !key_ok {
+            return Err(PaymentError::NotConfigured(
+                "API-ключ Freekassa вставлен с лишними символами: нужны латинские буквы и цифры без пробелов".into(),
+            ));
+        }
+        for (key, title) in [
+            (SECRET1, "Секретное слово 1"),
+            (SECRET2, "Секретное слово 2"),
+        ] {
+            if config
+                .get(key)
+                .is_some_and(|v| v.chars().count() > 256 || v.chars().any(char::is_control))
+            {
+                return Err(PaymentError::NotConfigured(format!(
+                    "{title} Freekassa вставлено с лишними символами"
+                )));
+            }
+        }
+        if let Some(raw) = config.get(SERVER_IP)
+            && raw.parse::<IpAddr>().is_err()
+        {
+            return Err(PaymentError::NotConfigured(
+                "IP-адрес сервера для Freekassa указан неверно: нужен адрес вида 203.0.113.10"
+                    .into(),
+            ));
+        }
+        senders(config).map(|_| ())
+    }
 }
 
 fn shop_id(config: &ProviderConfig) -> PaymentResult<&str> {
@@ -651,42 +686,17 @@ impl PaymentProvider for Freekassa {
     }
 
     fn is_configured(&self, config: &ProviderConfig) -> bool {
-        self.validate_settings(config).is_ok()
+        self.usable(config).is_ok()
     }
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
-        util::require_fields(&self.settings_schema(), config)?;
-        shop_id(config)?;
-        let key_ok = config
-            .get(API_KEY)
-            .is_some_and(|k| k.len() <= 256 && k.bytes().all(|b| b.is_ascii_graphic()));
-        if !key_ok {
+        self.usable(config)?;
+        if config.get(SECRET1).is_some() && config.get(SECRET1) == config.get(SECRET2) {
             return Err(PaymentError::NotConfigured(
-                "API-ключ Freekassa вставлен с лишними символами: нужны латинские буквы и цифры без пробелов".into(),
+                "секретные слова 1 и 2 Freekassa совпадают: задайте в настройках магазина Freekassa разные слова".into(),
             ));
         }
-        for (key, title) in [
-            (SECRET1, "Секретное слово 1"),
-            (SECRET2, "Секретное слово 2"),
-        ] {
-            if config
-                .get(key)
-                .is_some_and(|v| v.chars().count() > 256 || v.chars().any(char::is_control))
-            {
-                return Err(PaymentError::NotConfigured(format!(
-                    "{title} Freekassa вставлено с лишними символами"
-                )));
-            }
-        }
-        if let Some(raw) = config.get(SERVER_IP)
-            && raw.parse::<IpAddr>().is_err()
-        {
-            return Err(PaymentError::NotConfigured(
-                "IP-адрес сервера для Freekassa указан неверно: нужен адрес вида 203.0.113.10"
-                    .into(),
-            ));
-        }
-        senders(config).map(|_| ())
+        Ok(())
     }
 
     fn accepts_http_webhooks(&self) -> bool {

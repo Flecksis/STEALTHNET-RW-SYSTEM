@@ -843,6 +843,13 @@ fn настройки_и_способы_freekassa() {
             "{key}={value}"
         );
     }
+    assert!(provider.validate_settings(&full()).is_ok());
+    let same = with(settings(), &[("secret_word_1", json!(WORD2))]);
+    assert!(matches!(
+        provider.validate_settings(&same),
+        Err(PaymentError::NotConfigured(_))
+    ));
+    assert!(provider.is_configured(&same));
     let schema = provider.settings_schema();
     let secrets: Vec<&str> = schema
         .iter()
