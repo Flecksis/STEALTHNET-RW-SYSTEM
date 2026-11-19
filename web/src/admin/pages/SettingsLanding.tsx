@@ -273,7 +273,7 @@ function summary(block: Block, ctx: LandingContext): string {
       return n ? count(n, 'вопрос', 'вопроса', 'вопросов') : 'Без вопросов';
     }
     case 'cta':
-      return text(block.title, ctaTitle(ctx.trial)) || ctaTitle(ctx.trial);
+      return text(block.title, ctaTitle(ctx.trial, ctx.from)) || ctaTitle(ctx.trial, ctx.from);
     case 'footer':
       return 'Ссылки и документы';
   }
@@ -586,10 +586,10 @@ function CtaFields({ block, change, ctx, sections, limits }: BodyProps<'cta'>) {
       <TextField
         label="Заголовок"
         value={block.title}
-        fallback={ctaTitle(ctx.trial)}
+        fallback={ctaTitle(ctx.trial, ctx.from)}
         max={limits.title}
         required
-        hint={dynamic ? 'Пока не меняли, текст зависит от пробного периода' : undefined}
+        hint={dynamic ? 'Пока не меняли, текст зависит от пробного периода и цен' : undefined}
         onChange={(title) => change({ ...block, title })}
       />
       <TextField label="Текст" value={block.text} fallback={ctaText(ctx.trial)} max={limits.text} multiline onChange={(next) => change({ ...block, text: next })} />
@@ -741,6 +741,7 @@ export function SettingsLanding() {
         support: site?.support_url ?? null,
         brand: site?.brand_name ?? 'STEALTHNET',
         offer: catalog?.tariffs[0] ?? null,
+        offers: catalog?.tariffs ?? [],
       }),
     [catalog, site],
   );

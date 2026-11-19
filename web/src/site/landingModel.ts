@@ -75,6 +75,7 @@ export type LandingContext = {
   year: number;
   offer: Offer | null;
   extra: Money | null;
+  from: Money | null;
   botName?: string | null;
   botStart?: string | null;
 };
@@ -157,8 +158,23 @@ export function heroNote(trial: number): string {
   return trial ? t('Первые {days} бесплатно, оплата не нужна', { days: trialWord(trial) }) : '';
 }
 
-export function ctaTitle(trial: number): string {
-  return trial ? t('{days} бесплатно', { days: trialWord(trial) }) : t('Подключитесь сегодня');
+export function cheapest(offers: Offer[]): Money | null {
+  let best: Money | null = null;
+  for (const offer of offers) {
+    for (const period of offer.periods) {
+      if (!best || period.per_month.minor < best.minor) {
+        best = period.per_month;
+      }
+    }
+  }
+  return best;
+}
+
+export function ctaTitle(trial: number, from: Money | null): string {
+  if (trial) {
+    return t('{days} бесплатно', { days: trialWord(trial) });
+  }
+  return from ? t('От {price} в месяц', { price: money(from) }) : t('Оформите подписку');
 }
 
 export function ctaText(trial: number): string {
@@ -441,14 +457,16 @@ export function landingContext(input: {
   support: string | null;
   brand: string;
   offer: Offer | null;
+  offers: Offer[];
   botName?: string | null;
   botStart?: string | null;
 }): LandingContext {
+  const { offers, ...rest } = input;
   const extraConfig = input.offer?.tariff.devices.extra;
   let extra: Money | null = null;
   if (extraConfig && extraConfig.max) {
     const minor = input.currency === 'RUB' ? extraConfig.monthly.rub : extraConfig.monthly.usd;
     extra = minor ? { minor, currency: input.currency } : null;
   }
-  return { ...input, year: new Date().getFullYear(), extra };
+  return { ...rest, year: new Date().getFullYear(), extra, from: cheapest(offers) };
 }

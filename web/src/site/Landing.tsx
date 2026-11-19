@@ -279,7 +279,7 @@ function LandingPage({ mode }: { mode: Mode }) {
   const bot = site.bot_username ? botLink(site.bot_username, start) : null;
   const trial = site.trial?.enabled ? site.trial.days : 0;
   const selected = offer?.periods.find((p) => p.period_id === term) ?? offer?.periods[Math.min(1, (offer?.periods.length ?? 1) - 1)] ?? null;
-  const ctx: LandingContext = landingContext({ phone, currency, trial, bot, support: site.support_url, brand: site.brand_name, offer, botName: site.bot_username, botStart: start });
+  const ctx: LandingContext = landingContext({ phone, currency, trial, bot, support: site.support_url, brand: site.brand_name, offer, offers, botName: site.bot_username, botStart: start });
 
   const flipTheme = () => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
@@ -623,7 +623,7 @@ function LandingPage({ mode }: { mode: Mode }) {
       }
       case 'cta': {
         const buttons = resolveLinks(block.buttons, CTA_BUTTONS, ctx, sections);
-        const title = text(block.title, ctaTitle(trial)) || ctaTitle(trial);
+        const title = text(block.title, ctaTitle(trial, ctx.from)) || ctaTitle(trial, ctx.from);
         const body = text(block.text, ctaText(trial));
         return (
           <section key="cta" id="start" aria-labelledby="band-h" className="ld-sec ld-band-wrap" data-block="cta">
