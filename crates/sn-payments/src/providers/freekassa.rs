@@ -775,6 +775,27 @@ impl PaymentProvider for Freekassa {
         })
     }
 
+    async fn confirm_repeat(
+        &self,
+        config: &ProviderConfig,
+        outcome: &WebhookOutcome,
+    ) -> PaymentResult<bool> {
+        let Some(fk) = outcome
+            .provider_txid
+            .as_deref()
+            .and_then(|txid| digits(txid).ok())
+        else {
+            return Ok(false);
+        };
+        let Some(order) = self.order_by_number(config, fk).await? else {
+            return Ok(false);
+        };
+        let found = order_outcome(&order)?;
+        Ok(found.status == ProviderStatus::Paid
+            && found.payment == outcome.payment
+            && found.amount == outcome.amount)
+    }
+
     async fn fetch_status(
         &self,
         config: &ProviderConfig,

@@ -556,6 +556,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
         false
     }
 
+    async fn confirm_repeat(
+        &self,
+        _config: &ProviderConfig,
+        _outcome: &WebhookOutcome,
+    ) -> PaymentResult<bool> {
+        Ok(true)
+    }
+
     fn polls_status(&self) -> bool {
         false
     }

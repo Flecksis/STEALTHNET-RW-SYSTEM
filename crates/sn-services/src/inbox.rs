@@ -67,6 +67,7 @@ pub const REJECTED_WEBHOOK_RETENTION_DAYS: i64 = 3;
 pub const REPEAT_METHOD: &str = "repeat";
 pub const REPEAT_CREDITED_TEMPLATE: &str = "payment.repeat_credited";
 pub const REPEAT_REVIEW_TEMPLATE: &str = "payment.repeat_review";
+pub const REPEAT_UNCONFIRMED: &str = "payment.repeat_unconfirmed";
 const REFUND_REQUESTED_AUDIT: &str = "payment.refund_requested";
 pub const PAYMENT_CREDITED_TEMPLATE: &str = "payment.credited";
 pub const PAYMENT_REVIEW_TEMPLATE: &str = "payment.review";
@@ -1559,6 +1560,13 @@ impl<'a> PaymentInbox<'a> {
         let mut tx = self.services.store().begin().await?;
         let payment = locate(&mut tx, provider, reference).await?;
         if let Some(txid) = repeat_txid(&payment, outcome.provider_txid.as_deref()) {
+            if !self.repeat_confirmed(provider, outcome).await? {
+                tracing::warn!(payment = %payment.id, provider, "платёжка не подтвердила повторную оплату");
+                return Err(ServiceError::rejected(
+                    REPEAT_UNCONFIRMED,
+                    "платёжная система не подтвердила повторную оплату",
+                ));
+            }
             let result = self
                 .accept_repeat(&mut tx, &payment, txid, outcome.amount)
                 .await?;
@@ -1609,6 +1617,20 @@ impl<'a> PaymentInbox<'a> {
         }
         tx.commit().await?;
         Ok(result)
+    }
+
+    async fn repeat_confirmed(
+        &self,
+        provider: &str,
+        outcome: &WebhookOutcome,
+    ) -> ServiceResult<bool> {
+        let registry = self.services.payments();
+        let Some(found) = registry.get(provider) else {
+            return Ok(true);
+        };
+        Ok(found
+            .confirm_repeat(&registry.config(provider), outcome)
+            .await?)
     }
 
     async fn accept_repeat(

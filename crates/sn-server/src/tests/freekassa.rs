@@ -250,3 +250,84 @@ async fn freekassa_форма_оповещение_повтор_чужая_су�
     drop(conn);
     h.db.cleanup().await;
 }
+
+fn paid_order(order: Uuid, fk: u64) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "type": "success",
+        "pages": 1,
+        "orders": [{
+            "merchant_order_id": order.to_string(),
+            "fk_order_id": fk,
+            "amount": 500,
+            "currency": "RUB",
+            "status": 1
+        }]
+    }))
+}
+
+#[tokio::test]
+async fn freekassa_повторная_оплата_засчитывается_после_подтверждения_в_api() {
+    let api = MockServer::start().await;
+    let Some(h) = fk_http(&api).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/core",
+            &owner,
+            json!({ "currency": "RUB" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/payments/providers/freekassa",
+            &owner,
+            json!({"enabled": true, "config": {
+                "shop_id": SHOP, "api_key": KEY, "secret_word_1": WORD1,
+                "secret_word_2": WORD2, "server_ip": "203.0.113.10"
+            }}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let client = h.client(5_093_118_902).await;
+    let token = h.client_token(client).await;
+    let first = top_up(&h, &token, "500").await;
+    let (status, body) = post(&h, notice("500.00", first, "55501", WORD2)).await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "YES"));
+    assert_eq!(balance(&h, &token).await["minor"], 50_000);
+    assert!(api.received_requests().await.unwrap().is_empty());
+
+    Mock::given(method("POST"))
+        .and(path("/orders"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"type": "success", "pages": 1, "orders": []})),
+        )
+        .up_to_n_times(1)
+        .mount(&api)
+        .await;
+    post(&h, notice("500.00", first, "55599", WORD2)).await;
+    assert_eq!(
+        balance(&h, &token).await["minor"],
+        50_000,
+        "повтор без подтверждения в Freekassa не зачисляется"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/orders"))
+        .respond_with(paid_order(first, 55600))
+        .mount(&api)
+        .await;
+    let (status, body) = post(&h, notice("500.00", first, "55600", WORD2)).await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "YES"));
+    assert_eq!(
+        balance(&h, &token).await["minor"],
+        100_000,
+        "подтверждённая повторная оплата идёт на баланс"
+    );
+    h.db.cleanup().await;
+}
