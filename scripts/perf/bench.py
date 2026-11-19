@@ -162,9 +162,22 @@ def admin_scenarios(s, months_ago):
     yield "Главная", "badges", "GET", "/api/admin/badges", None
     yield "Главная", "последние платежи", "GET", "/api/admin/payments?limit=5", None
     yield "Главная", "обращения ждут", "GET", "/api/admin/support/tickets?filter=waiting&limit=3", None
-    yield "Аналитика", "отчёт 12 месяцев", "GET", "/api/admin/m/analytics/report", None
-    yield "Аналитика", "отчёт 3 месяца", "GET", "/api/admin/m/analytics/report?months=3", None
-    yield "Аналитика", "отчёт за всё время", "GET", "/api/admin/m/analytics/report?all=true", None
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    year_ago = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 365 * 86400))
+    for tab in ["money", "clients", "retention", "payments", "sources", "tariffs", "economy", "support"]:
+        yield "Аналитика", f"вкладка {tab}, 30 дней", "GET", f"/api/admin/m/analytics/tab/{tab}", None
+    for tab in ["money", "clients", "sources"]:
+        yield "Аналитика", f"вкладка {tab}, год", "GET", f"/api/admin/m/analytics/tab/{tab}?from={year_ago}&to={today}", None
+    yield "Аналитика", "фильтры", "GET", "/api/admin/m/analytics/options", None
+    yield "UTM", "отчёт по источникам", "GET", "/api/admin/m/utm/report", None
+    yield "UTM", "отчёт по кампаниям", "GET", "/api/admin/m/utm/report?group=campaign", None
+    yield "UTM", "ссылки", "GET", "/api/admin/m/utm/links", None
+    yield "UTM", "метки клиента", "GET", f"/api/admin/m/utm/clients/{s['typical_client']}", None
+    yield "Журнал действий", "первая страница", "GET", "/api/admin/audit?limit=50", None
+    yield "Журнал действий", "фильтр: клиенты", "GET", "/api/admin/audit?limit=50&actor=clients", None
+    yield "Журнал действий", "фильтр: клиент", "GET", f"/api/admin/audit?limit=50&client={s['typical_client']}", None
+    yield "Журнал действий", "поиск в подробностях", "GET", f"/api/admin/audit?limit=50&q={q('несуществующий')}", None
+    yield "Журнал действий", "справочник фильтров", "GET", "/api/admin/audit/meta", None
     yield "Промокоды", "список", "GET", "/api/admin/m/promo/codes?limit=50", None
     yield "Промокоды", "активные", "GET", "/api/admin/m/promo/codes?limit=50&status=active", None
     yield "Рефералы", "сводка", "GET", "/api/admin/m/referral/summary", None
@@ -254,7 +267,7 @@ def measure(api, scenarios, runs, warmup, only):
             status, payload, elapsed = api.call(method, path, body)
             size = len(payload)
             if status >= 400:
-                failure = payload[:300].decode(errors="replace")
+                failure = payload[:300].decode(errors="replace") or f"пустой ответ {status}"
                 break
             if i >= warmup:
                 timings.append(elapsed)
@@ -293,12 +306,19 @@ def heavy(api, dsn, runs, only):
         timings, size, error = [], 0, None
         for _ in range(runs):
             psql(dsn, "DELETE FROM analytics_state")
-            status, payload, ms = api.call("GET", "/api/admin/m/analytics/report")
-            size = len(payload)
-            if status >= 400:
-                error = f"HTTP {status}: {payload[:200].decode(errors='replace')}"
+            started = time.perf_counter()
+            while True:
+                status, payload, ms = api.call("GET", "/api/admin/m/analytics/tab/money")
+                size = len(payload)
+                if status >= 400:
+                    error = f"HTTP {status}: {payload[:200].decode(errors='replace')}"
+                    break
+                if not json.loads(payload).get("preparing"):
+                    break
+                time.sleep(0.25)
+            if error:
                 break
-            timings.append(ms)
+            timings.append((time.perf_counter() - started) * 1000)
         record("Аналитика", "полный пересчёт", timings, size, error)
 
     for label, audience in (("всем", {"kind": "all"}), ("закончившимся", {"kind": "expired"})):

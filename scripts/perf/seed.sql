@@ -962,7 +962,7 @@ SELECT broadcast_id, client_id, chat_id, state, attempts, done_at, 'bot' FROM pe
 UPDATE broadcasts b SET total = x.n FROM (SELECT broadcast_id, count(*) AS n FROM perf_gen.br GROUP BY broadcast_id) x WHERE x.broadcast_id = b.id;
 DROP TABLE perf_gen.br;
 
-INSERT INTO auto_broadcasts (id, trigger, days, with_autorenew, channel, text, enabled, created_at, updated_at) OVERRIDING SYSTEM VALUE VALUES
+INSERT INTO auto_broadcasts (id, trigger, amount, with_autorenew, channel, text, enabled, created_at, updated_at) OVERRIDING SYSTEM VALUE VALUES
     (1, 'expiring', 3, false, 'bot', 'Подписка закончится через 3 дня. Продлите, чтобы не потерять доступ.', true, :'t0'::timestamptz - interval '300 days', :'t0'::timestamptz - interval '300 days'),
     (2, 'expired', 1, false, 'bot', 'Подписка закончилась. Вернитесь со скидкой!', true, :'t0'::timestamptz - interval '300 days', :'t0'::timestamptz - interval '300 days'),
     (3, 'trial_ended', 0, false, 'bot', 'Пробный период закончился. Выберите тариф.', true, :'t0'::timestamptz - interval '300 days', :'t0'::timestamptz - interval '300 days'),
