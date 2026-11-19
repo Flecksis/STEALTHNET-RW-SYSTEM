@@ -402,7 +402,7 @@ mod tests {
     use sn_modules::ModuleRegistry;
     use sn_payments::ProviderRegistry;
     use sn_payments::providers::{
-        Overpay, cloudpayments_signature, cryptopay_signature, overpay_hook_token,
+        CloudPayments, Overpay, cloudpayments_signature, cryptopay_signature, overpay_hook_token,
     };
     use sn_services::{EnvFallbacks, ServiceDeps, Services, SystemClock};
     use sn_store::{InboxOutcome, NewClient, SecretBox, Store, StoreOptions};
@@ -504,9 +504,12 @@ mod tests {
             return;
         };
         let secret = "cp-api-secret";
+        let api = wiremock::MockServer::start().await;
         let services = Services::new(ServiceDeps {
             store: db.store.clone(),
-            payments: Arc::new(ProviderRegistry::builtin()),
+            payments: Arc::new(ProviderRegistry::new(vec![Arc::new(
+                CloudPayments::with_api_base(api.uri()),
+            )])),
             modules: Arc::new(ModuleRegistry::catalog_only()),
             secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
             clock: Arc::new(SystemClock),
@@ -576,6 +579,25 @@ mod tests {
                 .unwrap()
         };
         services.reload().await.unwrap();
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/payments/get"))
+            .and(wiremock::matchers::basic_auth("pk_get_test", secret))
+            .and(wiremock::matchers::body_json(
+                serde_json::json!({"TransactionId": 1504}),
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Success": true, "Message": null,
+                    "Model": {
+                        "TransactionId": 1504, "Amount": 499.0, "Currency": "RUB",
+                        "Status": "Completed", "InvoiceId": payment.public_id.to_string(),
+                        "TestMode": false, "Type": 0
+                    }
+                })),
+            )
+            .expect(2)
+            .mount(&api)
+            .await;
         let app = router(AppState::new(ServerConfig::default(), services.clone()));
         let check = format!(
             "TransactionId=1504&Amount=499.00&Currency=RUB&DateTime=2026-11-18+10%3A00%3A00&TestMode=0&Status=Completed&OperationType=Payment&InvoiceId={}&Email=client%40example.com",

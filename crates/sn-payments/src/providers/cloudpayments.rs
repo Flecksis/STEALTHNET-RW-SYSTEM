@@ -103,6 +103,55 @@ impl CloudPayments {
         .await
     }
 
+    async fn confirm_paid(
+        &self,
+        config: &ProviderConfig,
+        fields: &[(String, String)],
+        transaction: &str,
+        paid: Amount,
+    ) -> PaymentResult<()> {
+        let id = transaction_number(transaction)
+            .ok_or_else(|| util::bad("номер транзакции CloudPayments не число"))?;
+        let model = self.transaction(config, id).await?.ok_or_else(|| {
+            PaymentError::Rejected("CloudPayments не нашёл транзакцию из уведомления".into())
+        })?;
+        if model
+            .get("TransactionId")
+            .and_then(Json::scalar_text)
+            .and_then(transaction_number)
+            != Some(id)
+        {
+            return Err(util::bad("CloudPayments вернул другую транзакцию"));
+        }
+        if model_operation(&model).is_some_and(|op| op != Operation::Payment)
+            || model_test(&model) != config.flag("test_mode")
+        {
+            return Err(util::bad(
+                "транзакция в CloudPayments не оплата в режиме, который выбран в панели",
+            ));
+        }
+        let status = model
+            .get("Status")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if status != "Completed" {
+            return Err(PaymentError::Rejected(format!(
+                "CloudPayments не подтвердил оплату: статус транзакции «{}»",
+                util::clip(status, 32)
+            )));
+        }
+        if model_amount(&model)? != paid
+            || filled(model.get("InvoiceId").and_then(Json::scalar_text))
+                != filled(field(fields, "InvoiceId"))
+        {
+            return Err(util::bad(
+                "сумма или номер счёта в уведомлении не совпали с транзакцией в CloudPayments",
+            ));
+        }
+        Ok(())
+    }
+
     async fn order(
         &self,
         config: &ProviderConfig,
@@ -372,6 +421,10 @@ fn notification_fields(message: &[u8]) -> PaymentResult<Vec<(String, String)>> {
             .collect()),
         _ => Err(util::bad("тело не JSON-объект")),
     }
+}
+
+fn filled(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|text| !text.is_empty())
 }
 
 fn transaction_number(raw: &str) -> Option<i64> {
@@ -752,19 +805,24 @@ impl PaymentProvider for CloudPayments {
                 if is_test(&fields) == test_mode
                     && operation.is_none_or(|op| op == Operation::Payment) =>
             {
-                let status = match field(&fields, "Status") {
-                    Some("Completed") => ProviderStatus::Paid,
-                    _ => ProviderStatus::Pending,
-                };
                 if transaction.is_empty() {
                     return Err(util::bad("нет TransactionId"));
                 }
+                let paid = amount(&fields, "Amount")?;
+                let status = match field(&fields, "Status") {
+                    Some("Completed") => {
+                        self.confirm_paid(config, &fields, transaction, paid)
+                            .await?;
+                        ProviderStatus::Paid
+                    }
+                    _ => ProviderStatus::Pending,
+                };
                 Ok(WebhookOutcome {
                     event_key,
                     payment,
                     provider_txid: Some(transaction.to_string()),
                     status,
-                    amount: Some(amount(&fields, "Amount")?),
+                    amount: Some(paid),
                     saved_method: None,
                     reply: reply(0),
                     signal: None,
@@ -1077,13 +1135,50 @@ mod tests {
         hook(&[(header_name, signature.as_str())], body.to_string())
     }
 
-    async fn deliver(
+    fn completed(amount: serde_json::Value, currency: &str, test: bool) -> serde_json::Value {
+        json!({
+            "TransactionId": 1504, "Amount": amount, "Currency": currency, "Status": "Completed",
+            "InvoiceId": PAYMENT.to_string(), "AccountId": CLIENT.to_string(), "TestMode": test,
+            "Type": 0, "OperationType": "Payment"
+        })
+    }
+
+    async fn transaction_api(answer: ResponseTemplate) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/payments/get"))
+            .and(basic_auth("pk_8f3b2c1d0e", SECRET))
+            .and(body_json(json!({"TransactionId": 1504})))
+            .respond_with(answer)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn deliver_via(
+        api: &MockServer,
         config: &ProviderConfig,
         kind: &str,
         mut request: WebhookRequest,
     ) -> PaymentResult<WebhookOutcome> {
         request.route_suffix = Some(kind.into());
-        CloudPayments::new().parse_webhook(config, &request).await
+        CloudPayments::with_api_base(api.uri())
+            .parse_webhook(config, &request)
+            .await
+    }
+
+    async fn deliver(
+        config: &ProviderConfig,
+        kind: &str,
+        request: WebhookRequest,
+    ) -> PaymentResult<WebhookOutcome> {
+        let api = transaction_api(model(completed(
+            json!(499.0),
+            "RUB",
+            config.flag("test_mode"),
+        )))
+        .await;
+        deliver_via(&api, config, kind, request).await
     }
 
     async fn parse(
@@ -1384,6 +1479,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn оплата_засчитывается_только_если_cloudpayments_её_подтвердил() {
+        let body = pay_form("499.00", "RUB", "0");
+        let request = || signed_hook("Content-HMAC", &body, &body);
+        let confirmed = transaction_api(model(completed(json!(499.0), "RUB", false))).await;
+        let outcome = deliver_via(&confirmed, &settings(), "pay", request())
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Paid);
+        assert_eq!(outcome.amount, Some(rub(49_900)));
+        assert_eq!(confirmed.received_requests().await.unwrap().len(), 1);
+        let changed = |key: &str, value: serde_json::Value| {
+            let mut answer = completed(json!(499.0), "RUB", false);
+            answer[key] = value;
+            answer
+        };
+        for answer in [
+            changed("Status", json!("Declined")),
+            changed("Status", json!("Authorized")),
+            changed("Status", json!(null)),
+        ] {
+            let api = transaction_api(model(answer.clone())).await;
+            assert!(
+                matches!(
+                    deliver_via(&api, &settings(), "pay", request()).await,
+                    Err(PaymentError::Rejected(_))
+                ),
+                "{answer}"
+            );
+        }
+        for answer in [
+            changed("Amount", json!(4990.0)),
+            changed("Currency", json!("USD")),
+            changed("InvoiceId", json!(Uuid::from_u128(9).to_string())),
+            changed("InvoiceId", json!(null)),
+            changed("TestMode", json!(true)),
+            changed("OperationType", json!("Refund")),
+            changed("TransactionId", json!(1505)),
+        ] {
+            let api = transaction_api(model(answer.clone())).await;
+            assert!(
+                matches!(
+                    deliver_via(&api, &settings(), "pay", request()).await,
+                    Err(PaymentError::BadPayload(_))
+                ),
+                "{answer}"
+            );
+        }
+        let missing = transaction_api(not_found()).await;
+        assert!(matches!(
+            deliver_via(&missing, &settings(), "pay", request()).await,
+            Err(PaymentError::Rejected(_))
+        ));
+        let down = transaction_api(ResponseTemplate::new(503)).await;
+        assert_eq!(
+            deliver_via(&down, &settings(), "pay", request()).await,
+            Err(PaymentError::Http { status: 503 })
+        );
+        let letters = body.replace("TransactionId=1504", "TransactionId=tx1504");
+        assert!(matches!(
+            deliver_via(
+                &confirmed,
+                &settings(),
+                "pay",
+                signed_hook("Content-HMAC", &letters, &letters)
+            )
+            .await,
+            Err(PaymentError::BadPayload(_))
+        ));
+        let authorized = body.replace("Status=Completed", "Status=Authorized");
+        let quiet = transaction_api(model(completed(json!(499.0), "RUB", false))).await;
+        let waiting = deliver_via(
+            &quiet,
+            &settings(),
+            "pay",
+            signed_hook("Content-HMAC", &authorized, &authorized),
+        )
+        .await
+        .unwrap();
+        assert_eq!(waiting.status, ProviderStatus::Pending);
+        assert!(quiet.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn возврат_по_уведомлению_без_testmode_и_валюты() {
         let refund = format!(
             "TransactionId=1600&PaymentTransactionId=1504&Amount=100.00&DateTime=2026-11-16+15%3A00%3A00&OperationType=Refund&InvoiceId={PAYMENT}&AccountId={CLIENT}"
@@ -1467,17 +1645,29 @@ mod tests {
     async fn недоплата_и_чужая_валюта_cloudpayments() {
         let expected = rub(49_900);
         let under = pay_form("498.99", "RUB", "0");
-        let outcome = parse("pay", &under, Some(sign(&under, SECRET)))
-            .await
-            .unwrap();
+        let api = transaction_api(model(completed(json!(498.99), "RUB", false))).await;
+        let outcome = deliver_via(
+            &api,
+            &settings(),
+            "pay",
+            signed_hook("Content-HMAC", &under, &under),
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             check_paid_amount(expected, outcome.amount),
             AmountCheck::Underpaid { .. }
         ));
         let usd_pay = pay_form("499.00", "USD", "0");
-        let outcome = parse("pay", &usd_pay, Some(sign(&usd_pay, SECRET)))
-            .await
-            .unwrap();
+        let api = transaction_api(model(completed(json!(499.0), "USD", false))).await;
+        let outcome = deliver_via(
+            &api,
+            &settings(),
+            "pay",
+            signed_hook("Content-HMAC", &usd_pay, &usd_pay),
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             check_paid_amount(expected, outcome.amount),
             AmountCheck::CurrencyMismatch { .. }
