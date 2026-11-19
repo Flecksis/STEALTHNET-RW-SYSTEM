@@ -366,7 +366,7 @@ async fn письмо_рассылки_уходит_по_smtp_с_html_и_отп�
     assert!(bridge.site().unwrap_err().contains("способ отправки"));
     let (port, letters) = fake_smtp_rejecting("nobody@example.com").await;
     configure(services, admin, port).await;
-    assert!(bridge.site().unwrap_err().contains("адрес сайта"));
+    assert!(bridge.site().unwrap_err().contains("адрес сервиса"));
     site_ready(services).await;
     let site = bridge.site().unwrap();
     assert_eq!(site.base_url, "https://vpn.example.com");
