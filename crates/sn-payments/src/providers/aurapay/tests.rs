@@ -43,8 +43,41 @@ fn signed(body: impl Into<Vec<u8>>) -> WebhookRequest {
     hook(&[("X-SIGNATURE", sign.as_str())], body)
 }
 
-async fn parse(request: &WebhookRequest) -> PaymentResult<WebhookOutcome> {
-    AuraPay::new().parse_webhook(&settings(), request).await
+fn remote(status: &str, amount: serde_json::Value) -> serde_json::Value {
+    json!({
+        "id": INVOICE, "order_id": PAYMENT.to_string(), "shop_id": SHOP, "amount": amount,
+        "comment": "Стандарт", "service": "sbp", "status": status,
+        "expires_at": "2026-11-18 13:00:00", "created_at": "2026-11-18 12:00:00",
+        "payment_data": {"url": "https://payform.aurapay.tech/pay/9beea835"}
+    })
+}
+
+async fn api(body: serde_json::Value) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/invoice/status"))
+        .and(header("X-ApiKey", KEY))
+        .and(header("X-ShopId", SHOP))
+        .and(body_json(json!({"id": INVOICE})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/invoice/status"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"error": "Invoice not found", "data": []})),
+        )
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn parse(server: &MockServer, request: &WebhookRequest) -> PaymentResult<WebhookOutcome> {
+    AuraPay::with_api_base(server.uri())
+        .parse_webhook(&settings(), request)
+        .await
 }
 
 fn created(order: &str, amount: serde_json::Value) -> ResponseTemplate {
@@ -88,7 +121,10 @@ fn подпись_aurapay_по_векторам() {
 
 #[tokio::test]
 async fn уведомление_с_верной_подписью_засчитывает_оплату() {
-    let outcome = parse(&signed(event("PAID", "1500.00"))).await.unwrap();
+    let server = api(remote("PAID", json!(1500.0))).await;
+    let outcome = parse(&server, &signed(event("PAID", "1500.00")))
+        .await
+        .unwrap();
     assert_eq!(outcome.status, ProviderStatus::Paid);
     assert_eq!(outcome.event_key, format!("{INVOICE}:paid"));
     assert_eq!(outcome.payment, Some(PaymentRef::PublicId(PAYMENT)));
@@ -96,49 +132,114 @@ async fn уведомление_с_верной_подписью_засчиты�
     assert_eq!(outcome.amount, Some(rub(150_000)));
     assert_eq!(outcome.reply, WebhookReply::ok());
     assert_eq!(outcome.signal, None);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn статус_и_сумма_берутся_из_api_а_не_из_уведомления() {
+    let server = api(remote("PENDING", json!(1500))).await;
+    let outcome = parse(&server, &signed(event("PAID", "1500.00")))
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, ProviderStatus::Pending);
+    let server = api(remote("PAID", json!(15.0))).await;
+    let outcome = parse(&server, &signed(event("PAID", "1500.00")))
+        .await
+        .unwrap();
+    assert_eq!(outcome.amount, Some(rub(1_500)));
+    let mut other = remote("PAID", json!(1500));
+    other["order_id"] = json!(Uuid::from_u128(9).to_string());
+    let server = api(other).await;
+    assert!(matches!(
+        parse(&server, &signed(event("PAID", "1500.00"))).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let mut foreign = remote("PAID", json!(1500));
+    foreign["shop_id"] = json!("9bee9309-2585-4332-b63d-e1d897f7ce84");
+    let server = api(foreign).await;
+    assert!(matches!(
+        parse(&server, &signed(event("PAID", "1500.00"))).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let mut swapped = remote("PAID", json!(1500));
+    swapped["id"] = json!("0b9d77aa-1c2d-4e3f-8a4b-5c6d7e8f9012");
+    let server = api(swapped).await;
+    assert!(matches!(
+        parse(&server, &signed(event("PAID", "1500.00"))).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let unknown = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/invoice/status"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(json!({"error": "Invoice not found", "data": []})),
+        )
+        .mount(&unknown)
+        .await;
+    assert!(matches!(
+        parse(&unknown, &signed(event("PAID", "1500.00"))).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let down = failing_api(502).await;
+    assert_eq!(
+        parse(&down, &signed(event("PAID", "1500.00"))).await,
+        Err(PaymentError::Http { status: 502 })
+    );
 }
 
 #[tokio::test]
 async fn без_подписи_или_с_чужой_подписью_уведомление_отклоняется() {
+    let server = api(remote("PAID", json!(1500))).await;
     let body = event("PAID", "1500.00");
     assert_eq!(
-        parse(&hook(&[], body.clone())).await,
+        parse(&server, &hook(&[], body.clone())).await,
         Err(PaymentError::BadSignature)
     );
     let forged = signature("угаданный ключ", &body);
     assert_eq!(
-        parse(&hook(&[("X-SIGNATURE", forged.as_str())], body.clone())).await,
+        parse(
+            &server,
+            &hook(&[("X-SIGNATURE", forged.as_str())], body.clone())
+        )
+        .await,
         Err(PaymentError::BadSignature)
     );
     let genuine = signature(SECRET, &body);
     let tampered = event("PAID", "15000.00");
     assert_eq!(
-        parse(&hook(&[("X-SIGNATURE", genuine.as_str())], tampered)).await,
+        parse(
+            &server,
+            &hook(&[("X-SIGNATURE", genuine.as_str())], tampered)
+        )
+        .await,
         Err(PaymentError::BadSignature)
     );
     assert_eq!(
-        parse(&hook(
-            &[("X-SIGNATURE", genuine.as_str())],
-            "id=1&status=PAID"
-        ))
+        parse(
+            &server,
+            &hook(&[("X-SIGNATURE", genuine.as_str())], "id=1&status=PAID")
+        )
         .await,
         Err(PaymentError::BadSignature)
     );
     let mut suffixed = signed(body);
     suffixed.route_suffix = Some("pay".into());
     assert!(matches!(
-        parse(&suffixed).await,
+        parse(&server, &suffixed).await,
         Err(PaymentError::BadPayload(_))
     ));
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn порядок_полей_и_пробелы_в_теле_не_мешают_подписи() {
+    let server = api(remote("PAID", json!(1500))).await;
     let compact = event("PAID", "1500.00");
     let sign = signature(SECRET, &compact);
     let value: serde_json::Value = serde_json::from_slice(&compact).unwrap();
     let pretty = serde_json::to_vec_pretty(&value).unwrap();
-    let outcome = parse(&hook(&[("X-SIGNATURE", sign.as_str())], pretty))
+    let outcome = parse(&server, &hook(&[("X-SIGNATURE", sign.as_str())], pretty))
         .await
         .unwrap();
     assert_eq!(outcome.status, ProviderStatus::Paid);
@@ -146,8 +247,13 @@ async fn порядок_полей_и_пробелы_в_теле_не_мешаю
 
 #[tokio::test]
 async fn повтор_того_же_уведомления_даёт_то_же_событие() {
-    let first = parse(&signed(event("PAID", "1500.00"))).await.unwrap();
-    let second = parse(&signed(event("PAID", "1500.00"))).await.unwrap();
+    let server = api(remote("PAID", json!(1500))).await;
+    let first = parse(&server, &signed(event("PAID", "1500.00")))
+        .await
+        .unwrap();
+    let second = parse(&server, &signed(event("PAID", "1500.00")))
+        .await
+        .unwrap();
     assert_eq!(first.event_key, second.event_key);
     assert_eq!(first, second);
 }
@@ -179,7 +285,10 @@ async fn статусы_aurapay() {
             format!("{INVOICE}:something_new"),
         ),
     ] {
-        let outcome = parse(&signed(event(status, "1500.00"))).await.unwrap();
+        let server = api(remote(status, json!(1500))).await;
+        let outcome = parse(&server, &signed(event(status, "1500.00")))
+            .await
+            .unwrap();
         assert_eq!(outcome.status, expected, "{status}");
         assert_eq!(outcome.event_key, key, "{status}");
     }
@@ -188,22 +297,26 @@ async fn статусы_aurapay() {
 #[tokio::test]
 async fn сумма_не_сошлась() {
     let expected = rub(150_000);
-    let under = parse(&signed(event("PAID", "1499.99"))).await.unwrap();
+    let checked = |amount: serde_json::Value| async move {
+        let server = api(remote("PAID", amount)).await;
+        parse(&server, &signed(event("PAID", "1500.00"))).await
+    };
+    let under = checked(json!("1499.99")).await.unwrap();
     assert!(matches!(
         check_paid_amount(expected, under.amount),
         AmountCheck::Underpaid { .. }
     ));
-    let over = parse(&signed(event("PAID", "1575.00"))).await.unwrap();
+    let over = checked(json!(1575)).await.unwrap();
     assert!(matches!(
         check_paid_amount(expected, over.amount),
         AmountCheck::Overpaid { .. }
     ));
-    let exact = parse(&signed(event("PAID", "1500.00"))).await.unwrap();
+    let exact = checked(json!("1500.00")).await.unwrap();
     assert_eq!(check_paid_amount(expected, exact.amount), AmountCheck::Ok);
-    for amount in ["1500.001", "", "1 500.00", "-1"] {
+    for amount in [json!("1500.001"), json!(""), json!("1 500.00"), json!(-1)] {
         assert!(
             matches!(
-                parse(&signed(event("PAID", amount))).await,
+                checked(amount.clone()).await,
                 Err(PaymentError::BadPayload(_))
             ),
             "{amount}"
@@ -213,25 +326,31 @@ async fn сумма_не_сошлась() {
 
 #[tokio::test]
 async fn уведомление_другой_кассы_не_засчитывается() {
+    let server = api(remote("PAID", json!(1500))).await;
     let mut value: serde_json::Value = serde_json::from_slice(&event("PAID", "1500.00")).unwrap();
     value["shop_id"] = json!("9bee9309-2585-4332-b63d-e1d897f7ce84");
-    let outcome = parse(&signed(serde_json::to_vec(&value).unwrap())).await;
+    let outcome = parse(&server, &signed(serde_json::to_vec(&value).unwrap())).await;
     assert!(matches!(outcome, Err(PaymentError::BadPayload(_))));
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn подписки_и_выплаты_пропускаются() {
+    let server = MockServer::start().await;
     let subscription = Json::parse(V3.as_bytes()).unwrap();
     let mut body = subscription.clone();
     body.push("shop_id", Json::from(SHOP));
-    let outcome = parse(&signed(body.to_bytes())).await.unwrap();
+    let outcome = parse(&server, &signed(body.to_bytes())).await.unwrap();
     assert_eq!(outcome.status, ProviderStatus::Pending);
     assert_eq!(outcome.payment, None);
     assert_eq!(outcome.event_key, "subscription:PAYMENT_ERROR");
-    let payout = parse(&signed(V4.as_bytes().to_vec())).await.unwrap();
+    let payout = parse(&server, &signed(V4.as_bytes().to_vec()))
+        .await
+        .unwrap();
     assert_eq!(payout.payment, None);
     assert_eq!(payout.amount, None);
     assert!(payout.event_key.starts_with("payout:"));
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

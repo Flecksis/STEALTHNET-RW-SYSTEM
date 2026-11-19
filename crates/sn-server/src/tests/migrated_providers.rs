@@ -436,6 +436,19 @@ const AURA_SHOP: &str = "9bee9309-2585-4332-b63d-e1d897f7ce84";
 const AURA_KEY: &str = "aura_e2e_api_key";
 const AURA_SECRET: &str = "aura_e2e_secret_2";
 
+async fn aura_invoice(api: &MockServer, invoice: &str, public: Uuid, amount: f64) {
+    Mock::given(method("POST"))
+        .and(path("/invoice/status"))
+        .and(wiremock::matchers::body_json(json!({"id": invoice})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": invoice, "order_id": public.to_string(), "shop_id": AURA_SHOP,
+            "amount": amount, "status": "PAID", "service": "sbp", "comment": "Пополнение",
+            "payment_data": {"url": format!("https://payform.aurapay.tech/pay/{invoice}")}
+        })))
+        .mount(api)
+        .await;
+}
+
 fn aura_event(public: Uuid, invoice: &str, amount: &str) -> String {
     json!({
         "id": invoice, "amount": amount, "status": "PAID", "comment": "Пополнение",
@@ -477,6 +490,8 @@ async fn aurapay_счёт_уведомление_повтор_чужая_сум�
     let second = top_up(&h, &token, "aurapay", "700").await;
     let invoice = "00000000-0000-4000-8000-000000000001";
     assert_eq!(txid_of(&h, first).await.as_deref(), Some(invoice));
+    aura_invoice(&api, invoice, first, 500.0).await;
+    aura_invoice(&api, "00000000-0000-4000-8000-000000000002", second, 699.0).await;
     let uri = "/api/webhooks/pay/aurapay";
     let paid = aura_event(first, invoice, "500.00");
     let forged = aurapay_signature("guessed", paid.as_bytes());

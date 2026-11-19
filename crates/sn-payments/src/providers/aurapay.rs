@@ -181,6 +181,32 @@ impl AuraPay {
         )
         .await
     }
+
+    async fn invoice(&self, config: &ProviderConfig, id: &str) -> PaymentResult<Option<Json>> {
+        let id = util::safe_id(id.trim())?;
+        let own = shop(config)?;
+        let reply = self
+            .post(
+                config,
+                "/invoice/status",
+                &Json::object([("id", Json::from(id))]),
+            )
+            .await?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        if !reply.is_success() {
+            return Err(failure(&reply));
+        }
+        let parsed = reply.json()?;
+        if text(&parsed, "id") != Some(id) {
+            return Err(util::bad("AuraPay вернула другой счёт"));
+        }
+        if text(&parsed, "shop_id").is_some_and(|s| Uuid::parse_str(s) != Ok(own)) {
+            return Err(util::bad("AuraPay вернула счёт другой кассы"));
+        }
+        Ok(Some(parsed))
+    }
 }
 
 #[async_trait]
@@ -360,7 +386,17 @@ impl PaymentProvider for AuraPay {
                 WebhookReply::ok(),
             ));
         }
-        invoice_outcome(&body)
+        let id = text(&body, "id").ok_or_else(|| util::bad("нет id счёта"))?;
+        let invoice = self
+            .invoice(config, id)
+            .await?
+            .ok_or_else(|| util::bad("AuraPay не знает счёт из уведомления"))?;
+        if text(&invoice, "order_id") != text(&body, "order_id") {
+            return Err(util::bad(
+                "номер заказа в уведомлении и в AuraPay не совпал",
+            ));
+        }
+        invoice_outcome(&invoice)
     }
 
     async fn fetch_status(
@@ -368,25 +404,10 @@ impl PaymentProvider for AuraPay {
         config: &ProviderConfig,
         external_id: &str,
     ) -> PaymentResult<Option<WebhookOutcome>> {
-        let id = util::safe_id(external_id.trim())?;
-        let reply = self
-            .post(
-                config,
-                "/invoice/status",
-                &Json::object([("id", Json::from(id))]),
-            )
-            .await?;
-        if reply.status == 404 {
-            return Err(PaymentError::Rejected("счёт не найден в AuraPay".into()));
+        match self.invoice(config, external_id).await? {
+            Some(invoice) => invoice_outcome(&invoice).map(Some),
+            None => Err(PaymentError::Rejected("счёт не найден в AuraPay".into())),
         }
-        if !reply.is_success() {
-            return Err(failure(&reply));
-        }
-        let parsed = reply.json()?;
-        if text(&parsed, "id") != Some(id) {
-            return Err(util::bad("AuraPay вернула другой счёт"));
-        }
-        invoice_outcome(&parsed).map(Some)
     }
 
     async fn check_connection(
