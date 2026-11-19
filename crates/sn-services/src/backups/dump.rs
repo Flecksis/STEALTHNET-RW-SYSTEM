@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-pub const SKIPPED: [&str; 2] = ["_sqlx_migrations", "backup_runs"];
+pub const SKIPPED: [&str; 3] = ["_sqlx_migrations", "backup_runs", "bot_updates"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {

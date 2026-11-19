@@ -87,6 +87,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                 }
             }
             keys::PUBLIC_URL => settings.public_url = parse(&key, value),
+            keys::BOT_UPDATES => {
+                if let Some(v) = parse::<sn_domain::settings::BotDelivery>(&key, value) {
+                    settings.bot_updates = v;
+                }
+            }
             keys::SUPPORT_URL => settings.support_url = parse(&key, value),
             keys::SUPPORT_MODE => support_mode = parse(&key, value),
             keys::REMNA_UTC_OFFSET => {
@@ -1159,6 +1164,7 @@ pub struct BotSettingsView {
     pub token_from_env: bool,
     pub username: Option<String>,
     pub status: crate::BotState,
+    pub updates: crate::bot_webhook::UpdatesView,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -1167,6 +1173,8 @@ pub struct BotUpdate {
     pub token: Option<String>,
     #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub updates: Option<sn_domain::settings::UpdatesMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2510,11 +2518,13 @@ impl<'a> SettingsOps<'a> {
             .await?
             .filter(|u| !u.trim().is_empty());
         let env = self.services.env().bot_token.is_some();
+        drop(conn);
         Ok(BotSettingsView {
             token_set: stored.is_some() || env,
             token_from_env: stored.is_none() && env,
             username,
             status: self.services.bot_runtime().state(),
+            updates: self.services.bot_webhook().view().await?,
         })
     }
 
@@ -2600,11 +2610,76 @@ impl<'a> SettingsOps<'a> {
                 ))
                 .await?;
         }
+        let token_given = update
+            .token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty());
+        let switched = match update.updates {
+            Some(mode) => {
+                self.switch_updates(&mut tx, mode, token_given, admin)
+                    .await?
+            }
+            None => false,
+        };
         tx.commit().await?;
-        if !changed.is_empty() {
+        if !changed.is_empty() || switched {
             self.saved().await?;
         }
         self.bot().await
+    }
+
+    async fn switch_updates(
+        &self,
+        tx: &mut impl Db,
+        mode: sn_domain::settings::UpdatesMode,
+        token_given: bool,
+        admin: AdminId,
+    ) -> ServiceResult<bool> {
+        use crate::bot_webhook::{MODE_ACTION, NEEDS_TOKEN, WebhookKeys, mode_word};
+        use sn_domain::settings::{BotDelivery, UpdatesMode};
+        let current = self.services.settings().bot_updates.clone();
+        if current.mode == mode && current.fallback.is_none() {
+            return Ok(false);
+        }
+        if mode == UpdatesMode::Webhook {
+            self.services.bot_webhook().check_ready()?;
+            if !token_given && self.services.bot_token().is_none() {
+                return Err(ServiceError::rejected(
+                    NEEDS_TOKEN,
+                    "Сначала сохраните токен бота, потом включайте вебхук",
+                ));
+            }
+            write_secret(
+                tx,
+                self.services.secrets(),
+                secret_keys::BOT_WEBHOOK,
+                Some(&WebhookKeys::generate().to_secret()),
+                Some(admin),
+            )
+            .await?;
+        }
+        let value = serde_json::to_value(BotDelivery {
+            mode,
+            fallback: None,
+        })
+        .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        tx.settings()
+            .set(keys::BOT_UPDATES, &value, Some(admin))
+            .await?;
+        if current.mode != mode {
+            tx.audit()
+                .record(&Actor::Admin(admin).audit(
+                    MODE_ACTION,
+                    "settings",
+                    None,
+                    serde_json::json!({
+                        "from": mode_word(current.mode),
+                        "to": mode_word(mode),
+                    }),
+                ))
+                .await?;
+        }
+        Ok(true)
     }
 
     pub fn module_config(&self, id: ModuleId) -> ModuleConfigView {

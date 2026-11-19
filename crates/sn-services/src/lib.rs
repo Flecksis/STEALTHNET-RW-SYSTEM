@@ -8,6 +8,7 @@ pub mod autorenew;
 pub mod backups;
 pub mod bot_content;
 pub mod bot_runtime;
+pub mod bot_webhook;
 pub mod branding;
 pub mod checkout;
 pub mod clients;

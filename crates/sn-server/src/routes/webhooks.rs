@@ -10,6 +10,7 @@ use axum::{Extension, Json, Router};
 use sn_domain::payment::PaymentStatus;
 use sn_payments::{WebhookReply, WebhookRequest};
 use sn_remnawave::webhook::SIGNATURE_HEADER;
+use sn_services::bot_webhook::{self, Inbound};
 use sn_services::inbox::{InboundWebhook, MAX_WEBHOOK_BODY};
 use sn_services::remna_sync::RemnaWebhookResult;
 use sn_store::Db;
@@ -45,6 +46,10 @@ pub fn routes() -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY)),
         )
         .route("/api/telegram/webhook", post(telegram_webhook))
+        .route(
+            "/api/webhooks/telegram/{secret}",
+            post(telegram_update).layer(DefaultBodyLimit::max(bot_webhook::MAX_BODY)),
+        )
         .route("/api/pay/{payment}", get(pay_redirect))
 }
 
@@ -280,8 +285,57 @@ async fn telegram_webhook() -> ApiError {
     ApiError::new(
         StatusCode::NOT_FOUND,
         "telegram.webhook_disabled",
-        "бот получает обновления через long polling, вебхук Telegram выключен",
+        "этот адрес не принимает обновления Telegram: вебхук бота включается в «Настройки → Бот»",
     )
+}
+
+async fn telegram_update(
+    State(state): State<AppState>,
+    Path(secret): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Response> {
+    let token = headers
+        .get(bot_webhook::SECRET_HEADER)
+        .and_then(|v| v.to_str().ok());
+    let outcome = state
+        .services
+        .bot_webhook()
+        .accept(&secret, token, &body)
+        .await?;
+    Ok(match outcome {
+        Inbound::Queued(update_id) => {
+            tracing::debug!(update_id, "обновление Telegram принято вебхуком");
+            StatusCode::OK.into_response()
+        }
+        Inbound::Duplicate(update_id) => {
+            tracing::debug!(update_id, "повтор обновления Telegram пропущен");
+            StatusCode::OK.into_response()
+        }
+        Inbound::Malformed => {
+            tracing::warn!(
+                bytes = body.len(),
+                "вебхук Telegram прислал тело без update_id, пропущено"
+            );
+            StatusCode::OK.into_response()
+        }
+        Inbound::Off | Inbound::BadPath => ApiError::not_found().into_response(),
+        Inbound::BadToken => {
+            tracing::warn!("вебхук Telegram: секретный заголовок не совпал");
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "telegram.bad_secret",
+                "секрет вебхука не совпал",
+            )
+            .into_response()
+        }
+        Inbound::NoBot => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "telegram.no_bot",
+            "токен бота не задан",
+        )
+        .into_response(),
+    })
 }
 
 fn no_store(mut response: Response) -> Response {

@@ -19,6 +19,7 @@ pub mod support_files;
 pub mod telegram;
 pub mod text;
 pub mod ui;
+pub mod webhook;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use handler::handle_update;
 pub use notify::NotifyHandler;
-pub use telegram::{TelegramApi, TelegramError, Update};
+pub use telegram::{BotUser, TelegramApi, TelegramError, Update};
 
 pub const OFFSET_KEY: &str = "telegram.offset";
 
@@ -47,6 +48,9 @@ const RETRY_PAUSE: Duration = Duration::from_secs(30);
 const WEBHOOK_PAUSE: Duration = Duration::from_secs(120);
 const BAD_TOKEN_PAUSE: Duration = Duration::from_secs(600);
 const UNREACHABLE_AFTER: u32 = 2;
+const LEASE_CHECK: Duration = Duration::from_secs(30);
+const PURGE_EVERY: Duration = Duration::from_secs(600);
+const FIRST_CHECK: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
 pub struct BotConfig {
@@ -57,6 +61,10 @@ pub struct BotConfig {
     pub stars_reconcile_every: Duration,
     pub alerts_tick: Duration,
     pub alerts_every: Duration,
+    pub webhook_check_every: Duration,
+    pub webhook_alert_after: Duration,
+    pub webhook_fallback_after: Duration,
+    pub queue_recheck: Duration,
 }
 
 impl Default for BotConfig {
@@ -69,6 +77,10 @@ impl Default for BotConfig {
             stars_reconcile_every: Duration::from_secs(60),
             alerts_tick: Duration::from_secs(5),
             alerts_every: Duration::from_secs(60),
+            webhook_check_every: Duration::from_secs(60),
+            webhook_alert_after: Duration::from_secs(5 * 60),
+            webhook_fallback_after: Duration::from_secs(10 * 60),
+            queue_recheck: Duration::from_secs(2),
         }
     }
 }
@@ -89,11 +101,14 @@ pub enum BotError {
     Webhook(Option<String>),
     #[error("этот токен уже опрашивает другая программа")]
     Conflict,
+    #[error("бот уже запущен в другом процессе этой панели")]
+    Duplicate,
 }
 
 enum Stop {
     Cancelled,
     TokenChanged,
+    ModeChanged,
 }
 
 pub struct Bot {
@@ -129,6 +144,7 @@ fn diagnose(err: &BotError) -> (BotProblem, Option<String>, Duration) {
         BotError::Telegram(TelegramError::Api { code: 409, .. }) | BotError::Conflict => {
             (BotProblem::Conflict, None, RETRY_PAUSE)
         }
+        BotError::Duplicate => (BotProblem::Duplicate, None, RETRY_PAUSE),
         BotError::Webhook(host) => (BotProblem::Webhook, host.clone(), WEBHOOK_PAUSE),
         BotError::Telegram(TelegramError::Transport(_)) => {
             (BotProblem::Unreachable, None, RETRY_PAUSE)
@@ -327,6 +343,45 @@ fn spawn_workers(ctx: &BotCtx, count: usize) -> (Vec<mpsc::Sender<Update>>, Vec<
     (senders, handles)
 }
 
+async fn dispatch(ctx: &BotCtx, senders: &[mpsc::Sender<Update>], update: Update) {
+    if update.pre_checkout_query.is_some() {
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let _work = ctx.services.pause_gate().enter().await;
+            handle_update(&ctx, update).await
+        });
+        return;
+    }
+    let shard = shard_for(update.chat_key(), senders.len());
+    if senders[shard].send(update).await.is_err() {
+        tracing::warn!("обработчик апдейтов остановился");
+    }
+}
+
+struct Live<'a> {
+    api: Arc<TelegramApi>,
+    ctx: BotCtx,
+    senders: Vec<mpsc::Sender<Update>>,
+    me: BotUser,
+    queue: i64,
+    token: &'a str,
+    since: chrono::DateTime<chrono::Utc>,
+    menu: Option<String>,
+    commands: Option<sn_domain::client::Languages>,
+    next_lease: tokio::time::Instant,
+    next_purge: tokio::time::Instant,
+}
+
+impl Live<'_> {
+    fn running(&self, at: chrono::DateTime<chrono::Utc>) -> BotState {
+        BotState::Running {
+            username: self.me.username.clone(),
+            since: self.since,
+            last_ok_at: at,
+        }
+    }
+}
+
 impl Bot {
     pub fn new(services: Services, config: BotConfig) -> Self {
         Bot { services, config }
@@ -356,6 +411,9 @@ impl Bot {
                 Ok(Stop::TokenChanged) => {
                     tracing::info!("токен бота сменился, переподключаемся");
                 }
+                Ok(Stop::ModeChanged) => {
+                    tracing::info!("способ получения обновлений сменился, переподключаемся");
+                }
                 Err(err) => {
                     let (problem, detail, pause) = diagnose(&err);
                     runtime.set(BotState::Failed {
@@ -376,6 +434,18 @@ impl Bot {
     }
 
     async fn serve(&self, token: &str, cancel: &CancellationToken) -> Result<Stop, BotError> {
+        let mut lease = webhook::Lease::acquire(&self.services).await?;
+        let outcome = self.serve_leased(token, cancel, &mut lease).await;
+        lease.release().await;
+        outcome
+    }
+
+    async fn serve_leased(
+        &self,
+        token: &str,
+        cancel: &CancellationToken,
+        lease: &mut webhook::Lease,
+    ) -> Result<Stop, BotError> {
         let runtime = self.services.bot_runtime();
         let takeover = runtime.take_takeover();
         let api = Arc::new(TelegramApi::new(&self.config.api_base, token));
@@ -387,23 +457,52 @@ impl Bot {
         {
             tracing::warn!(error = %err, "имя бота не сохранено");
         }
-        match api.get_webhook_info().await {
-            Ok(hook) if !hook.url.is_empty() && !takeover => {
-                return Err(BotError::Webhook(webhook_host(&hook.url)));
-            }
-            Ok(_) | Err(_) if takeover => {
-                api.delete_webhook().await?;
-                tracing::info!("вебхук бота снят: администратор забрал бота сюда");
-            }
-            Ok(_) => {}
+        let hooks = self.services.bot_webhook();
+        let wanted = hooks.wanted();
+        let hook = match api.get_webhook_info().await {
+            Ok(hook) => Some(hook),
             Err(err) => {
                 tracing::debug!(error = %err, "сведения о вебхуке бота не получены");
+                None
             }
+        };
+        let foreign = match hook.as_ref().filter(|h| !h.url.is_empty()) {
+            Some(h) if !hooks.is_ours(&h.url).await? => Some(h.url.clone()),
+            _ => None,
+        };
+        if let Some(url) = &foreign
+            && !takeover
+        {
+            return Err(BotError::Webhook(webhook_host(url)));
         }
+        let queue = sn_services::bot_webhook::bot_id(token).unwrap_or(me.id);
+        let target = if wanted {
+            match webhook::register(&self.services, &api, queue, hook.as_ref()).await? {
+                webhook::Setup::Ready(url) => Some(url),
+                webhook::Setup::Rejected(description) => {
+                    webhook::fall_back_rejected(&self.services, description).await?;
+                    return Ok(Stop::ModeChanged);
+                }
+            }
+        } else {
+            let set = hook.as_ref().is_some_and(|h| !h.url.is_empty());
+            if set || (hook.is_none() && takeover) {
+                api.delete_webhook().await?;
+                if foreign.is_some() || takeover {
+                    tracing::info!("вебхук бота снят: администратор забрал бота сюда");
+                } else {
+                    tracing::info!("вебхук бота снят, бот получает обновления опросом");
+                }
+            }
+            None
+        };
         let mut commands = None;
         sync_commands(&api, &self.services, &mut commands).await;
-        let mut offset = load_offset(&self.services, me.id, same_bot).await?;
-        tracing::info!(username = %me.username.clone().unwrap_or_default(), "бот подключён");
+        tracing::info!(
+            username = %me.username.clone().unwrap_or_default(),
+            mode = if target.is_some() { "webhook" } else { "polling" },
+            "бот подключён"
+        );
         let ctx = BotCtx {
             services: self.services.clone(),
             api: api.clone(),
@@ -434,18 +533,117 @@ impl Bot {
             )
             .run(alerts_stop),
         );
-        let since = self.services.now();
-        let running = |at| BotState::Running {
-            username: me.username.clone(),
-            since,
-            last_ok_at: at,
+        let now = tokio::time::Instant::now();
+        let mut live = Live {
+            api,
+            ctx,
+            senders,
+            me,
+            queue,
+            token,
+            since: self.services.now(),
+            menu: stored_menu(&self.services).await,
+            commands,
+            next_lease: now + LEASE_CHECK,
+            next_purge: now,
         };
-        runtime.set(running(since));
+        runtime.set(live.running(live.since));
+        let outcome = match target {
+            Some(url) => self.consume(&mut live, url, lease, cancel).await,
+            None => {
+                let offset = load_offset(&self.services, live.me.id, same_bot).await;
+                match offset {
+                    Ok(offset) => self.poll(&mut live, offset, lease, cancel).await,
+                    Err(err) => Err(err.into()),
+                }
+            }
+        };
+        drop(live);
+        drop(keeper_guard);
+        drop(alerts_guard);
+        for handle in handles {
+            if tokio::time::timeout(Duration::from_secs(8), handle)
+                .await
+                .is_err()
+            {
+                tracing::warn!("обработчик апдейтов не завершился за 8 секунд");
+            }
+        }
+        if tokio::time::timeout(Duration::from_secs(8), keeper)
+            .await
+            .is_err()
+        {
+            tracing::warn!("сверка оплат звёздами не завершилась за 8 секунд");
+        }
+        if tokio::time::timeout(Duration::from_secs(8), alerts_keeper)
+            .await
+            .is_err()
+        {
+            tracing::warn!("уведомления администраторам не остановились за 8 секунд");
+        }
+        outcome
+    }
+
+    async fn drain(&self, live: &Live<'_>) -> usize {
+        let mut total = 0;
+        loop {
+            match webhook::take_batch(&self.services, live.queue).await {
+                Ok(updates) => {
+                    let count = updates.len();
+                    for update in updates {
+                        dispatch(&live.ctx, &live.senders, update).await;
+                    }
+                    total += count;
+                    if count < webhook::BATCH as usize {
+                        return total;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "обновления из очереди вебхука не взяты, повторим");
+                    return total;
+                }
+            }
+        }
+    }
+
+    async fn upkeep(
+        &self,
+        live: &mut Live<'_>,
+        lease: &mut webhook::Lease,
+    ) -> Result<(), BotError> {
+        let now = tokio::time::Instant::now();
+        if now >= live.next_lease {
+            lease.alive().await?;
+            live.next_lease = now + LEASE_CHECK;
+        }
+        if now >= live.next_purge {
+            live.next_purge = now + PURGE_EVERY;
+            match self.services.bot_webhook().purge(live.queue).await {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!(removed, "старые записи очереди вебхука удалены"),
+                Err(err) => tracing::warn!(error = %err, "очередь вебхука не почищена"),
+            }
+        }
+        Ok(())
+    }
+
+    async fn poll(
+        &self,
+        live: &mut Live<'_>,
+        mut offset: Option<i64>,
+        lease: &mut webhook::Lease,
+        cancel: &CancellationToken,
+    ) -> Result<Stop, BotError> {
+        let runtime = self.services.bot_runtime();
+        let api = live.api.clone();
+        self.drain(live).await;
         let mut failures = 0u32;
-        let mut menu = stored_menu(&self.services).await;
-        let outcome: Result<Stop, BotError> = loop {
-            if self.services.bot_token().as_deref() != Some(token) {
+        loop {
+            if self.services.bot_token().as_deref() != Some(live.token) {
                 break Ok(Stop::TokenChanged);
+            }
+            if self.services.bot_webhook().wanted() {
+                break Ok(Stop::ModeChanged);
             }
             if self.services.pause_gate().is_paused() {
                 tokio::select! {
@@ -454,17 +652,22 @@ impl Bot {
                 }
                 continue;
             }
-            sync_menu(&api, &self.services, &mut menu).await;
-            sync_commands(&api, &self.services, &mut commands).await;
+            self.upkeep(live, lease).await?;
+            sync_menu(&api, &self.services, &mut live.menu).await;
+            sync_commands(&api, &self.services, &mut live.commands).await;
             let polled = tokio::select! {
                 _ = cancel.cancelled() => break Ok(Stop::Cancelled),
                 _ = runtime.woken() => continue,
+                _ = self.services.bot_updates_signal().notified() => {
+                    self.drain(live).await;
+                    continue;
+                }
                 polled = api.get_updates(offset, self.config.poll_timeout) => polled,
             };
             match polled {
                 Ok(updates) => {
                     failures = 0;
-                    runtime.set(running(self.services.now()));
+                    runtime.set(live.running(self.services.now()));
                     if updates.is_empty() {
                         continue;
                     }
@@ -485,21 +688,10 @@ impl Bot {
                     let mut next = offset.unwrap_or(0);
                     for update in updates {
                         next = next.max(update.update_id + 1);
-                        if update.pre_checkout_query.is_some() {
-                            let ctx = ctx.clone();
-                            tokio::spawn(async move {
-                                let _work = ctx.services.pause_gate().enter().await;
-                                handle_update(&ctx, update).await
-                            });
-                            continue;
-                        }
-                        let shard = shard_for(update.chat_key(), senders.len());
-                        if senders[shard].send(update).await.is_err() {
-                            tracing::warn!("обработчик апдейтов остановился");
-                        }
+                        dispatch(&live.ctx, &live.senders, update).await;
                     }
                     offset = Some(next);
-                    if let Err(err) = save_offset(&self.services, me.id, next).await {
+                    if let Err(err) = save_offset(&self.services, live.me.id, next).await {
                         tracing::warn!(error = %err, "смещение апдейтов не сохранено");
                     }
                 }
@@ -542,30 +734,75 @@ impl Bot {
                     }
                 }
             }
-        };
-        drop(senders);
-        drop(keeper_guard);
-        drop(alerts_guard);
-        for handle in handles {
-            if tokio::time::timeout(Duration::from_secs(8), handle)
-                .await
-                .is_err()
-            {
-                tracing::warn!("обработчик апдейтов не завершился за 8 секунд");
+        }
+    }
+
+    async fn consume(
+        &self,
+        live: &mut Live<'_>,
+        mut url: String,
+        lease: &mut webhook::Lease,
+        cancel: &CancellationToken,
+    ) -> Result<Stop, BotError> {
+        let runtime = self.services.bot_runtime();
+        let api = live.api.clone();
+        let hooks = self.services.bot_webhook();
+        let mut next_check =
+            tokio::time::Instant::now() + self.config.webhook_check_every.min(FIRST_CHECK);
+        loop {
+            if self.services.bot_token().as_deref() != Some(live.token) {
+                webhook::forget_previous(&self.services, &api).await;
+                return Ok(Stop::TokenChanged);
+            }
+            if !hooks.wanted() {
+                return Ok(Stop::ModeChanged);
+            }
+            if self.services.pause_gate().is_paused() {
+                tokio::select! {
+                    _ = cancel.cancelled() => return Ok(Stop::Cancelled),
+                    _ = self.services.pause_gate().cleared() => {}
+                }
+                continue;
+            }
+            self.upkeep(live, lease).await?;
+            sync_menu(&api, &self.services, &mut live.menu).await;
+            sync_commands(&api, &self.services, &mut live.commands).await;
+            if hooks.target().is_some_and(|(wanted, _)| wanted != url) {
+                match webhook::register(&self.services, &api, live.queue, None).await? {
+                    webhook::Setup::Ready(fresh) => url = fresh,
+                    webhook::Setup::Rejected(description) => {
+                        webhook::fall_back_rejected(&self.services, description).await?;
+                        return Ok(Stop::ModeChanged);
+                    }
+                }
+            }
+            if self.drain(live).await > 0 {
+                runtime.set(live.running(self.services.now()));
+            }
+            if tokio::time::Instant::now() >= next_check {
+                next_check = tokio::time::Instant::now() + self.config.webhook_check_every;
+                match webhook::check(&self.services, &api, &url, &self.config).await? {
+                    webhook::Verdict::Fine => runtime.set(live.running(self.services.now())),
+                    webhook::Verdict::Unknown => {}
+                    webhook::Verdict::Lost => {
+                        match webhook::register(&self.services, &api, live.queue, None).await? {
+                            webhook::Setup::Ready(fresh) => url = fresh,
+                            webhook::Setup::Rejected(description) => {
+                                webhook::fall_back_rejected(&self.services, description).await?;
+                                return Ok(Stop::ModeChanged);
+                            }
+                        }
+                    }
+                    webhook::Verdict::Foreign(host) => return Err(BotError::Webhook(host)),
+                    webhook::Verdict::FellBack => return Ok(Stop::ModeChanged),
+                }
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(Stop::Cancelled),
+                _ = runtime.woken() => {}
+                _ = self.services.bot_updates_signal().notified() => {}
+                _ = tokio::time::sleep(self.config.queue_recheck) => {}
             }
         }
-        if tokio::time::timeout(Duration::from_secs(8), keeper)
-            .await
-            .is_err()
-        {
-            tracing::warn!("сверка оплат звёздами не завершилась за 8 секунд");
-        }
-        if tokio::time::timeout(Duration::from_secs(8), alerts_keeper)
-            .await
-            .is_err()
-        {
-            tracing::warn!("уведомления администраторам не остановились за 8 секунд");
-        }
-        outcome
     }
 }

@@ -6,7 +6,7 @@ use crate::money::{Currency, Money};
 use crate::payment::providers;
 use crate::pricing::TopUpLimits;
 use crate::traffic::TrafficPolicy;
-use chrono::{FixedOffset, Offset, Utc};
+use chrono::{DateTime, FixedOffset, Offset, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -460,6 +460,48 @@ pub struct CoreSettings {
     pub client_access: ClientAccess,
     #[serde(default)]
     pub languages: Languages,
+    #[serde(default)]
+    pub bot_updates: BotDelivery,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatesMode {
+    #[default]
+    Polling,
+    Webhook,
+}
+
+impl UpdatesMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            UpdatesMode::Polling => "polling",
+            UpdatesMode::Webhook => "webhook",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackReason {
+    Rejected,
+    Undelivered,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebhookFallback {
+    pub at: DateTime<Utc>,
+    pub reason: FallbackReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotDelivery {
+    #[serde(default)]
+    pub mode: UpdatesMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<WebhookFallback>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -541,6 +583,7 @@ impl Default for CoreSettings {
             multi_subscriptions: false,
             client_access: ClientAccess::default(),
             languages: Languages::default(),
+            bot_updates: BotDelivery::default(),
         }
     }
 }
@@ -619,6 +662,7 @@ pub mod keys {
     pub const FAVICON: &str = "core.favicon";
     pub const LANDING: &str = "core.landing";
     pub const LANGUAGES: &str = "core.languages";
+    pub const BOT_UPDATES: &str = "bot.updates";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")
@@ -641,6 +685,7 @@ pub mod secret_keys {
     pub const REMNA_API_KEY: &str = "remnawave.x_api_key";
     pub const REMNA_WEBHOOK_SECRET: &str = "remnawave.webhook_secret";
     pub const BOT_TOKEN: &str = "bot.token";
+    pub const BOT_WEBHOOK: &str = "bot.webhook_secret";
 
     pub fn provider(id: &str, field: &str) -> String {
         format!("payments.{id}.{field}")

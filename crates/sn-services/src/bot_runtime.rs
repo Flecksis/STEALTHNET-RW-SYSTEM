@@ -10,6 +10,7 @@ pub enum BotProblem {
     BadToken,
     Unreachable,
     Conflict,
+    Duplicate,
     Webhook,
     Telegram,
     Internal,

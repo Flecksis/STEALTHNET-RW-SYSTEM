@@ -545,6 +545,26 @@ pub const ACTIONS: &[ActionLabel] = &[
         "Бот забран у другого сайта",
         Area::Settings,
     ),
+    a(
+        "settings.bot_updates",
+        "Изменён способ получения обновлений бота",
+        Area::Settings,
+    ),
+    a(
+        "settings.bot_webhook_broken",
+        "Telegram не доставляет обновления на вебхук бота",
+        Area::Settings,
+    ),
+    a(
+        "settings.bot_webhook_restored",
+        "Вебхук бота снова получает обновления",
+        Area::Settings,
+    ),
+    a(
+        "settings.bot_webhook_fallback",
+        "Бот сам вернулся к опросу",
+        Area::Settings,
+    ),
     a("settings.documents", "Изменены документы", Area::Settings),
     a("settings.landing", "Изменён лендинг", Area::Settings),
     a(
@@ -1034,6 +1054,9 @@ const FIELDS: &[(&str, &str)] = &[
     ("state", "Состояние"),
     ("kind", "Вид"),
     ("host", "Хост"),
+    ("pending", "Ждут доставки"),
+    ("minutes", "Минут без доставки"),
+    ("fallback_in", "До возврата к опросу, минут"),
     ("node", "Нода"),
     ("node_name", "Нода"),
     ("address", "Адрес"),

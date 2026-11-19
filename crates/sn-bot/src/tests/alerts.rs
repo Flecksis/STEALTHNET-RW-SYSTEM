@@ -162,11 +162,16 @@ async fn уведомления_уходят_в_группу_по_темам() {
         .filter_map(|b| b["text"].as_str().map(str::to_string))
         .filter(|t| t.contains("Проверка уведомлений"))
         .collect();
-    assert_eq!(checks.len(), 12);
+    assert_eq!(checks.len(), 13);
     assert!(
         checks
             .iter()
             .any(|t| t.contains("Сюда будут приходить: перенос в Remnawave и обратно."))
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|t| t.contains("Сюда будут приходить: сбои вебхука бота."))
     );
     assert!(checks.iter().all(|t| !t.contains("remnawave")));
     db.cleanup().await;

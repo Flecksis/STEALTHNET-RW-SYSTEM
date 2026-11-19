@@ -125,6 +125,7 @@ pub(super) fn quick(server: &MockServer) -> BotConfig {
         stars_reconcile_every: Duration::from_millis(200),
         alerts_tick: Duration::from_millis(100),
         alerts_every: Duration::from_millis(200),
+        ..BotConfig::default()
     }
 }
 

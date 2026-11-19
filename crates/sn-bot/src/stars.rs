@@ -169,12 +169,22 @@ async fn insert(
 }
 
 pub async fn record(services: &Services, events: &[StarsPayment]) -> StoreResult<u32> {
-    let mut added = 0;
     if events.is_empty() {
-        return Ok(added);
+        return Ok(0);
     }
-    let due = later(services, GRACE);
     let mut tx = services.store().begin().await?;
+    let added = record_in(&mut tx, services, events).await?;
+    tx.commit().await?;
+    Ok(added)
+}
+
+pub async fn record_in(
+    db: &mut impl Db,
+    services: &Services,
+    events: &[StarsPayment],
+) -> StoreResult<u32> {
+    let mut added = 0;
+    let due = later(services, GRACE);
     for event in events {
         if !storable(event) {
             tracing::warn!(
@@ -183,11 +193,10 @@ pub async fn record(services: &Services, events: &[StarsPayment]) -> StoreResult
             );
             continue;
         }
-        if insert(&mut tx, event, Source::Update, due).await? {
+        if insert(db, event, Source::Update, due).await? {
             added += 1;
         }
     }
-    tx.commit().await?;
     Ok(added)
 }
 

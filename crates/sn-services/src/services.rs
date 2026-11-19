@@ -50,6 +50,7 @@ pub struct EnvFallbacks {
     pub public_url: Option<String>,
     pub remna: Option<RemnaConnection>,
     pub bot_token: Option<String>,
+    pub telegram_api: Option<String>,
 }
 
 pub struct ServiceDeps {
@@ -66,6 +67,7 @@ struct Runtime {
     remna: Option<Arc<dyn RemnawaveApi>>,
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
+    bot_webhook: Option<crate::bot_webhook::WebhookKeys>,
     updates: Option<Arc<crate::updates::UpdateConfig>>,
     backup_env: Option<Arc<crate::backups::BackupEnv>>,
     bot_content: Arc<crate::bot_content::BotContent>,
@@ -84,6 +86,7 @@ struct Inner {
     instance: Uuid,
     runtime: RwLock<Runtime>,
     bot: BotRuntime,
+    bot_updates: tokio::sync::Notify,
     pause: crate::pause::PauseGate,
     backups: crate::backups::Runtime,
 }
@@ -107,6 +110,7 @@ impl Services {
                 .as_ref()
                 .and_then(|r| r.webhook_secret.clone()),
             bot_token: deps.env.bot_token.clone(),
+            bot_webhook: None,
             updates: None,
             backup_env: None,
             bot_content: Arc::default(),
@@ -127,6 +131,7 @@ impl Services {
                 instance: Uuid::new_v4(),
                 runtime: RwLock::new(runtime),
                 bot: BotRuntime::default(),
+                bot_updates: tokio::sync::Notify::new(),
                 pause: crate::pause::PauseGate::default(),
                 backups: crate::backups::Runtime::default(),
             }),
@@ -216,6 +221,18 @@ impl Services {
         self.read(|r| r.bot_token.clone())
     }
 
+    pub fn bot_webhook_keys(&self) -> Option<crate::bot_webhook::WebhookKeys> {
+        self.read(|r| r.bot_webhook.clone())
+    }
+
+    pub fn bot_updates_signal(&self) -> &tokio::sync::Notify {
+        &self.inner.bot_updates
+    }
+
+    pub fn bot_webhook(&self) -> crate::bot_webhook::BotWebhook<'_> {
+        crate::bot_webhook::BotWebhook::new(self)
+    }
+
     pub fn set_bot_sender(&self, sender: Option<Arc<dyn BotSender>>) {
         self.write(|r| r.bot_sender = sender);
     }
@@ -268,6 +285,13 @@ impl Services {
         .await?;
         let checks = settings::provider_checks(&mut conn, &self.inner.payments).await?;
         let bot_content = crate::bot_content::load(&mut conn).await?;
+        let bot_webhook = settings::read_secret(
+            &mut conn,
+            self.secrets(),
+            sn_domain::settings::secret_keys::BOT_WEBHOOK,
+        )
+        .await?
+        .and_then(|secret| crate::bot_webhook::WebhookKeys::from_secret(&secret));
         drop(conn);
         self.inner.payments.apply(snapshot);
         self.inner.payments.set_checks(checks);
@@ -290,16 +314,21 @@ impl Services {
                     }
                 }
             };
+        let previous = self.settings();
+        let delivery_changed = previous.bot_updates != core.bot_updates
+            || previous.public_url != core.public_url
+            || self.bot_webhook_keys() != bot_webhook;
         let token_changed = self.bot_token() != bot_token;
         self.write(|r| {
             r.settings = Arc::new(core);
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;
+            r.bot_webhook = bot_webhook;
             r.bot_content_en = Arc::new(bot_content.in_locale(Locale::En));
             r.bot_content = Arc::new(bot_content);
         });
-        if token_changed {
+        if token_changed || delivery_changed {
             self.inner.bot.wake();
         }
         Ok(())

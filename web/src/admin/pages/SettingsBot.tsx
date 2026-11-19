@@ -3,9 +3,10 @@ import { api, ApiError } from '../../lib/api';
 import { NBSP, plural, timeHM } from '../../lib/format';
 import '../form.css';
 import { BotTabs } from './BotTabs';
+import { BotUpdates, type Updates, type UpdatesMode } from './BotUpdates';
 import { SettingsLayout } from './SettingsLayout';
 
-type Problem = 'bad_token' | 'unreachable' | 'conflict' | 'webhook' | 'telegram' | 'internal';
+type Problem = 'bad_token' | 'unreachable' | 'conflict' | 'duplicate' | 'webhook' | 'telegram' | 'internal';
 
 type BotStatus =
   | { state: 'off' }
@@ -14,7 +15,7 @@ type BotStatus =
   | { state: 'running'; username: string | null; since: string; last_ok_at: string }
   | { state: 'failed'; problem: Problem; detail: string | null; at: string; retry_at: string | null };
 
-type Bot = { token_set: boolean; token_from_env: boolean; username: string | null; status: BotStatus };
+type Bot = { token_set: boolean; token_from_env: boolean; username: string | null; status: BotStatus; updates: Updates };
 
 type Tone = 'ok' | 'quiet' | 'bad' | 'warn';
 
@@ -96,6 +97,13 @@ function describe(status: BotStatus): Shown {
             hint: 'Telegram отдаёт сообщения только одной программе. Остановите старого бота или выпустите в @BotFather новый токен и замените его ниже',
             retry: true,
           };
+        case 'duplicate':
+          return {
+            head: 'Бот уже запущен в другом процессе панели',
+            tone: 'warn',
+            hint: 'Обновления обрабатывает один процесс. Этот ждёт и подхватит бота, если тот остановится. Если так не задумано, оставьте SN_RUN_BOT=true только в одном процессе',
+            retry: true,
+          };
         case 'webhook':
           return {
             head: status.detail ? `Бот подключён к другому сайту: ${status.detail}` : 'Бот подключён к другому сайту',
@@ -127,17 +135,22 @@ export function SettingsBot() {
   const [token, setToken] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [username, setUsername] = useState('');
+  const [mode, setMode] = useState<UpdatesMode>('polling');
   const [status, setStatus] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [askTakeOver, setAskTakeOver] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [fastUntil, setFastUntil] = useState(0);
   const touched = useRef(false);
+  const modeTouched = useRef(false);
 
   const apply = useCallback((data: Bot) => {
     setBot(data);
     if (!touched.current) {
       setUsername(data.username ?? '');
+    }
+    if (!modeTouched.current) {
+      setMode(data.updates.mode);
     }
   }, []);
 
@@ -145,6 +158,7 @@ export function SettingsBot() {
     try {
       const data = await api<Bot>('/api/admin/settings/bot');
       touched.current = false;
+      modeTouched.current = false;
       apply(data);
       setToken('');
       setReplacing(false);
@@ -195,7 +209,8 @@ export function SettingsBot() {
   const clean = username.trim().replace(/^@/, '');
   const nameBad = clean !== '' && !/^[A-Za-z0-9_]{5,32}$/.test(clean);
   const tokenBad = token.trim() !== '' && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(token.trim());
-  const dirty = token.trim() !== '' || clean !== (bot.username ?? '');
+  const modeChanged = mode !== bot.updates.mode;
+  const dirty = token.trim() !== '' || clean !== (bot.username ?? '') || modeChanged;
   const editingToken = !bot.token_set || replacing;
   const shown = describe(bot.status);
 
@@ -217,12 +232,34 @@ export function SettingsBot() {
       if (clean !== (bot.username ?? '')) {
         body.username = clean;
       }
+      if (modeChanged) {
+        body.updates = mode;
+      }
       await api('/api/admin/settings/bot', { method: 'PUT', body });
       setFastUntil(Date.now() + FAST_FOR_MS);
       await load();
-      setStatus({ text: body.token ? 'Сохранено, бот переподключается' : 'Сохранено', bad: false });
+      const done = modeChanged
+        ? mode === 'webhook'
+          ? 'Сохранено, бот переходит на вебхук'
+          : 'Сохранено, бот переходит на опрос'
+        : body.token
+          ? 'Сохранено, бот переподключается'
+          : 'Сохранено';
+      setStatus({ text: done, bad: false });
     } catch (err) {
       setStatus({ text: failText(err, 'Настройки бота не сохранились'), bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = async () => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      apply(await api<Bot>('/api/admin/settings/bot', { method: 'PUT', body: { updates: bot.updates.mode } }));
+    } catch (err) {
+      setActionError(failText(err, 'Не получилось убрать сообщение'));
     } finally {
       setBusy(false);
     }
@@ -370,6 +407,18 @@ export function SettingsBot() {
         </div>
       </section>
 
+      <BotUpdates
+        updates={bot.updates}
+        mode={mode}
+        busy={busy}
+        onMode={(next) => {
+          modeTouched.current = true;
+          setMode(next);
+          setStatus(null);
+        }}
+        onDismiss={() => void dismiss()}
+      />
+
       <div className="save-row">
         <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
           {busy ? 'Сохраняем…' : 'Сохранить'}
@@ -380,9 +429,11 @@ export function SettingsBot() {
           disabled={busy}
           onClick={() => {
             touched.current = false;
+            modeTouched.current = false;
             setToken('');
             setReplacing(false);
             setUsername(bot.username ?? '');
+            setMode(bot.updates.mode);
             setStatus(null);
           }}
         >

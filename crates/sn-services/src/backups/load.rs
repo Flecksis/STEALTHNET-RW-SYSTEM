@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
-pub const RESTORE_SKIPPED: [&str; 2] = ["_sqlx_migrations", "backup_runs"];
+pub const RESTORE_SKIPPED: [&str; 3] = ["_sqlx_migrations", "backup_runs", "bot_updates"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {

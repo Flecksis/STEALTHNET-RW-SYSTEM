@@ -5,7 +5,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales' | 'security' | 'sync';
+type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales' | 'security' | 'sync' | 'bot';
 
 type KindView = { kind: Kind; title: string; default_topic: string; on: boolean; topic: string | null };
 
@@ -33,6 +33,7 @@ const ABOUT: Record<Kind, string> = {
   sales: 'Оплачена покупка, продление, смена тарифа, дополнение или пополнение баланса. Новые за минуту приходят одним сообщением',
   security: 'Вход администратора по коду из приложения закрылся после неверных кодов: 5 за 15 минут или 20 за сутки. Пароль при этом ввели верно',
   sync: 'Закончился или остановился перенос клиентов и подписок в Remnawave или забор из неё: сколько создано, исправлено и пропущено',
+  bot: 'Telegram дольше 5 минут не может доставить обновления на вебхук бота, бот сам вернулся к опросу или вебхук снова работает',
 };
 
 function failText(err: unknown, fallback: string): string {

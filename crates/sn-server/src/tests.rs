@@ -63,6 +63,7 @@ mod robots;
 mod rollypay;
 mod support_files;
 mod support_mode;
+mod telegram_webhook;
 mod tribute;
 mod utm;
 mod wata;
@@ -434,7 +435,7 @@ async fn вебхук_remnawave_без_секрета_и_с_чужой_подп�
 }
 
 #[tokio::test]
-async fn вебхук_telegram_выключен_бот_работает_через_long_polling() {
+async fn старый_адрес_вебхука_telegram_не_принимает_обновления() {
     let response = router(offline_state())
         .oneshot(
             Request::post("/api/telegram/webhook")

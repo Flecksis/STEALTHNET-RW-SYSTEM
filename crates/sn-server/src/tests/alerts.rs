@@ -6,7 +6,7 @@ async fn настройка_уведомлений_в_группу_через_ht
     let owner = h.owner().await;
     let (status, view) = h.get("/api/admin/alerts", &owner).await;
     assert_eq!(status, StatusCode::OK, "{view}");
-    assert_eq!(view["kinds"].as_array().map(Vec::len), Some(12));
+    assert_eq!(view["kinds"].as_array().map(Vec::len), Some(13));
     for (kind, topic) in [
         ("nodes", "Ноды"),
         ("clients", "Клиенты"),
@@ -14,6 +14,7 @@ async fn настройка_уведомлений_в_группу_через_ht
         ("security", "Безопасность"),
         ("sync", "Remnawave"),
         ("backups", "Резервные копии"),
+        ("bot", "Бот"),
     ] {
         let found = view["kinds"]
             .as_array()

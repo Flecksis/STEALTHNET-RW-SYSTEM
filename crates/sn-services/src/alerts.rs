@@ -45,6 +45,8 @@ const STARS_PATH: &str = "/admin/money#todo-stars";
 const REFUNDS_PATH: &str = "/admin/money#todo-refunds";
 const CHARGES_SEEN: &str = "alerts.seen.orders.charges";
 const SECURITY_DAYS: i32 = 2;
+const BOT_WEBHOOK_CURSOR: &str = "alerts.cursor.bot_webhook";
+const BOT_PATH: &str = "/admin/settings/bot";
 
 fn seen_key(kind: AlertKind) -> String {
     format!("alerts.seen.{}", kind.as_str())
@@ -170,6 +172,65 @@ struct RefundRow {
 
 pub struct AlertsOps<'a> {
     services: &'a Services,
+}
+
+pub fn bot_webhook_text(action: &str, details: &serde_json::Value) -> String {
+    let text = |key: &str| {
+        details
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(escape)
+    };
+    let number = |key: &str| details.get(key).and_then(serde_json::Value::as_i64);
+    let host = text("host").unwrap_or_else(|| "адрес сервиса".to_string());
+    let error = text("error")
+        .map(|e| format!(": «{e}»"))
+        .unwrap_or_default();
+    let minutes = |n: i64| {
+        format!(
+            "{n}\u{a0}{}",
+            format::plural_ru(n.unsigned_abs(), "минуту", "минуты", "минут")
+        )
+    };
+    match action {
+        crate::bot_webhook::BROKEN_ACTION => {
+            let mut lines = vec!["<b>Вебхук бота не получает обновления</b>".to_string()];
+            let spell = number("minutes")
+                .map(|n| format!(" уже {}", minutes(n)))
+                .unwrap_or_default();
+            lines.push(format!(
+                "Telegram не может доставить их на {host}{spell}{error}"
+            ));
+            if let Some(pending) = number("pending") {
+                lines.push(format!("Ждут доставки: {pending}"));
+            }
+            if let Some(left) = number("fallback_in") {
+                lines.push(format!(
+                    "Если не наладится, через {} бот сам вернётся к опросу",
+                    minutes(left)
+                ));
+            }
+            lines.join("\n")
+        }
+        crate::bot_webhook::RESTORED_ACTION => {
+            format!("<b>Вебхук бота снова работает</b>\nTelegram доставляет обновления на {host}")
+        }
+        _ if details.get("kind").and_then(serde_json::Value::as_str) == Some("rejected") => {
+            format!(
+                "<b>Вебхук бота не включился</b>\nTelegram не принял адрес на {host}{error}\nБот работает опросом. Исправьте адрес или сертификат и включите вебхук снова в «Настройки → Бот»"
+            )
+        }
+        _ => {
+            let spell = number("minutes")
+                .map(|n| format!(" {}", minutes(n)))
+                .unwrap_or_default();
+            format!(
+                "<b>Бот вернулся к опросу</b>\nTelegram{spell} не мог доставить обновления на {host}{error}\nБот снова получает их опросом, сообщения клиентов не потерялись. Когда почините доступ, включите вебхук в «Настройки → Бот»"
+            )
+        }
+    }
 }
 
 fn escape(raw: &str) -> String {
@@ -314,6 +375,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
                 format::plural_ru(n, "событие", "события", "событий")
             ),
             crate::backups::PAGE_PATH,
+        ),
+        AlertKind::Bot => (
+            format!(
+                "Ещё {rest} {} с вебхуком бота",
+                format::plural_ru(n, "событие", "события", "событий")
+            ),
+            BOT_PATH,
         ),
     };
     Alert {
@@ -761,6 +829,58 @@ impl<'a> AlertsOps<'a> {
         out.extend(self.new_clients(&config).await?);
         out.extend(self.new_sales(&config).await?);
         out.extend(self.backups(&config).await?);
+        out.extend(self.bot_webhook(&config).await?);
+        Ok(out)
+    }
+
+    async fn bot_webhook(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        use crate::bot_webhook::{BROKEN_ACTION, FALLBACK_ACTION, RESTORED_ACTION};
+        let cursor = self
+            .state(BOT_WEBHOOK_CURSOR)
+            .await?
+            .and_then(|v| v.as_i64());
+        let mut conn = self.services.store().conn().await?;
+        let newest: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
+            .fetch_one(conn.conn())
+            .await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(BOT_WEBHOOK_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+            "SELECT action, details FROM audit_log \
+             WHERE id > $1 AND id <= $2 AND action IN ($3, $4, $5) ORDER BY id",
+        )
+        .bind(cursor)
+        .bind(newest)
+        .bind(BROKEN_ACTION)
+        .bind(RESTORED_ACTION)
+        .bind(FALLBACK_ACTION)
+        .fetch_all(conn.conn())
+        .await?;
+        drop(conn);
+        self.put_state(BOT_WEBHOOK_CURSOR, &serde_json::json!(newest))
+            .await?;
+        if !config.route(AlertKind::Bot).on {
+            return Ok(Vec::new());
+        }
+        let mut out: Vec<Alert> = rows
+            .iter()
+            .take(PER_KIND)
+            .map(|(action, details)| Alert {
+                kind: AlertKind::Bot,
+                html: bot_webhook_text(action, details),
+                path: BOT_PATH.to_string(),
+            })
+            .collect();
+        if rows.len() > PER_KIND {
+            out.push(summary(AlertKind::Bot, rows.len() - PER_KIND));
+        }
         Ok(out)
     }
 
@@ -1519,7 +1639,8 @@ impl<'a> AlertsOps<'a> {
             | AlertKind::Nodes
             | AlertKind::Clients
             | AlertKind::Sales
-            | AlertKind::Backups => {}
+            | AlertKind::Backups
+            | AlertKind::Bot => {}
         }
         Ok(items)
     }

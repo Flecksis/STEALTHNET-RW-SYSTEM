@@ -1,5 +1,6 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sn_services::bot_webhook::ALLOWED_UPDATES;
 use std::time::Duration;
 
 pub const DEFAULT_API: &str = "https://api.telegram.org";
@@ -539,6 +540,33 @@ struct Envelope<T> {
 pub struct WebhookInfo {
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub pending_update_count: i64,
+    #[serde(default)]
+    pub last_error_date: Option<i64>,
+    #[serde(default)]
+    pub last_error_message: Option<String>,
+    #[serde(default)]
+    pub max_connections: Option<u32>,
+    #[serde(default)]
+    pub allowed_updates: Option<Vec<String>>,
+}
+
+pub fn parse_update(value: serde_json::Value) -> Option<Update> {
+    let id = value.get("update_id").and_then(|v| v.as_i64());
+    match serde_json::from_value::<Update>(value) {
+        Ok(update) => Some(update),
+        Err(err) => {
+            tracing::warn!(update_id = ?id, error = %err, "апдейт Telegram не разобран");
+            id.map(|update_id| Update {
+                update_id,
+                message: None,
+                callback_query: None,
+                pre_checkout_query: None,
+                widget_query: None,
+            })
+        }
+    }
 }
 
 pub struct TelegramApi {
@@ -831,6 +859,25 @@ impl TelegramApi {
         self.call("getWebhookInfo", &serde_json::json!({})).await
     }
 
+    pub async fn set_webhook(
+        &self,
+        url: &str,
+        secret_token: &str,
+        max_connections: u32,
+    ) -> Result<bool, TelegramError> {
+        self.call(
+            "setWebhook",
+            &serde_json::json!({
+                "url": url,
+                "secret_token": secret_token,
+                "max_connections": max_connections,
+                "allowed_updates": ALLOWED_UPDATES,
+                "drop_pending_updates": false,
+            }),
+        )
+        .await
+    }
+
     pub async fn delete_webhook(&self) -> Result<bool, TelegramError> {
         self.call(
             "deleteWebhook",
@@ -896,29 +943,11 @@ impl TelegramApi {
                 &serde_json::json!({
                     "offset": offset,
                     "timeout": timeout.as_secs(),
-                    "allowed_updates": ["message", "callback_query", "pre_checkout_query", "widget_query"],
+                    "allowed_updates": ALLOWED_UPDATES,
                 }),
             )
             .await?;
-        Ok(raw
-            .into_iter()
-            .filter_map(|value| {
-                let id = value.get("update_id").and_then(|v| v.as_i64());
-                match serde_json::from_value::<Update>(value) {
-                    Ok(update) => Some(update),
-                    Err(err) => {
-                        tracing::warn!(update_id = ?id, error = %err, "апдейт Telegram не разобран");
-                        id.map(|update_id| Update {
-                            update_id,
-                            message: None,
-                            callback_query: None,
-                            pre_checkout_query: None,
-                            widget_query: None,
-                        })
-                    }
-                }
-            })
-            .collect())
+        Ok(raw.into_iter().filter_map(parse_update).collect())
     }
 
     fn message_body(

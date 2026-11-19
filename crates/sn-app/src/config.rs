@@ -118,6 +118,7 @@ impl Config {
         if !(telegram_api.starts_with("https://") || telegram_api.starts_with("http://")) {
             bail!("SN_TELEGRAM_API: ожидается адрес Bot API вида https://api.telegram.org");
         }
+        let custom_api = (telegram_api != TELEGRAM_API).then(|| telegram_api.clone());
         let log_format = match text(vars, "SN_LOG_FORMAT").as_deref() {
             None | Some("text") => LogFormat::Text,
             Some("json") => LogFormat::Json,
@@ -161,6 +162,7 @@ impl Config {
                 public_url,
                 remna,
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
+                telegram_api: custom_api,
             },
             updates: updates(vars)?,
             backup_dir: text(vars, "SN_BACKUP_DIR").map(std::path::PathBuf::from),

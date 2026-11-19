@@ -57,9 +57,17 @@ pub fn request_span(request: &Request<Body>) -> tracing::Span {
     tracing::info_span!(
         "http",
         method = %request.method(),
-        path = %request.uri().path(),
+        path = %shown_path(request.uri().path()),
         request_id = %request_id,
     )
+}
+
+pub fn shown_path(path: &str) -> std::borrow::Cow<'_, str> {
+    let prefix = sn_services::bot_webhook::PATH_PREFIX;
+    match path.split_once(prefix) {
+        Some((head, _)) => std::borrow::Cow::Owned(format!("{head}{prefix}…")),
+        None => std::borrow::Cow::Borrowed(path),
+    }
 }
 
 const RESTORE_STATUS: &str = "/api/admin/backups/restore/status";
