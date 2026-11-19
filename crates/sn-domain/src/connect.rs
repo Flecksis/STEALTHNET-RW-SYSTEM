@@ -803,6 +803,16 @@ fn outside_reference(lower: &str) -> bool {
         .any(|(at, _)| !local(&lower[at + 4..]))
 }
 
+fn prefixed_element(lower: &str) -> bool {
+    lower.match_indices('<').any(|(at, _)| {
+        lower[at + 1..]
+            .trim_start_matches('/')
+            .split(|c: char| c.is_whitespace() || matches!(c, '>' | '/'))
+            .next()
+            .is_some_and(|name| name.contains(':'))
+    })
+}
+
 pub fn check_svg(bytes: &[u8]) -> Result<(), SvgProblem> {
     if bytes.len() > ICON_SVG_MAX {
         return Err(SvgProblem::TooHeavy);
@@ -827,6 +837,7 @@ pub fn check_svg(bytes: &[u8]) -> Result<(), SvgProblem> {
         "@import",
     ];
     if unsafe_parts.iter().any(|part| lower.contains(part))
+        || prefixed_element(&lower)
         || event_attribute(&lower)
         || outside_reference(&lower)
     {
@@ -1591,9 +1602,13 @@ mod tests {
             r#"<svg><image href="https://evil.example/x.png"/></svg>"#,
             r#"<svg><path style="fill:url(https://evil.example/a)"/></svg>"#,
             r#"<svg><foreignObject><div/></foreignObject></svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="http://www.w3.org/2000/svg"><x:script>alert(1)</x:script></svg>"#,
+            r#"<svg xmlns:h="http://www.w3.org/1999/xhtml"><h:iframe src="https://evil.example"/></svg>"#,
         ] {
             assert_eq!(check_svg(bad.as_bytes()), Err(SvgProblem::Unsafe), "{bad}");
         }
+        let linked = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><defs><path id="p" d="M0 0h1v1z"/></defs><use xlink:href="#p"/></svg>"##;
+        assert_eq!(check_svg(linked.as_bytes()), Ok(()));
         assert_eq!(
             check_svg(b"<html><svg></svg></html>"),
             Err(SvgProblem::Format)
