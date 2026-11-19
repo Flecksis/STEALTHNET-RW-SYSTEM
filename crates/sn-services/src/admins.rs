@@ -371,12 +371,13 @@ impl<'a> AdminsOps<'a> {
         }
         tx.admins().set_password(id, &hash, true).await?;
         tx.sessions().revoke_all_admin(id).await?;
+        let revoked_keys = tx.api_keys().revoke_personal(id).await?;
         tx.audit()
             .record(&Actor::Admin(actor).audit(
                 "admin.password_reset",
                 "admin",
                 Some(id.0),
-                serde_json::json!({}),
+                serde_json::json!({ "revoked_keys": revoked_keys }),
             ))
             .await?;
         tx.commit().await?;
@@ -402,12 +403,13 @@ impl<'a> AdminsOps<'a> {
             }
             tx.admins().set_totp(id, None).await?;
             tx.sessions().revoke_all_admin(id).await?;
+            let revoked_keys = tx.api_keys().revoke_personal(id).await?;
             tx.audit()
                 .record(&Actor::Admin(actor).audit(
                     "admin.totp_reset",
                     "admin",
                     Some(id.0),
-                    serde_json::json!({}),
+                    serde_json::json!({ "revoked_keys": revoked_keys }),
                 ))
                 .await?;
         }

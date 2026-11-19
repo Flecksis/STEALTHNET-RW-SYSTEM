@@ -18,11 +18,18 @@ fn request(name: &str, permissions: &[Permission], days: Option<i64>) -> NewKeyR
         name: name.into(),
         permissions: permissions.to_vec(),
         expires_in_days: days,
+        password: PASSWORD.into(),
+        code: None,
     }
 }
 
-async fn member(services: &Services, owner: AdminId, email: &str, role: AdminRole) -> AdminId {
-    services
+async fn member(
+    services: &Services,
+    owner: AdminId,
+    email: &str,
+    role: AdminRole,
+) -> (AdminId, String) {
+    let issued = services
         .admins()
         .create(
             owner,
@@ -32,9 +39,8 @@ async fn member(services: &Services, owner: AdminId, email: &str, role: AdminRol
             },
         )
         .await
-        .unwrap()
-        .admin
-        .id
+        .unwrap();
+    (issued.admin.id, issued.password)
 }
 
 #[tokio::test]
@@ -61,7 +67,7 @@ async fn ключ_api_действует_в_пределах_прав_созда
     ] {
         assert_eq!(code(keys.create(&by_owner, &bad).await), expected);
     }
-    let support = member(services, owner, "support@example.com", AdminRole::Support).await;
+    let (support, _) = member(services, owner, "support@example.com", AdminRole::Support).await;
     assert_eq!(
         code(
             keys.create(
@@ -72,19 +78,23 @@ async fn ключ_api_действует_в_пределах_прав_созда
         ),
         "api_keys.permissions"
     );
-    let admin = member(services, owner, "admin@example.com", AdminRole::Admin).await;
+    let (admin, admin_password) =
+        member(services, owner, "admin@example.com", AdminRole::Admin).await;
     let issued = keys
         .create(
             &session(admin, AdminRole::Admin),
-            &request(
-                "Выгрузка",
-                &[
-                    Permission::ClientsRead,
-                    Permission::Money,
-                    Permission::ClientsRead,
-                ],
-                Some(30),
-            ),
+            &NewKeyRequest {
+                password: admin_password,
+                ..request(
+                    "Выгрузка",
+                    &[
+                        Permission::ClientsRead,
+                        Permission::Money,
+                        Permission::ClientsRead,
+                    ],
+                    Some(30),
+                )
+            },
         )
         .await
         .unwrap();
@@ -177,5 +187,60 @@ async fn ключу_api_не_выдаются_вход_за_клиента_и_с
     assert!(principal.can(Permission::ClientsRead));
     assert!(!principal.can(Permission::ClientsLogin));
     assert!(!principal.can(Permission::RemnaSync));
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn ключ_api_выпускается_только_с_паролем_и_гаснет_при_сбросе_пароля_и_2fa() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let owner = owner(services).await;
+    let keys = services.api_keys();
+    let by_owner = session(owner, AdminRole::Owner);
+    for password in ["", "не-тот-пароль-1"] {
+        assert_eq!(
+            code(
+                keys.create(
+                    &by_owner,
+                    &NewKeyRequest {
+                        password: password.into(),
+                        ..request("Выгрузка", &[Permission::ClientsRead], None)
+                    }
+                )
+                .await
+            ),
+            "auth.wrong_password"
+        );
+    }
+    let (admin, admin_password) =
+        member(services, owner, "keys@example.com", AdminRole::Admin).await;
+    let personal = keys
+        .create(
+            &session(admin, AdminRole::Admin),
+            &NewKeyRequest {
+                password: admin_password,
+                ..request("Скрипт", &[Permission::ClientsRead], None)
+            },
+        )
+        .await
+        .unwrap();
+    assert!(keys.principal(&personal.token).await.is_ok());
+    services
+        .admins()
+        .reset_password(owner, admin)
+        .await
+        .unwrap();
+    assert!(
+        keys.principal(&personal.token).await.is_err(),
+        "после сброса пароля ключи админа отозваны"
+    );
+    let own = keys
+        .create(
+            &by_owner,
+            &request("Свой", &[Permission::ClientsRead], None),
+        )
+        .await
+        .unwrap();
+    assert!(keys.principal(&own.token).await.is_ok());
     env.db.cleanup().await;
 }

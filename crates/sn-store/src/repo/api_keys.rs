@@ -191,6 +191,17 @@ impl<'c> ApiKeysRepo<'c> {
         Ok(done.rows_affected() > 0)
     }
 
+    pub async fn revoke_personal(&mut self, admin: AdminId) -> StoreResult<u64> {
+        let done = sqlx::query(
+            "UPDATE api_keys k SET revoked_at = now() WHERE k.created_by = $1 AND k.revoked_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM ext_modules m WHERE m.api_key_id = k.id)",
+        )
+        .bind(admin.0)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     pub async fn revoke(&mut self, id: i64) -> StoreResult<bool> {
         let done = sqlx::query(
             "UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",

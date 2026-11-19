@@ -1121,6 +1121,7 @@ const FIELDS: &[(&str, &str)] = &[
     ("code", "Код"),
     ("max_activations", "Лимит активаций"),
     ("revoked_sessions", "Закрыто сессий"),
+    ("revoked_keys", "Отозвано ключей API"),
     ("via", "Через"),
     ("ip", "Адрес"),
     ("one_time", "Одноразовый"),

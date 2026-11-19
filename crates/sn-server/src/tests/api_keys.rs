@@ -12,7 +12,7 @@ async fn ключ_api_открывает_только_выданные_прав�
             Method::POST,
             "/api/admin/api-keys",
             &owner,
-            json!({ "name": "Выгрузка клиентов", "permissions": ["clients_read"], "expires_in_days": 90 }),
+            json!({ "name": "Выгрузка клиентов", "permissions": ["clients_read"], "expires_in_days": 90, "password": PASSWORD }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
@@ -56,7 +56,7 @@ async fn key_with(h: &Http, owner: &str, permissions: Value) -> String {
             Method::POST,
             "/api/admin/api-keys",
             owner,
-            json!({ "name": "Интеграция", "permissions": permissions, "expires_in_days": 30 }),
+            json!({ "name": "Интеграция", "permissions": permissions, "expires_in_days": 30, "password": PASSWORD }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");

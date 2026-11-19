@@ -41,6 +41,10 @@ pub struct NewKeyRequest {
     pub permissions: Vec<Permission>,
     #[serde(default)]
     pub expires_in_days: Option<i64>,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 pub fn is_api_token(raw: &str) -> bool {
@@ -174,6 +178,10 @@ impl<'a> ApiKeysOps<'a> {
                 ));
             }
         };
+        self.services
+            .auth()
+            .confirm_admin(actor.admin_id, &request.password, request.code.as_deref())
+            .await?;
         let token = new_token();
         let mut tx = self.services.store().begin().await?;
         let key = tx

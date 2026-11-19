@@ -107,6 +107,9 @@ export function SettingsApiKeys() {
   const [name, setName] = useState('');
   const [grants, setGrants] = useState<Permission[]>(['clients_read']);
   const [term, setTerm] = useState<number | null>(90);
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [needCode, setNeedCode] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -130,12 +133,18 @@ export function SettingsApiKeys() {
     try {
       const result = await api<Issued>('/api/admin/api-keys', {
         method: 'POST',
-        body: { name: name.trim(), permissions: grants, expires_in_days: term },
+        body: { name: name.trim(), permissions: grants, expires_in_days: term, password, code: needCode ? code : undefined },
       });
       setItems((list) => [result.key, ...(list ?? [])]);
       setIssued(result);
       setName('');
+      setPassword('');
+      setCode('');
+      setNeedCode(false);
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'auth.totp_required') {
+        setNeedCode(true);
+      }
       setRowError({ id: 'new', text: failText(err, 'Ключ не создался') });
     } finally {
       setBusy(null);
@@ -170,7 +179,7 @@ export function SettingsApiKeys() {
           </h2>
           <span className="muted">
             Для своих скриптов и интеграций: ключ работает как вход в админку с выбранными правами. Права ключа не шире ваших, а управлять
-            администраторами и ключами он не может.
+            администраторами и ключами он не может. Чтобы выпустить ключ, введите свой пароль.
           </span>
         </div>
         {error ? (
@@ -270,7 +279,33 @@ export function SettingsApiKeys() {
                   </option>
                 ))}
               </select>
-              <button type="submit" className="btn-main btn" disabled={busy !== null || !name.trim() || grants.length === 0}>
+              <input
+                className="field"
+                type="password"
+                autoComplete="current-password"
+                placeholder="Ваш пароль"
+                aria-label="Ваш пароль"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={busy !== null}
+              />
+              {needCode ? (
+                <input
+                  className="field tf-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="Код из приложения"
+                  aria-label="Код из приложения"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  disabled={busy !== null}
+                />
+              ) : null}
+              <button
+                type="submit"
+                className="btn-main btn"
+                disabled={busy !== null || !name.trim() || grants.length === 0 || !password || (needCode && code.length !== 6)}
+              >
                 {busy === 'new' ? 'Создаём…' : 'Создать ключ'}
               </button>
             </span>

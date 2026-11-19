@@ -31,7 +31,7 @@ async fn привязать_к_пользователю_remnawave_можно_т�
             Method::POST,
             "/api/admin/api-keys",
             &owner,
-            json!({ "name": "Скрипт", "permissions": ["clients_read", "clients_write"], "expires_in_days": 30 }),
+            json!({ "name": "Скрипт", "permissions": ["clients_read", "clients_write"], "expires_in_days": 30, "password": PASSWORD }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
@@ -104,7 +104,7 @@ async fn добавить_подписку_из_remnawave_можно_тольк�
             Method::POST,
             "/api/admin/api-keys",
             &owner,
-            json!({ "name": "Скрипт", "permissions": ["clients_read", "clients_write"], "expires_in_days": 30 }),
+            json!({ "name": "Скрипт", "permissions": ["clients_read", "clients_write"], "expires_in_days": 30, "password": PASSWORD }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");

@@ -128,7 +128,7 @@ async fn ключу_api_журнал_закрыт_а_его_действия_п�
             Method::POST,
             "/api/admin/api-keys",
             &owner,
-            json!({ "name": "Журнал", "permissions": ["audit_log"] }),
+            json!({ "name": "Журнал", "permissions": ["audit_log"], "password": PASSWORD }),
         )
         .await;
     assert!(status.is_client_error(), "{status} {refused}");
@@ -137,7 +137,7 @@ async fn ключу_api_журнал_закрыт_а_его_действия_п�
             Method::POST,
             "/api/admin/api-keys",
             &owner,
-            json!({ "name": "CRM-выгрузка", "permissions": ["clients_read", "clients_write"] }),
+            json!({ "name": "CRM-выгрузка", "permissions": ["clients_read", "clients_write"], "password": PASSWORD }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{created}");
