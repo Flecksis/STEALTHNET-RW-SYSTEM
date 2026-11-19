@@ -4,7 +4,13 @@ import { t } from '../lib/i18n';
 
 export type EmailProof = 'totp' | 'password';
 export type EmailPending = { email: string; expires_at: string };
-export type EmailState = { email: string | null; available: boolean; proof: EmailProof | null; pending: EmailPending | null };
+export type EmailState = {
+  email: string | null;
+  available: boolean;
+  proof: EmailProof | null;
+  confirm_current?: boolean;
+  pending: EmailPending | null;
+};
 export type EmailDone = { email: string; previous: string | null };
 
 function failText(err: unknown, fallback: string): string {
@@ -31,6 +37,7 @@ export function useEmailChange(onChanged: () => Promise<void> | void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<EmailDone | null>(null);
+  const [proofSent, setProofSent] = useState<EmailPending | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -47,7 +54,26 @@ export function useEmailChange(onChanged: () => Promise<void> | void) {
     void load();
   }, [load]);
 
-  const ready = address.trim().length > 3 && (info?.proof === 'totp' ? proof.length === 6 : info?.proof === 'password' ? proof.length > 0 : true);
+  const byCurrent = !!info?.confirm_current && info.proof === null;
+  const ready =
+    address.trim().length > 3 &&
+    (info?.proof === 'totp' || byCurrent ? proof.length === 6 : info?.proof === 'password' ? proof.length > 0 : true);
+
+  const sendProof = async () => {
+    if (!info || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      setProofSent(await api<EmailPending>('/api/client/security/email/proof', { method: 'POST' }));
+      setProof('');
+    } catch (err) {
+      setError(failText(err, t('Код не отправился, попробуйте ещё раз')));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const start = async () => {
     if (!info || busy || !ready) {
@@ -60,11 +86,12 @@ export function useEmailChange(onChanged: () => Promise<void> | void) {
       const body = {
         email: address.trim(),
         password: info.proof === 'password' ? proof : undefined,
-        code: info.proof === 'totp' ? proof : undefined,
+        code: info.proof === 'totp' || byCurrent ? proof : undefined,
       };
       setSent(await api<EmailPending>('/api/client/security/email/start', { method: 'POST', body }));
       setProof('');
       setCode('');
+      setProofSent(null);
     } catch (err) {
       setError(failText(err, t('Код не отправился, попробуйте ещё раз')));
       if (info.proof === 'totp') {
@@ -112,7 +139,29 @@ export function useEmailChange(onChanged: () => Promise<void> | void) {
     setCode('');
     setError(null);
     setDone(null);
+    setProofSent(null);
   };
 
-  return { info, failed, address, setAddress, proof, setProof, code, setCode, sent, busy, error, done, ready, start, confirm, restart, reset };
+  return {
+    info,
+    failed,
+    address,
+    setAddress,
+    proof,
+    setProof,
+    code,
+    setCode,
+    sent,
+    busy,
+    error,
+    done,
+    ready,
+    byCurrent,
+    proofSent,
+    sendProof,
+    start,
+    confirm,
+    restart,
+    reset,
+  };
 }

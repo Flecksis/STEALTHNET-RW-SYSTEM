@@ -97,7 +97,9 @@ export function MiniEmail() {
       ? t('Для смены почты нужен код из приложения-аутентификатора, затем код из письма на новый адрес.')
       : info.proof === 'password'
         ? t('Для смены почты нужен пароль для сайта, затем код из письма на новый адрес.')
-        : t('На новый адрес придёт код. Почта сменится, когда вы его введёте.');
+        : flow.byCurrent
+          ? t('Для смены почты нужен код из письма на текущую почту, затем код из письма на новый адрес.')
+          : t('На новый адрес придёт код. Почта сменится, когда вы его введёте.');
 
   return (
     <main className="mn-page">
@@ -190,6 +192,24 @@ export function MiniEmail() {
                 disabled={flow.busy}
               />
             </label>
+          ) : null}
+          {flow.byCurrent ? (
+            <>
+              <button type="button" className="mn-text press" onClick={() => void flow.sendProof()} disabled={flow.busy}>
+                {flow.proofSent ? t('Прислать код ещё раз') : t('Прислать код на {email}', { email: info.email ?? '' })}
+              </button>
+              <label className="mn-field">
+                <span className="sr-only">{t('Код из письма на текущую почту')}</span>
+                <input
+                  value={flow.proof}
+                  onChange={(e) => flow.setProof(sixDigits(e.target.value))}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder={t('Код из письма на текущую почту')}
+                  disabled={flow.busy}
+                />
+              </label>
+            </>
           ) : null}
           <p className="mn-notes">{note}</p>
           {flow.error ? (

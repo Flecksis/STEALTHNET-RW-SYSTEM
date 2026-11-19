@@ -20,6 +20,8 @@ pub const EMAIL_SAME: &str = "auth.email_same";
 pub const PASSWORD_REQUIRED: &str = "auth.password_required";
 pub const APP_CODE_REQUIRED: &str = "auth.app_code_required";
 pub const PASSWORD_INVALID: &str = "auth.password_invalid";
+pub const CURRENT_CODE_REQUIRED: &str = "auth.current_email_code_required";
+pub const CURRENT_CODE_NOT_NEEDED: &str = "auth.current_email_code_not_needed";
 pub const EMAIL_CHANGED_AUDIT: &str = "client.email_changed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -40,6 +42,7 @@ pub struct EmailState {
     pub email: Option<String>,
     pub available: bool,
     pub proof: Option<EmailProof>,
+    pub confirm_current: bool,
     pub pending: Option<EmailPending>,
 }
 
@@ -70,6 +73,20 @@ fn in_use() -> ServiceError {
 
 fn change_hash(client_id: ClientId, email: &str, code: &str) -> Vec<u8> {
     token_hash(&format!("email_change:{}:{email}:{code}", client_id.0))
+}
+
+fn proof_hash(client_id: ClientId, email: &str, code: &str) -> Vec<u8> {
+    token_hash(&format!("email_proof:{}:{email}:{code}", client_id.0))
+}
+
+async fn current_email(db: &mut impl Db, client_id: ClientId) -> ServiceResult<Option<String>> {
+    Ok(db
+        .clients()
+        .identities(client_id)
+        .await?
+        .into_iter()
+        .find(|i| i.kind == IdentityKind::Email)
+        .map(|i| i.value))
 }
 
 fn new_code() -> String {
@@ -157,21 +174,169 @@ impl<'a> Auth<'a> {
         } else {
             None
         };
+        let confirm_current = proof.is_none() && email.is_some();
         Ok(EmailState {
             email,
             available,
             proof,
+            confirm_current,
             pending: pending.map(|(email, expires_at)| EmailPending { email, expires_at }),
         })
     }
 
-    async fn check_email_proof(
+    pub async fn email_proof_start(
+        &self,
+        principal: &ClientPrincipal,
+        meta: &RequestMeta,
+    ) -> ServiceResult<EmailPending> {
+        let client_id = principal.client_id;
+        if !self.services.mail().available() {
+            return Err(change_off());
+        }
+        let current = {
+            let mut conn = self.services.store().conn().await?;
+            current_email(&mut conn, client_id).await?
+        };
+        let Some(current) = current.filter(|_| principal.channel != ClientChannel::Bot) else {
+            return Err(ServiceError::rejected(
+                CURRENT_CODE_NOT_NEEDED,
+                "Подтверждать текущую почту не нужно",
+            ));
+        };
+        if self.email_proof(client_id).await?.is_some() {
+            return Err(ServiceError::rejected(
+                CURRENT_CODE_NOT_NEEDED,
+                "Подтверждать текущую почту не нужно",
+            ));
+        }
+        let limits = self.services.limits();
+        limits
+            .hit(rules::EMAIL_CHANGE_CLIENT, &client_id.to_string())
+            .await?;
+        limits
+            .hit(rules::EMAIL_START_IP, &source(principal, meta))
+            .await?;
+        limits.hit(rules::EMAIL_START_ADDRESS, &current).await?;
+        let code = new_code();
+        let now = self.services.now();
+        let expires_at = now + Duration::seconds(EMAIL_CODE_TTL_SECONDS);
+        let mut tx = self.services.store().begin().await?;
+        sqlx::query(
+            "UPDATE client_login_requests SET status = 'rejected' \
+             WHERE method = 'email_proof' AND client_id = $1 AND status = 'pending'",
+        )
+        .bind(client_id.0)
+        .execute(tx.conn())
+        .await?;
+        sqlx::query(
+            "INSERT INTO client_login_requests (method, code_hash, email, client_id, ip, user_agent, created_at, expires_at) \
+             VALUES ('email_proof', $1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(proof_hash(client_id, &current, &code))
+        .bind(&current)
+        .bind(client_id.0)
+        .bind(&meta.ip)
+        .bind(&meta.user_agent)
+        .bind(now)
+        .bind(expires_at)
+        .execute(tx.conn())
+        .await?;
+        tx.commit().await?;
+        self.services
+            .letters()
+            .send(
+                LetterId::EmailCode,
+                &current,
+                crate::login::code_values(code),
+            )
+            .await?;
+        Ok(EmailPending {
+            email: current,
+            expires_at,
+        })
+    }
+
+    async fn check_current_code(
         &self,
         client_id: ClientId,
+        current: &str,
+        code: Option<&str>,
+    ) -> ServiceResult<()> {
+        let code: String = code
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if code.is_empty() {
+            return Err(ServiceError::rejected(
+                CURRENT_CODE_REQUIRED,
+                "Сначала подтвердите текущую почту: введите код из письма, которое пришло на неё",
+            ));
+        }
+        if code.len() != EMAIL_CODE_DIGITS || !code.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(code_invalid());
+        }
+        let now = self.services.now();
+        let mut tx = self.services.store().begin().await?;
+        let row: Option<ChangeRow> = sqlx::query_as(
+            "SELECT id, code_hash, attempts, expires_at FROM client_login_requests \
+             WHERE method = 'email_proof' AND client_id = $1 AND email = $2 AND status = 'pending' \
+             ORDER BY id DESC LIMIT 1 FOR UPDATE",
+        )
+        .bind(client_id.0)
+        .bind(current)
+        .fetch_optional(tx.conn())
+        .await?;
+        let Some(row) = row.filter(|r| r.expires_at > now) else {
+            return Err(code_invalid());
+        };
+        if row.attempts >= EMAIL_CODE_MAX_ATTEMPTS {
+            return Err(ServiceError::rejected(
+                "auth.code_attempts",
+                "Слишком много неверных попыток, запросите новый код",
+            ));
+        }
+        if !same(&row.code_hash, &proof_hash(client_id, current, &code)) {
+            sqlx::query("UPDATE client_login_requests SET attempts = attempts + 1 WHERE id = $1")
+                .bind(row.id)
+                .execute(tx.conn())
+                .await?;
+            tx.commit().await?;
+            return Err(code_invalid());
+        }
+        sqlx::query(
+            "UPDATE client_login_requests SET status = 'consumed', confirmed_at = $2, consumed_at = $2 \
+             WHERE id = $1",
+        )
+        .bind(row.id)
+        .bind(now)
+        .execute(tx.conn())
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn check_email_proof(
+        &self,
+        principal: &ClientPrincipal,
         input: EmailProofInput<'_>,
     ) -> ServiceResult<()> {
+        let client_id = principal.client_id;
         match self.email_proof(client_id).await? {
-            None => Ok(()),
+            None if principal.channel == ClientChannel::Bot => Ok(()),
+            None => {
+                let current = {
+                    let mut conn = self.services.store().conn().await?;
+                    current_email(&mut conn, client_id).await?
+                };
+                match current {
+                    Some(current) => {
+                        self.check_current_code(client_id, &current, input.code)
+                            .await
+                    }
+                    None => Ok(()),
+                }
+            }
             Some(EmailProof::Totp) => {
                 let code = input
                     .code
@@ -245,7 +410,7 @@ impl<'a> Auth<'a> {
                 return Err(in_use());
             }
         }
-        self.check_email_proof(client_id, proof).await?;
+        self.check_email_proof(principal, proof).await?;
         let code = new_code();
         let now = self.services.now();
         let expires_at = now + Duration::seconds(EMAIL_CODE_TTL_SECONDS);

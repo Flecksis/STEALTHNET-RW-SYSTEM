@@ -1,8 +1,8 @@
 use super::mail::{Letters, code_in, configure_with, fake_smtp, readable};
 use super::*;
 use crate::email_change::{
-    APP_CODE_REQUIRED, EMAIL_CHANGE_OFF, EMAIL_IN_USE, EMAIL_SAME, EmailProof, EmailProofInput,
-    PASSWORD_INVALID, PASSWORD_REQUIRED,
+    APP_CODE_REQUIRED, CURRENT_CODE_REQUIRED, EMAIL_CHANGE_OFF, EMAIL_IN_USE, EMAIL_SAME,
+    EmailProof, EmailProofInput, PASSWORD_INVALID, PASSWORD_REQUIRED,
 };
 use crate::two_factor::CabinetLogin;
 use sn_domain::access::{ClientChannel, ClientPrincipal};
@@ -152,10 +152,47 @@ async fn почта_привязывается_и_меняется_только_
         EMAIL_SAME
     );
 
-    auth.email_change_start(&me, "bob@example.com", NO_PROOF, &who)
-        .await
-        .unwrap();
-    let (_, text) = head_and_text(&sent(&letters)[1]);
+    env.clock.set(start() + Duration::minutes(16));
+    assert_eq!(
+        code(
+            auth.email_change_start(&me, "bob@example.com", NO_PROOF, &who)
+                .await
+        ),
+        CURRENT_CODE_REQUIRED
+    );
+    assert!(auth.email_state(client).await.unwrap().confirm_current);
+    let proof = auth.email_proof_start(&me, &who).await.unwrap();
+    assert_eq!(proof.email, "alex@example.com");
+    let (head, text) = head_and_text(&sent(&letters)[1]);
+    assert!(head.contains("alex@example.com"), "{head}");
+    let current_code = code_in(&text);
+    assert_eq!(
+        code(
+            auth.email_change_start(
+                &me,
+                "bob@example.com",
+                EmailProofInput {
+                    password: None,
+                    code: Some(other_code(&current_code)),
+                },
+                &who
+            )
+            .await
+        ),
+        "auth.code_invalid"
+    );
+    auth.email_change_start(
+        &me,
+        "bob@example.com",
+        EmailProofInput {
+            password: None,
+            code: Some(&current_code),
+        },
+        &who,
+    )
+    .await
+    .unwrap();
+    let (_, text) = head_and_text(&sent(&letters)[2]);
     let bob_code = code_in(&text);
     auth.email_change_confirm(&me, "bob@example.com", &bob_code, &who)
         .await
@@ -165,8 +202,8 @@ async fn почта_привязывается_и_меняется_только_
         Some(("bob@example.com".to_string(), true))
     );
     let all = sent(&letters);
-    assert_eq!(all.len(), 3);
-    let (head, text) = head_and_text(&all[2]);
+    assert_eq!(all.len(), 4);
+    let (head, text) = head_and_text(&all[3]);
     assert!(head.contains("alex@example.com"), "{head}");
     assert!(!head.contains("bob@example.com"), "{head}");
     assert!(text.contains("Почту в аккаунте"), "{text}");

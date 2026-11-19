@@ -11,6 +11,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/security/email", get(email_state))
         .route("/security/email/start", post(start))
+        .route("/security/email/proof", post(proof))
         .route("/security/email/confirm", post(confirm))
 }
 
@@ -24,6 +25,21 @@ async fn email_state(
             .services
             .auth()
             .email_state(client.0.client_id)
+            .await?,
+    ))
+}
+
+async fn proof(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+) -> ApiResult<Json<EmailPending>> {
+    client.require_full()?;
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .email_proof_start(&client.0, &meta)
             .await?,
     ))
 }

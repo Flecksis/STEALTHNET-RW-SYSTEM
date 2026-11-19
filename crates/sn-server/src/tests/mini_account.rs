@@ -196,7 +196,7 @@ async fn мини_приложение_меняет_почту_пароль_и_�
     assert_eq!(status, StatusCode::OK, "{email}");
     assert_eq!(
         email,
-        json!({ "email": null, "available": true, "proof": null, "pending": null })
+        json!({ "email": null, "available": true, "proof": null, "confirm_current": false, "pending": null })
     );
 
     let (status, started) = h

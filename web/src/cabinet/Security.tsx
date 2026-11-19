@@ -283,7 +283,9 @@ function EmailCard() {
       ? t('Для смены почты нужен код из приложения-аутентификатора, затем код из письма на новый адрес.')
       : info.proof === 'password'
         ? t('Для смены почты нужен пароль для сайта, затем код из письма на новый адрес.')
-        : t('На новый адрес придёт код. Почта сменится, когда вы его введёте.');
+        : flow.byCurrent
+          ? t('Для смены почты нужен код из письма на текущую почту, затем код из письма на новый адрес.')
+          : t('На новый адрес придёт код. Почта сменится, когда вы его введёте.');
   const errorLine = flow.error ? (
     <p className="cb-error" role="alert">
       {flow.error}
@@ -372,6 +374,19 @@ function EmailCard() {
               <span>{t('Код из приложения')}</span>
               <input value={flow.proof} onChange={(e) => flow.setProof(sixDigits(e.target.value))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
             </label>
+          ) : null}
+          {flow.byCurrent ? (
+            <>
+              <label className="cb-field">
+                <span>{t('Код из письма на текущую почту')}</span>
+                <input value={flow.proof} onChange={(e) => flow.setProof(sixDigits(e.target.value))} inputMode="numeric" autoComplete="one-time-code" placeholder={t('6 цифр')} />
+              </label>
+              <span className="cb-btns">
+                <button type="button" className="cb-cancel" onClick={() => void flow.sendProof()} disabled={flow.busy}>
+                  {flow.proofSent ? t('Прислать код ещё раз') : t('Прислать код на {email}', { email: info.email ?? '' })}
+                </button>
+              </span>
+            </>
           ) : null}
           <p className="cb-small cb-muted">{note}</p>
           {errorLine}
