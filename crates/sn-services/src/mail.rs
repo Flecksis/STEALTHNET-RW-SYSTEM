@@ -148,6 +148,13 @@ impl<'a> MailOps<'a> {
         self.settings().is_some_and(|s| s.code_login())
     }
 
+    pub fn codes_per_hour(&self) -> u32 {
+        self.settings()
+            .map_or(sn_modules::catalog::mail::CODES_PER_HOUR_DEFAULT, |s| {
+                s.codes_per_hour
+            })
+    }
+
     pub fn letters(&self) -> Option<ClientLetters> {
         self.settings().filter(|s| s.sends()).map(|s| s.letters)
     }

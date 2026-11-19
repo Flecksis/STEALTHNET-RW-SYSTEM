@@ -85,6 +85,11 @@ pub mod rules {
         limit: 10,
         window_seconds: 900,
     };
+    pub const EMAIL_START_WIDE: RateRule = RateRule {
+        scope: "email_login_wide",
+        limit: 15,
+        window_seconds: 600,
+    };
     pub const EMAIL_CODE_FAILURES_DAY: RateRule = RateRule {
         scope: "email_code_failures_day",
         limit: 30,
@@ -144,6 +149,26 @@ pub fn ip_key(ip: IpAddr) -> String {
             let network = u128::from(v6) & (u128::MAX << (128 - IPV6_NETWORK_BITS));
             format!("{}/{IPV6_NETWORK_BITS}", Ipv6Addr::from(network))
         }
+    }
+}
+
+pub const IPV6_WIDE_BITS: u32 = 48;
+
+pub fn wide_key(ip: Option<&str>) -> Option<String> {
+    match ip?.trim().parse::<IpAddr>().ok()?.to_canonical() {
+        IpAddr::V4(_) => None,
+        IpAddr::V6(v6) => {
+            let network = u128::from(v6) & (u128::MAX << (128 - IPV6_WIDE_BITS));
+            Some(format!("{}/{IPV6_WIDE_BITS}", Ipv6Addr::from(network)))
+        }
+    }
+}
+
+pub fn code_letters(kind: &'static str, per_hour: u32) -> RateRule {
+    RateRule {
+        scope: kind,
+        limit: per_hour,
+        window_seconds: 3_600,
     }
 }
 
@@ -261,6 +286,26 @@ impl<'a> RateLimits<'a> {
 
     pub async fn hit_ip(&self, rule: RateRule, ip: Option<&str>) -> ServiceResult<u32> {
         self.hit(rule, &address_key(ip)).await
+    }
+
+    pub async fn hit_wide(&self, rule: RateRule, ip: Option<&str>) -> ServiceResult<()> {
+        if let Some(key) = wide_key(ip) {
+            self.hit(rule, &key).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn letters_sent(&self, kind: &'static str, per_hour: u32) -> ServiceResult<()> {
+        let now = self.services.now();
+        let rule = code_letters(kind, per_hour);
+        let start = window_start(rule, now);
+        match self.hit(rule, "panel").await {
+            Ok(_) => Ok(()),
+            Err(_) => Err(rate_limited(
+                "Сейчас отправлено слишком много писем с кодами.",
+                start + window(rule) - now,
+            )),
+        }
     }
 
     pub async fn strike(

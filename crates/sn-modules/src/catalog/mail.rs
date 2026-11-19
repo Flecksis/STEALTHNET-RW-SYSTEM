@@ -66,6 +66,21 @@ pub struct MailSettings {
     pub from_name: Option<String>,
     pub login: EmailLogin,
     pub letters: ClientLetters,
+    pub codes_per_hour: u32,
+}
+
+pub const CODES_PER_HOUR_DEFAULT: u32 = 300;
+pub const CODES_PER_HOUR_MAX: u32 = 100_000;
+
+fn codes_per_hour(config: &ModuleConfig) -> Result<u32, String> {
+    match config.get("codes_per_hour") {
+        None | Some(serde_json::Value::Null) => Ok(CODES_PER_HOUR_DEFAULT),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(CODES_PER_HOUR_DEFAULT),
+        Some(_) => config_number(config, "codes_per_hour")
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| (10..=CODES_PER_HOUR_MAX).contains(n))
+            .ok_or_else(|| format!("писем с кодами в час — число от 10 до {CODES_PER_HOUR_MAX}")),
+    }
 }
 
 fn optional_text(config: &ModuleConfig, key: &str) -> Option<String> {
@@ -168,12 +183,14 @@ impl MailSettings {
         {
             return Err("имя отправителя — до 80 символов, без кавычек и угловых скобок".into());
         }
+        let codes_per_hour = codes_per_hour(config)?;
         Ok(MailSettings {
             transport,
             from_email,
             from_name,
             login,
             letters,
+            codes_per_hour,
         })
     }
 
@@ -299,6 +316,11 @@ impl Module for MailModule {
             .optional(),
             SettingField::text("from_name", "Имя отправителя", "Например название сервиса")
                 .optional(),
+            SettingField::number(
+                "codes_per_hour",
+                "Писем с кодами в час",
+                "Не больше стольких писем с кодами входа, сброса пароля и смены почты каждого вида за час на всю панель. Пусто — 300. Уменьшите, если у почтового сервера маленькая дневная квота",
+            ),
         ]
     }
 

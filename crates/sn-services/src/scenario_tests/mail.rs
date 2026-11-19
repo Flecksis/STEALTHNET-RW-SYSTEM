@@ -1230,3 +1230,90 @@ async fn смена_пароля_в_кабинете_ограничена_по_�
         .unwrap();
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn письма_с_кодами_ограничены_на_всю_панель_и_по_сети_ipv6() {
+    let registry = ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap();
+    let Some(env) = env_with(registry).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let auth = services.auth();
+    let (port, letters) = fake_smtp().await;
+    let ops = services.settings_ops();
+    let mut config = serde_json::Map::new();
+    config.insert("transport".into(), serde_json::json!("smtp"));
+    config.insert("smtp_host".into(), serde_json::json!("127.0.0.1"));
+    config.insert("smtp_port".into(), serde_json::json!(port));
+    config.insert("security".into(), serde_json::json!("none"));
+    config.insert("from_email".into(), serde_json::json!("robot@example.com"));
+    config.insert("login".into(), serde_json::json!("code"));
+    config.insert("codes_per_hour".into(), serde_json::json!(5));
+    assert!(
+        ops.update_module_config(
+            ModuleId::Mail,
+            &ModuleConfigUpdate {
+                config: config.clone(),
+                clear: Vec::new(),
+            },
+            admin,
+        )
+        .await
+        .is_err(),
+        "меньше 10 писем в час не сохраняется"
+    );
+    configure_with(
+        services,
+        admin,
+        port,
+        serde_json::json!({ "login": "code", "codes_per_hour": 10 }),
+    )
+    .await;
+    for n in 0..10 {
+        auth.email_login_start(
+            &format!("guest{n}@example.com"),
+            &meta(&format!("203.0.113.{}", 60 + n)),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        code(
+            auth.email_login_start("guest10@example.com", &meta("198.51.100.90"))
+                .await
+        ),
+        crate::limits::RATE_LIMITED,
+        "одиннадцатое письмо с кодом за час не уходит"
+    );
+    assert_eq!(letters.lock().unwrap().len(), 10);
+    env.clock.set(start() + chrono::Duration::hours(2));
+    configure_with(
+        services,
+        admin,
+        port,
+        serde_json::json!({ "login": "code", "codes_per_hour": 300 }),
+    )
+    .await;
+    let wide = crate::limits::rules::EMAIL_START_WIDE.limit;
+    for n in 0..wide {
+        auth.email_login_start(
+            &format!("net{n}@example.com"),
+            &meta(&format!("2001:db8:77:{:x}::1", n + 1)),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        code(
+            auth.email_login_start("net-last@example.com", &meta("2001:db8:77:ff::1"))
+                .await
+        ),
+        crate::limits::RATE_LIMITED,
+        "из одной сети /48 писем не больше лимита"
+    );
+    auth.email_login_start("other-net@example.com", &meta("2001:db8:78::1"))
+        .await
+        .unwrap();
+    env.db.cleanup().await;
+}

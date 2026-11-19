@@ -217,6 +217,12 @@ impl<'a> Auth<'a> {
             .hit(rules::EMAIL_START_IP, &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &current).await?;
+        limits
+            .letters_sent(
+                crate::login::CHANGE_LETTERS,
+                self.services.mail().codes_per_hour(),
+            )
+            .await?;
         let code = new_code();
         let now = self.services.now();
         let expires_at = now + Duration::seconds(EMAIL_CODE_TTL_SECONDS);
@@ -411,6 +417,9 @@ impl<'a> Auth<'a> {
             }
         }
         self.check_email_proof(principal, proof).await?;
+        limits
+            .letters_sent(crate::login::CHANGE_LETTERS, mail.codes_per_hour())
+            .await?;
         let code = new_code();
         let now = self.services.now();
         let expires_at = now + Duration::seconds(EMAIL_CODE_TTL_SECONDS);

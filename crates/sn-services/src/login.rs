@@ -44,6 +44,9 @@ pub const EMAIL_CODE_MAX_ATTEMPTS: i32 = 5;
 pub const EMAIL_CODE_DIGITS: usize = 6;
 pub const LOGIN_RETENTION_DAYS: i64 = 7;
 const METHOD_EMAIL: &str = "email";
+pub const LOGIN_LETTERS: &str = "code_letters_login";
+pub const RESET_LETTERS: &str = "code_letters_reset";
+pub const CHANGE_LETTERS: &str = "code_letters_change";
 const METHOD_RESET: &str = "reset";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -481,6 +484,9 @@ impl<'a> Auth<'a> {
             .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        limits
+            .hit_wide(rules::EMAIL_START_WIDE, meta.ip.as_deref())
+            .await?;
         let mail = self.services.mail();
         if !mail.code_login() {
             return Err(ServiceError::rejected(
@@ -488,6 +494,9 @@ impl<'a> Auth<'a> {
                 "Вход по почте — по паролю, без кода",
             ));
         }
+        limits
+            .letters_sent(LOGIN_LETTERS, mail.codes_per_hour())
+            .await?;
         let (code, start) = self.issue_email_code(&email, meta).await?;
         self.services
             .letters()
@@ -802,6 +811,12 @@ impl<'a> Auth<'a> {
             .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        limits
+            .hit_wide(rules::EMAIL_START_WIDE, meta.ip.as_deref())
+            .await?;
+        limits
+            .letters_sent(RESET_LETTERS, mail.codes_per_hour())
+            .await?;
         let known = {
             let mut conn = self.services.store().conn().await?;
             conn.clients()
