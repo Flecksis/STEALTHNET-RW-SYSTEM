@@ -2,6 +2,7 @@ use super::*;
 use crate::catalog::testing::{
     TestCore, age_challenge, antibot, antibot_actions, client, context, suspect,
 };
+use sn_domain::bot_content::TEXT_MAX;
 use sn_domain::client::{IdentityKind, NewIdentity};
 use sn_domain::ids::{RemnaUserId, SubscriptionId};
 use sn_domain::subscription::{AutoRenewState, RemnaLink, SubscriptionKind};
@@ -84,6 +85,41 @@ fn тексты_условий_и_подстановки() {
         default_messages(start, start + Duration::hours(1), false)
             .iter()
             .all(|m| m.audience != Audience::Participants)
+    );
+}
+
+#[test]
+fn английские_тексты_по_умолчанию_и_подстановки_по_английски() {
+    let end = DateTime::parse_from_rfc3339("2026-12-31T17:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let single = default_messages(end - Duration::days(3), end, false);
+    assert_eq!(single.len(), 4);
+    for message in &single {
+        let english = message.text_en.as_deref().unwrap();
+        assert!(clean_text(english, false).is_ok(), "{english}");
+    }
+    let tiered = default_messages(end - Duration::days(3), end, true);
+    assert!(
+        tiered[0]
+            .text_en
+            .as_deref()
+            .unwrap()
+            .contains("Prizes:\n{prizes}")
+    );
+    let rendered = lang::sync_scope(Locale::En, || {
+        render(
+            single[0].text_en.as_deref().unwrap(),
+            "Зима",
+            &PrizeConfig::Single(Prize::Days { days: 7 }),
+            3,
+            end,
+            offset_of(180),
+        )
+    });
+    assert_eq!(
+        rendered,
+        "<b>Зима</b>\nPrize: +7\u{a0}days of subscription. Winners: 3.\nResults on 31\u{a0}December at 20:00. Tap “Join” to enter the giveaway."
     );
 }
 
@@ -510,6 +546,7 @@ async fn напоминания_уходят_скрытыми_пачками_р�
             only_eligible: true,
             send_at: Some(now),
             text: "Вы подходите: {title}".into(),
+            text_en: None,
         },
         MessageDraft {
             id: None,
@@ -517,6 +554,7 @@ async fn напоминания_уходят_скрытыми_пачками_р�
             only_eligible: false,
             send_at: Some(now),
             text: "Всем: {title}, итоги {date}".into(),
+            text_en: None,
         },
         MessageDraft {
             id: None,
@@ -524,6 +562,7 @@ async fn напоминания_уходят_скрытыми_пачками_р�
             only_eligible: false,
             send_at: Some(now + Duration::minutes(30)),
             text: "Скоро итоги".into(),
+            text_en: None,
         },
     ]);
     let created = create(&ctx, &new, None).await.unwrap();
@@ -741,6 +780,7 @@ async fn правки_конкурса_зависят_от_этапа() {
         only_eligible: false,
         send_at: None,
         text: "Итоги".into(),
+        text_en: None,
     }]);
     let updated = update(&ctx, planned.id, &changed, None).await.unwrap();
     assert_eq!(updated.prize, PrizeConfig::Single(Prize::Days { days: 5 }));
@@ -842,6 +882,203 @@ async fn условия_покупки_и_друзей_считаются_по_�
     db.cleanup().await;
 }
 
+async fn english_on(store: &Store, on: bool) {
+    let mut conn = store.conn().await.unwrap();
+    conn.settings()
+        .set(
+            sn_domain::settings::keys::LANGUAGES,
+            &serde_json::json!({ "english": on, "default": "ru" }),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+async fn speaks_english(store: &Store, client: ClientId) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query("UPDATE clients SET locale = 'en' WHERE id = $1")
+        .bind(client.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+}
+
+async fn contest_batches(store: &Store, contest: i64) -> Vec<(i64, String, String, Vec<i64>)> {
+    let mut conn = store.conn().await.unwrap();
+    let rows: Vec<(i64, i64, String, String)> = sqlx::query_as(
+        "SELECT b.id, b.contest_message_id, b.contest_locale, b.text FROM broadcasts b \
+         JOIN contest_messages m ON m.id = b.contest_message_id WHERE m.contest_id = $1 \
+         ORDER BY b.contest_message_id, b.contest_locale DESC",
+    )
+    .bind(contest)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    let mut out = Vec::new();
+    for (id, message, locale, text) in rows {
+        let chats: Vec<i64> = sqlx::query_scalar(
+            "SELECT chat_id FROM broadcast_recipients WHERE broadcast_id = $1 ORDER BY chat_id",
+        )
+        .bind(id)
+        .fetch_all(conn.conn())
+        .await
+        .unwrap();
+        out.push((message, locale, text, chats));
+    }
+    out
+}
+
+fn outsiders(text: &str, text_en: Option<&str>) -> MessageDraft {
+    MessageDraft {
+        id: None,
+        audience: Audience::Outsiders,
+        only_eligible: false,
+        send_at: Some(Utc::now()),
+        text: text.into(),
+        text_en: text_en.map(str::to_string),
+    }
+}
+
+#[tokio::test]
+async fn сообщение_на_английском_уходит_клиентам_с_английским_а_без_него_русское() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let russian = tg_client(&db.store, 8101).await;
+    let english = tg_client(&db.store, 8102).await;
+    speaks_english(&db.store, english).await;
+    assert!(!options(&ctx).await.unwrap().english);
+    english_on(&db.store, true).await;
+    assert!(options(&ctx).await.unwrap().english);
+
+    let mut new = draft(PrizeDraft::Days { days: 7 }, 1);
+    new.messages = Some(vec![
+        outsiders(
+            "Конкурс «{title}»: {prize}, итоги {date}",
+            Some("  The “{title}” giveaway: {prize}, results on {date}  "),
+        ),
+        outsiders("Только по-русски: {prize}", Some("   ")),
+    ]);
+    let created = create(&ctx, &new, None).await.unwrap();
+    assert_eq!(
+        created.messages[0].text_en.as_deref(),
+        Some("The “{title}” giveaway: {prize}, results on {date}")
+    );
+    assert_eq!(created.messages[1].text_en, None);
+    assert_eq!(run(&ctx).await.unwrap().messages, 2);
+
+    let date_ru = when(created.ends_at, offset_of(0));
+    let date_en = lang::sync_scope(Locale::En, || when(created.ends_at, offset_of(0)));
+    let first = created.messages[0].id;
+    let second = created.messages[1].id;
+    assert_eq!(
+        contest_batches(&db.store, created.id).await,
+        vec![
+            (
+                first,
+                "ru".to_string(),
+                format!("Конкурс «Новогодний розыгрыш»: +7\u{a0}дней к подписке, итоги {date_ru}"),
+                vec![8101],
+            ),
+            (
+                first,
+                "en".to_string(),
+                format!(
+                    "The “Новогодний розыгрыш” giveaway: +7\u{a0}days of subscription, results on {date_en}"
+                ),
+                vec![8102],
+            ),
+            (
+                second,
+                "ru".to_string(),
+                "Только по-русски: +7\u{a0}дней к подписке".to_string(),
+                vec![8101, 8102],
+            ),
+        ]
+    );
+    let view = contest(&ctx, created.id).await.unwrap();
+    assert_eq!(view.messages[0].recipients, Some(2));
+    assert_eq!(view.messages[0].progress.unwrap().total, 2);
+    assert_eq!(view.messages[1].recipients, Some(2));
+    assert!(
+        view.log.iter().any(|l| l.kind == "message_queued"
+            && l.text.ends_with("в очереди 2, из них на английском 1")),
+        "{:?}",
+        view.log
+    );
+    assert!(
+        view.log
+            .iter()
+            .any(|l| l.kind == "message_queued" && l.text.ends_with("в очереди 2"))
+    );
+
+    english_on(&db.store, false).await;
+    let mut off = draft(PrizeDraft::Days { days: 7 }, 1);
+    off.title = "Без английского".into();
+    off.messages = Some(vec![outsiders("Русский текст", Some("English text"))]);
+    let quiet = create(&ctx, &off, None).await.unwrap();
+    assert_eq!(quiet.messages[0].text_en.as_deref(), Some("English text"));
+    assert_eq!(run(&ctx).await.unwrap().messages, 1);
+    assert_eq!(
+        contest_batches(&db.store, quiet.id).await,
+        vec![(
+            quiet.messages[0].id,
+            "ru".to_string(),
+            "Русский текст".to_string(),
+            vec![8101, 8102],
+        )]
+    );
+    let _ = russian;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn английский_текст_проверяется_и_не_ломает_русский() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    english_on(&db.store, true).await;
+    let mut broken = draft(PrizeDraft::Days { days: 7 }, 1);
+    broken.messages = Some(vec![outsiders("Нормальный текст", Some("<b>broken"))]);
+    let err = create(&ctx, &broken, None).await.unwrap_err().to_string();
+    assert!(err.contains("Сообщение 1, текст на английском"), "{err}");
+
+    let created = create(&ctx, &draft(PrizeDraft::Days { days: 7 }, 1), None)
+        .await
+        .unwrap();
+    assert!(created.messages.iter().all(|m| m.text_en.is_some()));
+    let english = tg_client(&db.store, 8201).await;
+    speaks_english(&db.store, english).await;
+    let long = format!("{{prizes}} {}", "x".repeat(TEXT_MAX - 20));
+    let mut edited = draft(PrizeDraft::Days { days: 7 }, 1);
+    edited.ends_at = created.ends_at;
+    edited.messages = Some(vec![outsiders("Короткий русский", Some(&long))]);
+    let updated = update(&ctx, created.id, &edited, None).await.unwrap();
+    assert_eq!(updated.messages.len(), 1);
+    assert_eq!(run(&ctx).await.unwrap().messages, 1);
+    assert_eq!(
+        contest_batches(&db.store, created.id).await,
+        vec![(
+            updated.messages[0].id,
+            "ru".to_string(),
+            "Короткий русский".to_string(),
+            vec![8201],
+        )]
+    );
+    let view = contest(&ctx, created.id).await.unwrap();
+    assert!(
+        view.log.iter().any(|l| l.kind == "message_english_skipped"
+            && l.text.contains("клиенты с английским получат русский")),
+        "{:?}",
+        view.log
+    );
+    db.cleanup().await;
+}
+
 async fn json_of(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await
@@ -925,6 +1162,12 @@ async fn маршруты_конкурсов_под_модулем_и_право
     assert_eq!(created["status"], "running");
     assert!(created["seed"].is_null());
     assert_eq!(created["seed_hash"].as_str().unwrap().len(), 64);
+    assert!(
+        created["messages"][0]["text_en"]
+            .as_str()
+            .unwrap()
+            .starts_with("<b>{title}</b>\nPrize: {prize}. Winners: {winners}.")
+    );
     assert_eq!(
         created["condition_lines"][0]["text"],
         "Действующая купленная или подаренная подписка"
@@ -960,6 +1203,7 @@ async fn маршруты_конкурсов_под_модулем_и_право
     )
     .await;
     assert_eq!(options["winners_max"], WINNERS_MAX);
+    assert_eq!(options["english"], false);
     let canceled = router
         .clone()
         .oneshot(

@@ -1256,6 +1256,108 @@ async fn английский_текст_уходит_клиентам_на_ан
     db.cleanup().await;
 }
 
+async fn settle_contest(store: &Store, contest: i64) {
+    let started = Instant::now();
+    loop {
+        let mut conn = store.conn().await.unwrap();
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM broadcast_recipients r JOIN broadcasts b ON b.id = r.broadcast_id \
+             JOIN contest_messages m ON m.id = b.contest_message_id \
+             WHERE m.contest_id = $1 AND (r.state IN ('pending', 'sending') OR b.status = 'sending')",
+        )
+        .bind(contest)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        drop(conn);
+        if left == 0 {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "сообщения конкурса {contest} не разошлись"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test]
+async fn сообщение_конкурса_приходит_на_языке_клиента() {
+    use crate::catalog::contests::{self, Audience, ConditionsDraft, ContestDraft, MessageDraft};
+    use crate::catalog::prize::PrizeDraft;
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let sender = FakeSender::new();
+    let ctx = context_with(store, Some(sender.clone()), None);
+    let now = now_of(store).await;
+    tg_client(store, 9851).await;
+    let english = tg_client(store, 9852).await;
+    run(
+        store,
+        "UPDATE clients SET locale = 'en' WHERE id = $1",
+        english.0,
+    )
+    .await;
+    english_clients(store, true).await;
+    let message = |text: &str, text_en: Option<&str>| MessageDraft {
+        id: None,
+        audience: Audience::Outsiders,
+        only_eligible: false,
+        send_at: Some(now),
+        text: text.into(),
+        text_en: text_en.map(str::to_string),
+    };
+    let draft = ContestDraft {
+        title: "Зимний".into(),
+        description: None,
+        prize: PrizeDraft::Days { days: 7 }.into(),
+        winners: 1,
+        starts_at: None,
+        ends_at: now + Span::hours(2),
+        conditions: ConditionsDraft::default(),
+        messages: Some(vec![
+            message("Конкурс «{title}»", Some("The “{title}” giveaway")),
+            message("Только по-русски", None),
+        ]),
+    };
+    let created = contests::create(&ctx, &draft, None).await.unwrap();
+    assert_eq!(contests::run(&ctx).await.unwrap().messages, 2);
+    let engine = spawn_engine(&ctx, &sender, fast());
+    settle_contest(store, created.id).await;
+    engine.stop().await;
+    let mut sent: Vec<(i64, String, Vec<String>)> = sender
+        .sent()
+        .into_iter()
+        .map(|s| {
+            (
+                s.chat,
+                s.html,
+                s.buttons.into_iter().map(|b| b.text).collect(),
+            )
+        })
+        .collect();
+    sent.sort();
+    let join = |text: &str| vec![text.to_string()];
+    assert_eq!(
+        sent,
+        vec![
+            (9851, "Конкурс «Зимний»".to_string(), join("Участвовать")),
+            (9851, "Только по-русски".to_string(), join("Участвовать")),
+            (9852, "The “Зимний” giveaway".to_string(), join("Join")),
+            (9852, "Только по-русски".to_string(), join("Join")),
+        ]
+    );
+    let view = contests::contest(&ctx, created.id).await.unwrap();
+    assert!(
+        view.messages
+            .iter()
+            .all(|m| m.progress.is_some_and(|p| p.sent == 2 && p.total == 2))
+    );
+    db.cleanup().await;
+}
+
 async fn preset_rows(store: &Store) -> Vec<(String, String, bool, bool)> {
     let mut conn = store.conn().await.unwrap();
     sqlx::query_as(

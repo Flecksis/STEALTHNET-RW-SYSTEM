@@ -736,24 +736,28 @@ pub async fn open_batch(db: &mut impl Db, batch: i64, now: DateTime<Utc>) -> Sto
 pub async fn contest_batch(
     db: &mut impl Db,
     message_id: i64,
+    locale: Locale,
     text: &str,
     buttons: &serde_json::Value,
 ) -> StoreResult<i64> {
-    let existing: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM broadcasts WHERE contest_message_id = $1 FOR UPDATE")
-            .bind(message_id)
-            .fetch_optional(db.conn())
-            .await?;
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM broadcasts WHERE contest_message_id = $1 AND contest_locale = $2 FOR UPDATE",
+    )
+    .bind(message_id)
+    .bind(locale.as_str())
+    .fetch_optional(db.conn())
+    .await?;
     if let Some(id) = existing {
         return Ok(id);
     }
     Ok(sqlx::query_scalar(
-        "INSERT INTO broadcasts (text, buttons, audience, channel, status, contest_message_id) \
-         VALUES ($1, $2, '{\"kind\": \"all\"}'::jsonb, 'bot', 'done', $3) RETURNING id",
+        "INSERT INTO broadcasts (text, buttons, audience, channel, status, contest_message_id, contest_locale) \
+         VALUES ($1, $2, '{\"kind\": \"all\"}'::jsonb, 'bot', 'done', $3, $4) RETURNING id",
     )
     .bind(text)
     .bind(buttons)
     .bind(message_id)
+    .bind(locale.as_str())
     .fetch_one(db.conn())
     .await?)
 }

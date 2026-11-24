@@ -43,6 +43,7 @@ export type MessageView = {
   only_eligible: boolean;
   send_at: string | null;
   text: string;
+  text_en: string | null;
   state: 'planned' | 'queued' | 'skipped';
   queued_at: string | null;
   recipients: number | null;
@@ -137,6 +138,7 @@ export type Options = {
   promo_enabled: boolean;
   referral_enabled: boolean;
   broadcast_enabled: boolean;
+  english: boolean;
   winners_max: number;
   messages_max: number;
   friends_max: number;
@@ -318,7 +320,18 @@ export function groups(hash: string): string {
   return hash.replace(/(.{4})/g, `$1${NBSP}`).trim();
 }
 
-export type MessageDraft = { key: string; id: number | null; audience: Audience; onlyEligible: boolean; sendAt: string; text: string; locked: boolean };
+export type MessageDraft = {
+  key: string;
+  id: number | null;
+  audience: Audience;
+  onlyEligible: boolean;
+  sendAt: string;
+  text: string;
+  textEn: string;
+  locked: boolean;
+};
+
+export type MessageLang = 'ru' | 'en';
 
 export type PrizeFields = {
   kind: PrizeKind;
@@ -457,6 +470,7 @@ export function draftOf(c: Contest): Draft {
       onlyEligible: m.only_eligible,
       sendAt: localInput(m.send_at),
       text: m.text,
+      textEn: m.text_en ?? '',
       locked: m.state !== 'planned',
     })),
   };
@@ -578,6 +592,7 @@ export function buildBody(draft: Draft, currency: Currency, options: Options | n
         only_eligible: m.audience === 'outsiders' && m.onlyEligible,
         send_at: m.audience === 'results' ? null : fromLocal(m.sendAt),
         text: m.text,
+        text_en: m.textEn.trim() ? m.textEn : null,
       }));
   }
   return {
@@ -600,6 +615,10 @@ export function buildBody(draft: Draft, currency: Currency, options: Options | n
       ...(messages === undefined ? {} : { messages }),
     },
   };
+}
+
+export function englishCount(messages: MessageDraft[]): number {
+  return messages.filter((m) => m.textEn.trim()).length;
 }
 
 export const PLACEHOLDERS: Array<[string, string]> = [

@@ -1,10 +1,12 @@
 import { useId, useState, type ReactNode } from 'react';
 import { api } from '../../lib/api';
+import { count } from '../../lib/format';
 import type { Currency } from '../../lib/types';
 import {
   AUDIENCES,
   BASE,
   buildBody,
+  englishCount,
   failText,
   messageKey,
   placesLabel,
@@ -16,6 +18,7 @@ import {
   type Draft,
   type DraftErrors,
   type MessageDraft,
+  type MessageLang,
   type Options,
   type PrizeFields,
   type PrizeRow,
@@ -200,6 +203,7 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
   const [errors, setErrors] = useState<DraftErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lang, setLang] = useState<MessageLang>('ru');
   const locked = contest !== null && !contest.editable.all;
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => {
@@ -230,7 +234,7 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
   const addMessage = () => {
     setDraft((d) => ({
       ...d,
-      messages: [...(d.messages ?? []), { key: messageKey(), id: null, audience: 'participants', onlyEligible: false, sendAt: '', text: '', locked: false }],
+      messages: [...(d.messages ?? []), { key: messageKey(), id: null, audience: 'participants', onlyEligible: false, sendAt: '', text: '', textEn: '', locked: false }],
     }));
   };
 
@@ -271,6 +275,18 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
   const messages = draft.messages;
   const canAdd = messages !== null && messages.length < (options?.messages_max ?? 6);
   const hasResults = (messages ?? []).some((m) => m.audience === 'results');
+  const english = lang === 'en';
+  const total = messages?.length ?? 0;
+  const translated = englishCount(messages ?? []);
+  const langNote = english
+    ? options && !options.english
+      ? 'Английский выключен в настройках «Языки»: тексты сохранятся и заработают, когда его включат.'
+      : 'Эти тексты получат клиенты, выбравшие английский. Где английского текста нет, уйдёт русский. Кому и когда — общие для обоих языков.'
+    : translated === 0
+      ? 'Клиенты, выбравшие английский, получат эти тексты: английских пока нет.'
+      : translated === total
+        ? 'Клиенты, выбравшие английский, получат английские тексты.'
+        : `Английский текст есть у ${count(translated, 'сообщения', 'сообщений', 'сообщений')} из ${total}, по остальным клиенты с английским получат русский.`;
 
   return (
     <form
@@ -501,6 +517,19 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
             ))}
             . Победители получают отдельное сообщение со своим призом.
           </p>
+          <div className="pf-field ct-langs">
+            <span className="pf-label" id={`${base}-lang`}>
+              Язык текстов
+            </span>
+            <div role="group" aria-labelledby={`${base}-lang`} className={phone ? 'pf-psegs' : 'segs'}>
+              {(['ru', 'en'] as const).map((value) => (
+                <button key={value} type="button" aria-pressed={lang === value} onClick={() => setLang(value)}>
+                  {value === 'ru' ? 'Русский' : 'English'}
+                </button>
+              ))}
+            </div>
+            <span className="cap">{langNote}</span>
+          </div>
           {messages.map((m, index) => (
             <div key={m.key} className={m.locked ? 'ct-msg ct-msg-locked' : 'ct-msg'}>
               <div className="ct-msg-top">
@@ -556,14 +585,29 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
                   )}
                 </div>
               </div>
-              <textarea
-                className="field ct-area"
-                rows={phone ? 4 : 3}
-                value={m.text}
-                disabled={m.locked}
-                onChange={(e) => setMessage(m.key, { text: e.target.value })}
-                aria-label={`Текст сообщения ${index + 1}`}
-              />
+              {english ? (
+                <textarea
+                  key="en"
+                  className="field ct-area"
+                  rows={phone ? 4 : 3}
+                  lang="en"
+                  value={m.textEn}
+                  disabled={m.locked}
+                  onChange={(e) => setMessage(m.key, { textEn: e.target.value })}
+                  placeholder="Пусто — клиенты с английским получат русский текст"
+                  aria-label={`Текст сообщения ${index + 1} на английском`}
+                />
+              ) : (
+                <textarea
+                  key="ru"
+                  className="field ct-area"
+                  rows={phone ? 4 : 3}
+                  value={m.text}
+                  disabled={m.locked}
+                  onChange={(e) => setMessage(m.key, { text: e.target.value })}
+                  aria-label={`Текст сообщения ${index + 1}`}
+                />
+              )}
             </div>
           ))}
           {errors.messages ? <span className="err">{errors.messages}</span> : null}
@@ -575,7 +619,7 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
         </fieldset>
       ) : (
         <p className="cap ct-lead">
-          После создания появятся сообщения: объявление на старте, напоминание за день до итогов тем, кто не участвует, напоминание участникам за три часа и итоги. Их можно поправить на странице конкурса.
+          После создания появятся сообщения на русском и английском: объявление на старте, напоминание за день до итогов тем, кто не участвует, напоминание участникам за три часа и итоги. Их можно поправить на странице конкурса.
         </p>
       )}
 

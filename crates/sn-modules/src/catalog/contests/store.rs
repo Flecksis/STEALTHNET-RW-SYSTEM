@@ -1,6 +1,7 @@
 use super::{Audience, Content, EntryFilter, ListFilter, MessageContent};
 use crate::catalog::antibot::Invite;
 use chrono::{DateTime, Utc};
+use sn_domain::client::Locale;
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_store::{Db, StoreError, StoreResult};
@@ -192,12 +193,14 @@ pub struct MessageRow {
     pub only_eligible: bool,
     pub send_at: Option<DateTime<Utc>>,
     pub text: String,
+    pub text_en: Option<String>,
     pub queued_at: Option<DateTime<Utc>>,
     pub recipients: Option<i32>,
     pub skipped: Option<String>,
 }
 
-const MESSAGE_COLUMNS: &str = "m.id, m.contest_id, m.audience, m.only_eligible, m.send_at, m.text, m.queued_at, m.recipients, m.skipped";
+const MESSAGE_COLUMNS: &str = "m.id, m.contest_id, m.audience, m.only_eligible, m.send_at, m.text, m.text_en, m.queued_at, \
+                               m.recipients, m.skipped";
 
 pub async fn messages(db: &mut impl Db, contest_id: i64) -> StoreResult<Vec<MessageRow>> {
     Ok(sqlx::query_as(&format!(
@@ -226,8 +229,8 @@ pub async fn replace_messages(
         match message.id {
             Some(id) => {
                 sqlx::query(
-                    "UPDATE contest_messages SET audience = $3, only_eligible = $4, send_at = $5, text = $6 \
-                     WHERE id = $1 AND contest_id = $2 AND queued_at IS NULL",
+                    "UPDATE contest_messages SET audience = $3, only_eligible = $4, send_at = $5, text = $6, \
+                     text_en = $7 WHERE id = $1 AND contest_id = $2 AND queued_at IS NULL",
                 )
                 .bind(id)
                 .bind(contest_id)
@@ -235,19 +238,21 @@ pub async fn replace_messages(
                 .bind(message.only_eligible)
                 .bind(message.send_at)
                 .bind(&message.text)
+                .bind(message.text_en.as_deref())
                 .execute(db.conn())
                 .await?;
             }
             None => {
                 sqlx::query(
-                    "INSERT INTO contest_messages (contest_id, audience, only_eligible, send_at, text) \
-                     VALUES ($1, $2, $3, $4, $5)",
+                    "INSERT INTO contest_messages (contest_id, audience, only_eligible, send_at, text, text_en) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
                 )
                 .bind(contest_id)
                 .bind(message.audience.as_str())
                 .bind(message.only_eligible)
                 .bind(message.send_at)
                 .bind(&message.text)
+                .bind(message.text_en.as_deref())
                 .execute(db.conn())
                 .await?;
             }
@@ -298,11 +303,18 @@ pub async fn mark_message(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chat {
+    pub client: ClientId,
+    pub chat: i64,
+    pub locale: Locale,
+}
+
 pub async fn audience_chats(
     db: &mut impl Db,
     contest_id: i64,
     audience: Audience,
-) -> StoreResult<Vec<(ClientId, i64)>> {
+) -> StoreResult<Vec<Chat>> {
     let filter = match audience {
         Audience::Outsiders => {
             "NOT EXISTS (SELECT 1 FROM contest_entries e WHERE e.contest_id = $1 AND e.client_id = c.id)"
@@ -315,8 +327,8 @@ pub async fn audience_chats(
              AND e.place IS NULL)"
         }
     };
-    let rows: Vec<(i64, String)> = sqlx::query_as(&format!(
-        "SELECT c.id, tg.value FROM clients c \
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(&format!(
+        "SELECT c.id, tg.value, c.locale FROM clients c \
          JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id AND i.kind = 'telegram' \
              AND i.value ~ '^[0-9]{{1,15}}$' ORDER BY i.id LIMIT 1) tg ON true \
          WHERE c.deleted_at IS NULL AND c.status = 'active' AND NOT c.bot_unreachable AND {filter} \
@@ -327,11 +339,15 @@ pub async fn audience_chats(
     .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(id, chat)| {
+        .filter_map(|(id, chat, locale)| {
             chat.parse::<i64>()
                 .ok()
                 .filter(|c| *c > 0)
-                .map(|c| (ClientId(id), c))
+                .map(|chat| Chat {
+                    client: ClientId(id),
+                    chat,
+                    locale: Locale::parse(&locale).unwrap_or_default(),
+                })
         })
         .collect())
 }

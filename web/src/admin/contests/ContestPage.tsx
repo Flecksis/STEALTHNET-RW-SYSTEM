@@ -293,6 +293,7 @@ function Messages({ items, c }: { items: MessageView[]; c: Contest }) {
           <span className="ct-mbody">
             <span>{m.audience_title}</span>
             <span className="ct-sub ct-mtext">{filled(m.text, c)}</span>
+            {m.text_en ? <span className="ct-sub">Есть текст на английском</span> : null}
           </span>
           <span className={m.state === 'skipped' ? 'ct-mstate warn' : 'ct-mstate'}>{deliveryText(m)}</span>
         </div>

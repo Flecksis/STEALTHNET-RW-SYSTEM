@@ -40,7 +40,7 @@ use uuid::Uuid;
 pub use auto::{
     AUTO_EVERY_SECS, AUTO_TASK, AutoReach, CATCH_UP_HOURS, CheckReport, Delay, Localized,
     ReachQuery, Rule, RuleDraft, RuleItem, RuleStats, Trigger, Unit, check as check_rules,
-    create_rule, delete_rule, rule, rule_reach, rules, switch_rule, update_rule,
+    create_rule, delete_rule, english_on, rule, rule_reach, rules, switch_rule, update_rule,
 };
 pub use auto_store::{contest_batch, contest_progress, open_batch, queue_bot, stop_contest};
 pub use engine::{Engine, EngineConfig, Sender};

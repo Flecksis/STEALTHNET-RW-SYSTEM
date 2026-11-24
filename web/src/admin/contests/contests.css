@@ -240,6 +240,10 @@ a.ct-trow:hover {
   border-radius: 8px;
 }
 
+.ct-langs .segs {
+  align-self: flex-start;
+}
+
 .ct-msg-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

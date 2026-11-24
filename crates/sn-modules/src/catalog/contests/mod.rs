@@ -279,6 +279,8 @@ pub struct MessageDraft {
     #[serde(default)]
     pub send_at: Option<DateTime<Utc>>,
     pub text: String,
+    #[serde(default)]
+    pub text_en: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,6 +516,7 @@ pub struct MessageContent {
     pub only_eligible: bool,
     pub send_at: Option<DateTime<Utc>>,
     pub text: String,
+    pub text_en: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -544,6 +547,7 @@ pub struct MessageView {
     pub only_eligible: bool,
     pub send_at: Option<DateTime<Utc>>,
     pub text: String,
+    pub text_en: Option<String>,
     pub state: MessageState,
     pub queued_at: Option<DateTime<Utc>>,
     pub recipients: Option<i32>,
@@ -698,6 +702,7 @@ pub struct Options {
     pub promo_enabled: bool,
     pub referral_enabled: bool,
     pub broadcast_enabled: bool,
+    pub english: bool,
     pub winners_max: u32,
     pub messages_max: usize,
     pub friends_max: u32,
@@ -1216,6 +1221,12 @@ fn clean_messages(
             let n = index + 1;
             let text = clean_text(&draft.text, false)
                 .map_err(|err| invalid(format!("Сообщение {n}: {err}")))?;
+            let text_en = match draft.text_en.as_deref().map(str::trim) {
+                Some(raw) if !raw.is_empty() => Some(clean_text(raw, false).map_err(|err| {
+                    invalid(format!("Сообщение {n}, текст на английском: {err}"))
+                })?),
+                _ => None,
+            };
             let send_at = match draft.audience {
                 Audience::Results => None,
                 _ => {
@@ -1239,6 +1250,7 @@ fn clean_messages(
                 only_eligible: draft.only_eligible && draft.audience == Audience::Outsiders,
                 send_at,
                 text,
+                text_en,
             })
         })
         .collect()
@@ -1250,44 +1262,52 @@ pub fn default_messages(
     tiered: bool,
 ) -> Vec<MessageContent> {
     let span = ends_at - starts_at;
-    let announce = if tiered {
-        "<b>{title}</b>\nПризы:\n{prizes}\nПобедителей: {winners}. Итоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш."
+    let message =
+        |audience: Audience, send_at: Option<DateTime<Utc>>, ru: &str, en: &str| MessageContent {
+            id: None,
+            audience,
+            only_eligible: false,
+            send_at,
+            text: ru.into(),
+            text_en: Some(en.into()),
+        };
+    let mut out = vec![if tiered {
+        message(
+            Audience::Outsiders,
+            Some(starts_at),
+            "<b>{title}</b>\nПризы:\n{prizes}\nПобедителей: {winners}. Итоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш.",
+            "<b>{title}</b>\nPrizes:\n{prizes}\nWinners: {winners}. Results on {date}. Tap “Join” to enter the giveaway.",
+        )
     } else {
-        "<b>{title}</b>\nПриз: {prize}. Победителей: {winners}.\nИтоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш."
-    };
-    let mut out = vec![MessageContent {
-        id: None,
-        audience: Audience::Outsiders,
-        only_eligible: false,
-        send_at: Some(starts_at),
-        text: announce.into(),
+        message(
+            Audience::Outsiders,
+            Some(starts_at),
+            "<b>{title}</b>\nПриз: {prize}. Победителей: {winners}.\nИтоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш.",
+            "<b>{title}</b>\nPrize: {prize}. Winners: {winners}.\nResults on {date}. Tap “Join” to enter the giveaway.",
+        )
     }];
     if span >= Duration::days(2) {
-        out.push(MessageContent {
-            id: None,
-            audience: Audience::Outsiders,
-            only_eligible: false,
-            send_at: Some(ends_at - Duration::days(1)),
-            text: "До итогов конкурса «{title}» остался день. Успейте принять участие!".into(),
-        });
+        out.push(message(
+            Audience::Outsiders,
+            Some(ends_at - Duration::days(1)),
+            "До итогов конкурса «{title}» остался день. Успейте принять участие!",
+            "One day left until the results of the “{title}” giveaway. There's still time to join!",
+        ));
     }
     if span >= Duration::hours(6) {
-        out.push(MessageContent {
-            id: None,
-            audience: Audience::Participants,
-            only_eligible: false,
-            send_at: Some(ends_at - Duration::hours(3)),
-            text: "Итоги конкурса «{title}» — {date}. Вы участвуете, удачи!".into(),
-        });
+        out.push(message(
+            Audience::Participants,
+            Some(ends_at - Duration::hours(3)),
+            "Итоги конкурса «{title}» — {date}. Вы участвуете, удачи!",
+            "Results of the “{title}” giveaway on {date}. You're in, good luck!",
+        ));
     }
-    out.push(MessageContent {
-        id: None,
-        audience: Audience::Results,
-        only_eligible: false,
-        send_at: None,
-        text: "Итоги конкурса «{title}» подведены. В этот раз приз достался другим участникам — спасибо, что участвовали!"
-            .into(),
-    });
+    out.push(message(
+        Audience::Results,
+        None,
+        "Итоги конкурса «{title}» подведены. В этот раз приз достался другим участникам — спасибо, что участвовали!",
+        "The results of the “{title}” giveaway are in. This time the prize went to others. Thanks for taking part!",
+    ));
     out
 }
 
@@ -1342,6 +1362,7 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, ModuleError> {
         promo_enabled: module_on(&mut conn, ModuleId::Promo).await?,
         referral_enabled: module_on(&mut conn, ModuleId::Referral).await?,
         broadcast_enabled: module_on(&mut conn, ModuleId::Broadcast).await?,
+        english: broadcast::english_on(&mut conn).await?,
         winners_max: WINNERS_MAX,
         messages_max: MESSAGES_MAX,
         friends_max: FRIENDS_MAX,
@@ -1376,6 +1397,7 @@ async fn view(db: &mut impl Db, id: i64, now: DateTime<Utc>) -> Result<Contest, 
                 only_eligible: m.only_eligible,
                 send_at: m.send_at,
                 text: m.text,
+                text_en: m.text_en,
                 state,
                 queued_at: m.queued_at,
                 recipients: m.recipients,
@@ -2805,15 +2827,13 @@ async fn queue_one(ctx: &ModuleContext, message_id: i64) -> Result<bool, ModuleE
     }
     let prize = parse_prize(&row)?;
     let offset = offset(&mut tx).await?;
-    let rendered = render(
-        &message.text,
-        &row.title,
-        &prize,
-        winners_of(&row),
-        row.ends_at,
-        offset,
-    );
-    let text = match clean_text(&rendered, false) {
+    let winners = winners_of(&row);
+    let rendered = |raw: &str, locale: Locale| {
+        lang::sync_scope(locale, || {
+            render(raw, &row.title, &prize, winners, row.ends_at, offset)
+        })
+    };
+    let text = match clean_text(&rendered(&message.text, Locale::Ru), false) {
         Ok(text) => text,
         Err(err) => {
             let reason = format!("Не отправлено: {err}");
@@ -2830,48 +2850,107 @@ async fn queue_one(ctx: &ModuleContext, message_id: i64) -> Result<bool, ModuleE
             return Ok(false);
         }
     };
+    let english = match message.text_en.as_deref() {
+        Some(raw) if broadcast::english_on(&mut tx).await? => {
+            match clean_text(&rendered(raw, Locale::En), false) {
+                Ok(text) => Some(text),
+                Err(err) => {
+                    store::log(
+                        &mut tx,
+                        row.id,
+                        "message_english_skipped",
+                        &format!(
+                            "{}: текст на английском не отправлен ({err}), клиенты с английским получат русский",
+                            audience.title(message.only_eligible)
+                        ),
+                        serde_json::json!({ "message_id": message_id }),
+                    )
+                    .await?;
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     let mut chats = store::audience_chats(&mut tx, row.id, audience).await?;
     if message.only_eligible && audience == Audience::Outsiders {
         let conditions = parse_conditions(&row)?;
-        let ids: Vec<i64> = chats.iter().map(|(c, _)| c.0).collect();
+        let ids: Vec<i64> = chats.iter().map(|c| c.client.0).collect();
         let facts = facts_for(&mut tx, &conditions, row.starts_at, row.ends_at, now, &ids).await?;
         let suspects = antibot::blocked_among(&mut tx, Target::Contest, &ids).await?;
-        chats.retain(|(client, _)| {
-            facts.get(&client.0).is_some_and(|f| {
+        chats.retain(|chat| {
+            facts.get(&chat.client.0).is_some_and(|f| {
                 !f.blocked
-                    && !suspects.contains_key(client)
+                    && !suspects.contains_key(&chat.client)
                     && checks(&conditions, f, row.starts_at, row.ends_at, offset)
                         .iter()
                         .all(|c| c.ok)
             })
         });
     }
-    let mut added = 0u64;
-    if !chats.is_empty() {
-        let buttons = serde_json::to_value(vec![audience.button()])
-            .map_err(|e| ModuleError::Core(e.to_string()))?;
-        let batch = broadcast::contest_batch(&mut tx, message_id, &text, &buttons).await?;
-        added = broadcast::queue_bot(&mut tx, batch, &chats).await?;
-        if added > 0 {
-            broadcast::open_batch(&mut tx, batch, now).await?;
-        }
+    let buttons = serde_json::to_value(vec![audience.button()])
+        .map_err(|e| ModuleError::Core(e.to_string()))?;
+    let (english_chats, russian_chats): (Vec<store::Chat>, Vec<store::Chat>) = chats
+        .into_iter()
+        .partition(|chat| english.is_some() && chat.locale == Locale::En);
+    let batch = Batch {
+        message_id,
+        buttons: &buttons,
+        now,
+    };
+    let mut added = queue_batch(&mut tx, &batch, Locale::Ru, &text, &russian_chats).await?;
+    let mut added_en = 0u64;
+    if let Some(english) = &english {
+        added_en = queue_batch(&mut tx, &batch, Locale::En, english, &english_chats).await?;
+        added += added_en;
     }
     let recipients = i64::try_from(added).unwrap_or(i64::MAX);
+    let recipients_en = i64::try_from(added_en).unwrap_or(i64::MAX);
     store::mark_message(&mut tx, message_id, now, recipients, None).await?;
+    let queued = if recipients_en > 0 {
+        format!("в очереди {recipients}, из них на английском {recipients_en}")
+    } else {
+        format!("в очереди {recipients}")
+    };
     store::log(
         &mut tx,
         row.id,
         "message_queued",
-        &format!(
-            "{}: в очереди {}",
-            audience.title(message.only_eligible),
-            recipients
-        ),
-        serde_json::json!({ "message_id": message_id, "recipients": recipients }),
+        &format!("{}: {queued}", audience.title(message.only_eligible)),
+        serde_json::json!({
+            "message_id": message_id,
+            "recipients": recipients,
+            "english": recipients_en,
+        }),
     )
     .await?;
     tx.commit().await?;
     Ok(true)
+}
+
+struct Batch<'a> {
+    message_id: i64,
+    buttons: &'a serde_json::Value,
+    now: DateTime<Utc>,
+}
+
+async fn queue_batch(
+    db: &mut impl Db,
+    batch: &Batch<'_>,
+    locale: Locale,
+    text: &str,
+    chats: &[store::Chat],
+) -> Result<u64, ModuleError> {
+    if chats.is_empty() {
+        return Ok(0);
+    }
+    let rows: Vec<(ClientId, i64)> = chats.iter().map(|c| (c.client, c.chat)).collect();
+    let id = broadcast::contest_batch(db, batch.message_id, locale, text, batch.buttons).await?;
+    let added = broadcast::queue_bot(db, id, &rows).await?;
+    if added > 0 {
+        broadcast::open_batch(db, id, batch.now).await?;
+    }
+    Ok(added)
 }
 
 pub struct ContestsModule;
