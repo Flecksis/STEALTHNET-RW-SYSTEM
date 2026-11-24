@@ -55,7 +55,7 @@ export type Block = HeroBlock | FeaturesBlock | StepsBlock | PlansBlock | Server
 export type BlockOf<K extends BlockKind> = Extract<Block, { kind: K }>;
 export type ItemBlock = FeaturesBlock | StepsBlock | FaqBlock;
 
-export type PublicLanding = { version?: string; blocks?: unknown };
+export type PublicLanding = { version?: string; blocks?: unknown; css?: unknown };
 
 export const PREVIEW_MESSAGES = {
   draft: 'sn-landing-draft',
@@ -63,7 +63,7 @@ export const PREVIEW_MESSAGES = {
   pick: 'sn-landing-pick',
 } as const;
 
-export type PreviewDraft = { type: typeof PREVIEW_MESSAGES.draft; blocks: Block[]; theme: 'dark' | 'light'; focus?: BlockKind | null };
+export type PreviewDraft = { type: typeof PREVIEW_MESSAGES.draft; blocks: Block[]; theme: 'dark' | 'light'; css?: string; focus?: BlockKind | null };
 
 export type LandingContext = {
   phone: boolean;

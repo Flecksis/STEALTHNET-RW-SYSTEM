@@ -2427,6 +2427,7 @@ version = "0.1.0"
 dependencies = [
  "ammonia",
  "chrono",
+ "cssparser",
  "serde",
  "serde_json",
  "thiserror",

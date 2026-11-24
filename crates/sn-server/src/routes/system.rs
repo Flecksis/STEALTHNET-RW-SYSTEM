@@ -17,6 +17,7 @@ const TAB_ICON_CACHE: &str = "public, max-age=3600";
 const IMAGE_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'";
 const ICON_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 const LANDING_CACHE: &str = "no-cache";
+const STYLE_POLICY: &str = "default-src 'none'; frame-ancestors 'none'; sandbox";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -27,7 +28,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/logo/{file}", get(logo))
         .route("/api/public/favicon/{file}", get(favicon))
         .route("/api/public/landing", get(landing))
-        .route("/api/public/landing/{file}", get(landing_image))
+        .route("/api/public/landing/{file}", get(landing_file))
         .route("/api/public/pages/{*path}", get(document_page))
         .route("/api/public/connect-apps", get(connect_apps))
         .route("/api/public/app-icon/{file}", get(app_icon))
@@ -261,10 +262,63 @@ async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .into_response()
 }
 
-async fn landing_image(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+fn landing_style(state: &AppState, version: &str, headers: &HeaderMap) -> Response {
+    if !state.services.modules().is_enabled(ModuleId::Landing) {
+        return sn_modules::gate::disabled_response(ModuleId::Landing);
+    }
+    let style = state
+        .services
+        .landing()
+        .style()
+        .filter(|_| sn_domain::landing::valid_tag(version));
+    let Some(style) = style else {
+        return ApiError::not_found().into_response();
+    };
+    let etag = format!("\"{}\"", style.version);
+    let Ok(tag) = HeaderValue::from_str(&etag) else {
+        return ApiError::not_found().into_response();
+    };
+    let cache = HeaderValue::from_static(if style.version == version {
+        IMAGE_CACHE
+    } else {
+        LANDING_CACHE
+    });
+    if etag_matches(headers, &etag) {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [(header::ETAG, tag), (header::CACHE_CONTROL, cache)],
+        )
+            .into_response();
+    }
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/css; charset=utf-8"),
+            ),
+            (header::ETAG, tag),
+            (header::CACHE_CONTROL, cache),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(STYLE_POLICY),
+            ),
+        ],
+        style.text.clone(),
+    )
+        .into_response()
+}
+
+async fn landing_file(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     let Some((tag, extension)) = file.split_once('.') else {
         return ApiError::not_found().into_response();
     };
+    if extension == "css" {
+        return landing_style(&state, tag, &headers);
+    }
     match state.services.landing().image_file(tag).await {
         Ok(Some((kind, bytes))) if kind.extension() == extension => (
             [

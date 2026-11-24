@@ -70,6 +70,15 @@ impl<'c> SiteAssetsRepo<'c> {
         Ok(found.is_some())
     }
 
+    pub async fn existing(&mut self, names: &[String]) -> StoreResult<Vec<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT name FROM site_assets WHERE name = ANY($1)")
+                .bind(names)
+                .fetch_all(&mut *self.conn)
+                .await?,
+        )
+    }
+
     pub async fn count_prefix(&mut self, prefix: &str) -> StoreResult<i64> {
         Ok(
             sqlx::query_scalar("SELECT count(*) FROM site_assets WHERE starts_with(name, $1)")

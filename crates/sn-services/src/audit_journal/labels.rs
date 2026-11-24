@@ -1262,6 +1262,8 @@ const FIELDS: &[(&str, &str)] = &[
     ("promo_id", "Промокод №"),
     ("channel", "Канал"),
     ("order", "Порядок"),
+    ("css", "Свой CSS"),
+    ("css_size", "Размер CSS, символов"),
     ("report", "Итог"),
     ("from", "Было"),
     ("to", "Стало"),
@@ -1297,6 +1299,15 @@ const VALUES: &[(&str, &str, &str)] = &[
     ("channel", "miniapp", "мини-приложение"),
     ("menu_mode", "classic", "Классический"),
     ("menu_mode", "web", "Веб"),
+    ("css", "page", "общий"),
+    ("css", "hero", "первый экран"),
+    ("css", "features", "преимущества"),
+    ("css", "steps", "как подключиться"),
+    ("css", "plans", "тарифы"),
+    ("css", "servers", "серверы и приложения"),
+    ("css", "faq", "вопросы и ответы"),
+    ("css", "cta", "призыв в конце"),
+    ("css", "footer", "подвал"),
 ];
 
 pub fn field_label_in(action: &str, key: &str) -> Option<&'static str> {

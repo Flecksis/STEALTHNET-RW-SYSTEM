@@ -343,3 +343,310 @@ async fn превью_лендинга_встраивается_только_в_
     assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
     std::fs::remove_dir_all(dir).ok();
 }
+
+async fn style_file(
+    h: &Http,
+    path: &str,
+    if_none_match: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    let mut builder = Request::builder().method(Method::GET).uri(path);
+    if let Some(etag) = if_none_match {
+        builder = builder.header(header::IF_NONE_MATCH, etag);
+    }
+    let response = router(h.state.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn свой_css_лендинга_отдаётся_отдельным_файлом_с_версией() {
+    let Some(mut h) = http().await else { return };
+    let owner = h.owner().await;
+    let dir = std::env::temp_dir().join(format!("sn-css-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><html lang=\"ru\"><head><title>S</title></head><body></body></html>",
+    )
+    .unwrap();
+    h.state.config = Arc::new(ServerConfig {
+        web_dir: Some(dir.clone()),
+        csp: crate::security::CspMode::All,
+        ..ServerConfig::default()
+    });
+
+    let (_, _, plain) = style_file(&h, "/", None).await;
+    assert!(!plain.contains("preload"));
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "blocks": [], "css": {
+                "page": ".ld { --accent: teal }",
+                "hero": "h1 { font-size: 90px }"
+            } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(
+        saved["css"],
+        json!({ "page": ".ld { --accent: teal }", "hero": "h1 { font-size: 90px }" })
+    );
+    assert_eq!(
+        saved["styles"]["hero"],
+        "[data-block=\"hero\"] h1 { font-size: 90px }\n"
+    );
+    assert_eq!(saved["limits"]["page_css"], 50_000);
+    assert_eq!(saved["limits"]["block_css"], 10_000);
+
+    let (_, headers, body) = public(&h, None).await;
+    let shown: Value = serde_json::from_slice(&body).unwrap();
+    let path = shown["css"].as_str().unwrap().to_string();
+    assert!(path.starts_with("/api/public/landing/"), "{path}");
+    assert!(shown.get("styles").is_none());
+    let json_etag = headers[header::ETAG].to_str().unwrap().to_string();
+
+    let (status, headers, text) = style_file(&h, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        text,
+        ".ld { --accent: teal }\n[data-block=\"hero\"] h1 { font-size: 90px }\n"
+    );
+    assert_eq!(headers[header::CONTENT_TYPE], "text/css; charset=utf-8");
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        headers[header::CONTENT_SECURITY_POLICY],
+        "default-src 'none'; frame-ancestors 'none'; sandbox"
+    );
+    let etag = headers[header::ETAG].to_str().unwrap().to_string();
+    assert!(path.contains(etag.trim_matches('"')));
+    let (status, headers, text) = style_file(&h, &path, Some(&etag)).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(text.is_empty());
+    assert_eq!(headers[header::ETAG], etag.as_str());
+
+    let (_, headers, html) = style_file(&h, "/", None).await;
+    assert!(
+        html.contains(&format!(
+            "<link rel=\"preload\" as=\"style\" href=\"{path}\">"
+        )),
+        "{html}"
+    );
+    assert!(!html.contains("teal"));
+    assert!(!html.contains("<style"));
+    let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    assert!(policy.contains("style-src 'self';"), "{policy}");
+    assert!(!policy.contains("unsafe-inline"), "{policy}");
+    for other in [
+        "/cabinet",
+        "/app",
+        "/admin",
+        "/admin/settings/landing",
+        "/pay/1",
+    ] {
+        let (_, _, html) = style_file(&h, other, None).await;
+        assert!(!html.contains(&path), "{other}");
+    }
+
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "blocks": [], "css": { "page": ".ld { --accent: navy }" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, headers, body) = public(&h, Some(&json_etag)).await;
+    assert_ne!(headers[header::ETAG], json_etag.as_str());
+    let shown: Value = serde_json::from_slice(&body).unwrap();
+    let newer = shown["css"].as_str().unwrap().to_string();
+    assert_ne!(newer, path);
+    let (status, headers, text) = style_file(&h, &path, Some(&etag)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text, ".ld { --accent: navy }\n");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+    for missing in [
+        "/api/public/landing/style.css",
+        "/api/public/landing/0123456789ABCDEF.css",
+        "/api/public/landing/..%2F..%2Fetc%2Fpasswd.css",
+        "/api/public/landing/.css",
+    ] {
+        let (status, _, _) = style_file(&h, missing, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    }
+
+    let landing_off = sn_store::ModuleStateRow {
+        module: "landing".into(),
+        enabled: false,
+        config: json!({}),
+        updated_at: Utc::now(),
+    };
+    h.services().modules().apply_rows(&[landing_off]);
+    let (status, _, text) = style_file(&h, &newer, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(text.contains("module.disabled"));
+    h.services().modules().apply_rows(&[]);
+
+    let (status, reset) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "blocks": [], "css": {} }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reset}");
+    assert_eq!(reset["css"], json!({}));
+    let (status, _, _) = style_file(&h, &newer, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, _, html) = style_file(&h, "/", None).await;
+    assert!(!html.contains("preload"));
+    let (_, _, body) = public(&h, None).await;
+    let shown: Value = serde_json::from_slice(&body).unwrap();
+    assert!(shown.get("css").is_none());
+    std::fs::remove_dir_all(dir).ok();
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn опасный_и_кривой_css_не_сохраняется_а_проверка_говорит_где_ошибка() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let check_path = "/api/admin/settings/landing/css";
+    let (status, _) = h
+        .write(
+            Method::POST,
+            check_path,
+            &support,
+            json!({ "css": { "page": ".a {}" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &support,
+            json!({ "blocks": [], "css": { "page": ".a {}" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    for (css, message) in [
+        (
+            ".a {\n  color: red;",
+            "Общий CSS, строка 1: не закрыта скобка {",
+        ),
+        (
+            ".a {}\n@import url(https://evil.example/x.css);",
+            "Общий CSS, строка 2: @import запрещён: скопируйте правила из того файла сюда",
+        ),
+        (
+            ".a { background: url('javascript:alert(1)') }",
+            "Общий CSS, строка 1: ссылки javascript: и vbscript: в CSS запрещены",
+        ),
+        (
+            ".a { width: expression(1) }",
+            "Общий CSS, строка 1: expression() запрещён",
+        ),
+        (
+            ".a { behavior: url(#x) }",
+            "Общий CSS, строка 1: свойство behavior запрещено",
+        ),
+        (
+            ".a { -moz-binding: none }",
+            "Общий CSS, строка 1: свойство -moz-binding запрещено",
+        ),
+        (
+            "</style><script>alert(1)</script>",
+            "Общий CSS, строка 1: уберите теги вроде <style>: нужен только CSS",
+        ),
+        (
+            ".a { background: url(https://evil.example/pixel.gif) }",
+            "Общий CSS, строка 1: адрес «https://evil.example/pixel.gif» нельзя: картинки и шрифты — только со своего домена. Загрузите картинку кнопкой под полем",
+        ),
+    ] {
+        let (status, error) = h
+            .write(
+                Method::PUT,
+                ADMIN_PATH,
+                &owner,
+                json!({ "blocks": [], "css": { "page": css } }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{css}: {error}");
+        assert_eq!(error["error"]["code"], "landing.invalid");
+        assert_eq!(error["error"]["message"], message);
+    }
+    let (status, error) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "blocks": [], "css": { "page": "я".repeat(50_001) } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+    assert_eq!(
+        error["error"]["message"],
+        "Общий CSS, не длиннее 50000 символов"
+    );
+    let (_, view) = h.get(ADMIN_PATH, &owner).await;
+    assert_eq!(view["css"], json!({}));
+    assert_eq!(view["styles"], json!({}));
+
+    let (status, report) = h
+        .write(
+            Method::POST,
+            check_path,
+            &owner,
+            json!({ "css": {
+                "page": ".a {\n}\n.b {",
+                "hero": "h1 { color: red }",
+                "cta": null
+            } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(
+        report,
+        json!({
+            "page": { "line": 3, "problem": "не закрыта скобка {" },
+            "hero": { "style": "[data-block=\"hero\"] h1 { color: red }\n" },
+            "cta": { "style": "" }
+        })
+    );
+    let (_, view) = h.get(ADMIN_PATH, &owner).await;
+    assert_eq!(view["css"], json!({}));
+
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "blocks": [], "css": { "hero": "h1 { color: secretcolor }" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, journal) = h.get("/api/admin/audit?limit=20", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{journal}");
+    let text = journal.to_string();
+    assert!(text.contains("Изменён лендинг"), "{text}");
+    assert!(text.contains("Свой CSS"), "{text}");
+    assert!(text.contains("первый экран"), "{text}");
+    assert!(!text.contains("secretcolor"), "{text}");
+    h.db.cleanup().await;
+}

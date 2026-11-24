@@ -45,6 +45,8 @@ import {
 } from '../../site/landingModel';
 import type { ModulesData, ModuleView } from '../modules/model';
 import { Switch } from '../ui';
+import { CssEditor, useCssCheck } from './CssEditor';
+import { CSS_PLACES, cssOut, joinStyles, lengthProblem, readTexts, sameCss, type CssPlace, type CssProblems, type CssTexts } from './landingCss';
 import {
   chars,
   IMAGE_RULES,
@@ -61,14 +63,16 @@ import {
   type ImageRules,
   type Limits,
 } from './landingFields';
+import { SNIPPETS } from './landingSnippets';
 import { SettingsLayout } from './SettingsLayout';
 import '../form.css';
 import './landing-editor.css';
 
-type AdminLanding = { blocks?: unknown; limits?: Partial<Limits>; image?: ImageRules };
+type AdminLanding = { blocks?: unknown; css?: unknown; styles?: unknown; limits?: Partial<Limits>; image?: ImageRules };
 type Device = 'desktop' | 'phone';
 type PreviewTheme = 'light' | 'dark';
 type Focus = { kind: BlockKind; n: number };
+type Row = BlockKind | 'css';
 
 const PREVIEW_PATH = '/admin/landing-preview';
 const KIND_SET = new Set<string>(DEFAULT_ORDER);
@@ -249,6 +253,22 @@ function problemsOf(blocks: Block[], limits: Limits): string[] {
   return out;
 }
 
+function placeName(place: CssPlace): string {
+  return place === 'page' ? 'Общий CSS' : `${BLOCK_NAMES[place]}, CSS блока`;
+}
+
+function cssProblemsOf(texts: CssTexts, problems: CssProblems, limits: Limits): string[] {
+  const out: string[] = [];
+  for (const place of CSS_PLACES) {
+    const max = place === 'page' ? limits.page_css : limits.block_css;
+    const problem = lengthProblem(texts[place] ?? '', max) ?? problems[place];
+    if (problem) {
+      out.push(problem.line ? `${placeName(place)}, строка ${problem.line}: ${problem.text}` : `${placeName(place)}: ${problem.text}`);
+    }
+  }
+  return out;
+}
+
 function summary(block: Block, ctx: LandingContext): string {
   if (!isOn(block)) {
     return 'Скрыт';
@@ -306,6 +326,7 @@ function useViewportHeight(): number {
 
 type FrameProps = {
   blocks: Block[];
+  css: string;
   device: Device;
   theme: PreviewTheme;
   focus: Focus | null;
@@ -313,7 +334,7 @@ type FrameProps = {
   onPick: (kind: BlockKind) => void;
 };
 
-function PreviewFrame({ blocks, device, theme, focus, height, onPick }: FrameProps) {
+function PreviewFrame({ blocks, css, device, theme, focus, height, onPick }: FrameProps) {
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const { width } = useSize(box);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -354,11 +375,11 @@ function PreviewFrame({ blocks, device, theme, focus, height, onPick }: FramePro
       if (focus) {
         sent.current = focus.n;
       }
-      const message: PreviewDraft = { type: PREVIEW_MESSAGES.draft, blocks, theme, focus: jump };
+      const message: PreviewDraft = { type: PREVIEW_MESSAGES.draft, blocks, theme, css, focus: jump };
       target.postMessage(message, window.location.origin);
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [ready, blocks, theme, focus]);
+  }, [ready, blocks, css, theme, focus]);
 
   const virtual = device === 'desktop' ? 1280 : 390;
   const scale = width > 0 ? Math.min(1, width / virtual) : 0;
@@ -668,11 +689,15 @@ export function SettingsLanding() {
   const viewport = useViewportHeight();
   const [saved, setSaved] = useState<Block[] | null>(null);
   const [draft, setDraft] = useState<Block[] | null>(null);
+  const [cssSaved, setCssSaved] = useState<CssTexts>({});
+  const [cssDraft, setCssDraft] = useState<CssTexts>({});
+  const css = useCssCheck(cssDraft);
+  const resetCss = css.reset;
   const [limits, setLimits] = useState<Limits>(LIMITS);
   const [rules, setRules] = useState<ImageRules>(IMAGE_RULES);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<PublicCatalog | null>(null);
-  const [open, setOpen] = useState<BlockKind | null>(null);
+  const [open, setOpen] = useState<Row | null>(null);
   const [focus, setFocus] = useState<Focus | null>(null);
   const [device, setDevice] = useState<Device>(() => (phone ? 'phone' : 'desktop'));
   const [theme, setTheme] = useState<PreviewTheme>('light');
@@ -694,11 +719,15 @@ export function SettingsLanding() {
 
   const apply = useCallback((view: AdminLanding) => {
     const blocks = normalizeBlocks(view.blocks);
+    const texts = readTexts(view.css);
     setSaved(blocks);
     setDraft(blocks);
+    setCssSaved(texts);
+    setCssDraft(texts);
+    resetCss(texts, readTexts(view.styles));
     setLimits({ ...LIMITS, ...(view.limits ?? {}) });
     setRules(view.image ?? IMAGE_RULES);
-  }, []);
+  }, [resetCss]);
 
   useEffect(() => {
     api<AdminLanding>('/api/admin/settings/landing')
@@ -746,8 +775,15 @@ export function SettingsLanding() {
     [catalog, site],
   );
   const sections = useMemo(() => visibleSections(draft ?? []), [draft]);
-  const dirty = useMemo(() => (saved && draft ? JSON.stringify(canonical(draft)) !== JSON.stringify(canonical(saved)) : false), [saved, draft]);
-  const problems = useMemo(() => (draft ? problemsOf(draft, limits) : []), [draft, limits]);
+  const dirty = useMemo(
+    () => (saved && draft ? JSON.stringify(canonical(draft)) !== JSON.stringify(canonical(saved)) || !sameCss(cssDraft, cssSaved) : false),
+    [saved, draft, cssDraft, cssSaved],
+  );
+  const problems = useMemo(
+    () => (draft ? [...problemsOf(draft, limits), ...cssProblemsOf(cssDraft, css.problems, limits)] : []),
+    [draft, limits, cssDraft, css.problems],
+  );
+  const previewCss = useMemo(() => joinStyles(css.styles), [css.styles]);
 
   useEffect(() => {
     if (!dirty) {
@@ -785,6 +821,11 @@ export function SettingsLanding() {
 
   const replace = (next: Block) => {
     setDraft((current) => current?.map((block) => (block.kind === next.kind ? next : block)) ?? current);
+    touched();
+  };
+
+  const changeCss = (place: CssPlace, text: string) => {
+    setCssDraft((current) => ({ ...current, [place]: text }));
     touched();
   };
 
@@ -837,6 +878,8 @@ export function SettingsLanding() {
 
   const onPick = useCallback((kind: BlockKind) => expand(kind, true), [expand]);
 
+  const expandCss = () => setOpen((current) => (current === 'css' ? null : 'css'));
+
   const save = async () => {
     if (!draft || !dirty || problems.length || busy) {
       return;
@@ -845,7 +888,7 @@ export function SettingsLanding() {
     setError(null);
     setNote('');
     try {
-      const view = await api<AdminLanding>('/api/admin/settings/landing', { method: 'PUT', body: { blocks: canonical(draft) } });
+      const view = await api<AdminLanding>('/api/admin/settings/landing', { method: 'PUT', body: { blocks: canonical(draft), css: cssOut(cssDraft) } });
       apply(view);
       setNote('Сохранено, на сайте уже новая версия');
     } catch (err) {
@@ -857,11 +900,13 @@ export function SettingsLanding() {
 
   const cancel = () => {
     setDraft(saved);
+    setCssDraft(cssSaved);
     touched();
   };
 
   const resetAll = () => {
     setDraft(defaultBlocks());
+    setCssDraft({});
     setAsking(false);
     setOpen(null);
     touched();
@@ -985,6 +1030,7 @@ export function SettingsLanding() {
           classes.push(drop.after ? 'drop-after' : 'drop-before');
         }
         const name = BLOCK_NAMES[kind];
+        const own = Boolean(cssDraft[kind]?.trim());
         return (
           <div key={kind} id={`lde-${kind}`} className={classes.join(' ')} onDragOver={dragOver(kind)} onDrop={dropOn(kind)}>
             <div className="lde-row">
@@ -998,7 +1044,10 @@ export function SettingsLanding() {
               <button type="button" className="lde-row-main" aria-expanded={isOpen} aria-controls={`lde-${kind}-body`} onClick={() => expand(kind)}>
                 <span className="lde-row-text">
                   <span className="lde-row-name">{name}</span>
-                  <span className="lde-row-sum">{summary(block, ctx)}</span>
+                  <span className="lde-row-sum">
+                    {summary(block, ctx)}
+                    {own ? ' · свой CSS' : ''}
+                  </span>
                 </span>
                 <Icon name="chevron-down" size={18} />
               </button>
@@ -1011,6 +1060,19 @@ export function SettingsLanding() {
             {isOpen ? (
               <div className="lde-body" id={`lde-${kind}-body`}>
                 <BlockFields block={block} change={(next) => replace(next)} ctx={ctx} sections={sections} limits={limits} rules={rules} />
+                <CssEditor
+                  label="CSS блока"
+                  value={cssDraft[kind] ?? ''}
+                  max={limits.block_css}
+                  problem={css.problems[kind] ?? null}
+                  page={false}
+                  rows={[4, 18]}
+                  hint={`Действует только на блок «${name}»`}
+                  placeholder={`${kind === 'hero' ? 'h1' : kind === 'footer' ? 'a' : 'h2'} {\n  color: #0f766e;\n}`}
+                  snippets={SNIPPETS[kind]}
+                  rules={rules}
+                  onChange={(next) => changeCss(kind, next)}
+                />
                 <div className="lde-body-foot">
                   {movable ? (
                     <>
@@ -1024,11 +1086,14 @@ export function SettingsLanding() {
                       </button>
                     </>
                   ) : null}
-                  {customized(block) ? (
+                  {customized(block) || own ? (
                     <button
                       type="button"
                       className="lde-reset"
-                      onClick={() => replace(kind === 'hero' || kind === 'footer' ? ({ kind } as Block) : ({ kind, on } as Block))}
+                      onClick={() => {
+                        replace(kind === 'hero' || kind === 'footer' ? ({ kind } as Block) : ({ kind, on } as Block));
+                        changeCss(kind, '');
+                      }}
                     >
                       Вернуть стандартный блок
                     </button>
@@ -1039,6 +1104,35 @@ export function SettingsLanding() {
           </div>
         );
       })}
+      <div id="lde-css" className={open === 'css' ? 'lde-block open' : 'lde-block'}>
+        <div className="lde-row">
+          <span className="lde-grip-space" aria-hidden="true" />
+          <button type="button" className="lde-row-main" aria-expanded={open === 'css'} aria-controls="lde-css-body" onClick={expandCss}>
+            <span className="lde-row-text">
+              <span className="lde-row-name">Общий CSS</span>
+              <span className="lde-row-sum">{cssDraft.page?.trim() ? count(cssDraft.page.trim().split('\n').length, 'строка', 'строки', 'строк') : 'Вся страница: цвета, шрифт, кнопки'}</span>
+            </span>
+            <Icon name="chevron-down" size={18} />
+          </button>
+        </div>
+        {open === 'css' ? (
+          <div className="lde-body" id="lde-css-body">
+            <CssEditor
+              label="CSS страницы"
+              value={cssDraft.page ?? ''}
+              max={limits.page_css}
+              problem={css.problems.page ?? null}
+              page
+              rows={[14, 28]}
+              hint="Действует только на лендинг: кабинет, мини-приложение и админка не изменятся"
+              placeholder={'.ld-btn {\n  border-radius: 22px;\n}'}
+              snippets={SNIPPETS.page}
+              rules={rules}
+              onChange={(next) => changeCss('page', next)}
+            />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 
@@ -1073,7 +1167,7 @@ export function SettingsLanding() {
           {wide ? (
             <div className="card lde-pv">
               <PreviewTools device={device} theme={theme} onDevice={setDevice} onTheme={setTheme} />
-              <PreviewFrame blocks={draft} device={device} theme={theme} focus={focus} height={previewHeight} onPick={onPick} />
+              <PreviewFrame blocks={draft} css={previewCss} device={device} theme={theme} focus={focus} height={previewHeight} onPick={onPick} />
             </div>
           ) : null}
         </div>
@@ -1130,6 +1224,7 @@ export function SettingsLanding() {
             {sheetSize.height > 0 ? (
               <PreviewFrame
                 blocks={draft}
+                css={previewCss}
                 device={device}
                 theme={theme}
                 focus={focus}
@@ -1147,7 +1242,7 @@ export function SettingsLanding() {
         <div className="dialog-back" role="presentation" onClick={() => setAsking(false)}>
           <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="lde-reset-h" onClick={(event) => event.stopPropagation()}>
             <h2 id="lde-reset-h">Вернуть стандартный лендинг?</h2>
-            <p className="muted">Тексты, порядок и видимость блоков станут как при установке, свои картинки уйдут со страницы. На сайте это появится после сохранения.</p>
+            <p className="muted">Тексты, порядок и видимость блоков станут как при установке, свои картинки и свой CSS уйдут со страницы. На сайте это появится после сохранения.</p>
             <div className="dialog-actions">
               <button type="button" className="btn-main" onClick={resetAll} autoFocus>
                 Вернуть

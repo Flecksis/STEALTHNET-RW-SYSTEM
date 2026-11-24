@@ -11,6 +11,7 @@ import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
+import { styleFile, usePreviewStyles, useSiteStyles } from './landingStyles';
 import { SiteHeader } from './SiteHeader';
 import { botLink, storedReferral } from '../lib/referral';
 import { reportVisit, storedUtm } from '../lib/utm';
@@ -185,12 +186,18 @@ function LandingPage({ mode }: { mode: Mode }) {
   const [tariffId, setTariffId] = useState<number | null>(null);
   const [term, setTerm] = useState<number | null>(null);
   const [blocks, setBlocks] = useState<Block[] | null>(null);
+  const [cssHref, setCssHref] = useState<string | null>(null);
+  const [draftCss, setDraftCss] = useState('');
   const [focus, setFocus] = useState<{ kind: BlockKind; at: number } | null>(null);
 
   const choice = site.appearance.client_theme;
   const fixed = choice === 'dark' || choice === 'light' ? choice : null;
   const theme: Theme = forced ?? fixed ?? personal ?? system;
   useSurface('landing', theme, site.appearance.client === 'mono' ? 'b' : 'a');
+  const styled = useSiteStyles(cssHref);
+  usePreviewStyles(draftCss);
+  const [opened, setOpened] = useState(false);
+  const visible = blocks !== null && ready && (styled || opened);
 
   useEffect(() => {
     if (!framed) {
@@ -225,6 +232,7 @@ function LandingPage({ mode }: { mode: Mode }) {
           return;
         }
         setBlocks(normalizeBlocks(data.blocks));
+        setDraftCss(typeof data.css === 'string' ? data.css : '');
         setForced(data.theme === 'dark' || data.theme === 'light' ? data.theme : null);
         if (data.focus) {
           setFocus({ kind: data.focus, at: Date.now() });
@@ -239,6 +247,7 @@ function LandingPage({ mode }: { mode: Mode }) {
     api<PublicLanding>('/api/public/landing')
       .then((landing) => {
         if (alive) {
+          setCssHref(mode === 'live' ? styleFile(landing.css) : null);
           setBlocks(normalizeBlocks(landing.blocks));
         }
       })
@@ -256,7 +265,13 @@ function LandingPage({ mode }: { mode: Mode }) {
       alive = false;
       window.clearTimeout(slow);
     };
-  }, [framed]);
+  }, [framed, mode]);
+
+  useEffect(() => {
+    if (visible) {
+      setOpened(true);
+    }
+  }, [visible]);
 
   useEffect(() => {
     if (!focus) {
@@ -297,7 +312,7 @@ function LandingPage({ mode }: { mode: Mode }) {
   };
   const rootClass = phone ? 'ld ld-phone' : 'ld';
 
-  if (!blocks || !ready) {
+  if (!blocks || !visible) {
     return <div className={rootClass} aria-busy="true" />;
   }
 

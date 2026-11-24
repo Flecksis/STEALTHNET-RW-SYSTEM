@@ -8,11 +8,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use sn_domain::access::Permission;
-use sn_services::landing::{LandingUpdate, LandingView, UploadedImage};
+use sn_domain::landing_css::CssPlace;
+use sn_services::landing::{CssCheck, CssReport, LandingUpdate, LandingView, UploadedImage};
+use std::collections::BTreeMap;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/landing", get(view).put(update))
+        .route("/settings/landing/css", post(check_css))
         .route(
             "/settings/landing/images",
             post(upload).layer(DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT)),
@@ -37,6 +40,15 @@ async fn update(
             .update(&body, admin.0.admin_id)
             .await?,
     ))
+}
+
+async fn check_css(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<CssCheck>,
+) -> ApiResult<Json<BTreeMap<CssPlace, CssReport>>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.landing().check_css(&body).await?))
 }
 
 async fn upload(

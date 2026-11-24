@@ -9,8 +9,11 @@ use sn_domain::image::{self, ImageKind, ImageProblem, LANDING_RULES};
 use sn_domain::landing::{
     self, Block, BlockKind, IMAGE_TAG_LEN, LIMITS, LandingConfig, Limits, STORED_IMAGES_MAX,
 };
+use sn_domain::landing_css::{self, CssError, CssPlace, LandingCss};
 use sn_domain::settings::keys;
 use sn_store::{Db, SiteAsset};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub const ASSET_PREFIX: &str = "landing.";
 pub const STALE_AFTER_SECONDS: i64 = 3600;
@@ -43,6 +46,8 @@ impl ImageRulesView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LandingView {
     pub blocks: Vec<Block>,
+    pub css: LandingCss,
+    pub styles: BTreeMap<CssPlace, String>,
     pub limits: Limits,
     pub image: ImageRulesView,
 }
@@ -51,6 +56,50 @@ pub struct LandingView {
 pub struct PublicLanding {
     pub version: String,
     pub blocks: Vec<Block>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub css: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandingStyle {
+    pub version: String,
+    pub text: String,
+}
+
+impl LandingStyle {
+    pub fn of(config: &LandingConfig) -> Option<LandingStyle> {
+        let text = config.css.style();
+        (!text.is_empty()).then(|| LandingStyle {
+            version: short_hash(text.as_bytes()),
+            text,
+        })
+    }
+
+    pub fn path(&self) -> String {
+        format!("/api/public/landing/{}.css", self.version)
+    }
+}
+
+pub type CssPlaces = BTreeMap<String, Option<String>>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CssReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+impl From<CssError> for CssReport {
+    fn from(err: CssError) -> CssReport {
+        CssReport {
+            style: None,
+            line: err.line,
+            problem: Some(err.reason),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -67,15 +116,32 @@ pub struct UploadedImage {
 pub struct LandingUpdate {
     #[serde(default)]
     pub blocks: Option<Vec<Value>>,
+    #[serde(default)]
+    pub css: Option<CssPlaces>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CssCheck {
+    #[serde(default)]
+    pub css: CssPlaces,
 }
 
 pub fn asset_name(tag: &str) -> String {
     format!("{ASSET_PREFIX}{tag}")
 }
 
-pub fn version_of(blocks: &[Block]) -> String {
-    let bytes = serde_json::to_vec(blocks).unwrap_or_default();
-    hex::encode(Sha256::digest(&bytes))[..VERSION_LEN].to_string()
+fn short_hash(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))[..VERSION_LEN].to_string()
+}
+
+pub fn version_of(blocks: &[Block], css: Option<&str>) -> String {
+    let mut bytes = serde_json::to_vec(blocks).unwrap_or_default();
+    bytes.extend_from_slice(css.unwrap_or_default().as_bytes());
+    short_hash(&bytes)
+}
+
+fn lost_image() -> String {
+    "картинка не найдена, загрузите её заново".to_string()
 }
 
 fn image_problem(problem: ImageProblem) -> ServiceError {
@@ -134,8 +200,11 @@ impl<'a> LandingOps<'a> {
     }
 
     pub fn view(&self) -> LandingView {
+        let config = self.services.settings().landing.with_urls();
         LandingView {
-            blocks: self.services.settings().landing.with_urls().blocks,
+            blocks: config.blocks,
+            styles: config.css.styles(),
+            css: config.css,
             limits: LIMITS,
             image: ImageRulesView::landing(),
         }
@@ -143,18 +212,98 @@ impl<'a> LandingOps<'a> {
 
     pub fn public(&self) -> PublicLanding {
         let blocks = self.services.settings().landing.with_urls().blocks;
+        let css = self.style().map(|style| style.path());
         PublicLanding {
-            version: version_of(&blocks),
+            version: version_of(&blocks, css.as_deref()),
             blocks,
+            css,
         }
+    }
+
+    pub fn style(&self) -> Option<Arc<LandingStyle>> {
+        self.services.landing_style()
     }
 
     fn referenced(config: &LandingConfig) -> Vec<String> {
         config
             .image_tags()
-            .iter()
-            .map(|tag| asset_name(tag))
+            .into_iter()
+            .chain(config.css.images().into_iter().map(|(_, _, tag)| tag))
+            .map(|tag| asset_name(&tag))
             .collect()
+    }
+
+    async fn missing(&self, tags: BTreeSet<String>) -> ServiceResult<BTreeSet<String>> {
+        if tags.is_empty() {
+            return Ok(tags);
+        }
+        let names: Vec<String> = tags.iter().map(|tag| asset_name(tag)).collect();
+        let mut conn = self.services.store().conn().await?;
+        let found: BTreeSet<String> = conn
+            .site_assets()
+            .existing(&names)
+            .await?
+            .into_iter()
+            .collect();
+        Ok(tags
+            .into_iter()
+            .filter(|tag| !found.contains(&asset_name(tag)))
+            .collect())
+    }
+
+    pub async fn check_css(
+        &self,
+        check: &CssCheck,
+    ) -> ServiceResult<BTreeMap<CssPlace, CssReport>> {
+        let mut checked = BTreeMap::new();
+        for (name, text) in &check.css {
+            if let Some(place) = CssPlace::parse(name) {
+                let verdict = landing_css::check(place, text.as_deref().unwrap_or_default());
+                checked.insert(place, verdict);
+            }
+        }
+        let tags = checked
+            .values()
+            .flatten()
+            .flat_map(|css| css.images.keys().cloned())
+            .collect();
+        let missing = self.missing(tags).await?;
+        Ok(checked
+            .into_iter()
+            .map(|(place, verdict)| {
+                let report = match verdict {
+                    Err(err) => CssReport::from(err),
+                    Ok(css) => match css.images.iter().find(|(tag, _)| missing.contains(*tag)) {
+                        Some((_, line)) => CssReport {
+                            style: None,
+                            line: Some(*line),
+                            problem: Some(lost_image()),
+                        },
+                        None => CssReport {
+                            style: Some(css.style),
+                            ..CssReport::default()
+                        },
+                    },
+                };
+                (place, report)
+            })
+            .collect())
+    }
+
+    async fn next_css(&self, places: &CssPlaces) -> ServiceResult<LandingCss> {
+        let css = LandingCss::parse(places)
+            .map_err(|err| ServiceError::rejected(INVALID, err.to_string()))?;
+        let images = css.images();
+        let missing = self
+            .missing(images.iter().map(|(_, _, tag)| tag.clone()).collect())
+            .await?;
+        if let Some((place, line, _)) = images.iter().find(|(_, _, tag)| missing.contains(tag)) {
+            return Err(ServiceError::rejected(
+                INVALID,
+                format!("{}, строка {line}: {}", place.title(), lost_image()),
+            ));
+        }
+        Ok(css)
     }
 
     pub async fn update(
@@ -165,6 +314,10 @@ impl<'a> LandingOps<'a> {
         let raw = update.blocks.as_deref().unwrap_or_default();
         let mut next = LandingConfig::parse(raw)
             .map_err(|err| ServiceError::rejected(INVALID, err.to_string()))?;
+        next.css = match &update.css {
+            Some(places) => self.next_css(places).await?,
+            None => self.config().css,
+        };
         {
             let mut conn = self.services.store().conn().await?;
             for (place, image) in next.images_mut() {
@@ -204,8 +357,28 @@ impl<'a> LandingOps<'a> {
             .iter()
             .map(Block::kind)
             .eq(next.blocks.iter().map(Block::kind));
+        let css: Vec<&'static str> = CssPlace::ALL
+            .into_iter()
+            .filter(|place| current.css.get(*place) != next.css.get(*place))
+            .map(CssPlace::as_str)
+            .collect();
+        let css_size: usize = next
+            .css
+            .places()
+            .map(|(_, text)| text.chars().count())
+            .sum();
         let standard = next.is_standard();
         let keep = Self::referenced(&next);
+        let mut details = json!({
+            "changed": changed,
+            "order": order,
+            "hidden": hidden,
+            "standard": standard,
+        });
+        if !css.is_empty() {
+            details["css"] = json!(css);
+            details["css_size"] = json!(css_size);
+        }
         let mut tx = self.services.store().begin().await?;
         if standard {
             tx.settings().delete(keys::LANDING).await?;
@@ -218,19 +391,9 @@ impl<'a> LandingOps<'a> {
             .site_assets()
             .prune(ASSET_PREFIX, &keep, STALE_AFTER_SECONDS)
             .await?;
+        details["removed_images"] = json!(removed);
         tx.audit()
-            .record(&Actor::Admin(admin).audit(
-                "settings.landing",
-                "settings",
-                None,
-                json!({
-                    "changed": changed,
-                    "order": order,
-                    "hidden": hidden,
-                    "standard": standard,
-                    "removed_images": removed,
-                }),
-            ))
+            .record(&Actor::Admin(admin).audit("settings.landing", "settings", None, details))
             .await?;
         tx.commit().await?;
         self.saved().await?;
@@ -659,6 +822,227 @@ mod tests {
         .await
         .unwrap();
         assert!(!stored(&env, &fresh).await);
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn свой_css_сохраняется_собирается_в_файл_и_уходит_со_сбросом() {
+        let Some(env) = env().await else { return };
+        let ops = env.services.landing();
+        let plain = ops.public();
+        assert!(ops.style().is_none());
+        assert_eq!(plain.css, None);
+        assert!(ops.view().css.is_empty());
+
+        let saved = ops
+            .update(
+                &update(json!({
+                    "blocks": [{ "kind": "plans", "title": "Цены" }],
+                    "css": {
+                        "page": ".ld { --accent: teal }  \r\n\r\n",
+                        "plans": ".ld-card { gap: 0 }",
+                        "faq": "   "
+                    }
+                })),
+                env.admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved.css).unwrap(),
+            json!({ "page": ".ld { --accent: teal }", "plans": ".ld-card { gap: 0 }" })
+        );
+        assert_eq!(saved.styles[&CssPlace::Page], ".ld { --accent: teal }\n");
+        assert!(saved.styles[&CssPlace::Plans].starts_with("[data-block=\"plans\"] .ld-card"));
+        let style = ops.style().unwrap();
+        assert_eq!(
+            style.text,
+            format!(
+                "{}{}",
+                saved.styles[&CssPlace::Page],
+                saved.styles[&CssPlace::Plans]
+            )
+        );
+        assert_eq!(style.version.len(), 16);
+        let public = ops.public();
+        assert_eq!(
+            public.css.as_deref(),
+            Some(format!("/api/public/landing/{}.css", style.version).as_str())
+        );
+        let records = audits(&env, "settings.landing").await;
+        assert_eq!(records[0].details["css"], json!(["page", "plans"]));
+        assert_eq!(records[0].details["css_size"], 41);
+        assert!(!records[0].details.to_string().contains("teal"));
+
+        let fresh = services_for(&env.db);
+        fresh.reload().await.unwrap();
+        assert_eq!(fresh.landing().view(), saved);
+        assert_eq!(fresh.landing().style(), ops.style());
+
+        let kept = ops
+            .update(
+                &update(json!({ "blocks": [{ "kind": "plans", "title": "Тарифы и цены" }] })),
+                env.admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(kept.css, saved.css);
+        assert_eq!(ops.style(), Some(style.clone()));
+        assert_ne!(ops.public().version, public.version);
+        let records = audits(&env, "settings.landing").await;
+        assert!(records[0].details.get("css").is_none());
+        assert!(records[0].details.get("css_size").is_none());
+
+        let changed = ops
+            .update(
+                &update(json!({
+                    "blocks": [{ "kind": "plans", "title": "Тарифы и цены" }],
+                    "css": { "page": ".ld { --accent: navy }" }
+                })),
+                env.admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed.css.get(CssPlace::Plans), "");
+        let newer = ops.style().unwrap();
+        assert_ne!(newer.version, style.version);
+        assert_ne!(ops.public().css, public.css);
+
+        let (code, message) = rejected(
+            ops.update(
+                &update(json!({ "blocks": [], "css": { "hero": "h1 {\n  color: red;" } })),
+                env.admin,
+            )
+            .await,
+        );
+        assert_eq!(code, INVALID);
+        assert_eq!(
+            message,
+            "Первый экран, CSS блока, строка 1: не закрыта скобка {"
+        );
+        assert_eq!(ops.style(), Some(newer));
+
+        let reset = ops
+            .update(&update(json!({ "blocks": [], "css": {} })), env.admin)
+            .await
+            .unwrap();
+        assert!(reset.css.is_empty());
+        assert!(ops.style().is_none());
+        assert_eq!(ops.public(), plain);
+        let mut conn = env.db.store.conn().await.unwrap();
+        assert!(conn.settings().get(keys::LANDING).await.unwrap().is_none());
+        drop(conn);
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn испорченный_в_базе_css_на_сайт_не_попадает() {
+        let Some(env) = env().await else { return };
+        {
+            let mut tx = env.db.store.begin().await.unwrap();
+            tx.settings()
+                .set_as(
+                    keys::LANDING,
+                    &json!({
+                        "blocks": [{ "kind": "plans", "title": "Цены" }],
+                        "css": {
+                            "page": "@import 'https://evil.example/x.css';",
+                            "hero": "h1 { color: red }",
+                            "faq": "p { background: url(https://evil.example/x.png) }",
+                            "video": "x",
+                            "cta": null
+                        }
+                    }),
+                    None,
+                )
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+        env.services.reload().await.unwrap();
+        let ops = env.services.landing();
+        assert_eq!(
+            ops.style().unwrap().text,
+            "[data-block=\"hero\"] h1 { color: red }\n"
+        );
+        let view = ops.view();
+        assert_eq!(view.styles.len(), 1);
+        assert_eq!(
+            view.css.get(CssPlace::Page),
+            "@import 'https://evil.example/x.css';"
+        );
+        let Some(Block::Plans(plans)) = view.blocks.iter().find(|b| b.kind() == BlockKind::Plans)
+        else {
+            unreachable!()
+        };
+        assert_eq!(plans.title.as_deref(), Some("Цены"));
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn картинка_из_css_должна_существовать_и_не_удаляется_чисткой() {
+        let Some(env) = env().await else { return };
+        let ops = env.services.landing();
+        let kept = ops
+            .upload_image(&png(800, 600, 1), env.admin)
+            .await
+            .unwrap();
+        let unused = ops
+            .upload_image(&png(800, 600, 2), env.admin)
+            .await
+            .unwrap();
+        let css = format!("h1 {{}}\nbackground: url(\"{}\");", kept.url);
+        age(&env, &[&kept.tag, &unused.tag]).await;
+        ops.update(
+            &update(json!({ "blocks": [], "css": { "hero": css } })),
+            env.admin,
+        )
+        .await
+        .unwrap();
+        assert!(stored(&env, &kept.tag).await);
+        assert!(!stored(&env, &unused.tag).await);
+
+        let lost = "\n.ld { background: url(/api/public/landing/ffffffffffffffff.png) }";
+        let (code, message) = rejected(
+            ops.update(
+                &update(json!({ "blocks": [], "css": { "page": lost } })),
+                env.admin,
+            )
+            .await,
+        );
+        assert_eq!(code, INVALID);
+        assert_eq!(
+            message,
+            "Общий CSS, строка 2: картинка не найдена, загрузите её заново"
+        );
+        let check: CssCheck = serde_json::from_value(json!({ "css": {
+            "page": lost,
+            "hero": css,
+            "plans": ".ld-card {",
+            "cta": "",
+            "video": "x"
+        } }))
+        .unwrap();
+        let report = serde_json::to_value(ops.check_css(&check).await.unwrap()).unwrap();
+        assert_eq!(
+            report["page"],
+            json!({ "line": 2, "problem": "картинка не найдена, загрузите её заново" })
+        );
+        assert_eq!(
+            report["hero"],
+            json!({ "style": format!("[data-block=\"hero\"] h1 {{}}\n[data-block=\"hero\"] {{\n  background: url(\"{}\");\n}}\n", kept.url) })
+        );
+        assert_eq!(
+            report["plans"],
+            json!({ "line": 1, "problem": "не закрыта скобка {" })
+        );
+        assert_eq!(report["cta"], json!({ "style": "" }));
+        assert!(report.get("video").is_none());
+
+        ops.update(&update(json!({ "blocks": [], "css": {} })), env.admin)
+            .await
+            .unwrap();
+        assert!(!stored(&env, &kept.tag).await);
         env.db.cleanup().await;
     }
 

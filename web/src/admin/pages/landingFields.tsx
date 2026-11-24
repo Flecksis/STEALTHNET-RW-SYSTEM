@@ -36,6 +36,8 @@ export type Limits = {
   hero_buttons: number;
   cta_buttons: number;
   footer_links: number;
+  page_css: number;
+  block_css: number;
 };
 
 export const LIMITS: Limits = {
@@ -56,6 +58,8 @@ export const LIMITS: Limits = {
   hero_buttons: 2,
   cta_buttons: 2,
   footer_links: 8,
+  page_css: 50000,
+  block_css: 10000,
 };
 
 export type ImageRules = { max_bytes: number; min_side: number; max_side: number; types: string[] };
@@ -325,6 +329,17 @@ export function LinksEditor({ links, onChange, max, addLabel, what, ctx, section
   );
 }
 
+export async function sendImage(file: File, rules: ImageRules): Promise<LandingImage & { url: string }> {
+  if (!rules.types.includes(file.type)) {
+    throw new ApiError(0, 'landing_image.format', 'Подходят только PNG, JPEG и WebP');
+  }
+  if (file.size > rules.max_bytes) {
+    throw new ApiError(0, 'landing_image.too_heavy', `Файл больше ${weight(rules.max_bytes)}: уменьшите картинку`);
+  }
+  const saved = await upload<Uploaded>('/api/admin/settings/landing/images', new Blob([file], { type: file.type }));
+  return { tag: saved.tag, kind: saved.kind, width: saved.width, height: saved.height, url: saved.url };
+}
+
 type ImageProps = {
   image: LandingImage | null | undefined;
   onChange: (next: LandingImage | null) => void;
@@ -343,19 +358,10 @@ export function ImageField({ image, onChange, rules, hint, what }: ImageProps) {
     if (!file) {
       return;
     }
-    if (!rules.types.includes(file.type)) {
-      setError('Подходят только PNG, JPEG и WebP');
-      return;
-    }
-    if (file.size > rules.max_bytes) {
-      setError(`Файл больше ${weight(rules.max_bytes)}: уменьшите картинку`);
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
-      const saved = await upload<Uploaded>('/api/admin/settings/landing/images', new Blob([file], { type: file.type }));
-      onChange({ tag: saved.tag, kind: saved.kind, width: saved.width, height: saved.height, url: saved.url });
+      onChange(await sendImage(file, rules));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Картинка не загрузилась');
     } finally {

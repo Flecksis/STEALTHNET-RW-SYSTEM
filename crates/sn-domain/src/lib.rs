@@ -14,6 +14,7 @@ pub mod ids;
 pub mod image;
 pub mod jobs;
 pub mod landing;
+pub mod landing_css;
 pub mod lang;
 pub mod ledger;
 pub mod mail_letters;

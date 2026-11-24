@@ -1,4 +1,5 @@
 use crate::image::ImageKind;
+use crate::landing_css::{BLOCK_CSS_MAX, LandingCss, PAGE_CSS_MAX};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -50,6 +51,8 @@ pub struct Limits {
     pub hero_buttons: usize,
     pub cta_buttons: usize,
     pub footer_links: usize,
+    pub page_css: usize,
+    pub block_css: usize,
 }
 
 pub const LIMITS: Limits = Limits {
@@ -70,6 +73,8 @@ pub const LIMITS: Limits = Limits {
     hero_buttons: HERO_BUTTONS_MAX,
     cta_buttons: CTA_BUTTONS_MAX,
     footer_links: FOOTER_LINKS_MAX,
+    page_css: PAGE_CSS_MAX,
+    block_css: BLOCK_CSS_MAX,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -415,6 +420,8 @@ impl Block {
 pub struct LandingConfig {
     #[serde(default)]
     pub blocks: Vec<Block>,
+    #[serde(default, skip_serializing_if = "LandingCss::is_empty")]
+    pub css: LandingCss,
 }
 
 impl Default for LandingConfig {
@@ -427,6 +434,7 @@ impl LandingConfig {
     pub fn standard() -> LandingConfig {
         LandingConfig {
             blocks: BlockKind::ALL.into_iter().map(Block::standard).collect(),
+            css: LandingCss::default(),
         }
     }
 
@@ -462,7 +470,11 @@ impl LandingConfig {
             })?;
             blocks.push(block.clean()?);
         }
-        Ok(LandingConfig { blocks }.arranged())
+        Ok(LandingConfig {
+            blocks,
+            css: LandingCss::default(),
+        }
+        .arranged())
     }
 
     pub fn arranged(self) -> LandingConfig {
@@ -502,7 +514,10 @@ impl LandingConfig {
         blocks.push(hero.unwrap_or_else(|| Block::standard(BlockKind::Hero)));
         blocks.extend(middle);
         blocks.push(footer.unwrap_or_else(|| Block::standard(BlockKind::Footer)));
-        LandingConfig { blocks }
+        LandingConfig {
+            blocks,
+            css: self.css,
+        }
     }
 
     pub fn images(&self) -> Vec<&LandingImage> {
@@ -1104,6 +1119,7 @@ mod tests {
                 Block::standard(BlockKind::Footer),
                 Block::standard(BlockKind::Hero),
             ],
+            css: LandingCss::default(),
         }
         .arranged();
         assert_eq!(

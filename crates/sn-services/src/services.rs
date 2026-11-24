@@ -66,6 +66,7 @@ pub struct ServiceDeps {
 
 struct Runtime {
     settings: Arc<CoreSettings>,
+    landing_style: Option<Arc<crate::landing::LandingStyle>>,
     remna: Option<Arc<dyn RemnawaveApi>>,
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
@@ -110,6 +111,7 @@ impl Services {
                 public_url: deps.env.public_url.clone(),
                 ..CoreSettings::default()
             }),
+            landing_style: None,
             remna: None,
             remna_webhook_secret: deps
                 .env
@@ -216,7 +218,15 @@ impl Services {
 
     pub fn replace_settings(&self, settings: CoreSettings) {
         self.inner.modules.set_currency(settings.currency);
-        self.write(|r| r.settings = Arc::new(settings));
+        let style = crate::landing::LandingStyle::of(&settings.landing).map(Arc::new);
+        self.write(|r| {
+            r.settings = Arc::new(settings);
+            r.landing_style = style;
+        });
+    }
+
+    pub fn landing_style(&self) -> Option<Arc<crate::landing::LandingStyle>> {
+        self.read(|r| r.landing_style.clone())
     }
 
     pub fn remna(&self) -> ServiceResult<Arc<dyn RemnawaveApi>> {
@@ -390,8 +400,10 @@ impl Services {
             || previous.public_url != core.public_url
             || self.bot_webhook_keys() != bot_webhook;
         let token_changed = self.bot_token() != bot_token;
+        let landing_style = crate::landing::LandingStyle::of(&core.landing).map(Arc::new);
         self.write(|r| {
             r.settings = Arc::new(core);
+            r.landing_style = landing_style;
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;

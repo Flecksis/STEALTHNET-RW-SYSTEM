@@ -471,7 +471,16 @@ async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) 
         Page::Admin => Locale::Ru,
         _ => settings.languages.pick(wanted),
     };
-    let html = with_lang(inject(&template, &head(&settings, page, locale)), locale);
+    let mut tags = head(&settings, page, locale);
+    if page == Page::Landing
+        && let Some(style) = state.services.landing().style()
+    {
+        tags.push_str(&format!(
+            "\n    <link rel=\"preload\" as=\"style\" href=\"{}\">",
+            escape_html(&style.path())
+        ));
+    }
+    let html = with_lang(inject(&template, &tags), locale);
     let mut response = Html(html).into_response();
     protect(&mut response, state, path, REVALIDATE);
     response
