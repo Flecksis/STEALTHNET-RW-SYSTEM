@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/sn-domain",
+    "crates/sn-egress",
     "crates/sn-remnawave",
     "crates/sn-store",
     "crates/sn-payments",
@@ -22,6 +23,7 @@ publish = false
 
 [workspace.dependencies]
 sn-domain = { path = "crates/sn-domain" }
+sn-egress = { path = "crates/sn-egress" }
 sn-remnawave = { path = "crates/sn-remnawave" }
 sn-store = { path = "crates/sn-store" }
 sn-payments = { path = "crates/sn-payments" }
@@ -38,7 +40,7 @@ axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit", "catch-panic", "request-id", "set-header", "timeout", "fs"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid", "json", "macros", "migrate"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "socks"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

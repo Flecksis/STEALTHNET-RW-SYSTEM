@@ -594,15 +594,19 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(65);
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(65))
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+pub type Proxy = Option<Arc<sn_egress::Proxy>>;
+
 impl TelegramApi {
-    pub fn new(api_base: &str, token: &str) -> Self {
+    pub fn new(api_base: &str, token: &str, proxy: Proxy) -> Self {
         TelegramApi {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(65))
-                .connect_timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
+            http: sn_egress::build(http_builder(), proxy.as_deref()),
             base: format!("{}/bot{}", api_base.trim_end_matches('/'), token),
             files: format!("{}/file/bot{}", api_base.trim_end_matches('/'), token),
             pacer: None,
@@ -610,10 +614,10 @@ impl TelegramApi {
         }
     }
 
-    pub fn paced(api_base: &str, token: &str, limits: SendLimits) -> Self {
+    pub fn paced(api_base: &str, token: &str, limits: SendLimits, proxy: Proxy) -> Self {
         TelegramApi {
             pacer: Some(crate::pacer::shared(api_base, token, limits)),
-            ..TelegramApi::new(api_base, token)
+            ..TelegramApi::new(api_base, token, proxy)
         }
     }
 
@@ -1311,7 +1315,7 @@ mod tests {
 
     #[tokio::test]
     async fn ошибка_сети_не_раскрывает_токен() {
-        let api = TelegramApi::new("http://127.0.0.1:9", TOKEN);
+        let api = TelegramApi::new("http://127.0.0.1:9", TOKEN, None);
         let err = api.get_me().await.unwrap_err();
         assert!(matches!(err, TelegramError::Transport(_)));
         assert!(!err.to_string().contains("SECRET"));
@@ -1329,7 +1333,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let api = TelegramApi::new(&server.uri(), TOKEN);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None);
         let err = api.send_message(1, "текст", None).await.unwrap_err();
         assert_eq!(err.retry_after(), Some(7));
         assert!(err.is_retryable());
@@ -1353,10 +1357,10 @@ mod tests {
             mime: "text/plain",
             photo: false,
         };
-        let plain = TelegramApi::new(&server.uri(), TOKEN);
+        let plain = TelegramApi::new(&server.uri(), TOKEN, None);
         let err = plain.send_document(1, upload, "", None).await.unwrap_err();
         assert_eq!(err.retry_after(), Some(7));
-        let api = TelegramApi::paced(&server.uri(), TOKEN, SendLimits::default());
+        let api = TelegramApi::paced(&server.uri(), TOKEN, SendLimits::default(), None);
         let pacer = api.pacer().expect("у отправки есть ограничитель").clone();
         assert_eq!(pacer.stats().pauses, 0);
         let err = api.send_document(1, upload, "", None).await.unwrap_err();
@@ -1386,7 +1390,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let api = TelegramApi::new(&server.uri(), TOKEN);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None);
         let sent = api
             .send_message(1, "<b>Привет</b> &amp; пока", None)
             .await

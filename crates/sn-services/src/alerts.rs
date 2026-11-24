@@ -46,6 +46,7 @@ const REFUNDS_PATH: &str = "/admin/money#todo-refunds";
 const CHARGES_SEEN: &str = "alerts.seen.orders.charges";
 const SECURITY_DAYS: i32 = 2;
 const BOT_WEBHOOK_CURSOR: &str = "alerts.cursor.bot_webhook";
+const PROXY_CURSOR: &str = "alerts.cursor.proxy";
 const BOT_PATH: &str = "/admin/settings/bot";
 
 fn seen_key(kind: AlertKind) -> String {
@@ -309,7 +310,7 @@ fn flood_text(details: &serde_json::Value, minutes: impl Fn(i64) -> String) -> S
     lines.join("\n")
 }
 
-fn escape(raw: &str) -> String {
+pub(crate) fn escape(raw: &str) -> String {
     raw.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -458,6 +459,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
                 format::plural_ru(n, "событие", "события", "событий")
             ),
             BOT_PATH,
+        ),
+        AlertKind::Proxy => (
+            format!(
+                "Ещё {rest} {} с прокси",
+                format::plural_ru(n, "событие", "события", "событий")
+            ),
+            crate::egress::PAGE_PATH,
         ),
     };
     Alert {
@@ -682,9 +690,11 @@ impl<'a> AlertsOps<'a> {
             .services
             .modules()
             .is_enabled(sn_domain::module::ModuleId::Limits);
+        let proxy = self.services.egress().plan().active();
         AlertKind::ALL
             .into_iter()
             .filter(|kind| limits || *kind != AlertKind::Traffic)
+            .filter(|kind| proxy || *kind != AlertKind::Proxy)
             .collect()
     }
 
@@ -906,6 +916,54 @@ impl<'a> AlertsOps<'a> {
         out.extend(self.new_sales(&config).await?);
         out.extend(self.backups(&config).await?);
         out.extend(self.bot_webhook(&config).await?);
+        out.extend(self.proxy(&config).await?);
+        Ok(out)
+    }
+
+    async fn proxy(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        use crate::egress::{DOWN_ACTION, PAGE_PATH, RESTORED_ACTION};
+        let cursor = self.state(PROXY_CURSOR).await?.and_then(|v| v.as_i64());
+        let mut conn = self.services.store().conn().await?;
+        let newest: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
+            .fetch_one(conn.conn())
+            .await?;
+        let Some(cursor) = cursor else {
+            drop(conn);
+            self.put_state(PROXY_CURSOR, &serde_json::json!(newest))
+                .await?;
+            return Ok(Vec::new());
+        };
+        if newest <= cursor {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+            "SELECT action, details FROM audit_log \
+             WHERE id > $1 AND id <= $2 AND action IN ($3, $4) ORDER BY id",
+        )
+        .bind(cursor)
+        .bind(newest)
+        .bind(DOWN_ACTION)
+        .bind(RESTORED_ACTION)
+        .fetch_all(conn.conn())
+        .await?;
+        drop(conn);
+        self.put_state(PROXY_CURSOR, &serde_json::json!(newest))
+            .await?;
+        if !config.route(AlertKind::Proxy).on {
+            return Ok(Vec::new());
+        }
+        let mut out: Vec<Alert> = rows
+            .iter()
+            .take(PER_KIND)
+            .map(|(action, details)| Alert {
+                kind: AlertKind::Proxy,
+                html: crate::egress::alert_text(action, details),
+                path: PAGE_PATH.to_string(),
+            })
+            .collect();
+        if rows.len() > PER_KIND {
+            out.push(summary(AlertKind::Proxy, rows.len() - PER_KIND));
+        }
         Ok(out)
     }
 
@@ -1718,7 +1776,8 @@ impl<'a> AlertsOps<'a> {
             | AlertKind::Clients
             | AlertKind::Sales
             | AlertKind::Backups
-            | AlertKind::Bot => {}
+            | AlertKind::Bot
+            | AlertKind::Proxy => {}
         }
         Ok(items)
     }

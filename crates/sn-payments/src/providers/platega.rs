@@ -38,7 +38,7 @@ const ERIP_LABEL: ClientLabel = ClientLabel {
 const IN_PROGRESS: &str = "возврат по этому платежу уже выполняется, дождитесь его результата";
 
 pub struct Platega {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -55,7 +55,7 @@ impl Platega {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Platega {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::PLATEGA),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -302,6 +302,10 @@ fn transaction_outcome(tx: &Json, id: &str) -> PaymentResult<WebhookOutcome> {
 
 #[async_trait]
 impl PaymentProvider for Platega {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::PLATEGA
     }

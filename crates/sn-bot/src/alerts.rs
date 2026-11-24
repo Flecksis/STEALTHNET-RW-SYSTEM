@@ -1,7 +1,7 @@
 use crate::BotError;
 use crate::telegram::{Keyboard, Message, TelegramApi, TelegramError};
 use crate::text::{escape, lowercase_first};
-use sn_domain::alerts::{AlertsConfig, START_PREFIX};
+use sn_domain::alerts::{AlertKind, AlertsConfig, START_PREFIX};
 use sn_services::Services;
 use sn_services::alerts::Alert;
 use std::collections::BTreeMap;
@@ -18,6 +18,7 @@ pub struct Keeper {
     tick: Duration,
     sweep_every: u32,
     nodes_every: u32,
+    direct: Option<Arc<TelegramApi>>,
 }
 
 impl Keeper {
@@ -30,7 +31,51 @@ impl Keeper {
             tick,
             sweep_every: u32::try_from(ticks).unwrap_or(u32::MAX),
             nodes_every: u32::try_from(nodes).unwrap_or(u32::MAX),
+            direct: None,
         }
+    }
+
+    pub fn with_direct(mut self, direct: Option<Arc<TelegramApi>>) -> Self {
+        self.direct = direct;
+        self
+    }
+
+    fn bypass(&self) -> Option<Keeper> {
+        self.direct.as_ref().map(|api| Keeper {
+            services: self.services.clone(),
+            api: api.clone(),
+            tick: self.tick,
+            sweep_every: self.sweep_every,
+            nodes_every: self.nodes_every,
+            direct: None,
+        })
+    }
+
+    async fn proxy_only(&self) -> Result<(), BotError> {
+        let alerts = self.services.alerts();
+        let config = alerts.config().await?;
+        let Some(chat_id) = config.chat_id else {
+            return Ok(());
+        };
+        let fresh = alerts.collect().await?;
+        let mut queue = alerts.pending().await?;
+        queue.extend(fresh);
+        if queue.len() > OUTBOX_MAX {
+            let dropped = queue.len() - OUTBOX_MAX;
+            queue.drain(..dropped);
+        }
+        alerts.keep_pending(&queue).await?;
+        let mut rest = Vec::with_capacity(queue.len());
+        for alert in queue {
+            if alert.kind == AlertKind::Proxy
+                && self.deliver(&config, chat_id, &alert).await.is_ok()
+            {
+                continue;
+            }
+            rest.push(alert);
+        }
+        alerts.keep_pending(&rest).await?;
+        Ok(())
     }
 
     pub async fn run(self, cancel: CancellationToken) {
@@ -113,6 +158,9 @@ impl Keeper {
                 "Telegram долго не принимает уведомления администраторам, самые старые убраны из очереди"
             );
         }
+        if self.direct.is_some() {
+            queue.sort_by_key(|alert| alert.kind != AlertKind::Proxy);
+        }
         if added {
             alerts.keep_pending(&queue).await?;
         }
@@ -179,8 +227,19 @@ impl Keeper {
     ) -> Result<(), BotError> {
         let topic = config.topic_for(alert.kind);
         let keyboard = self.open_button(&alert.path);
-        self.send(chat_id, topic.as_deref(), &alert.html, keyboard.as_ref())
-            .await
+        let sent = self
+            .send(chat_id, topic.as_deref(), &alert.html, keyboard.as_ref())
+            .await;
+        match (sent, self.bypass()) {
+            (Err(err), Some(direct)) if later(&err) && alert.kind == AlertKind::Proxy => {
+                tracing::info!("уведомление о сбое прокси отправляем в Telegram напрямую");
+                direct
+                    .send(chat_id, topic.as_deref(), &alert.html, keyboard.as_ref())
+                    .await
+                    .map_err(|_| err)
+            }
+            (sent, _) => sent,
+        }
     }
 
     async fn test(&self, config: &AlertsConfig, chat_id: i64) -> Result<(), BotError> {
@@ -308,6 +367,17 @@ pub async fn bind_from_group(
         report(&err);
     }
     Ok(())
+}
+
+pub async fn flush_proxy(services: &Services, api_base: &str, token: &str) {
+    if !services.egress().down_for(sn_egress::Route::Telegram) {
+        return;
+    }
+    let direct = Arc::new(TelegramApi::new(api_base, token, None));
+    let keeper = Keeper::new(services.clone(), direct, NODES_EVERY, NODES_EVERY);
+    if let Err(err) = keeper.proxy_only().await {
+        tracing::debug!(error = %err, "уведомление о сбое прокси напрямую не отправлено");
+    }
 }
 
 fn later(err: &BotError) -> bool {

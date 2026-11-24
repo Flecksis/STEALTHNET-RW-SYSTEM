@@ -275,6 +275,12 @@ impl Worker {
                     .retry_leased(job, &error, self.services.now() + after)
                     .await?
             }
+            JobResult::Wait { after, error } => {
+                let mut conn = self.services.store().conn().await?;
+                conn.jobs()
+                    .postpone_leased(job, &error, self.services.now() + after)
+                    .await?
+            }
         };
         if !recorded {
             tracing::warn!(job = %job.id, kind = %job.kind, "итог задачи не записан: аренду уже перехватил другой обработчик");

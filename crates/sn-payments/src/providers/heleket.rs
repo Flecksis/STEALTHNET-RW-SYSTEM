@@ -60,7 +60,7 @@ const COINS: [Coin; 6] = [
 ];
 
 pub struct Heleket {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: Option<String>,
 }
 
@@ -73,14 +73,14 @@ impl Default for Heleket {
 impl Heleket {
     pub fn new() -> Self {
         Heleket {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::HELEKET),
             api_base: None,
         }
     }
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Heleket {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::HELEKET),
             api_base: Some(api_base.into()),
         }
     }
@@ -178,6 +178,10 @@ fn aml_note(links: Option<&Json>) -> String {
 
 #[async_trait]
 impl PaymentProvider for Heleket {
+    fn api_url(&self, config: &ProviderConfig) -> Option<String> {
+        Some(self.base(config))
+    }
+
     fn id(&self) -> &'static str {
         providers::HELEKET
     }

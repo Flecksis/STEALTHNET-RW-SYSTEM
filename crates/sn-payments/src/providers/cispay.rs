@@ -200,7 +200,7 @@ fn payment_outcome(payment: &Json, test_mode: bool) -> PaymentResult<WebhookOutc
 }
 
 pub struct CisPay {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -217,7 +217,7 @@ impl CisPay {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         CisPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::CISPAY),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -260,6 +260,10 @@ impl CisPay {
 
 #[async_trait]
 impl PaymentProvider for CisPay {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::CISPAY
     }

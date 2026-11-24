@@ -1241,7 +1241,11 @@ impl<'a> BackupOps<'a> {
                 "Бот не подключён: подключите его в разделе «Настройки → Бот»",
             )
         })?;
-        telegram::Bot::new(&self.env().telegram_api, &token).map_err(internal)
+        let proxy = self
+            .services
+            .egress()
+            .proxy_for(sn_egress::Route::Telegram, None);
+        telegram::Bot::new(&self.env().telegram_api, &token, proxy.as_deref()).map_err(internal)
     }
 
     async fn thread(

@@ -135,6 +135,9 @@ sudo stealthnet restore /путь/к/stealthnet-backup-20261118-040000-auto.tar.
 | `SN_LOG` | `info` | Фильтр журнала в формате `tracing` |
 | `SN_LOG_FORMAT` | `text` | `text` или `json` |
 | `SN_TELEGRAM_API` | `https://api.telegram.org` | Адрес Bot API. Меняют, если хостинг закрывает Telegram и рядом поднят свой сервер Bot API. С вебхуком этому серверу нужен доступ к адресу панели |
+| `SN_PROXY_URL` | — | Исходящий прокси для Telegram, платёжек, ИИ, Resend и проверки обновлений: `socks5://`, `socks5h://`, `http://` или `https://`, логин и пароль в адресе, например `socks5h://user:pass@203.0.113.5:1080`. Настройки прокси в «Настройки → Общие» важнее. Remnawave и внешние модули всегда идут напрямую, см. [исходящий прокси](docs/guide/proxy.md) |
+| `SN_PROXY_ROUTES` | `telegram,ai` | Что идёт через `SN_PROXY_URL`: `telegram`, `payments`, `ai`, `mail`, `updates` через запятую |
+| `SN_PROXY_PAYMENTS` | все | Коды платёжек через запятую, если через прокси идут не все, например `cryptomus,heleket` |
 | `SN_EXT_MODULES_LOOPBACK` | `false` | `1` — разрешить внешним модулям адреса этого же сервера: `localhost`, `127.0.0.1`, `[::1]`. Нужно, только если модуль работает рядом с панелью. Без неё такие адреса закрыты |
 | `REMNAWAVE_URL`, `REMNAWAVE_TOKEN` | — | Адрес и API-токен Remnawave, пока они не заданы в админке |
 | `REMNAWAVE_WEBHOOK_SECRET` | — | Совпадает с `WEBHOOK_SECRET_HEADER` в `.env` Remnawave |

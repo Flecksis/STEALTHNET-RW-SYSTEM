@@ -7,10 +7,12 @@ use sn_services::Services;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+type Cached = (String, crate::telegram::Proxy, Arc<TelegramApi>);
+
 pub struct TelegramSender {
     services: Services,
     api_base: String,
-    cache: Mutex<Option<(String, Arc<TelegramApi>)>>,
+    cache: Mutex<Option<Cached>>,
 }
 
 impl TelegramSender {
@@ -23,19 +25,30 @@ impl TelegramSender {
     }
 
     fn api(&self, token: &str) -> Arc<TelegramApi> {
+        let proxy = self
+            .services
+            .egress()
+            .proxy_for(sn_egress::Route::Telegram, None);
         let mut cache = match self.cache.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some((cached, api)) = cache.as_ref()
+        if let Some((cached, via, api)) = cache.as_ref()
             && cached == token
+            && *via == proxy
         {
             return api.clone();
         }
         let api = Arc::new(
-            TelegramApi::paced(&self.api_base, token, crate::SendLimits::default()).bulk(),
+            TelegramApi::paced(
+                &self.api_base,
+                token,
+                crate::SendLimits::default(),
+                proxy.clone(),
+            )
+            .bulk(),
         );
-        *cache = Some((token.to_string(), api.clone()));
+        *cache = Some((token.to_string(), proxy, api.clone()));
         api
     }
 }

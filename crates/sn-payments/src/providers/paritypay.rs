@@ -138,7 +138,7 @@ fn invoice_outcome(invoice: &Json) -> PaymentResult<WebhookOutcome> {
 }
 
 pub struct ParityPay {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -155,7 +155,7 @@ impl ParityPay {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         ParityPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::PARITYPAY),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -201,6 +201,10 @@ impl ParityPay {
 
 #[async_trait]
 impl PaymentProvider for ParityPay {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::PARITYPAY
     }

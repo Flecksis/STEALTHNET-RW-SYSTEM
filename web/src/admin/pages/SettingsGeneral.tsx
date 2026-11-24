@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { BrandMark } from '../../lib/brand';
 import { telegramLink } from '../../lib/support';
@@ -7,6 +7,7 @@ import { useSession } from '../session';
 import { fromRaw, toRaw } from '../tariffs/model';
 import { Switch } from '../ui';
 import '../form.css';
+import { ProxySection, proxyChanged, proxyForm, proxyProblem, saveProxy, type ProxyForm, type ProxyView } from './ProxySettings';
 import { SettingsLayout } from './SettingsLayout';
 
 type Core = {
@@ -86,10 +87,17 @@ export function SettingsGeneral() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<{ text: string; bad: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [proxyView, setProxyView] = useState<ProxyView | null>(null);
+  const [proxy, setProxy] = useState<ProxyForm | null>(null);
+  const scrolled = useRef(false);
 
   const load = useCallback(async () => {
     try {
-      const [data, site] = await Promise.all([api<Core>('/api/admin/settings/core'), api<SiteData>('/api/admin/settings/site')]);
+      const [data, site, egress] = await Promise.all([
+        api<Core>('/api/admin/settings/core'),
+        api<SiteData>('/api/admin/settings/site'),
+        api<ProxyView>('/api/admin/settings/proxy'),
+      ]);
       const s = data.settings;
       const next: Work = {
         brand: s.brand_name,
@@ -104,6 +112,8 @@ export function SettingsGeneral() {
         indexing: site.indexing,
       };
       setLimits({ title: site.title_max, desc: site.description_max });
+      setProxyView(egress);
+      setProxy(proxyForm(egress));
       setCore(s);
       setBase(next);
       setWork(next);
@@ -117,7 +127,14 @@ export function SettingsGeneral() {
     void load();
   }, [load]);
 
-  if (!core || !work || !base) {
+  useEffect(() => {
+    if (proxyView && !scrolled.current && window.location.hash === '#proxy') {
+      scrolled.current = true;
+      document.getElementById('proxy')?.scrollIntoView({ block: 'start' });
+    }
+  }, [proxyView]);
+
+  if (!core || !work || !base || !proxy || !proxyView) {
     return (
       <SettingsLayout>
         {error ? (
@@ -132,7 +149,9 @@ export function SettingsGeneral() {
   }
 
   const currency = core.currency;
-  const dirty = JSON.stringify(work) !== JSON.stringify(base);
+  const proxyDirty = proxyChanged(proxy, proxyView);
+  const proxyBad = proxyDirty ? proxyProblem(proxy) : null;
+  const dirty = JSON.stringify(work) !== JSON.stringify(base) || proxyDirty;
   const edit = (patch: Partial<Work>) => {
     setWork({ ...work, ...patch });
     setStatus(null);
@@ -158,6 +177,10 @@ export function SettingsGeneral() {
     }
     if (brandBad || supportBad || ttlBad || topupBad || titleBad || descBad) {
       setStatus({ text: 'Исправьте поля, отмеченные красным', bad: true });
+      return;
+    }
+    if (proxyBad) {
+      setStatus({ text: proxyBad, bad: true });
       return;
     }
     setBusy(true);
@@ -191,6 +214,9 @@ export function SettingsGeneral() {
           body: { title: work.title, description: work.desc, indexing: work.indexing },
         });
       }
+      if (proxyDirty) {
+        await saveProxy(proxy);
+      }
       await load();
       if (work.brand !== base.brand) {
         await reload();
@@ -204,6 +230,21 @@ export function SettingsGeneral() {
   };
 
   const unit = currency === 'RUB' ? '₽' : '$';
+
+  const resetProxy = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const next = await api<ProxyView>('/api/admin/settings/proxy/reset', { method: 'POST' });
+      setProxyView(next);
+      setProxy(proxyForm(next));
+      setStatus({ text: 'Прокси снова берётся из deploy/.env', bad: false });
+    } catch (err) {
+      setStatus({ text: failText(err, 'Настройки прокси не сбросились'), bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <SettingsLayout>
@@ -445,6 +486,17 @@ export function SettingsGeneral() {
         </div>
       </section>
 
+      <ProxySection
+        view={proxyView}
+        form={proxy}
+        onChange={(next) => {
+          setProxy(next);
+          setStatus(null);
+        }}
+        onReset={resetProxy}
+        busy={busy}
+      />
+
       <div className="save-row">
         <button type="button" className="btn-main btn" onClick={() => void save()} disabled={busy}>
           {busy ? 'Сохраняем…' : 'Сохранить'}
@@ -455,6 +507,7 @@ export function SettingsGeneral() {
           disabled={busy}
           onClick={() => {
             setWork(base);
+            setProxy(proxyForm(proxyView));
             setStatus(null);
           }}
         >

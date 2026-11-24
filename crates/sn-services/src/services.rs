@@ -52,6 +52,7 @@ pub struct EnvFallbacks {
     pub bot_token: Option<String>,
     pub telegram_api: Option<String>,
     pub ext_modules_loopback: bool,
+    pub proxy: Option<sn_egress::EnvProxy>,
 }
 
 pub struct ServiceDeps {
@@ -93,6 +94,7 @@ struct Inner {
     pause: crate::pause::PauseGate,
     backups: crate::backups::Runtime,
     squad_countries: crate::squad_countries::SquadCountries,
+    egress: sn_egress::Egress,
 }
 
 #[derive(Clone)]
@@ -141,6 +143,7 @@ impl Services {
                 pause: crate::pause::PauseGate::default(),
                 backups: crate::backups::Runtime::default(),
                 squad_countries: crate::squad_countries::SquadCountries::default(),
+                egress: sn_egress::Egress::new(),
             }),
         }
     }
@@ -177,6 +180,14 @@ impl Services {
 
     pub fn env(&self) -> &EnvFallbacks {
         &self.inner.env
+    }
+
+    pub fn egress(&self) -> &sn_egress::Egress {
+        &self.inner.egress
+    }
+
+    pub fn egress_ops(&self) -> crate::egress::EgressOps<'_> {
+        crate::egress::EgressOps::new(self)
     }
 
     pub fn now(&self) -> DateTime<Utc> {
@@ -326,7 +337,20 @@ impl Services {
         )
         .await?
         .and_then(|secret| crate::bot_webhook::WebhookKeys::from_secret(&secret));
+        let plan =
+            crate::egress::load_plan(&mut conn, self.secrets(), self.inner.env.proxy.as_ref())
+                .await?;
         drop(conn);
+        let telegram = self
+            .inner
+            .egress
+            .proxy_for(sn_egress::Route::Telegram, None);
+        self.inner.egress.set_plan(plan);
+        let proxy_changed = telegram
+            != self
+                .inner
+                .egress
+                .proxy_for(sn_egress::Route::Telegram, None);
         self.inner.payments.apply(snapshot);
         self.inner.payments.set_checks(checks);
         self.inner.modules.set_currency(core.currency);
@@ -362,7 +386,7 @@ impl Services {
             r.bot_content_en = Arc::new(bot_content.in_locale(Locale::En));
             r.bot_content = Arc::new(bot_content);
         });
-        if token_changed || delivery_changed {
+        if token_changed || delivery_changed || proxy_changed {
             self.inner.bot.wake();
         }
         Ok(())

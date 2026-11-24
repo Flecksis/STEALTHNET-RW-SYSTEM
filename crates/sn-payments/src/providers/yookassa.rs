@@ -64,7 +64,7 @@ impl Misses {
 }
 
 pub struct YooKassa {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
     misses: Misses,
     miss_ttl: Duration,
@@ -83,7 +83,7 @@ impl YooKassa {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         YooKassa {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::YOOKASSA),
             api_base: api_base.into().trim_end_matches('/').to_string(),
             misses: Misses::default(),
             miss_ttl: MISS_TTL,
@@ -435,6 +435,10 @@ fn payment_outcome(payment: &Json) -> PaymentResult<WebhookOutcome> {
 
 #[async_trait]
 impl PaymentProvider for YooKassa {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::YOOKASSA
     }

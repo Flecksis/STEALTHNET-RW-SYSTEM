@@ -368,7 +368,7 @@ struct Message {
 type Chain = HashMap<String, (Instant, Vec<Transaction>)>;
 
 pub struct Gram {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     toncenter: Option<String>,
     tonapi: String,
     coingecko: String,
@@ -419,7 +419,7 @@ impl Default for Gram {
 impl Gram {
     pub fn new() -> Self {
         Gram {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::GRAM),
             toncenter: None,
             tonapi: TONAPI.into(),
             coingecko: COINGECKO.into(),
@@ -438,7 +438,7 @@ impl Gram {
         coingecko: impl Into<String>,
     ) -> Self {
         Gram {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::GRAM),
             toncenter: Some(toncenter.into()),
             tonapi: tonapi.into(),
             coingecko: coingecko.into(),
@@ -779,6 +779,10 @@ fn pending(invoice: &GramInvoice) -> WebhookOutcome {
 
 #[async_trait]
 impl PaymentProvider for Gram {
+    fn api_url(&self, config: &ProviderConfig) -> Option<String> {
+        Some(self.toncenter(config))
+    }
+
     fn id(&self) -> &'static str {
         providers::GRAM
     }

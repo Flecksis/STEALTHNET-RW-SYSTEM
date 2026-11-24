@@ -126,6 +126,7 @@ pub enum BotError {
 enum Stop {
     Cancelled,
     TokenChanged,
+    ProxyChanged,
     ModeChanged,
 }
 
@@ -405,6 +406,16 @@ pub fn probe(update: &Update) -> Probe {
     )
 }
 
+fn live_proxy_direct(
+    api_base: &str,
+    token: &str,
+    proxy: &telegram::Proxy,
+) -> Option<Arc<TelegramApi>> {
+    proxy
+        .as_ref()
+        .map(|_| Arc::new(TelegramApi::new(api_base, token, None)))
+}
+
 struct Live<'a> {
     api: Arc<TelegramApi>,
     ctx: BotCtx,
@@ -412,6 +423,7 @@ struct Live<'a> {
     me: BotUser,
     queue: i64,
     token: &'a str,
+    proxy: telegram::Proxy,
     since: chrono::DateTime<chrono::Utc>,
     menu: Option<String>,
     commands: Option<sn_domain::client::Languages>,
@@ -434,6 +446,12 @@ impl Live<'_> {
 impl Bot {
     pub fn new(services: Services, config: BotConfig) -> Self {
         Bot { services, config }
+    }
+
+    fn telegram_proxy(&self) -> telegram::Proxy {
+        self.services
+            .egress()
+            .proxy_for(sn_egress::Route::Telegram, None)
     }
 
     pub async fn run(self, cancel: CancellationToken) -> Result<(), BotError> {
@@ -460,6 +478,9 @@ impl Bot {
                 Ok(Stop::TokenChanged) => {
                     tracing::info!("токен бота сменился, переподключаемся");
                 }
+                Ok(Stop::ProxyChanged) => {
+                    tracing::info!("прокси для Telegram сменился, переподключаемся");
+                }
                 Ok(Stop::ModeChanged) => {
                     tracing::info!("способ получения обновлений сменился, переподключаемся");
                 }
@@ -472,6 +493,7 @@ impl Bot {
                         retry_at: Some(later(&self.services, pause)),
                     });
                     tracing::warn!(error = %err, ?problem, "бот не запустился, повторим позже");
+                    alerts::flush_proxy(&self.services, &self.config.api_base, &token).await;
                     tokio::select! {
                         _ = cancel.cancelled() => return Ok(()),
                         _ = runtime.woken() => {}
@@ -497,10 +519,12 @@ impl Bot {
     ) -> Result<Stop, BotError> {
         let runtime = self.services.bot_runtime();
         let takeover = runtime.take_takeover();
+        let proxy = self.telegram_proxy();
         let api = Arc::new(TelegramApi::paced(
             &self.config.api_base,
             token,
             self.config.send,
+            proxy.clone(),
         ));
         let me = api.get_me().await?;
         let previous = remembered_username(&self.services).await?;
@@ -583,6 +607,7 @@ impl Bot {
         );
         let alerts_stop = cancel.child_token();
         let alerts_guard = alerts_stop.clone().drop_guard();
+        let direct = live_proxy_direct(&self.config.api_base, token, &self.telegram_proxy());
         let alerts_keeper = tokio::spawn(
             alerts::Keeper::new(
                 self.services.clone(),
@@ -590,6 +615,7 @@ impl Bot {
                 self.config.alerts_tick,
                 self.config.alerts_every,
             )
+            .with_direct(direct)
             .run(alerts_stop),
         );
         let now = tokio::time::Instant::now();
@@ -600,6 +626,7 @@ impl Bot {
             me,
             queue,
             token,
+            proxy,
             since: self.services.now(),
             menu: stored_menu(&self.services).await,
             commands,
@@ -842,6 +869,9 @@ impl Bot {
             if self.services.bot_token().as_deref() != Some(live.token) {
                 break Ok(Stop::TokenChanged);
             }
+            if self.telegram_proxy() != live.proxy {
+                break Ok(Stop::ProxyChanged);
+            }
             if self.services.bot_webhook().wanted() {
                 break Ok(Stop::ModeChanged);
             }
@@ -967,6 +997,9 @@ impl Bot {
             if self.services.bot_token().as_deref() != Some(live.token) {
                 webhook::forget_previous(&self.services, &api).await;
                 return Ok(Stop::TokenChanged);
+            }
+            if self.telegram_proxy() != live.proxy {
+                return Ok(Stop::ProxyChanged);
             }
             if !hooks.wanted() {
                 return Ok(Stop::ModeChanged);

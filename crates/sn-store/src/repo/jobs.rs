@@ -272,6 +272,29 @@ impl<'c> JobsRepo<'c> {
         Ok(done.rows_affected() > 0)
     }
 
+    pub async fn postpone_leased(
+        &mut self,
+        job: &JobRecord,
+        error: &str,
+        run_at: DateTime<Utc>,
+    ) -> StoreResult<bool> {
+        let Some(token) = job.lease_token else {
+            return Ok(false);
+        };
+        let done = sqlx::query(
+            "UPDATE jobs SET status = 'queued', last_error = $3, run_at = $4, locked_until = NULL, lease_token = NULL, \
+             attempts = GREATEST(attempts - 1, 0) \
+             WHERE id = $1 AND lease_token = $2 AND status = 'running'",
+        )
+        .bind(job.id.0)
+        .bind(token)
+        .bind(error)
+        .bind(run_at)
+        .execute(&mut *self.conn)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn extend_lease(&mut self, job: &JobRecord, lease: Duration) -> StoreResult<bool> {
         let Some(token) = job.lease_token else {
             return Ok(false);

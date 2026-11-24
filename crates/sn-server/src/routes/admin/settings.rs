@@ -16,6 +16,7 @@ use sn_domain::settings::{
 };
 use sn_modules::ModuleView;
 use sn_services::branding::{ImageView, SiteUpdate};
+use sn_services::egress::{CheckView, ProxyCheckRequest, ProxyUpdate, ProxyView};
 use sn_services::settings::{
     BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
     ProviderUpdate, RemnaCheck, RemnaCheckRequest, RemnaUpdate, SubscriptionSettingsUpdate,
@@ -38,6 +39,8 @@ pub fn routes() -> Router<AppState> {
                 .delete(delete_favicon)
                 .layer(DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT)),
         )
+        .route("/settings/proxy/check", post(check_proxy))
+        .route("/settings/proxy/reset", post(reset_proxy))
         .route("/settings/remnawave/check", post(check_remnawave))
         .route("/settings/remnawave/webhook-secret", post(webhook_secret))
         .route("/settings/remnawave/page-configs", get(page_configs))
@@ -78,6 +81,7 @@ async fn read(
         "subscription" => json(&ops.subscription_settings().await?)?,
         "bot" => json(&ops.bot().await?)?,
         "site" => json(&state.services.branding().site())?,
+        "proxy" => json(&state.services.egress_ops().view().await?)?,
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
@@ -135,6 +139,13 @@ async fn write(
                 .await?,
         )?,
         "bot" => json(&ops.update_bot(&decode::<BotUpdate>(body)?, by).await?)?,
+        "proxy" => json(
+            &state
+                .services
+                .egress_ops()
+                .update(&decode::<ProxyUpdate>(body)?, by)
+                .await?,
+        )?,
         "site" => json(
             &state
                 .services
@@ -145,6 +156,25 @@ async fn write(
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
+}
+
+async fn check_proxy(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<ProxyCheckRequest>,
+) -> ApiResult<Json<CheckView>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.egress_ops().check(&body).await?))
+}
+
+async fn reset_proxy(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<ProxyView>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state.services.egress_ops().reset(admin.0.admin_id).await?,
+    ))
 }
 
 #[derive(Debug, Default, Deserialize)]

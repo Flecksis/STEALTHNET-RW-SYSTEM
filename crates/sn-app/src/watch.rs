@@ -6,6 +6,24 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const PROXY_FIRST: Duration = Duration::from_secs(15);
+
+pub async fn proxy(services: Services, cancel: CancellationToken) {
+    let mut wait = PROXY_FIRST;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(wait) => {}
+        }
+        wait = sn_services::egress::WATCH_EVERY;
+        if services.pause_gate().is_paused() {
+            continue;
+        }
+        if let Err(err) = services.egress_ops().watch().await {
+            tracing::warn!(error = %err, "проверка прокси не прошла");
+        }
+    }
+}
 
 async fn reload(services: &Services) {
     if let Err(err) = services.reload().await {

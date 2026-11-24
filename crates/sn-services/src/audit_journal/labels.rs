@@ -536,6 +536,26 @@ pub const ACTIONS: &[ActionLabel] = &[
     a("settings.currency", "Изменена валюта", Area::Settings),
     a("settings.bot", "Изменены настройки бота", Area::Settings),
     a(
+        "settings.proxy",
+        "Изменены настройки исходящего прокси",
+        Area::Settings,
+    ),
+    a(
+        "settings.proxy_reset",
+        "Прокси возвращён к настройкам из .env",
+        Area::Settings,
+    ),
+    a(
+        "settings.proxy_down",
+        "Прокси перестал отвечать",
+        Area::Settings,
+    ),
+    a(
+        "settings.proxy_restored",
+        "Прокси снова работает",
+        Area::Settings,
+    ),
+    a(
         "settings.bot_content",
         "Изменены тексты и кнопки бота",
         Area::Settings,

@@ -252,7 +252,7 @@ struct Answer {
 }
 
 pub struct RollyPay {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -269,7 +269,7 @@ impl RollyPay {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         RollyPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::ROLLYPAY),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -365,6 +365,10 @@ impl RollyPay {
 
 #[async_trait]
 impl PaymentProvider for RollyPay {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::ROLLYPAY
     }

@@ -568,6 +568,55 @@ impl JobHandler for Slow {
     }
 }
 
+struct Waiting;
+
+#[async_trait]
+impl JobHandler for Waiting {
+    async fn handle(
+        &self,
+        _services: &Services,
+        _payload: &JobPayload,
+        _attempt: u32,
+    ) -> JobResult {
+        JobResult::Wait {
+            after: chrono::Duration::zero(),
+            error: "прокси не отвечает".into(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn ожидание_прокси_не_тратит_попытки_задачи() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    {
+        let mut conn = setup.services.store().conn().await.unwrap();
+        conn.jobs()
+            .enqueue(&JobPayload::ProcessRemnaEvent { event_id: 7 }, None)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let worker = Worker::new(setup.services.clone(), WorkerConfig::default())
+        .with_handler(Arc::new(Waiting));
+    let runs = worker.tick().await.unwrap();
+    assert!(
+        runs > usize::try_from(JobKind::ProcessRemnaEvent.max_attempts()).unwrap(),
+        "{runs}"
+    );
+    assert_eq!(
+        job_counts(&setup.services).await,
+        vec![("queued".to_string(), 1)]
+    );
+    let mut conn = setup.services.store().conn().await.unwrap();
+    let claimed = conn.jobs().claim(1, Duration::from_secs(30)).await.unwrap();
+    drop(conn);
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].attempts, 1);
+    setup.db.cleanup().await;
+}
+
 #[tokio::test]
 async fn долгая_задача_не_достаётся_второму_обработчику() {
     let Some(setup) = setup(Vec::new()).await else {

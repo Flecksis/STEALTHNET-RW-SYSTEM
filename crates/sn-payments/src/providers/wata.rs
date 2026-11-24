@@ -236,7 +236,7 @@ struct CachedKey {
 }
 
 pub struct Wata {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     live: String,
     sandbox: String,
     keys: Mutex<HashMap<String, CachedKey>>,
@@ -252,7 +252,7 @@ impl Default for Wata {
 impl Wata {
     pub fn new() -> Self {
         Wata {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::WATA),
             live: LIVE.to_string(),
             sandbox: SANDBOX.to_string(),
             keys: Mutex::new(HashMap::new()),
@@ -263,7 +263,7 @@ impl Wata {
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         let base = api_base.into().trim_end_matches('/').to_string();
         Wata {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::WATA),
             live: base.clone(),
             sandbox: base,
             keys: Mutex::new(HashMap::new()),
@@ -448,6 +448,10 @@ impl Wata {
 
 #[async_trait]
 impl PaymentProvider for Wata {
+    fn api_url(&self, config: &ProviderConfig) -> Option<String> {
+        Some(self.base(config).to_string())
+    }
+
     fn id(&self) -> &'static str {
         providers::WATA
     }

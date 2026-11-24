@@ -333,6 +333,7 @@ impl RemnawaveClient {
             "ключ защиты панели записан неверно",
         )?;
         let http = reqwest::Client::builder()
+            .no_proxy()
             .timeout(config.timeout)
             .connect_timeout(config.connect_timeout)
             .redirect(reqwest::redirect::Policy::none())

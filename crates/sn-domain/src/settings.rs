@@ -855,6 +855,7 @@ impl CoreSettings {
 }
 
 pub mod keys {
+    pub const PROXY: &str = "egress.proxy";
     pub const CURRENCY: &str = "core.currency";
     pub const BRAND_NAME: &str = "core.brand_name";
     pub const PUBLIC_URL: &str = "core.public_url";
@@ -904,6 +905,7 @@ pub mod secret_keys {
     pub const REMNA_WEBHOOK_SECRET: &str = "remnawave.webhook_secret";
     pub const BOT_TOKEN: &str = "bot.token";
     pub const BOT_WEBHOOK: &str = "bot.webhook_secret";
+    pub const PROXY_PASSWORD: &str = "egress.proxy_password";
 
     pub fn provider(id: &str, field: &str) -> String {
         format!("payments.{id}.{field}")

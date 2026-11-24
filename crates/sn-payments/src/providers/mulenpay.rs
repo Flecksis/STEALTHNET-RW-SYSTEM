@@ -162,7 +162,7 @@ fn payment_outcome(payment: &Json, id: &str) -> PaymentResult<WebhookOutcome> {
 }
 
 pub struct MulenPay {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -179,7 +179,7 @@ impl MulenPay {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         MulenPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::MULENPAY),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -225,6 +225,10 @@ impl MulenPay {
 
 #[async_trait]
 impl PaymentProvider for MulenPay {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::MULENPAY
     }

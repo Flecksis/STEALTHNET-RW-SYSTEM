@@ -10,6 +10,7 @@ use sn_services::{ServiceError, Services};
 pub enum JobResult {
     Done,
     Retry { after: Duration, error: String },
+    Wait { after: Duration, error: String },
     Review(String),
     Fail(String),
 }
@@ -32,6 +33,16 @@ impl JobResult {
             },
         }
     }
+}
+
+fn payment_failure(services: &Services, err: ServiceError, attempt: u32) -> JobResult {
+    if err.is_retryable() && services.egress().down_for(sn_egress::Route::Payments) {
+        return JobResult::Wait {
+            after: sn_services::egress::WAIT,
+            error: format!("прокси не отвечает, проверим позже: {err}"),
+        };
+    }
+    JobResult::from_error(err, attempt)
 }
 
 #[async_trait]
@@ -112,7 +123,7 @@ impl JobHandler for CoreHandlers {
                         };
                     }
                     Ok(Some(ChargeCheck::Unclear(reason))) => return JobResult::Review(reason),
-                    Err(err) => return JobResult::from_error(err, attempt),
+                    Err(err) => return payment_failure(services, err, attempt),
                 }
                 match services.inbox().poll_payment(*payment_id).await {
                     Ok(PollResult::Settled | PollResult::Unsupported) => JobResult::Done,
@@ -121,7 +132,7 @@ impl JobHandler for CoreHandlers {
                         after: retry_delay(attempt),
                         error: "счёт ещё не оплачен".into(),
                     },
-                    Err(err) => JobResult::from_error(err, attempt),
+                    Err(err) => payment_failure(services, err, attempt),
                 }
             }
             JobPayload::Notify { .. } => {

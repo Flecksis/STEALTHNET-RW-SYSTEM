@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 sn-domain.workspace = true
+sn-egress.workspace = true
 sn-store.workspace = true
 sn-remnawave.workspace = true
 sn-payments.workspace = true

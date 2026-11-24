@@ -625,6 +625,10 @@ fn place(kind: &str, label: &str, link: &str) -> Option<TargetView> {
 fn settings_place(action: &str) -> Option<TargetView> {
     let (label, link) = match action {
         "settings.core" | "settings.currency" => ("Общие настройки", "/admin/settings/general"),
+        "settings.proxy"
+        | "settings.proxy_reset"
+        | "settings.proxy_down"
+        | "settings.proxy_restored" => ("Исходящий прокси", "/admin/settings/general#proxy"),
         "settings.appearance" | "settings.site" | "settings.logo" | "settings.favicon" => {
             ("Оформление", "/admin/settings/look")
         }

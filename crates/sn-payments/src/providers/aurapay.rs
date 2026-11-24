@@ -132,7 +132,7 @@ fn invoice_outcome(invoice: &Json) -> PaymentResult<WebhookOutcome> {
 }
 
 pub struct AuraPay {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -149,7 +149,7 @@ impl AuraPay {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         AuraPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::AURAPAY),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -211,6 +211,10 @@ impl AuraPay {
 
 #[async_trait]
 impl PaymentProvider for AuraPay {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::AURAPAY
     }

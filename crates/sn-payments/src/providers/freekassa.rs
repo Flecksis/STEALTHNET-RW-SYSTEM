@@ -349,7 +349,7 @@ impl Param {
 }
 
 pub struct Freekassa {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
     refunds: Mutex<HashMap<Uuid, String>>,
 }
@@ -367,7 +367,7 @@ impl Freekassa {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Freekassa {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::FREEKASSA),
             api_base: api_base.into().trim_end_matches('/').to_string(),
             refunds: Mutex::new(HashMap::new()),
         }
@@ -608,6 +608,10 @@ fn shop_id(config: &ProviderConfig) -> PaymentResult<&str> {
 
 #[async_trait]
 impl PaymentProvider for Freekassa {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::FREEKASSA
     }

@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
 use std::net::IpAddr;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(25);
@@ -828,17 +827,17 @@ pub fn check_address(raw: &str, strict: bool) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn http() -> &'static reqwest::Client {
-    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    HTTP.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .unwrap_or_default()
-    })
+fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
+}
+
+fn http() -> reqwest::Client {
+    let proxy = sn_egress::current(None).proxy_for(sn_egress::Route::Ai, None);
+    sn_egress::build(http_builder(), proxy.as_deref())
 }
 
 fn transport(err: &reqwest::Error) -> String {
@@ -853,7 +852,7 @@ fn transport(err: &reqwest::Error) -> String {
 
 #[derive(Clone)]
 pub struct Llm {
-    http: &'static reqwest::Client,
+    http: reqwest::Client,
     provider: Provider,
     base: String,
     key: String,

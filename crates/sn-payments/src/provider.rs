@@ -668,16 +668,31 @@ pub trait PaymentProvider: Send + Sync + 'static {
     ) -> ConnectionCheck {
         ConnectionCheck::manual(NO_CHECK_REQUEST)
     }
+
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        None
+    }
 }
 
-pub fn http_client() -> reqwest::Client {
+pub fn http_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .connect_timeout(std::time::Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_default()
+}
+
+pub static PAYMENTS_HTTP: sn_egress::Profile = sn_egress::Profile {
+    name: "payments",
+    build: http_builder,
+};
+
+pub fn http_client(provider: &'static str) -> sn_egress::Http {
+    sn_egress::Http::new(&PAYMENTS_HTTP, sn_egress::Route::Payments, Some(provider))
+}
+
+pub fn telegram_client() -> sn_egress::Http {
+    sn_egress::Http::new(&PAYMENTS_HTTP, sn_egress::Route::Telegram, None)
 }
 
 #[cfg(test)]

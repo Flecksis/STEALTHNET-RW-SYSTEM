@@ -72,7 +72,7 @@ enum Share {
 }
 
 pub struct Lava {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -89,7 +89,7 @@ impl Lava {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Lava {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::LAVA),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -534,6 +534,10 @@ fn pick(sales: &[Sale], amount: Amount, share: Share) -> Option<&Sale> {
 
 #[async_trait]
 impl PaymentProvider for Lava {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::LAVA
     }

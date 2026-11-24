@@ -311,3 +311,55 @@ async fn ошибка_отправки_не_теряет_остаток_пачк
     assert!(services.alerts().pending().await.unwrap().is_empty());
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn сбой_прокси_уходит_в_группу_напрямую_раньше_остальных() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    services
+        .alerts()
+        .adopt_chat(-100_500, Some("Админы".into()), false)
+        .await
+        .unwrap();
+    let dead = Arc::new(TelegramApi::new("http://127.0.0.1:9", TOKEN, None));
+    let keeper = Keeper::new(
+        services.clone(),
+        dead,
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    )
+    .with_direct(Some(ctx.api.clone()));
+    keeper.step(true).await.unwrap();
+    open(&services, 7_402, "Не открывается кабинет").await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.audit()
+            .record(&sn_services::Actor::System.audit(
+                sn_services::egress::DOWN_ACTION,
+                "settings",
+                None,
+                serde_json::json!({
+                    "proxy": "socks5h://203.0.113.5:1080",
+                    "target": "api.telegram.org",
+                    "problem": "Прокси socks5h://203.0.113.5:1080 не отвечает",
+                    "routes": "Telegram",
+                }),
+            ))
+            .await
+            .unwrap();
+    }
+    assert!(keeper.step(true).await.is_err());
+    let delivered: Vec<String> = sent(&server)
+        .await
+        .into_iter()
+        .filter(|b| b["chat_id"] == -100_500)
+        .filter_map(|b| b["text"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(delivered.len(), 1, "{delivered:?}");
+    assert!(delivered[0].contains("Прокси не отвечает"));
+    let pending = services.alerts().pending().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].kind, sn_domain::alerts::AlertKind::Support);
+    db.cleanup().await;
+}

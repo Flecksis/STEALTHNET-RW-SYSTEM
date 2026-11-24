@@ -14,7 +14,7 @@ const PAGE: u32 = 100;
 const MAX_REFUND_PAGES: u32 = 50;
 
 pub struct TelegramStars {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -208,7 +208,7 @@ impl TelegramStars {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         TelegramStars {
-            http: http_client(),
+            http: crate::provider::telegram_client(),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }

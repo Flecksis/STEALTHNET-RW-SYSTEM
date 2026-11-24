@@ -2252,6 +2252,7 @@ dependencies = [
  "serde_json",
  "sn-bot",
  "sn-domain",
+ "sn-egress",
  "sn-modules",
  "sn-payments",
  "sn-remnawave",
@@ -2280,6 +2281,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sn-domain",
+ "sn-egress",
  "sn-modules",
  "sn-payments",
  "sn-remnawave",
@@ -2308,6 +2310,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sn-egress"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "sn-modules"
 version = "0.1.0"
 dependencies = [
@@ -2322,6 +2337,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sn-domain",
+ "sn-egress",
  "sn-store",
  "sqlx",
  "thiserror",
@@ -2349,6 +2365,7 @@ dependencies = [
  "sha1 0.10.7",
  "sha2",
  "sn-domain",
+ "sn-egress",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -2390,6 +2407,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sn-domain",
+ "sn-egress",
  "sn-modules",
  "sn-payments",
  "sn-remnawave",
@@ -2432,6 +2450,7 @@ dependencies = [
  "sha1 0.10.7",
  "sha2",
  "sn-domain",
+ "sn-egress",
  "sn-modules",
  "sn-payments",
  "sn-remnawave",
@@ -2475,6 +2494,7 @@ dependencies = [
  "futures-util",
  "serde_json",
  "sn-domain",
+ "sn-egress",
  "sn-modules",
  "sn-payments",
  "sn-remnawave",

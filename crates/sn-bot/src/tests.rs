@@ -112,7 +112,7 @@ async fn setup() -> Option<(TestDb, Services, MockServer, BotCtx)> {
     let server = telegram().await;
     let ctx = BotCtx {
         services: services.clone(),
-        api: Arc::new(TelegramApi::new(&server.uri(), TOKEN)),
+        api: Arc::new(TelegramApi::new(&server.uri(), TOKEN, None)),
         username: Some("stealth_test_bot".into()),
     };
     Some((db, services, server, ctx))
@@ -684,6 +684,44 @@ async fn лимит_телеграма_откладывает_уведомлен
         JobResult::Retry { error, .. } => assert!(!error.contains(TOKEN)),
         other => panic!("ожидался повтор, получено {other:?}"),
     }
+    let egress = services.egress();
+    egress.set_plan(sn_egress::Plan::from_panel(
+        &sn_egress::ProxySettings {
+            enabled: true,
+            server: Some("socks5h://127.0.0.1:9".into()),
+            routes: [sn_egress::Route::Telegram].into_iter().collect(),
+            ..sn_egress::ProxySettings::default()
+        },
+        None,
+    ));
+    egress.set_down(true);
+    match notify(
+        &services,
+        &offline,
+        client.id,
+        "text",
+        serde_json::json!({"text": "x"}),
+    )
+    .await
+    {
+        JobResult::Wait { after, error } => {
+            assert_eq!(after, chrono::Duration::seconds(60));
+            assert!(!error.contains(TOKEN));
+        }
+        other => panic!("ожидалось ожидание прокси, получено {other:?}"),
+    }
+    egress.set_down(false);
+    assert!(matches!(
+        notify(
+            &services,
+            &offline,
+            client.id,
+            "text",
+            serde_json::json!({"text": "x"}),
+        )
+        .await,
+        JobResult::Retry { .. }
+    ));
     db.cleanup().await;
 }
 

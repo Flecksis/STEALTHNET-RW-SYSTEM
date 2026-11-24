@@ -95,7 +95,7 @@ struct Catalog {
 }
 
 pub struct Cryptomus {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: Option<String>,
     catalog: Mutex<Option<Catalog>>,
 }
@@ -109,7 +109,7 @@ impl Default for Cryptomus {
 impl Cryptomus {
     pub fn new() -> Self {
         Cryptomus {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::CRYPTOMUS),
             api_base: None,
             catalog: Mutex::new(None),
         }
@@ -117,7 +117,7 @@ impl Cryptomus {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Cryptomus {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::CRYPTOMUS),
             api_base: Some(api_base.into()),
             catalog: Mutex::new(None),
         }
@@ -259,6 +259,10 @@ fn read(info: &Json) -> PaymentResult<WebhookOutcome> {
 
 #[async_trait]
 impl PaymentProvider for Cryptomus {
+    fn api_url(&self, config: &ProviderConfig) -> Option<String> {
+        Some(self.base(config))
+    }
+
     fn id(&self) -> &'static str {
         providers::CRYPTOMUS
     }

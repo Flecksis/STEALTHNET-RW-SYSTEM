@@ -1116,12 +1116,17 @@ impl<'a> Updates<'a> {
     }
 
     async fn run_check(&self, config: &UpdateConfig) -> ServiceResult<CheckState> {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let proxy = self
+            .services
+            .egress()
+            .proxy_for(sn_egress::Route::Updates, None);
+        let http = sn_egress::build(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .user_agent(USER_AGENT),
+            proxy.as_deref(),
+        );
         let result = fetch_latest(&http, config).await;
         let now = self.services.now();
         let mut state = self.check_state().await?;

@@ -14,7 +14,11 @@ use sn_modules::{MailDelivery, MailOut, MailSender, MailSite};
 use std::time::Duration;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(20);
-const RESEND_API: &str = "https://api.resend.com";
+pub(crate) const RESEND_API: &str = "https://api.resend.com";
+
+fn resend_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().timeout(SEND_TIMEOUT)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Letter {
@@ -139,6 +143,14 @@ impl<'a> MailOps<'a> {
         self
     }
 
+    fn resend_client(&self) -> reqwest::Client {
+        let proxy = self
+            .services
+            .egress()
+            .proxy_for(sn_egress::Route::Mail, None);
+        sn_egress::build(resend_builder(), proxy.as_deref())
+    }
+
     pub fn settings(&self) -> Option<MailSettings> {
         let modules = self.services.modules();
         if !modules.is_enabled(ModuleId::Mail) {
@@ -149,6 +161,11 @@ impl<'a> MailOps<'a> {
 
     pub fn available(&self) -> bool {
         self.settings().is_some_and(|s| s.sends())
+    }
+
+    pub fn via_resend(&self) -> bool {
+        self.settings()
+            .is_some_and(|s| matches!(s.transport, MailTransport::Resend { .. }))
     }
 
     pub fn code_login(&self) -> bool {
@@ -262,10 +279,7 @@ impl<'a> MailOps<'a> {
         to: Address,
         letter: &RichLetter,
     ) -> Result<(), Undelivered> {
-        let client = reqwest::Client::builder()
-            .timeout(SEND_TIMEOUT)
-            .build()
-            .map_err(|err| Undelivered::Failed(format!("Письмо не отправилось: {err}")))?;
+        let client = self.resend_client();
         let mut body = serde_json::json!({
             "from": format!("{name} <{}>", settings.from_email),
             "to": [to.to_string()],
@@ -391,10 +405,7 @@ impl<'a> MailOps<'a> {
         to: Address,
         letter: &Letter,
     ) -> ServiceResult<()> {
-        let client = reqwest::Client::builder()
-            .timeout(SEND_TIMEOUT)
-            .build()
-            .map_err(|err| rejected("mail.failed", format!("Письмо не отправилось: {err}")))?;
+        let client = self.resend_client();
         let body = serde_json::json!({
             "from": format!("{name} <{}>", settings.from_email),
             "to": [to.to_string()],

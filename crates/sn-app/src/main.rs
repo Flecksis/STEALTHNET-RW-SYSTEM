@@ -127,6 +127,7 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         bail!("в базе не применены миграции: выполните `stealthnet migrate`");
     }
     let services = build_services(&config, store)?;
+    services.egress().install();
     services
         .reload()
         .await
@@ -169,6 +170,7 @@ async fn serve(config: Config, store: Store) -> Result<()> {
     ));
     services.set_bot_sender(Some(sender.clone()));
     if config.run_worker {
+        background.push(tokio::spawn(watch::proxy(services.clone(), cancel.clone())));
         background.push(tokio::spawn(
             worker(services.clone(), &config).run(cancel.clone()),
         ));

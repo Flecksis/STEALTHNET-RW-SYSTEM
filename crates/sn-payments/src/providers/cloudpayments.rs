@@ -37,7 +37,7 @@ const METHODS: [PayMethod; 2] = [
 ];
 
 pub struct CloudPayments {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: String,
 }
 
@@ -54,7 +54,7 @@ impl CloudPayments {
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         CloudPayments {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::CLOUDPAYMENTS),
             api_base: api_base.into().trim_end_matches('/').to_string(),
         }
     }
@@ -641,6 +641,10 @@ fn refund_outcome(model: &Json, refund_id: &str) -> PaymentResult<WebhookOutcome
 
 #[async_trait]
 impl PaymentProvider for CloudPayments {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.api_base.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::CLOUDPAYMENTS
     }

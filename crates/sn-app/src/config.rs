@@ -105,7 +105,7 @@ impl Config {
         }
         let proxies = parse_proxy_list(&text(vars, "SN_TRUSTED_PROXIES").unwrap_or_default())
             .map_err(|err| anyhow!("SN_TRUSTED_PROXIES: {err}"))?;
-        let warnings = proxies.warnings();
+        let mut warnings = proxies.warnings();
         let db_max_connections = text(vars, "SN_DB_MAX_CONNECTIONS")
             .map(|v| {
                 v.parse::<u32>()
@@ -146,6 +146,35 @@ impl Config {
             })
             .transpose()?
             .unwrap_or(HSTS_MAX_AGE);
+        let routes = text(vars, "SN_PROXY_ROUTES");
+        let chosen = text(vars, "SN_PROXY_PAYMENTS");
+        let proxy = sn_egress::EnvProxy::from_env(
+            text(vars, "SN_PROXY_URL").as_deref(),
+            routes.as_deref(),
+            chosen.as_deref(),
+        )
+        .map_err(|err| anyhow!("{err}"))?;
+        if proxy.is_none() && (routes.is_some() || chosen.is_some()) {
+            warnings
+                .push("SN_PROXY_ROUTES и SN_PROXY_PAYMENTS без SN_PROXY_URL не действуют".into());
+        }
+        let ignored: Vec<&str> = [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ]
+        .into_iter()
+        .filter(|key| text(vars, key).is_some())
+        .collect();
+        if !ignored.is_empty() {
+            warnings.push(format!(
+                "{} в окружении панель не применяет: прокси для Telegram, платёжек, ИИ, почты и обновлений задаётся в SN_PROXY_URL или в «Настройки → Общие», Remnawave и внешние модули ходят напрямую",
+                ignored.join(", ")
+            ));
+        }
         let remna = match (text(vars, "REMNAWAVE_URL"), text(vars, "REMNAWAVE_TOKEN")) {
             (url, token)
                 if url.is_some()
@@ -189,6 +218,7 @@ impl Config {
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
                 telegram_api: custom_api,
                 ext_modules_loopback: flag(vars, "SN_EXT_MODULES_LOOPBACK", false)?,
+                proxy,
             },
             updates: updates(vars)?,
             backup_dir: text(vars, "SN_BACKUP_DIR").map(std::path::PathBuf::from),
@@ -207,6 +237,58 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn прокси_задаётся_в_окружении_без_утечки_пароля() {
+        let base = ("DATABASE_URL", "postgres://sn@db/sn");
+        let config = Config::from_vars(&vars(&[
+            base,
+            (
+                "SN_PROXY_URL",
+                "socks5h://shop:Pa55word@proxy.example.com:1080",
+            ),
+            ("SN_PROXY_ROUTES", "telegram, payments"),
+            ("SN_PROXY_PAYMENTS", "cryptomus"),
+        ]))
+        .unwrap();
+        let proxy = config.env.proxy.clone().unwrap();
+        assert_eq!(proxy.proxy.password(), Some("Pa55word"));
+        assert_eq!(
+            proxy.routes,
+            [sn_egress::Route::Telegram, sn_egress::Route::Payments]
+                .into_iter()
+                .collect()
+        );
+        assert!(!format!("{config:?}").contains("Pa55word"));
+        assert!(config.warnings.is_empty());
+        let err = Config::from_vars(&vars(&[
+            base,
+            (
+                "SN_PROXY_URL",
+                "socks5://shop:Pa55word@proxy.example.com:port",
+            ),
+        ]))
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("SN_PROXY_URL"));
+        assert!(!format!("{err:#}").contains("Pa55word"));
+        assert!(
+            Config::from_vars(&vars(&[
+                base,
+                ("SN_PROXY_URL", "socks5://proxy.example.com:1080"),
+                ("SN_PROXY_ROUTES", "telegram,remnawave"),
+            ]))
+            .is_err()
+        );
+        let warned = Config::from_vars(&vars(&[
+            base,
+            ("HTTPS_PROXY", "http://proxy.example.com:3128"),
+            ("SN_PROXY_ROUTES", "telegram"),
+        ]))
+        .unwrap();
+        assert!(warned.env.proxy.is_none());
+        assert_eq!(warned.warnings.len(), 2, "{:?}", warned.warnings);
+        assert!(warned.warnings.iter().any(|w| w.contains("HTTPS_PROXY")));
     }
 
     #[test]

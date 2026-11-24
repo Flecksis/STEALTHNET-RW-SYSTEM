@@ -479,7 +479,7 @@ fn failure(reply: &util::Reply) -> PaymentError {
 }
 
 pub struct Tribute {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: Option<String>,
 }
 
@@ -492,14 +492,14 @@ impl Default for Tribute {
 impl Tribute {
     pub fn new() -> Self {
         Tribute {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::TRIBUTE),
             api_base: None,
         }
     }
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         Tribute {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::TRIBUTE),
             api_base: Some(api_base.into()),
         }
     }
@@ -573,6 +573,10 @@ fn currency_name(currency: Currency) -> &'static str {
 
 #[async_trait]
 impl PaymentProvider for Tribute {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.base())
+    }
+
     fn id(&self) -> &'static str {
         providers::TRIBUTE
     }

@@ -61,13 +61,20 @@ pub struct Bot {
 }
 
 impl Bot {
-    pub fn new(api_base: &str, token: &str) -> Result<Self, String> {
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(600))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| e.to_string())?;
+    pub fn new(
+        api_base: &str,
+        token: &str,
+        proxy: Option<&sn_egress::Proxy>,
+    ) -> Result<Self, String> {
+        let http = sn_egress::routed(
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(600))
+                .redirect(reqwest::redirect::Policy::none()),
+            proxy,
+        )
+        .build()
+        .map_err(|e| e.without_url().to_string())?;
         Ok(Bot {
             http,
             base: format!("{}/bot{}", api_base.trim_end_matches('/'), token),
@@ -220,7 +227,7 @@ mod tests {
             )
             .mount(&api)
             .await;
-        let bot = Bot::new(&api.uri(), "123:abc").unwrap();
+        let bot = Bot::new(&api.uri(), "123:abc", None).unwrap();
         assert!(bot.send_message(-100, None, "проверка").await.is_err());
         assert!(elsewhere.received_requests().await.unwrap().is_empty());
     }

@@ -446,7 +446,7 @@ fn state_outcome(inv: &str, op: &Operation) -> WebhookOutcome {
 }
 
 pub struct Robokassa {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     auth: String,
     services: String,
     refunds: Mutex<HashMap<Uuid, String>>,
@@ -461,7 +461,7 @@ impl Default for Robokassa {
 impl Robokassa {
     pub fn new() -> Self {
         Robokassa {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::ROBOKASSA),
             auth: AUTH.to_string(),
             services: SERVICES.to_string(),
             refunds: Mutex::new(HashMap::new()),
@@ -471,7 +471,7 @@ impl Robokassa {
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         let base = api_base.into().trim_end_matches('/').to_string();
         Robokassa {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::ROBOKASSA),
             auth: base.clone(),
             services: base,
             refunds: Mutex::new(HashMap::new()),
@@ -581,6 +581,10 @@ impl Robokassa {
 
 #[async_trait]
 impl PaymentProvider for Robokassa {
+    fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        Some(self.auth.clone())
+    }
+
     fn id(&self) -> &'static str {
         providers::ROBOKASSA
     }

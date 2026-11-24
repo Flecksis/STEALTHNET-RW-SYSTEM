@@ -527,6 +527,7 @@ impl Attempts {
 
 struct Built {
     digest: [u8; 32],
+    proxy: Option<std::sync::Arc<sn_egress::Proxy>>,
     client: PaymentResult<reqwest::Client>,
 }
 
@@ -534,6 +535,7 @@ pub struct Overpay {
     api_base: Option<String>,
     root: Option<reqwest::Certificate>,
     built: Mutex<Option<Built>>,
+    route: sn_egress::Http,
     attempts: Attempts,
 }
 
@@ -549,6 +551,7 @@ impl Overpay {
             api_base: None,
             root: None,
             built: Mutex::new(None),
+            route: http_client(sn_domain::payment::providers::OVERPAY),
             attempts: Attempts::default(),
         }
     }
@@ -579,19 +582,20 @@ impl Overpay {
         }
     }
 
-    fn builder(&self) -> reqwest::ClientBuilder {
+    fn builder(&self, proxy: Option<&sn_egress::Proxy>) -> reqwest::ClientBuilder {
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .connect_timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")));
+        let builder = sn_egress::routed(builder, proxy);
         match &self.root {
             Some(root) => builder.add_root_certificate(root.clone()),
             None => builder,
         }
     }
 
-    fn build(&self, raw: &str) -> PaymentResult<reqwest::Client> {
+    fn build(&self, raw: &str, proxy: Option<&sn_egress::Proxy>) -> PaymentResult<reqwest::Client> {
         let pem = Pem::parse(raw)?;
         let mut parsed = false;
         for leaf in 0..pem.certificates.len() {
@@ -599,7 +603,7 @@ impl Overpay {
                 continue;
             };
             parsed = true;
-            if let Ok(client) = self.builder().identity(identity).build() {
+            if let Ok(client) = self.builder(proxy).identity(identity).build() {
                 return Ok(client);
             }
         }
@@ -613,13 +617,18 @@ impl Overpay {
     fn client(&self, config: &ProviderConfig) -> PaymentResult<reqwest::Client> {
         let raw = config.require(CERTIFICATE)?;
         let digest: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
+        let proxy = self.route.proxy();
         let mut built = locked(&self.built);
-        if let Some(cached) = built.as_ref().filter(|b| b.digest == digest) {
+        if let Some(cached) = built
+            .as_ref()
+            .filter(|b| b.digest == digest && b.proxy == proxy)
+        {
             return cached.client.clone();
         }
-        let client = self.build(raw);
+        let client = self.build(raw, proxy.as_deref());
         *built = Some(Built {
             digest,
+            proxy,
             client: client.clone(),
         });
         client
@@ -682,6 +691,10 @@ impl Overpay {
 
 #[async_trait]
 impl PaymentProvider for Overpay {
+    fn api_url(&self, config: &ProviderConfig) -> Option<String> {
+        Some(self.api(config))
+    }
+
     fn id(&self) -> &'static str {
         providers::OVERPAY
     }

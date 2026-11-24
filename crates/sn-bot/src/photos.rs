@@ -51,8 +51,20 @@ pub struct PhotoKeeper {
     services: Services,
     api_base: String,
     every: Duration,
-    http: reqwest::Client,
+    files: sn_egress::Http,
 }
+
+fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+static PHOTOS_HTTP: sn_egress::Profile = sn_egress::Profile {
+    name: "telegram-files",
+    build: http_builder,
+};
 
 fn pick(sizes: Vec<PhotoSize>) -> Option<PhotoSize> {
     let area = |s: &PhotoSize| s.width.saturating_mul(s.height);
@@ -99,16 +111,13 @@ fn failure(err: &TelegramError) -> Outcome {
 
 impl PhotoKeeper {
     pub fn new(services: Services, api_base: &str, every: Duration) -> Self {
+        let files = sn_egress::Http::new(&PHOTOS_HTTP, sn_egress::Route::Telegram, None)
+            .bound(services.egress());
         PhotoKeeper {
             services,
             api_base: api_base.trim_end_matches('/').to_string(),
             every,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(20))
-                .connect_timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
+            files,
         }
     }
 
@@ -135,7 +144,11 @@ impl PhotoKeeper {
         if due.is_empty() {
             return Ok(0);
         }
-        let api = TelegramApi::new(&self.api_base, token);
+        let proxy = self
+            .services
+            .egress()
+            .proxy_for(sn_egress::Route::Telegram, None);
+        let api = TelegramApi::new(&self.api_base, token, proxy);
         let mut done = 0;
         for target in due {
             let outcome = self.fetch(&api, token, &target).await;
@@ -197,7 +210,7 @@ impl PhotoKeeper {
     async fn download(&self, token: &str, path: &str) -> Result<Vec<u8>, Outcome> {
         let url = format!("{}/file/bot{token}/{path}", self.api_base);
         let mut response = self
-            .http
+            .files
             .get(url)
             .send()
             .await

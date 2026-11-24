@@ -18,7 +18,7 @@ const ASSETS: [&str; 8] = ["USDT", "TON", "BTC", "ETH", "LTC", "BNB", "TRX", "US
 const TESTNET_ASSET: &str = "JET";
 
 pub struct CryptoPay {
-    http: reqwest::Client,
+    http: sn_egress::Http,
     api_base: Option<String>,
 }
 
@@ -31,14 +31,14 @@ impl Default for CryptoPay {
 impl CryptoPay {
     pub fn new() -> Self {
         CryptoPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::CRYPTOPAY),
             api_base: None,
         }
     }
 
     pub fn with_api_base(api_base: impl Into<String>) -> Self {
         CryptoPay {
-            http: http_client(),
+            http: http_client(sn_domain::payment::providers::CRYPTOPAY),
             api_base: Some(api_base.into()),
         }
     }
@@ -161,6 +161,10 @@ fn paid_button_url(request: &InvoiceRequest) -> Option<&str> {
 
 #[async_trait]
 impl PaymentProvider for CryptoPay {
+    fn api_url(&self, config: &ProviderConfig) -> Option<String> {
+        Some(self.base(config))
+    }
+
     fn id(&self) -> &'static str {
         providers::CRYPTOPAY
     }

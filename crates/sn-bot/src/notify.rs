@@ -566,7 +566,16 @@ pub fn render(
 pub struct NotifyHandler {
     api_base: String,
     send: crate::SendLimits,
-    cache: Mutex<Option<(String, Arc<TelegramApi>)>>,
+    cache: Mutex<Option<Cached>>,
+}
+
+type Cached = (String, crate::telegram::Proxy, Arc<TelegramApi>);
+
+fn waiting() -> JobResult {
+    JobResult::Wait {
+        after: sn_services::egress::WAIT,
+        error: "прокси не отвечает, отправим, когда он заработает".into(),
+    }
 }
 
 impl Default for NotifyHandler {
@@ -584,18 +593,20 @@ impl NotifyHandler {
         }
     }
 
-    fn api(&self, token: &str) -> Arc<TelegramApi> {
+    fn api(&self, token: &str, proxy: &crate::telegram::Proxy) -> Arc<TelegramApi> {
         let mut cache = match self.cache.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some((cached, api)) = cache.as_ref()
+        if let Some((cached, via, api)) = cache.as_ref()
             && cached == token
+            && via == proxy
         {
             return api.clone();
         }
-        let api = Arc::new(TelegramApi::paced(&self.api_base, token, self.send).bulk());
-        *cache = Some((token.to_string(), api.clone()));
+        let api =
+            Arc::new(TelegramApi::paced(&self.api_base, token, self.send, proxy.clone()).bulk());
+        *cache = Some((token.to_string(), proxy.clone(), api.clone()));
         api
     }
 
@@ -664,6 +675,9 @@ impl NotifyHandler {
         let Some(token) = services.bot_token() else {
             return retry("токен бота не задан".into());
         };
+        let proxy = services
+            .egress()
+            .proxy_for(sn_egress::Route::Telegram, None);
         let sent = if template == gram_wallet::TEMPLATE {
             let Some(payment) = params
                 .get("payment_id")
@@ -677,7 +691,7 @@ impl NotifyHandler {
                 Ok(None) => return JobResult::Done,
                 Err(err) => return retry(err.to_string()),
             };
-            self.api(&token)
+            self.api(&token, &proxy)
                 .send_widget(chat_id, &widget)
                 .await
                 .map(|_| ())
@@ -697,14 +711,14 @@ impl NotifyHandler {
                 Vec::new()
             };
             if files.is_empty() {
-                self.api(&token)
+                self.api(&token, &proxy)
                     .send_message(chat_id, &rendered.text, Some(&rendered.keyboard))
                     .await
                     .map(|_| ())
             } else {
                 crate::support_files::send_reply(
                     services,
-                    &self.api(&token),
+                    &self.api(&token, &proxy),
                     chat_id,
                     &rendered.text,
                     &rendered.keyboard,
@@ -737,6 +751,11 @@ impl NotifyHandler {
                     after: chrono::Duration::seconds(i64::try_from(seconds).unwrap_or(60)),
                     error: err.to_string(),
                 },
+                None if matches!(err, TelegramError::Transport(_))
+                    && services.egress().down_for(sn_egress::Route::Telegram) =>
+                {
+                    waiting()
+                }
                 None if err.is_retryable() => retry(err.to_string()),
                 None => JobResult::Fail(err.to_string()),
             },
@@ -935,6 +954,11 @@ async fn mail_notice(
     };
     match mail.deliver(&letter).await {
         Ok(()) => JobResult::Done,
+        Err(Undelivered::Off(_) | Undelivered::Failed(_))
+            if services.egress().down_for(sn_egress::Route::Mail) && mail.via_resend() =>
+        {
+            waiting()
+        }
         Err(Undelivered::Off(_)) => JobResult::Done,
         Err(Undelivered::Address(reason)) => {
             tracing::info!(template, reason = %reason, "письмо клиенту не отправлено: адрес не принят");

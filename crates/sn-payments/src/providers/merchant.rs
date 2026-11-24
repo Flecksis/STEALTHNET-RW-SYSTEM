@@ -79,7 +79,7 @@ pub(crate) fn error_text(parsed: &Json) -> Option<String> {
 }
 
 pub(crate) async fn call(
-    http: &reqwest::Client,
+    http: &sn_egress::Http,
     url: String,
     config: &ProviderConfig,
     body: &Json,
@@ -206,7 +206,7 @@ pub(crate) fn service_closed(service: &Json) -> bool {
 }
 
 pub(crate) async fn services(
-    http: &reqwest::Client,
+    http: &sn_egress::Http,
     url: String,
     config: &ProviderConfig,
     brand: &str,

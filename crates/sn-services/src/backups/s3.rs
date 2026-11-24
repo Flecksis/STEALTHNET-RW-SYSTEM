@@ -236,6 +236,7 @@ struct Target {
 impl Client {
     pub fn new(place: S3Place, secret: String) -> Result<Self, String> {
         let http = reqwest::Client::builder()
+            .no_proxy()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(900))
             .redirect(reqwest::redirect::Policy::none())

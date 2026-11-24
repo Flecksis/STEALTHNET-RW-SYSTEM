@@ -22,10 +22,11 @@ pub enum AlertKind {
     Sync,
     Backups,
     Bot,
+    Proxy,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 14] = [
+    pub const ALL: [AlertKind; 15] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
@@ -40,6 +41,7 @@ impl AlertKind {
         AlertKind::Sync,
         AlertKind::Backups,
         AlertKind::Bot,
+        AlertKind::Proxy,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -58,6 +60,7 @@ impl AlertKind {
             AlertKind::Sync => "sync",
             AlertKind::Backups => "backups",
             AlertKind::Bot => "bot",
+            AlertKind::Proxy => "proxy",
         }
     }
 
@@ -77,6 +80,7 @@ impl AlertKind {
             AlertKind::Sync => "Перенос в Remnawave и обратно",
             AlertKind::Backups => "Резервные копии: сбои и восстановление",
             AlertKind::Bot => "Сбои вебхука и флуд в боте",
+            AlertKind::Proxy => "Исходящий прокси: сбои и восстановление",
         }
     }
 
@@ -96,6 +100,7 @@ impl AlertKind {
             AlertKind::Sync => "Remnawave",
             AlertKind::Backups => "Резервные копии",
             AlertKind::Bot => "Бот",
+            AlertKind::Proxy => "Прокси",
         }
     }
 }
