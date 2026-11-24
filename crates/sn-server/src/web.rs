@@ -58,7 +58,7 @@ fn is_api(path: &str) -> bool {
 }
 
 fn embeddable(path: &str) -> bool {
-    path == "/app" || path.starts_with("/app/")
+    path == "/app" || path.starts_with("/app/") || path.starts_with("/verify/")
 }
 
 fn landing_preview(path: &str) -> bool {
@@ -76,6 +76,9 @@ fn frame_option(path: &str) -> Option<&'static str> {
 }
 
 fn section(path: &str) -> Section {
+    if path.starts_with("/verify/") {
+        return Section::MiniApp;
+    }
     match Page::of(path) {
         Page::MiniApp => Section::MiniApp,
         Page::Admin if landing_preview(path) => Section::AdminFrame,
@@ -349,12 +352,25 @@ fn protect(response: &mut Response, state: &AppState, path: &str, cache: &'stati
     if let Some(option) = frame_option(path) {
         headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static(option));
     }
-    crate::security::apply(
+    crate::security::apply_with(
         headers,
         section(path),
         state.config.csp,
         state.services.env().ext_modules_loopback,
+        captcha_origin(state),
     );
+}
+
+fn captcha_origin(state: &AppState) -> Option<crate::security::CaptchaSource> {
+    use sn_modules::catalog::antibot::captcha::{Captcha, Provider};
+    let modules = state.services.modules();
+    if !modules.is_enabled(ModuleId::Antibot) {
+        return None;
+    }
+    Captcha::of(&modules.config(ModuleId::Antibot)).map(|captcha| crate::security::CaptchaSource {
+        origin: captcha.provider.origin(),
+        inline_styles: captcha.provider == Provider::Yandex,
+    })
 }
 
 async fn serve(state: &AppState, dir: &Path, path: &str, request: Request<Body>) -> Response {
@@ -418,6 +434,9 @@ mod tests {
     #[test]
     fn во_фрейме_открываются_мини_приложение_и_превью_лендинга_из_админки() {
         assert!(embeddable("/app"));
+        assert!(embeddable("/verify/0123456789abcdef"));
+        assert_eq!(frame_option("/verify/0123456789abcdef"), None);
+        assert!(!embeddable("/verifying"));
         assert!(embeddable("/app/plans"));
         assert!(!embeddable("/admin"));
         assert!(!embeddable("/application"));
@@ -448,6 +467,8 @@ mod tests {
         assert_eq!(section("/admin/m/ext/7"), Section::Admin);
         assert_eq!(section("/admin/landing-preview"), Section::AdminFrame);
         assert_eq!(section("/admin/landing-previewer"), Section::Admin);
+        assert_eq!(section("/verify/0123456789abcdef"), Section::MiniApp);
+        assert_eq!(section("/verifying"), Section::Site);
     }
 
     #[test]

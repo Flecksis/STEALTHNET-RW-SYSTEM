@@ -13,6 +13,7 @@ import { ClientsTabs } from './ClientsTabs';
 import {
   ANTIBOT,
   antibotLead,
+  CAPTCHA_PROVIDERS,
   failText,
   isOff,
   JOURNAL_FILTERS,
@@ -21,6 +22,7 @@ import {
   MODES,
   reasonsText,
   type AntibotSummary,
+  type CaptchaProvider,
   type JournalItem,
   type MarkItem,
   type Mode,
@@ -159,6 +161,11 @@ type FormState = {
   mass_invites: string;
   roulette_guard: boolean;
   contest_guard: boolean;
+  captcha: CaptchaProvider;
+  captcha_site_key: string;
+  captcha_secret: string;
+  captcha_trial: 'all' | 'suspicious';
+  captcha_signup: boolean;
 };
 
 function formOf(summary: AntibotSummary): FormState {
@@ -174,7 +181,90 @@ function formOf(summary: AntibotSummary): FormState {
     mass_invites: String(s.mass_invites),
     roulette_guard: s.roulette_guard,
     contest_guard: s.contest_guard,
+    captcha: s.captcha ?? 'none',
+    captcha_site_key: s.captcha_site_key ?? '',
+    captcha_secret: '',
+    captcha_trial: s.captcha_trial ?? 'all',
+    captcha_signup: s.captcha_signup ?? true,
   };
+}
+
+function CaptchaFields({ form, summary, set, busy }: { form: FormState; summary: AntibotSummary; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; busy: boolean }) {
+  const saved = summary.settings.captcha ?? 'none';
+  const keep = summary.captcha?.secret_set === true && form.captcha === saved;
+  const problem = summary.captcha?.problem ?? null;
+  return (
+    <fieldset className="pt-modes">
+      <legend className="pf-label">Капча</legend>
+      {CAPTCHA_PROVIDERS.map((p) => (
+        <label key={p.id} className="pt-mode">
+          <input type="radio" name="ab-captcha" checked={form.captcha === p.id} onChange={() => set('captcha', p.id)} disabled={busy} />
+          <span>
+            <span className="pt-mode-title">{p.title}</span>
+            <span className="cap">{p.text}</span>
+          </span>
+        </label>
+      ))}
+      {form.captcha === 'none' ? null : (
+        <>
+          <div className="pt-grid">
+            <label className="pf-field">
+              <span className="pf-label">Ключ сайта</span>
+              <input className="field" value={form.captcha_site_key} onChange={(e) => set('captcha_site_key', e.target.value)} maxLength={200} autoComplete="off" spellCheck={false} disabled={busy} />
+              <span className="cap">Публичный, его видит браузер клиента.</span>
+            </label>
+            <label className="pf-field">
+              <span className="pf-label">Секретный ключ</span>
+              <input
+                className="field"
+                type="password"
+                value={form.captcha_secret}
+                onChange={(e) => set('captcha_secret', e.target.value)}
+                placeholder={keep ? 'Сохранён. Пусто — не менять' : ''}
+                maxLength={200}
+                autoComplete="new-password"
+                spellCheck={false}
+                disabled={busy}
+              />
+              <span className="cap">Хранится зашифрованным, нужен только серверу.</span>
+            </label>
+          </div>
+          <fieldset className="pt-modes">
+            <legend className="pf-label">Кому капча перед пробным периодом</legend>
+            <label className="pt-mode">
+              <input type="radio" name="ab-captcha-trial" checked={form.captcha_trial === 'all'} onChange={() => set('captcha_trial', 'all')} disabled={busy} />
+              <span>
+                <span className="pt-mode-title">Всем</span>
+                <span className="cap">В боте кнопка открывает страницу проверки, в кабинете капча появляется на месте кнопки пробника.</span>
+              </span>
+            </label>
+            <label className="pt-mode">
+              <input type="radio" name="ab-captcha-trial" checked={form.captcha_trial === 'suspicious'} onChange={() => set('captcha_trial', 'suspicious')} disabled={busy} />
+              <span>
+                <span className="pt-mode-title">Только подозрительным</span>
+                <span className="cap">Вместо кнопки «Я не робот» в режиме «Просить подтвердить». Остальные получают пробник сразу.</span>
+              </span>
+            </label>
+          </fieldset>
+          <div className="sf-flag">
+            <span className="sf-text">
+              <span className="sf-label">Капча при регистрации по почте</span>
+              <span className="cap">В кабинете: в форме регистрации по паролю, а при входе кодом из письма — перед отправкой кода.</span>
+            </span>
+            <Switch on={form.captcha_signup} onToggle={() => set('captcha_signup', !form.captcha_signup)} label="Капча при регистрации по почте" disabled={busy} />
+          </div>
+          <p className="cap">
+            Если сервис капчи не отвечает, пробный период и регистрация по почте не выдаются, клиент видит просьбу повторить через минуту. Иначе боты получали бы пробники как раз тогда, когда проверка не работает.
+          </p>
+          {problem ? (
+            <p className="err" role="status">
+              {`Последняя проверка ${dateTime(problem.at)} не удалась: ${problem.problem}.`}
+            </p>
+          ) : null}
+        </>
+      )}
+    </fieldset>
+  );
 }
 
 const GUARDS: Array<['roulette_guard' | 'contest_guard', string, string]> = [
@@ -207,7 +297,25 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
       roulette_guard: form.roulette_guard,
       contest_guard: form.contest_guard,
       extra_domains: form.extra_domains.trim() || null,
+      captcha: form.captcha,
+      captcha_site_key: form.captcha_site_key.trim() || null,
+      captcha_trial: form.captcha_trial,
+      captcha_signup: form.captcha_signup,
     };
+    if (form.captcha_secret.trim()) {
+      config.captcha_secret = form.captcha_secret.trim();
+    }
+    if (form.captcha !== 'none') {
+      const saved = summary.settings.captcha ?? 'none';
+      if (!form.captcha_site_key.trim()) {
+        setError('Капча: укажите ключ сайта');
+        return;
+      }
+      if (!form.captcha_secret.trim() && !(summary.captcha?.secret_set === true && form.captcha === saved)) {
+        setError('Капча: укажите секретный ключ');
+        return;
+      }
+    }
     for (const [key, label] of NUMBERS) {
       const raw = String(form[key]).trim();
       if (!/^\d{1,4}$/.test(raw)) {
@@ -290,6 +398,7 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
           <Switch on={form[key]} onToggle={() => set(key, !form[key])} label={label} disabled={busy} />
         </div>
       ))}
+      <CaptchaFields form={form} summary={summary} set={set} busy={busy} />
       {error ? (
         <p className="err" role="alert">
           {error}

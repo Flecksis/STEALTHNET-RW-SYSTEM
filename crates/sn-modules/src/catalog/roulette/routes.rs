@@ -1,5 +1,5 @@
 use super::{AdminView, ClientState, ConfigDraft, RouletteError, SpinItem, SpinResult};
-use crate::catalog::antibot;
+use crate::catalog::antibot::{self, Target};
 use crate::catalog::web::{Admin, Customer, WebError};
 use crate::context::ModuleContext;
 use axum::extract::{Query, State};
@@ -90,12 +90,15 @@ struct SpinRequest {
     subscription_id: Option<SubscriptionId>,
     #[serde(default)]
     confirm: Option<String>,
+    #[serde(default)]
+    proof: Option<String>,
 }
 
 #[derive(Serialize)]
 struct Prompt {
     token: String,
     text: &'static str,
+    check: antibot::Check,
 }
 
 #[derive(Serialize)]
@@ -125,6 +128,7 @@ async fn spin(
                 body.request_id,
                 body.subscription_id,
                 token,
+                body.proof.as_deref(),
             )
             .await
         }
@@ -133,14 +137,21 @@ async fn spin(
     match result {
         Ok(spun) => Ok(Json(SpinReply::Spun(Box::new(spun)))),
         Err(RouletteError::Rejected { code, .. }) if code == antibot::CONFIRM_CODE => {
-            let token = antibot::challenge(&ctx, client_id).await?;
+            let challenge = antibot::challenge(
+                &ctx,
+                client_id,
+                Target::Roulette.as_str(),
+                antibot::Surface::Web,
+            )
+            .await?;
             Ok(Json(SpinReply::Confirm {
                 confirm: Prompt {
-                    token,
+                    token: challenge.token,
                     text: sn_domain::lang::pick(
                         super::CONFIRM_TEXT,
                         "Before a free spin, confirm you're not a robot.",
                     ),
+                    check: challenge.check,
                 },
             }))
         }

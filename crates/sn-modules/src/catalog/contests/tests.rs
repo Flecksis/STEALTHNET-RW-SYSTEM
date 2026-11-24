@@ -1134,9 +1134,15 @@ async fn антибот_просит_подтвердить_участие_в_к
         join(&ctx, created.id, player).await.unwrap(),
         JoinOutcome::Confirm
     );
-    let token = crate::catalog::antibot::challenge(&ctx, player)
-        .await
-        .unwrap();
+    let token = crate::catalog::antibot::challenge(
+        &ctx,
+        player,
+        crate::catalog::antibot::Target::Contest.as_str(),
+        crate::catalog::antibot::Surface::Bot,
+    )
+    .await
+    .unwrap()
+    .token;
     assert_eq!(
         join_confirmed(&ctx, created.id, player, &token)
             .await

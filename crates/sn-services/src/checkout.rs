@@ -775,6 +775,27 @@ fn trusted_return_url(url: &str, public_url: Option<&str>) -> bool {
         && (public_url.is_some_and(same_origin) || same_origin("https://t.me"))
 }
 
+pub fn antibot_refusal(outcome: antibot::Confirmation) -> ServiceError {
+    match outcome {
+        antibot::Confirmation::TooFast => {
+            ServiceError::rejected(antibot::TOO_FAST, "Нажмите кнопку ещё раз")
+        }
+        antibot::Confirmation::Failed => {
+            ServiceError::rejected(antibot::FAILED, "Проверка не пройдена. Попробуйте ещё раз")
+        }
+        antibot::Confirmation::Unavailable => ServiceError::rejected(
+            antibot::UNAVAILABLE,
+            "Не удалось проверить, что вы не робот: сервис проверки не ответил. Попробуйте ещё раз через минуту",
+        ),
+        antibot::Confirmation::Expired | antibot::Confirmation::Confirmed => {
+            ServiceError::rejected(
+                antibot::EXPIRED,
+                "Проверка устарела. Запросите пробный период заново",
+            )
+        }
+    }
+}
+
 pub(crate) const TRIAL_NAME: &str = "Пробный период";
 
 pub(crate) fn trial_snapshot(variant: &TrialVariant) -> TariffSnapshot {
@@ -1556,26 +1577,29 @@ impl<'a> Checkout<'a> {
         })
     }
 
-    pub async fn trial_challenge(&self, client_id: ClientId) -> ServiceResult<String> {
-        Ok(antibot::challenge(&self.services.module_context(), client_id).await?)
+    pub async fn trial_challenge(
+        &self,
+        client_id: ClientId,
+        surface: antibot::Surface,
+        variant: Option<u32>,
+    ) -> ServiceResult<antibot::Challenge> {
+        Ok(
+            antibot::trial_challenge(&self.services.module_context(), client_id, surface, variant)
+                .await?,
+        )
     }
 
     pub async fn confirm_trial(
         &self,
         client_id: ClientId,
         token: &str,
+        answer: antibot::Answer<'_>,
         variant: Option<u32>,
     ) -> ServiceResult<OrderId> {
-        match antibot::confirm(&self.services.module_context(), client_id, token, "trial").await? {
+        let ctx = self.services.module_context();
+        match antibot::confirm(&ctx, client_id, token, antibot::TRIAL, answer).await? {
             antibot::Confirmation::Confirmed => self.start_trial(client_id, variant).await,
-            antibot::Confirmation::TooFast => Err(ServiceError::rejected(
-                "antibot.too_fast",
-                "Нажмите кнопку ещё раз",
-            )),
-            antibot::Confirmation::Expired => Err(ServiceError::rejected(
-                "antibot.expired",
-                "Кнопка устарела. Запросите пробный период заново",
-            )),
+            other => Err(antibot_refusal(other)),
         }
     }
 

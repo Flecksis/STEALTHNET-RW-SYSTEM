@@ -2085,7 +2085,14 @@ pub async fn join_confirmed(
     client_id: ClientId,
     token: &str,
 ) -> Result<JoinOutcome, ModuleError> {
-    antibot::confirm(ctx, client_id, token, Target::Contest.as_str()).await?;
+    antibot::confirm(
+        ctx,
+        client_id,
+        token,
+        Target::Contest.as_str(),
+        antibot::Answer::button(),
+    )
+    .await?;
     join(ctx, id, client_id).await
 }
 

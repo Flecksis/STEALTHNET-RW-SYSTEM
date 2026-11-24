@@ -802,3 +802,300 @@ async fn письма_регистрации_считаются_в_общем_п
     );
     env.db.cleanup().await;
 }
+
+async fn captcha_env(login: &str, confirm: bool) -> Option<(Env, AdminId, Letters)> {
+    let modules: Vec<Arc<dyn Module>> = vec![
+        Arc::new(MailModule),
+        Arc::new(sn_modules::catalog::antibot::AntibotModule),
+    ];
+    let env = env_with(ModuleRegistry::new(modules).unwrap()).await?;
+    let admin = owner(&env.services).await;
+    let (port, letters) = fake_smtp().await;
+    configure_with(
+        &env.services,
+        admin,
+        port,
+        serde_json::json!({ "login": login, "confirm_signup": confirm }),
+    )
+    .await;
+    let ops = env.services.settings_ops();
+    let mut config = serde_json::Map::new();
+    config.insert("captcha".into(), serde_json::json!("turnstile"));
+    config.insert(
+        "captcha_site_key".into(),
+        serde_json::json!("0x4AAAAAAAsite"),
+    );
+    config.insert(
+        "captcha_secret".into(),
+        serde_json::json!("0x4AAAAAAAsecret-key"),
+    );
+    config.insert("burst_count".into(), serde_json::json!(0));
+    ops.update_module_config(
+        ModuleId::Antibot,
+        &ModuleConfigUpdate {
+            config,
+            clear: Vec::new(),
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    ops.toggle_module(ModuleId::Antibot, true, admin)
+        .await
+        .unwrap();
+    Some((env, admin, letters))
+}
+
+#[tokio::test]
+async fn регистрация_по_паролю_просит_капчу_и_проверяет_её_на_сервере() {
+    let Some((env, admin, _letters)) = captcha_env("password", false).await else {
+        return;
+    };
+    let services = &env.services;
+    let stub = super::siteverify::siteverify(services).await;
+    let auth = services.auth();
+    let who = meta("203.0.113.81");
+    let signup = |captcha: Option<&'static str>, email: &'static str| {
+        let auth = services.auth();
+        let who = who.clone();
+        async move {
+            auth.email_signup_with(email, "пароль-гостя-1", &who, Arrival::default(), captcha)
+                .await
+        }
+    };
+    assert_eq!(
+        signup(None, "guest@example.com").await.unwrap_err().code(),
+        sn_modules::catalog::antibot::CAPTCHA_REQUIRED
+    );
+    assert_eq!(
+        signup(Some("bad-1"), "guest@example.com")
+            .await
+            .unwrap_err()
+            .code(),
+        sn_modules::catalog::antibot::FAILED
+    );
+    assert_eq!(
+        signup(Some("ok:trial:"), "guest@example.com")
+            .await
+            .unwrap_err()
+            .code(),
+        sn_modules::catalog::antibot::FAILED
+    );
+    assert_eq!(
+        signup(Some("down-1"), "guest@example.com")
+            .await
+            .unwrap_err()
+            .code(),
+        sn_modules::catalog::antibot::UNAVAILABLE
+    );
+    assert!(
+        client_by_email(services, "guest@example.com")
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        auth.email_register("old-api@example.com", "пароль-гостя-1", &who)
+            .await
+            .unwrap_err()
+            .code(),
+        sn_modules::catalog::antibot::CAPTCHA_REQUIRED
+    );
+    let registered = signup(Some("ok:signup:"), "guest@example.com")
+        .await
+        .unwrap();
+    assert!(matches!(registered, Registration::Login(_)));
+    assert!(
+        client_by_email(services, "guest@example.com")
+            .await
+            .is_some()
+    );
+    let sent = stub.last();
+    assert_eq!(sent["secret"], "0x4AAAAAAAsecret-key");
+    assert_eq!(sent["remoteip"], "203.0.113.81");
+    assert_eq!(
+        signup(Some("ok:signup:"), "second@example.com")
+            .await
+            .unwrap_err()
+            .code(),
+        sn_modules::catalog::antibot::FAILED
+    );
+    let ops = services.settings_ops();
+    let mut off = serde_json::Map::new();
+    off.insert("captcha_signup".into(), serde_json::json!(false));
+    ops.update_module_config(
+        ModuleId::Antibot,
+        &ModuleConfigUpdate {
+            config: off,
+            clear: Vec::new(),
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    signup(None, "third@example.com").await.unwrap();
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn вход_кодом_просит_капчу_перед_письмом() {
+    let Some((env, _, letters)) = captcha_env("code", false).await else {
+        return;
+    };
+    let services = &env.services;
+    let _stub = super::siteverify::siteverify(services).await;
+    let auth = services.auth();
+    let who = meta("203.0.113.82");
+    assert_eq!(
+        auth.email_login_start("coder@example.com", &who)
+            .await
+            .unwrap_err()
+            .code(),
+        sn_modules::catalog::antibot::CAPTCHA_REQUIRED
+    );
+    assert!(letters.lock().unwrap().is_empty());
+    auth.email_login_start_with("coder@example.com", &who, Some("ok:login:"))
+        .await
+        .unwrap();
+    assert_eq!(letters.lock().unwrap().len(), 1);
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn секрет_капчи_хранится_зашифрованным_и_при_смене_сервиса_просится_заново() {
+    let Some((env, admin, _)) = captcha_env("password", false).await else {
+        return;
+    };
+    let services = &env.services;
+    let stored: String = count_text(
+        services,
+        "SELECT config::text FROM module_states WHERE module = 'antibot'",
+    )
+    .await;
+    assert!(!stored.contains("0x4AAAAAAAsecret-key"), "{stored}");
+    let sealed: String = count_text(
+        services,
+        "SELECT encode(ciphertext, 'escape') FROM secrets WHERE key LIKE '%captcha_secret%'",
+    )
+    .await;
+    assert!(!sealed.is_empty());
+    assert!(!sealed.contains("0x4AAAAAAAsecret-key"));
+    assert_eq!(
+        services
+            .modules()
+            .config(ModuleId::Antibot)
+            .text("captcha_secret"),
+        Some("0x4AAAAAAAsecret-key")
+    );
+    let view = services.settings_ops().module_config(ModuleId::Antibot);
+    assert_eq!(
+        view.config["captcha_secret"],
+        serde_json::json!({ "filled": true })
+    );
+    let ops = services.settings_ops();
+    let mut switch = serde_json::Map::new();
+    switch.insert("captcha".into(), serde_json::json!("yandex"));
+    switch.insert("captcha_site_key".into(), serde_json::json!("ysc1_site"));
+    let err = ops
+        .update_module_config(
+            ModuleId::Antibot,
+            &ModuleConfigUpdate {
+                config: switch.clone(),
+                clear: Vec::new(),
+            },
+            admin,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), crate::settings::SECRETS_AGAIN);
+    switch.insert("captcha_secret".into(), serde_json::json!("ysc2_secret"));
+    ops.update_module_config(
+        ModuleId::Antibot,
+        &ModuleConfigUpdate {
+            config: switch,
+            clear: Vec::new(),
+        },
+        admin,
+    )
+    .await
+    .unwrap();
+    let mut no_secret = serde_json::Map::new();
+    no_secret.insert("captcha".into(), serde_json::json!("turnstile"));
+    no_secret.insert(
+        "captcha_site_key".into(),
+        serde_json::json!("0x4AAAAAAAsite"),
+    );
+    let err = ops
+        .update_module_config(
+            ModuleId::Antibot,
+            &ModuleConfigUpdate {
+                config: no_secret,
+                clear: vec!["captcha_secret".into()],
+            },
+            admin,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "modules.config");
+    env.db.cleanup().await;
+}
+
+async fn count_text(services: &Services, sql: &str) -> String {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query_scalar(sql)
+        .fetch_optional(conn.conn())
+        .await
+        .unwrap()
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn регистрация_с_подтверждением_почты_просит_капчу_только_на_первом_шаге() {
+    let Some((env, _, letters)) = captcha_env("password", true).await else {
+        return;
+    };
+    let services = &env.services;
+    let _stub = super::siteverify::siteverify(services).await;
+    let auth = services.auth();
+    let who = meta("203.0.113.83");
+    assert_eq!(
+        auth.email_signup(
+            "mila@example.com",
+            "пароль-милы-1",
+            &who,
+            Arrival::default()
+        )
+        .await
+        .unwrap_err()
+        .code(),
+        sn_modules::catalog::antibot::CAPTCHA_REQUIRED
+    );
+    assert!(letters.lock().unwrap().is_empty());
+    let start = sent(
+        auth.email_signup_with(
+            "mila@example.com",
+            "пароль-милы-1",
+            &who,
+            Arrival::default(),
+            Some("ok:signup:"),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(
+        client_by_email(services, "mila@example.com")
+            .await
+            .is_none()
+    );
+    let code = code_in(&last_letter(&letters));
+    let login = auth
+        .email_signup_confirm("mila@example.com", &start.signup_token, &code, &who)
+        .await
+        .unwrap();
+    assert!(matches!(login, CabinetLogin::Session(_)));
+    assert!(
+        client_by_email(services, "mila@example.com")
+            .await
+            .is_some()
+    );
+    env.db.cleanup().await;
+}

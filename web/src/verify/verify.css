@@ -1,0 +1,110 @@
+.vf {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 24px 16px 40px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.vf-box {
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vf-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.vf-mark {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #0b0b0c;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.vf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  border-radius: 18px;
+  background: var(--surface);
+}
+
+.vf-title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.vf-sub {
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.vf-widget {
+  margin-top: 4px;
+}
+
+.vf-status {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.vf-warn {
+  margin: 0;
+  color: var(--bad);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.vf-note {
+  margin: 4px 4px 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.vf-btn {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 4px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--btn);
+  color: var(--btn-ink);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+@media (max-width: 340px) {
+  .vf-card {
+    padding: 16px 14px;
+  }
+}

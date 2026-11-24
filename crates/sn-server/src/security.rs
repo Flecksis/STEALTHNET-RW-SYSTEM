@@ -75,11 +75,33 @@ impl Section {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptchaSource {
+    pub origin: &'static str,
+    pub inline_styles: bool,
+}
+
 pub fn policy(section: Section, loopback_frames: bool) -> String {
-    let script = match section {
-        Section::MiniApp => "'self' https://telegram.org",
-        _ => "'self'",
+    policy_with(section, loopback_frames, None)
+}
+
+pub fn policy_with(
+    section: Section,
+    loopback_frames: bool,
+    captcha: Option<CaptchaSource>,
+) -> String {
+    let captcha = captcha.filter(|_| !section.is_admin());
+    let mut script = match section {
+        Section::MiniApp => "'self' https://telegram.org".to_string(),
+        _ => "'self'".to_string(),
     };
+    let mut connect = "'self'".to_string();
+    if let Some(source) = captcha {
+        script.push(' ');
+        script.push_str(source.origin);
+        connect.push(' ');
+        connect.push_str(source.origin);
+    }
     let (style, img, frame) = if section.is_admin() {
         (
             "'self' 'unsafe-inline'",
@@ -91,11 +113,19 @@ pub fn policy(section: Section, loopback_frames: bool) -> String {
             },
         )
     } else {
-        ("'self'", "'self' data: blob:", "'none'".to_string())
+        (
+            if captcha.is_some_and(|source| source.inline_styles) {
+                "'self' 'unsafe-inline'"
+            } else {
+                "'self'"
+            },
+            "'self' data: blob:",
+            captcha.map_or_else(|| "'none'".to_string(), |source| source.origin.to_string()),
+        )
     };
     let mut out = format!(
         "default-src 'self'; script-src {script}; style-src {style}; img-src {img}; \
-         font-src 'self' data:; connect-src 'self'; frame-src {frame}; object-src 'none'; \
+         font-src 'self' data:; connect-src {connect}; frame-src {frame}; object-src 'none'; \
          base-uri 'none'; form-action 'self'"
     );
     if let Some(ancestors) = section.ancestors() {
@@ -115,9 +145,19 @@ fn baseline(section: Section) -> String {
 }
 
 pub fn apply(headers: &mut HeaderMap, section: Section, mode: CspMode, loopback_frames: bool) {
+    apply_with(headers, section, mode, loopback_frames, None);
+}
+
+pub fn apply_with(
+    headers: &mut HeaderMap,
+    section: Section,
+    mode: CspMode,
+    loopback_frames: bool,
+    captcha: Option<CaptchaSource>,
+) {
     let full = format!(
         "{}; report-uri {REPORT_PATH}",
-        policy(section, loopback_frames)
+        policy_with(section, loopback_frames, captcha)
     );
     let (enforced, report_only) = if mode.enforces(section) {
         (full, None)
@@ -370,6 +410,40 @@ mod tests {
             assert!(text.contains("object-src 'none'"), "{section:?}: {text}");
             assert!(text.contains("base-uri 'none'"), "{section:?}: {text}");
         }
+        let turnstile = policy_with(
+            Section::Site,
+            false,
+            Some(CaptchaSource {
+                origin: "https://challenges.cloudflare.com",
+                inline_styles: false,
+            }),
+        );
+        assert!(turnstile.contains("style-src 'self';"));
+        assert!(turnstile.contains("script-src 'self' https://challenges.cloudflare.com;"));
+        assert!(turnstile.contains("frame-src https://challenges.cloudflare.com;"));
+        assert!(turnstile.contains("connect-src 'self' https://challenges.cloudflare.com;"));
+        let yandex = policy_with(
+            Section::MiniApp,
+            false,
+            Some(CaptchaSource {
+                origin: "https://smartcaptcha.cloud.yandex.ru",
+                inline_styles: true,
+            }),
+        );
+        assert!(yandex.contains("style-src 'self' 'unsafe-inline';"));
+        assert!(yandex.contains(
+            "script-src 'self' https://telegram.org https://smartcaptcha.cloud.yandex.ru;"
+        ));
+        assert!(!yandex.contains("frame-ancestors"));
+        let admin = policy_with(
+            Section::Admin,
+            false,
+            Some(CaptchaSource {
+                origin: "https://challenges.cloudflare.com",
+                inline_styles: false,
+            }),
+        );
+        assert!(!admin.contains("challenges.cloudflare.com"));
         let mini = policy(Section::MiniApp, false);
         assert!(mini.contains("script-src 'self' https://telegram.org;"));
         assert!(!mini.contains("frame-ancestors"));

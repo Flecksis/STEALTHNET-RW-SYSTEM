@@ -160,6 +160,8 @@ async fn telegram_status(
 #[derive(Deserialize)]
 struct EmailStart {
     email: String,
+    #[serde(default)]
+    captcha: Option<String>,
 }
 
 async fn email_start(
@@ -171,7 +173,7 @@ async fn email_start(
         state
             .services
             .auth()
-            .email_login_start(&body.email, &meta)
+            .email_login_start_with(&body.email, &meta, body.captcha.as_deref())
             .await?,
     ))
 }
@@ -212,6 +214,8 @@ struct EmailPassword {
     utm: Option<serde_json::Value>,
     #[serde(default, rename = "ref")]
     referral: Option<String>,
+    #[serde(default)]
+    captcha: Option<String>,
 }
 
 fn cabinet_response(state: &AppState, login: &CabinetLogin) -> Response {
@@ -231,7 +235,13 @@ async fn email_register(
     let registration = state
         .services
         .auth()
-        .email_signup(&body.email, &body.password, &meta, from)
+        .email_signup_with(
+            &body.email,
+            &body.password,
+            &meta,
+            from,
+            body.captcha.as_deref(),
+        )
         .await?;
     Ok(match &registration {
         Registration::Login(login) => cabinet_response(&state, login),
@@ -761,6 +771,10 @@ struct TrialBody {
     confirm: Option<String>,
     #[serde(default)]
     variant: Option<u32>,
+    #[serde(default)]
+    proof: Option<String>,
+    #[serde(default)]
+    captcha: Option<String>,
 }
 
 async fn trial_offer(
@@ -782,31 +796,73 @@ async fn trial_offer(
     ))
 }
 
+fn again_reason(code: &str) -> Option<&'static str> {
+    match code {
+        antibot::CONFIRM_CODE => Some("ask"),
+        antibot::TOO_FAST => Some("too_fast"),
+        antibot::FAILED => Some("failed"),
+        antibot::EXPIRED => Some("expired"),
+        _ => None,
+    }
+}
+
 async fn trial(
     client: CurrentClient,
     State(state): State<AppState>,
+    Meta(meta): Meta,
     body: Option<ApiJson<TrialBody>>,
 ) -> ApiResult<Json<serde_json::Value>> {
     client.require_full()?;
     let checkout = state.services.checkout();
     let id = client.0.client_id;
-    let TrialBody { confirm, variant } = body.map(|ApiJson(b)| b).unwrap_or_default();
-    let result = match confirm.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        Some(token) => checkout.confirm_trial(id, token, variant).await,
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let variant = body.variant;
+    let result = match body
+        .confirm
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        Some(token) => {
+            let answer = antibot::Answer::web(
+                body.proof.as_deref(),
+                body.captcha.as_deref(),
+                meta.ip.as_deref(),
+            );
+            checkout.confirm_trial(id, token, answer, variant).await
+        }
         None => checkout.start_trial(id, variant).await,
     };
     match result {
         Ok(order_id) => Ok(Json(serde_json::json!({ "order_id": order_id }))),
-        Err(err) if err.code() == antibot::CONFIRM_CODE || err.code() == "antibot.too_fast" => {
-            let token = checkout.trial_challenge(id).await?;
-            Ok(Json(serde_json::json!({
-                "confirm": {
-                    "token": token,
-                    "text": "Чтобы получить пробный период, подтвердите, что вы не робот."
-                }
-            })))
-        }
-        Err(err) => Err(err.into()),
+        Err(err) => match again_reason(err.code()) {
+            Some(again) => {
+                let challenge = checkout
+                    .trial_challenge(id, antibot::Surface::Web, variant)
+                    .await?;
+                let text = if challenge.captcha() {
+                    sn_domain::lang::pick(
+                        "Чтобы получить пробный период, пройдите проверку «Я не робот».",
+                        "To get the free trial, pass the check that you're not a robot.",
+                    )
+                } else {
+                    sn_domain::lang::pick(
+                        "Чтобы получить пробный период, подтвердите, что вы не робот.",
+                        "To get the free trial, confirm you're not a robot.",
+                    )
+                };
+                Ok(Json(serde_json::json!({
+                    "confirm": {
+                        "token": challenge.token,
+                        "text": text,
+                        "check": challenge.check,
+                        "expires_at": challenge.expires_at,
+                    },
+                    "again": again,
+                })))
+            }
+            None => Err(err.into()),
+        },
     }
 }
 

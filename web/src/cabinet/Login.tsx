@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
+import { Captcha, type CaptchaWidget } from '../lib/captcha';
 import { NATIVE, t, type Lang } from '../lib/i18n';
 import { QrCode } from '../lib/qr';
 import { useSurface, useSystemTheme } from '../lib/theme';
@@ -46,6 +47,13 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
   const [fresh, setFresh] = useState('');
   const emailAuth = site.email_auth === undefined ? 'code' : site.email_auth;
   const confirmJoin = site.email_confirm === true;
+  const [human, setHuman] = useState<string | null>(null);
+  const [humanRound, setHumanRound] = useState(0);
+  const humanCheck: CaptchaWidget | null = site.captcha ? { provider: site.captcha.provider, site_key: site.captcha.site_key, action: emailAuth === 'password' ? 'signup' : 'login' } : null;
+  const freshHuman = () => {
+    setHuman(null);
+    setHumanRound((n) => n + 1);
+  };
   const siteOpen = site.client_access?.site_login !== false;
   const timer = useRef<number | null>(null);
   const navigate = useNavigate();
@@ -167,7 +175,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ email?: string }>('/api/client/auth/email', { method: 'POST', body: { email: email.trim() } });
+      const res = await api<{ email?: string }>('/api/client/auth/email', { method: 'POST', body: { email: email.trim(), ...(human ? { captcha: human } : {}) } });
       setSent({ email: res.email ?? email.trim(), again });
       setWait(RESEND_SECONDS);
       if (again) {
@@ -176,6 +184,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     } catch (err) {
       setError(err instanceof ApiError && err.status === 501 ? t('Вход по почте пока недоступен. Войдите через Telegram.') : failText(err, t('Код не отправился')));
     } finally {
+      if (humanCheck) {
+        freshHuman();
+      }
       setBusy(false);
     }
   };
@@ -220,7 +231,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     try {
       const res = await api<Registered>(joining ? '/api/client/auth/email/register' : '/api/client/auth/email/password', {
         method: 'POST',
-        body: joining ? { email: email.trim(), password, utm: storedUtm() ?? undefined, ref: storedReferral() ?? undefined } : { email: email.trim(), password },
+        body: joining
+          ? { email: email.trim(), password, utm: storedUtm() ?? undefined, ref: storedReferral() ?? undefined, ...(human ? { captcha: human } : {}) }
+          : { email: email.trim(), password },
       });
       if (res.status === 'code_sent' && res.signup_token) {
         setSignup({ email: res.email ?? email.trim(), token: res.signup_token, again: false });
@@ -239,6 +252,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
         setJoining(false);
       }
       setError(failText(err, joining ? t('Аккаунт не создался') : t('Войти не получилось')));
+      if (joining && humanCheck) {
+        freshHuman();
+      }
     } finally {
       setBusy(false);
     }
@@ -555,7 +571,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
                 placeholder={joining ? t('Не короче 10 символов') : ''}
               />
             </label>
-            <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1)}>
+            {joining && humanCheck ? <Captcha widget={humanCheck} round={humanRound} onToken={setHuman} onExpire={() => setHuman(null)} /> : null}
+            <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1) || (joining && !!humanCheck && !human)}>
               {busy ? (joining ? (confirmJoin ? t('Отправляем…') : t('Создаём…')) : t('Входим…')) : joining ? t('Создать аккаунт') : t('Войти')}
             </button>
             {joining && confirmJoin ? <span className="cb-login-help cb-muted">{t('Пришлём на почту код: аккаунт появится, когда вы его введёте.')}</span> : null}
@@ -604,7 +621,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
             <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
               {t('Войти')}
             </button>
-            <button type="button" className="cb-text" onClick={() => void requestCode(true)} disabled={busy || wait > 0}>
+            {humanCheck && wait === 0 ? <Captcha widget={humanCheck} round={humanRound} onToken={setHuman} onExpire={() => setHuman(null)} /> : null}
+            <button type="button" className="cb-text" onClick={() => void requestCode(true)} disabled={busy || wait > 0 || (!!humanCheck && !human)}>
               {wait > 0 ? t('Отправить ещё раз через {seconds} с', { seconds: String(wait) }) : t('Отправить ещё раз')}
             </button>
             <button type="button" className="cb-text" onClick={changeEmail} disabled={busy}>
@@ -617,7 +635,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
               <span>{t('Почта')}</span>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
             </label>
-            <button type="submit" className="cb-main" disabled={busy || !email.includes('@')}>
+            {humanCheck ? <Captcha widget={humanCheck} round={humanRound} onToken={setHuman} onExpire={() => setHuman(null)} /> : null}
+            <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || (!!humanCheck && !human)}>
               {t('Прислать код')}
             </button>
           </form>

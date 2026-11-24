@@ -33,6 +33,7 @@ mod backups;
 mod balance_off;
 mod bot_content;
 mod broadcast;
+mod captcha;
 mod channels;
 mod client_access;
 mod client_email;

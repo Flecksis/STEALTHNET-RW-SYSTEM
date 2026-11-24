@@ -73,9 +73,14 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "oauth.last_method" => {
             "This is your only sign-in method. Link another one first: Telegram, email or another account."
         }
-        "antibot.expired" => "The button has expired. Request the free trial again.",
+        "antibot.expired" => "The check has expired. Request the free trial again.",
         "antibot.too_fast" => "Tap the button once more.",
         "antibot.confirm" => "First confirm you're not a robot.",
+        "antibot.failed" => "The check didn't pass. Please try again.",
+        "antibot.unavailable" => {
+            "We couldn't check that you're not a robot: the check service didn't answer. Please try again in a minute."
+        }
+        "antibot.captcha" => "Pass the check that you're not a robot.",
         "balance.insufficient" => "Not enough money on your balance.",
         "balance.topup_out_of_range" => "This top-up amount isn't allowed.",
         "balance.currency" => "The balance is kept in a different currency.",

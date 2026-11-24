@@ -23,6 +23,7 @@ use sn_domain::jobs::JobPayload;
 use sn_domain::lang;
 use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::settings::keys;
+use sn_modules::catalog::antibot;
 use sn_modules::catalog::start_param::Utm;
 use sn_store::{Db, NewClient, NewSession, SessionChannel, SessionScope, Tx};
 
@@ -486,6 +487,15 @@ impl<'a> Auth<'a> {
         email: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<EmailLoginStart> {
+        self.email_login_start_with(email, meta, None).await
+    }
+
+    pub async fn email_login_start_with(
+        &self,
+        email: &str,
+        meta: &RequestMeta,
+        captcha: Option<&str>,
+    ) -> ServiceResult<EmailLoginStart> {
         self.site_open()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
@@ -503,6 +513,7 @@ impl<'a> Auth<'a> {
                 "Вход по почте — по паролю, без кода",
             ));
         }
+        self.captcha_gate(antibot::LOGIN, captcha, meta).await?;
         limits
             .letters_sent(LOGIN_LETTERS, mail.codes_per_hour())
             .await?;
@@ -548,8 +559,40 @@ impl<'a> Auth<'a> {
             SignupRule::Confirm => return Err(confirm_required()),
             SignupRule::Closed => return Err(signup_closed()),
         }
+        self.captcha_gate(antibot::SIGNUP, None, meta).await?;
         self.register_now(email, password, meta, site_start_param(utm, None))
             .await
+    }
+
+    pub(crate) async fn captcha_gate(
+        &self,
+        action: &str,
+        token: Option<&str>,
+        meta: &RequestMeta,
+    ) -> ServiceResult<()> {
+        let ctx = self.services.module_context();
+        if antibot::signup_captcha(&ctx).is_none() {
+            return Ok(());
+        }
+        self.services
+            .limits()
+            .hit_ip(rules::CAPTCHA_IP, meta.ip.as_deref())
+            .await?;
+        match antibot::check_signup(&ctx, action, token, meta.ip.as_deref()).await? {
+            antibot::SignupCheck::Off | antibot::SignupCheck::Passed => Ok(()),
+            antibot::SignupCheck::Missing => Err(ServiceError::rejected(
+                antibot::CAPTCHA_REQUIRED,
+                "Пройдите проверку «Я не робот»",
+            )),
+            antibot::SignupCheck::Failed => Err(ServiceError::rejected(
+                antibot::FAILED,
+                "Проверка не пройдена. Попробуйте ещё раз",
+            )),
+            antibot::SignupCheck::Unavailable => Err(ServiceError::rejected(
+                antibot::UNAVAILABLE,
+                "Не удалось проверить, что вы не робот: сервис проверки не ответил. Попробуйте ещё раз через минуту",
+            )),
+        }
     }
 
     pub(crate) async fn register_now(

@@ -76,6 +76,13 @@ pub fn default(key: &str) -> Option<&'static str> {
         "sub.trial_variant_line" => "{variant} — {days}, devices: {count}, traffic: {limit}",
         "sub.trial_variant_unlimited" => "{variant} — {days}, devices: {count}, unlimited traffic",
         "sub.btn.trial_variant" => "{variant} · {days}",
+        "sub.trial_verify" => {
+            "To get the free trial, pass the check that you're not a robot. It opens with the button below, and the trial starts right after it."
+        }
+        "sub.btn.trial_verify" => "Take the check",
+        "sub.trial_verify_off" => {
+            "The free trial isn't available right now: the check page doesn't open. Please try later or contact support."
+        }
         "dev.empty" => "No devices yet. They appear once you add the subscription to an app.",
         "dev.title" => "<b>Devices</b>",
         "dev.line" => "{n}. {title} — {details}, added {date}",

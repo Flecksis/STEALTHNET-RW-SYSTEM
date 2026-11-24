@@ -597,7 +597,14 @@ async fn promo_link_check(
     client: &Client,
     code: &str,
 ) -> Result<Screen, BotError> {
-    let token = antibot::challenge(&turn.services().module_context(), client.id).await?;
+    let token = antibot::challenge(
+        &turn.services().module_context(),
+        client.id,
+        antibot::PROMO_LINK,
+        antibot::Surface::Bot,
+    )
+    .await?
+    .token;
     turn.session.promo_link = Some(code.to_string());
     let content = turn.content();
     let c = &*content;

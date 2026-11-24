@@ -1,3 +1,4 @@
+use super::siteverify::siteverify;
 use crate::Services;
 use crate::checkout::testkit::{Kit, client, kit_with, set_trial_variants, trial_variant};
 use sn_domain::client::{RegistrationSource, TelegramProfile};
@@ -5,7 +6,10 @@ use sn_domain::ids::ClientId;
 use sn_domain::module::ModuleId;
 use sn_domain::paging::PageRequest;
 use sn_modules::ModuleConfig;
-use sn_modules::catalog::antibot::{self, AntibotModule, JournalFilter};
+use sn_modules::catalog::antibot::captcha::{Provider, Widget};
+use sn_modules::catalog::antibot::{
+    self, Answer, AntibotModule, Check, JournalFilter, Surface, checks,
+};
 use sn_store::Db;
 use sn_store::testing::{DAY, wait_for_window_room};
 use std::sync::Arc;
@@ -77,7 +81,7 @@ async fn actions(services: &Services, client_id: ClientId) -> Vec<&'static str> 
 async fn age_challenge(services: &Services, client_id: ClientId) {
     let mut conn = services.store().conn().await.unwrap();
     sqlx::query(
-        "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+        "UPDATE antibot_checks SET created_at = now() - interval '5 seconds', bits = LEAST(bits, 4) WHERE client_id = $1",
     )
     .bind(client_id.0)
     .execute(conn.conn())
@@ -117,10 +121,14 @@ async fn после_проверки_антибота_выдаётся_выбр�
             .code(),
         antibot::CONFIRM_CODE
     );
-    let token = checkout.trial_challenge(suspect).await.unwrap();
+    let token = checkout
+        .trial_challenge(suspect, Surface::Bot, Some(2))
+        .await
+        .unwrap()
+        .token;
     age_challenge(services, suspect).await;
     let order_id = checkout
-        .confirm_trial(suspect, &token, Some(2))
+        .confirm_trial(suspect, &token, Answer::button(), Some(2))
         .await
         .unwrap();
     let order = crate::checkout::testkit::order(services, order_id).await;
@@ -153,7 +161,7 @@ async fn после_проверки_антибота_выдаётся_выбр�
 }
 
 #[tokio::test]
-async fn новый_аккаунт_без_username_жмёт_кнопку_и_получает_пробник() {
+async fn новый_аккаунт_без_username_проходит_проверку_и_получает_пробник() {
     let Some(kit) = antibot_kit().await else {
         return;
     };
@@ -165,26 +173,89 @@ async fn новый_аккаунт_без_username_жмёт_кнопку_и_по
     let suspect = fresh(services, 8_100_000_000, None).await;
     let err = checkout.start_trial(suspect, None).await.unwrap_err();
     assert_eq!(err.code(), antibot::CONFIRM_CODE);
-    let token = checkout.trial_challenge(suspect).await.unwrap();
+    let challenge = checkout
+        .trial_challenge(suspect, Surface::Web, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        challenge.check,
+        Check::Work {
+            bits: checks::WORK_BITS
+        }
+    );
+    let echo = Answer::default();
     assert_eq!(
         checkout
-            .confirm_trial(suspect, &token, None)
+            .confirm_trial(suspect, &challenge.token, echo, None)
             .await
             .unwrap_err()
             .code(),
-        "antibot.too_fast"
+        antibot::TOO_FAST
     );
-    let token = checkout.trial_challenge(suspect).await.unwrap();
     age_challenge(services, suspect).await;
     assert_eq!(
         checkout
-            .confirm_trial(suspect, "чужой", None)
+            .confirm_trial(suspect, &challenge.token, echo, None)
             .await
             .unwrap_err()
             .code(),
-        "antibot.expired"
+        antibot::FAILED
     );
-    checkout.confirm_trial(suspect, &token, None).await.unwrap();
+    let late = checks::solve(&challenge.token, 4);
+    assert_eq!(
+        checkout
+            .confirm_trial(
+                suspect,
+                &challenge.token,
+                Answer::web(Some(&late), None, None),
+                None,
+            )
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::EXPIRED
+    );
+    let challenge = checkout
+        .trial_challenge(suspect, Surface::Web, None)
+        .await
+        .unwrap();
+    age_challenge(services, suspect).await;
+    let proof = checks::solve(&challenge.token, 4);
+    assert_eq!(
+        checkout
+            .confirm_trial(
+                suspect,
+                "0123456789abcdef0123456789abcdef",
+                Answer::web(Some(&proof), None, None),
+                None,
+            )
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::EXPIRED
+    );
+    assert_eq!(
+        checkout
+            .confirm_trial(
+                calm,
+                &challenge.token,
+                Answer::web(Some(&proof), None, None),
+                None,
+            )
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::EXPIRED
+    );
+    checkout
+        .confirm_trial(
+            suspect,
+            &challenge.token,
+            Answer::web(Some(&proof), None, None),
+            None,
+        )
+        .await
+        .unwrap();
     assert_eq!(
         checkout
             .start_trial(suspect, None)
@@ -383,5 +454,339 @@ async fn регистрации_в_кабинете_с_одного_адреса
         assert_eq!(limited, n == 3, "клиент {n}: {:?}", found.signals);
     }
     drop(conn);
+    kit.db.cleanup().await;
+}
+
+async fn captcha_on(services: &Services, provider: &str, trial: &str) {
+    services
+        .modules()
+        .set_config(
+            services.store(),
+            ModuleId::Antibot,
+            ModuleConfig::from_value(&serde_json::json!({
+                "mode": "confirm",
+                "captcha": provider,
+                "captcha_site_key": "0x4AAAAAAAsite-key",
+                "captcha_secret": "0x4AAAAAAAsecret-key",
+                "captcha_trial": trial,
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+fn widget(challenge: &antibot::Challenge) -> Widget {
+    match &challenge.check {
+        Check::Captcha(widget) => widget.clone(),
+        other => panic!("ожидалась капча, а пришло {other:?}"),
+    }
+}
+
+const IP: Option<&str> = Some("203.0.113.7");
+
+fn captcha(token: &str) -> Answer<'_> {
+    Answer::web(None, Some(token), IP)
+}
+
+async fn trial_code(
+    services: &Services,
+    client: ClientId,
+    token: &str,
+    answer: Answer<'_>,
+) -> String {
+    services
+        .checkout()
+        .confirm_trial(client, token, answer, None)
+        .await
+        .unwrap_err()
+        .code()
+        .to_string()
+}
+
+#[tokio::test]
+async fn капча_перед_пробником_проверяется_на_сервере_один_раз_и_только_для_своего_клиента() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let stub = siteverify(services).await;
+    captcha_on(services, "turnstile", "all").await;
+    let checkout = services.checkout();
+    let calm = fresh(services, 1_020_000_000, Some("calm_user")).await;
+    let other = fresh(services, 1_045_000_000, Some("other_user")).await;
+    assert_eq!(
+        checkout.start_trial(calm, None).await.unwrap_err().code(),
+        antibot::CONFIRM_CODE
+    );
+    let challenge = checkout
+        .trial_challenge(calm, Surface::Web, None)
+        .await
+        .unwrap();
+    let shown = widget(&challenge);
+    assert_eq!(shown.provider, Provider::Turnstile);
+    assert_eq!(shown.site_key, "0x4AAAAAAAsite-key");
+    assert_eq!(shown.action, "trial");
+    let cdata = shown.cdata.clone().unwrap();
+    assert_eq!(cdata.len(), 32);
+    let token = challenge.token.as_str();
+    assert_eq!(
+        trial_code(services, calm, token, Answer::web(None, None, IP)).await,
+        antibot::FAILED
+    );
+    assert_eq!(
+        trial_code(services, calm, token, captcha("bad-1")).await,
+        antibot::FAILED
+    );
+    let signup = format!("ok:signup:{cdata}");
+    assert_eq!(
+        trial_code(services, calm, token, captcha(&signup)).await,
+        antibot::FAILED
+    );
+    assert_eq!(
+        trial_code(services, calm, token, captcha("ok:trial:0000")).await,
+        antibot::FAILED
+    );
+    assert_eq!(
+        trial_code(services, calm, token, captcha("down-1")).await,
+        antibot::UNAVAILABLE
+    );
+    assert_eq!(
+        trial_code(services, calm, token, captcha("secret-1")).await,
+        antibot::UNAVAILABLE
+    );
+    assert_eq!(
+        checkout.start_trial(calm, None).await.unwrap_err().code(),
+        antibot::CONFIRM_CODE
+    );
+    let good = format!("ok:trial:{cdata}");
+    checkout
+        .confirm_trial(calm, token, captcha(&good), None)
+        .await
+        .unwrap();
+    let sent = stub.last();
+    assert_eq!(sent["secret"], "0x4AAAAAAAsecret-key");
+    assert_eq!(sent["response"], good);
+    assert_eq!(sent["remoteip"], "203.0.113.7");
+    assert_eq!(sent["idempotency_key"].len(), 36);
+    assert_eq!(
+        checkout.start_trial(calm, None).await.unwrap_err().code(),
+        "trial.used"
+    );
+    let theirs = checkout
+        .trial_challenge(other, Surface::Web, None)
+        .await
+        .unwrap();
+    let asked = stub.calls();
+    assert_eq!(
+        trial_code(services, other, &theirs.token, captcha(&good)).await,
+        antibot::FAILED
+    );
+    assert_eq!(stub.calls(), asked);
+    let their_cdata = widget(&theirs).cdata.unwrap();
+    assert_ne!(their_cdata, cdata);
+    let theirs_good = format!("ok:trial:{their_cdata}");
+    assert_eq!(
+        trial_code(services, calm, &theirs.token, captcha(&theirs_good)).await,
+        antibot::EXPIRED
+    );
+    for n in 0..4 {
+        assert_eq!(
+            trial_code(services, other, &theirs.token, captcha(&format!("bad-{n}"))).await,
+            antibot::FAILED
+        );
+    }
+    assert_eq!(
+        trial_code(
+            services,
+            other,
+            &theirs.token,
+            captcha(&format!("ok:trial:{their_cdata}:late"))
+        )
+        .await,
+        antibot::EXPIRED
+    );
+    assert!(actions(services, calm).await.is_empty());
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn капча_только_подозрительным_заменяет_кнопку_и_не_засчитывает_прежнее_подтверждение() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let stub = siteverify(services).await;
+    captcha_on(services, "yandex", "suspicious").await;
+    let checkout = services.checkout();
+    let ctx = services.module_context();
+    let calm = fresh(services, 1_060_000_000, Some("plain_user")).await;
+    checkout.start_trial(calm, None).await.unwrap();
+    assert_eq!(stub.calls(), 0);
+    let suspect = fresh(services, 8_300_000_000, None).await;
+    assert_eq!(
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::CONFIRM_CODE
+    );
+    let button = antibot::challenge(&ctx, suspect, "roulette", Surface::Bot)
+        .await
+        .unwrap();
+    assert_eq!(button.check, Check::Button);
+    age_challenge(services, suspect).await;
+    assert_eq!(
+        antibot::confirm(&ctx, suspect, &button.token, "roulette", Answer::button())
+            .await
+            .unwrap(),
+        antibot::Confirmation::Confirmed
+    );
+    assert_eq!(
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::CONFIRM_CODE
+    );
+    let challenge = checkout
+        .trial_challenge(suspect, Surface::Bot, None)
+        .await
+        .unwrap();
+    let shown = widget(&challenge);
+    assert_eq!(shown.provider, Provider::Yandex);
+    let token = challenge.token.as_str();
+    assert_eq!(
+        trial_code(services, suspect, token, captcha("nohost-1")).await,
+        antibot::UNAVAILABLE
+    );
+    assert_eq!(
+        trial_code(services, suspect, token, captcha("down-1")).await,
+        antibot::UNAVAILABLE
+    );
+    assert_eq!(
+        trial_code(services, suspect, token, captcha("bad-1")).await,
+        antibot::FAILED
+    );
+    checkout
+        .confirm_trial(suspect, token, captcha("ok-1"), None)
+        .await
+        .unwrap();
+    let sent = stub.last();
+    assert_eq!(sent["secret"], "0x4AAAAAAAsecret-key");
+    assert_eq!(sent["token"], "ok-1");
+    assert_eq!(sent["ip"], "203.0.113.7");
+    assert_eq!(
+        actions(services, suspect).await,
+        ["marked", "asked", "confirmed"]
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_режиме_запрета_капча_не_спрашивается_а_без_модуля_её_нет() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let stub = siteverify(services).await;
+    services
+        .modules()
+        .set_config(
+            services.store(),
+            ModuleId::Antibot,
+            ModuleConfig::from_value(&serde_json::json!({
+                "mode": "block",
+                "captcha": "turnstile",
+                "captcha_site_key": "0x4AAAAAAAsite-key",
+                "captcha_secret": "0x4AAAAAAAsecret-key",
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    let checkout = services.checkout();
+    let suspect = fresh(services, 8_400_000_000, None).await;
+    assert_eq!(
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::DENIED_CODE
+    );
+    let calm = fresh(services, 1_070_000_000, Some("calm_again")).await;
+    assert_eq!(
+        checkout.start_trial(calm, None).await.unwrap_err().code(),
+        antibot::CONFIRM_CODE
+    );
+    services
+        .modules()
+        .set_enabled(services.store(), ModuleId::Antibot, false, None)
+        .await
+        .unwrap();
+    checkout.start_trial(calm, None).await.unwrap();
+    assert_eq!(stub.calls(), 0);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn страница_проверки_из_бота_выдаёт_выбранный_вариант_пробника() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    set_trial_variants(
+        &kit,
+        vec![
+            trial_variant(1, "Россия", true, 3, 1, &[1]),
+            trial_variant(2, "Европа", true, 1, 2, &[2]),
+        ],
+    )
+    .await;
+    let services = &kit.services;
+    let _stub = siteverify(services).await;
+    captcha_on(services, "turnstile", "all").await;
+    let checkout = services.checkout();
+    let ctx = services.module_context();
+    let calm = fresh(services, 1_080_000_000, Some("picky_user")).await;
+    assert_eq!(
+        checkout
+            .start_trial(calm, Some(2))
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::CONFIRM_CODE
+    );
+    let challenge = checkout
+        .trial_challenge(calm, Surface::Bot, Some(2))
+        .await
+        .unwrap();
+    let page = checks::page_check(&ctx, &challenge.token)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(page.client_id, calm);
+    assert_eq!(page.variant, Some(2));
+    let good = format!("ok:trial:{}", page.widget.cdata.clone().unwrap());
+    let order_id = checkout
+        .confirm_trial(
+            page.client_id,
+            &challenge.token,
+            captcha(&good),
+            page.variant,
+        )
+        .await
+        .unwrap();
+    let order = crate::checkout::testkit::order(services, order_id).await;
+    let snapshot = order.snapshot.unwrap();
+    assert_eq!((snapshot.name.as_str(), snapshot.days), ("Европа", 1));
+    assert!(
+        checks::page_check(&ctx, &challenge.token)
+            .await
+            .unwrap()
+            .is_none()
+    );
     kit.db.cleanup().await;
 }

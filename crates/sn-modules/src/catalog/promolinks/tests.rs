@@ -393,7 +393,10 @@ async fn отмеченный_получает_подписку_по_ссылк�
     asks(activate(&ctx, marked, &link.code).await);
     asks(activate(&ctx, marked, &link.code).await);
     asks(activate_confirmed(&ctx, marked, &link.code, "чужой").await);
-    let token = antibot::challenge(&ctx, marked).await.unwrap();
+    let token = antibot::challenge(&ctx, marked, antibot::PROMO_LINK, antibot::Surface::Bot)
+        .await
+        .unwrap()
+        .token;
     asks(activate_confirmed(&ctx, marked, &link.code, &token).await);
     assert_eq!(core.grants().len(), 1);
     assert_eq!(

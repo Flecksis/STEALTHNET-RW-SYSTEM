@@ -337,6 +337,10 @@ pub trait CoreApi: Send + Sync {
     fn core_settings(&self) -> Arc<CoreSettings> {
         Arc::new(CoreSettings::default())
     }
+
+    fn captcha_endpoints(&self) -> crate::catalog::antibot::captcha::Endpoints {
+        crate::catalog::antibot::captcha::Endpoints::default()
+    }
 }
 
 #[derive(Clone)]

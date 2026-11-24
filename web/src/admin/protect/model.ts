@@ -67,10 +67,23 @@ export type AntibotSettings = {
   mass_invites: number;
   roulette_guard: boolean;
   contest_guard: boolean;
+  captcha: CaptchaProvider;
+  captcha_site_key: string;
+  captcha_trial: 'all' | 'suspicious';
+  captcha_signup: boolean;
+};
+
+export type CaptchaProvider = 'none' | 'turnstile' | 'yandex';
+
+export type CaptchaState = {
+  secret_set: boolean;
+  ready: boolean;
+  problem: { at: string; provider: CaptchaProvider; problem: string } | null;
 };
 
 export type AntibotSummary = {
   settings: AntibotSettings;
+  captcha?: CaptchaState;
   marked_open: number;
   marked_week: number;
   asked_week: number;
@@ -105,6 +118,39 @@ export const MODES: Array<{ id: Mode; title: string; text: string }> = [
   },
 ];
 
+export const CAPTCHA_PROVIDERS: Array<{ id: CaptchaProvider; title: string; text: string }> = [
+  {
+    id: 'none',
+    title: 'Без внешней капчи',
+    text: 'Кнопка «Я не робот» с проверкой в браузере. Простой скрипт её не пройдёт, а написанный под вашу панель — пройдёт.',
+  },
+  {
+    id: 'turnstile',
+    title: 'Cloudflare Turnstile',
+    text: 'Бесплатно. Ключи: панель Cloudflare → Turnstile → Add widget, в списке доменов — домен панели.',
+  },
+  {
+    id: 'yandex',
+    title: 'Яндекс SmartCaptcha',
+    text: 'Ключи: Яндекс Облако → SmartCaptcha → Создать капчу, в списке доменов — домен панели. Подходит, если у клиентов плохо открывается Cloudflare.',
+  },
+];
+
+export function captchaTitle(provider: CaptchaProvider): string {
+  return CAPTCHA_PROVIDERS.find((p) => p.id === provider)?.title ?? provider;
+}
+
+export function captchaLine(settings: AntibotSettings): string | null {
+  if (settings.captcha === 'none') {
+    return null;
+  }
+  const where = [settings.captcha_trial === 'all' ? 'всем перед пробным периодом' : 'подозрительным перед пробным периодом'];
+  if (settings.captcha_signup) {
+    where.push('при регистрации по почте');
+  }
+  return `Капча ${captchaTitle(settings.captcha)}: ${where.join(' и ')}.`;
+}
+
 export const JOURNAL_FILTERS: Array<[string, string]> = [
   ['all', 'Все'],
   ['signup', 'Отметки'],
@@ -123,6 +169,10 @@ export function modeTitle(mode: Mode): string {
 export function antibotLead(summary: AntibotSummary): string {
   const parts: string[] = [];
   parts.push(`Режим: ${modeTitle(summary.settings.mode).toLowerCase()}.`);
+  const captcha = captchaLine(summary.settings);
+  if (captcha) {
+    parts.push(captcha);
+  }
   if (summary.marked_open > 0) {
     parts.push(`Сейчас отмечено ${count(summary.marked_open, 'клиент', 'клиента', 'клиентов')}.`);
   } else {
@@ -133,7 +183,7 @@ export function antibotLead(summary: AntibotSummary): string {
     week.push(`${summary.marked_week} ${plural(summary.marked_week, 'новая отметка', 'новые отметки', 'новых отметок')}`);
   }
   if (summary.confirmed_week > 0) {
-    week.push(`${summary.confirmed_week} ${plural(summary.confirmed_week, 'подтвердил', 'подтвердили', 'подтвердили')} кнопкой`);
+    week.push(`${summary.confirmed_week} ${plural(summary.confirmed_week, 'прошёл', 'прошли', 'прошли')} проверку «Я не робот»`);
   }
   if (summary.denied_week > 0) {
     week.push(`${summary.denied_week} ${plural(summary.denied_week, 'отказ', 'отказа', 'отказов')} в пробнике, промокодах, промо-ссылках, рулетке или конкурсах`);
@@ -161,6 +211,9 @@ export function journalNote(item: JournalItem): string | null {
   if (item.action === 'cleared' && item.admin) {
     return item.admin;
   }
+  if (item.action === 'confirmed' && d.via === 'captcha') {
+    return d.target === 'trial' ? 'капчей перед пробным периодом' : 'капчей';
+  }
   if (d.target === 'promo_link') {
     return typeof d.name === 'string' ? `промо-ссылка «${d.name}»` : 'промо-ссылка';
   }
@@ -187,7 +240,7 @@ export function markState(m: MarkItem): { text: string; tone: string } {
     return { text: 'Пробный период не выдан', tone: 'warn' };
   }
   if (m.confirmed_at) {
-    return { text: `Подтвердил кнопкой ${dateTime(m.confirmed_at).toLowerCase()}`, tone: 'ink' };
+    return { text: `Прошёл проверку ${dateTime(m.confirmed_at).toLowerCase()}`, tone: 'ink' };
   }
   return { text: 'Не подтверждал', tone: 'muted' };
 }

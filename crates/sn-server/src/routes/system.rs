@@ -119,6 +119,16 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let email_reset = email_auth == Some("password") && mail.available();
     let email_confirm =
         email_auth == Some("password") && mail.signup_rule() != sn_services::mail::SignupRule::Open;
+    let captcha = email_auth
+        .and_then(|_| {
+            sn_modules::catalog::antibot::signup_captcha(&state.services.module_context())
+        })
+        .map(|captcha| {
+            serde_json::json!({
+                "provider": captcha.provider,
+                "site_key": captcha.site_key,
+            })
+        });
     tagged(
         &headers,
         &serde_json::json!({
@@ -154,6 +164,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "email_auth": email_auth,
             "email_reset": email_reset,
             "email_confirm": email_confirm,
+            "captcha": captcha,
             "oauth": state.services.oauth().availability(),
             "client_access": {
                 "miniapp": access.miniapp,

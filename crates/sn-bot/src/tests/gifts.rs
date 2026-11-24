@@ -658,7 +658,7 @@ async fn промо_ссылка_в_боте_просит_кнопку_у_отм
     {
         let mut conn = services.store().conn().await.unwrap();
         sqlx::query(
-            "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+            "UPDATE antibot_checks SET created_at = now() - interval '5 seconds' WHERE client_id = $1",
         )
         .bind(marked.0)
         .execute(conn.conn())

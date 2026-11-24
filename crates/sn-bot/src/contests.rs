@@ -258,7 +258,14 @@ pub async fn confirmed(
 
 async fn human_check(turn: &Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
     let services = turn.services();
-    let token = antibot::challenge(&services.module_context(), client.id).await?;
+    let token = antibot::challenge(
+        &services.module_context(),
+        client.id,
+        antibot::Target::Contest.as_str(),
+        antibot::Surface::Bot,
+    )
+    .await?
+    .token;
     let content = services.bot_content_in(lang::current());
     let c = &*content;
     Ok(Screen::new(ui::text(c, "contest.confirm", &[]))

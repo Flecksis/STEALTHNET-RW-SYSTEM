@@ -184,7 +184,7 @@ async fn кнопка_я_не_робот_помнит_выбранный_вар�
     {
         let mut conn = services.store().conn().await.unwrap();
         sqlx::query(
-            "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+            "UPDATE antibot_checks SET created_at = now() - interval '5 seconds' WHERE client_id = $1",
         )
         .bind(client.id.0)
         .execute(conn.conn())
@@ -224,7 +224,7 @@ async fn кнопка_я_не_робот_помнит_выбранный_вар�
     {
         let mut conn = services.store().conn().await.unwrap();
         sqlx::query(
-            "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+            "UPDATE antibot_checks SET created_at = now() - interval '5 seconds' WHERE client_id = $1",
         )
         .bind(other.id.0)
         .execute(conn.conn())

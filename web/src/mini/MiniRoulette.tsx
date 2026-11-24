@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { count, dateLong, days, money, plural, timeHM, type Money } from '../lib/format';
+import { answerOf, startWork, type CheckAnswer, type CheckPrompt } from '../lib/humanCheck';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { BackHead, useMini } from './MiniApp';
@@ -29,7 +30,7 @@ type RouletteState = {
 
 type SpinResult = { spin: HistoryItem; state: RouletteState };
 
-type Check = { token: string; text: string };
+type Check = CheckPrompt;
 
 type SpinReply = SpinResult | { confirm: Check };
 
@@ -199,6 +200,7 @@ export function MiniRoulette() {
   const [lit, setLit] = useState<number | null>(null);
   const [won, setWon] = useState<HistoryItem | null>(null);
   const [check, setCheck] = useState<Check | null>(null);
+  const work = useRef<Promise<string | null> | null>(null);
   const [fast] = useState(reduced);
   const timer = useRef(0);
 
@@ -232,8 +234,13 @@ export function MiniRoulette() {
     [reload],
   );
 
-  const spin = async (confirm?: string) => {
-    if (!state || busy) {
+  const confirmSpin = async (prompt: Check) => {
+    setBusy(true);
+    await spin(await answerOf(prompt, work.current));
+  };
+
+  const spin = async (answer?: CheckAnswer) => {
+    if (!state || (busy && !answer)) {
       return;
     }
     setError(null);
@@ -243,10 +250,11 @@ export function MiniRoulette() {
     try {
       const reply = await api<SpinReply>('/api/client/m/roulette/spin', {
         method: 'POST',
-        body: { request_id: requestId(), subscription_id: view?.subscription.id ?? null, ...(confirm ? { confirm } : {}) },
+        body: { request_id: requestId(), subscription_id: view?.subscription.id ?? null, ...(answer ?? {}) },
       });
       if ('confirm' in reply) {
         setCheck(reply.confirm);
+        work.current = startWork(reply.confirm);
         setBusy(false);
         return;
       }
@@ -346,7 +354,7 @@ export function MiniRoulette() {
           <p className="mr-human" aria-live="polite">
             {check.text}
           </p>
-          <button type="button" className="mn-main press" disabled={busy} onClick={() => void spin(check.token)}>
+          <button type="button" className="mn-main press" disabled={busy} onClick={() => void confirmSpin(check)}>
             {busy ? t('Проверяем…') : t('Я не робот')}
           </button>
         </>

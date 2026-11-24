@@ -1,0 +1,43 @@
+.snc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 65px;
+}
+
+.snc-fit {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  contain: inline-size;
+}
+
+.snc-box {
+  width: 300px;
+  min-height: 65px;
+  transform-origin: 0 0;
+}
+
+.snc-box:empty {
+  display: none;
+}
+
+.snc-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.snc-retry {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink, var(--ink));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}

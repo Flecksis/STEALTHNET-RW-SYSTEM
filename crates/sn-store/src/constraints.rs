@@ -65,6 +65,7 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
     ("traffic_exceeds_window_key", None),
     ("oauth_requests_state_key", None),
     ("email_signups_token_key", None),
+    ("antibot_checks_token_key", None),
     (
         "client_identities_one_oauth_idx",
         Some("Вход через Google или Apple"),

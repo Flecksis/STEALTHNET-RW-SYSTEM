@@ -347,6 +347,10 @@ impl CoreApi for Services {
         self.modules().config(module)
     }
 
+    fn captcha_endpoints(&self) -> sn_modules::catalog::antibot::captcha::Endpoints {
+        Services::captcha_endpoints(self).as_ref().clone()
+    }
+
     fn core_settings(&self) -> Arc<CoreSettings> {
         self.settings()
     }

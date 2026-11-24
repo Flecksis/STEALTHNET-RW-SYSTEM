@@ -19,7 +19,7 @@ use sn_payments::{MethodsContext, ProviderKind};
 use sn_services::bot_content::BotContent;
 use sn_services::checkout::{Channel, CheckoutResult};
 use sn_services::support::Delivered;
-use sn_services::{Actor, ServiceError};
+use sn_services::{Actor, ServiceError, Services};
 use sn_store::{Db, StoreError};
 
 pub fn payment_screen(c: &BotContent, result: &CheckoutResult, what: &str) -> Screen {
@@ -851,6 +851,16 @@ fn trial_choice(c: &BotContent, variants: &[TrialVariant], note: Option<String>)
         .section(Section::Subscription)
 }
 
+fn verify_button(c: &BotContent, services: &Services, token: &str) -> Option<Button> {
+    let site = sn_services::bot_layout::site_url(services)?;
+    let url = format!("{site}/verify/{token}");
+    if site.starts_with("https://") {
+        ui::web_app(c, "sub.btn.trial_verify", url)
+    } else {
+        ui::link(c, "sub.btn.trial_verify", &[], url)
+    }
+}
+
 async fn trial_check(
     turn: &mut Turn<'_>,
     client: &Client,
@@ -858,22 +868,38 @@ async fn trial_check(
 ) -> Result<Screen, BotError> {
     let content = turn.content();
     let c = &*content;
-    match turn.services().checkout().trial_challenge(client.id).await {
-        Ok(token) => {
-            let data = match variant {
-                Some(id) => format!("ab:{token}:{id}"),
-                None => format!("ab:{token}"),
-            };
-            Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
-                .keyboard(
-                    Keyboard::new()
-                        .push(ui::button(c, "sub.btn.trial_confirm", &[], data))
-                        .push(ui::menu(c)),
-                )
-                .section(Section::Subscription))
-        }
-        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+    let services = turn.services().clone();
+    let challenge = match services
+        .checkout()
+        .trial_challenge(client.id, antibot::Surface::Bot, variant)
+        .await
+    {
+        Ok(challenge) => challenge,
+        Err(err) => return Ok(Screen::notice(text::user_error(&err))),
+    };
+    if challenge.captcha() {
+        return Ok(match verify_button(c, &services, &challenge.token) {
+            Some(button) => Screen::new(ui::text(c, "sub.trial_verify", &[]))
+                .keyboard(Keyboard::new().push(Some(button)).push(ui::menu(c)))
+                .section(Section::Subscription),
+            None => Screen::notice(ui::text(c, "sub.trial_verify_off", &[])),
+        });
     }
+    Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
+        .keyboard(
+            Keyboard::new()
+                .push(ui::button(
+                    c,
+                    "sub.btn.trial_confirm",
+                    &[],
+                    match variant {
+                        Some(id) => format!("ab:{}:{id}", challenge.token),
+                        None => format!("ab:{}", challenge.token),
+                    },
+                ))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Subscription))
 }
 
 async fn trial_start(
@@ -936,11 +962,13 @@ pub async fn trial_confirmed(
     match turn
         .services()
         .checkout()
-        .confirm_trial(client.id, token, variant)
+        .confirm_trial(client.id, token, antibot::Answer::button(), variant)
         .await
     {
         Ok(_) => Ok(trial_started(&content)),
-        Err(err) if err.code() == "antibot.too_fast" => trial_check(turn, client, variant).await,
+        Err(err) if matches!(err.code(), antibot::TOO_FAST | antibot::CONFIRM_CODE) => {
+            trial_check(turn, client, variant).await
+        }
         Err(err) => Ok(trial_refused(turn, &err)),
     }
 }

@@ -21,10 +21,29 @@ pub fn admin(ctx: ModuleContext) -> Router {
 }
 
 #[derive(Serialize)]
+struct CaptchaState {
+    secret_set: bool,
+    ready: bool,
+    problem: Option<super::captcha::Health>,
+}
+
+#[derive(Serialize)]
 struct SummaryView {
     settings: AntibotSettings,
+    captcha: CaptchaState,
     #[serde(flatten)]
     counts: Summary,
+}
+
+fn captcha_state(ctx: &ModuleContext, settings: &AntibotSettings) -> CaptchaState {
+    let config = ctx.core.module_config(sn_domain::module::ModuleId::Antibot);
+    let ready = super::captcha::Captcha::of(&config).is_some();
+    CaptchaState {
+        secret_set: config.text("captcha_secret").is_some(),
+        ready,
+        problem: super::captcha::health()
+            .filter(|health| ready && health.provider == settings.captcha),
+    }
 }
 
 async fn summary(
@@ -35,7 +54,12 @@ async fn summary(
     let mut conn = ctx.store.conn().await?;
     let settings = active(&mut conn).await?.unwrap_or_default();
     let counts = store::summary(&mut conn).await?;
-    Ok(Json(SummaryView { settings, counts }))
+    let captcha = captcha_state(&ctx, &settings);
+    Ok(Json(SummaryView {
+        settings,
+        captcha,
+        counts,
+    }))
 }
 
 #[derive(Deserialize)]

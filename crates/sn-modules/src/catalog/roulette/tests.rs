@@ -734,10 +734,21 @@ async fn антибот_просит_подтвердить_перед_бесп�
         }
     ));
     assert_eq!(balance(&db.store, player).await, 0);
-    let token = crate::catalog::antibot::challenge(&ctx, player)
-        .await
-        .unwrap();
-    let hurried = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &token)
+    let challenge = crate::catalog::antibot::challenge(
+        &ctx,
+        player,
+        "roulette",
+        crate::catalog::antibot::Surface::Web,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        challenge.check,
+        crate::catalog::antibot::Check::Work {
+            bits: crate::catalog::antibot::checks::WORK_BITS
+        }
+    );
+    let hurried = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &challenge.token, None)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -748,7 +759,29 @@ async fn антибот_просит_подтвердить_перед_бесп�
         }
     ));
     age_challenge(&db.store, player).await;
-    let won = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &token)
+    let echoed = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &challenge.token, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        echoed,
+        RouletteError::Rejected {
+            code: crate::catalog::antibot::CONFIRM_CODE,
+            ..
+        }
+    ));
+    assert_eq!(balance(&db.store, player).await, 0);
+    let token = crate::catalog::antibot::challenge(
+        &ctx,
+        player,
+        "roulette",
+        crate::catalog::antibot::Surface::Web,
+    )
+    .await
+    .unwrap()
+    .token;
+    age_challenge(&db.store, player).await;
+    let proof = crate::catalog::antibot::checks::solve(&token, 4);
+    let won = spin_confirmed(&ctx, player, Uuid::new_v4(), None, &token, Some(&proof))
         .await
         .unwrap();
     assert_eq!(won.spin.state, "issued");
@@ -861,13 +894,30 @@ async fn кнопка_я_не_робот_в_рулетке_через_маршр
     assert_eq!(first.status(), StatusCode::OK);
     let first = json_of(first).await;
     assert_eq!(first["confirm"]["text"], CONFIRM_TEXT);
+    assert_eq!(first["confirm"]["check"]["kind"], "work");
     let token = first["confirm"]["token"].as_str().unwrap().to_string();
     assert!(first.get("spin").is_none());
     age_challenge(&db.store, player).await;
-    let spun = router
+    let echoed = router
+        .clone()
         .oneshot(call(
             serde_json::json!({ "request_id": Uuid::new_v4(), "confirm": token }),
         ))
+        .await
+        .unwrap();
+    assert_eq!(echoed.status(), StatusCode::OK);
+    let echoed = json_of(echoed).await;
+    assert!(echoed.get("spin").is_none(), "{echoed}");
+    let token = echoed["confirm"]["token"].as_str().unwrap().to_string();
+    assert_eq!(balance(&db.store, player).await, 0);
+    age_challenge(&db.store, player).await;
+    let proof = crate::catalog::antibot::checks::solve(&token, 4);
+    let spun = router
+        .oneshot(call(serde_json::json!({
+            "request_id": Uuid::new_v4(),
+            "confirm": token,
+            "proof": proof,
+        })))
         .await
         .unwrap();
     assert_eq!(spun.status(), StatusCode::OK);

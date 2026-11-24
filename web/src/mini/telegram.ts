@@ -10,6 +10,7 @@ export type WebApp = {
   setBackgroundColor?: (color: string) => void;
   ready: () => void;
   expand?: () => void;
+  close?: () => void;
   openLink?: (url: string) => void;
   openTelegramLink?: (url: string) => void;
   downloadFile?: (params: { url: string; file_name: string }) => void;

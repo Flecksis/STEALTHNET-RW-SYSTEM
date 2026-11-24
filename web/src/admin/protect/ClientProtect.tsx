@@ -72,7 +72,7 @@ export function ClientProtect({ clientId, phone, onChanged }: Props) {
           <div className={body}>
             <span className="pt-card-text">
               Отмечен как подозрительный: {reasonsText(marked.reasons)}.{' '}
-              {marked.confirmed_at ? `Подтвердил кнопкой ${dateTime(marked.confirmed_at).toLowerCase()}.` : ''}
+              {marked.confirmed_at ? `Прошёл проверку «Я не робот» ${dateTime(marked.confirmed_at).toLowerCase()}.` : ''}
             </span>
             <Link to="/admin/clients/antibot" className="pr-inline-link">
               Журнал антибота

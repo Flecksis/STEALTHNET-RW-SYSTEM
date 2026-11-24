@@ -1,4 +1,5 @@
 import { api } from '../lib/api';
+import type { CheckAnswer, CheckPrompt } from '../lib/humanCheck';
 import { count, days } from '../lib/format';
 import { countryName } from '../lib/geo';
 import { t } from '../lib/i18n';
@@ -15,7 +16,7 @@ export type TrialChoice = {
 
 export type TrialOffer = { available: boolean; variants: TrialChoice[] };
 
-export type TrialCheck = { token: string; text: string };
+export type TrialCheck = CheckPrompt & { again?: string };
 
 export const NO_TRIAL: TrialOffer = { available: false, variants: [] };
 
@@ -23,16 +24,13 @@ export function loadTrial(): Promise<TrialOffer> {
   return api<TrialOffer>('/api/client/trial');
 }
 
-export async function requestTrial(variant: number | null, confirm?: string): Promise<TrialCheck | null> {
-  const body: { variant?: number; confirm?: string } = {};
+export async function requestTrial(variant: number | null, answer?: CheckAnswer): Promise<TrialCheck | null> {
+  const body: Partial<CheckAnswer> & { variant?: number } = { ...(answer ?? {}) };
   if (variant !== null) {
     body.variant = variant;
   }
-  if (confirm) {
-    body.confirm = confirm;
-  }
-  const started = await api<{ confirm?: TrialCheck }>('/api/client/trial', { method: 'POST', body });
-  return started.confirm ?? null;
+  const started = await api<{ confirm?: CheckPrompt; again?: string }>('/api/client/trial', { method: 'POST', body });
+  return started.confirm ? { ...started.confirm, ...(started.again ? { again: started.again } : {}) } : null;
 }
 
 export function trialFacts(choice: TrialChoice, withDays = true): string {

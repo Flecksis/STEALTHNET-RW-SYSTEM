@@ -1,3 +1,5 @@
+pub mod captcha;
+pub mod checks;
 mod routes;
 pub mod signals;
 pub mod store;
@@ -8,9 +10,10 @@ use crate::catalog::config_flag;
 use crate::catalog::web::{address_network, is_internal};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
-use crate::module::{Module, ModuleConfig};
+use crate::module::{Module, ModuleConfig, ScheduledTask};
 use async_trait::async_trait;
 use axum::Router;
+use captcha::{Captcha, Provider, Scope};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use signals::Signal;
@@ -21,16 +24,23 @@ use sn_domain::settings::SettingField;
 use sn_store::{Db, StoreError};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use store::{ChallengeCheck, NewEvent};
-use uuid::Uuid;
+use store::NewEvent;
 
+pub use checks::{Answer, Challenge, Check, Confirmation, Surface};
 pub use store::{Action, JournalFilter, JournalItem, Mark, MarkItem, Summary};
 
 pub const CONFIRM_CODE: &str = "antibot.confirm";
 pub const DENIED_CODE: &str = "antibot.denied";
-pub const CONFIRM_MIN_SECONDS: i64 = 1;
-pub const CONFIRM_TTL_MINUTES: i64 = 15;
+pub const TOO_FAST: &str = "antibot.too_fast";
+pub const EXPIRED: &str = "antibot.expired";
+pub const FAILED: &str = "antibot.failed";
+pub const UNAVAILABLE: &str = "antibot.unavailable";
+pub const CAPTCHA_REQUIRED: &str = "antibot.captcha";
 pub const PROMO_LINK: &str = "promo_link";
+pub const TRIAL: &str = "trial";
+pub const SIGNUP: &str = "signup";
+pub const LOGIN: &str = "login";
+const SWEEP_TASK: &str = "antibot.sweep";
 const MODE_OPTIONS: &[&str] = &["mark", "confirm", "block"];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +83,10 @@ pub struct AntibotSettings {
     pub mass_invites: u32,
     pub roulette_guard: bool,
     pub contest_guard: bool,
+    pub captcha: Provider,
+    pub captcha_site_key: String,
+    pub captcha_trial: Scope,
+    pub captcha_signup: bool,
 }
 
 impl Default for AntibotSettings {
@@ -88,6 +102,10 @@ impl Default for AntibotSettings {
             mass_invites: 5,
             roulette_guard: true,
             contest_guard: true,
+            captcha: Provider::None,
+            captcha_site_key: String::new(),
+            captcha_trial: Scope::All,
+            captcha_signup: true,
         }
     }
 }
@@ -127,7 +145,46 @@ impl AntibotSettings {
             roulette_guard: config_flag(config, "roulette_guard")
                 .unwrap_or(defaults.roulette_guard),
             contest_guard: config_flag(config, "contest_guard").unwrap_or(defaults.contest_guard),
+            captcha: match config.text("captcha") {
+                None => defaults.captcha,
+                Some(raw) => Provider::parse(raw).ok_or("captcha: none, turnstile или yandex")?,
+            },
+            captcha_site_key: match config.text("captcha_site_key") {
+                None => String::new(),
+                Some(raw) => captcha::clean_key(raw).ok_or(
+                    "captcha_site_key: латинские буквы, цифры, точка, дефис и подчёркивание",
+                )?,
+            },
+            captcha_trial: match config.text("captcha_trial") {
+                None => defaults.captcha_trial,
+                Some(raw) => Scope::parse(raw).ok_or("captcha_trial: all или suspicious")?,
+            },
+            captcha_signup: config_flag(config, "captcha_signup")
+                .unwrap_or(defaults.captcha_signup),
         })
+    }
+
+    pub fn check_captcha(config: &ModuleConfig) -> Result<(), String> {
+        let settings = Self::parse(config)?;
+        if settings.captcha == Provider::None {
+            return Ok(());
+        }
+        if settings.captcha_site_key.is_empty() {
+            return Err(format!(
+                "Для капчи {} укажите ключ сайта",
+                settings.captcha.title()
+            ));
+        }
+        match config.text("captcha_secret") {
+            None => Err(format!(
+                "Для капчи {} укажите секретный ключ",
+                settings.captcha.title()
+            )),
+            Some(raw) if captcha::clean_key(raw).is_none() => {
+                Err("captcha_secret: латинские буквы, цифры, точка, дефис и подчёркивание".into())
+            }
+            Some(_) => Ok(()),
+        }
     }
 
     pub fn lenient(config: &ModuleConfig) -> Self {
@@ -599,14 +656,62 @@ fn day_key(now: DateTime<Utc>) -> String {
     now.format("%Y-%m-%d").to_string()
 }
 
+fn wants_captcha(captcha: &Captcha, verdict: &Verdict) -> bool {
+    match captcha.trial {
+        Scope::All => true,
+        Scope::Suspicious => verdict.flagged() && verdict.settings.mode == Mode::Confirm,
+    }
+}
+
 pub async fn trial_gate(ctx: &ModuleContext, client_id: ClientId) -> Result<Gate, ModuleError> {
-    free_gate(
-        ctx,
-        client_id,
-        (Action::Asked, Action::TrialDenied),
-        serde_json::json!({ "target": "trial" }),
-    )
-    .await
+    let mut conn = ctx.store.conn().await?;
+    let Some(verdict) = verdict(&mut conn, client_id).await? else {
+        return Ok(Gate::Allow);
+    };
+    let details = serde_json::json!({ "target": TRIAL });
+    let actions = (Action::Asked, Action::TrialDenied);
+    let blocked = verdict.flagged() && verdict.settings.mode == Mode::Block;
+    let captcha = captcha::active(ctx).filter(|c| wants_captcha(c, &verdict));
+    if captcha.is_none() || blocked {
+        return Ok(gate_of(&mut conn, client_id, &verdict, actions, details).await?);
+    }
+    if checks::passed_recently(&mut conn, client_id, TRIAL).await? {
+        return Ok(Gate::Allow);
+    }
+    if verdict.flagged() {
+        note(
+            &mut conn,
+            client_id,
+            Action::Asked,
+            &verdict.signals,
+            details,
+            None,
+        )
+        .await?;
+    }
+    Ok(Gate::Confirm)
+}
+
+pub async fn trial_challenge(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    surface: Surface,
+    variant: Option<u32>,
+) -> Result<Challenge, ModuleError> {
+    if let Some(captcha) = captcha::active(ctx) {
+        let mut conn = ctx.store.conn().await?;
+        if let Some(verdict) = verdict(&mut conn, client_id).await?
+            && wants_captcha(&captcha, &verdict)
+        {
+            drop(conn);
+            let details = match variant {
+                Some(id) => serde_json::json!({ "variant": id }),
+                None => serde_json::json!({}),
+            };
+            return checks::captcha_challenge(ctx, client_id, TRIAL, &captcha, details).await;
+        }
+    }
+    checks::challenge(ctx, client_id, TRIAL, surface).await
 }
 
 pub async fn promo_link_gate(
@@ -627,17 +732,27 @@ pub async fn promo_link_gate(
 async fn free_gate(
     ctx: &ModuleContext,
     client_id: ClientId,
-    (asked, denied): (Action, Action),
+    actions: (Action, Action),
     details: serde_json::Value,
 ) -> Result<Gate, ModuleError> {
     let mut conn = ctx.store.conn().await?;
     let Some(verdict) = verdict(&mut conn, client_id).await? else {
         return Ok(Gate::Allow);
     };
+    Ok(gate_of(&mut conn, client_id, &verdict, actions, details).await?)
+}
+
+async fn gate_of(
+    db: &mut impl Db,
+    client_id: ClientId,
+    verdict: &Verdict,
+    (asked, denied): (Action, Action),
+    details: serde_json::Value,
+) -> Result<Gate, StoreError> {
     if !verdict.flagged() {
         return Ok(Gate::Allow);
     }
-    let now = db_now(&mut conn).await?;
+    let now = db_now(db).await?;
     let (gate, action) = match verdict.settings.mode {
         Mode::Mark => return Ok(Gate::Allow),
         Mode::Confirm if verdict.confirmed() => return Ok(Gate::Allow),
@@ -645,7 +760,7 @@ async fn free_gate(
         Mode::Block => (Gate::Deny, denied),
     };
     store::event(
-        &mut conn,
+        db,
         &NewEvent {
             client_id,
             action,
@@ -702,18 +817,13 @@ pub async fn bonus_allowed(ctx: &ModuleContext, client_id: ClientId) -> Result<b
     Ok(!(verdict.flagged() && verdict.settings.mode == Mode::Block))
 }
 
-pub async fn challenge(ctx: &ModuleContext, client_id: ClientId) -> Result<String, ModuleError> {
-    let token = Uuid::new_v4().simple().to_string();
-    let mut conn = ctx.store.conn().await?;
-    store::set_challenge(&mut conn, client_id, &token).await?;
-    Ok(token)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Confirmation {
-    Confirmed,
-    TooFast,
-    Expired,
+pub async fn challenge(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    target: &str,
+    surface: Surface,
+) -> Result<Challenge, ModuleError> {
+    checks::challenge(ctx, client_id, target, surface).await
 }
 
 pub async fn confirm(
@@ -721,42 +831,53 @@ pub async fn confirm(
     client_id: ClientId,
     token: &str,
     target: &str,
+    answer: Answer<'_>,
 ) -> Result<Confirmation, ModuleError> {
-    let token = token.trim();
-    if token.is_empty() || token.len() > 64 {
-        return Ok(Confirmation::Expired);
-    }
+    checks::confirm(ctx, client_id, token, target, answer).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignupCheck {
+    Off,
+    Passed,
+    Missing,
+    Failed,
+    Unavailable,
+}
+
+pub fn signup_captcha(ctx: &ModuleContext) -> Option<Captcha> {
+    captcha::active(ctx).filter(|c| c.signup)
+}
+
+pub async fn check_signup(
+    ctx: &ModuleContext,
+    action: &str,
+    token: Option<&str>,
+    ip: Option<&str>,
+) -> Result<SignupCheck, ModuleError> {
+    let Some(captcha) = signup_captcha(ctx) else {
+        return Ok(SignupCheck::Off);
+    };
+    let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(SignupCheck::Missing);
+    };
     let mut conn = ctx.store.conn().await?;
-    let check = store::take_challenge(
+    let outcome = captcha::verify(
         &mut conn,
-        client_id,
+        &ctx.core.captcha_endpoints(),
+        &captcha,
         token,
-        CONFIRM_MIN_SECONDS,
-        CONFIRM_TTL_MINUTES,
+        ip,
+        captcha::Expect {
+            action,
+            cdata: None,
+        },
     )
     .await?;
-    Ok(match check {
-        ChallengeCheck::Passed => {
-            let reasons = store::mark_of(&mut conn, client_id)
-                .await?
-                .map(|m| m.reasons)
-                .unwrap_or_default();
-            store::event(
-                &mut conn,
-                &NewEvent {
-                    client_id,
-                    action: Action::Confirmed,
-                    reasons: &reasons,
-                    details: serde_json::json!({ "target": target }),
-                    dedupe: Some(format!("confirmed:{client_id}")),
-                    admin: None,
-                },
-            )
-            .await?;
-            Confirmation::Confirmed
-        }
-        ChallengeCheck::TooFast => Confirmation::TooFast,
-        ChallengeCheck::Wrong => Confirmation::Expired,
+    Ok(match outcome {
+        captcha::Outcome::Passed => SignupCheck::Passed,
+        captcha::Outcome::Rejected(_) => SignupCheck::Failed,
+        captcha::Outcome::Unavailable(_) => SignupCheck::Unavailable,
     })
 }
 
@@ -1089,13 +1210,89 @@ impl Module for AntibotModule {
                 "Участие подозрительных и зачёт приглашённых друзей — по режиму антибота; самоприглашения и массовые приглашения не засчитываются никогда",
             )
             .with_default("true"),
+            SettingField::select(
+                "captcha",
+                "Капча",
+                "Внешняя проверка «Я не робот» перед пробным периодом и при регистрации по почте. Без неё кнопка «Я не робот» проверяется в браузере, но скрипт, написанный под вашу панель, её пройдёт",
+                captcha::provider_options(),
+            )
+            .labels(&["Без внешней капчи", "Cloudflare Turnstile", "Яндекс SmartCaptcha"])
+            .with_default("none"),
+            SettingField::text(
+                "captcha_site_key",
+                "Ключ сайта капчи",
+                "Публичный ключ из Cloudflare (Turnstile) или Яндекс Облака (SmartCaptcha), выданный для домена панели",
+            )
+            .optional(),
+            SettingField::secret(
+                "captcha_secret",
+                "Секретный ключ капчи",
+                "Хранится зашифрованным и нужен только серверу для проверки ответа",
+            )
+            .optional(),
+            SettingField::select(
+                "captcha_trial",
+                "Капча перед пробным периодом",
+                "«Всем» — каждый проходит капчу перед пробником; «Только подозрительным» — капча вместо кнопки «Я не робот» в режиме «Просить подтвердить»",
+                captcha::scope_options(),
+            )
+            .labels(&["Всем", "Только подозрительным"])
+            .with_default("all"),
+            SettingField::flag(
+                "captcha_signup",
+                "Капча при регистрации по почте",
+                "В кабинете на сайте: в форме регистрации по паролю, а при входе кодом из письма — перед отправкой кода",
+            )
+            .with_default("true"),
         ]
     }
 
     fn validate_config(&self, config: &ModuleConfig) -> Result<(), ModuleError> {
-        AntibotSettings::parse(config)
-            .map(|_| ())
-            .map_err(ModuleError::Invalid)
+        AntibotSettings::check_captcha(config).map_err(ModuleError::Invalid)
+    }
+
+    fn validate_change(
+        &self,
+        before: &ModuleConfig,
+        after: &ModuleConfig,
+        new_secrets: &[&str],
+    ) -> Result<(), ModuleError> {
+        let was = AntibotSettings::lenient(before).captcha;
+        let now = AntibotSettings::lenient(after).captcha;
+        if was != now
+            && was != Provider::None
+            && now != Provider::None
+            && !new_secrets.contains(&"captcha_secret")
+        {
+            return Err(ModuleError::SecretsAgain(format!(
+                "При смене капчи на {} вставьте заново секретный ключ: ключ одного сервиса другому не подходит",
+                now.title()
+            )));
+        }
+        Ok(())
+    }
+
+    fn config_warning(&self, config: &ModuleConfig) -> Option<&'static str> {
+        let settings = AntibotSettings::lenient(config);
+        (settings.captcha != Provider::None && Captcha::of(config).is_none()).then_some(
+            "Капча выбрана, но ключи не заданы: пробный период и регистрация идут без неё",
+        )
+    }
+
+    fn cleanup_tasks(&self) -> Vec<ScheduledTask> {
+        vec![ScheduledTask {
+            name: SWEEP_TASK,
+            every: std::time::Duration::from_secs(3600),
+        }]
+    }
+
+    async fn run_task(&self, ctx: &ModuleContext, task: &str) -> Result<(), ModuleError> {
+        if task != SWEEP_TASK {
+            return Err(ModuleError::Invalid(format!("у модуля нет задачи {task}")));
+        }
+        let mut conn = ctx.store.conn().await?;
+        captcha::sweep(&mut conn).await?;
+        Ok(())
     }
 
     fn admin_routes(&self, ctx: ModuleContext) -> Option<Router> {

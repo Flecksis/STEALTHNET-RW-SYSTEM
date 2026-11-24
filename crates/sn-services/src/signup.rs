@@ -117,9 +117,27 @@ impl Auth<'_> {
         meta: &RequestMeta,
         from: Arrival<'_>,
     ) -> ServiceResult<Registration> {
+        self.email_signup_with(email, password, meta, from, None)
+            .await
+    }
+
+    pub async fn email_signup_with(
+        &self,
+        email: &str,
+        password: &str,
+        meta: &RequestMeta,
+        from: Arrival<'_>,
+        captcha: Option<&str>,
+    ) -> ServiceResult<Registration> {
         self.site_open()?;
         self.email_by_password()?;
-        match self.services.mail().signup_rule() {
+        let rule = self.services.mail().signup_rule();
+        if rule == SignupRule::Closed {
+            return Err(signup_closed());
+        }
+        self.captcha_gate(sn_modules::catalog::antibot::SIGNUP, captcha, meta)
+            .await?;
+        match rule {
             SignupRule::Open => self
                 .register_now(email, password, meta, from.start_param())
                 .await

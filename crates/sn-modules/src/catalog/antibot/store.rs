@@ -117,67 +117,13 @@ pub async fn save_mark(
     Ok(false)
 }
 
-pub async fn set_challenge(db: &mut impl Db, client_id: ClientId, token: &str) -> StoreResult<()> {
-    sqlx::query(
-        "UPDATE antibot_marks SET challenge_hash = sha256(convert_to($2, 'UTF8')), challenge_at = now() \
-         WHERE client_id = $1",
-    )
-    .bind(client_id.0)
-    .bind(token)
-    .execute(db.conn())
-    .await?;
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChallengeCheck {
-    Passed,
-    TooFast,
-    Wrong,
-}
-
-pub async fn take_challenge(
-    db: &mut impl Db,
-    client_id: ClientId,
-    token: &str,
-    min_seconds: i64,
-    max_minutes: i64,
-) -> StoreResult<ChallengeCheck> {
-    let row: Option<(bool, i64)> = sqlx::query_as(
-        "SELECT challenge_hash = sha256(convert_to($2, 'UTF8')), \
-                COALESCE(EXTRACT(EPOCH FROM now() - challenge_at)::bigint, -1) \
-         FROM antibot_marks WHERE client_id = $1 AND challenge_hash IS NOT NULL",
-    )
-    .bind(client_id.0)
-    .bind(token)
-    .fetch_optional(db.conn())
-    .await?;
-    let Some((same, age)) = row else {
-        return Ok(ChallengeCheck::Wrong);
-    };
-    if !same || age < 0 || age > max_minutes * 60 {
-        return Ok(ChallengeCheck::Wrong);
-    }
-    if age < min_seconds {
-        return Ok(ChallengeCheck::TooFast);
-    }
-    sqlx::query(
-        "UPDATE antibot_marks SET confirmed_at = COALESCE(confirmed_at, now()), \
-         challenge_hash = NULL, challenge_at = NULL WHERE client_id = $1",
-    )
-    .bind(client_id.0)
-    .execute(db.conn())
-    .await?;
-    Ok(ChallengeCheck::Passed)
-}
-
 pub async fn clear(
     db: &mut impl Db,
     client_id: ClientId,
     admin: Option<AdminId>,
 ) -> StoreResult<bool> {
     let changed = sqlx::query(
-        "UPDATE antibot_marks SET cleared_at = now(), cleared_by = $2, challenge_hash = NULL, challenge_at = NULL \
+        "UPDATE antibot_marks SET cleared_at = now(), cleared_by = $2 \
          WHERE client_id = $1 AND cleared_at IS NULL",
     )
     .bind(client_id.0)
@@ -258,7 +204,7 @@ impl Action {
         match self {
             Action::Marked => "Отмечен как подозрительный",
             Action::Asked => "Попросили подтвердить, что не робот",
-            Action::Confirmed => "Подтвердил кнопкой",
+            Action::Confirmed => "Прошёл проверку «Я не робот»",
             Action::TrialDenied => "Пробный период не выдан",
             Action::PromoDenied => "Бесплатные дни не выданы",
             Action::NoBonus => "Бонус пригласившему не начислен",

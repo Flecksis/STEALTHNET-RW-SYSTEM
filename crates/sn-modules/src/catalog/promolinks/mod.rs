@@ -441,7 +441,14 @@ pub async fn activate_confirmed(
     code: &str,
     token: &str,
 ) -> Result<Activated, LinkError> {
-    antibot::confirm(ctx, client_id, token, antibot::PROMO_LINK).await?;
+    antibot::confirm(
+        ctx,
+        client_id,
+        token,
+        antibot::PROMO_LINK,
+        antibot::Answer::button(),
+    )
+    .await?;
     activate(ctx, client_id, code).await
 }
 

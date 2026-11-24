@@ -17,6 +17,7 @@ const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.Mi
 const Landing = lazy(() => import('./site/Landing').then((m) => ({ default: m.Landing })));
 const LandingPreview = lazy(() => import('./site/Landing').then((m) => ({ default: m.LandingPreview })));
 const PayPage = lazy(() => import('./pay/PayPage').then((m) => ({ default: m.PayPage })));
+const VerifyPage = lazy(() => import('./verify/VerifyPage').then((m) => ({ default: m.VerifyPage })));
 
 function NotFound() {
   const site = useSite();
@@ -37,6 +38,7 @@ function App() {
           <Route path="/cabinet/*" element={<CabinetApp />} />
           <Route path="/app/*" element={<MiniApp />} />
           <Route path="/pay/:id" element={<PayPage />} />
+          <Route path="/verify/:token" element={<VerifyPage />} />
           <Route path="/" element={<Landing />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

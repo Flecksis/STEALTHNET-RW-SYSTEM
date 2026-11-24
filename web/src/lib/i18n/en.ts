@@ -6,8 +6,9 @@ import { CONNECT } from './en-connect';
 import { MINI } from './en-mini';
 import { PROMO } from './en-promo';
 import { SITE } from './en-site';
+import { VERIFY } from './en-verify';
 
-export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT, ...PROMO };
+export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT, ...PROMO, ...VERIFY };
 
 export const PLURALS: Record<string, [string, string]> = {
   день: ['day', 'days'],

@@ -386,7 +386,7 @@ pub async fn suspect(store: &Store, client_id: ClientId) {
 pub async fn age_challenge(store: &Store, client_id: ClientId) {
     let mut conn = store.conn().await.unwrap();
     sqlx::query(
-        "UPDATE antibot_marks SET challenge_at = now() - interval '5 seconds' WHERE client_id = $1",
+        "UPDATE antibot_checks SET created_at = now() - interval '5 seconds', bits = LEAST(bits, 4) WHERE client_id = $1",
     )
     .bind(client_id.0)
     .execute(conn.conn())

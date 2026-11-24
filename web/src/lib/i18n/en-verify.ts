@@ -1,0 +1,15 @@
+export const VERIFY: Record<string, string> = {
+  'Загружаем проверку…': 'Loading the check…',
+  'Проверка не загрузилась. Проверьте интернет и попробуйте ещё раз.': 'The check didn\'t load. Check your connection and try again.',
+  'Не получилось открыть проверку. Проверьте интернет и обновите страницу.': 'Couldn\'t open the check. Check your connection and refresh the page.',
+  'Не получилось проверить. Проверьте интернет и попробуйте ещё раз.': 'Couldn\'t run the check. Check your connection and try again.',
+  'Пробный период включён': 'Your free trial is on',
+  'Подписка появится через минуту, сообщение о ней придёт в бот.': 'The subscription will appear in a minute, and the bot will message you about it.',
+  'Пройдите проверку «Я не робот», и пробный период включится сразу.': 'Pass the check that you\'re not a robot, and the free trial starts right away.',
+  'Проверяем и включаем пробный период…': 'Checking and starting your free trial…',
+  'Ссылка на проверку действует до {time}. ': 'The check link works until {time}. ',
+  'Проверка нужна, чтобы пробный период доставался людям, а не ботам.': 'The check keeps free trials for people, not bots.',
+  'Проверка недоступна': 'The check isn\'t available',
+  'Пройти проверку ещё раз': 'Take the check again',
+  'Проверка не пройдена. Попробуйте ещё раз.': 'The check didn\'t pass. Please try again.',
+};

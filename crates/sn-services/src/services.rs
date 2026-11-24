@@ -76,6 +76,7 @@ struct Runtime {
     bot_content_en: Arc<crate::bot_content::BotContent>,
     bot_sender: Option<Arc<dyn BotSender>>,
     oauth_endpoints: Arc<crate::oauth::OauthEndpoints>,
+    captcha_endpoints: Arc<sn_modules::catalog::antibot::captcha::Endpoints>,
 }
 
 struct Inner {
@@ -125,6 +126,7 @@ impl Services {
             ),
             bot_sender: None,
             oauth_endpoints: Arc::default(),
+            captcha_endpoints: Arc::default(),
         };
         Services {
             inner: Arc::new(Inner {
@@ -277,6 +279,17 @@ impl Services {
 
     pub fn set_oauth_endpoints(&self, endpoints: crate::oauth::OauthEndpoints) {
         self.write(|r| r.oauth_endpoints = Arc::new(endpoints));
+    }
+
+    pub fn captcha_endpoints(&self) -> Arc<sn_modules::catalog::antibot::captcha::Endpoints> {
+        self.read(|r| r.captcha_endpoints.clone())
+    }
+
+    pub fn set_captcha_endpoints(
+        &self,
+        endpoints: sn_modules::catalog::antibot::captcha::Endpoints,
+    ) {
+        self.write(|r| r.captcha_endpoints = Arc::new(endpoints));
     }
 
     pub async fn squad_countries(

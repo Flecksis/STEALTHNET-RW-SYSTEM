@@ -23,6 +23,7 @@ mod addons;
 mod alerts;
 mod balance_off;
 mod broadcast;
+mod captcha;
 mod client_letters;
 mod content;
 mod contests;

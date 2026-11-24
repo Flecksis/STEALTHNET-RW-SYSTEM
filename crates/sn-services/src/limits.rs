@@ -130,6 +130,16 @@ pub mod rules {
         limit: 60,
         window_seconds: 600,
     };
+    pub const CAPTCHA_IP: RateRule = RateRule {
+        scope: "captcha_ip",
+        limit: 30,
+        window_seconds: 600,
+    };
+    pub const VERIFY_PAGE_IP: RateRule = RateRule {
+        scope: "verify_page_ip",
+        limit: 60,
+        window_seconds: 600,
+    };
     pub const PAYMENT_CHECK: RateRule = RateRule {
         scope: "payment_check",
         limit: 10,

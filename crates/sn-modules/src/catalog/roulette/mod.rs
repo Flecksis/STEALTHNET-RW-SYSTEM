@@ -832,8 +832,16 @@ pub async fn spin_confirmed(
     request_id: Uuid,
     prefer: Option<SubscriptionId>,
     token: &str,
+    proof: Option<&str>,
 ) -> Result<SpinResult, RouletteError> {
-    antibot::confirm(ctx, client_id, token, Target::Roulette.as_str()).await?;
+    antibot::confirm(
+        ctx,
+        client_id,
+        token,
+        Target::Roulette.as_str(),
+        antibot::Answer::web(proof, None, None),
+    )
+    .await?;
     spin(ctx, client_id, request_id, prefer).await
 }
 

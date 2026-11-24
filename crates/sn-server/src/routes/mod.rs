@@ -4,6 +4,7 @@ mod client_email;
 mod client_oauth;
 mod client_photo;
 mod public_pay;
+mod public_verify;
 pub mod support_files;
 pub mod system;
 pub mod webhooks;
@@ -62,8 +63,9 @@ pub fn request_span(request: &Request<Body>) -> tracing::Span {
     )
 }
 
-const SECRET_PATHS: [&str; 5] = [
+const SECRET_PATHS: [&str; 6] = [
     sn_services::bot_webhook::PATH_PREFIX,
+    "/verify/",
     "/api/webhooks/pay/overpay/",
     "/api/public/support-files/",
     "/api/public/m/broadcast/unsubscribe/",
@@ -133,6 +135,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(system::routes())
         .merge(public_pay::routes())
+        .merge(public_verify::routes())
         .merge(webhooks::routes())
         .merge(support_files::public_routes())
         .merge(crate::security::routes())
@@ -200,6 +203,7 @@ mod tests {
                 "/api/public/support-files/a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
                 "/api/public/support-files/…",
             ),
+            ("/verify/0123456789abcdef0123456789abcdef", "/verify/…"),
             (
                 "/api/public/m/broadcast/unsubscribe/0b9d77aa1c2d4e3f",
                 "/api/public/m/broadcast/unsubscribe/…",

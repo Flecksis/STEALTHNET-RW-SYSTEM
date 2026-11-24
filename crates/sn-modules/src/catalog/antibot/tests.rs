@@ -506,3 +506,134 @@ async fn наплыв_регистраций_отмечает_новых_тол�
     );
     db.cleanup().await;
 }
+
+#[test]
+fn капча_в_настройках_требует_оба_ключа_и_не_показывает_секрет() {
+    let off = AntibotSettings::parse(&ModuleConfig::default()).unwrap();
+    assert_eq!(off.captcha, captcha::Provider::None);
+    assert_eq!(off.captcha_trial, captcha::Scope::All);
+    assert!(off.captcha_signup);
+    let full = ModuleConfig::from_value(&serde_json::json!({
+        "captcha": "turnstile",
+        "captcha_site_key": " 0x4AAAAAAAsite ",
+        "captcha_secret": "0x4AAAAAAAsecret",
+        "captcha_trial": "suspicious",
+        "captcha_signup": false,
+    }));
+    assert!(AntibotModule.validate_config(&full).is_ok());
+    let settings = AntibotSettings::parse(&full).unwrap();
+    assert_eq!(settings.captcha_site_key, "0x4AAAAAAAsite");
+    assert_eq!(settings.captcha_trial, captcha::Scope::Suspicious);
+    assert!(!settings.captcha_signup);
+    let shown = serde_json::to_string(&settings).unwrap();
+    assert!(!shown.contains("0x4AAAAAAAsecret"), "{shown}");
+    let ready = captcha::Captcha::of(&full).unwrap();
+    assert_eq!(ready.provider, captcha::Provider::Turnstile);
+    assert!(!format!("{ready:?}").contains("0x4AAAAAAAsecret"));
+    let widget = ready.widget("trial", Some("abc".into()));
+    let json = serde_json::to_value(&widget).unwrap();
+    assert_eq!(json["provider"], "turnstile");
+    assert_eq!(json["action"], "trial");
+    assert!(json.get("secret").is_none());
+    for (config, needle) in [
+        (
+            serde_json::json!({ "captcha": "yandex", "captcha_secret": "ysc2_secret" }),
+            "ключ сайта",
+        ),
+        (
+            serde_json::json!({ "captcha": "yandex", "captcha_site_key": "ysc1_site" }),
+            "секретный ключ",
+        ),
+        (serde_json::json!({ "captcha": "hcaptcha" }), "captcha:"),
+        (
+            serde_json::json!({ "captcha": "turnstile", "captcha_site_key": "<script>" }),
+            "captcha_site_key",
+        ),
+    ] {
+        let err = AntibotModule
+            .validate_config(&ModuleConfig::from_value(&config))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(needle), "{err}");
+    }
+    let without_secret = ModuleConfig::from_value(&serde_json::json!({
+        "mode": "block",
+        "captcha": "turnstile",
+        "captcha_site_key": "0x4AAAAAAAsite",
+    }));
+    assert_eq!(
+        AntibotSettings::lenient(&without_secret).mode,
+        Mode::Block,
+        "настройки без секрета в базе не должны сбрасываться"
+    );
+    assert!(captcha::Captcha::of(&without_secret).is_none());
+    assert!(AntibotModule.config_warning(&without_secret).is_some());
+    assert!(AntibotModule.config_warning(&full).is_none());
+}
+
+#[test]
+fn при_смене_сервиса_капчи_секрет_вставляется_заново() {
+    let turnstile = ModuleConfig::from_value(&serde_json::json!({
+        "captcha": "turnstile",
+        "captcha_site_key": "0x4AAAAAAAsite",
+        "captcha_secret": "0x4AAAAAAAsecret",
+    }));
+    let yandex = ModuleConfig::from_value(&serde_json::json!({
+        "captcha": "yandex",
+        "captcha_site_key": "ysc1_site",
+        "captcha_secret": "0x4AAAAAAAsecret",
+    }));
+    assert!(matches!(
+        AntibotModule.validate_change(&turnstile, &yandex, &[]),
+        Err(ModuleError::SecretsAgain(_))
+    ));
+    assert!(
+        AntibotModule
+            .validate_change(&turnstile, &yandex, &["captcha_secret"])
+            .is_ok()
+    );
+    assert!(
+        AntibotModule
+            .validate_change(&turnstile, &turnstile, &[])
+            .is_ok()
+    );
+    let off = ModuleConfig::from_value(&serde_json::json!({ "captcha": "none" }));
+    assert!(AntibotModule.validate_change(&turnstile, &off, &[]).is_ok());
+    assert!(AntibotModule.validate_change(&off, &turnstile, &[]).is_ok());
+}
+
+#[test]
+fn доказательство_работы_проверяется_по_числу_нулевых_битов() {
+    assert_eq!(checks::leading_zero_bits(&[0, 0, 0x0f, 0xff]), 20);
+    assert_eq!(checks::leading_zero_bits(&[0x80]), 0);
+    assert_eq!(checks::leading_zero_bits(&[0, 0]), 16);
+    let seed = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+    let proof = checks::solve(seed, 10);
+    assert!(checks::work_done(seed, &proof, 10));
+    assert!(!checks::work_done("другой-токен", &proof, 30));
+    for bad in ["", "12a", "-1", "123456789012345678901", " "] {
+        assert!(!checks::work_done(seed, bad, 0), "{bad:?}");
+    }
+    assert!(checks::work_done(seed, "7", 0));
+    assert_eq!(checks::cdata(seed).len(), 32);
+    assert_ne!(checks::cdata(seed), checks::cdata("другой"));
+}
+
+#[test]
+fn проверка_в_ответе_сервера_несёт_вид_и_не_несёт_секрета() {
+    let work = serde_json::to_value(Check::Work { bits: 18 }).unwrap();
+    assert_eq!(work, serde_json::json!({ "kind": "work", "bits": 18 }));
+    let button = serde_json::to_value(Check::Button).unwrap();
+    assert_eq!(button, serde_json::json!({ "kind": "button" }));
+    let captcha = serde_json::to_value(Check::Captcha(captcha::Widget {
+        provider: captcha::Provider::Yandex,
+        site_key: "ysc1_site".into(),
+        action: "trial".into(),
+        cdata: None,
+    }))
+    .unwrap();
+    assert_eq!(
+        captcha,
+        serde_json::json!({ "kind": "captcha", "provider": "yandex", "site_key": "ysc1_site", "action": "trial" })
+    );
+}

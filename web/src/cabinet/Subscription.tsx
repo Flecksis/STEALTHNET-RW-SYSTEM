@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
+import { Captcha } from '../lib/captcha';
 import { dateLong, days, money, type Money } from '../lib/format';
 import { countryName } from '../lib/geo';
+import { answerOf, captchaOf, startWork, type CheckAnswer } from '../lib/humanCheck';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
@@ -21,7 +23,7 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function SubscriptionPage() {
-  const { me, site, phone } = useCabinet();
+  const { me, site, phone, theme } = useCabinet();
   const location = useLocation();
   const navigate = useNavigate();
   const subs = useSubs();
@@ -43,6 +45,11 @@ export function SubscriptionPage() {
   const [trialVariant, setTrialVariant] = useState<number | null>(null);
   const [trialBusy, setTrialBusy] = useState(false);
   const [trialCheck, setTrialCheck] = useState<TrialCheck | null>(null);
+  const [trialNote, setTrialNote] = useState<string | null>(null);
+  const [trialPaused, setTrialPaused] = useState(false);
+  const [trialRound, setTrialRound] = useState(0);
+  const trialWork = useRef<Promise<string | null> | null>(null);
+  const trialCaptcha = captchaOf(trialCheck);
   const error = pageError ?? subs.error;
   const trialOn = !!site.trial?.enabled;
   const noSub = view === null;
@@ -131,14 +138,18 @@ export function SubscriptionPage() {
     }
   };
 
-  const startTrial = async (variant: number | null, confirm?: string) => {
+  const startTrial = async (variant: number | null, answer?: CheckAnswer) => {
     setTrialBusy(true);
     setError(null);
     try {
-      const check = await requestTrial(variant, confirm);
+      const check = await requestTrial(variant, answer);
       if (check) {
+        const failed = check.again === 'failed';
         setTrialVariant(variant);
         setTrialCheck(check);
+        trialWork.current = startWork(check);
+        setTrialNote(failed ? t('Проверка не пройдена. Попробуйте ещё раз.') : null);
+        setTrialPaused(failed && check.check?.kind === 'captcha');
         return;
       }
       setTrialCheck(null);
@@ -151,12 +162,30 @@ export function SubscriptionPage() {
       }
     } catch (err) {
       setError(failText(err, t('Пробный период не включился')));
+      if (answer?.captcha) {
+        setTrialPaused(true);
+      }
       loadTrial()
         .then(setTrial)
         .catch(() => setTrial(NO_TRIAL));
     } finally {
       setTrialBusy(false);
     }
+  };
+
+  const confirmTrial = async () => {
+    if (!trialCheck) {
+      return;
+    }
+    setTrialBusy(true);
+    await startTrial(trialVariant, await answerOf(trialCheck, trialWork.current));
+  };
+
+  const againTrial = () => {
+    setTrialPaused(false);
+    setTrialNote(null);
+    setError(null);
+    setTrialRound((n) => n + 1);
   };
 
   if (view === undefined) {
@@ -299,11 +328,29 @@ export function SubscriptionPage() {
         </div>
       ) : null}
       {trialCheck ? (
-        <div className="cb-human" role="group" aria-label={t('Проверка перед пробным периодом')}>
+        <div className={trialCaptcha ? 'cb-human col' : 'cb-human'} role="group" aria-label={t('Проверка перед пробным периодом')}>
           <p className="cb-ink2">{trialCheck.text}</p>
-          <button type="button" className="cb-second" onClick={() => void startTrial(trialVariant, trialCheck.token)} disabled={trialBusy}>
-            {trialBusy ? t('Проверяем…') : t('Я не робот')}
-          </button>
+          {trialNote ? (
+            <p className="cb-warn" role="alert">
+              {trialNote}
+            </p>
+          ) : null}
+          {!trialCaptcha ? (
+            <button type="button" className="cb-second" onClick={() => void confirmTrial()} disabled={trialBusy}>
+              {trialBusy ? t('Проверяем…') : t('Я не робот')}
+            </button>
+          ) : trialPaused ? (
+            <button type="button" className="cb-second" onClick={againTrial}>
+              {t('Пройти проверку ещё раз')}
+            </button>
+          ) : (
+            <Captcha widget={trialCaptcha} theme={theme} round={trialRound} onToken={(token) => void startTrial(trialVariant, { confirm: trialCheck.token, captcha: token })} />
+          )}
+          {trialBusy && trialCaptcha ? (
+            <p className="cb-muted" role="status">
+              {t('Проверяем…')}
+            </p>
+          ) : null}
         </div>
       ) : null}
       <PromoBox subs={subs} />

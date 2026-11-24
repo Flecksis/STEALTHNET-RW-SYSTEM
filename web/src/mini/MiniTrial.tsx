@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { ApiError } from '../lib/api';
+import { Captcha } from '../lib/captcha';
 import { days } from '../lib/format';
+import { answerOf, captchaOf, startWork, type CheckAnswer } from '../lib/humanCheck';
 import { t } from '../lib/i18n';
 import { loadTrial, NO_TRIAL, requestTrial, trialFacts, trialPlaces, trialTitle, type TrialCheck, type TrialOffer } from '../cabinet/trial';
 import { BackHead, useMini } from './MiniApp';
@@ -11,11 +13,16 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function MiniTrial() {
-  const { subs, reload } = useMini();
+  const { subs, reload, theme } = useMini();
   const navigate = useNavigate();
   const [offer, setOffer] = useState<TrialOffer | null>(null);
   const [pick, setPick] = useState<number | null>(null);
   const [check, setCheck] = useState<TrialCheck | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [paused, setPaused] = useState(false);
+  const [round, setRound] = useState(0);
+  const work = useRef<Promise<string | null> | null>(null);
+  const captcha = captchaOf(check);
   const [busy, setBusy] = useState(false);
   const [started, setStarted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,13 +58,17 @@ export function MiniTrial() {
     }
   }, [started, subs.length, navigate]);
 
-  const start = async (variant: number, confirm?: string) => {
+  const start = async (variant: number, answer?: CheckAnswer) => {
     setBusy(true);
     setError(null);
     try {
-      const asked = await requestTrial(variant, confirm);
+      const asked = await requestTrial(variant, answer);
       if (asked) {
+        const failed = asked.again === 'failed';
         setCheck(asked);
+        work.current = startWork(asked);
+        setNote(failed ? t('Проверка не пройдена. Попробуйте ещё раз.') : null);
+        setPaused(failed && asked.check?.kind === 'captcha');
         return;
       }
       setCheck(null);
@@ -68,6 +79,9 @@ export function MiniTrial() {
       }
     } catch (err) {
       setError(failText(err, t('Пробный период не включился')));
+      if (answer?.captcha) {
+        setPaused(true);
+      }
       loadTrial()
         .then((loaded) => alive.current && setOffer(loaded))
         .catch(() => undefined);
@@ -138,9 +152,39 @@ export function MiniTrial() {
           <p className="mn-note" aria-live="polite">
             {check.text}
           </p>
-          <button type="button" className="mn-main press" disabled={busy} onClick={() => void start(picked.id, check.token)}>
-            {busy ? t('Проверяем…') : t('Я не робот')}
-          </button>
+          {note ? (
+            <p className="mn-error" role="alert">
+              {note}
+            </p>
+          ) : null}
+          {!captcha ? (
+            <button
+              type="button"
+              className="mn-main press"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                await start(picked.id, await answerOf(check, work.current));
+              }}
+            >
+              {busy ? t('Проверяем…') : t('Я не робот')}
+            </button>
+          ) : paused ? (
+            <button
+              type="button"
+              className="mn-main press"
+              onClick={() => {
+                setPaused(false);
+                setNote(null);
+                setError(null);
+                setRound((n) => n + 1);
+              }}
+            >
+              {t('Пройти проверку ещё раз')}
+            </button>
+          ) : (
+            <Captcha widget={captcha} theme={theme} round={round} onToken={(token) => void start(picked.id, { confirm: check.token, captcha: token })} />
+          )}
         </>
       ) : choices.length && !started ? (
         <button type="button" className="mn-main press" disabled={busy || !picked} onClick={() => picked && void start(picked.id)}>
