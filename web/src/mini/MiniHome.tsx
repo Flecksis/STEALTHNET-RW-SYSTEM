@@ -112,7 +112,7 @@ export function MiniHome() {
   if (spins !== null) {
     rows.push({ label: t('Рулетка'), icon: 'trophy', value: spins ? count(spins, 'вращение', 'вращения', 'вращений') : undefined, to: '/app/roulette' });
   }
-  if (view && !expired && !blocked && !view.subscription.ended_at) {
+  if (me.options !== false && view && !expired && !blocked && !view.subscription.ended_at) {
     rows.push({ label: t('Докупить устройства или трафик'), icon: 'plus', to: '/app/addons' });
   }
   if (gifts) {
@@ -183,7 +183,7 @@ export function MiniHome() {
           <span className="mn-traffic-sub">
             {t('{n} из {limit}', { n: meter.used, limit: meter.limit })} · {meter.tail}
           </span>
-          {tight ? (
+          {tight && me.options !== false ? (
             <Link to="/app/addons?kind=traffic" className="mn-link press">
               {t('Докупить трафик')}
             </Link>
