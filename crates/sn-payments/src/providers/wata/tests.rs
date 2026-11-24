@@ -749,3 +749,88 @@ fn настройки_wata() {
         assert!(crate::english::text(label.hint).is_some());
     }
 }
+
+#[tokio::test]
+async fn терминал_из_настроек_сверяется_с_уведомлением_транзакцией_и_токеном() {
+    const OTHER: &str = "0f0e0d0c-0b0a-4909-8807-060504030201";
+    let provider = Wata::new();
+    assert!(provider.verifies_webhooks_by_api());
+    let mut own = settings();
+    own.set("terminal_id", json!(TERMINAL));
+    let mut other = settings();
+    other.set("terminal_id", json!(OTHER));
+    let mut broken = settings();
+    broken.set("terminal_id", json!("мой терминал"));
+    assert!(provider.validate_settings(&own).is_ok());
+    assert!(provider.validate_settings(&other).is_ok());
+    assert!(provider.validate_settings(&broken).is_err());
+    assert!(
+        provider
+            .settings_schema()
+            .iter()
+            .any(|f| f.key == "terminal_id" && !f.is_secret())
+    );
+
+    let server = api_with_key().await;
+    with_transaction(&server, TX, tx_json(TX, "Payment", "Paid", 1500.0)).await;
+    let wata = Wata::with_api_base(server.uri());
+    let paid = wata
+        .parse_webhook(&own, &signed(event("Payment", "Paid", TX, "1500.00")))
+        .await
+        .unwrap();
+    assert_eq!(paid.status, ProviderStatus::Paid);
+    assert!(matches!(
+        wata.parse_webhook(&other, &signed(event("Payment", "Paid", TX, "1500.00")))
+            .await,
+        Err(PaymentError::BadPayload(_))
+    ));
+
+    let moved = api_with_key().await;
+    let mut tx = tx_json(TX, "Payment", "Paid", 1500.0);
+    tx["terminalPublicId"] = json!(OTHER);
+    with_transaction(&moved, TX, tx).await;
+    let wata = Wata::with_api_base(moved.uri());
+    assert!(matches!(
+        wata.parse_webhook(&own, &signed(event("Payment", "Paid", TX, "1500.00")))
+            .await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    assert_eq!(
+        wata.parse_webhook(
+            &settings(),
+            &signed(event("Payment", "Paid", TX, "1500.00"))
+        )
+        .await
+        .unwrap()
+        .status,
+        ProviderStatus::Paid
+    );
+
+    let balance = api_with_key().await;
+    Mock::given(method("GET"))
+        .and(path("/finance/balance"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "terminalPublicId": TERMINAL, "date": "2026-11-18", "balance": 10.0, "currency": "RUB"
+        })))
+        .mount(&balance)
+        .await;
+    let context = CheckContext {
+        webhook_url: Some("https://panel.example.com/api/webhooks/pay/wata".into()),
+    };
+    let wata = Wata::with_api_base(balance.uri());
+    let wrong = wata.check_connection(&other, &context).await;
+    assert_eq!(wrong.status, CheckStatus::SettingsRejected, "{wrong:?}");
+    assert!(wrong.details.join("\n").contains(TERMINAL), "{wrong:?}");
+    let right = wata.check_connection(&own, &context).await;
+    assert_eq!(right.status, CheckStatus::Ok, "{right:?}");
+    assert!(
+        !right.details.join("\n").contains("«ID терминала»"),
+        "{right:?}"
+    );
+    let unset = wata.check_connection(&settings(), &context).await;
+    assert_eq!(unset.status, CheckStatus::Ok, "{unset:?}");
+    assert!(
+        unset.details.join("\n").contains("«ID терминала»"),
+        "{unset:?}"
+    );
+}

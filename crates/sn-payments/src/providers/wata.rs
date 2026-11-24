@@ -18,6 +18,7 @@ const LIVE: &str = "https://api.wata.pro/api/h2h";
 const SANDBOX: &str = "https://api-sandbox.wata.pro/api/h2h";
 const TOKEN: &str = "api_token";
 const SANDBOX_MODE: &str = "sandbox";
+const TERMINAL: &str = "terminal_id";
 const TOKEN_MAX: usize = 4096;
 const DESCRIPTION_MAX: usize = 255;
 const KEY_TTL_SECONDS: u64 = 6 * 3600;
@@ -209,6 +210,24 @@ fn deadline(raw: Option<&str>) -> Option<DateTime<Utc>> {
 
 fn token_ok(token: &str) -> bool {
     token.len() <= TOKEN_MAX && token.bytes().all(|b| b.is_ascii_graphic())
+}
+
+fn terminal(config: &ProviderConfig) -> PaymentResult<Option<Uuid>> {
+    match config.get(TERMINAL) {
+        None => Ok(None),
+        Some(raw) => Uuid::parse_str(raw).map(Some).map_err(|_| {
+            PaymentError::NotConfigured(
+                "ID терминала WATA — это UUID из кабинета WATA, например 3b16a2f1-dead-4e5d-abff-90865d1e13b1".into(),
+            )
+        }),
+    }
+}
+
+fn foreign_terminal(object: &Json, own: Option<Uuid>) -> bool {
+    match (own, text(object, "terminalPublicId")) {
+        (Some(own), Some(got)) => Uuid::parse_str(got).ok() != Some(own),
+        _ => false,
+    }
 }
 
 struct CachedKey {
@@ -463,6 +482,12 @@ impl PaymentProvider for Wata {
                 "Тестовая среда",
                 "Запросы идут в песочницу WATA, оплата тестовыми картами. Токен для неё выдаётся в тестовом кабинете, который открывает менеджер WATA",
             ),
+            SettingField::text(
+                TERMINAL,
+                "ID терминала",
+                "Необязательно. ID терминала из кабинета WATA, его же показывает «Проверить подключение». Если указан, панель принимает уведомления только этого терминала",
+            )
+            .optional(),
         ]
     }
 
@@ -472,16 +497,19 @@ impl PaymentProvider for Wata {
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
         util::require_fields(&self.settings_schema(), config)?;
-        if config.get(TOKEN).is_some_and(token_ok) {
-            Ok(())
-        } else {
-            Err(PaymentError::NotConfigured(
+        if !config.get(TOKEN).is_some_and(token_ok) {
+            return Err(PaymentError::NotConfigured(
                 "токен WATA вставлен с лишними символами: нужен текст без пробелов и переносов строк".into(),
-            ))
+            ));
         }
+        terminal(config).map(|_| ())
     }
 
     fn accepts_http_webhooks(&self) -> bool {
+        true
+    }
+
+    fn verifies_webhooks_by_api(&self) -> bool {
         true
     }
 
@@ -596,6 +624,12 @@ impl PaymentProvider for Wata {
             return Err(PaymentError::BadSignature);
         }
         let body = Json::parse(&request.body).ok_or_else(|| util::bad("тело не JSON"))?;
+        let own = terminal(config)?;
+        if foreign_terminal(&body, own) {
+            return Err(util::bad(
+                "уведомление другого терминала WATA: его ID не совпал с ID терминала в настройках",
+            ));
+        }
         if let Some(event) = text(&body, "eventType") {
             return Ok(util::skipped(
                 util::clip(event, 64),
@@ -632,6 +666,11 @@ impl PaymentProvider for Wata {
         })?;
         if is_refund(&tx) != refund {
             return Err(util::bad("вид транзакции WATA не совпал с уведомлением"));
+        }
+        if foreign_terminal(&tx, own) {
+            return Err(util::bad(
+                "транзакция WATA относится к другому терминалу, чем указан в настройках",
+            ));
         }
         transaction_outcome(&tx)
     }
@@ -749,16 +788,35 @@ impl PaymentProvider for Wata {
             return ConnectionCheck::failed(&failure(&reply));
         }
         let mut check = ConnectionCheck::ok("Токен принят WATA");
+        let wanted = match terminal(config) {
+            Ok(wanted) => wanted,
+            Err(err) => return ConnectionCheck::failed(&err),
+        };
         if let Some(parsed) = Json::parse(&reply.body)
-            && let Some(terminal) = text(&parsed, "terminalPublicId")
+            && let Some(found) = text(&parsed, "terminalPublicId")
         {
+            if foreign_terminal(&parsed, wanted) {
+                return ConnectionCheck::new(
+                    CheckStatus::SettingsRejected,
+                    "ID терминала в настройках не совпадает с терминалом токена WATA",
+                )
+                .detail(format!(
+                    "Токен относится к терминалу {}. Впишите этот ID в поле «ID терминала» или очистите поле: с другим ID панель отклонит уведомления об оплате",
+                    util::clip(found, 64)
+                ));
+            }
             let currency = text(&parsed, "currency")
                 .map(|c| format!(", валюта баланса {}", util::clip(c, 8)))
                 .unwrap_or_default();
             check = check.detail(format!(
                 "Токен относится к терминалу {}{currency}",
-                util::clip(terminal, 64)
+                util::clip(found, 64)
             ));
+            if wanted.is_none() {
+                check = check.detail(
+                    "Чтобы панель принимала уведомления только этого терминала, впишите его ID в поле «ID терминала»",
+                );
+            }
         }
         let base = self.base(config).to_string();
         match self.fetch_key(&base).await {
