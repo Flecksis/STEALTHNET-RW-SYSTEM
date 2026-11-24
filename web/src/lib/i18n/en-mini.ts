@@ -1,4 +1,8 @@
 export const MINI: Record<string, string> = {
+  'Пробный период не загрузился': 'Couldn\'t load the free trial',
+  'Пробный период сейчас недоступен.': 'The free trial isn\'t available right now.',
+  'Пробный период оформляется. Подписка появится здесь через минуту.': 'Your free trial is being set up. The subscription will show up here in a minute.',
+  'Включить пробный период': 'Start the free trial',
   'Не получилось скопировать: выделите ссылку вручную': 'Couldn\'t copy. Select the link manually',
   'Сначала оформите подписку — потом здесь появятся шаги подключения.': 'Get a subscription first, and the setup steps will show up here.',
   'Всё на одной странице': 'Everything on one page',

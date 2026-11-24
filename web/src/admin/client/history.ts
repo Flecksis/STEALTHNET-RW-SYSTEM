@@ -79,6 +79,11 @@ function period(order: OrderBrief): string {
   return periodLabel(order.days) ?? '';
 }
 
+function trialName(order: OrderBrief): string {
+  const variant = order.tariff_name && order.tariff_name !== 'Пробный период' ? ` «${order.tariff_name}»` : '';
+  return `Пробный период${variant}`;
+}
+
 function bought(order: OrderBrief | null): string {
   if (!order) {
     return 'Оплата заказа';
@@ -93,7 +98,7 @@ function bought(order: OrderBrief | null): string {
     case 'module':
       return order.label ? `Оплата: ${order.label}` : 'Оплата дополнения';
     case 'trial':
-      return 'Пробный период';
+      return trialName(order);
     default:
       return span ? `Оплата ${name} на ${span}` : `Оплата ${name}`;
   }
@@ -208,7 +213,7 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
     case 'order': {
       const { order } = item;
       if (order.kind === 'trial') {
-        return { ...base, what: order.days ? `Пробный период на ${days(order.days)}` : 'Пробный период', note: '', sum: '' };
+        return { ...base, what: order.days ? `${trialName(order)} на ${days(order.days)}` : trialName(order), note: '', sum: '' };
       }
       const name = order.tariff_name ? `«${order.tariff_name}»` : 'подписка';
       const span = period(order);

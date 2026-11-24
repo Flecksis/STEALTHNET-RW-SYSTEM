@@ -821,7 +821,7 @@ async fn настройки_ядра_оплаты_и_remnawave_через_http()
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(h.services().settings().trial.days, 3);
+    assert_eq!(h.services().settings().trial.variants[0].days, 3);
     let (status, body) = h
         .write(
             Method::PUT,
@@ -1635,11 +1635,13 @@ async fn кабинет_видит_свой_платёж_и_обращения()
         conn.settings()
             .set(
                 keys::TRIAL,
-                &serde_json::to_value(sn_domain::settings::TrialSettings {
-                    enabled: true,
-                    squads: vec![SquadId(Uuid::from_u128(1))],
-                    ..sn_domain::settings::TrialSettings::default()
-                })
+                &serde_json::to_value(sn_domain::settings::TrialSettings::single(
+                    true,
+                    3,
+                    vec![SquadId(Uuid::from_u128(1))],
+                    sn_domain::traffic::TrafficPolicy::UNLIMITED,
+                    1,
+                ))
                 .unwrap(),
                 None,
             )
@@ -1718,6 +1720,144 @@ async fn клиенты_ищутся_и_история_собирается_че
         .get(&format!("/api/admin/clients/{}/history", second.0), &owner)
         .await;
     assert_eq!(status, StatusCode::OK);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn варианты_пробного_периода_через_админку_и_кабинет() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let squad = |n: u128| Uuid::from_u128(n).to_string();
+    let unlimited = json!({ "limit_bytes": null, "reset": "no_reset" });
+    let (status, trial) = h.get("/api/admin/settings/trial", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{trial}");
+    assert_eq!(trial["enabled"], false);
+    assert_eq!(trial["variants"].as_array().unwrap().len(), 1);
+    assert_eq!(trial["variants"][0]["id"], 1);
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/trial",
+            &owner,
+            json!({
+                "enabled": true,
+                "variants": [
+                    { "id": 1, "name": "Россия", "enabled": true, "days": 3, "devices": 1, "squads": [squad(1)], "traffic": unlimited },
+                    { "id": 0, "name": "", "enabled": true, "days": 1, "devices": 2, "squads": [squad(2)], "traffic": unlimited }
+                ]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "settings.invalid_field");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("вариант 2: укажите название"),
+        "{body}"
+    );
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/trial",
+            &owner,
+            json!({
+                "enabled": true,
+                "variants": [
+                    { "id": 1, "name": " Россия ", "enabled": true, "days": 3, "devices": 1, "squads": [squad(1)], "traffic": unlimited },
+                    { "id": 0, "name": "Европа", "enabled": true, "days": 1, "devices": 2, "squads": [squad(2)], "traffic": { "limit_bytes": 10_737_418_240u64, "reset": "no_reset" } },
+                    { "id": 0, "name": "США", "enabled": false, "days": 7, "devices": 1, "squads": [], "traffic": unlimited }
+                ]
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let ids: Vec<i64> = saved["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, [1, 2, 3]);
+    assert_eq!(saved["variants"][0]["name"], "Россия");
+    assert_eq!(saved["days"], 3);
+    assert_eq!(saved["squads"], json!([squad(1)]));
+    h.services().set_remna(Some(h.remna.clone()));
+    let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
+    assert_eq!(site["trial"], json!({ "enabled": true, "days": 1 }));
+    let client = h.client(5_093_118_422).await;
+    let token = h.client_token(client).await;
+    let (status, offer) = h.get("/api/client/trial", &token).await;
+    assert_eq!(status, StatusCode::OK, "{offer}");
+    assert_eq!(offer["available"], true);
+    let names: Vec<&str> = offer["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Россия", "Европа"]);
+    assert_eq!(offer["variants"][1]["devices"], 2);
+    assert_eq!(
+        offer["variants"][1]["traffic"]["limit_bytes"],
+        10_737_418_240u64
+    );
+    assert!(offer["variants"][1]["countries"].is_array());
+    assert!(offer["variants"][0].get("squads").is_none(), "{offer}");
+    let (status, body) = h
+        .write(Method::POST, "/api/client/trial", &token, json!({}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "trial.variant_required");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/client/trial",
+            &token,
+            json!({ "variant": 3 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "trial.variant_unavailable");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/client/trial",
+            &token,
+            json!({ "variant": 2 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order_id = sn_domain::ids::OrderId(body["order_id"].as_i64().unwrap());
+    let order = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.orders().get(order_id).await.unwrap()
+    };
+    assert_eq!(order.snapshot.unwrap().name, "Европа");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/client/trial",
+            &token,
+            json!({ "variant": 1 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "trial.used");
+    let (_, offer) = h.get("/api/client/trial", &token).await;
+    assert_eq!(offer, json!({ "available": false, "variants": [] }));
+    let (status, old) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/trial",
+            &owner,
+            json!({ "enabled": true, "days": 5, "squads": [squad(1)], "devices": 1, "traffic": unlimited }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{old}");
+    assert_eq!(old["variants"].as_array().unwrap().len(), 1);
+    assert_eq!(old["variants"][0]["days"], 5);
     h.db.cleanup().await;
 }
 

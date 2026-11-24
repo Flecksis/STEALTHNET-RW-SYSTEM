@@ -139,6 +139,10 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "trial.no_identity" => "The free trial needs an account with Telegram or email.",
         "trial.not_configured" => "The free trial isn't set up yet.",
         "trial.used" => "You've already used the free trial.",
+        "trial.variant_required" => "Choose which free trial to start.",
+        "trial.variant_unavailable" => {
+            "This free trial option isn't available right now. Please choose another one."
+        }
         "addon.no_tariff" => "This subscription has no plan.",
         "addon.unlimited" => "This subscription has unlimited traffic, nothing to add.",
         "addon.wait" => "The previous order is still being delivered. Please wait a minute.",
@@ -172,6 +176,8 @@ mod tests {
         for code in [
             "auth.rate_limited",
             "trial.used",
+            "trial.variant_required",
+            "trial.variant_unavailable",
             "payment.error",
             "support.closed",
             "support.files_quota",

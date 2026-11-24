@@ -789,16 +789,16 @@ impl<'a> Extras<'a> {
                 .or_else(|| value(old, "trial_traffic_limit_bytes"))
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|b| *b > 0);
-            let trial = TrialSettings {
-                enabled: true,
-                days: days.min(90),
-                squads: vec![SquadId(squad)],
-                traffic: TrafficPolicy {
+            let trial = TrialSettings::single(
+                true,
+                days.min(90),
+                vec![SquadId(squad)],
+                TrafficPolicy {
                     limit_bytes: limit,
                     reset: TrafficReset::NoReset,
                 },
                 devices,
-            };
+            );
             let result = ops.update_trial(&trial, actor).await.map(|_| ());
             self.outcome("Пробный период", result);
         }

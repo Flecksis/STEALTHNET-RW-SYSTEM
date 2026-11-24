@@ -18,7 +18,8 @@ use sn_domain::payment::{
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
     ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, SupportMode,
-    TopUpSettings, TrialSettings, keys, secret_keys,
+    TRIAL_NAME_MAX, TRIAL_VARIANTS_MAX, TopUpSettings, TrialSettings, TrialVariant, keys,
+    secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -799,6 +800,111 @@ pub async fn module_secret_rows(
         }
     }
     Ok(merged)
+}
+
+const TRIAL_ID_MAX: u32 = 999_999;
+
+fn variant_error(index: usize, variant: &TrialVariant, reason: &str) -> ServiceError {
+    let name = variant.name.trim();
+    let who = if name.is_empty() {
+        format!("вариант {}", index + 1)
+    } else {
+        format!("вариант «{name}»")
+    };
+    ServiceError::rejected("settings.invalid_field", format!("{who}: {reason}"))
+}
+
+pub(crate) fn checked_trial(
+    trial: &TrialSettings,
+    saved: &TrialSettings,
+) -> ServiceResult<TrialSettings> {
+    let count = trial.variants.len();
+    if count == 0 || count > TRIAL_VARIANTS_MAX {
+        return Err(field_error(
+            "variants",
+            &format!("от 1 до {TRIAL_VARIANTS_MAX} вариантов пробного периода"),
+        ));
+    }
+    let mut next = trial
+        .variants
+        .iter()
+        .chain(saved.variants.iter())
+        .map(|v| v.id)
+        .filter(|id| *id <= TRIAL_ID_MAX)
+        .max()
+        .unwrap_or(0);
+    let mut ids: Vec<u32> = Vec::with_capacity(count);
+    let mut names: Vec<String> = Vec::with_capacity(count);
+    let mut variants: Vec<TrialVariant> = Vec::with_capacity(count);
+    for (index, sent) in trial.variants.iter().enumerate() {
+        let mut variant = sent.clone();
+        variant.name = variant.name.trim().to_string();
+        if variant.name.chars().count() > TRIAL_NAME_MAX {
+            return Err(variant_error(
+                index,
+                &variant,
+                &format!("название до {TRIAL_NAME_MAX} знаков"),
+            ));
+        }
+        if count > 1 && variant.name.is_empty() {
+            return Err(variant_error(
+                index,
+                &variant,
+                "укажите название, по нему клиент выбирает вариант",
+            ));
+        }
+        let folded = variant.name.to_lowercase();
+        if !folded.is_empty() && names.contains(&folded) {
+            return Err(variant_error(
+                index,
+                &variant,
+                "такое название уже есть у другого варианта",
+            ));
+        }
+        names.push(folded);
+        if !(1..=90).contains(&variant.days) {
+            return Err(variant_error(index, &variant, "срок от 1 до 90 дней"));
+        }
+        if !(1..=100).contains(&variant.devices) {
+            return Err(variant_error(index, &variant, "от 1 до 100 устройств"));
+        }
+        variant.traffic.validate()?;
+        if trial.enabled && variant.enabled && variant.squads.is_empty() {
+            return Err(variant_error(
+                index,
+                &variant,
+                "выберите хотя бы один сквад, иначе у пробной подписки не будет серверов",
+            ));
+        }
+        let mut unique = variant.squads.clone();
+        unique.sort();
+        unique.dedup();
+        if unique.len() != variant.squads.len() {
+            return Err(variant_error(index, &variant, "сквад указан дважды"));
+        }
+        if variant.id > TRIAL_ID_MAX {
+            return Err(variant_error(index, &variant, "неверный номер варианта"));
+        }
+        if variant.id == 0 {
+            next += 1;
+            variant.id = next;
+        }
+        if ids.contains(&variant.id) {
+            return Err(variant_error(index, &variant, "номер варианта повторяется"));
+        }
+        ids.push(variant.id);
+        variants.push(variant);
+    }
+    if trial.enabled && !variants.iter().any(|v| v.enabled) {
+        return Err(field_error(
+            "variants",
+            "включите хотя бы один вариант или выключите пробный период",
+        ));
+    }
+    Ok(TrialSettings {
+        enabled: trial.enabled,
+        variants,
+    })
 }
 
 fn field_error(field: &str, reason: &str) -> ServiceError {
@@ -1599,25 +1705,7 @@ impl<'a> SettingsOps<'a> {
         trial: &TrialSettings,
         admin: AdminId,
     ) -> ServiceResult<TrialSettings> {
-        if !(1..=90).contains(&trial.days) {
-            return Err(field_error("days", "пробный период от 1 до 90 дней"));
-        }
-        if !(1..=100).contains(&trial.devices) {
-            return Err(field_error("devices", "от 1 до 100 устройств"));
-        }
-        trial.traffic.validate()?;
-        if trial.enabled && trial.squads.is_empty() {
-            return Err(field_error(
-                "squads",
-                "выберите хотя бы один сквад, иначе у пробной подписки не будет серверов",
-            ));
-        }
-        let mut unique = trial.squads.clone();
-        unique.sort();
-        unique.dedup();
-        if unique.len() != trial.squads.len() {
-            return Err(field_error("squads", "сквад указан дважды"));
-        }
+        let trial = &checked_trial(trial, &self.services.settings().trial)?;
         let mut tx = self.services.store().begin().await?;
         tx.settings()
             .set_as(keys::TRIAL, trial, Some(admin))
@@ -3037,6 +3125,147 @@ mod tests {
         );
         assert_eq!(mask_secret(&"7f3c".repeat(16)), "7f3c…7f3c");
         assert_eq!(mask_secret("short"), "…");
+    }
+
+    fn variant(id: u32, name: &str, enabled: bool, squads: &[u128]) -> TrialVariant {
+        TrialVariant {
+            id,
+            name: name.into(),
+            enabled,
+            days: 3,
+            squads: squads
+                .iter()
+                .map(|n| sn_domain::ids::SquadId(uuid::Uuid::from_u128(*n)))
+                .collect(),
+            traffic: sn_domain::traffic::TrafficPolicy::UNLIMITED,
+            devices: 1,
+        }
+    }
+
+    fn trial(enabled: bool, variants: Vec<TrialVariant>) -> TrialSettings {
+        TrialSettings { enabled, variants }
+    }
+
+    fn reason(result: ServiceResult<TrialSettings>) -> String {
+        match result {
+            Err(ServiceError::Rejected { message, .. }) => message,
+            other => panic!("ожидалась ошибка проверки: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn варианты_пробного_периода_проверяются_и_получают_номера() {
+        let saved = trial(
+            true,
+            vec![variant(1, "", true, &[1]), variant(5, "Старый", true, &[2])],
+        );
+        let checked = checked_trial(
+            &trial(
+                true,
+                vec![
+                    variant(1, "  Европа ", true, &[1]),
+                    variant(0, "Россия", false, &[]),
+                    variant(0, "США", true, &[3]),
+                ],
+            ),
+            &saved,
+        )
+        .unwrap();
+        let ids: Vec<u32> = checked.variants.iter().map(|v| v.id).collect();
+        assert_eq!(ids, [1, 6, 7]);
+        assert_eq!(checked.variants[0].name, "Европа");
+        let single = checked_trial(
+            &trial(true, vec![variant(0, "", true, &[1])]),
+            &TrialSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(single.variants[0].id, 2);
+        assert_eq!(single.variants[0].name, "");
+        let off = checked_trial(&trial(false, vec![variant(1, "", true, &[])]), &saved).unwrap();
+        assert!(!off.enabled);
+        assert!(
+            reason(checked_trial(
+                &trial(true, vec![variant(1, "", true, &[])]),
+                &saved
+            ))
+            .contains("сквад")
+        );
+        assert!(
+            reason(checked_trial(
+                &trial(
+                    true,
+                    vec![variant(1, "Европа", true, &[1]), variant(2, "", true, &[2])]
+                ),
+                &saved,
+            ))
+            .contains("вариант 2: укажите название")
+        );
+        assert!(
+            reason(checked_trial(
+                &trial(
+                    true,
+                    vec![
+                        variant(1, "Европа", true, &[1]),
+                        variant(2, "европа", true, &[2])
+                    ]
+                ),
+                &saved,
+            ))
+            .contains("уже есть")
+        );
+        assert!(
+            reason(checked_trial(
+                &trial(
+                    true,
+                    vec![variant(3, "А", true, &[1]), variant(3, "Б", true, &[2])]
+                ),
+                &saved,
+            ))
+            .contains("повторяется")
+        );
+        assert!(
+            reason(checked_trial(
+                &trial(
+                    true,
+                    vec![variant(1, "А", false, &[1]), variant(2, "Б", false, &[2])]
+                ),
+                &saved,
+            ))
+            .contains("включите хотя бы один вариант")
+        );
+        assert!(
+            reason(checked_trial(
+                &trial(true, vec![variant(1, "", true, &[1, 1])]),
+                &saved
+            ))
+            .contains("дважды")
+        );
+        let mut long = variant(1, &"я".repeat(TRIAL_NAME_MAX + 1), true, &[1]);
+        assert!(
+            reason(checked_trial(&trial(true, vec![long.clone()]), &saved)).contains("название до")
+        );
+        long.name = "я".repeat(TRIAL_NAME_MAX);
+        assert!(checked_trial(&trial(true, vec![long]), &saved).is_ok());
+        let mut short = variant(1, "", true, &[1]);
+        short.days = 0;
+        assert!(
+            reason(checked_trial(&trial(true, vec![short.clone()]), &saved)).contains("от 1 до 90")
+        );
+        short.days = 3;
+        short.devices = 101;
+        assert!(reason(checked_trial(&trial(true, vec![short]), &saved)).contains("устройств"));
+        let many: Vec<TrialVariant> = (1..=TRIAL_VARIANTS_MAX as u32 + 1)
+            .map(|n| variant(n, &format!("Вариант {n}"), true, &[u128::from(n)]))
+            .collect();
+        assert!(reason(checked_trial(&trial(true, many), &saved)).contains("вариантов"));
+        assert!(reason(checked_trial(&trial(true, Vec::new()), &saved)).contains("вариантов"));
+        assert!(
+            reason(checked_trial(
+                &trial(true, vec![variant(TRIAL_ID_MAX + 1, "", true, &[1])]),
+                &saved
+            ))
+            .contains("номер")
+        );
     }
 
     #[test]

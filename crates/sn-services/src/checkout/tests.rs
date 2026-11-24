@@ -315,7 +315,7 @@ async fn пробный_период_один_раз_и_с_тегом() {
     let order_id = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     let order = order(&kit.services, order_id).await;
@@ -324,7 +324,7 @@ async fn пробный_период_один_раз_и_с_тегом() {
     let again = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap_err();
     assert_eq!(again.code(), "trial.used");
@@ -347,10 +347,173 @@ async fn пробный_период_один_раз_и_с_тегом() {
     let after = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap_err();
     assert_eq!(after.code(), "trial.has_subscription");
+    kit.db.cleanup().await;
+}
+
+fn place_squads(kit: &Kit, places: &[(u128, &str)]) {
+    use sn_remnawave::fake::sample_node;
+    use sn_remnawave::{Inbound, InternalSquad, NodeConfigProfile, NodeDetails, SquadInfo};
+    let mut squads = Vec::new();
+    let mut nodes = Vec::new();
+    for n in [1u128, 2, 3, 9] {
+        let place = places.iter().find(|(id, _)| *id == n);
+        let inbound = Inbound {
+            uuid: Uuid::from_u128(0x100 + n),
+            profile_uuid: None,
+            tag: format!("IN-{n}"),
+            kind: "vless".into(),
+            network: Some("tcp".into()),
+            security: Some("reality".into()),
+            port: Some(443),
+        };
+        squads.push(InternalSquad {
+            uuid: squad(n).0,
+            name: format!("Сквад {n}"),
+            view_position: 0,
+            info: SquadInfo::default(),
+            inbounds: if place.is_some() {
+                vec![inbound.clone()]
+            } else {
+                Vec::new()
+            },
+        });
+        if let Some((_, country)) = place {
+            let mut node = NodeDetails::from(sample_node(
+                Uuid::from_u128(0x200 + n),
+                &format!("N-{n}"),
+                country,
+            ));
+            node.config_profile = Some(NodeConfigProfile {
+                active_config_profile_uuid: None,
+                active_inbounds: vec![inbound],
+            });
+            nodes.push(node);
+        }
+    }
+    kit.remna.set_squads(squads);
+    kit.remna.set_node_details(nodes);
+}
+
+#[tokio::test]
+async fn вариант_пробного_периода_выбирает_клиент_и_пробник_один_на_всех() {
+    let Some(kit) = kit().await else { return };
+    let mut europe = trial_variant(4, "Европа", true, 1, 2, &[2]);
+    europe.traffic = TrafficPolicy {
+        limit_bytes: Some(10 * 1024 * 1024 * 1024),
+        reset: sn_domain::traffic::TrafficReset::NoReset,
+    };
+    set_trial_variants(
+        &kit,
+        vec![
+            trial_variant(1, "Россия", true, 3, 1, &[1]),
+            europe,
+            trial_variant(7, "Черновик", false, 5, 1, &[3]),
+        ],
+    )
+    .await;
+    place_squads(&kit, &[(1, "RU"), (2, "NL")]);
+    let checkout = kit.services.checkout();
+    let first = client(&kit.services, 2_710_000_001).await;
+    let offer = checkout.trial_offer(first).await.unwrap();
+    assert!(offer.available);
+    let shown: Vec<(u32, &str, u32, u32)> = offer
+        .variants
+        .iter()
+        .map(|v| (v.id, v.name.as_str(), v.days, v.devices))
+        .collect();
+    assert_eq!(shown, [(1, "Россия", 3, 1), (4, "Европа", 1, 2)]);
+    assert_eq!(offer.variants[0].countries, ["RU"]);
+    assert_eq!(offer.variants[1].countries, ["NL"]);
+    assert_eq!(
+        offer.variants[1].traffic.limit_bytes,
+        Some(10 * 1024 * 1024 * 1024)
+    );
+    let code = |result: ServiceResult<OrderId>| result.unwrap_err().code();
+    assert_eq!(
+        code(checkout.start_trial(first, None).await),
+        "trial.variant_required"
+    );
+    assert_eq!(
+        code(checkout.start_trial(first, Some(7)).await),
+        "trial.variant_unavailable"
+    );
+    assert_eq!(
+        code(checkout.start_trial(first, Some(99)).await),
+        "trial.variant_unavailable"
+    );
+    let order_id = checkout.start_trial(first, Some(4)).await.unwrap();
+    let order = order(&kit.services, order_id).await;
+    assert_eq!(order.kind, OrderKind::Trial);
+    assert_eq!(order.intent, PurchaseIntent::Trial);
+    assert_eq!(order.status, OrderStatus::Paid);
+    assert!(order.paid_at.is_some());
+    assert_eq!(order.quote.days, 1);
+    let snapshot = order.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.name, "Европа");
+    assert_eq!((snapshot.days, snapshot.devices_included), (1, 2));
+    assert_eq!(snapshot.squads, vec![squad(2)]);
+    assert_eq!(snapshot.traffic.limit_bytes, Some(10 * 1024 * 1024 * 1024));
+    assert_eq!(
+        code(checkout.start_trial(first, Some(1)).await),
+        "trial.used"
+    );
+    let after = checkout.trial_offer(first).await.unwrap();
+    assert!(!after.available);
+    assert!(after.variants.is_empty());
+    let outcome = kit.services.fulfillment().run(order_id).await.unwrap();
+    assert!(
+        matches!(outcome, FulfillmentOutcome::Done { .. }),
+        "{outcome:?}"
+    );
+    let order = self::order(&kit.services, order_id).await;
+    let subscription = subscription(&kit.services, &order).await;
+    assert_eq!(subscription.kind, SubscriptionKind::Trial);
+    let user = remna_user(&kit, &subscription).await;
+    assert_eq!(user.squad_ids(), vec![squad(2)]);
+    assert_eq!(user.hwid_device_limit, Some(2));
+    assert_eq!(user.traffic_limit_bytes, 10 * 1024 * 1024 * 1024);
+    assert_eq!((user.expire_at - order.paid_at.unwrap()).num_hours(), 24);
+    let second = client(&kit.services, 2_730_000_001).await;
+    let order_id = checkout.start_trial(second, Some(1)).await.unwrap();
+    let order = self::order(&kit.services, order_id).await;
+    let snapshot = order.snapshot.as_ref().unwrap();
+    assert_eq!((snapshot.name.as_str(), snapshot.days), ("Россия", 3));
+    assert_eq!(snapshot.squads, vec![squad(1)]);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn один_вариант_выдаётся_без_выбора_а_без_вариантов_пробника_нет() {
+    let Some(kit) = kit().await else { return };
+    set_trial_variants(
+        &kit,
+        vec![
+            trial_variant(2, "", true, 2, 1, &[1]),
+            trial_variant(3, "Выключен", false, 9, 1, &[2]),
+        ],
+    )
+    .await;
+    let checkout = kit.services.checkout();
+    let only = client(&kit.services, 2_750_000_001).await;
+    let offer = checkout.trial_offer(only).await.unwrap();
+    assert_eq!(offer.variants.len(), 1);
+    assert_eq!(offer.variants[0].name, "");
+    let order_id = checkout.start_trial(only, None).await.unwrap();
+    let order = order(&kit.services, order_id).await;
+    let snapshot = order.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.name, "Пробный период");
+    assert_eq!(snapshot.days, 2);
+    set_trial_variants(&kit, vec![trial_variant(2, "", false, 2, 1, &[1])]).await;
+    let late = client(&kit.services, 2_770_000_001).await;
+    assert!(!checkout.trial_offer(late).await.unwrap().available);
+    assert_eq!(
+        checkout.start_trial(late, None).await.unwrap_err().code(),
+        "trial.not_configured"
+    );
     kit.db.cleanup().await;
 }
 
@@ -361,7 +524,7 @@ async fn покупка_после_пробного_периода_меняет_
     let trial = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     kit.services.fulfillment().run(trial).await.unwrap();

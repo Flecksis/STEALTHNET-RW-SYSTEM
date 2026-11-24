@@ -191,16 +191,27 @@ pub async fn facts(
     } else {
         lines.insert(lines.len() - offered, "Тарифы в продаже:".to_string());
     }
-    let trial = &settings.trial;
-    if trial.enabled && trial.days > 0 && !trial.squads.is_empty() {
-        lines.push(format!(
+    let offered = settings.trial.offered();
+    match offered.as_slice() {
+        [] => lines.push("Пробного периода нет.".to_string()),
+        [only] => lines.push(format!(
             "Пробный период: {} бесплатно, один раз и только если у клиента ещё не было подписки. {}, {}. Включается в боте, в кабинете или в мини-приложении.",
-            format::days(trial.days),
-            devices_word(trial.devices),
-            traffic_text(&trial.traffic)
-        ));
-    } else {
-        lines.push("Пробного периода нет.".to_string());
+            format::days(only.days),
+            devices_word(only.devices),
+            traffic_text(&only.traffic)
+        )),
+        several => {
+            lines.push("Пробный период: бесплатно, один раз и только если у клиента ещё не было подписки. Клиент выбирает один из вариантов в боте, в кабинете или в мини-приложении:".to_string());
+            for variant in several {
+                lines.push(format!(
+                    "- {}: {}, {}, {}.",
+                    variant.name,
+                    format::days(variant.days),
+                    devices_word(variant.devices),
+                    traffic_text(&variant.traffic)
+                ));
+            }
+        }
     }
     lines.push("Оплата и продление: в кабинете на странице «Оплата», в боте и в мини-приложении. Баланс пополняется там же.".to_string());
     lines.push(connect_text(settings));

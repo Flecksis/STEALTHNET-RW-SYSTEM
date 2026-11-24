@@ -72,6 +72,10 @@ pub fn default(key: &str) -> Option<&'static str> {
             "To get the free trial, confirm you're not a robot: tap the button below."
         }
         "sub.btn.trial_confirm" => "I'm not a robot",
+        "sub.trial_choose" => "<b>Choose your free trial</b>",
+        "sub.trial_variant_line" => "{variant} — {days}, devices: {count}, traffic: {limit}",
+        "sub.trial_variant_unlimited" => "{variant} — {days}, devices: {count}, unlimited traffic",
+        "sub.btn.trial_variant" => "{variant} · {days}",
         "dev.empty" => "No devices yet. They appear once you add the subscription to an app.",
         "dev.title" => "<b>Devices</b>",
         "dev.line" => "{n}. {title} — {details}, added {date}",

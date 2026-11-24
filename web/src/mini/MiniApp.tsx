@@ -21,6 +21,7 @@ import { MiniProfile } from './MiniProfile';
 import { MiniPromo } from './MiniPromo';
 import { MiniEmail, MiniLanguage, MiniPassword, MiniTotp } from './MiniAccount';
 import { MiniTopUp } from './MiniTopUp';
+import { MiniTrial } from './MiniTrial';
 import { MiniRoulette } from './MiniRoulette';
 import { MiniWithdraw } from './MiniWithdraw';
 import { MiniSupport, MiniTicket } from './MiniSupport';
@@ -276,6 +277,7 @@ export function MiniApp() {
         <Routes>
           <Route index element={<MiniHome />} />
           <Route path="plans" element={<MiniPlans />} />
+          <Route path="trial" element={<MiniTrial />} />
           <Route path="connect" element={<MiniConnect />} />
           <Route path="profile" element={<MiniProfile />} />
           <Route path="profile/email" element={<MiniEmail />} />

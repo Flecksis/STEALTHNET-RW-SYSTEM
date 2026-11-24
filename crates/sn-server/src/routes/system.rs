@@ -142,7 +142,14 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "appearance": settings.appearance,
             "connect": settings.connect,
             "autorenew_days_before": settings.autorenew.charge_days_before,
-            "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
+            "trial": {
+                "enabled": settings.trial.is_offered(),
+                "days": settings
+                    .trial
+                    .shortest_days()
+                    .or(settings.trial.first().map(|v| v.days))
+                    .unwrap_or(0),
+            },
             "documents": state.services.bot_content().documents,
             "email_auth": email_auth,
             "email_reset": email_reset,

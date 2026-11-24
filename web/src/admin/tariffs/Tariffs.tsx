@@ -36,7 +36,28 @@ import {
 import '../form.css';
 import './tariffs.css';
 
-type Trial = { enabled: boolean; days: number; squads: string[]; traffic: { limit_bytes: number | null; reset: TrafficReset }; devices: number };
+type TrialVariant = { id: number; name: string; enabled: boolean; days: number; devices: number; squads: string[]; traffic: { limit_bytes: number | null; reset: TrafficReset } };
+type Trial = { enabled: boolean; variants: TrialVariant[] };
+type VariantDraft = { key: string; id: number; name: string; enabled: boolean; days: string; devices: string; gb: string; squads: string[] };
+
+const TRIAL_VARIANTS_MAX = 10;
+const TRIAL_NAME_MAX = 40;
+
+function offeredVariants(trial: Trial): TrialVariant[] {
+  return trial.enabled ? trial.variants.filter((v) => v.enabled && v.squads.length > 0) : [];
+}
+
+function trialSummary(trial: Trial): string {
+  const offered = offeredVariants(trial);
+  const [only] = offered;
+  if (!only) {
+    return 'выключен';
+  }
+  if (offered.length === 1) {
+    return `${only.days}${NBSP}${plural(only.days, 'день', 'дня', 'дней')}`;
+  }
+  return count(offered.length, 'вариант', 'варианта', 'вариантов');
+}
 type Multi = { enabled: boolean };
 
 const DEFAULT_CHANNELS: Channels = { bot: true, cabinet: true, miniapp: true };
@@ -232,7 +253,7 @@ export function Tariffs() {
         ) : null}
         {settingsOk && trial ? (
           <button type="button" className="b44 hov tf-trial" onClick={() => setDialog('trial')}>
-            Пробный период <span className="muted">{trial.enabled ? `${trial.days}${NBSP}${plural(trial.days, 'день', 'дня', 'дней')}` : 'выключен'}</span>
+            Пробный период <span className="muted">{trialSummary(trial)}</span>
           </button>
         ) : null}
         <button type="button" className="btn-main btn" onClick={startNew} style={{ padding: '0 18px' }}>
@@ -1005,38 +1026,85 @@ function MultiDialog({ value, onClose, onDone }: { value: Multi; onClose: () => 
   );
 }
 
+function variantDraft(variant: TrialVariant, index: number): VariantDraft {
+  return {
+    key: `v${variant.id || index}`,
+    id: variant.id,
+    name: variant.name,
+    enabled: variant.enabled,
+    days: String(variant.days),
+    devices: String(variant.devices),
+    gb: variant.traffic.limit_bytes ? String(Math.round(variant.traffic.limit_bytes / GIB)) : '',
+    squads: variant.squads,
+  };
+}
+
+function variantLabel(draft: VariantDraft, index: number): string {
+  return draft.name.trim() ? `вариант «${draft.name.trim()}»` : `вариант ${index + 1}`;
+}
+
 function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads: Squad[]; onClose: () => void; onDone: (trial: Trial) => void }) {
   const [enabled, setEnabled] = useState(trial.enabled);
-  const [daysRaw, setDays] = useState(String(trial.days));
-  const [devices, setDevices] = useState(String(trial.devices));
-  const [gb, setGb] = useState(trial.traffic.limit_bytes ? String(Math.round(trial.traffic.limit_bytes / GIB)) : '');
-  const [chosen, setChosen] = useState<string[]>(trial.squads);
+  const [drafts, setDrafts] = useState<VariantDraft[]>(() => trial.variants.map(variantDraft));
+  const [added, setAdded] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ids = useId();
+  const many = drafts.length > 1;
+  const patch = (key: string, change: Partial<VariantDraft>) => setDrafts((list) => list.map((d) => (d.key === key ? { ...d, ...change } : d)));
+  const add = () => {
+    setDrafts((list) => [...list, { key: `n${added}`, id: 0, name: '', enabled: true, days: '3', devices: '1', gb: '', squads: [] }]);
+    setAdded(added + 1);
+  };
+  const remove = (key: string) => setDrafts((list) => (list.length > 1 ? list.filter((d) => d.key !== key) : list));
   const save = async () => {
-    const days = Number(daysRaw);
-    const dev = Number(devices);
-    const limit = gb.trim() ? Number(gb) : null;
-    if (!Number.isInteger(days) || days < 1 || days > 90) {
-      setError('Срок пробного периода: от 1 до 90 дней');
-      return;
+    const variants: TrialVariant[] = [];
+    const names: string[] = [];
+    for (const [index, draft] of drafts.entries()) {
+      const label = variantLabel(draft, index);
+      const name = draft.name.trim();
+      if (many && !name) {
+        setError(`Укажите название, ${label}: по нему клиент выбирает вариант`);
+        return;
+      }
+      if (name.length > TRIAL_NAME_MAX) {
+        setError(`Название, ${label}: до ${TRIAL_NAME_MAX} знаков`);
+        return;
+      }
+      if (name && names.includes(name.toLowerCase())) {
+        setError(`Название «${name}» уже есть у другого варианта`);
+        return;
+      }
+      names.push(name.toLowerCase());
+      const days = Number(draft.days);
+      if (!Number.isInteger(days) || days < 1 || days > 90) {
+        setError(many ? `Срок, ${label}: от 1 до 90 дней` : 'Срок пробного периода: от 1 до 90 дней');
+        return;
+      }
+      const devices = Number(draft.devices);
+      if (!Number.isInteger(devices) || devices < 1 || devices > 100) {
+        setError(many ? `Устройств, ${label}: от 1 до 100` : 'Устройств: от 1 до 100');
+        return;
+      }
+      const limit = draft.gb.trim() ? Number(draft.gb) : null;
+      if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+        setError(many ? `Трафик, ${label}: целое число ГБ или пусто` : 'Трафик: целое число ГБ или пусто');
+        return;
+      }
+      if (enabled && draft.enabled && draft.squads.length === 0) {
+        setError(many ? `Выберите хотя бы один сквад, ${label}` : 'Выберите хотя бы один сквад');
+        return;
+      }
+      variants.push({ id: draft.id, name, enabled: draft.enabled, days, devices, squads: draft.squads, traffic: { limit_bytes: limit === null ? null : limit * GIB, reset: 'no_reset' } });
     }
-    if (!Number.isInteger(dev) || dev < 1 || dev > 100) {
-      setError('Устройств: от 1 до 100');
-      return;
-    }
-    if (enabled && chosen.length === 0) {
-      setError('Выберите хотя бы один сквад');
+    if (enabled && !variants.some((v) => v.enabled)) {
+      setError('Включите хотя бы один вариант или выключите пробный период');
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const next = await api<Trial>('/api/admin/settings/trial', {
-        method: 'PUT',
-        body: { enabled, days, devices: dev, squads: chosen, traffic: { limit_bytes: limit === null ? null : limit * GIB, reset: 'no_reset' } },
-      });
+      const next = await api<Trial>('/api/admin/settings/trial', { method: 'PUT', body: { enabled, variants } });
       onDone(next);
     } catch (err) {
       setError(failText(err, 'Настройки не сохранились'));
@@ -1051,39 +1119,75 @@ function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads:
           Выдавать пробный период новым клиентам
         </span>
       </span>
-      <div className="tf-wrap">
-        <label className="tf-field" htmlFor={`${ids}-d`}>
-          <span>Срок</span>
-          <span className="tf-inline">
-            <input id={`${ids}-d`} className="field num" inputMode="numeric" value={daysRaw} onChange={(e) => setDays(e.target.value.replace(/\D/g, '').slice(0, 2))} style={{ width: 88 }} disabled={busy} />
-            <span className="muted">{plural(Number(daysRaw) || 0, 'день', 'дня', 'дней')}</span>
-          </span>
-        </label>
-        <label className="tf-field" htmlFor={`${ids}-v`}>
-          <span>Устройств</span>
-          <input id={`${ids}-v`} className="field num" inputMode="numeric" value={devices} onChange={(e) => setDevices(e.target.value.replace(/\D/g, '').slice(0, 3))} style={{ width: 88 }} disabled={busy} />
-        </label>
-        <label className="tf-field" htmlFor={`${ids}-g`}>
-          <span>Трафик на весь срок</span>
-          <span className="tf-inline">
-            <input id={`${ids}-g`} className="field num" inputMode="numeric" placeholder="Без лимита" value={gb} onChange={(e) => setGb(e.target.value.replace(/\D/g, '').slice(0, 6))} style={{ width: 120 }} disabled={busy} />
-            <span className="muted">ГБ</span>
-          </span>
-        </label>
-      </div>
-      <div className="field-row">
-        <span style={{ fontWeight: 600 }}>Сквады</span>
-        <div role="group" aria-label="Сквады пробного периода" className="chips">
-          {squads.map((s) => {
-            const on = chosen.includes(s.uuid);
-            return (
-              <button key={s.uuid} type="button" className="chip" aria-pressed={on} onClick={() => setChosen(on ? chosen.filter((x) => x !== s.uuid) : [...chosen, s.uuid])} disabled={busy}>
-                <span>{s.name}</span>
-              </button>
-            );
-          })}
-          {squads.length === 0 ? <span className="muted">Remnawave не отдал сквады</span> : null}
-        </div>
+      {drafts.map((draft, index) => {
+        const label = variantLabel(draft, index);
+        return (
+          <section key={draft.key} className={many ? 'tf-variant' : 'tf-block'} aria-label={many ? label : undefined}>
+            {many ? (
+              <div className="tf-variant-head">
+                <label className="tf-field tf-variant-name" htmlFor={`${ids}-${draft.key}-n`}>
+                  <span>Название для клиента</span>
+                  <input id={`${ids}-${draft.key}-n`} className="field" value={draft.name} maxLength={TRIAL_NAME_MAX} placeholder="Например, Европа" onChange={(e) => patch(draft.key, { name: e.target.value })} disabled={busy} />
+                </label>
+                <span className="tf-switchrow">
+                  <Switch on={draft.enabled} onToggle={() => patch(draft.key, { enabled: !draft.enabled })} label={`Выдавать: ${label}`} />
+                  <span className="muted" aria-hidden="true">
+                    {draft.enabled ? 'выдаётся' : 'не выдаётся'}
+                  </span>
+                </span>
+                <button type="button" className="tf-link tf-variant-del" onClick={() => remove(draft.key)} disabled={busy}>
+                  Убрать
+                </button>
+              </div>
+            ) : null}
+            <div className="tf-wrap">
+              <label className="tf-field" htmlFor={`${ids}-${draft.key}-d`}>
+                <span>Срок</span>
+                <span className="tf-inline">
+                  <input id={`${ids}-${draft.key}-d`} className="field num" inputMode="numeric" value={draft.days} onChange={(e) => patch(draft.key, { days: e.target.value.replace(/\D/g, '').slice(0, 2) })} style={{ width: 88 }} disabled={busy} />
+                  <span className="muted">{plural(Number(draft.days) || 0, 'день', 'дня', 'дней')}</span>
+                </span>
+              </label>
+              <label className="tf-field" htmlFor={`${ids}-${draft.key}-v`}>
+                <span>Устройств</span>
+                <input id={`${ids}-${draft.key}-v`} className="field num" inputMode="numeric" value={draft.devices} onChange={(e) => patch(draft.key, { devices: e.target.value.replace(/\D/g, '').slice(0, 3) })} style={{ width: 88 }} disabled={busy} />
+              </label>
+              <label className="tf-field" htmlFor={`${ids}-${draft.key}-g`}>
+                <span>Трафик на весь срок</span>
+                <span className="tf-inline">
+                  <input id={`${ids}-${draft.key}-g`} className="field num" inputMode="numeric" placeholder="Без лимита" value={draft.gb} onChange={(e) => patch(draft.key, { gb: e.target.value.replace(/\D/g, '').slice(0, 6) })} style={{ width: 120 }} disabled={busy} />
+                  <span className="muted">ГБ</span>
+                </span>
+              </label>
+            </div>
+            <div className="field-row">
+              <span style={{ fontWeight: 600 }}>Сквады</span>
+              <div role="group" aria-label={many ? `Сквады, ${label}` : 'Сквады пробного периода'} className="chips">
+                {squads.map((s) => {
+                  const on = draft.squads.includes(s.uuid);
+                  return (
+                    <button key={s.uuid} type="button" className="chip" aria-pressed={on} onClick={() => patch(draft.key, { squads: on ? draft.squads.filter((x) => x !== s.uuid) : [...draft.squads, s.uuid] })} disabled={busy}>
+                      <span>{s.name}</span>
+                    </button>
+                  );
+                })}
+                {squads.length === 0 ? <span className="muted">Remnawave не отдал сквады</span> : null}
+              </div>
+            </div>
+          </section>
+        );
+      })}
+      <div className="tf-variant-more">
+        {drafts.length < TRIAL_VARIANTS_MAX ? (
+          <button type="button" className="btn-line hov" onClick={add} disabled={busy}>
+            Добавить вариант
+          </button>
+        ) : null}
+        <span className="muted">
+          {many
+            ? 'Клиент выбирает вариант в боте, кабинете или мини-приложении. Пробный период даётся один раз, какой бы вариант клиент ни выбрал.'
+            : 'Несколько вариантов нужны, если пробный период разный, например по локациям: свои сквады, срок, устройства и трафик.'}
+        </span>
       </div>
       {error ? (
         <p className="err" role="alert">

@@ -21,7 +21,7 @@ use sn_domain::plan::{
     CurrentTariff, HeldSubscription, PlanKind, classify, new_expire_at, single_target,
 };
 use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
-use sn_domain::settings::{TrialSettings, keys};
+use sn_domain::settings::{TrialVariant, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
 use sn_modules::catalog::{antibot, promo};
@@ -172,6 +172,22 @@ pub struct PublicOffer {
     pub tariff: PublicTariff,
     pub periods: Vec<PeriodOffer>,
     pub countries: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TrialChoice {
+    pub id: u32,
+    pub name: String,
+    pub days: u32,
+    pub devices: u32,
+    pub traffic: sn_domain::traffic::TrafficPolicy,
+    pub countries: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TrialOffer {
+    pub available: bool,
+    pub variants: Vec<TrialChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -759,18 +775,24 @@ fn trusted_return_url(url: &str, public_url: Option<&str>) -> bool {
         && (public_url.is_some_and(same_origin) || same_origin("https://t.me"))
 }
 
-pub(crate) fn trial_snapshot(trial: &TrialSettings) -> TariffSnapshot {
+pub(crate) const TRIAL_NAME: &str = "Пробный период";
+
+pub(crate) fn trial_snapshot(variant: &TrialVariant) -> TariffSnapshot {
     TariffSnapshot {
         traffic_leftover: Default::default(),
         tariff_id: TariffId(0),
         category_id: CategoryId(0),
-        name: "Пробный период".into(),
+        name: if variant.name.is_empty() {
+            TRIAL_NAME.into()
+        } else {
+            variant.name.clone()
+        },
         period_id: PeriodId(0),
-        days: trial.days,
-        devices_included: trial.devices,
+        days: variant.days,
+        devices_included: variant.devices,
         max_extra_devices: 0,
-        traffic: trial.traffic,
-        squads: trial.squads.clone(),
+        traffic: variant.traffic,
+        squads: variant.squads.clone(),
         external_squad: None,
     }
 }
@@ -1331,7 +1353,11 @@ impl<'a> Checkout<'a> {
         })
     }
 
-    pub async fn start_trial(&self, client_id: ClientId) -> ServiceResult<OrderId> {
+    pub async fn start_trial(
+        &self,
+        client_id: ClientId,
+        variant: Option<u32>,
+    ) -> ServiceResult<OrderId> {
         self.services.remna()?;
         let settings = self.services.settings();
         let trial = &settings.trial;
@@ -1341,12 +1367,32 @@ impl<'a> Checkout<'a> {
                 "Пробный период сейчас недоступен",
             ));
         }
-        if trial.squads.is_empty() || trial.days == 0 {
-            return Err(ServiceError::rejected(
-                "trial.not_configured",
-                "Пробный период не настроен: укажите срок и сквады",
-            ));
-        }
+        let offered = trial.offered();
+        let variant = match (variant, offered.as_slice()) {
+            (_, []) => {
+                return Err(ServiceError::rejected(
+                    "trial.not_configured",
+                    "Пробный период не настроен: укажите срок и сквады",
+                ));
+            }
+            (Some(id), _) => offered
+                .iter()
+                .find(|v| v.id == id)
+                .copied()
+                .ok_or_else(|| {
+                    ServiceError::rejected(
+                        "trial.variant_unavailable",
+                        "Этот вариант пробного периода сейчас недоступен, выберите другой",
+                    )
+                })?,
+            (None, [only]) => *only,
+            (None, _) => {
+                return Err(ServiceError::rejected(
+                    "trial.variant_required",
+                    "Выберите вариант пробного периода",
+                ));
+            }
+        };
         self.trial_guard(client_id).await?;
         let mut tx = self.services.store().begin().await?;
         tx.lock(LockSpace::Client, client_id.0).await?;
@@ -1395,10 +1441,10 @@ impl<'a> Checkout<'a> {
                     discount: Money::zero(currency),
                     total: Money::zero(currency),
                     stars: None,
-                    days: trial.days,
+                    days: variant.days,
                     extra_devices: 0,
                 },
-                snapshot: Some(trial_snapshot(trial)),
+                snapshot: Some(trial_snapshot(variant)),
             })
             .await?;
         tx.orders().transition(order.id, OrderStatus::Paid).await?;
@@ -1442,13 +1488,86 @@ impl<'a> Checkout<'a> {
         }
     }
 
+    pub async fn trial_open(&self, client_id: ClientId) -> ServiceResult<bool> {
+        if !self.services.settings().trial.is_offered() {
+            return Ok(false);
+        }
+        let mut conn = self.services.store().conn().await?;
+        if conn.clients().get(client_id).await?.is_blocked() {
+            return Ok(false);
+        }
+        let live = conn
+            .subscriptions()
+            .by_client(client_id)
+            .await?
+            .iter()
+            .any(|s| s.ended_at.is_none());
+        if live {
+            return Ok(false);
+        }
+        let identities: Vec<(IdentityKind, String)> = conn
+            .clients()
+            .identities(client_id)
+            .await?
+            .into_iter()
+            .map(|i| (i.kind, i.value))
+            .collect();
+        Ok(!identities.is_empty() && !conn.trials().was_claimed(&identities).await?)
+    }
+
+    pub async fn trial_offer(&self, client_id: ClientId) -> ServiceResult<TrialOffer> {
+        let offered: Vec<TrialVariant> = self
+            .services
+            .settings()
+            .trial
+            .offered()
+            .into_iter()
+            .cloned()
+            .collect();
+        if offered.is_empty() || !self.trial_open(client_id).await? {
+            return Ok(TrialOffer {
+                available: false,
+                variants: Vec::new(),
+            });
+        }
+        let mut squads: Vec<Uuid> = Vec::new();
+        for squad in offered.iter().flat_map(|v| v.squads.iter()) {
+            if !squads.contains(&squad.0) {
+                squads.push(squad.0);
+            }
+        }
+        let countries = self.services.squad_countries(&squads).await;
+        Ok(TrialOffer {
+            available: true,
+            variants: offered
+                .into_iter()
+                .map(|v| {
+                    let own: Vec<Uuid> = v.squads.iter().map(|s| s.0).collect();
+                    TrialChoice {
+                        id: v.id,
+                        countries: crate::squad_countries::union(&own, &countries),
+                        name: v.name,
+                        days: v.days,
+                        devices: v.devices,
+                        traffic: v.traffic,
+                    }
+                })
+                .collect(),
+        })
+    }
+
     pub async fn trial_challenge(&self, client_id: ClientId) -> ServiceResult<String> {
         Ok(antibot::challenge(&self.services.module_context(), client_id).await?)
     }
 
-    pub async fn confirm_trial(&self, client_id: ClientId, token: &str) -> ServiceResult<OrderId> {
+    pub async fn confirm_trial(
+        &self,
+        client_id: ClientId,
+        token: &str,
+        variant: Option<u32>,
+    ) -> ServiceResult<OrderId> {
         match antibot::confirm(&self.services.module_context(), client_id, token, "trial").await? {
-            antibot::Confirmation::Confirmed => self.start_trial(client_id).await,
+            antibot::Confirmation::Confirmed => self.start_trial(client_id, variant).await,
             antibot::Confirmation::TooFast => Err(ServiceError::rejected(
                 "antibot.too_fast",
                 "Нажмите кнопку ещё раз",

@@ -54,7 +54,7 @@ pub fn routes() -> Router<AppState> {
         .route("/items/quote", post(item_quote))
         .route("/items/checkout", post(item_checkout))
         .route("/topup", get(topup_options).post(topup))
-        .route("/trial", post(trial))
+        .route("/trial", get(trial_offer).post(trial))
         .route("/payments", get(payments))
         .route("/payments/{id}", get(payment))
         .route("/payments/{id}/telegram", post(gram_in_telegram))
@@ -755,6 +755,27 @@ async fn gram_in_telegram(
 struct TrialBody {
     #[serde(default)]
     confirm: Option<String>,
+    #[serde(default)]
+    variant: Option<u32>,
+}
+
+async fn trial_offer(
+    client: CurrentClient,
+    State(state): State<AppState>,
+) -> ApiResult<Json<sn_services::checkout::TrialOffer>> {
+    if !client.0.full_access {
+        return Ok(Json(sn_services::checkout::TrialOffer {
+            available: false,
+            variants: Vec::new(),
+        }));
+    }
+    Ok(Json(
+        state
+            .services
+            .checkout()
+            .trial_offer(client.0.client_id)
+            .await?,
+    ))
 }
 
 async fn trial(
@@ -765,10 +786,10 @@ async fn trial(
     client.require_full()?;
     let checkout = state.services.checkout();
     let id = client.0.client_id;
-    let token = body.and_then(|ApiJson(b)| b.confirm);
-    let result = match token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        Some(token) => checkout.confirm_trial(id, token).await,
-        None => checkout.start_trial(id).await,
+    let TrialBody { confirm, variant } = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let result = match confirm.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(token) => checkout.confirm_trial(id, token, variant).await,
+        None => checkout.start_trial(id, variant).await,
     };
     match result {
         Ok(order_id) => Ok(Json(serde_json::json!({ "order_id": order_id }))),

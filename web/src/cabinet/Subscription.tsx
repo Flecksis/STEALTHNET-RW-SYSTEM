@@ -14,6 +14,7 @@ import { DevicesCard } from './DevicesCard';
 import { PromoBox } from './PromoBox';
 import { SubSwitch, useSubDetail, useSubs } from './SubSwitch';
 import { explanation, heldBalance, periodTitle, statusWord, trafficLine, type Catalog, type Referral } from './model';
+import { loadTrial, NO_TRIAL, requestTrial, trialFacts, trialPlaces, trialTitle, type TrialCheck, type TrialOffer } from './trial';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -36,9 +37,29 @@ export function SubscriptionPage() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [qr, setQr] = useState(false);
+  const [trial, setTrial] = useState<TrialOffer>(NO_TRIAL);
+  const [trialOpen, setTrialOpen] = useState(false);
+  const [trialPick, setTrialPick] = useState<number | null>(null);
+  const [trialVariant, setTrialVariant] = useState<number | null>(null);
   const [trialBusy, setTrialBusy] = useState(false);
-  const [trialCheck, setTrialCheck] = useState<{ token: string; text: string } | null>(null);
+  const [trialCheck, setTrialCheck] = useState<TrialCheck | null>(null);
   const error = pageError ?? subs.error;
+  const trialOn = !!site.trial?.enabled;
+  const noSub = view === null;
+
+  useEffect(() => {
+    if (!trialOn || !noSub) {
+      setTrial(NO_TRIAL);
+      return;
+    }
+    let live = true;
+    loadTrial()
+      .then((offer) => live && setTrial(offer))
+      .catch(() => live && setTrial(NO_TRIAL));
+    return () => {
+      live = false;
+    };
+  }, [trialOn, noSub]);
 
   useEffect(() => {
     api<Referral>('/api/client/m/referral/me')
@@ -110,16 +131,18 @@ export function SubscriptionPage() {
     }
   };
 
-  const startTrial = async (confirm?: string) => {
+  const startTrial = async (variant: number | null, confirm?: string) => {
     setTrialBusy(true);
     setError(null);
     try {
-      const started = await api<{ confirm?: { token: string; text: string } }>('/api/client/trial', { method: 'POST', body: confirm ? { confirm } : {} });
-      if (started.confirm) {
-        setTrialCheck(started.confirm);
+      const check = await requestTrial(variant, confirm);
+      if (check) {
+        setTrialVariant(variant);
+        setTrialCheck(check);
         return;
       }
       setTrialCheck(null);
+      setTrialOpen(false);
       for (let i = 0; i < 10; i += 1) {
         await new Promise((r) => window.setTimeout(r, 1500));
         if ((await subs.reload()).length > 0) {
@@ -128,6 +151,9 @@ export function SubscriptionPage() {
       }
     } catch (err) {
       setError(failText(err, t('Пробный период не включился')));
+      loadTrial()
+        .then(setTrial)
+        .catch(() => setTrial(NO_TRIAL));
     } finally {
       setTrialBusy(false);
     }
@@ -138,6 +164,9 @@ export function SubscriptionPage() {
   }
 
   const blocked = me.client.status === 'blocked';
+  const trialChoices = trial.available ? trial.variants : [];
+  const trialSingle = trialChoices.length === 1 ? trialChoices[0] : null;
+  const trialPicked = trialChoices.find((choice) => choice.id === trialPick) ?? null;
   const status = statusWord(view, blocked);
   const note = explanation(view, blocked);
   const traffic = view ? trafficLine(view) : null;
@@ -220,16 +249,59 @@ export function SubscriptionPage() {
         <Link to="/cabinet/pay" className="cb-main">
           {t('Выбрать тариф')}
         </Link>
-        {site.trial?.enabled && !trialCheck ? (
-          <button type="button" className="cb-second" onClick={() => void startTrial()} disabled={trialBusy}>
-            {trialBusy ? t('Включаем…') : t('Попробовать бесплатно {days}', { days: days(site.trial.days) })}
+        {trialSingle && !trialCheck ? (
+          <button type="button" className="cb-second" onClick={() => void startTrial(trialSingle.id)} disabled={trialBusy}>
+            {trialBusy ? t('Включаем…') : t('Попробовать бесплатно {days}', { days: days(trialSingle.days) })}
+          </button>
+        ) : null}
+        {trialChoices.length > 1 && !trialCheck && !trialOpen ? (
+          <button type="button" className="cb-second" onClick={() => setTrialOpen(true)}>
+            {t('Попробовать бесплатно')}
           </button>
         ) : null}
       </div>
+      {trialChoices.length > 1 && trialOpen && !trialCheck ? (
+        <div className="cb-trial" role="group" aria-labelledby="cb-trial-h">
+          <h2 id="cb-trial-h" className="cb-trial-h">
+            {t('Выберите пробный период')}
+          </h2>
+          <div role="radiogroup" aria-labelledby="cb-trial-h" className="cb-method-grid">
+            {trialChoices.map((choice, index) => {
+              const places = trialPlaces(choice);
+              return (
+                <button key={choice.id} type="button" role="radio" aria-checked={trialPick === choice.id} className="cb-method" onClick={() => setTrialPick(choice.id)} disabled={trialBusy}>
+                  <span className="cb-radio" aria-hidden="true" />
+                  <span className="cb-method-text">
+                    <strong>{trialTitle(choice, index)}</strong>
+                    <span>{trialFacts(choice)}</span>
+                    {places ? <span>{places}</span> : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <span className={phone ? 'cb-ask-btns col' : 'cb-ask-btns'}>
+            <button type="button" className="cb-main sm" onClick={() => trialPicked && void startTrial(trialPicked.id)} disabled={trialBusy || !trialPicked}>
+              {trialBusy ? t('Включаем…') : trialPicked ? t('Включить «{name}»', { name: trialTitle(trialPicked, trialChoices.indexOf(trialPicked)) }) : t('Выберите вариант')}
+            </button>
+            <button
+              type="button"
+              className="cb-cancel"
+              onClick={() => {
+                setTrialOpen(false);
+                setTrialPick(null);
+              }}
+              disabled={trialBusy}
+            >
+              {t('Отменить')}
+            </button>
+          </span>
+        </div>
+      ) : null}
       {trialCheck ? (
         <div className="cb-human" role="group" aria-label={t('Проверка перед пробным периодом')}>
           <p className="cb-ink2">{trialCheck.text}</p>
-          <button type="button" className="cb-second" onClick={() => void startTrial(trialCheck.token)} disabled={trialBusy}>
+          <button type="button" className="cb-second" onClick={() => void startTrial(trialVariant, trialCheck.token)} disabled={trialBusy}>
             {trialBusy ? t('Проверяем…') : t('Я не робот')}
           </button>
         </div>

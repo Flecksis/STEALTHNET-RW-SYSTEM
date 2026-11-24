@@ -322,6 +322,23 @@
   margin-top: -6px;
 }
 
+.mn-trialbtn {
+  margin-top: -6px;
+}
+
+.mn-trial {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mn-trial-h {
+  margin: 0;
+  padding: 0 4px;
+  font-size: 17px;
+  font-weight: 800;
+}
+
 .mn-pairbtn {
   height: 50px;
   display: flex;

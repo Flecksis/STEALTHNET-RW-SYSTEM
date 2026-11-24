@@ -6,6 +6,7 @@ import { count, dateLong, money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon, type IconName } from '../lib/icons';
 import { resetWhen, trafficMeter, type Referral } from '../cabinet/model';
+import { loadTrial } from '../cabinet/trial';
 import { MiniSubSwitch, ThemeCirc, useMini } from './MiniApp';
 import { openExternal } from './telegram';
 import { supportLink, supportTickets } from '../lib/support';
@@ -18,6 +19,9 @@ export function MiniHome() {
   const [referral, setReferral] = useState<Referral | null>(null);
   const [gifts, setGifts] = useState(false);
   const [spins, setSpins] = useState<number | null>(null);
+  const [trial, setTrial] = useState(false);
+  const noSub = !view;
+  const trialOn = !!site.trial?.enabled;
 
   useEffect(() => {
     api<Referral>('/api/client/m/referral/me')
@@ -30,6 +34,20 @@ export function MiniHome() {
       .then((s) => setSpins(s.ready ? s.spins.total : null))
       .catch(() => setSpins(null));
   }, []);
+
+  useEffect(() => {
+    if (!noSub || !trialOn) {
+      setTrial(false);
+      return;
+    }
+    let live = true;
+    loadTrial()
+      .then((offer) => live && setTrial(offer.available))
+      .catch(() => live && setTrial(false));
+    return () => {
+      live = false;
+    };
+  }, [noSub, trialOn]);
 
   const blocked = me.client.status === 'blocked' || view?.status === 'blocked';
   const expired = view?.status === 'expired';
@@ -174,6 +192,12 @@ export function MiniHome() {
       ) : null}
 
       {button(main, 'mn-main press', 20)}
+      {noSub && trial ? (
+        <Link to="/app/trial" className="mn-pairbtn mn-trialbtn press">
+          <Icon name="gift" size={18} />
+          {t('Попробовать бесплатно')}
+        </Link>
+      ) : null}
       {view ? (
         <div className="mn-pair">
           {button(left2, 'mn-pairbtn press', 18)}

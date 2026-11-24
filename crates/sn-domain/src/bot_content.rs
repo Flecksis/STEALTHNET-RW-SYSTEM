@@ -566,6 +566,10 @@ const CABINET: Var = Var {
     name: "url",
     hint: "адрес кабинета на сайте",
 };
+const VARIANT: Var = Var {
+    name: "variant",
+    hint: "название варианта пробного периода",
+};
 
 use Section::*;
 
@@ -983,6 +987,34 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка «Я не робот»",
         "Я не робот",
         &[],
+    ),
+    text(
+        "sub.trial_choose",
+        Subscription,
+        "Выбор варианта пробного периода",
+        "<b>Выберите пробный период</b>",
+        &[],
+    ),
+    text(
+        "sub.trial_variant_line",
+        Subscription,
+        "Вариант пробного периода в списке",
+        "{variant} — {days}, устройств: {count}, трафик: {limit}",
+        &[VARIANT, DAYS, COUNT, LIMIT],
+    ),
+    text(
+        "sub.trial_variant_unlimited",
+        Subscription,
+        "Вариант пробного периода без лимита трафика",
+        "{variant} — {days}, устройств: {count}, трафик без лимита",
+        &[VARIANT, DAYS, COUNT],
+    ),
+    button(
+        "sub.btn.trial_variant",
+        Subscription,
+        "Кнопка варианта пробного периода",
+        "{variant} · {days}",
+        &[VARIANT, DAYS],
     ),
     text(
         "dev.empty",

@@ -87,6 +87,7 @@ const SAMPLES: Record<string, string> = {
   minimum: ' Минимум — 500 ₽.',
   extra: '1',
   can_add: '2',
+  variant: 'Европа',
   months: '3',
   who: 'Алексей (@morozov_a, Telegram 5093118422)',
   ip: '203.0.113.7',
@@ -128,6 +129,7 @@ const SAMPLES_EN: Record<string, string> = {
   agent: 'Chrome on macOS',
   body: 'We have sent the receipt to your email again.',
   comment: 'the details are wrong',
+  variant: 'Europe',
 };
 
 function englishEntry(entry: Entry): Entry {

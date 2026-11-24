@@ -2012,12 +2012,10 @@ async fn настройки_админы_подарки_выводы_и_авто
     let core = s.settings();
     assert_eq!(core.brand_name, "Тест VPN");
     assert_eq!(core.support_url.as_deref(), Some("https://t.me/help_bot"));
-    assert_eq!(core.trial.days, 3);
-    assert_eq!(core.trial.devices, 2);
-    assert_eq!(
-        core.trial.traffic.limit_bytes,
-        Some(10 * 1024 * 1024 * 1024)
-    );
+    assert_eq!(core.trial.variants.len(), 1);
+    let trial = &core.trial.variants[0];
+    assert_eq!((trial.days, trial.devices), (3, 2));
+    assert_eq!(trial.traffic.limit_bytes, Some(10 * 1024 * 1024 * 1024));
     let setting = |key: &'static str| async move {
         let mut conn = s.store().conn().await.unwrap();
         sqlx::query_scalar::<_, serde_json::Value>("SELECT value FROM settings WHERE key = $1")

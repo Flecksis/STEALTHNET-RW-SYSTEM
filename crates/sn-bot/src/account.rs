@@ -12,6 +12,7 @@ use sn_domain::lang;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
 use sn_domain::pricing::{topup_presets, topup_quote};
+use sn_domain::settings::{TRIAL_NAME_MAX, TrialVariant};
 use sn_domain::traffic::{NextReset, next_reset};
 use sn_modules::catalog::antibot;
 use sn_payments::{MethodsContext, ProviderKind};
@@ -787,49 +788,159 @@ fn trial_started(c: &BotContent) -> Screen {
         .section(Section::Subscription)
 }
 
-async fn trial_check(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+fn variant_title(variant: &TrialVariant, index: usize) -> String {
+    let name: String = variant.name.trim().chars().take(TRIAL_NAME_MAX).collect();
+    if name.is_empty() {
+        format!("№{}", index + 1)
+    } else {
+        name
+    }
+}
+
+fn offered_variants(turn: &Turn<'_>) -> Vec<TrialVariant> {
+    turn.services()
+        .settings()
+        .trial
+        .offered()
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+fn trial_choice(c: &BotContent, variants: &[TrialVariant], note: Option<String>) -> Screen {
+    let mut lines = Lines::new();
+    if let Some(note) = note {
+        lines.add(text::escape(&note));
+    }
+    lines.add(ui::text(c, "sub.trial_choose", &[]));
+    let mut keyboard = Keyboard::new();
+    for (index, variant) in variants.iter().enumerate() {
+        let title = variant_title(variant, index);
+        let days = text::days(variant.days);
+        let count = variant.devices.to_string();
+        lines.add(match variant.traffic.limit_bytes.filter(|b| *b > 0) {
+            Some(bytes) => ui::text(
+                c,
+                "sub.trial_variant_line",
+                &[
+                    ("variant", Text(&title)),
+                    ("days", Text(&days)),
+                    ("count", Text(&count)),
+                    ("limit", Text(&text::traffic(bytes))),
+                ],
+            ),
+            None => ui::text(
+                c,
+                "sub.trial_variant_unlimited",
+                &[
+                    ("variant", Text(&title)),
+                    ("days", Text(&days)),
+                    ("count", Text(&count)),
+                ],
+            ),
+        });
+        keyboard = keyboard.push(ui::button(
+            c,
+            "sub.btn.trial_variant",
+            &[("variant", Text(&title)), ("days", Text(&days))],
+            format!("trial:{}", variant.id),
+        ));
+    }
+    Screen::new(lines.text())
+        .keyboard(keyboard.push(ui::menu(c)))
+        .section(Section::Subscription)
+}
+
+async fn trial_check(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    variant: Option<u32>,
+) -> Result<Screen, BotError> {
     let content = turn.content();
     let c = &*content;
     match turn.services().checkout().trial_challenge(client.id).await {
-        Ok(token) => Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
-            .keyboard(
-                Keyboard::new()
-                    .push(ui::button(
-                        c,
-                        "sub.btn.trial_confirm",
-                        &[],
-                        format!("ab:{token}"),
-                    ))
-                    .push(ui::menu(c)),
-            )
-            .section(Section::Subscription)),
+        Ok(token) => {
+            let data = match variant {
+                Some(id) => format!("ab:{token}:{id}"),
+                None => format!("ab:{token}"),
+            };
+            Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
+                .keyboard(
+                    Keyboard::new()
+                        .push(ui::button(c, "sub.btn.trial_confirm", &[], data))
+                        .push(ui::menu(c)),
+                )
+                .section(Section::Subscription))
+        }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }
 
-pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
-    let content = turn.content();
-    match turn.services().checkout().start_trial(client.id).await {
-        Ok(_) => Ok(trial_started(&content)),
-        Err(err) if err.code() == antibot::CONFIRM_CODE => trial_check(turn, client).await,
-        Err(err) => Ok(Screen::notice(text::user_error(&err))),
-    }
-}
-
-pub async fn trial_confirmed(
+async fn trial_start(
     turn: &mut Turn<'_>,
     client: &Client,
-    token: &str,
+    variant: Option<u32>,
 ) -> Result<Screen, BotError> {
     let content = turn.content();
     match turn
         .services()
         .checkout()
-        .confirm_trial(client.id, token)
+        .start_trial(client.id, variant)
         .await
     {
         Ok(_) => Ok(trial_started(&content)),
-        Err(err) if err.code() == "antibot.too_fast" => trial_check(turn, client).await,
-        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+        Err(err) if err.code() == antibot::CONFIRM_CODE => trial_check(turn, client, variant).await,
+        Err(err) => Ok(trial_refused(turn, &err)),
+    }
+}
+
+fn trial_refused(turn: &Turn<'_>, err: &ServiceError) -> Screen {
+    let offered = offered_variants(turn);
+    match err.code() {
+        "trial.variant_required" if offered.len() > 1 => {
+            trial_choice(&turn.content(), &offered, None)
+        }
+        "trial.variant_unavailable" if offered.len() > 1 => {
+            trial_choice(&turn.content(), &offered, Some(text::user_error(err)))
+        }
+        _ => Screen::notice(text::user_error(err)),
+    }
+}
+
+pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let offered = offered_variants(turn);
+    if offered.len() > 1 {
+        return Ok(trial_choice(&turn.content(), &offered, None));
+    }
+    trial_start(turn, client, None).await
+}
+
+pub async fn trial_variant(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    variant: u32,
+) -> Result<Screen, BotError> {
+    trial_start(turn, client, Some(variant)).await
+}
+
+pub async fn trial_confirmed(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    rest: &str,
+) -> Result<Screen, BotError> {
+    let (token, variant) = match rest.split_once(':') {
+        Some((token, id)) => (token, id.parse::<u32>().ok().filter(|id| *id > 0)),
+        None => (rest, None),
+    };
+    let content = turn.content();
+    match turn
+        .services()
+        .checkout()
+        .confirm_trial(client.id, token, variant)
+        .await
+    {
+        Ok(_) => Ok(trial_started(&content)),
+        Err(err) if err.code() == "antibot.too_fast" => trial_check(turn, client, variant).await,
+        Err(err) => Ok(trial_refused(turn, &err)),
     }
 }

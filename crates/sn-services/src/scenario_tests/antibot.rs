@@ -1,5 +1,5 @@
 use crate::Services;
-use crate::checkout::testkit::{Kit, client, kit_with};
+use crate::checkout::testkit::{Kit, client, kit_with, set_trial_variants, trial_variant};
 use sn_domain::client::{RegistrationSource, TelegramProfile};
 use sn_domain::ids::ClientId;
 use sn_domain::module::ModuleId;
@@ -86,6 +86,73 @@ async fn age_challenge(services: &Services, client_id: ClientId) {
 }
 
 #[tokio::test]
+async fn после_проверки_антибота_выдаётся_выбранный_вариант() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    set_trial_variants(
+        &kit,
+        vec![
+            trial_variant(1, "Россия", true, 3, 1, &[1]),
+            trial_variant(2, "Европа", true, 1, 2, &[2]),
+        ],
+    )
+    .await;
+    let services = &kit.services;
+    let checkout = services.checkout();
+    let suspect = fresh(services, 8_600_000_000, None).await;
+    assert_eq!(
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
+        "trial.variant_required"
+    );
+    assert_eq!(
+        checkout
+            .start_trial(suspect, Some(2))
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::CONFIRM_CODE
+    );
+    let token = checkout.trial_challenge(suspect).await.unwrap();
+    age_challenge(services, suspect).await;
+    let order_id = checkout
+        .confirm_trial(suspect, &token, Some(2))
+        .await
+        .unwrap();
+    let order = crate::checkout::testkit::order(services, order_id).await;
+    let snapshot = order.snapshot.unwrap();
+    assert_eq!((snapshot.name.as_str(), snapshot.days), ("Европа", 1));
+    assert_eq!(
+        checkout
+            .start_trial(suspect, Some(1))
+            .await
+            .unwrap_err()
+            .code(),
+        "trial.used"
+    );
+    assert_eq!(
+        actions(services, suspect).await,
+        ["marked", "asked", "confirmed"]
+    );
+    mode(services, "block").await;
+    let denied = fresh(services, 8_700_000_000, None).await;
+    assert_eq!(
+        checkout
+            .start_trial(denied, Some(1))
+            .await
+            .unwrap_err()
+            .code(),
+        antibot::DENIED_CODE
+    );
+    assert_eq!(actions(services, denied).await, ["marked", "trial_denied"]);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn новый_аккаунт_без_username_жмёт_кнопку_и_получает_пробник() {
     let Some(kit) = antibot_kit().await else {
         return;
@@ -93,15 +160,15 @@ async fn новый_аккаунт_без_username_жмёт_кнопку_и_по
     let services = &kit.services;
     let checkout = services.checkout();
     let calm = fresh(services, 1_010_000_000, Some("real_user")).await;
-    checkout.start_trial(calm).await.unwrap();
+    checkout.start_trial(calm, None).await.unwrap();
     assert!(actions(services, calm).await.is_empty());
     let suspect = fresh(services, 8_100_000_000, None).await;
-    let err = checkout.start_trial(suspect).await.unwrap_err();
+    let err = checkout.start_trial(suspect, None).await.unwrap_err();
     assert_eq!(err.code(), antibot::CONFIRM_CODE);
     let token = checkout.trial_challenge(suspect).await.unwrap();
     assert_eq!(
         checkout
-            .confirm_trial(suspect, &token)
+            .confirm_trial(suspect, &token, None)
             .await
             .unwrap_err()
             .code(),
@@ -111,15 +178,19 @@ async fn новый_аккаунт_без_username_жмёт_кнопку_и_по
     age_challenge(services, suspect).await;
     assert_eq!(
         checkout
-            .confirm_trial(suspect, "чужой")
+            .confirm_trial(suspect, "чужой", None)
             .await
             .unwrap_err()
             .code(),
         "antibot.expired"
     );
-    checkout.confirm_trial(suspect, &token).await.unwrap();
+    checkout.confirm_trial(suspect, &token, None).await.unwrap();
     assert_eq!(
-        checkout.start_trial(suspect).await.unwrap_err().code(),
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
         "trial.used"
     );
     assert_eq!(
@@ -154,11 +225,19 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let checkout = services.checkout();
     let suspect = fresh(services, 8_200_000_000, None).await;
     assert_eq!(
-        checkout.start_trial(suspect).await.unwrap_err().code(),
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
         antibot::DENIED_CODE
     );
     assert_eq!(
-        checkout.start_trial(suspect).await.unwrap_err().code(),
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
         antibot::DENIED_CODE
     );
     assert_eq!(actions(services, suspect).await, ["marked", "trial_denied"]);
@@ -166,14 +245,14 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let admin = crate::scenario_tests::owner(services).await;
     assert!(antibot::clear(&ctx, suspect, Some(admin)).await.unwrap());
     assert!(!antibot::clear(&ctx, suspect, Some(admin)).await.unwrap());
-    checkout.start_trial(suspect).await.unwrap();
+    checkout.start_trial(suspect, None).await.unwrap();
     assert_eq!(
         actions(services, suspect).await,
         ["marked", "trial_denied", "cleared"]
     );
     mode(services, "mark").await;
     let quiet = fresh(services, 8_300_000_000, None).await;
-    checkout.start_trial(quiet).await.unwrap();
+    checkout.start_trial(quiet, None).await.unwrap();
     assert_eq!(actions(services, quiet).await, ["marked"]);
     services
         .modules()
@@ -181,7 +260,7 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
         .await
         .unwrap();
     let off = fresh(services, 8_400_000_000, None).await;
-    checkout.start_trial(off).await.unwrap();
+    checkout.start_trial(off, None).await.unwrap();
     assert!(actions(services, off).await.is_empty());
     kit.db.cleanup().await;
 }

@@ -73,13 +73,13 @@ fn settings() -> CoreSettings {
         currency: Currency::Rub,
         brand_name: "Тестовый VPN".into(),
         public_url: Some("https://vpn.example".into()),
-        trial: TrialSettings {
-            enabled: true,
-            days: 3,
-            squads: vec![SquadId(Uuid::from_u128(7))],
-            traffic: TrafficPolicy::UNLIMITED,
-            devices: 1,
-        },
+        trial: TrialSettings::single(
+            true,
+            3,
+            vec![SquadId(Uuid::from_u128(7))],
+            TrafficPolicy::UNLIMITED,
+            1,
+        ),
         ..CoreSettings::default()
     }
 }
@@ -1264,6 +1264,64 @@ async fn ключ_не_попадает_в_ошибки_и_не_уходит_п�
             .text
             .contains("gsk_test_key")
     );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_подсказке_перечислены_включённые_варианты_пробного_периода() {
+    let Some(db) = sn_store::testing::test_store().await else {
+        return;
+    };
+    let variant = |id: u32, name: &str, enabled: bool, days: u32, devices: u32| {
+        sn_domain::settings::TrialVariant {
+            id,
+            name: name.into(),
+            enabled,
+            days,
+            squads: vec![SquadId(Uuid::from_u128(u128::from(id)))],
+            traffic: TrafficPolicy::UNLIMITED,
+            devices,
+        }
+    };
+    let mut core = settings();
+    core.trial = TrialSettings {
+        enabled: true,
+        variants: vec![
+            variant(1, "Россия", true, 3, 1),
+            variant(2, "Европа", true, 1, 2),
+            variant(3, "Черновик", false, 9, 1),
+        ],
+    };
+    let mut conn = db.store.conn().await.unwrap();
+    let several = prompt::facts(
+        &mut conn,
+        &core,
+        sn_domain::access::ClientChannel::Bot,
+        None,
+    )
+    .await
+    .unwrap()
+    .text;
+    assert!(
+        several.contains("Клиент выбирает один из вариантов"),
+        "{several}"
+    );
+    assert!(several.contains("- Россия: 3"), "{several}");
+    assert!(several.contains("- Европа: 1"), "{several}");
+    assert!(several.contains("2 устройства"), "{several}");
+    assert!(!several.contains("Черновик"), "{several}");
+    core.trial.enabled = false;
+    let none = prompt::facts(
+        &mut conn,
+        &core,
+        sn_domain::access::ClientChannel::Bot,
+        None,
+    )
+    .await
+    .unwrap()
+    .text;
+    assert!(none.contains("Пробного периода нет."), "{none}");
     drop(conn);
     db.cleanup().await;
 }

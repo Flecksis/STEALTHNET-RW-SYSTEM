@@ -11,7 +11,7 @@ use sn_domain::ledger::{LedgerKind, Wallet};
 use sn_domain::money::{Currency, Money, Stars};
 use sn_domain::order::Order;
 use sn_domain::payment::providers;
-use sn_domain::settings::{TrialSettings, keys, secret_keys};
+use sn_domain::settings::{TrialSettings, TrialVariant, keys, secret_keys};
 use sn_domain::subscription::{Subscription, SubscriptionStatus};
 use sn_domain::tariff::{CurrencyPrices, DevicePolicy, ExtraDevices, Tariff};
 use sn_domain::traffic::TrafficPolicy;
@@ -233,13 +233,7 @@ pub(crate) async fn kit_with(modules: Vec<Arc<dyn Module>>) -> Option<Kit> {
         conn.settings()
             .set_as(
                 keys::TRIAL,
-                &TrialSettings {
-                    enabled: true,
-                    days: 3,
-                    squads: vec![squad(9)],
-                    traffic: TrafficPolicy::UNLIMITED,
-                    devices: 1,
-                },
+                &TrialSettings::single(true, 3, vec![squad(9)], TrafficPolicy::UNLIMITED, 1),
                 None,
             )
             .await
@@ -266,6 +260,44 @@ pub(crate) async fn kit_with(modules: Vec<Arc<dyn Module>>) -> Option<Kit> {
         remna,
         pay,
     })
+}
+
+pub(crate) fn trial_variant(
+    id: u32,
+    name: &str,
+    enabled: bool,
+    days: u32,
+    devices: u32,
+    squads: &[u128],
+) -> TrialVariant {
+    TrialVariant {
+        id,
+        name: name.into(),
+        enabled,
+        days,
+        squads: squads.iter().map(|n| squad(*n)).collect(),
+        traffic: TrafficPolicy::UNLIMITED,
+        devices,
+    }
+}
+
+pub(crate) async fn set_trial_variants(kit: &Kit, variants: Vec<TrialVariant>) {
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set_as(
+                keys::TRIAL,
+                &TrialSettings {
+                    enabled: true,
+                    variants,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    kit.services.reload().await.unwrap();
+    kit.services.set_remna(Some(kit.remna.clone()));
 }
 
 pub(crate) async fn client(services: &Services, telegram_id: i64) -> ClientId {

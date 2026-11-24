@@ -203,9 +203,14 @@ impl Default for AutoRenewSettings {
     }
 }
 
+pub const TRIAL_VARIANTS_MAX: usize = 10;
+pub const TRIAL_NAME_MAX: usize = 40;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct TrialSettings {
+pub struct TrialVariant {
+    pub id: u32,
+    pub name: String,
     pub enabled: bool,
     pub days: u32,
     pub squads: Vec<SquadId>,
@@ -213,14 +218,145 @@ pub struct TrialSettings {
     pub devices: u32,
 }
 
-impl Default for TrialSettings {
+impl Default for TrialVariant {
     fn default() -> Self {
-        TrialSettings {
-            enabled: false,
+        TrialVariant {
+            id: 1,
+            name: String::new(),
+            enabled: true,
             days: 3,
             squads: Vec::new(),
             traffic: TrafficPolicy::UNLIMITED,
             devices: 1,
+        }
+    }
+}
+
+impl TrialVariant {
+    pub fn offered(&self) -> bool {
+        self.enabled && self.days > 0 && !self.squads.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredTrial", into = "StoredTrial")]
+pub struct TrialSettings {
+    pub enabled: bool,
+    pub variants: Vec<TrialVariant>,
+}
+
+impl Default for TrialSettings {
+    fn default() -> Self {
+        TrialSettings {
+            enabled: false,
+            variants: vec![TrialVariant::default()],
+        }
+    }
+}
+
+impl TrialSettings {
+    pub fn single(
+        enabled: bool,
+        days: u32,
+        squads: Vec<SquadId>,
+        traffic: TrafficPolicy,
+        devices: u32,
+    ) -> Self {
+        TrialSettings {
+            enabled,
+            variants: vec![TrialVariant {
+                days,
+                squads,
+                traffic,
+                devices,
+                ..TrialVariant::default()
+            }],
+        }
+    }
+
+    pub fn offered(&self) -> Vec<&TrialVariant> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.variants.iter().filter(|v| v.offered()).collect()
+    }
+
+    pub fn is_offered(&self) -> bool {
+        self.enabled && self.variants.iter().any(TrialVariant::offered)
+    }
+
+    pub fn offered_variant(&self, id: u32) -> Option<&TrialVariant> {
+        self.offered().into_iter().find(|v| v.id == id)
+    }
+
+    pub fn shortest_days(&self) -> Option<u32> {
+        self.offered().into_iter().map(|v| v.days).min()
+    }
+
+    pub fn first(&self) -> Option<&TrialVariant> {
+        self.variants.first()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
+struct StoredTrial {
+    enabled: bool,
+    variants: Vec<TrialVariant>,
+    days: u32,
+    squads: Vec<SquadId>,
+    traffic: TrafficPolicy,
+    devices: u32,
+}
+
+impl Default for StoredTrial {
+    fn default() -> Self {
+        let first = TrialVariant::default();
+        StoredTrial {
+            enabled: false,
+            variants: Vec::new(),
+            days: first.days,
+            squads: first.squads,
+            traffic: first.traffic,
+            devices: first.devices,
+        }
+    }
+}
+
+impl From<StoredTrial> for TrialSettings {
+    fn from(stored: StoredTrial) -> Self {
+        if !stored.variants.is_empty() {
+            return TrialSettings {
+                enabled: stored.enabled,
+                variants: stored.variants,
+            };
+        }
+        TrialSettings::single(
+            stored.enabled,
+            stored.days,
+            stored.squads,
+            stored.traffic,
+            stored.devices,
+        )
+    }
+}
+
+impl From<TrialSettings> for StoredTrial {
+    fn from(trial: TrialSettings) -> Self {
+        let first = trial
+            .variants
+            .iter()
+            .find(|v| v.offered())
+            .or(trial.variants.first())
+            .cloned()
+            .unwrap_or_default();
+        StoredTrial {
+            enabled: trial.enabled,
+            days: first.days,
+            squads: first.squads,
+            traffic: first.traffic,
+            devices: first.devices,
+            variants: trial.variants,
         }
     }
 }
@@ -818,6 +954,93 @@ mod tests {
         assert_eq!(missing_required(&schema, &config), ["api_token"]);
         config.insert("api_token".into(), serde_json::json!("abc"));
         assert!(missing_required(&schema, &config).is_empty());
+    }
+
+    fn squad(n: u128) -> SquadId {
+        SquadId(uuid::Uuid::from_u128(n))
+    }
+
+    fn variant(id: u32, name: &str, enabled: bool, days: u32, squads: &[u128]) -> TrialVariant {
+        TrialVariant {
+            id,
+            name: name.into(),
+            enabled,
+            days,
+            squads: squads.iter().map(|n| squad(*n)).collect(),
+            traffic: TrafficPolicy::UNLIMITED,
+            devices: 1,
+        }
+    }
+
+    #[test]
+    fn прежняя_настройка_пробного_периода_становится_первым_вариантом() {
+        let old: TrialSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "days": 5,
+            "squads": [squad(9)],
+            "traffic": { "limit_bytes": 1_073_741_824u64, "reset": "no_reset" },
+            "devices": 2,
+        }))
+        .unwrap();
+        assert!(old.enabled);
+        assert_eq!(old.variants.len(), 1);
+        let first = &old.variants[0];
+        assert_eq!(
+            (first.id, first.name.as_str(), first.enabled),
+            (1, "", true)
+        );
+        assert_eq!((first.days, first.devices), (5, 2));
+        assert_eq!(first.squads, vec![squad(9)]);
+        assert_eq!(first.traffic.limit_bytes, Some(1_073_741_824));
+        let off: TrialSettings = serde_json::from_value(serde_json::json!({
+            "enabled": false,
+            "days": 2,
+            "squads": [squad(3)],
+        }))
+        .unwrap();
+        assert!(!off.enabled);
+        assert_eq!(off.variants[0].days, 2);
+        assert_eq!(off.variants[0].devices, 1);
+        assert!(off.offered().is_empty());
+        let empty: TrialSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(empty, TrialSettings::default());
+        assert_eq!(empty.variants.len(), 1);
+        assert!(!empty.is_offered());
+    }
+
+    #[test]
+    fn варианты_пробного_периода_сохраняются_с_полями_первого_для_старых_версий() {
+        let trial = TrialSettings {
+            enabled: true,
+            variants: vec![
+                variant(4, "Черновик", false, 7, &[]),
+                variant(2, "Европа", true, 1, &[2]),
+                variant(7, "Россия", true, 3, &[1, 5]),
+            ],
+        };
+        let stored = serde_json::to_value(&trial).unwrap();
+        assert_eq!(stored["enabled"], true);
+        assert_eq!(stored["variants"].as_array().unwrap().len(), 3);
+        assert_eq!(stored["days"], 1);
+        assert_eq!(stored["squads"], serde_json::json!([squad(2)]));
+        assert_eq!(stored["devices"], 1);
+        let back: TrialSettings = serde_json::from_value(stored).unwrap();
+        assert_eq!(back, trial);
+        let ids: Vec<u32> = trial.offered().iter().map(|v| v.id).collect();
+        assert_eq!(ids, [2, 7]);
+        assert!(trial.is_offered());
+        assert_eq!(trial.shortest_days(), Some(1));
+        assert_eq!(trial.offered_variant(7).map(|v| v.days), Some(3));
+        assert!(trial.offered_variant(4).is_none());
+        assert!(trial.offered_variant(99).is_none());
+        let off = TrialSettings {
+            enabled: false,
+            ..trial.clone()
+        };
+        assert!(off.offered().is_empty());
+        assert!(!off.is_offered());
+        assert_eq!(off.shortest_days(), None);
+        assert!(off.offered_variant(2).is_none());
     }
 
     #[test]

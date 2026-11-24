@@ -624,7 +624,10 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             Some(id) => account::support_reply_prompt(turn, client, id).await?,
             None => account::support_prompt(turn),
         },
-        "trial" => account::trial(turn, client).await?,
+        "trial" => match id_arg(rest).and_then(|id| u32::try_from(id).ok()) {
+            Some(id) => account::trial_variant(turn, client, id).await?,
+            None => account::trial(turn, client).await?,
+        },
         "ab" => account::trial_confirmed(turn, client, rest).await?,
         "buy" => buy::start(turn, client, rest).await?,
         "t" => match id_arg(rest) {
@@ -784,7 +787,7 @@ pub fn live(views: Vec<SubscriptionView>) -> Vec<Subscription> {
 }
 
 async fn trial_available(services: &Services, client: &Client) -> Result<bool, BotError> {
-    if !services.settings().trial.enabled {
+    if !services.settings().trial.is_offered() {
         return Ok(false);
     }
     let mut conn = services.store().conn().await?;
