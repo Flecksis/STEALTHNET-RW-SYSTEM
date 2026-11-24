@@ -9,8 +9,9 @@ import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from 
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
-import { initData, loadTelegram, telegramLanguage, webApp } from './telegram';
+import { initData, loadTelegram, paintTelegram, telegramLanguage, webApp, type WebApp } from './telegram';
 import { backTarget } from './back';
+import { watchInsets } from './insets';
 import { MiniConnect } from './MiniConnect';
 import { MiniHome } from './MiniHome';
 import { MiniPayments } from './MiniPayments';
@@ -94,6 +95,7 @@ export function MiniApp() {
   const [chosenId, setChosenId] = useState<number | null>(null);
   const cache = useRef(new Map<number, Detail>());
   const [, setTick] = useState(0);
+  const [tg, setTg] = useState<WebApp | null>(null);
   const [tgScheme, setTgScheme] = useState<Theme | null>(null);
   const [personal, setPersonal] = useState<Theme | null>(() => {
     const v = readStored(THEME_KEY);
@@ -163,6 +165,7 @@ export function MiniApp() {
     const app = await loadTelegram();
     app?.ready();
     app?.expand?.();
+    setTg(app);
     if (app?.colorScheme) {
       setTgScheme(app.colorScheme);
     }
@@ -201,6 +204,14 @@ export function MiniApp() {
   const fixed = choice === 'dark' || choice === 'light' ? choice : null;
   const theme: Theme = fixed ?? personal ?? tgScheme ?? system;
   useSurface('mini', theme, site.appearance.client === 'mono' ? 'b' : 'a');
+
+  useEffect(() => (tg ? watchInsets(tg, document.documentElement) : undefined), [tg]);
+
+  useEffect(() => {
+    if (tg) {
+      paintTelegram(tg, getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
+    }
+  }, [tg, theme]);
 
   const flipTheme = useCallback(() => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';

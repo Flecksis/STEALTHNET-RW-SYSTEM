@@ -1,3 +1,10 @@
+:root {
+  --mn-top: calc(max(var(--mn-tg-safe-top, var(--tg-safe-area-inset-top, 0px)), env(safe-area-inset-top, 0px)) + var(--mn-tg-content-top, var(--tg-content-safe-area-inset-top, 0px)));
+  --mn-right: calc(max(var(--mn-tg-safe-right, var(--tg-safe-area-inset-right, 0px)), env(safe-area-inset-right, 0px)) + var(--mn-tg-content-right, var(--tg-content-safe-area-inset-right, 0px)));
+  --mn-bottom: calc(max(var(--mn-tg-safe-bottom, var(--tg-safe-area-inset-bottom, 0px)), env(safe-area-inset-bottom, 0px)) + var(--mn-tg-content-bottom, var(--tg-content-safe-area-inset-bottom, 0px)));
+  --mn-left: calc(max(var(--mn-tg-safe-left, var(--tg-safe-area-inset-left, 0px)), env(safe-area-inset-left, 0px)) + var(--mn-tg-content-left, var(--tg-content-safe-area-inset-left, 0px)));
+}
+
 [data-surface='mini'] {
   font-size: 15px;
 }
@@ -12,6 +19,18 @@
   background: var(--bg);
   color: var(--ink);
   -webkit-tap-highlight-color: transparent;
+}
+
+.mn::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  height: var(--mn-top);
+  background: var(--bg);
+  pointer-events: none;
 }
 
 .mn a {
@@ -38,7 +57,7 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 24px;
+  padding: calc(24px + var(--mn-top)) calc(24px + var(--mn-right)) calc(24px + var(--mn-bottom)) calc(24px + var(--mn-left));
   text-align: center;
   box-sizing: border-box;
 }
@@ -58,7 +77,7 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 12px 16px 104px;
+  padding: calc(12px + var(--mn-top)) calc(16px + var(--mn-right)) calc(104px + var(--mn-bottom)) calc(16px + var(--mn-left));
   box-sizing: border-box;
 }
 
@@ -67,7 +86,7 @@
 }
 
 .mn-page.plans {
-  padding-bottom: 180px;
+  padding-bottom: calc(180px + var(--mn-bottom));
 }
 
 .mn-head {
@@ -413,9 +432,9 @@
 
 .mn-nav {
   position: fixed;
-  left: 20px;
-  right: 20px;
-  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  left: calc(20px + var(--mn-left));
+  right: calc(20px + var(--mn-right));
+  bottom: calc(22px + var(--mn-bottom));
   z-index: 5;
   height: 64px;
   display: grid;
@@ -757,9 +776,9 @@
 
 .mn-paybtn {
   position: fixed;
-  left: 16px;
-  right: 16px;
-  bottom: calc(98px + env(safe-area-inset-bottom, 0px));
+  left: calc(16px + var(--mn-left));
+  right: calc(16px + var(--mn-right));
+  bottom: calc(98px + var(--mn-bottom));
   z-index: 4;
 }
 
@@ -1000,7 +1019,7 @@
 }
 
 .mn-page.topup {
-  padding-bottom: 180px;
+  padding-bottom: calc(180px + var(--mn-bottom));
 }
 
 .mn-amounts {
@@ -1658,7 +1677,7 @@
   height: 100dvh;
   max-height: 100dvh;
   margin: 0;
-  padding: 0;
+  padding: var(--mn-top) var(--mn-right) 0 var(--mn-left);
   border: 0;
   background: #000;
   color: #fff;
@@ -1673,7 +1692,7 @@
 .mn-viewer img {
   display: block;
   max-width: 100%;
-  max-height: calc(100dvh - 64px);
+  max-height: calc(100dvh - 64px - var(--mn-top) - var(--mn-bottom));
   margin: 0 auto;
   object-fit: contain;
 }
@@ -1683,7 +1702,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding: 10px 16px calc(10px + var(--mn-bottom));
   font-size: 14px;
 }
 

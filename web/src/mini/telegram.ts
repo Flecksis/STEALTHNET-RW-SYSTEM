@@ -1,6 +1,13 @@
-type WebApp = {
+import type { InsetBox } from './insets';
+
+export type WebApp = {
   initData: string;
   colorScheme?: 'dark' | 'light';
+  safeAreaInset?: InsetBox;
+  contentSafeAreaInset?: InsetBox;
+  isVersionAtLeast?: (version: string) => boolean;
+  setHeaderColor?: (color: string) => void;
+  setBackgroundColor?: (color: string) => void;
   ready: () => void;
   expand?: () => void;
   openLink?: (url: string) => void;
@@ -51,6 +58,18 @@ export function loadTelegram(): Promise<WebApp | null> {
     window.setTimeout(done, 4000);
     document.head.appendChild(script);
   });
+}
+
+export function paintTelegram(app: WebApp, color: string): void {
+  if (!/^#[0-9a-f]{6}$/i.test(color) || !app.isVersionAtLeast?.('6.9')) {
+    return;
+  }
+  try {
+    app.setHeaderColor?.(color);
+    app.setBackgroundColor?.(color);
+  } catch {
+    return;
+  }
 }
 
 export function initData(): string {
