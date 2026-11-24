@@ -146,19 +146,21 @@ async fn рассылка_уходит_через_bot_api_и_отмечает_з
     );
     let sent = bodies(&server, "sendMessage").await;
     assert_eq!(sent.len(), 3);
-    let chats: Vec<i64> = sent.iter().filter_map(|b| b["chat_id"].as_i64()).collect();
+    let mut chats: Vec<i64> = sent.iter().filter_map(|b| b["chat_id"].as_i64()).collect();
+    chats.sort_unstable();
     assert_eq!(chats, [801, 802, 803]);
-    let first = &sent[0];
-    assert_eq!(first["parse_mode"], "HTML");
-    assert_eq!(first["text"], "<b>Новые серверы</b> уже работают");
-    assert_eq!(
-        first["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
-        "n:buy"
-    );
-    assert_eq!(
-        first["reply_markup"]["inline_keyboard"][1][0]["url"],
-        "https://t.me/stealth_news"
-    );
+    for message in &sent {
+        assert_eq!(message["parse_mode"], "HTML");
+        assert_eq!(message["text"], "<b>Новые серверы</b> уже работают");
+        assert_eq!(
+            message["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+            "n:buy"
+        );
+        assert_eq!(
+            message["reply_markup"]["inline_keyboard"][1][0]["url"],
+            "https://t.me/stealth_news"
+        );
+    }
     let mut conn = db.store.conn().await.unwrap();
     assert!(conn.clients().get(blocked).await.unwrap().bot_unreachable);
     drop(conn);
