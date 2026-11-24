@@ -776,7 +776,7 @@ async fn страница_модуля_из_архива_открывается_
     h.db.cleanup().await;
 }
 
-async fn save_address(h: &Http, token: &str, address: &str) {
+async fn save_address(h: &Http, token: &str, address: &str, queued: bool) {
     let (status, body) = h
         .write(
             Method::PUT,
@@ -787,6 +787,13 @@ async fn save_address(h: &Http, token: &str, address: &str) {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["config"]["remna_url"], address, "{body}");
+    assert_eq!(body["event_queued"], queued, "{body}");
+}
+
+async fn takes_events(h: &Http, token: &str) -> Value {
+    let (status, card) = h.get("/api/admin/ext-modules/nodes", token).await;
+    assert_eq!(status, StatusCode::OK, "{card}");
+    card["takes_events"].clone()
 }
 
 async fn deliveries(h: &Http) -> Vec<(String, Value, String)> {
@@ -813,7 +820,8 @@ async fn сохранение_настроек_доходит_до_модуля_
     let cred = std::fs::read_to_string(dir.0.join(format!("request/{job}.cred"))).unwrap();
     let secret = cred.lines().nth(1).unwrap().to_string();
     clear_request(&dir.0);
-    save_address(&h, &owner, "https://remna.example.com").await;
+    assert_eq!(takes_events(&h, &owner).await, true);
+    save_address(&h, &owner, "https://remna.example.com", true).await;
     let changed = |status: &str| {
         (
             "settings_changed".to_string(),
@@ -859,7 +867,7 @@ async fn сохранение_настроек_доходит_до_модуля_
     assert_eq!(attempt["status"], "done");
     assert_eq!(attempt["http_status"], 200);
     assert_eq!(attempt["response"], "принято");
-    save_address(&h, &owner, "https://remna.example.com").await;
+    save_address(&h, &owner, "https://remna.example.com", false).await;
     assert_eq!(deliveries(&h).await, [changed("done")]);
     let (status, body) = h
         .write(
@@ -871,7 +879,7 @@ async fn сохранение_настроек_доходит_до_модуля_
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     clear_request(&dir.0);
-    save_address(&h, &owner, "https://new.example.com").await;
+    save_address(&h, &owner, "https://new.example.com", false).await;
     assert_eq!(deliveries(&h).await, [changed("done")]);
     h.db.cleanup().await;
 }
@@ -894,7 +902,8 @@ async fn модулю_из_архива_без_пути_событий_ниче�
     let (status, body) = install(&h, &owner, &archive, true).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     clear_request(&dir.0);
-    save_address(&h, &owner, "https://remna.example.com").await;
+    assert_eq!(takes_events(&h, &owner).await, false);
+    save_address(&h, &owner, "https://remna.example.com", false).await;
     assert_eq!(deliveries(&h).await, []);
     let (status, body) = h
         .write(

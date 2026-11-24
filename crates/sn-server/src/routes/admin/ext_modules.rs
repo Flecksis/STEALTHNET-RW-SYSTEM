@@ -16,8 +16,8 @@ use sn_services::ext_modules::packages::{
     RemoveRequest, RuntimeView,
 };
 use sn_services::ext_modules::{
-    Card, ConfigUpdate, ConfigView, InstallRequest, InstallResult, Journal, PageToken, PingResult,
-    PreviewResult, SelfView, Summary,
+    Card, ConfigSaved, ConfigUpdate, ConfigView, InstallRequest, InstallResult, Journal, PageToken,
+    PingResult, PreviewResult, SelfView, Summary,
 };
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -377,7 +377,7 @@ async fn update_config(
     State(state): State<AppState>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<ConfigUpdate>,
-) -> ApiResult<Json<ConfigView>> {
+) -> ApiResult<Json<ConfigSaved>> {
     admin.require(Permission::Modules)?;
     admin.require_session()?;
     Ok(Json(

@@ -174,6 +174,30 @@ fn события_без_адреса_не_принимаются() {
 }
 
 #[test]
+fn пустой_адрес_для_событий_считается_неуказанным() {
+    let with =
+        |address: &str| HELLO.replace("\"https://hello.example.com/stealthnet/events\"", address);
+    for empty in ["null", "\"\"", "\"  \""] {
+        assert_eq!(
+            messages(&with(empty)),
+            [(
+                "webhook".to_string(),
+                "укажите адрес, куда слать события: модуль подписан на события".to_string()
+            )],
+            "{empty}"
+        );
+        let quiet =
+            with(empty).replace("\"events\": [\"client_registered\", \"payment_paid\"],", "");
+        assert_eq!(parse(&quiet).unwrap().webhook, None, "{empty}");
+    }
+    for wrong in ["\"http://hello.example.com/events\"", "5"] {
+        let problems = messages(&with(wrong));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(!has(&problems, "webhook", "укажите адрес"), "{problems:?}");
+    }
+}
+
+#[test]
 fn поля_настроек_проверяются() {
     let source = r#"{
       "format": 1, "id": "crm", "name": "CRM", "version": "1", "author": "Я",

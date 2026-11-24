@@ -1322,8 +1322,9 @@ pub fn parse_as(source: &str, kind: Kind) -> Result<Manifest, Vec<Problem>> {
     let events = events(&map, &permissions, &mut problems);
     let webhook = match kind {
         Kind::External => {
+            let found = problems.0.len();
             let webhook = url(&map, "webhook", "webhook", false, &mut problems);
-            if webhook.is_none() && !events.is_empty() && !map.contains_key("webhook") {
+            if webhook.is_none() && !events.is_empty() && problems.0.len() == found {
                 problems.add(
                     "webhook",
                     "укажите адрес, куда слать события: модуль подписан на события",

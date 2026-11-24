@@ -11,10 +11,13 @@ import { ManagedManage, RuntimeSection, useRuntimeWatch } from './ExtRuntime';
 import {
   KEY_TEXT,
   extPageLink,
+  savedNote,
+  stateNote,
   type Attempt,
   type Credentials,
   type ExtCard,
   type ExtConfig,
+  type ExtConfigSaved,
   type Journal,
   type PingResult,
   type Reissued,
@@ -80,13 +83,12 @@ function Settings({ id, onSaved }: { id: string; onSaved: () => void }) {
     setError(null);
     setNote(null);
     try {
-      apply(
-        await api<ExtConfig>(`/api/admin/ext-modules/${pathPart(id)}/config`, {
-          method: 'PUT',
-          body: { config: changedConfig(cfg.schema, cfg.config, values), clear: secrets.clear },
-        }),
-      );
-      setNote('Настройки сохранены, модуль получит событие об изменении');
+      const saved = await api<ExtConfigSaved>(`/api/admin/ext-modules/${pathPart(id)}/config`, {
+        method: 'PUT',
+        body: { config: changedConfig(cfg.schema, cfg.config, values), clear: secrets.clear },
+      });
+      apply(saved);
+      setNote(savedNote(saved.event_queued));
       onSaved();
     } catch (err) {
       setError(failText(err, 'Настройки не сохранились'));
@@ -424,7 +426,7 @@ export function ExtModule() {
   const keyBad = card.key.state !== 'active';
   const signed = card.managed && runtime?.package ? signatureNote(runtime.package.signature, card.author) : null;
   const eventsPath = runtime?.run?.events_path ?? null;
-  const canPing = card.enabled && (card.managed ? eventsPath !== null : card.webhook !== null);
+  const canPing = card.enabled && card.takes_events;
 
   return (
     <div className="md-page">
@@ -456,7 +458,7 @@ export function ExtModule() {
         <div className="md-text">
           <span className="md-name">{card.enabled ? 'Модуль включён' : 'Модуль выключен'}</span>
           <span className="md-where">
-            {card.enabled ? 'Получает события, ключ API работает.' : 'События не уходят, ключ API не принимается.'} Установлен {dateLong(card.installed_at)},{' '}
+            {stateNote(card)} Установлен {dateLong(card.installed_at)},{' '}
             {card.installed_by}
           </span>
           {card.warning ? <span className="md-warn">{card.warning}</span> : null}

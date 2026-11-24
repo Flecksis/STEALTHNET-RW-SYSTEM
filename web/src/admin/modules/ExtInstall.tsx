@@ -9,7 +9,9 @@ import { CredentialsBlock } from './ExtCredentials';
 import { JobSteps, NO_CONFIRM, OwnerFields, confirmError, useRuntimeWatch, type Confirm, type ConfirmError } from './ExtRuntime';
 import {
   extLink,
+  installedNote,
   MANIFEST_LIMIT,
+  noEventsNote,
   type ExtCard,
   type ExtEvent,
   type ExtPermission,
@@ -366,7 +368,7 @@ function DetailRows({ preview }: { preview: PackagePreview }) {
       </div>
       <div className="row">
         <span className="rl">События</span>
-        <EventList events={preview.events} empty="Нет: только «Проверка связи» и «Настройки изменены»." />
+        <EventList events={preview.events} empty={noEventsNote(run)} />
       </div>
       <div className="row">
         <span className="rl">Права ключа API</span>
@@ -803,7 +805,7 @@ export function ExtInstall() {
         </Link>
         <div className="md-title">
           <h1 className="page-title tight">Модуль «{done.module.name}» установлен</h1>
-          <p>Он уже включён: события начнут уходить на его адрес. Передайте модулю ключ и секрет — без них он не сможет проверить подпись и обратиться к API.</p>
+          <p>{installedNote(done.module)}</p>
         </div>
         <CredentialsBlock credentials={done.credentials} onDone={() => navigate(extLink(done.module.id))} />
         <Link to={extLink(done.module.id)} className="md-back">

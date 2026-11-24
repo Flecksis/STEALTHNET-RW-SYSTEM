@@ -45,6 +45,7 @@ export type ExtCard = {
   stats: { pending: number; failed: number; last_ok: boolean | null; last_at: string | null };
   warning: string | null;
   managed: boolean;
+  takes_events: boolean;
 };
 
 export type Problem = { path: string; message: string };
@@ -75,6 +76,8 @@ export type Credentials = { api_key: string; signing_secret: string };
 export type InstallResult = { module: ExtCard; created: boolean; credentials: Credentials | null };
 
 export type ExtConfig = { module: string; schema: SettingField[]; config: Record<string, unknown> };
+
+export type ExtConfigSaved = ExtConfig & { event_queued: boolean };
 
 export type Attempt = {
   id: number;
@@ -222,4 +225,24 @@ export function extLink(id: string): string {
 
 export function extPageLink(id: string): string {
   return `/admin/ext/${encodeURIComponent(id)}`;
+}
+
+export function savedNote(eventQueued: boolean): string {
+  return eventQueued ? 'Настройки сохранены, модуль получит событие об изменении' : 'Настройки сохранены';
+}
+
+export function stateNote(card: Pick<ExtCard, 'enabled' | 'takes_events'>): string {
+  if (!card.enabled) {
+    return 'События не уходят, ключ API не принимается.';
+  }
+  return card.takes_events ? 'Получает события, ключ API работает.' : 'Ключ API работает.';
+}
+
+export function installedNote(card: Pick<ExtCard, 'takes_events'>): string {
+  const start = card.takes_events ? 'Он уже включён: события начнут уходить на его адрес.' : 'Он уже включён.';
+  return `${start} Передайте модулю ключ и секрет — без них он не сможет проверить подпись и обратиться к API.`;
+}
+
+export function noEventsNote(run: Pick<RunView, 'events_path'>): string {
+  return run.events_path === null ? 'Нет: модуль не принимает события.' : 'Нет: только «Проверка связи» и «Настройки изменены».';
 }

@@ -1256,7 +1256,7 @@ async fn настройки_модуля_сохраняются_и_доходя�
         ),
         "ext_modules.settings"
     );
-    let view = ops
+    let saved = ops
         .update_config(
             &by_owner,
             "hello",
@@ -1267,9 +1267,10 @@ async fn настройки_модуля_сохраняются_и_доходя�
         )
         .await
         .unwrap();
-    assert_eq!(view.config["greeting"], "Привет!");
-    assert_eq!(view.config["limit"], 7);
-    assert_eq!(view.config["crm_token"]["filled"], true);
+    assert!(saved.event_queued);
+    assert_eq!(saved.view.config["greeting"], "Привет!");
+    assert_eq!(saved.view.config["limit"], 7);
+    assert_eq!(saved.view.config["crm_token"]["filled"], true);
     let principal = services
         .api_keys()
         .principal(&credentials.api_key)
@@ -1422,11 +1423,14 @@ async fn изменение_настроек_ставит_событие_мод�
         ("by-zip", vec![changed.clone()]),
         ("by-zip-silent", Vec::new()),
     ] {
-        let view = save(id, "Привет").await;
-        assert_eq!(view.config["greeting"], "Привет", "{id}");
-        assert_eq!(view.config["crm_token"]["filled"], true, "{id}");
+        let takes_events = !expected.is_empty();
+        assert_eq!(ops.card(id).await.unwrap().takes_events, takes_events);
+        let saved = save(id, "Привет").await;
+        assert_eq!(saved.view.config["greeting"], "Привет", "{id}");
+        assert_eq!(saved.view.config["crm_token"]["filled"], true, "{id}");
+        assert_eq!(saved.event_queued, takes_events, "{id}");
         assert_eq!(queued_for(services, id).await, expected, "{id}");
-        if expected.is_empty() {
+        if !takes_events {
             assert_eq!(
                 code(ops.ping(&by_owner, id).await),
                 "ext_modules.no_webhook",
@@ -1434,7 +1438,7 @@ async fn изменение_настроек_ставит_событие_мод�
             );
         }
         run_sql(services, switch, owner).await;
-        save(id, "Здравствуйте").await;
+        assert!(!save(id, "Здравствуйте").await.event_queued, "{id}");
         assert_eq!(queued_for(services, id).await, expected, "{id}");
         run_sql(services, switch, owner).await;
     }

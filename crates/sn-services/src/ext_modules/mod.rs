@@ -329,6 +329,7 @@ pub struct Card {
     pub stats: Stats,
     pub warning: Option<String>,
     pub managed: bool,
+    pub takes_events: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -336,6 +337,13 @@ pub struct ConfigView {
     pub module: String,
     pub schema: Vec<Field>,
     pub config: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConfigSaved {
+    #[serde(flatten)]
+    pub view: ConfigView,
+    pub event_queued: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -980,6 +988,7 @@ impl<'a> ExtModulesOps<'a> {
         let (key, stats) = self.view_parts(&row).await?;
         Ok(Card {
             managed: row.managed,
+            takes_events: row.has_events_address(),
             warning: warning(&row, &key, &stats, self.loopback()),
             events: events_diff(&row.manifest, None),
             permissions: permissions_diff(&row.manifest, None),
@@ -1169,7 +1178,7 @@ impl<'a> ExtModulesOps<'a> {
         actor: &AdminPrincipal,
         id: &str,
         update: &ConfigUpdate,
-    ) -> ServiceResult<ConfigView> {
+    ) -> ServiceResult<ConfigSaved> {
         manager(actor)?;
         let mut tx = self.services.store().begin().await?;
         let row = store::lock(&mut tx, id).await?.ok_or_else(missing)?;
@@ -1269,6 +1278,7 @@ impl<'a> ExtModulesOps<'a> {
         changed.sort();
         changed.dedup();
         store::set_config(&mut tx, id, &config, actor.admin_id).await?;
+        let event_queued = !changed.is_empty() && row.enabled && row.has_events_address();
         if !changed.is_empty() {
             tx.audit()
                 .record(&Actor::Admin(actor.admin_id).audit(
@@ -1278,21 +1288,21 @@ impl<'a> ExtModulesOps<'a> {
                     serde_json::json!({ "module": id, "keys": changed }),
                 ))
                 .await?;
-            if row.enabled && row.has_events_address() {
-                store::enqueue_service(
-                    &mut tx,
-                    id,
-                    delivery::SETTINGS_CHANGED,
-                    &serde_json::json!({ "keys": changed }),
-                    None,
-                )
-                .await?;
-            }
+        }
+        if event_queued {
+            store::enqueue_service(
+                &mut tx,
+                id,
+                delivery::SETTINGS_CHANGED,
+                &serde_json::json!({ "keys": changed }),
+                None,
+            )
+            .await?;
         }
         let fresh = ModuleRow { config, ..row };
         let view = self.config_view(&mut tx, &fresh).await?;
         tx.commit().await?;
-        Ok(view)
+        Ok(ConfigSaved { view, event_queued })
     }
 
     pub async fn journal(&self, actor: &AdminPrincipal, id: &str) -> ServiceResult<Journal> {
