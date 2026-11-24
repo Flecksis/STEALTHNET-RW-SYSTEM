@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pageNeed, SECTIONS } from './settingsAccess.ts';
+import { firstSection, pageNeed, SECTIONS } from './settingsAccess.ts';
 
 const support = ['clients_read', 'clients_write', 'support'];
 const can = (granted) => (permission) => granted.includes(permission);
@@ -27,4 +27,16 @@ test('отдельные права открывают только свои р�
   assert.deepEqual(pageNeed('/admin/settings/import'), ['settings', 'money']);
   const settingsOnly = can(['settings']);
   assert.ok(!SECTIONS.find((s) => s.label === 'Перенос из другого бота').need.every(settingsOnly));
+});
+
+test('настройки открываются на первом разделе, который администратору доступен', () => {
+  const everything = () => true;
+  const admin = can(['clients_read', 'clients_write', 'money', 'refunds', 'tariffs', 'infrastructure', 'support', 'marketing', 'modules', 'settings', 'clients_login']);
+  assert.equal(firstSection(everything)?.label, 'Общие');
+  assert.equal(firstSection(everything)?.to, '/admin/settings/general');
+  assert.equal(firstSection(admin)?.label, 'Общие');
+  assert.equal(firstSection(can([...support, 'backups']))?.label, 'Резервные копии');
+  assert.equal(firstSection(can([...support, 'backups']))?.to, '/admin/settings/backups');
+  assert.equal(firstSection(can(['admins']))?.label, 'Администраторы');
+  assert.equal(firstSection(can(support)), undefined);
 });

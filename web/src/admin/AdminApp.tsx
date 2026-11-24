@@ -9,6 +9,7 @@ import type { AdminTheme, Appearance, Me, Permission } from '../lib/types';
 import { Login } from './Login';
 import { Pending } from './pages/Pending';
 import { ForcedPassword, Security } from './pages/Security';
+import { firstSection } from './pages/settingsAccess';
 import { SessionContext, type Session } from './session';
 import { Shell } from './Shell';
 const Clients = lazy(() => import('./clients/Clients').then((m) => ({ default: m.Clients })));
@@ -264,7 +265,7 @@ export function AdminApp() {
           <Route path="modules/:id" element={<ModulePage />} />
           <Route path="m/:module/*" element={<ModuleScreen />} />
           <Route path="settings" element={<SettingsGate />}>
-            <Route index element={<Navigate to="/admin/settings/payments" replace />} />
+            <Route index element={<Navigate to={firstSection(session.can)?.to ?? '/admin'} replace />} />
             <Route path="look" element={<SettingsLook />} />
             <Route path="remnawave" element={<SettingsRemna />} />
             <Route path="remnawave/sync" element={<SettingsRemnaSync />} />

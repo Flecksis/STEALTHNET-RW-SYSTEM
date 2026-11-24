@@ -4,7 +4,7 @@ import { api } from '../../lib/api';
 import type { Permission } from '../../lib/types';
 import { useSession } from '../session';
 import { shortName, UPDATES_PATH, upgradeText, versionLine, type BuildSummary } from '../version';
-import { pageNeed, SECTIONS } from './settingsAccess';
+import { firstSection, pageNeed, SECTIONS } from './settingsAccess';
 import '../settings.css';
 import './updates.css';
 
@@ -38,7 +38,7 @@ export function SettingsGate() {
   if (need.every(can)) {
     return <Outlet />;
   }
-  const open = SECTIONS.find((section) => section.need.every(can));
+  const open = firstSection(can);
   if (pathname.replace(/\/+$/, '') === '/admin/settings' && open) {
     return <Navigate to={open.to} replace />;
   }

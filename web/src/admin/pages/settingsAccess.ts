@@ -25,6 +25,10 @@ export const SECTIONS: SettingsSection[] = [
 
 const PAGES: Array<{ to: string; need: Permission[] }> = [{ to: '/admin/settings/remnawave/sync', need: ['remna_sync'] }];
 
+export function firstSection(can: (permission: Permission) => boolean): SettingsSection | undefined {
+  return SECTIONS.find((section) => section.need.every(can));
+}
+
 function under(pathname: string, to: string): boolean {
   return pathname === to || pathname.startsWith(`${to}/`);
 }
