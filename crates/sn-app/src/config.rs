@@ -22,6 +22,7 @@ pub struct Config {
     pub migrate_on_start: bool,
     pub run_worker: bool,
     pub run_bot: bool,
+    pub bot_concurrency: usize,
     pub telegram_api: String,
     pub server: ServerConfig,
     pub env: EnvFallbacks,
@@ -112,6 +113,14 @@ impl Config {
             .transpose()?
             .unwrap_or(16)
             .clamp(2, 200);
+        let bot_concurrency = text(vars, "SN_BOT_CONCURRENCY")
+            .map(|v| {
+                v.parse::<usize>()
+                    .context("SN_BOT_CONCURRENCY: ожидается число")
+            })
+            .transpose()?
+            .unwrap_or(sn_bot::DEFAULT_CONCURRENCY)
+            .clamp(1, 256);
         let telegram_api = text(vars, "SN_TELEGRAM_API")
             .map(|u| u.trim_end_matches('/').to_string())
             .unwrap_or_else(|| TELEGRAM_API.into());
@@ -149,6 +158,7 @@ impl Config {
             migrate_on_start: flag(vars, "SN_MIGRATE_ON_START", true)?,
             run_worker: flag(vars, "SN_RUN_WORKER", true)?,
             run_bot: flag(vars, "SN_RUN_BOT", true)?,
+            bot_concurrency,
             telegram_api,
             server: ServerConfig {
                 bind,
@@ -193,6 +203,7 @@ mod tests {
         let config = Config::from_vars(&vars(&[("DATABASE_URL", "postgres://sn@db/sn")])).unwrap();
         assert_eq!(config.server.bind.to_string(), "0.0.0.0:8080");
         assert!(config.migrate_on_start && config.run_worker && config.run_bot);
+        assert_eq!(config.bot_concurrency, 64);
         assert_eq!(config.db_max_connections, 16);
         assert_eq!(config.log_format, LogFormat::Text);
         assert!(config.env.remna.is_none());
@@ -356,6 +367,39 @@ mod tests {
             Config::from_vars(&vars(&[
                 ("DATABASE_URL", "x"),
                 ("SN_PUBLIC_URL", "panel.example.com")
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn число_обработчиков_бота_берётся_из_окружения() {
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "x"),
+            ("SN_DB_MAX_CONNECTIONS", "40"),
+        ]))
+        .unwrap();
+        assert_eq!(config.bot_concurrency, 64, "от пула базы не зависит");
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "x"),
+            ("SN_BOT_CONCURRENCY", "24"),
+        ]))
+        .unwrap();
+        assert_eq!(config.bot_concurrency, 24);
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "x"),
+            ("SN_BOT_CONCURRENCY", "100000"),
+        ]))
+        .unwrap();
+        assert_eq!(config.bot_concurrency, 256);
+        let config =
+            Config::from_vars(&vars(&[("DATABASE_URL", "x"), ("SN_BOT_CONCURRENCY", "0")]))
+                .unwrap();
+        assert_eq!(config.bot_concurrency, 1);
+        assert!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "x"),
+                ("SN_BOT_CONCURRENCY", "много")
             ]))
             .is_err()
         );

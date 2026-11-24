@@ -60,6 +60,7 @@ fn module_registry() -> Result<ModuleRegistry> {
 fn bot_config(config: &Config) -> BotConfig {
     BotConfig {
         api_base: config.telegram_api.clone(),
+        workers: config.bot_concurrency,
         ..BotConfig::default()
     }
 }

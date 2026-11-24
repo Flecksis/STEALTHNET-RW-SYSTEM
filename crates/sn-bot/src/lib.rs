@@ -45,6 +45,7 @@ pub use pacer::SendLimits;
 pub use telegram::{BotUser, TelegramApi, TelegramError, Update};
 
 pub const OFFSET_KEY: &str = "telegram.offset";
+pub const DEFAULT_CONCURRENCY: usize = 64;
 
 const SAVE_RETRY: Duration = Duration::from_secs(1);
 const IDLE_RECHECK: Duration = Duration::from_secs(30);
@@ -73,7 +74,9 @@ pub struct BotConfig {
     pub send: SendLimits,
     pub queue_high: usize,
     pub queue_low: usize,
+    pub chat_queue: usize,
     pub flood_report_every: Duration,
+    pub offset_every: Duration,
 }
 
 impl Default for BotConfig {
@@ -81,7 +84,7 @@ impl Default for BotConfig {
         BotConfig {
             api_base: telegram::DEFAULT_API.into(),
             poll_timeout: Duration::from_secs(25),
-            workers: 8,
+            workers: DEFAULT_CONCURRENCY,
             stars_retry_every: Duration::from_secs(30),
             stars_reconcile_every: Duration::from_secs(60),
             alerts_tick: Duration::from_secs(5),
@@ -91,9 +94,11 @@ impl Default for BotConfig {
             webhook_fallback_after: Duration::from_secs(10 * 60),
             queue_recheck: Duration::from_secs(2),
             send: SendLimits::default(),
-            queue_high: 512,
-            queue_low: 64,
+            queue_high: 4_096,
+            queue_low: 512,
+            chat_queue: 64,
             flood_report_every: Duration::from_secs(60),
+            offset_every: Duration::from_secs(5),
         }
     }
 }
@@ -128,8 +133,6 @@ pub struct Bot {
     services: Services,
     config: BotConfig,
 }
-
-pub use lanes::shard_for;
 
 fn is_webhook_conflict(description: &str) -> bool {
     description.to_ascii_lowercase().contains("webhook")
@@ -337,14 +340,21 @@ async fn sync_menu(api: &TelegramApi, services: &Services, applied: &mut Option<
 }
 
 fn spawn_workers(ctx: &BotCtx, lanes: &Arc<Lanes>) -> Vec<JoinHandle<()>> {
-    (0..lanes.len())
-        .map(|index| {
+    (0..lanes.workers())
+        .map(|_| {
             let ctx = ctx.clone();
             let lanes = lanes.clone();
             tokio::spawn(async move {
-                while let Some(update) = lanes.next(index).await {
-                    let _work = ctx.services.pause_gate().enter().await;
-                    handle_update(&ctx, update).await;
+                while let Some((chat, update)) = lanes.next().await {
+                    let ctx = ctx.clone();
+                    let job = tokio::spawn(async move {
+                        let _work = ctx.services.pause_gate().enter().await;
+                        handle_update(&ctx, update).await;
+                    });
+                    if let Err(err) = job.await {
+                        tracing::error!(error = %err, "обработка апдейта прервалась");
+                    }
+                    lanes.done(chat);
                 }
             })
         })
@@ -555,6 +565,7 @@ impl Bot {
             self.config.workers,
             self.config.queue_high,
             self.config.queue_low,
+            self.config.chat_queue,
         ));
         let handles = spawn_workers(&ctx, &lanes);
         let keeper_stop = cancel.child_token();
@@ -825,7 +836,9 @@ impl Bot {
         let api = live.api.clone();
         self.drain(live).await;
         let mut failures = 0u32;
-        loop {
+        let mut saved_at = tokio::time::Instant::now();
+        let mut unsaved: Option<i64> = None;
+        let outcome = loop {
             if self.services.bot_token().as_deref() != Some(live.token) {
                 break Ok(Stop::TokenChanged);
             }
@@ -855,31 +868,39 @@ impl Bot {
                 Ok(updates) => {
                     failures = 0;
                     runtime.set(live.running(self.services.now()));
-                    if updates.is_empty() {
-                        continue;
-                    }
-                    let payments = stars::from_updates(&updates);
-                    if !payments.is_empty()
-                        && let Err(err) = stars::record(&self.services, &payments).await
-                    {
-                        tracing::warn!(
-                            error = %err,
-                            "оплаты звёздами не сохранены, апдейты будут прочитаны заново"
-                        );
-                        tokio::select! {
-                            _ = cancel.cancelled() => break Ok(Stop::Cancelled),
-                            _ = tokio::time::sleep(SAVE_RETRY) => {}
+                    if !updates.is_empty() {
+                        let payments = stars::from_updates(&updates);
+                        if !payments.is_empty()
+                            && let Err(err) = stars::record(&self.services, &payments).await
+                        {
+                            tracing::warn!(
+                                error = %err,
+                                "оплаты звёздами не сохранены, апдейты будут прочитаны заново"
+                            );
+                            tokio::select! {
+                                _ = cancel.cancelled() => break Ok(Stop::Cancelled),
+                                _ = tokio::time::sleep(SAVE_RETRY) => {}
+                            }
+                            continue;
                         }
-                        continue;
+                        let mut next = offset.unwrap_or(0);
+                        for update in updates {
+                            next = next.max(update.update_id + 1);
+                            self.dispatch(live, update).await;
+                        }
+                        offset = Some(next);
+                        unsaved = Some(next);
                     }
-                    let mut next = offset.unwrap_or(0);
-                    for update in updates {
-                        next = next.max(update.update_id + 1);
-                        self.dispatch(live, update).await;
-                    }
-                    offset = Some(next);
-                    if let Err(err) = save_offset(&self.services, live.me.id, next).await {
-                        tracing::warn!(error = %err, "смещение апдейтов не сохранено");
+                    if let Some(next) = unsaved
+                        && saved_at.elapsed() >= self.config.offset_every
+                    {
+                        saved_at = tokio::time::Instant::now();
+                        match save_offset(&self.services, live.me.id, next).await {
+                            Ok(()) => unsaved = None,
+                            Err(err) => {
+                                tracing::warn!(error = %err, "смещение апдейтов не сохранено")
+                            }
+                        }
                     }
                 }
                 Err(err) => {
@@ -921,7 +942,13 @@ impl Bot {
                     }
                 }
             }
+        };
+        if let Some(next) = unsaved
+            && let Err(err) = save_offset(&self.services, live.me.id, next).await
+        {
+            tracing::warn!(error = %err, "смещение апдейтов не сохранено при остановке");
         }
+        outcome
     }
 
     async fn consume(

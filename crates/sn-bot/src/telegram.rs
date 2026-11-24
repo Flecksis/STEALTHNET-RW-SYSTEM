@@ -590,6 +590,9 @@ pub struct TelegramApi {
 }
 
 const PACED_RETRIES: u32 = 2;
+const POLL_TIMEOUT: Duration = Duration::from_secs(65);
+const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl TelegramApi {
     pub fn new(api_base: &str, token: &str) -> Self {
@@ -751,9 +754,15 @@ impl TelegramApi {
         method: &str,
         body: &serde_json::Value,
     ) -> Result<T, TelegramError> {
+        let timeout = if method == "getUpdates" {
+            POLL_TIMEOUT
+        } else {
+            CALL_TIMEOUT
+        };
         let response = self
             .http
             .post(format!("{}/{method}", self.base))
+            .timeout(timeout)
             .json(body)
             .send()
             .await
@@ -767,17 +776,30 @@ impl TelegramApi {
         form: reqwest::multipart::Form,
         chat: Option<i64>,
     ) -> Result<T, TelegramError> {
-        if let Some(pacer) = self.pacer.as_ref().filter(|_| sends(method)) {
+        let pacer = self.pacer.as_ref().filter(|_| sends(method));
+        if let Some(pacer) = pacer {
             pacer.acquire(chat, self.class).await;
         }
         let response = self
             .http
             .post(format!("{}/{method}", self.base))
+            .timeout(UPLOAD_TIMEOUT)
             .multipart(form)
             .send()
             .await
             .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
-        Self::parse(response).await
+        let result = Self::parse(response).await;
+        if let (Some(pacer), Err(err)) = (pacer, &result)
+            && let Some(wait) = err.retry_after()
+        {
+            tracing::warn!(
+                method,
+                wait_secs = wait,
+                "Telegram попросил подождать с отправкой файла"
+            );
+            pacer.pause(Duration::from_secs(wait));
+        }
+        result
     }
 
     fn photo_part(
@@ -1312,6 +1334,38 @@ mod tests {
         assert_eq!(err.retry_after(), Some(7));
         assert!(err.is_retryable());
         assert!(!err.is_forbidden());
+    }
+
+    #[tokio::test]
+    async fn отказ_429_на_отправке_файла_ставит_общую_паузу() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/sendDocument")))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "ok": false, "error_code": 429, "description": "Too Many Requests: retry after 7",
+                "parameters": {"retry_after": 7}
+            })))
+            .mount(&server)
+            .await;
+        let upload = FileUpload {
+            bytes: b"report",
+            name: "report.txt",
+            mime: "text/plain",
+            photo: false,
+        };
+        let plain = TelegramApi::new(&server.uri(), TOKEN);
+        let err = plain.send_document(1, upload, "", None).await.unwrap_err();
+        assert_eq!(err.retry_after(), Some(7));
+        let api = TelegramApi::paced(&server.uri(), TOKEN, SendLimits::default());
+        let pacer = api.pacer().expect("у отправки есть ограничитель").clone();
+        assert_eq!(pacer.stats().pauses, 0);
+        let err = api.send_document(1, upload, "", None).await.unwrap_err();
+        assert_eq!(err.retry_after(), Some(7));
+        assert_eq!(
+            pacer.stats().pauses,
+            1,
+            "отказ на загрузке файла останавливает всю отправку"
+        );
     }
 
     #[tokio::test]

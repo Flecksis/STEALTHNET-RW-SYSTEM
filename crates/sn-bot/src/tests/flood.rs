@@ -422,3 +422,71 @@ async fn тысяча_новых_аккаунтов_упираются_в_пре
     );
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn медленный_чат_не_задерживает_ответы_соседям() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let slow = 8_000;
+    let neighbours: Vec<i64> = (1..=16).map(|i| slow + 8 * i).collect();
+    for chat in std::iter::once(slow).chain(neighbours.iter().copied()) {
+        handle_update(&ctx, text_update(1, chat, "/start")).await;
+    }
+    Mock::given(method("POST"))
+        .and(path_regex(r"/(sendMessage|editMessageText)$"))
+        .and(wiremock::matchers::body_partial_json(
+            json!({"chat_id": slow}),
+        ))
+        .respond_with(
+            ok(json!({"message_id": 100, "chat": {"id": slow, "type": "private"}, "date": 0}))
+                .set_delay(Duration::from_secs(3)),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let mut updates = vec![json!({
+        "update_id": 10,
+        "callback_query": {
+            "id": "slow", "from": user(slow), "data": "m",
+            "message": {"message_id": 55, "chat": {"id": slow, "type": "private"}, "date": 1}
+        }
+    })];
+    for (index, chat) in neighbours.iter().enumerate() {
+        updates.push(json!({
+            "update_id": 11 + index as i64,
+            "callback_query": {
+                "id": format!("fast{chat}"), "from": user(*chat), "data": "m",
+                "message": {"message_id": 55, "chat": {"id": chat, "type": "private"}, "date": 1}
+            }
+        }));
+    }
+    let fake = FakeTelegram::new(updates);
+    mount(&server, &fake).await;
+    let started = Instant::now();
+    let cancel = CancellationToken::new();
+    let bot = tokio::spawn(Bot::new(services.clone(), flood_config(&server)).run(cancel.clone()));
+    wait_until(
+        "соседи получили ответы",
+        Duration::from_secs(10),
+        || async { neighbours.iter().all(|chat| fake.first_to(*chat).is_some()) },
+    )
+    .await;
+    let slowest = neighbours
+        .iter()
+        .filter_map(|chat| fake.first_to(*chat))
+        .map(|at| at.duration_since(started))
+        .max()
+        .unwrap();
+    cancel.cancel();
+    bot.await.unwrap().unwrap();
+    assert!(
+        slowest < Duration::from_millis(2_500),
+        "соседи по старой очереди ждали медленный чат: {slowest:?}"
+    );
+    eprintln!(
+        "медленный чат 3 с, 16 соседей по старой очереди: последний ответ через {:.2} с",
+        slowest.as_secs_f64()
+    );
+    db.cleanup().await;
+}

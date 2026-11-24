@@ -240,14 +240,6 @@ fn команда_с_именем_бота_и_параметром() {
     assert_eq!(parse_command("/"), None);
 }
 
-#[test]
-fn апдейты_одного_чата_идут_в_одну_очередь() {
-    assert_eq!(shard_for(42, 8), shard_for(42, 8));
-    assert_eq!(shard_for(42, 8), 2);
-    assert!(shard_for(-1_001_234_567, 8) < 8);
-    assert_eq!(shard_for(7, 0), 0);
-}
-
 #[tokio::test]
 async fn старт_по_ссылке_регистрирует_клиента_с_меткой_и_пригласившим() {
     let Some((db, services, server, ctx)) = setup().await else {
@@ -1069,6 +1061,71 @@ async fn бот_читает_апдейты_и_хранит_смещение() {
         .map(|r| serde_json::from_slice(&r.body).unwrap())
         .collect();
     assert!(polls.iter().skip(1).all(|body| body["offset"] == 42));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn смещение_сохраняется_и_когда_апдейтов_больше_нет() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    let first = serde_json::json!([{
+        "update_id": 41,
+        "message": {
+            "message_id": 1, "from": user(511), "chat": {"id": 511, "type": "private"},
+            "date": 1, "text": "/start"
+        }
+    }]);
+    Mock::given(method("POST"))
+        .and(path_regex(r"/getUpdates$"))
+        .respond_with(ok(first))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/getUpdates$"))
+        .respond_with(ok(serde_json::json!([])).set_delay(Duration::from_millis(100)))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let bot = Bot::new(
+        services.clone(),
+        BotConfig {
+            api_base: server.uri(),
+            poll_timeout: Duration::from_secs(1),
+            workers: 2,
+            offset_every: Duration::from_secs(1),
+            ..BotConfig::default()
+        },
+    );
+    let cancel = CancellationToken::new();
+    let running = tokio::spawn(bot.run(cancel.clone()));
+    let mut saved = None;
+    for _ in 0..60 {
+        let mut conn = db.store.conn().await.unwrap();
+        saved = conn.bot_state().get(OFFSET_KEY).await.unwrap();
+        drop(conn);
+        if saved.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let polls_before_stop = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().ends_with("/getUpdates"))
+        .count();
+    cancel.cancel();
+    running.await.unwrap().unwrap();
+    assert_eq!(
+        saved,
+        Some(serde_json::json!({"bot": 1, "offset": 42})),
+        "смещение записано, пока бот работает, хотя новых апдейтов не было"
+    );
+    assert!(polls_before_stop >= 2, "{polls_before_stop}");
     db.cleanup().await;
 }
 
