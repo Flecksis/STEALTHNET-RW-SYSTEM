@@ -1129,10 +1129,34 @@ impl UpdateNodeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "KeygenWire")]
 pub struct NodeKeygen {
-    #[serde(alias = "pubKey")]
     pub secret_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeygenWire {
+    #[serde(default, deserialize_with = "nullable")]
+    secret_key: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub_key: String,
+}
+
+impl TryFrom<KeygenWire> for NodeKeygen {
+    type Error = &'static str;
+
+    fn try_from(wire: KeygenWire) -> Result<Self, Self::Error> {
+        let secret_key = if wire.secret_key.is_empty() {
+            wire.pub_key
+        } else {
+            wire.secret_key
+        };
+        if secret_key.is_empty() {
+            return Err("в ответе /api/keygen нет ключа ноды");
+        }
+        Ok(NodeKeygen { secret_key })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2047,6 +2071,35 @@ impl PluginExecutorRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ключ_ноды_берётся_из_secret_key_даже_когда_рядом_pub_key() {
+        let both: NodeKeygen = serde_json::from_value(serde_json::json!({
+            "secretKey": "eyJub2RlQ2VydFBlbSI6",
+            "pubKey": "MCowBQYDK2VwAyEA"
+        }))
+        .unwrap();
+        assert_eq!(both.secret_key, "eyJub2RlQ2VydFBlbSI6");
+        let old: NodeKeygen =
+            serde_json::from_value(serde_json::json!({"pubKey": "MCowBQYDK2VwAyEA"})).unwrap();
+        assert_eq!(old.secret_key, "MCowBQYDK2VwAyEA");
+        let empty_pub: NodeKeygen = serde_json::from_value(
+            serde_json::json!({"secretKey": "eyJub2RlQ2VydFBlbSI6", "pubKey": null}),
+        )
+        .unwrap();
+        assert_eq!(empty_pub.secret_key, "eyJub2RlQ2VydFBlbSI6");
+        assert!(serde_json::from_value::<NodeKeygen>(serde_json::json!({})).is_err());
+        assert!(
+            serde_json::from_value::<NodeKeygen>(
+                serde_json::json!({"secretKey": "", "pubKey": ""})
+            )
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(&both).unwrap(),
+            serde_json::json!({"secretKey": "eyJub2RlQ2VydFBlbSI6"})
+        );
+    }
 
     #[test]
     fn сброс_соединений_сериализуется_как_в_спецификации() {

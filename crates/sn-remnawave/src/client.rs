@@ -1584,9 +1584,10 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/keygen"))
-            .respond_with(wrapped(
-                serde_json::json!({"secretKey": "eyJub2RlQ2VydFBlbSI6"}),
-            ))
+            .respond_with(wrapped(serde_json::json!({
+                "secretKey": "eyJub2RlQ2VydFBlbSI6",
+                "pubKey": "MCowBQYDK2VwAyEA"
+            })))
             .expect(1)
             .mount(&server)
             .await;
