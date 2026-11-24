@@ -20,25 +20,90 @@ pub const IMAGES_KEY: &str = "bot.images";
 pub const DOCUMENTS_KEY: &str = "bot.documents";
 pub const CONSENT_KEY: &str = "bot.documents_consent";
 pub const EMOJI_REJECTED_KEY: &str = "telegram.custom_emoji_rejected";
-pub const DOCUMENTS_MAX: usize = 10;
-pub const DOCUMENT_TITLE_MAX: usize = 80;
-pub const DOCUMENT_URL_MAX: usize = 500;
 pub const IMAGE_MIN_SIDE: u32 = 100;
 pub const IMAGE_MAX_SIDES: u32 = 10_000;
 pub const IMAGE_MAX_RATIO: u32 = 20;
 const VERSION_LEN: usize = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Document {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_en: Option<String>,
+    #[serde(default)]
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl Document {
-    pub fn valid(&self) -> bool {
-        !self.title.trim().is_empty()
-            && (self.url.starts_with("https://") || self.url.starts_with("http://"))
+    pub fn link(title: impl Into<String>, url: impl Into<String>) -> Document {
+        Document {
+            title: title.into(),
+            url: url.into(),
+            ..Document::default()
+        }
     }
+
+    pub fn valid(&self) -> bool {
+        if self.title.trim().is_empty() {
+            return false;
+        }
+        match &self.path {
+            Some(path) => sn_domain::documents::is_page_path(path),
+            None => self.url.starts_with("https://") || self.url.starts_with("http://"),
+        }
+    }
+
+    pub fn is_page(&self) -> bool {
+        self.path.is_some()
+    }
+
+    pub fn title_in(&self, locale: Locale) -> &str {
+        match (locale, self.title_en.as_deref()) {
+            (Locale::En, Some(en)) if !en.trim().is_empty() => en,
+            _ => &self.title,
+        }
+    }
+
+    pub fn target(&self) -> &str {
+        self.path.as_deref().unwrap_or(&self.url)
+    }
+
+    pub fn absolute(&self, public_url: Option<&str>) -> Option<String> {
+        match &self.path {
+            Some(path) => {
+                let base = public_url?.trim().trim_end_matches('/');
+                (base.starts_with("https://") || base.starts_with("http://"))
+                    .then(|| format!("{base}{path}"))
+            }
+            None => Some(self.url.clone()),
+        }
+    }
+}
+
+pub fn with_ids(documents: Vec<Document>) -> Vec<Document> {
+    let mut taken: std::collections::HashSet<String> = documents
+        .iter()
+        .filter(|d| !d.id.is_empty())
+        .map(|d| d.id.clone())
+        .collect();
+    let mut next = 1usize;
+    documents
+        .into_iter()
+        .map(|mut document| {
+            if document.id.is_empty() {
+                while taken.contains(&format!("d{next}")) {
+                    next += 1;
+                }
+                document.id = format!("d{next}");
+                taken.insert(document.id.clone());
+            }
+            document
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,11 +158,13 @@ fn parsed<T: serde::de::DeserializeOwned>(value: Option<Value>) -> Option<T> {
 pub async fn load(db: &mut impl Db) -> ServiceResult<BotContent> {
     let config: ContentConfig = parsed(db.settings().get(CONTENT_KEY).await?).unwrap_or_default();
     let images: ImagesConfig = parsed(db.settings().get(IMAGES_KEY).await?).unwrap_or_default();
-    let documents: Vec<Document> = parsed::<Vec<Document>>(db.settings().get(DOCUMENTS_KEY).await?)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(Document::valid)
-        .collect();
+    let documents: Vec<Document> = with_ids(
+        parsed::<Vec<Document>>(db.settings().get(DOCUMENTS_KEY).await?)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(Document::valid)
+            .collect(),
+    );
     let consent = parsed::<bool>(db.settings().get(CONSENT_KEY).await?).unwrap_or(true);
     let versions = db
         .bot_images()
@@ -187,21 +254,6 @@ pub struct ImagesView {
     pub min_side: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DocumentsView {
-    pub consent: bool,
-    pub items: Vec<Document>,
-    pub max: usize,
-    pub title_max: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct DocumentsUpdate {
-    pub consent: bool,
-    #[serde(default)]
-    pub items: Vec<Document>,
-}
-
 fn invalid(code: &'static str, message: impl Into<String>) -> ServiceError {
     ServiceError::rejected(code, message)
 }
@@ -260,37 +312,6 @@ pub fn check_image(bytes: &[u8]) -> ServiceResult<ImageKind> {
         ));
     }
     Ok(info.kind)
-}
-
-fn clean_document(document: &Document) -> ServiceResult<Document> {
-    let title: String = document
-        .title
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if title.is_empty() {
-        return Err(invalid("bot_documents.invalid", "У документа нет названия"));
-    }
-    if title.chars().count() > DOCUMENT_TITLE_MAX {
-        return Err(invalid(
-            "bot_documents.invalid",
-            format!("Название «{title}» длиннее {DOCUMENT_TITLE_MAX} символов"),
-        ));
-    }
-    let url = document.url.trim().to_string();
-    let well_formed = url.starts_with("https://")
-        && url.len() > "https://".len()
-        && url.len() <= DOCUMENT_URL_MAX
-        && !url
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '"' | '<' | '>' | '\''));
-    if !well_formed {
-        return Err(invalid(
-            "bot_documents.invalid",
-            format!("У документа «{title}» нужна ссылка вида https://…"),
-        ));
-    }
-    Ok(Document { title, url })
 }
 
 fn apply_translation(
@@ -680,99 +701,11 @@ impl<'a> BotContentOps<'a> {
         let mut conn = self.services.store().conn().await?;
         Ok(conn.bot_images().get(slot.as_str()).await?)
     }
-
-    pub fn documents(&self) -> DocumentsView {
-        let runtime = self.services.bot_content();
-        DocumentsView {
-            consent: runtime.consent,
-            items: runtime.documents.clone(),
-            max: DOCUMENTS_MAX,
-            title_max: DOCUMENT_TITLE_MAX,
-        }
-    }
-
-    pub async fn update_documents(
-        &self,
-        update: &DocumentsUpdate,
-        admin: AdminId,
-    ) -> ServiceResult<DocumentsView> {
-        if update.items.len() > DOCUMENTS_MAX {
-            return Err(invalid(
-                "bot_documents.invalid",
-                format!("Документов может быть не больше {DOCUMENTS_MAX}"),
-            ));
-        }
-        let items = update
-            .items
-            .iter()
-            .map(clean_document)
-            .collect::<ServiceResult<Vec<_>>>()?;
-        let current = self.documents();
-        if items == current.items && update.consent == current.consent {
-            return Ok(current);
-        }
-        let mut tx = self.services.store().begin().await?;
-        tx.settings()
-            .set_as(DOCUMENTS_KEY, &items, Some(admin))
-            .await?;
-        tx.settings()
-            .set_as(CONSENT_KEY, &update.consent, Some(admin))
-            .await?;
-        tx.audit()
-            .record(&Actor::Admin(admin).audit(
-                "settings.documents",
-                "settings",
-                None,
-                json!({
-                    "count": items.len(),
-                    "titles": items.iter().map(|d| d.title.as_str()).collect::<Vec<_>>(),
-                    "consent": update.consent,
-                }),
-            ))
-            .await?;
-        tx.commit().await?;
-        self.saved().await?;
-        Ok(self.documents())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn документы_проверяются_и_приводятся_к_виду() {
-        let clean = clean_document(&Document {
-            title: "  Пользовательское   соглашение ".into(),
-            url: " https://example.com/terms ".into(),
-        })
-        .unwrap();
-        assert_eq!(clean.title, "Пользовательское соглашение");
-        assert_eq!(clean.url, "https://example.com/terms");
-        for url in [
-            "http://example.com",
-            "https://",
-            "https://exa mple.com",
-            "javascript:alert(1)",
-            "https://example.com/\"x",
-        ] {
-            assert!(
-                clean_document(&Document {
-                    title: "Оферта".into(),
-                    url: url.into(),
-                })
-                .is_err(),
-                "{url}"
-            );
-        }
-        assert!(
-            clean_document(&Document {
-                title: " ".into(),
-                url: "https://example.com".into(),
-            })
-            .is_err()
-        );
-    }
 
     #[test]
     fn картинка_для_раздела_с_версией() {
@@ -798,10 +731,9 @@ mod tests {
             Some((ImageSlot::Menu, "bbbbbbbbbbbbbbbb".into()))
         );
         assert!(content.consent);
-        content.documents.push(Document {
-            title: "Оферта".into(),
-            url: "https://example.com/offer".into(),
-        });
+        content
+            .documents
+            .push(Document::link("Оферта", "https://example.com/offer"));
         assert_eq!(content.consent_documents().len(), 1);
         content.consent = false;
         assert!(content.consent_documents().is_empty());

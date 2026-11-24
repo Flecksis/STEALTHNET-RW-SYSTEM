@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Link, Route, Routes, useLocation } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
+import { documentTitle } from '../lib/documents';
 import { avatarColor, money } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { applyLang, guessLang, msg, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
@@ -514,7 +515,7 @@ function Footer() {
       ) : null}
       {(site.documents ?? []).map((doc) => (
         <a key={doc.url} href={doc.url} target="_blank" rel="noreferrer noopener">
-          {doc.title}
+          {documentTitle(doc)}
         </a>
       ))}
     </footer>

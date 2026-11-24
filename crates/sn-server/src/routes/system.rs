@@ -28,6 +28,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/favicon/{file}", get(favicon))
         .route("/api/public/landing", get(landing))
         .route("/api/public/landing/{file}", get(landing_image))
+        .route("/api/public/pages/{*path}", get(document_page))
         .route("/api/public/connect-apps", get(connect_apps))
         .route("/api/public/app-icon/{file}", get(app_icon))
         .route("/api/public/icon.svg", get(icon))
@@ -80,6 +81,24 @@ fn tagged(headers: &HeaderMap, value: &serde_json::Value) -> Response {
         body,
     )
         .into_response()
+}
+
+async fn document_page(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let path = format!("/{}", path.trim_matches('/'));
+    let locale = state
+        .services
+        .settings()
+        .languages
+        .pick(sn_domain::lang::hint());
+    match state.services.documents().page(&path, locale).await {
+        Ok(Some(page)) => tagged(&headers, &serde_json::json!(page)),
+        Ok(None) => ApiError::not_found().into_response(),
+        Err(err) => ApiError::from(err).into_response(),
+    }
 }
 
 async fn catalog(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -160,7 +179,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
                     .or(settings.trial.first().map(|v| v.days))
                     .unwrap_or(0),
             },
-            "documents": state.services.bot_content().documents,
+            "documents": sn_services::documents::public_list(&state.services.bot_content().documents),
             "email_auth": email_auth,
             "email_reset": email_reset,
             "email_confirm": email_confirm,

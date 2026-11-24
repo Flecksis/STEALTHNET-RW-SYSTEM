@@ -12,7 +12,7 @@ pub fn version(documents: &[Document]) -> Option<String> {
     for document in documents {
         hasher.update(document.title.trim().as_bytes());
         hasher.update(b"\n");
-        hasher.update(document.url.trim().as_bytes());
+        hasher.update(document.target().trim().as_bytes());
         hasher.update(b"\n");
     }
     Some(hex::encode(&hasher.finalize()[..12]))
@@ -53,15 +53,29 @@ mod tests {
     #[test]
     fn версия_согласия_меняется_вместе_с_документами() {
         assert_eq!(version(&[]), None);
-        let offer = Document {
-            title: "Оферта".into(),
-            url: "https://example.com/offer".into(),
-        };
+        let offer = Document::link("Оферта", "https://example.com/offer");
         let first = version(std::slice::from_ref(&offer)).unwrap();
         assert_eq!(first.len(), 24);
         let mut changed = offer.clone();
         changed.url = "https://example.com/offer-v2".into();
         assert_ne!(version(&[changed]), Some(first.clone()));
-        assert_eq!(version(&[offer]), Some(first));
+        assert_eq!(version(std::slice::from_ref(&offer)), Some(first.clone()));
+        let mut with_id = offer.clone();
+        with_id.id = "d1".into();
+        with_id.title_en = Some("Offer".into());
+        assert_eq!(version(&[with_id]), Some(first));
+        let page = Document {
+            id: "k3f9a1b2c3".into(),
+            title: "Политика".into(),
+            path: Some("/privacy-policy".into()),
+            ..Document::default()
+        };
+        let both = version(&[offer, page.clone()]).unwrap();
+        let mut moved = page;
+        moved.path = Some("/privacy".into());
+        assert_ne!(
+            version(&[Document::link("Оферта", "https://example.com/offer"), moved]),
+            Some(both)
+        );
     }
 }

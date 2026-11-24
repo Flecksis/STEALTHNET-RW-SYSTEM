@@ -1,0 +1,172 @@
+.dp-main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 56px 24px 72px;
+  box-sizing: border-box;
+}
+
+.dp-doc {
+  max-width: 760px;
+}
+
+.dp-doc h1 {
+  margin: 0;
+  font-size: clamp(30px, 3.6vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.dp-meta {
+  margin-top: 14px;
+  color: var(--muted);
+}
+
+.dp-body {
+  margin-top: 36px;
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.dp-body > * {
+  margin: 0;
+}
+
+.dp-body > * + * {
+  margin-top: 1em;
+}
+
+.dp-body h1,
+.dp-body h2 {
+  margin-top: 1.9em;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.dp-body h3,
+.dp-body h4,
+.dp-body h5,
+.dp-body h6 {
+  margin-top: 1.5em;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.dp-body > :first-child {
+  margin-top: 0;
+}
+
+.dp-body ul,
+.dp-body ol {
+  padding-left: 1.4em;
+}
+
+.dp-body li + li {
+  margin-top: 0.4em;
+}
+
+.dp-body a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--ink) 40%, transparent);
+  text-underline-offset: 3px;
+}
+
+.dp-body a:hover {
+  text-decoration-color: currentColor;
+}
+
+.dp-body a:not([href]) {
+  color: inherit;
+  text-decoration: none;
+}
+
+.dp-body strong,
+.dp-body b {
+  color: var(--ink);
+}
+
+.dp-body blockquote {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 1.2em;
+  color: var(--muted);
+}
+
+.dp-body hr {
+  margin: 2em 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.dp-body pre,
+.dp-body code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+
+.dp-body pre {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  white-space: pre-wrap;
+}
+
+.dp-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.dp-body th,
+.dp-body td {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.dp-body th {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.dp-foot-nav a[aria-current='page'] {
+  color: var(--ink);
+}
+
+.ld-phone .dp-main {
+  padding: 32px 20px 40px;
+}
+
+.ld-phone .dp-doc h1 {
+  font-size: 30px;
+}
+
+.ld-phone .dp-body {
+  margin-top: 26px;
+  font-size: 16px;
+}
+
+.ld-phone .dp-body h1,
+.ld-phone .dp-body h2 {
+  font-size: 21px;
+}
+
+.ld-phone .dp-body h3,
+.ld-phone .dp-body h4,
+.ld-phone .dp-body h5,
+.ld-phone .dp-body h6 {
+  font-size: 17px;
+}

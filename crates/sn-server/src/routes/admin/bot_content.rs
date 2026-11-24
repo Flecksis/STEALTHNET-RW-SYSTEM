@@ -10,9 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::bot_content::ImageMode;
-use sn_services::bot_content::{
-    ContentUpdate, ContentView, DocumentsUpdate, DocumentsView, ImagesView,
-};
+use sn_services::bot_content::{ContentUpdate, ContentView, ImagesView};
 use sn_services::bot_layout::{LayoutUpdate, LayoutView};
 use sn_store::BOT_IMAGE_MAX_BYTES;
 
@@ -31,7 +29,6 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/bot/images/{slot}/mode", put(mode))
         .route("/bot/images/{slot}/file", get(file))
-        .route("/settings/documents", get(documents).put(update_documents))
 }
 
 async fn content(
@@ -177,27 +174,4 @@ async fn file(
         image.bytes,
     )
         .into_response())
-}
-
-async fn documents(
-    admin: CurrentAdmin,
-    State(state): State<AppState>,
-) -> ApiResult<Json<DocumentsView>> {
-    admin.require(Permission::Settings)?;
-    Ok(Json(state.services.bot_content_ops().documents()))
-}
-
-async fn update_documents(
-    admin: CurrentAdmin,
-    State(state): State<AppState>,
-    ApiJson(body): ApiJson<DocumentsUpdate>,
-) -> ApiResult<Json<DocumentsView>> {
-    admin.require(Permission::Settings)?;
-    Ok(Json(
-        state
-            .services
-            .bot_content_ops()
-            .update_documents(&body, admin.0.admin_id)
-            .await?,
-    ))
 }

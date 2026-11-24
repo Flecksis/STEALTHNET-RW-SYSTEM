@@ -4,6 +4,45 @@ use crate::traffic::{GIB, TIB};
 
 pub const NBSP: char = '\u{a0}';
 
+const MONTHS_RU: [&str; 12] = [
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+];
+
+const MONTHS_EN: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+pub fn date_in(date: chrono::NaiveDate, locale: Locale) -> String {
+    use chrono::Datelike;
+    let index = date.month0() as usize;
+    match locale {
+        Locale::Ru => format!("{}{NBSP}{} {}", date.day(), MONTHS_RU[index], date.year()),
+        Locale::En => format!("{}{NBSP}{}, {}", MONTHS_EN[index], date.day(), date.year()),
+    }
+}
+
 pub fn group_digits(n: u64) -> String {
     let digits = n.to_string();
     let len = digits.len();
@@ -200,6 +239,13 @@ pub fn gigabytes_in(gb: u64, locale: Locale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn дата_словами_на_двух_языках() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+        assert_eq!(date_in(date, Locale::Ru), "24\u{a0}ноября 2026");
+        assert_eq!(date_in(date, Locale::En), "November\u{a0}24, 2026");
+    }
 
     #[test]
     fn по_английски_деньги_дни_и_трафик() {

@@ -116,4 +116,5 @@ export const MINI: Record<string, string> = {
   'Обращение': 'Request',
   'Обращение закрыто. Если вопрос остался, задайте новый.': 'This request is closed. Still have a question? Ask a new one.',
   'Писать в него будет нельзя, но можно задать новый вопрос.': 'You won\'t be able to reply here, but you can ask a new question.',
+  'Документы': 'Documents',
 };

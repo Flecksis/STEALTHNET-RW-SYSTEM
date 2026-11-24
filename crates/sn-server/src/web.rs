@@ -6,9 +6,11 @@ use axum::extract::State;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use sn_domain::client::Locale;
+use sn_domain::format;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::CoreSettings;
 use sn_services::branding::{TabIcon, tab_icon, touch_icon};
+use sn_services::documents::{PublicPage, find_page};
 use std::path::Path;
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
@@ -52,6 +54,7 @@ pub fn robots_txt(indexing: bool) -> String {
 }
 const REVALIDATE: &str = "no-cache";
 const ICON: &str = "/api/public/icon.svg";
+const ROOT: &str = "<div id=\"root\">";
 
 fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
@@ -62,7 +65,9 @@ fn embeddable(path: &str) -> bool {
 }
 
 fn landing_preview(path: &str) -> bool {
-    path == "/admin/landing-preview" || path.starts_with("/admin/landing-preview/")
+    ["/admin/landing-preview", "/admin/document-preview"]
+        .iter()
+        .any(|frame| path == *frame || path.starts_with(&format!("{frame}/")))
 }
 
 fn frame_option(path: &str) -> Option<&'static str> {
@@ -154,6 +159,100 @@ pub fn escape_html(text: &str) -> String {
     out
 }
 
+fn icon_tags(settings: &CoreSettings) -> Vec<String> {
+    let (icon, icon_type) = match tab_icon(settings) {
+        TabIcon::Image(image, meta) => (meta.path(image), meta.kind.content_type()),
+        TabIcon::Mark => (ICON.to_string(), "image/svg+xml"),
+    };
+    let mut tags = vec![format!(
+        "<link rel=\"icon\" type=\"{icon_type}\" href=\"{}\">",
+        escape_html(&icon)
+    )];
+    if let Some(touch) = touch_icon(settings) {
+        tags.push(format!(
+            "<link rel=\"apple-touch-icon\" href=\"{}\">",
+            escape_html(&touch)
+        ));
+    }
+    tags
+}
+
+fn document_head(settings: &CoreSettings, page: &PublicPage) -> String {
+    let brand = settings.brand_name.as_str();
+    let robots = if settings.site.indexing {
+        "index, follow"
+    } else {
+        "noindex"
+    };
+    let mut tags = vec![
+        format!(
+            "<title>{}</title>",
+            escape_html(&format!("{} — {brand}", page.title))
+        ),
+        format!("<meta name=\"robots\" content=\"{robots}\">"),
+    ];
+    tags.extend(icon_tags(settings));
+    if let Some(description) = &page.description {
+        tags.push(format!(
+            "<meta name=\"description\" content=\"{}\">",
+            escape_html(description)
+        ));
+    }
+    tags.push("<meta property=\"og:type\" content=\"article\">".to_string());
+    tags.push(format!(
+        "<meta property=\"og:site_name\" content=\"{}\">",
+        escape_html(brand)
+    ));
+    tags.push(format!(
+        "<meta property=\"og:title\" content=\"{}\">",
+        escape_html(&page.title)
+    ));
+    if let Some(description) = &page.description {
+        tags.push(format!(
+            "<meta property=\"og:description\" content=\"{}\">",
+            escape_html(description)
+        ));
+    }
+    if let Some(base) = settings
+        .public_url
+        .as_deref()
+        .map(|url| url.trim_end_matches('/'))
+    {
+        let url = escape_html(&format!("{base}{}", page.path));
+        tags.push(format!("<meta property=\"og:url\" content=\"{url}\">"));
+        if settings.site.indexing {
+            tags.push(format!("<link rel=\"canonical\" href=\"{url}\">"));
+        }
+    }
+    tags.push("<meta name=\"twitter:card\" content=\"summary\">".to_string());
+    tags.push(format!(
+        "<meta name=\"twitter:title\" content=\"{}\">",
+        escape_html(&page.title)
+    ));
+    tags.join("\n    ")
+}
+
+fn document_body(page: &PublicPage) -> String {
+    let updated = match page.lang {
+        Locale::Ru => "Обновлено",
+        Locale::En => "Updated",
+    };
+    format!(
+        "<noscript><article class=\"dp-noscript\"><h1>{}</h1><p>{updated} {}</p>{}</article></noscript>",
+        escape_html(&page.title),
+        format::date_in(page.updated_at.date_naive(), page.lang),
+        page.html
+    )
+}
+
+fn with_body(mut html: String, body: &str) -> String {
+    match html.find(ROOT).or_else(|| html.find("</body>")) {
+        Some(at) => html.insert_str(at, body),
+        None => html.push_str(body),
+    }
+    html
+}
+
 fn head(settings: &CoreSettings, page: Page, locale: Locale) -> String {
     let brand = settings.brand_name.as_str();
     let site_title = settings.site.title.as_deref().unwrap_or(brand);
@@ -177,24 +276,11 @@ fn head(settings: &CoreSettings, page: Page, locale: Locale) -> String {
         .map(|url| url.trim_end_matches('/'));
     let logo = settings.logo_url();
     let description = settings.site.description.as_deref();
-    let (icon, icon_type) = match tab_icon(settings) {
-        TabIcon::Image(image, meta) => (meta.path(image), meta.kind.content_type()),
-        TabIcon::Mark => (ICON.to_string(), "image/svg+xml"),
-    };
     let mut tags = vec![
         format!("<title>{}</title>", escape_html(&title)),
         format!("<meta name=\"robots\" content=\"{robots}\">"),
-        format!(
-            "<link rel=\"icon\" type=\"{icon_type}\" href=\"{}\">",
-            escape_html(&icon)
-        ),
     ];
-    if let Some(touch) = touch_icon(settings) {
-        tags.push(format!(
-            "<link rel=\"apple-touch-icon\" href=\"{}\">",
-            escape_html(&touch)
-        ));
-    }
+    tags.extend(icon_tags(settings));
     if page == Page::Admin {
         return tags.join("\n    ");
     }
@@ -299,6 +385,10 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         return retired_worker_script();
     }
     if renders_page(&path) {
+        let wanted = crate::lang::from_cookie(request.headers());
+        if let Some(response) = document(&state, &dir, &path, request.uri().query(), wanted).await {
+            return response;
+        }
         if Page::of(&path) == Page::Landing
             && !state.services.modules().is_enabled(ModuleId::Landing)
         {
@@ -312,7 +402,6 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         {
             tracing::info!(bot, path = %path, "сборщик превью ссылок открыл страницу");
         }
-        let wanted = crate::lang::from_cookie(request.headers());
         return page(&state, &dir, &path, wanted).await;
     }
     serve(&state, &dir, &path, request).await
@@ -328,6 +417,48 @@ fn cabinet_instead(query: Option<&str>) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+async fn document(
+    state: &AppState,
+    dir: &Path,
+    path: &str,
+    query: Option<&str>,
+    wanted: Option<Locale>,
+) -> Option<Response> {
+    let runtime = state.services.bot_content();
+    let trimmed = path.trim_end_matches('/');
+    find_page(&runtime.documents, trimmed)?;
+    if trimmed != path {
+        let target = match query.filter(|q| !q.is_empty()) {
+            Some(query) => format!("{trimmed}?{query}"),
+            None => trimmed.to_string(),
+        };
+        return Some(Redirect::permanent(&target).into_response());
+    }
+    let settings = state.services.settings();
+    let locale = settings.languages.pick(wanted);
+    let page = match state.services.documents().page(path, locale).await {
+        Ok(Some(page)) => page,
+        Ok(None) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, path, "страница документа не загрузилась");
+            return None;
+        }
+    };
+    let template = tokio::fs::read_to_string(dir.join("index.html"))
+        .await
+        .ok()?;
+    let html = with_lang(
+        with_body(
+            inject(&template, &document_head(&settings, &page)),
+            &document_body(&page),
+        ),
+        page.lang,
+    );
+    let mut response = Html(html).into_response();
+    protect(&mut response, state, path, REVALIDATE);
+    Some(response)
 }
 
 async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) -> Response {
@@ -452,6 +583,9 @@ mod tests {
         assert_eq!(frame_option("/admin/settings/landing"), Some("DENY"));
         assert_eq!(frame_option("/"), Some("DENY"));
         assert_eq!(frame_option("/landing-preview"), Some("DENY"));
+        assert_eq!(frame_option("/admin/document-preview"), Some("SAMEORIGIN"));
+        assert_eq!(frame_option("/admin/document-previews"), Some("DENY"));
+        assert_eq!(frame_option("/privacy-policy"), Some("DENY"));
     }
 
     #[test]
@@ -469,6 +603,9 @@ mod tests {
         assert_eq!(section("/admin/landing-previewer"), Section::Admin);
         assert_eq!(section("/verify/0123456789abcdef"), Section::MiniApp);
         assert_eq!(section("/verifying"), Section::Site);
+        assert_eq!(section("/admin/document-preview"), Section::AdminFrame);
+        assert_eq!(section("/privacy-policy"), Section::Site);
+        assert_eq!(section("/legal/offer"), Section::Site);
     }
 
     #[test]

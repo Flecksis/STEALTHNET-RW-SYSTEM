@@ -573,6 +573,10 @@ impl Services {
         self.settings().languages.effective(locale)
     }
 
+    pub fn documents(&self) -> crate::documents::DocumentOps<'_> {
+        crate::documents::DocumentOps::new(self)
+    }
+
     pub fn bot_content_ops(&self) -> crate::bot_content::BotContentOps<'_> {
         crate::bot_content::BotContentOps::new(self)
     }

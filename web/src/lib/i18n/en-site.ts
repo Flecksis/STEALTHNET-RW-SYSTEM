@@ -6,6 +6,7 @@ export const SITE: Record<string, string> = {
   'Начать в Telegram': 'Start in Telegram',
   'Личный кабинет': 'Your account',
   'Telegram-бот': 'Telegram bot',
+  'Обновлено {date}': 'Updated {date}',
   'Где удобнее, там и пользуйтесь': 'Use it wherever suits you',
   'Как подключиться': 'How to connect',
   'Серверы': 'Servers',

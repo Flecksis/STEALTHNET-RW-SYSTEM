@@ -366,3 +366,75 @@ async fn конкурс_в_боте_по_английски_с_условиям�
     );
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn страницы_документов_ведут_на_сайт_панели_и_названия_по_языку() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let mut conn = services.store().conn().await.unwrap();
+    conn.settings()
+        .set(
+            sn_services::bot_content::DOCUMENTS_KEY,
+            &serde_json::json!([
+                {"title": "Оферта", "title_en": "Offer", "url": "https://example.com/offer"},
+                {"id": "p1page0001", "title": "Политика", "title_en": "Privacy policy", "url": "", "path": "/privacy-policy"}
+            ]),
+            None,
+        )
+        .await
+        .unwrap();
+    conn.settings()
+        .set(
+            sn_services::bot_content::CONSENT_KEY,
+            &serde_json::json!(false),
+            None,
+        )
+        .await
+        .unwrap();
+    drop(conn);
+    services.reload().await.unwrap();
+    handle_update(&ctx, text_update(1, 961, "/start")).await;
+    handle_update(&ctx, callback_update(2, 961, "docs")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("<a href=\"https://example.com/offer\">Оферта</a>"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Политика"),
+        "без адреса панели страницу не на что вести: {text}"
+    );
+
+    let mut conn = services.store().conn().await.unwrap();
+    conn.settings()
+        .set(
+            sn_domain::settings::keys::PUBLIC_URL,
+            &serde_json::json!("https://vpn.example.com/"),
+            None,
+        )
+        .await
+        .unwrap();
+    drop(conn);
+    services.reload().await.unwrap();
+    handle_update(&ctx, callback_update(3, 961, "docs")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("<a href=\"https://vpn.example.com/privacy-policy\">Политика</a>"),
+        "{text}"
+    );
+
+    english_on(&services, Locale::En).await;
+    handle_update(&ctx, english_text(4, 962, "/start")).await;
+    handle_update(&ctx, english_callback(5, 962, "docs")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("<a href=\"https://example.com/offer\">Offer</a>"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<a href=\"https://vpn.example.com/privacy-policy\">Privacy policy</a>"),
+        "{text}"
+    );
+    db.cleanup().await;
+}

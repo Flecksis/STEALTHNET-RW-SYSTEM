@@ -5,6 +5,7 @@ pub mod bot_content_en;
 pub mod bot_layout;
 pub mod client;
 pub mod connect;
+pub mod documents;
 pub mod error;
 pub mod errors_en;
 pub mod events;

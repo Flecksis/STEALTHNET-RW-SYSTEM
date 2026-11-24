@@ -11,6 +11,7 @@ mod connect_apps;
 #[cfg(test)]
 mod decisions_tests;
 mod delivery;
+mod documents;
 mod ext_modules;
 mod import;
 mod infra;
@@ -59,6 +60,7 @@ pub fn routes() -> Router<AppState> {
         .merge(system::routes())
         .merge(backups::routes())
         .merge(bot_content::routes())
+        .merge(documents::routes())
         .merge(import::routes())
         .merge(remna_sync::routes())
         .merge(remna_link::routes())

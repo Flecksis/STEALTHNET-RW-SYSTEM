@@ -37,6 +37,7 @@ pub enum LockSpace {
     Telegram = 5,
     Worker = 6,
     Category = 7,
+    Documents = 8,
 }
 
 impl LockSpace {
@@ -283,6 +284,10 @@ pub trait Db: Send {
 
     fn bot_images(&mut self) -> BotImagesRepo<'_> {
         BotImagesRepo::new(self.conn())
+    }
+
+    fn document_pages(&mut self) -> DocumentPagesRepo<'_> {
+        DocumentPagesRepo::new(self.conn())
     }
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../lib/api';
+import { documentTitle, documentUrl } from '../lib/documents';
 import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
@@ -24,6 +25,7 @@ export function MiniProfile() {
   }, []);
 
   const link = supportLink(site);
+  const documents = site.documents ?? [];
   const chat = supportTickets(site) && site.support_ai?.miniapp === true;
   const ticketsBot = supportTickets(site) && !chat ? site.bot_username : null;
 
@@ -116,6 +118,17 @@ export function MiniProfile() {
           </button>
         ) : null}
       </div>
+      {documents.length ? (
+        <div className="mn-list" aria-label={t('Документы')}>
+          {documents.map((doc) => (
+            <button key={doc.url} type="button" className="mn-row press" onClick={() => openExternal(documentUrl(doc))}>
+              <Icon name="file" size={21} />
+              <span className="mn-row-name">{documentTitle(doc)}</span>
+              <Icon name="external" size={16} />
+            </button>
+          ))}
+        </div>
+      ) : null}
       <AccountCard />
     </main>
   );

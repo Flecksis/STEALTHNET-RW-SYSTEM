@@ -2,14 +2,16 @@ import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type 
 import { Link } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
+import { documentTitle } from '../lib/documents';
 import { count, money, NBSP } from '../lib/format';
 import { countriesIn, countryName, joinAnd } from '../lib/geo';
-import { applyLang, guessLang, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
+import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
+import { SiteHeader } from './SiteHeader';
 import { botLink, storedReferral } from '../lib/referral';
 import { reportVisit, storedUtm } from '../lib/utm';
 import { startParam } from '../lib/utmTags';
@@ -293,7 +295,6 @@ function LandingPage({ mode }: { mode: Mode }) {
     writeStored(THEME_KEY, next);
     setPersonal(next);
   };
-  const themeLabel = theme === 'dark' ? t('Светлая тема') : t('Тёмная тема');
   const rootClass = phone ? 'ld ld-phone' : 'ld';
 
   if (!blocks || !ready) {
@@ -301,7 +302,6 @@ function LandingPage({ mode }: { mode: Mode }) {
   }
 
   const sections = visibleSections(blocks);
-  const nav = menuLinks(blocks);
 
   const onPreviewClick = (event: ReactMouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -325,65 +325,19 @@ function LandingPage({ mode }: { mode: Mode }) {
     .map((o) => ({ name: o.tariff.name, text: o.countries.length ? joinAnd(o.countries.map(countryName)) : '' }))
     .filter((l) => l.text);
 
-  const header = phone ? (
-    <header className="ld-head">
-      <a href="#top" className="ld-brand">
-        <BrandMark name={site.brand_name} logo={site.logo_url} className="ld-mark" />
-        <span>{site.brand_name.toUpperCase()}</span>
-      </a>
-      <span className="ld-grow" />
-      {nextLang ? (
-        <button type="button" className="ld-circ ld-lang" lang={nextLang} aria-label={NATIVE[nextLang]} title={NATIVE[nextLang]} onClick={() => switchLang(nextLang)}>
-          {nextLang.toUpperCase()}
-        </button>
-      ) : null}
-      {fixed ? null : (
-        <button type="button" className="ld-circ" aria-label={themeLabel} onClick={flipTheme}>
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
-        </button>
-      )}
-      <Link to="/cabinet" className="ld-enter">
-        {t('Войти')}
-      </Link>
-    </header>
-  ) : (
-    <header className="ld-head">
-      <div className="ld-head-in">
-        <a href="#top" className="ld-brand">
-          <BrandMark name={site.brand_name} logo={site.logo_url} className="ld-mark" />
-          <span>{site.brand_name.toUpperCase()}</span>
-        </a>
-        {nav.length ? (
-          <nav aria-label={t('Разделы страницы')} className="ld-nav">
-            {nav.map((item) => (
-              <a key={item.href} href={item.href}>
-                {item.label}
-              </a>
-            ))}
-          </nav>
-        ) : null}
-        <span className="ld-head-end">
-          {nextLang ? (
-            <button type="button" className="ld-ghost ld-lang hov" lang={nextLang} onClick={() => switchLang(nextLang)}>
-              {NATIVE[nextLang]}
-            </button>
-          ) : null}
-          {fixed ? null : (
-            <button type="button" className="ld-icon hov" aria-label={themeLabel} title={themeLabel} onClick={flipTheme}>
-              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
-            </button>
-          )}
-          {bot ? (
-            <a href={bot} className="ld-ghost hov">
-              {t('Telegram-бот')}
-            </a>
-          ) : null}
-          <Link to="/cabinet" className="ld-btn sm">
-            {t('Личный кабинет')}
-          </Link>
-        </span>
-      </div>
-    </header>
+  const header = (
+    <SiteHeader
+      site={site}
+      phone={phone}
+      home="#top"
+      nav={menuLinks(blocks)}
+      theme={theme}
+      fixed={fixed !== null}
+      onTheme={flipTheme}
+      nextLang={nextLang}
+      onLang={switchLang}
+      bot={bot}
+    />
   );
 
   const hero = findBlock(blocks, 'hero');
@@ -678,11 +632,17 @@ function LandingPage({ mode }: { mode: Mode }) {
           {footerLinks.map((link, i) => (
             <Go key={`${link.href}-${i}`} link={link} />
           ))}
-          {(site.documents ?? []).map((doc) => (
-            <a key={doc.url} href={doc.url} target="_blank" rel="noreferrer noopener">
-              {doc.title}
-            </a>
-          ))}
+          {(site.documents ?? []).map((doc) =>
+            doc.page ? (
+              <Link key={doc.url} to={doc.url}>
+                {documentTitle(doc)}
+              </Link>
+            ) : (
+              <a key={doc.url} href={doc.url} target="_blank" rel="noreferrer noopener">
+                {documentTitle(doc)}
+              </a>
+            ),
+          )}
         </nav>
       </footer>
     </div>

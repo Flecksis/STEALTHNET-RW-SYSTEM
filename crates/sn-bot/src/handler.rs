@@ -425,7 +425,10 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
             if let Some(param) = start_param {
                 turn.session.pending_start = Some(param.to_string());
             }
-            return Ok(Gate::Stop(consent_screen(&content)));
+            return Ok(Gate::Stop(consent_screen(
+                &content,
+                services.settings().public_url.as_deref(),
+            )));
         }
     }
     let param = start_param
@@ -494,33 +497,42 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
     Ok(Gate::Ready(client))
 }
 
-fn document_lines(content: &BotContent, documents: &[Document], lines: &mut Lines) {
+fn document_lines(
+    content: &BotContent,
+    documents: &[Document],
+    public_url: Option<&str>,
+    lines: &mut Lines,
+) {
+    let locale = content.locale();
     for document in documents {
+        let Some(url) = document.absolute(public_url) else {
+            continue;
+        };
         lines.add(ui::text(
             content,
             "docs.item",
             &[
-                ("title", Text(&document.title)),
-                ("url", Text(&document.url)),
+                ("title", Text(document.title_in(locale))),
+                ("url", Text(&url)),
             ],
         ));
     }
 }
 
-fn consent_screen(content: &BotContent) -> Screen {
+fn consent_screen(content: &BotContent, public_url: Option<&str>) -> Screen {
     let mut lines = Lines::new();
     lines.add(ui::text(content, "docs.intro", &[]));
-    document_lines(content, content.consent_documents(), &mut lines);
+    document_lines(content, content.consent_documents(), public_url, &mut lines);
     lines.add(ui::text(content, "docs.agree", &[]));
     Screen::new(lines.text())
         .keyboard(Keyboard::new().push(ui::button(content, "docs.btn.accept", &[], "terms:ok")))
         .section(Section::Documents)
 }
 
-pub fn documents_screen(content: &BotContent) -> Screen {
+pub fn documents_screen(content: &BotContent, public_url: Option<&str>) -> Screen {
     let mut lines = Lines::new();
     lines.add(ui::text(content, "docs.list_title", &[]));
-    document_lines(content, &content.documents, &mut lines);
+    document_lines(content, &content.documents, public_url, &mut lines);
     Screen::new(lines.text())
         .with_menu()
         .section(Section::Documents)
@@ -683,7 +695,10 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
         gifts::PROMO_CONFIRM => gifts::promo_link_confirmed(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
         email::CALLBACK => email::action(turn, client, rest).await?,
-        "docs" => documents_screen(&turn.content()),
+        "docs" => documents_screen(
+            &turn.content(),
+            turn.services().settings().public_url.as_deref(),
+        ),
         "lang" if rest.is_empty() => language_screen(turn, client).await?,
         "lang" => set_language(turn, client, rest).await?,
         _ => main_menu(turn.ctx, client).await?,

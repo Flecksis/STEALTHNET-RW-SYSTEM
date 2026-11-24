@@ -12,6 +12,8 @@ export type Appearance = {
 
 export type Currency = 'USD' | 'RUB';
 
+export type SiteDocument = { title: string; title_en?: string | null; url: string; page?: boolean };
+
 export type Site = {
   brand_name: string;
   title?: string;
@@ -26,7 +28,7 @@ export type Site = {
   connect?: { mode: 'ours' | 'remnawave'; page_config: string | null };
   autorenew_days_before?: number;
   trial?: { enabled: boolean; days: number };
-  documents?: Array<{ title: string; url: string }>;
+  documents?: SiteDocument[];
   email_auth?: 'password' | 'code' | null;
   email_reset?: boolean;
   email_confirm?: boolean;

@@ -6,7 +6,8 @@ use super::model::{
 use super::multi::{self, MultiPlan};
 use super::runs::IssueRow;
 use crate::Services;
-use crate::bot_content::{ContentUpdate, Document, DocumentsUpdate};
+use crate::bot_content::ContentUpdate;
+use crate::documents::{ListItem, ListUpdate};
 use crate::error::{ServiceError, ServiceResult};
 use crate::settings::{CoreUpdate, ModuleConfigUpdate, ProviderUpdate};
 use serde_json::{Map, Value};
@@ -818,7 +819,7 @@ impl<'a> Extras<'a> {
                 .map(|_| ());
             self.outcome("Языки", result);
         }
-        let mut documents: Vec<Document> = Vec::new();
+        let mut documents: Vec<ListItem> = Vec::new();
         for (key, title) in [
             ("offer_link", "Публичная оферта"),
             ("landing_offer_link", "Публичная оферта"),
@@ -832,22 +833,26 @@ impl<'a> Extras<'a> {
             } else {
                 continue;
             };
-            if documents.iter().any(|d| d.url == url || d.title == title) {
+            if documents
+                .iter()
+                .any(|d| d.url.as_deref() == Some(url.as_str()) || d.title == title)
+            {
                 continue;
             }
-            documents.push(Document {
+            documents.push(ListItem {
                 title: title.to_string(),
-                url,
+                url: Some(url),
+                ..ListItem::default()
             });
         }
         if !documents.is_empty() && unset("bot.documents") {
-            let update = DocumentsUpdate {
+            let update = ListUpdate {
                 consent: false,
                 items: documents,
             };
             let result = services
-                .bot_content_ops()
-                .update_documents(&update, actor)
+                .documents()
+                .replace(&update, Some(actor))
                 .await
                 .map(|_| ());
             self.outcome("Документы: оферта, соглашение, инструкция", result);
