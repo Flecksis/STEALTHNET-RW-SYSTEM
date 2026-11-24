@@ -181,6 +181,12 @@ async fn me(
         .ok();
     let must_change_password = security.as_ref().is_some_and(|s| s.must_change_password);
     let email = security.map(|s| s.email);
+    let pages = state
+        .services
+        .ext_modules()
+        .menu(&admin.0)
+        .await
+        .unwrap_or_default();
     Ok(Json(serde_json::json!({
         "admin": admin.0,
         "email": email,
@@ -193,6 +199,7 @@ async fn me(
             .into_iter()
             .filter(|item| admin.can(item.need))
             .collect::<Vec<_>>(),
+        "pages": pages,
         "modules": state
             .services
             .modules()

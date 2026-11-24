@@ -499,7 +499,7 @@ export function ExtInstall() {
   const [params] = useSearchParams();
   const update = params.get('update');
   const navigate = useNavigate();
-  const { can } = useSession();
+  const { can, reload } = useSession();
   const phone = usePhone();
   const input = useRef<HTMLInputElement>(null);
   const xhr = useRef<XMLHttpRequest | null>(null);
@@ -731,6 +731,7 @@ export function ExtInstall() {
           page: jsonPreview.page?.url ?? null,
         },
       });
+      await reload();
       if (next.credentials) {
         setDone(next);
       } else {
@@ -778,6 +779,7 @@ export function ExtInstall() {
       setConfirm(NO_CONFIRM);
       setInstalled(next.module);
       setRuntime(next.runtime);
+      void reload();
     } catch (err) {
       if (mine !== round.current) {
         return;

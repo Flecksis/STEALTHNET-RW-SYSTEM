@@ -10,7 +10,7 @@ import { CredentialsBlock } from './ExtCredentials';
 import { ManagedManage, RuntimeSection, useRuntimeWatch } from './ExtRuntime';
 import {
   KEY_TEXT,
-  extLink,
+  extPageLink,
   type Attempt,
   type Credentials,
   type ExtCard,
@@ -264,7 +264,7 @@ function DeliveryLog({ id, version }: { id: string; version: number }) {
 
 export function ExtModule() {
   const { id = '' } = useParams();
-  const { can, me } = useSession();
+  const { can, me, reload } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
   const [card, setCard] = useState<ExtCard | null>(null);
@@ -335,6 +335,7 @@ export function ExtModule() {
       if (card.managed) {
         await loadRuntime();
       }
+      await reload();
     } catch (err) {
       setError(failText(err, 'Модуль не переключился'));
     } finally {
@@ -383,6 +384,7 @@ export function ExtModule() {
     setError(null);
     try {
       await api(`/api/admin/ext-modules/${pathPart(id)}`, { method: 'DELETE' });
+      await reload();
       navigate('/admin/modules');
     } catch (err) {
       setError(failText(err, 'Модуль не удалился'));
@@ -462,7 +464,7 @@ export function ExtModule() {
         <Switch on={card.enabled} onToggle={() => void toggle()} label={card.name} disabled={busy !== null || running} />
       </section>
       {card.page && card.enabled && can(card.page.permission) ? (
-        <Link to={`${extLink(card.id)}/page`} className="md-back">
+        <Link to={extPageLink(card.id)} className="md-back">
           Открыть страницу «{card.page.title}»
         </Link>
       ) : null}

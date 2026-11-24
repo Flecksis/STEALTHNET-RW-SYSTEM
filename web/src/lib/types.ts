@@ -64,12 +64,15 @@ export type ModuleMenuItem = {
   order: number;
 };
 
+export type ExtMenuPage = { id: string; title: string };
+
 export type Me = {
   admin: { admin_id: number; role: AdminRole; permissions: Permission[]; session_id: number };
   email: string | null;
   must_change_password?: boolean;
   permissions: Permission[];
   menu: ModuleMenuItem[];
+  pages?: ExtMenuPage[];
   modules?: string[];
   currency: Currency;
   brand_name: string;

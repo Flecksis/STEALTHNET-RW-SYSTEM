@@ -2,6 +2,7 @@ import type { IconName } from '../lib/icons';
 import { isIconName } from '../lib/icons';
 import type { Me, Permission } from '../lib/types';
 import { menuAllowed } from './menuAccess';
+import { extPageLink } from './modules/ext';
 
 export type NavItem = {
   key: string;
@@ -54,6 +55,9 @@ export function navItems(me: Me, can: (p: Permission) => boolean, supportBadge?:
       to: `/admin/m/${entry.module}`,
       group: 'module',
     });
+  }
+  for (const page of me.pages ?? []) {
+    items.push({ key: `x-${page.id}`, label: page.title, icon: 'blocks', to: extPageLink(page.id), group: 'module' });
   }
   if (can('modules')) {
     items.push({ key: 'modules', label: 'Модули', icon: 'blocks', to: '/admin/modules', group: 'system' });

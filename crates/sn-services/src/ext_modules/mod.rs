@@ -386,6 +386,14 @@ pub struct PageToken {
     pub token: String,
     pub expires_at: DateTime<Utc>,
     pub proxied: bool,
+    pub title: String,
+    pub module: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MenuPage {
+    pub id: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1526,6 +1534,8 @@ impl<'a> ExtModulesOps<'a> {
                 token,
                 expires_at,
                 proxied: true,
+                title: page.title,
+                module: row.manifest.name,
             });
         }
         let mut url = reqwest::Url::parse(&page.url)
@@ -1538,7 +1548,32 @@ impl<'a> ExtModulesOps<'a> {
             token,
             expires_at,
             proxied: false,
+            title: page.title,
+            module: row.manifest.name,
         })
+    }
+
+    pub async fn menu(&self, actor: &AdminPrincipal) -> ServiceResult<Vec<MenuPage>> {
+        if actor.api_key.is_some() {
+            return Ok(Vec::new());
+        }
+        let rows = {
+            let mut conn = self.services.store().conn().await?;
+            store::list(&mut conn).await?
+        };
+        let mut pages: Vec<MenuPage> = rows
+            .into_iter()
+            .filter(|row| row.enabled)
+            .filter_map(|row| {
+                let page = row.manifest.page?;
+                actor.can(page.permission).then_some(MenuPage {
+                    id: row.manifest.id,
+                    title: page.title,
+                })
+            })
+            .collect();
+        pages.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
+        Ok(pages)
     }
 
     pub async fn me(&self, principal: &AdminPrincipal) -> ServiceResult<SelfView> {

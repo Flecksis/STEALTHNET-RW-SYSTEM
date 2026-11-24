@@ -97,7 +97,7 @@ export type Journal = { attempts: Attempt[]; stats: ExtCard['stats'] };
 
 export type PingResult = { ok: boolean; http_status: number | null; duration_ms: number; error: string | null; response: string | null };
 
-export type PageToken = { url: string; origin: string; token: string; expires_at: string; proxied: boolean };
+export type PageToken = { url: string; origin: string; token: string; expires_at: string; proxied: boolean; title: string; module: string };
 
 export type HelperAvailability = 'ready' | 'no_helper' | 'helper_off' | 'outdated' | 'modules_off';
 
@@ -218,4 +218,8 @@ export const MANIFEST_LIMIT = 64 * 1024;
 
 export function extLink(id: string): string {
   return `/admin/modules/ext/${encodeURIComponent(id)}`;
+}
+
+export function extPageLink(id: string): string {
+  return `/admin/ext/${encodeURIComponent(id)}`;
 }

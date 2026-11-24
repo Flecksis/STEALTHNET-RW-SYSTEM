@@ -118,3 +118,75 @@ async fn внешний_модуль_ставит_только_админ_в_с�
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     h.db.cleanup().await;
 }
+
+fn manifest_with_page(permission: &str) -> String {
+    json!({
+        "format": 1,
+        "id": "hello",
+        "name": "Привет",
+        "version": "1.0.0",
+        "author": "Студия Пример",
+        "page": { "url": "https://hello.example.com/admin", "title": "Обращения модуля", "permission": permission }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn страница_модуля_в_меню_у_тех_кому_она_открыта() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let reader = h.admin("reader@example.com", AdminRole::ReadOnly).await;
+    let (status, installed) = h
+        .write(
+            Method::POST,
+            "/api/admin/ext-modules",
+            &owner,
+            json!({ "manifest": manifest_with_page("support") }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{installed}");
+    let page = json!([{ "id": "hello", "title": "Обращения модуля" }]);
+    let (_, me) = h.get("/api/admin/me", &owner).await;
+    assert_eq!(me["pages"], page);
+    let (_, me) = h.get("/api/admin/me", &support).await;
+    assert_eq!(me["pages"], page);
+    let (_, me) = h.get("/api/admin/me", &reader).await;
+    assert_eq!(me["pages"], json!([]));
+    let (status, _, body) = h
+        .send(
+            Method::POST,
+            "/api/admin/ext-modules/hello/page-token",
+            Some(&support),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["title"], "Обращения модуля");
+    assert_eq!(body["module"], "Привет");
+    let (status, _) = h.get("/api/admin/ext-modules/hello", &support).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = h
+        .send(
+            Method::POST,
+            "/api/admin/ext-modules/hello/page-token",
+            Some(&reader),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(
+            Method::PATCH,
+            "/api/admin/ext-modules/hello",
+            &owner,
+            json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, me) = h.get("/api/admin/me", &support).await;
+    assert_eq!(me["pages"], json!([]));
+    let (_, me) = h.get("/api/admin/me", &owner).await;
+    assert_eq!(me["pages"], json!([]));
+    h.db.cleanup().await;
+}

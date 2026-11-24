@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { pathPart } from '../../lib/apiPath';
-import { extLink, type ExtCard, type PageToken } from './ext';
+import { useSession } from '../session';
+import { extLink, type PageToken } from './ext';
 import './modules.css';
 import './ext.css';
 
@@ -15,18 +16,21 @@ function failText(err: unknown, fallback: string): string {
 
 export function ExtPage() {
   const { id = '' } = useParams();
+  return <ExtPageBody key={id} id={id} />;
+}
+
+function ExtPageBody({ id }: { id: string }) {
+  const { can } = useSession();
   const frame = useRef<HTMLIFrameElement>(null);
-  const [card, setCard] = useState<ExtCard | null>(null);
   const [page, setPage] = useState<PageToken | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([api<ExtCard>(`/api/admin/ext-modules/${pathPart(id)}`), api<PageToken>(`/api/admin/ext-modules/${pathPart(id)}/page-token`, { method: 'POST', body: {} })])
-      .then(([nextCard, nextPage]) => {
+    api<PageToken>(`/api/admin/ext-modules/${pathPart(id)}/page-token`, { method: 'POST', body: {} })
+      .then((next) => {
         if (alive) {
-          setCard(nextCard);
-          setPage(nextPage);
+          setPage(next);
         }
       })
       .catch((err) => {
@@ -67,19 +71,21 @@ export function ExtPage() {
   }, [id, page]);
 
   const isolated = page !== null && (page.proxied || page.origin === window.location.origin);
-  const title = card?.page?.title ?? card?.name ?? 'Страница модуля';
+  const title = page?.title ?? 'Страница модуля';
   const where = page?.proxied ? 'через панель' : (page?.origin ?? '');
 
   return (
     <div className="md ext-frame-page">
-      <Link to={extLink(id)} className="md-back">
-        Карточка модуля
-      </Link>
+      {can('modules') ? (
+        <Link to={extLink(id)} className="md-back">
+          Карточка модуля
+        </Link>
+      ) : null}
       <div className="md-title">
         <h1 className="page-title tight">{title}</h1>
-        {card ? (
+        {page ? (
           <span className="md-where">
-            Страница внешнего модуля «{card.name}» · {where}
+            Страница внешнего модуля «{page.module}» · {where}
           </span>
         ) : null}
       </div>

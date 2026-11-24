@@ -75,6 +75,7 @@ export function Modules() {
       if (m.managed) {
         await load();
       }
+      await reload();
     } catch (err) {
       swap(m);
       setError(failText(err, `Модуль «${m.name}» не переключился`));

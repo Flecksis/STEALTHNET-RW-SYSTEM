@@ -263,6 +263,7 @@ export function AdminApp() {
           <Route path="modules/install" element={<ExtInstall />} />
           <Route path="modules/ext/:id" element={<ExtModule />} />
           <Route path="modules/ext/:id/page" element={<ExtPage />} />
+          <Route path="ext/:id" element={<ExtPage />} />
           <Route path="modules/:id" element={<ModulePage />} />
           <Route path="m/:module/*" element={<ModuleScreen />} />
           <Route path="settings" element={<SettingsGate />}>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { pathPart } from '../../lib/apiPath';
+import { useSession } from '../session';
 import type { ExtCard, LogsView, RuntimeJob, RuntimeView } from './ext';
 import {
   RUNTIME_POLL_MS,
@@ -333,6 +334,7 @@ export function RuntimeSection({ id, runtime, onRuntime }: { id: string; runtime
 
 export function ManagedManage({ card, runtime, owner }: { card: ExtCard; runtime: RuntimeView | null; owner: boolean }) {
   const navigate = useNavigate();
+  const { reload } = useSession();
   const [asking, setAsking] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(NO_CONFIRM);
   const [erase, setErase] = useState(false);
@@ -365,6 +367,7 @@ export function ManagedManage({ card, runtime, owner }: { card: ExtCard; runtime
         method: 'DELETE',
         body: { password: confirm.password, code: totp ? confirm.code : undefined, erase_data: erase },
       });
+      await reload();
       navigate('/admin/modules');
     } catch (err) {
       setError(confirmError(err, 'Модуль не удалился'));
