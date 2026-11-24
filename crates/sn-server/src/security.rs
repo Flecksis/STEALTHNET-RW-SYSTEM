@@ -207,7 +207,7 @@ struct RawViolation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
-    pub enforced: bool,
+    pub enforced: Option<bool>,
     pub directive: String,
     pub blocked: String,
     pub page: String,
@@ -268,7 +268,11 @@ impl Violation {
             return None;
         }
         Some(Violation {
-            enforced: raw.disposition.as_deref() != Some("report"),
+            enforced: match raw.disposition.as_deref() {
+                Some("enforce") => Some(true),
+                Some("report") => Some(false),
+                _ => None,
+            },
             directive: clip(directive, 40),
             blocked: without_query(&blocked),
             page: page_path(&raw.document_uri.unwrap_or_default()),
@@ -463,7 +467,7 @@ mod tests {
         assert_eq!(
             violation,
             Violation {
-                enforced: false,
+                enforced: Some(false),
                 directive: "script-src-elem".into(),
                 blocked: "https://static.example-cdn.com/beacon.min.js".into(),
                 page: "/cabinet/pay".into(),
@@ -481,7 +485,7 @@ mod tests {
             }
         });
         let violation = Violation::parse(inline.to_string().as_bytes()).unwrap();
-        assert!(violation.enforced);
+        assert_eq!(violation.enforced, None);
         assert_eq!(violation.directive, "style-src-attr");
         assert_eq!(violation.blocked, "inline");
         assert_eq!(violation.sample.chars().count(), SAMPLE_MAX);
@@ -494,6 +498,20 @@ mod tests {
             }
         });
         assert_eq!(Violation::parse(extension.to_string().as_bytes()), None);
+        let blocked = serde_json::json!({
+            "csp-report": {
+                "document-uri": "https://vpn.example/admin",
+                "effective-directive": "frame-src",
+                "blocked-uri": "http://intranet.example/",
+                "disposition": "enforce"
+            }
+        });
+        assert_eq!(
+            Violation::parse(blocked.to_string().as_bytes())
+                .unwrap()
+                .enforced,
+            Some(true)
+        );
         assert_eq!(Violation::parse(b"not json"), None);
         assert_eq!(Violation::parse(b"{\"csp-report\":{}}"), None);
     }
