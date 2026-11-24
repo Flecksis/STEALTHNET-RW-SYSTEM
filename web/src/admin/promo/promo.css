@@ -60,11 +60,6 @@
   font-weight: 700;
 }
 
-.pr-inline-link {
-  color: var(--accent-ink);
-  font-weight: 600;
-}
-
 .pr-row {
   display: grid;
   grid-template-columns: minmax(140px, 1.1fr) minmax(220px, 2.2fr) 140px minmax(130px, 1.1fr) 128px 116px;
@@ -171,11 +166,6 @@
 
 .pr-ask b {
   font-weight: 700;
-}
-
-.pr-ask-btns {
-  display: flex;
-  gap: 8px;
 }
 
 .pr-row-err {

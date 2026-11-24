@@ -1106,3 +1106,187 @@ a.btn-line {
   top: auto;
   right: auto;
 }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chip .chip-n {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.chip[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+.chip[aria-pressed='true'] .chip-n {
+  color: var(--bg);
+}
+
+.right {
+  text-align: right;
+}
+
+.hm-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.hm-h2b {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.hm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hm-chips button {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hm-chips button[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+.hm-link {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.hm-panehead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 12px 6px;
+}
+
+.cc-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 7px 7px 7px 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.cc-note-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.cc-note-text.wide {
+  flex-basis: 400px;
+}
+
+.cc-note-text strong {
+  font-weight: 700;
+}
+
+.unit-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.unit-field .field {
+  max-width: 160px;
+}
+
+.tf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tf-field > span:first-child,
+.tf-field > label {
+  font-weight: 600;
+}
+
+.tf-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+}
+
+.tf-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.tf-fieldset legend {
+  padding: 0;
+  margin-bottom: 10px;
+}
+
+.tf-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tf-check input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.sp-ell {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-small {
+  font-size: 13px;
+}
+
+.pr-inline-link {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.pr-ask-btns {
+  display: flex;
+  gap: 8px;
+}

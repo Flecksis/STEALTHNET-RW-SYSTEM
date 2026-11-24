@@ -145,13 +145,6 @@
   background: var(--accent);
 }
 
-.hm-cols {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  align-items: flex-start;
-}
-
 .hm-feed {
   flex: 1.7 1 520px;
   min-width: 0;
@@ -181,35 +174,6 @@
 .hm-h2 {
   font-size: 17px;
   font-weight: 800;
-}
-
-.hm-h2b {
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.hm-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.hm-chips button {
-  height: 32px;
-  padding: 0 12px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--ink-2);
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.hm-chips button[aria-pressed='true'] {
-  background: var(--ink);
-  color: var(--bg);
-  border-color: var(--ink);
 }
 
 .hm-row {
@@ -351,23 +315,10 @@
   color: var(--bad);
 }
 
-.hm-link {
-  color: var(--accent-ink);
-  font-weight: 600;
-}
-
 .hm-pane {
   flex: 1 1 440px;
   min-width: 0;
   padding: 18px 8px 8px;
-}
-
-.hm-panehead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 12px 6px;
 }
 
 .hm-link-row {

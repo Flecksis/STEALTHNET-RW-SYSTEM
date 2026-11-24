@@ -139,29 +139,6 @@
   line-height: 1;
 }
 
-.cc-note {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding: 7px 7px 7px 14px;
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-
-.cc-note-text {
-  flex: 1 1 260px;
-  min-width: 0;
-}
-
-.cc-note-text.wide {
-  flex-basis: 400px;
-}
-
-.cc-note-text strong {
-  font-weight: 700;
-}
-
 .cc-fact {
   display: flex;
   flex-wrap: wrap;
@@ -347,16 +324,6 @@
   font-weight: 800;
   color: var(--bad);
   cursor: pointer;
-}
-
-.unit-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.unit-field .field {
-  max-width: 160px;
 }
 
 .qr {

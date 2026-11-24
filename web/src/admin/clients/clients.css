@@ -47,41 +47,6 @@
   cursor: pointer;
 }
 
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 14px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--ink-2);
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.chip .chip-n {
-  font-weight: 500;
-  color: var(--muted);
-}
-
-.chip[aria-pressed='true'] {
-  background: var(--ink);
-  color: var(--bg);
-  border-color: var(--ink);
-}
-
-.chip[aria-pressed='true'] .chip-n {
-  color: var(--bg);
-}
-
 .cl-sec {
   background: var(--surface);
   border: 1px solid var(--card-line);
@@ -200,10 +165,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.right {
-  text-align: right;
 }
 
 .dots-btn {

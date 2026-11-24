@@ -150,17 +150,6 @@
   gap: 14px;
 }
 
-.tf-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.tf-field > span:first-child,
-.tf-field > label {
-  font-weight: 600;
-}
-
 .tf-block {
   display: flex;
   flex-direction: column;
@@ -219,12 +208,6 @@
 .tf-add:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.tf-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px 24px;
 }
 
 .tf-switchrow {
@@ -300,31 +283,6 @@
   justify-content: space-between;
   gap: 8px 16px;
   margin-top: -6px;
-}
-
-.tf-fieldset {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  min-width: 0;
-}
-
-.tf-fieldset legend {
-  padding: 0;
-  margin-bottom: 10px;
-}
-
-.tf-check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.tf-check input {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-  accent-color: var(--accent);
 }
 
 .tf-actions {
