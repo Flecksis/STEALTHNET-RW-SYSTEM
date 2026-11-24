@@ -3174,6 +3174,21 @@ mod tests {
         let ids: Vec<u32> = checked.variants.iter().map(|v| v.id).collect();
         assert_eq!(ids, [1, 6, 7]);
         assert_eq!(checked.variants[0].name, "Европа");
+        let unnumbered: TrialSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "variants": [
+                { "name": "Европа", "squads": [uuid::Uuid::from_u128(1)] },
+                { "name": "Россия", "squads": [uuid::Uuid::from_u128(2)] }
+            ]
+        }))
+        .unwrap();
+        let ids: Vec<u32> = checked_trial(&unnumbered, &saved)
+            .unwrap()
+            .variants
+            .iter()
+            .map(|v| v.id)
+            .collect();
+        assert_eq!(ids, [6, 7]);
         let single = checked_trial(
             &trial(true, vec![variant(0, "", true, &[1])]),
             &TrialSettings::default(),

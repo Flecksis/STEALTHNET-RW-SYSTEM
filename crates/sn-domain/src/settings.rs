@@ -209,6 +209,7 @@ pub const TRIAL_NAME_MAX: usize = 40;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrialVariant {
+    #[serde(default)]
     pub id: u32,
     pub name: String,
     pub enabled: bool,
@@ -1002,6 +1003,15 @@ mod tests {
         assert_eq!(off.variants[0].days, 2);
         assert_eq!(off.variants[0].devices, 1);
         assert!(off.offered().is_empty());
+        let fresh: TrialSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "variants": [{ "name": "Европа", "squads": [squad(1)] }, { "name": "Россия" }],
+        }))
+        .unwrap();
+        let ids: Vec<u32> = fresh.variants.iter().map(|v| v.id).collect();
+        assert_eq!(ids, [0, 0]);
+        assert_eq!((fresh.variants[0].days, fresh.variants[0].devices), (3, 1));
+        assert!(fresh.variants[1].enabled);
         let empty: TrialSettings = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(empty, TrialSettings::default());
         assert_eq!(empty.variants.len(), 1);
