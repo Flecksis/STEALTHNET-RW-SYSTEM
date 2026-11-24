@@ -111,7 +111,7 @@ async fn feed_titles(env: &Env) -> Vec<String> {
                 core_before: None,
                 limit: Some(20),
             },
-            true,
+            Sees::ALL,
         )
         .await
         .unwrap()
@@ -240,7 +240,7 @@ async fn переходы_ноды_пишутся_в_ленту_по_одном�
                 core_before: None,
                 limit: Some(20),
             },
-            true,
+            Sees::ALL,
         )
         .await
         .unwrap();

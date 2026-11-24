@@ -9,6 +9,7 @@ const MODULE_NEED: Record<string, Permission> = {
   gifts: 'marketing',
   contests: 'marketing',
   roulette: 'marketing',
+  utm: 'marketing',
 };
 
 export function menuAllowed(module: string, can: (permission: Permission) => boolean): boolean {

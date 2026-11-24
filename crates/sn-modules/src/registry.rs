@@ -6,6 +6,7 @@ use crate::placeholder::Placeholder;
 use axum::Router;
 use axum::middleware::from_fn_with_state;
 use serde::Serialize;
+use sn_domain::access::Permission;
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::AdminId;
 use sn_domain::module::{ModuleId, ModuleInfo};
@@ -33,6 +34,7 @@ pub struct MenuItem {
     pub label: &'static str,
     pub icon: &'static str,
     pub order: u8,
+    pub need: Permission,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -186,6 +188,7 @@ impl ModuleRegistry {
                     label: entry.label,
                     icon: entry.icon,
                     order: entry.order,
+                    need: entry.need,
                 })
             })
             .collect();

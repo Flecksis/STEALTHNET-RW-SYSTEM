@@ -274,7 +274,7 @@ function Feed({ nodes, restart, restarting, canRestart, variant }: FeedProps) {
     ['highlights', 'Всё', true],
     ['payments', 'Деньги', can('money')],
     ['support', 'Поддержка', true],
-    ['nodes', 'Ноды', true],
+    ['nodes', 'Ноды', can('infrastructure')],
   ];
 
   return (
@@ -348,6 +348,7 @@ function MainBoard() {
     revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
   const summary = nodesSummary(nodes);
   const remnaOff = dashboard?.setup?.remnawave === false;
+  const seesNodes = can('infrastructure');
 
   return (
     <div className="hm">
@@ -399,13 +400,13 @@ function MainBoard() {
         <div className="hm-stat">
           <span className="hm-cap">Новые клиенты</span>
           <span className="hm-num num">{today ? groupDigits(today.new_clients) : '—'}</span>
-          <span className="muted">{today ? (today.new_clients_paid ? `${groupDigits(today.new_clients_paid)} уже с оплатой` : 'пока без оплат') : ''}</span>
+          <span className="muted">{today && today.new_clients_paid !== null ? (today.new_clients_paid ? `${groupDigits(today.new_clients_paid)} уже с оплатой` : 'пока без оплат') : ''}</span>
         </div>
         <div className="hm-stat">
           <span className="hm-cap">Онлайн сейчас</span>
           <span className="hm-num num">{dashboard?.remna ? groupDigits(dashboard.remna.online_now) : '—'}</span>
-          <span style={{ color: dashboard?.remna ? (summary.tone === 'bad' ? 'var(--bad)' : 'var(--muted)') : 'var(--muted)' }}>
-            {dashboard?.remna ? summary.text : remnaOff ? 'Remnawave не подключена' : 'Remnawave не отвечает'}
+          <span style={{ color: dashboard?.remna && seesNodes && summary.tone === 'bad' ? 'var(--bad)' : 'var(--muted)' }}>
+            {dashboard?.remna ? (seesNodes ? summary.text : '') : remnaOff ? 'Remnawave не подключена' : 'Remnawave не отвечает'}
           </span>
         </div>
         <div className="hm-stat">
@@ -420,40 +421,42 @@ function MainBoard() {
 
         <div className="hm-side">
         <TodoPane dashboard={dashboard} variant="main" />
-        <section aria-labelledby="nodes-h" className="hm-sec hm-nodes">
-          <div className="hm-feedhead">
-            <h2 id="nodes-h" className="hm-h2">
-              Ноды
-            </h2>
-            <span className="hm-small muted">{dashboard?.remna ? nodesHeader(nodes) : ''}</span>
-          </div>
-          {dashboard && !dashboard.remna ? <p className="hm-empty muted">{remnaGone(dashboard)}</p> : null}
-          {nodes.map((node) => {
-            const state = nodeStateText(node, true);
-            const alert = trafficAlert(node);
-            return (
-              <div key={node.uuid} className="hm-node">
-                <span className="hm-code">{node.name}</span>
-                <span className="hm-city muted">
-                  <Flag code={node.country_code} />
-                  {countryName(node.country_code)}
-                </span>
-                <span className="hm-state num">
-                  <span style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
-                    <span className={`st-dot ${state.tone}`} aria-hidden="true" />
-                    {state.text}
+        {seesNodes ? (
+          <section aria-labelledby="nodes-h" className="hm-sec hm-nodes">
+            <div className="hm-feedhead">
+              <h2 id="nodes-h" className="hm-h2">
+                Ноды
+              </h2>
+              <span className="hm-small muted">{dashboard?.remna ? nodesHeader(nodes) : ''}</span>
+            </div>
+            {dashboard && !dashboard.remna ? <p className="hm-empty muted">{remnaGone(dashboard)}</p> : null}
+            {nodes.map((node) => {
+              const state = nodeStateText(node, true);
+              const alert = trafficAlert(node);
+              return (
+                <div key={node.uuid} className="hm-node">
+                  <span className="hm-code">{node.name}</span>
+                  <span className="hm-city muted">
+                    <Flag code={node.country_code} />
+                    {countryName(node.country_code)}
                   </span>
-                  {alert ? (
-                    <span style={{ color: 'var(--warn)' }} title={alert.title}>
-                      {' '}
-                      · {alert.text}
+                  <span className="hm-state num">
+                    <span style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
+                      <span className={`st-dot ${state.tone}`} aria-hidden="true" />
+                      {state.text}
                     </span>
-                  ) : null}
-                </span>
-              </div>
-            );
-          })}
-        </section>
+                    {alert ? (
+                      <span style={{ color: 'var(--warn)' }} title={alert.title}>
+                        {' '}
+                        · {alert.text}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })}
+          </section>
+        ) : null}
         <PanelServer load={dashboard?.server} variant="side" />
         </div>
       </div>
@@ -486,7 +489,7 @@ function Daylight() {
   if (can('clients_write')) {
     quick.push({ label: 'Выдать подписку', run: () => setPicking(true) });
   }
-  if (modules.has('promo')) {
+  if (modules.has('promo') && can('marketing')) {
     quick.push({ label: 'Создать промокод', to: '/admin/m/promo' });
   }
   if (modules.has('broadcast') && can('marketing')) {
@@ -523,10 +526,16 @@ function Daylight() {
 
       <section aria-label="Сводка за сегодня" className="hm-col" style={{ gap: 6 }}>
         <p className="hm-phrase">
-          {today ? (
+          {today && today.payments !== null ? (
             <>
               Сегодня {count(today.payments, 'оплата', 'оплаты', 'оплат')}
               {revenue ? ` на ${money(revenue.today)}` : ''} и {groupDigits(today.new_clients)}
+              {NBSP}
+              {plural(today.new_clients, 'новый клиент', 'новых клиента', 'новых клиентов')}.
+            </>
+          ) : today ? (
+            <>
+              Сегодня {groupDigits(today.new_clients)}
               {NBSP}
               {plural(today.new_clients, 'новый клиент', 'новых клиента', 'новых клиентов')}.
             </>
@@ -612,70 +621,70 @@ function Daylight() {
         ) : null}
       </div>
 
-      <section id="servers" aria-labelledby="srv-h" className="hm-sec hm-servers">
-        <div className="hm-panehead" style={{ padding: 0 }}>
-          <h2 id="srv-h" className="hm-h2b">
-            Ноды
-          </h2>
-          {can('infrastructure') ? (
+      {can('infrastructure') ? (
+        <section id="servers" aria-labelledby="srv-h" className="hm-sec hm-servers">
+          <div className="hm-panehead" style={{ padding: 0 }}>
+            <h2 id="srv-h" className="hm-h2b">
+              Ноды
+            </h2>
             <Link to="/admin/infra" className="hm-link">
               Управление
             </Link>
-          ) : null}
-        </div>
-        {dashboard && !dashboard.remna ? <p className="muted">{remnaGone(dashboard)}</p> : null}
-        <div className="hm-flow-wrap">
-          <div className="hm-flow">
-            {nodes.map((node) => {
-              const state = nodeStateText(node, false);
-              const alert = trafficAlert(node);
-              return (
-                <span key={node.uuid} className="hm-flow-item">
-                  <span className="hm-bar" aria-hidden="true" />
-                  <strong>{node.name}</strong>
-                  <span className="muted">
-                    <Flag code={node.country_code} />
-                    {countryName(node.country_code)}
-                  </span>
-                  <span className="num" style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
-                    <span className={`st-dot ${state.tone}`} aria-hidden="true" />
-                    {state.text}
-                  </span>
-                  {alert ? (
-                    <span style={{ color: 'var(--warn)' }} title={alert.title}>
-                      · {alert.text}
+          </div>
+          {dashboard && !dashboard.remna ? <p className="muted">{remnaGone(dashboard)}</p> : null}
+          <div className="hm-flow-wrap">
+            <div className="hm-flow">
+              {nodes.map((node) => {
+                const state = nodeStateText(node, false);
+                const alert = trafficAlert(node);
+                return (
+                  <span key={node.uuid} className="hm-flow-item">
+                    <span className="hm-bar" aria-hidden="true" />
+                    <strong>{node.name}</strong>
+                    <span className="muted">
+                      <Flag code={node.country_code} />
+                      {countryName(node.country_code)}
                     </span>
-                  ) : null}
-                  {canRestart && (node.state === 'down' || restarting.has(node.uuid)) ? (
-                    <button type="button" className="b36 hov" onClick={() => void restart(node.uuid)} disabled={restarting.has(node.uuid)} style={{ fontWeight: 600 }}>
-                      {restarting.has(node.uuid) ? 'Перезапускаем…' : 'Перезапустить'}
-                    </button>
-                  ) : null}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-        {billing.length ? (
-          <div className="hm-billing">
-            {billing.map((b) => {
-              const nodeName = b.node?.name ?? b.name ?? 'нода';
-              return (
-                <span key={b.uuid} className="hm-billing-row">
-                  <span style={{ color: 'var(--warn)' }}>
-                    Оплата хостинга: {nodeName} в {b.provider.name} до {dateLong(b.nextBillingAt)}
+                    <span className="num" style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
+                      <span className={`st-dot ${state.tone}`} aria-hidden="true" />
+                      {state.text}
+                    </span>
+                    {alert ? (
+                      <span style={{ color: 'var(--warn)' }} title={alert.title}>
+                        · {alert.text}
+                      </span>
+                    ) : null}
+                    {canRestart && (node.state === 'down' || restarting.has(node.uuid)) ? (
+                      <button type="button" className="b36 hov" onClick={() => void restart(node.uuid)} disabled={restarting.has(node.uuid)} style={{ fontWeight: 600 }}>
+                        {restarting.has(node.uuid) ? 'Перезапускаем…' : 'Перезапустить'}
+                      </button>
+                    ) : null}
                   </span>
-                  {b.provider.loginUrl ? (
-                    <a href={b.provider.loginUrl} target="_blank" rel="noreferrer" className="hm-link" aria-label={`Открыть ${b.provider.name}, чтобы оплатить ${nodeName}`}>
-                      Открыть
-                    </a>
-                  ) : null}
-                </span>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        ) : null}
-      </section>
+          {billing.length ? (
+            <div className="hm-billing">
+              {billing.map((b) => {
+                const nodeName = b.node?.name ?? b.name ?? 'нода';
+                return (
+                  <span key={b.uuid} className="hm-billing-row">
+                    <span style={{ color: 'var(--warn)' }}>
+                      Оплата хостинга: {nodeName} в {b.provider.name} до {dateLong(b.nextBillingAt)}
+                    </span>
+                    {b.provider.loginUrl ? (
+                      <a href={b.provider.loginUrl} target="_blank" rel="noreferrer" className="hm-link" aria-label={`Открыть ${b.provider.name}, чтобы оплатить ${nodeName}`}>
+                        Открыть
+                      </a>
+                    ) : null}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
       <PanelServer load={dashboard?.server} variant="day" />
       <Feed nodes={nodes} restart={restart} restarting={restarting} canRestart={canRestart} variant="day" />
       {picking ? <PickClient onClose={() => setPicking(false)} /> : null}

@@ -695,9 +695,23 @@ async fn главная_видит_отклонённые_и_упавшие_ув
     let after = inbox.webhook_attention().await.unwrap();
     assert_eq!((after.rejected, after.failed), (2, 0));
 
-    let money = kit.services.admin().dashboard(true).await.unwrap();
+    let money = kit
+        .services
+        .admin()
+        .dashboard(crate::admin::Sees::ALL)
+        .await
+        .unwrap();
     assert_eq!(money.webhooks.map(|w| w.rejected), Some(2));
-    let support = kit.services.admin().dashboard(false).await.unwrap();
+    let support = kit
+        .services
+        .admin()
+        .dashboard(crate::admin::Sees {
+            money: false,
+            refunds: false,
+            infrastructure: true,
+        })
+        .await
+        .unwrap();
     assert!(support.webhooks.is_none());
     kit.db.cleanup().await;
 }

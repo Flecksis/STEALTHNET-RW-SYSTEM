@@ -1,4 +1,5 @@
 use crate::DomainError;
+use crate::access::Permission;
 use crate::money::Currency;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -63,6 +64,7 @@ pub struct MenuEntry {
     pub label: &'static str,
     pub icon: &'static str,
     pub order: u8,
+    pub need: Permission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -104,8 +106,14 @@ const fn with_menu(
     label: &'static str,
     icon: &'static str,
     order: u8,
+    need: Permission,
 ) -> ModuleInfo {
-    module.menu = Some(MenuEntry { label, icon, order });
+    module.menu = Some(MenuEntry {
+        label,
+        icon,
+        order,
+        need,
+    });
     module
 }
 
@@ -122,6 +130,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Промокоды",
         "percent",
         2,
+        Permission::Marketing,
     ),
     with_menu(
         info(
@@ -135,6 +144,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Подарки",
         "gift",
         4,
+        Permission::Marketing,
     ),
     info(
         ModuleId::Options,
@@ -156,6 +166,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Рассылки",
         "send",
         1,
+        Permission::Marketing,
     ),
     with_menu(
         info(
@@ -169,6 +180,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Рефералы",
         "share",
         3,
+        Permission::Money,
     ),
     info(
         ModuleId::Promolinks,
@@ -190,6 +202,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "UTM-метки",
         "flag",
         7,
+        Permission::Marketing,
     ),
     with_menu(
         info(
@@ -203,6 +216,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Конкурсы",
         "trophy",
         5,
+        Permission::Marketing,
     ),
     info(
         ModuleId::Roulette,
@@ -259,6 +273,7 @@ pub static CATALOG: [ModuleInfo; 17] = [
         "Аналитика",
         "chart",
         6,
+        Permission::Money,
     ),
     info(
         ModuleId::Landing,

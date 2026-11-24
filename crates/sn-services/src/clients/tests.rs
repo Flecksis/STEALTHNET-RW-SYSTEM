@@ -540,11 +540,11 @@ async fn списание_на_ручной_проверке_видно_в_ис�
     assert_eq!(
         kit.services
             .admin()
-            .dashboard(true)
+            .dashboard(crate::admin::Sees::ALL)
             .await
             .unwrap()
             .charges_review,
-        1
+        Some(1)
     );
     let history = clients
         .history(client_id, PageRequest::default(), true)

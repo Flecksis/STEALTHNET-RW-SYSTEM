@@ -6,7 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 use sn_domain::access::Permission;
-use sn_services::admin::{DashboardView, FeedPage, FeedQuery};
+use sn_services::admin::{DashboardView, FeedPage, FeedQuery, Sees};
 use sn_services::decisions::{Decisions, Scope};
 
 pub fn routes() -> Router<AppState> {
@@ -21,6 +21,14 @@ struct DashboardReply {
     #[serde(flatten)]
     view: DashboardView,
     decisions: Decisions,
+}
+
+fn sees(admin: &CurrentAdmin) -> Sees {
+    Sees {
+        money: admin.can(Permission::Money),
+        refunds: admin.can(Permission::Refunds),
+        infrastructure: admin.can(Permission::Infrastructure),
+    }
 }
 
 fn scope(admin: &CurrentAdmin) -> Scope {
@@ -50,11 +58,7 @@ async fn dashboard(
     State(state): State<AppState>,
 ) -> ApiResult<Json<DashboardReply>> {
     admin.require(Permission::ClientsRead)?;
-    let view = state
-        .services
-        .admin()
-        .dashboard(admin.can(Permission::Money))
-        .await?;
+    let view = state.services.admin().dashboard(sees(&admin)).await?;
     let decisions = state.services.decisions().summary(scope(&admin)).await?;
     Ok(Json(DashboardReply { view, decisions }))
 }
@@ -66,10 +70,6 @@ async fn feed(
 ) -> ApiResult<Json<FeedPage>> {
     admin.require(Permission::ClientsRead)?;
     Ok(Json(
-        state
-            .services
-            .admin()
-            .feed(&query, admin.can(Permission::Money))
-            .await?,
+        state.services.admin().feed(&query, sees(&admin)).await?,
     ))
 }

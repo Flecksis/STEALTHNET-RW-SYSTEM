@@ -544,6 +544,26 @@ mod tests {
             page["links"][0]["stats"].get("revenue_all").is_some(),
             "{page}"
         );
+        let support = sn_domain::access::AdminPrincipal {
+            admin_id: admin,
+            role: sn_domain::access::AdminRole::Support,
+            permissions: vec![
+                Permission::ClientsRead,
+                Permission::ClientsWrite,
+                Permission::Support,
+            ],
+            session_id: 1,
+            api_key: None,
+        };
+        for path in ["/utm/report", "/utm/links"] {
+            use tower::ServiceExt;
+            let response = router.clone().oneshot(get(path, &support)).await.unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::FORBIDDEN,
+                "{path}"
+            );
+        }
         db.cleanup().await;
     }
 }

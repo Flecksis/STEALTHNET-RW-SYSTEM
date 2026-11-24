@@ -26,14 +26,14 @@ export type NodeBrief = {
 export type Dashboard = {
   currency: 'USD' | 'RUB';
   subscriptions: { active_paid: number; trials: number; expiring_soon: number; never_connected: number; limited: number } | null;
-  today: { payments: number; new_clients: number; new_clients_paid: number } | null;
+  today: { payments: number | null; new_clients: number; new_clients_paid: number | null } | null;
   revenue: { today: Money; yesterday: Money; week: Money; month: Money; today_stars: number; by_day: Array<{ day: string; amount: Money }> } | null;
   support_waiting: number;
   webhooks?: Attention | null;
   decisions?: Decisions;
   remna: { online_now: number; users_total: number; nodes_total: number; nodes_online: number; nodes: NodeBrief[] } | null;
   remna_error: string | null;
-  server?: ServerLoad;
+  server?: ServerLoad | null;
   setup?: Setup;
 };
 

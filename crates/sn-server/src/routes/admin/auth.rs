@@ -186,7 +186,13 @@ async fn me(
         "email": email,
         "must_change_password": must_change_password,
         "permissions": permissions,
-        "menu": state.services.modules().menu(),
+        "menu": state
+            .services
+            .modules()
+            .menu()
+            .into_iter()
+            .filter(|item| admin.can(item.need))
+            .collect::<Vec<_>>(),
         "modules": state
             .services
             .modules()

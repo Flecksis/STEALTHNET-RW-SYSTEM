@@ -6,7 +6,7 @@ const support = (permission) => ['clients_read', 'clients_write', 'support'].inc
 const marketer = (permission) => ['marketing'].includes(permission);
 
 test('поддержка не видит в меню разделы маркетинга и денег', () => {
-  for (const module of ['analytics', 'referral', 'broadcast', 'promo', 'promolinks', 'gifts', 'contests', 'roulette']) {
+  for (const module of ['analytics', 'referral', 'broadcast', 'promo', 'promolinks', 'gifts', 'contests', 'roulette', 'utm']) {
     assert.equal(menuAllowed(module, support), false, module);
   }
 });
@@ -14,6 +14,7 @@ test('поддержка не видит в меню разделы маркет
 test('маркетинг видит свои разделы, но не деньги', () => {
   assert.equal(menuAllowed('broadcast', marketer), true);
   assert.equal(menuAllowed('promo', marketer), true);
+  assert.equal(menuAllowed('utm', marketer), true);
   assert.equal(menuAllowed('referral', marketer), false);
   assert.equal(menuAllowed('analytics', marketer), false);
 });

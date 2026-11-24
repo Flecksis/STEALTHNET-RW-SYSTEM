@@ -48,11 +48,26 @@ pub struct DayAmount {
     pub amount: Money,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sees {
+    pub money: bool,
+    pub refunds: bool,
+    pub infrastructure: bool,
+}
+
+impl Sees {
+    pub const ALL: Sees = Sees {
+        money: true,
+        refunds: true,
+        infrastructure: true,
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct DashboardToday {
-    pub payments: i64,
+    pub payments: Option<i64>,
     pub new_clients: i64,
-    pub new_clients_paid: i64,
+    pub new_clients_paid: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,14 +104,14 @@ pub struct DashboardView {
     pub revenue: Option<DashboardRevenue>,
     pub stats_error: Option<String>,
     pub support_waiting: i64,
-    pub orders_review: i64,
-    pub stars_review: i64,
-    pub refund_actions_failed: i64,
-    pub charges_review: i64,
+    pub orders_review: Option<i64>,
+    pub stars_review: Option<i64>,
+    pub refund_actions_failed: Option<i64>,
+    pub charges_review: Option<i64>,
     pub webhooks: Option<crate::inbox::WebhookAttention>,
     pub remna: Option<RemnaOverview>,
     pub remna_error: Option<String>,
-    pub server: crate::server_load::ServerLoad,
+    pub server: Option<crate::server_load::ServerLoad>,
     pub setup: SetupState,
 }
 
@@ -401,13 +416,17 @@ pub fn core_feed_title(event: &DomainEvent) -> String {
     }
 }
 
-fn remna_scopes(kind: FeedKind) -> Option<Vec<String>> {
+fn remna_scopes(kind: FeedKind, infrastructure: bool) -> Option<Vec<String>> {
+    let people = || vec!["user".into(), "user_hwid_devices".into()];
     match kind {
-        FeedKind::All => None,
-        FeedKind::Nodes => Some(vec!["node".into(), "crm".into()]),
-        FeedKind::Clients => Some(vec!["user".into(), "user_hwid_devices".into()]),
-        FeedKind::Payments | FeedKind::Support => Some(Vec::new()),
-        FeedKind::Highlights => Some(vec!["node".into(), "crm".into()]),
+        FeedKind::All if infrastructure => None,
+        FeedKind::All | FeedKind::Clients => Some(people()),
+        FeedKind::Nodes | FeedKind::Highlights if infrastructure => {
+            Some(vec!["node".into(), "crm".into()])
+        }
+        FeedKind::Nodes | FeedKind::Highlights | FeedKind::Payments | FeedKind::Support => {
+            Some(Vec::new())
+        }
     }
 }
 
@@ -510,7 +529,8 @@ impl<'a> AdminOps<'a> {
         AdminOps { services }
     }
 
-    pub async fn dashboard(&self, include_money: bool) -> ServiceResult<DashboardView> {
+    pub async fn dashboard(&self, sees: Sees) -> ServiceResult<DashboardView> {
+        let include_money = sees.money;
         let currency = self.services.settings().currency;
         let now = self.services.now();
         let mut conn = self.services.store().conn().await?;
@@ -529,9 +549,9 @@ impl<'a> AdminOps<'a> {
                     limited: stats.limited,
                 }),
                 Some(DashboardToday {
-                    payments: stats.payments_today,
+                    payments: include_money.then_some(stats.payments_today),
                     new_clients: stats.new_clients_today,
-                    new_clients_paid: stats.new_clients_paid_today,
+                    new_clients_paid: include_money.then_some(stats.new_clients_paid_today),
                 }),
                 include_money.then(|| DashboardRevenue {
                     today: Money::new(stats.revenue_today_minor, currency),
@@ -588,12 +608,18 @@ impl<'a> AdminOps<'a> {
         } else {
             None
         };
-        let mut server = crate::server_load::probe().sample().await;
-        server.database_bytes = database_bytes.and_then(|b| u64::try_from(b).ok());
-        let (remna, remna_error) = match self.remna_overview().await {
-            Ok(overview) => (Some(overview), None),
-            Err(err) => (None, Some(err.to_string())),
+        let server = if sees.infrastructure {
+            let mut server = crate::server_load::probe().sample().await;
+            server.database_bytes = database_bytes.and_then(|b| u64::try_from(b).ok());
+            Some(server)
+        } else {
+            None
         };
+        let (remna, remna_error) = match self.remna_overview(sees.infrastructure).await {
+            Ok(overview) => (Some(overview), None),
+            Err(err) => (None, sees.infrastructure.then(|| err.to_string())),
+        };
+        let money_count = |count: i64| include_money.then_some(count);
         Ok(DashboardView {
             currency,
             subscriptions,
@@ -601,10 +627,10 @@ impl<'a> AdminOps<'a> {
             revenue,
             stats_error,
             support_waiting,
-            orders_review,
-            stars_review,
-            refund_actions_failed,
-            charges_review,
+            orders_review: money_count(orders_review),
+            stars_review: money_count(stars_review),
+            refund_actions_failed: sees.refunds.then_some(refund_actions_failed),
+            charges_review: money_count(charges_review),
             webhooks,
             remna,
             remna_error,
@@ -626,9 +652,19 @@ impl<'a> AdminOps<'a> {
         .await?)
     }
 
-    async fn remna_overview(&self) -> ServiceResult<RemnaOverview> {
+    async fn remna_overview(&self, with_nodes: bool) -> ServiceResult<RemnaOverview> {
         let remna = self.services.remna()?;
         let stats = remna.stats().await?;
+        if !with_nodes {
+            return Ok(RemnaOverview {
+                online_now: stats.online_stats.online_now,
+                users_total: stats.users.total_users,
+                status_counts: stats.users.status_counts.into_iter().collect(),
+                nodes_total: 0,
+                nodes_online: 0,
+                nodes: Vec::new(),
+            });
+        }
         let nodes = remna.nodes().await?;
         let down = self
             .services
@@ -669,11 +705,11 @@ impl<'a> AdminOps<'a> {
         })
     }
 
-    pub async fn feed(&self, query: &FeedQuery, include_money: bool) -> ServiceResult<FeedPage> {
+    pub async fn feed(&self, query: &FeedQuery, sees: Sees) -> ServiceResult<FeedPage> {
         let limit = query.limit.unwrap_or(50).clamp(1, FEED_MAX);
         let fetch = i64::from(limit) + 1;
         let mut conn = self.services.store().conn().await?;
-        let scopes = remna_scopes(query.kind);
+        let scopes = remna_scopes(query.kind, sees.infrastructure);
         let remna_rows: Vec<RemnaFeedRow> = if scopes.as_ref().is_some_and(Vec::is_empty) {
             Vec::new()
         } else {
@@ -688,7 +724,7 @@ impl<'a> AdminOps<'a> {
             .fetch_all(conn.conn())
             .await?
         };
-        let kinds = core_kinds(query.kind, include_money);
+        let kinds = core_kinds(query.kind, sees.money);
         let core_rows: Vec<CoreFeedRow> = if kinds.as_ref().is_some_and(Vec::is_empty) {
             Vec::new()
         } else {

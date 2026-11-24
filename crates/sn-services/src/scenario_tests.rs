@@ -1,4 +1,4 @@
-use crate::admin::{FeedKind, FeedQuery, MarkPaidRequest, MarkPaidResult, PaymentFilter};
+use crate::admin::{FeedKind, FeedQuery, MarkPaidRequest, MarkPaidResult, PaymentFilter, Sees};
 use crate::auth::{RequestMeta, TOTP_INVALID, TOTP_REQUIRED};
 use crate::limits::{RATE_LIMITED, rules};
 use crate::login::TelegramLoginStatus;
@@ -1815,7 +1815,11 @@ async fn сообщения_из_бота_идут_в_открытое_обра�
                 core_before: None,
                 limit: Some(10),
             },
-            false,
+            Sees {
+                money: false,
+                refunds: false,
+                infrastructure: true,
+            },
         )
         .await
         .unwrap();
@@ -1983,7 +1987,7 @@ async fn лента_собирает_события_ядра_и_remnawave() {
                 core_before: None,
                 limit: Some(10),
             },
-            true,
+            Sees::ALL,
         )
         .await
         .unwrap();
@@ -2006,7 +2010,7 @@ async fn лента_собирает_события_ядра_и_remnawave() {
                 core_before: None,
                 limit: Some(10),
             },
-            true,
+            Sees::ALL,
         )
         .await
         .unwrap();
@@ -2019,7 +2023,11 @@ async fn лента_собирает_события_ядра_и_remnawave() {
                 core_before: None,
                 limit: Some(10),
             },
-            false,
+            Sees {
+                money: false,
+                refunds: false,
+                infrastructure: true,
+            },
         )
         .await
         .unwrap();
@@ -2032,7 +2040,7 @@ async fn лента_собирает_события_ядра_и_remnawave() {
                 core_before: None,
                 limit: Some(1),
             },
-            true,
+            Sees::ALL,
         )
         .await
         .unwrap();
@@ -2046,7 +2054,7 @@ async fn лента_собирает_события_ядра_и_remnawave() {
                 core_before: first.core_before,
                 limit: Some(10),
             },
-            true,
+            Sees::ALL,
         )
         .await
         .unwrap();

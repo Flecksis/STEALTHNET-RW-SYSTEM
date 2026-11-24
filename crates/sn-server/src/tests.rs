@@ -68,6 +68,7 @@ mod rollypay;
 mod security_headers;
 mod support_files;
 mod support_mode;
+mod support_role;
 mod telegram_webhook;
 mod tribute;
 mod utm;
