@@ -29,6 +29,7 @@ export type Site = {
   documents?: Array<{ title: string; url: string }>;
   email_auth?: 'password' | 'code' | null;
   email_reset?: boolean;
+  email_confirm?: boolean;
   oauth?: { google: boolean; apple: boolean };
   client_access?: { miniapp: boolean; site_login: boolean; devices: boolean; reissue: boolean };
   languages?: { list: Array<'ru' | 'en'>; default: 'ru' | 'en' };

@@ -14,6 +14,8 @@ import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, 
 type Tg = { poll_token: string; link: string; expires_at: string };
 type Status = { status: 'pending' | 'confirmed' | 'rejected' | 'expired' | 'totp_required'; challenge?: string };
 type Verified = { status?: 'totp_required'; challenge?: string };
+type Registered = { status?: 'totp_required' | 'code_sent'; challenge?: string; email?: string; signup_token?: string };
+type Signup = { email: string; token: string; again: boolean };
 
 const RESEND_SECONDS = 60;
 
@@ -39,9 +41,11 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
   const [totp, setTotp] = useState('');
   const [password, setPassword] = useState('');
   const [joining, setJoining] = useState(false);
+  const [signup, setSignup] = useState<Signup | null>(null);
   const [reset, setReset] = useState<'off' | 'email' | 'code'>('off');
   const [fresh, setFresh] = useState('');
   const emailAuth = site.email_auth === undefined ? 'code' : site.email_auth;
+  const confirmJoin = site.email_confirm === true;
   const siteOpen = site.client_access?.site_login !== false;
   const timer = useRef<number | null>(null);
   const navigate = useNavigate();
@@ -192,7 +196,10 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setBusy(true);
     setError(null);
     try {
-      const res = await api<Verified>('/api/client/auth/email/verify', { method: 'POST', body: { email: email.trim(), code: code.trim(), utm: storedUtm() ?? undefined } });
+      const res = await api<Verified>('/api/client/auth/email/verify', {
+        method: 'POST',
+        body: { email: email.trim(), code: code.trim(), utm: storedUtm() ?? undefined, ref: storedReferral() ?? undefined },
+      });
       if (res.status === 'totp_required' && res.challenge) {
         setChallenge(res.challenge);
         setTotp('');
@@ -211,10 +218,16 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setBusy(true);
     setError(null);
     try {
-      const res = await api<Verified>(joining ? '/api/client/auth/email/register' : '/api/client/auth/email/password', {
+      const res = await api<Registered>(joining ? '/api/client/auth/email/register' : '/api/client/auth/email/password', {
         method: 'POST',
-        body: { email: email.trim(), password, utm: joining ? (storedUtm() ?? undefined) : undefined },
+        body: joining ? { email: email.trim(), password, utm: storedUtm() ?? undefined, ref: storedReferral() ?? undefined } : { email: email.trim(), password },
       });
+      if (res.status === 'code_sent' && res.signup_token) {
+        setSignup({ email: res.email ?? email.trim(), token: res.signup_token, again: false });
+        setCode('');
+        setWait(RESEND_SECONDS);
+        return;
+      }
       if (res.status === 'totp_required' && res.challenge) {
         setChallenge(res.challenge);
         setTotp('');
@@ -229,6 +242,64 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     } finally {
       setBusy(false);
     }
+  };
+
+  const finishSignup = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!signup) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<Verified>('/api/client/auth/email/register/confirm', { method: 'POST', body: { email: signup.email, signup_token: signup.token, code } });
+      if (res.status === 'totp_required' && res.challenge) {
+        setSignup(null);
+        setChallenge(res.challenge);
+        setTotp('');
+        return;
+      }
+      onDone();
+    } catch (err) {
+      if (err instanceof ApiError && (err.code === 'auth.signup_expired' || err.code === 'auth.email_taken')) {
+        setSignup(null);
+        setCode('');
+        if (err.code === 'auth.email_taken') {
+          setJoining(false);
+        }
+      }
+      setError(failText(err, t('Код не подошёл')));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendSignup = async () => {
+    if (!signup) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<{ email: string; signup_token: string }>('/api/client/auth/email/register/resend', { method: 'POST', body: { email: signup.email, signup_token: signup.token } });
+      setSignup({ email: res.email, token: res.signup_token, again: true });
+      setCode('');
+      setWait(RESEND_SECONDS);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'auth.signup_expired') {
+        setSignup(null);
+        setCode('');
+      }
+      setError(failText(err, t('Код не отправился')));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const leaveSignup = () => {
+    setSignup(null);
+    setCode('');
+    setError(null);
   };
 
   const resetStart = async (event: FormEvent) => {
@@ -431,6 +502,35 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
               {t('Прислать код ещё раз')}
             </button>
           </form>
+        ) : emailAuth === 'password' && signup ? (
+          <form className="cb-login-form" onSubmit={finishSignup}>
+            <p className="cb-login-note" role="status">
+              {signup.again
+                ? t('Новое письмо отправлено на {email}. Код в нём действует 15 минут.', { email: signup.email })
+                : t('Письмо отправлено на {email}. Код в нём действует 15 минут.', { email: signup.email })}
+            </p>
+            <label className="cb-field">
+              <span>{t('Код из письма')}</span>
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder={t('6 цифр')}
+                autoFocus
+              />
+            </label>
+            <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
+              {busy ? t('Проверяем…') : t('Подтвердить и войти')}
+            </button>
+            <span className="cb-login-help cb-muted">{t('Если с этой почтой уже есть аккаунт, кода в письме не будет: там подсказка, как войти.')}</span>
+            <button type="button" className="cb-text" onClick={() => void resendSignup()} disabled={busy || wait > 0}>
+              {wait > 0 ? t('Отправить ещё раз через {seconds} с', { seconds: String(wait) }) : t('Отправить ещё раз')}
+            </button>
+            <button type="button" className="cb-text" onClick={leaveSignup} disabled={busy}>
+              {t('Изменить почту')}
+            </button>
+          </form>
         ) : emailAuth === 'password' ? (
           <form className="cb-login-form" onSubmit={byPassword}>
             <div role="group" aria-label={t('Есть ли аккаунт')} className="cb-seg">
@@ -456,8 +556,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
               />
             </label>
             <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1)}>
-              {busy ? (joining ? t('Создаём…') : t('Входим…')) : joining ? t('Создать аккаунт') : t('Войти')}
+              {busy ? (joining ? (confirmJoin ? t('Отправляем…') : t('Создаём…')) : t('Входим…')) : joining ? t('Создать аккаунт') : t('Войти')}
             </button>
+            {joining && confirmJoin ? <span className="cb-login-help cb-muted">{t('Пришлём на почту код: аккаунт появится, когда вы его введёте.')}</span> : null}
             {joining ? null : site.email_reset ? (
               <button
                 type="button"

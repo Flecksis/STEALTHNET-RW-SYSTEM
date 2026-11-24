@@ -3,6 +3,7 @@ import { api, ApiError } from '../../lib/api';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState } from '../SchemaFields';
 import type { ModuleConfig, ModulesData, ModuleView } from '../modules/model';
 import { useSession } from '../session';
+import { Switch } from '../ui';
 import '../form.css';
 import './admins.css';
 import { MailTabs } from './MailTabs';
@@ -36,7 +37,7 @@ const LOGINS: Array<[Login, string]> = [
   ['code', 'По коду из письма'],
 ];
 
-const CUSTOM = new Set(['transport', 'login', 'letter_expiring', 'letter_payments', 'letter_support', 'from_name']);
+const CUSTOM = new Set(['transport', 'login', 'confirm_signup', 'letter_expiring', 'letter_payments', 'letter_support', 'from_name']);
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -121,6 +122,9 @@ export function SettingsMail() {
   const login = loginOf(values.login, transport);
   const visible = cfg.schema.filter((field) => FIELDS[transport].includes(field.key) && !CUSTOM.has(field.key));
   const sends = view.active && saved !== 'none';
+  const confirm = values.confirm_signup === true && transport !== 'none';
+  const mailReady = view.active && transport !== 'none';
+  const savedConfirm = cfg.config.confirm_signup === true && loginOf(cfg.config.login, saved) === 'password';
   const edit = (patch: FieldValues) => {
     setValues({ ...values, ...patch });
     setStatus(null);
@@ -138,7 +142,7 @@ export function SettingsMail() {
     setBusy(true);
     setStatus(null);
     try {
-      const config = changedConfig(cfg.schema, cfg.config, { ...values, login });
+      const config = changedConfig(cfg.schema, cfg.config, { ...values, login, confirm_signup: confirm });
       if (cfg.config.login !== login) {
         config.login = login;
       }
@@ -173,6 +177,16 @@ export function SettingsMail() {
     }
   };
 
+  const confirmText = !mailReady
+    ? confirm
+      ? 'Пока письма не отправляются, регистрация по почте закрыта: код не дойдёт до клиента. Вход по паролю работает.'
+      : transport === 'none'
+        ? 'Чтобы включить, выберите SMTP или Resend в «Отправке писем»: без писем код не дойдёт до клиента.'
+        : 'Сначала включите модуль «Почта» выше: без писем код не дойдёт до клиента.'
+    : confirm
+      ? 'Аккаунт появится, только когда клиент введёт код из письма. До этого клиента нет: ни пробного периода, ни учёта в метках и рефералах.'
+      : 'Аккаунт создаётся сразу, почту клиент не подтверждает.';
+
   const loginText =
     login === 'code'
       ? 'Пароль не нужен: при каждом входе на почту приходит код.'
@@ -195,7 +209,11 @@ export function SettingsMail() {
             <div className="row adm-row">
               <span className="adm-who">
                 <span className="adm-email">Модуль «Почта» выключен</span>
-                <span className="adm-status">Письма не отправляются, вход по почте работает только по паролю.</span>
+                <span className="adm-status">
+                  {savedConfirm
+                    ? 'Письма не отправляются: вход по почте работает только по паролю, а регистрация по почте закрыта, пока включено подтверждение почты.'
+                    : 'Письма не отправляются, вход по почте работает только по паролю.'}
+                </span>
               </span>
               <span className="adm-acts">
                 <button type="button" className="b34 hov" onClick={() => void enable()} disabled={busy}>
@@ -242,6 +260,25 @@ export function SettingsMail() {
               <span className="cap">{loginText}</span>
             </span>
           </div>
+          {login === 'password' ? (
+            <div className="row adm-row">
+              <span className="adm-who">
+                <span className="adm-email">Подтверждать почту при регистрации</span>
+                <span className="adm-status" id="mail-confirm-text">
+                  {confirmText}
+                </span>
+              </span>
+              <span className="adm-acts">
+                <Switch
+                  on={confirm}
+                  onToggle={() => edit({ confirm_signup: !confirm })}
+                  label="Подтверждать почту при регистрации"
+                  describedBy="mail-confirm-text"
+                  disabled={busy || (!confirm && !mailReady)}
+                />
+              </span>
+            </div>
+          ) : null}
         </section>
 
         <div className="save-row">

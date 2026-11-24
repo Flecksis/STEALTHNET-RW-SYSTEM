@@ -55,6 +55,8 @@ pub enum LetterId {
     LoginCode,
     ResetCode,
     EmailCode,
+    SignupCode,
+    SignupTaken,
     SubscriptionReady,
     SubscriptionRenewed,
     TopupDone,
@@ -301,7 +303,7 @@ const NEW_EMAIL: Var = var(
     Sample::Text("n***@example.com", "n***@example.com"),
 );
 
-pub const CATALOG: [Spec; 26] = [
+pub const CATALOG: [Spec; 28] = [
     Spec {
         id: LetterId::LoginCode,
         group: Group::Login,
@@ -369,6 +371,52 @@ pub const CATALOG: [Spec; 26] = [
                 "Your code to change the email on {brand}:\n{code}\n\nIt works for {minutes}. If you didn't ask for this, just ignore it and this address won't be added to the account.",
             ],
             button: "",
+        },
+    },
+    Spec {
+        id: LetterId::SignupCode,
+        group: Group::Login,
+        title: "Код для регистрации",
+        when: "Клиент регистрируется на сайте по почте и паролю, а в «Почте» включено подтверждение почты",
+        vars: &[CODE, MINUTES],
+        required: &["code"],
+        path: &[],
+        ru: Texts {
+            subject: &["Код для регистрации в {brand}: {code}"],
+            text: &[
+                "Код для регистрации в {brand}:\n{code}\n\nКод действует {minutes}. Аккаунт появится, когда вы введёте код на сайте. Если регистрируетесь не вы, просто не используйте код: аккаунт не создастся.",
+            ],
+            button: "",
+        },
+        en: Texts {
+            subject: &["Your {brand} sign-up code: {code}"],
+            text: &[
+                "Your code to finish signing up for {brand}:\n{code}\n\nIt works for {minutes}. Your account is created once you enter the code on the site. If you didn't sign up, just ignore it and no account will be created.",
+            ],
+            button: "",
+        },
+    },
+    Spec {
+        id: LetterId::SignupTaken,
+        group: Group::Login,
+        title: "Почта уже зарегистрирована",
+        when: "Кто-то регистрируется на сайте с почтой, у которой уже есть аккаунт, а в «Почте» включено подтверждение почты",
+        vars: &[],
+        required: &[],
+        path: &["/cabinet"],
+        ru: Texts {
+            subject: &["Аккаунт {brand} с этой почтой уже есть"],
+            text: &[
+                "С адресом {email} пытаются зарегистрироваться в {brand}. Аккаунт с этой почтой уже есть, второй создать нельзя.\n\nЕсли это вы, войдите в кабинет с паролем. Если пароля нет или вы его не помните, нажмите «Забыли пароль?» на странице входа: на почту придёт код, с ним вы зададите новый пароль.\n\nЕсли регистрируетесь не вы, ничего делать не нужно: доступ к аккаунту не изменился.",
+            ],
+            button: "Войти",
+        },
+        en: Texts {
+            subject: &["You already have a {brand} account"],
+            text: &[
+                "Someone is trying to sign up for {brand} with {email}. There is already an account with this email, so a second one can't be created.\n\nIf it's you, sign in with your password. If you don't have one or don't remember it, tap “Forgot password?” on the sign-in page: we'll email you a code to set a new password.\n\nIf it wasn't you, there's nothing to do: access to your account hasn't changed.",
+            ],
+            button: "Sign in",
         },
     },
     Spec {
@@ -884,6 +932,8 @@ impl LetterId {
             LetterId::LoginCode => "login_code",
             LetterId::ResetCode => "reset_code",
             LetterId::EmailCode => "email_code",
+            LetterId::SignupCode => "signup_code",
+            LetterId::SignupTaken => "signup_taken",
             LetterId::SubscriptionReady => "subscription_ready",
             LetterId::SubscriptionRenewed => "subscription_renewed",
             LetterId::TopupDone => "topup_done",

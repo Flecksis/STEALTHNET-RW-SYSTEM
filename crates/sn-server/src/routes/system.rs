@@ -117,6 +117,8 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
         Some("password")
     };
     let email_reset = email_auth == Some("password") && mail.available();
+    let email_confirm =
+        email_auth == Some("password") && mail.signup_rule() != sn_services::mail::SignupRule::Open;
     tagged(
         &headers,
         &serde_json::json!({
@@ -144,6 +146,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "documents": state.services.bot_content().documents,
             "email_auth": email_auth,
             "email_reset": email_reset,
+            "email_confirm": email_confirm,
             "oauth": state.services.oauth().availability(),
             "client_access": {
                 "miniapp": access.miniapp,

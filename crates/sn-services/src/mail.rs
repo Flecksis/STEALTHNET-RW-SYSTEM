@@ -8,7 +8,7 @@ use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use sn_domain::client::{IdentityKind, normalize_identity};
 use sn_domain::module::ModuleId;
 use sn_modules::catalog::mail::{
-    ClientLetters, MailSecurity, MailSettings, MailTransport, SmtpSettings,
+    ClientLetters, EmailLogin, MailSecurity, MailSettings, MailTransport, SmtpSettings,
 };
 use sn_modules::{MailDelivery, MailOut, MailSender, MailSite};
 use std::time::Duration;
@@ -119,6 +119,13 @@ pub struct MailOps<'a> {
     resend_base: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignupRule {
+    Open,
+    Confirm,
+    Closed,
+}
+
 impl<'a> MailOps<'a> {
     pub fn new(services: &'a Services) -> Self {
         MailOps {
@@ -153,6 +160,18 @@ impl<'a> MailOps<'a> {
             .map_or(sn_modules::catalog::mail::CODES_PER_HOUR_DEFAULT, |s| {
                 s.codes_per_hour
             })
+    }
+
+    pub fn signup_rule(&self) -> SignupRule {
+        let asked = MailSettings::parse(&self.services.modules().config(ModuleId::Mail))
+            .is_ok_and(|s| s.confirm_signup && s.login == EmailLogin::Password);
+        if !asked {
+            SignupRule::Open
+        } else if self.available() {
+            SignupRule::Confirm
+        } else {
+            SignupRule::Closed
+        }
     }
 
     pub fn letters(&self) -> Option<ClientLetters> {

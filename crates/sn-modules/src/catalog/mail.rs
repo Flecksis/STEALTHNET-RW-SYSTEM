@@ -67,6 +67,7 @@ pub struct MailSettings {
     pub login: EmailLogin,
     pub letters: ClientLetters,
     pub codes_per_hour: u32,
+    pub confirm_signup: bool,
 }
 
 pub const CODES_PER_HOUR_DEFAULT: u32 = 300;
@@ -176,6 +177,15 @@ impl MailSettings {
             payments: flag("letter_payments"),
             support: flag("letter_support"),
         };
+        let confirm_signup = config
+            .get("confirm_signup")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if confirm_signup && transport == MailTransport::Off {
+            return Err(
+                "подтверждать почту при регистрации можно, только когда письма отправляются: выберите SMTP или Resend".into(),
+            );
+        }
         let from_name = optional_text(config, "from_name");
         if from_name
             .as_deref()
@@ -191,6 +201,7 @@ impl MailSettings {
             login,
             letters,
             codes_per_hour,
+            confirm_signup,
         })
     }
 
@@ -200,6 +211,10 @@ impl MailSettings {
 
     pub fn code_login(&self) -> bool {
         self.sends() && self.login == EmailLogin::Code
+    }
+
+    pub fn signup_confirm(&self) -> bool {
+        self.sends() && self.login == EmailLogin::Password && self.confirm_signup
     }
 }
 
@@ -257,6 +272,12 @@ impl Module for MailModule {
             )
             .labels(&["По паролю", "По коду из письма"])
             .optional(),
+            SettingField::flag(
+                "confirm_signup",
+                "Подтверждать почту при регистрации",
+                "Только для входа по паролю: аккаунт появляется после того, как клиент введёт код из письма. Нужна отправка писем",
+            )
+            .with_default("false"),
             SettingField::flag(
                 "letter_expiring",
                 "Письма об автопродлении",
@@ -319,7 +340,7 @@ impl Module for MailModule {
             SettingField::number(
                 "codes_per_hour",
                 "Писем с кодами в час",
-                "Не больше стольких писем с кодами входа, сброса пароля и смены почты каждого вида за час на всю панель. Пусто — 300. Уменьшите, если у почтового сервера маленькая дневная квота",
+                "Не больше стольких писем с кодами входа и регистрации, сброса пароля и смены почты каждого вида за час на всю панель. Пусто — 300. Уменьшите, если у почтового сервера маленькая дневная квота",
             ),
         ]
     }
@@ -383,6 +404,40 @@ mod tests {
         let silent = MailSettings::parse(&config(json!({ "login": "code" }))).unwrap();
         assert!(!silent.code_login());
         assert!(MailSettings::parse(&config(json!({ "login": "magic" }))).is_err());
+    }
+
+    #[test]
+    fn подтверждение_почты_при_регистрации_только_с_отправкой_писем() {
+        let smtp = json!({
+            "transport": "smtp",
+            "smtp_host": "smtp.example.com",
+            "from_email": "robot@example.com",
+            "login": "password"
+        });
+        let plain = MailSettings::parse(&config(smtp.clone())).unwrap();
+        assert!(!plain.confirm_signup);
+        assert!(!plain.signup_confirm());
+        let mut asked = smtp.clone();
+        asked["confirm_signup"] = json!(true);
+        let confirmed = MailSettings::parse(&config(asked.clone())).unwrap();
+        assert!(confirmed.signup_confirm());
+        let mut by_code = asked.clone();
+        by_code["login"] = json!("code");
+        let code = MailSettings::parse(&config(by_code)).unwrap();
+        assert!(code.confirm_signup && !code.signup_confirm());
+        let refused = MailSettings::parse(&config(json!({
+            "transport": "none",
+            "login": "password",
+            "confirm_signup": true
+        })))
+        .unwrap_err();
+        assert!(refused.contains("SMTP или Resend"), "{refused}");
+        assert!(
+            MailSettings::parse(&config(
+                json!({ "login": "password", "confirm_signup": true })
+            ))
+            .is_err()
+        );
     }
 
     #[test]

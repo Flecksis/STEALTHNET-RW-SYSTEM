@@ -41,6 +41,7 @@ mod client_payments;
 mod config_warnings;
 mod connect_apps;
 mod cryptomus;
+mod email_signup;
 mod ext_modules;
 mod freekassa;
 mod gram;

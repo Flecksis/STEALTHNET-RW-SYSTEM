@@ -5,6 +5,8 @@ use crate::auth::{
 };
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::{RateLimits, Strike, rules};
+use crate::mail::SignupRule;
+use crate::signup::{Arrival, confirm_required, signup_closed};
 use crate::two_factor::{CabinetLogin, cabinet_session, cabinet_session_for};
 use crate::utm_tracking::site_start_param;
 use chrono::{DateTime, Duration, Utc};
@@ -157,6 +159,13 @@ fn expired_link() -> ServiceError {
     )
 }
 
+pub(crate) fn email_code() -> String {
+    let mut rng = rand::rngs::OsRng;
+    (0..EMAIL_CODE_DIGITS)
+        .map(|_| char::from(b'0' + rng.gen_range(0..10u8)))
+        .collect()
+}
+
 pub(crate) fn code_invalid() -> ServiceError {
     ServiceError::rejected("auth.code_invalid", "Код не подошёл или устарел")
 }
@@ -265,7 +274,7 @@ impl<'a> Auth<'a> {
         self.telegram_login_start_with(meta, None).await
     }
 
-    fn site_open(&self) -> ServiceResult<()> {
+    pub(crate) fn site_open(&self) -> ServiceResult<()> {
         if self.services.settings().client_access.site_login {
             Ok(())
         } else {
@@ -505,7 +514,7 @@ impl<'a> Auth<'a> {
         Ok(start)
     }
 
-    fn email_by_password(&self) -> ServiceResult<()> {
+    pub(crate) fn email_by_password(&self) -> ServiceResult<()> {
         if self.services.mail().code_login() {
             Err(ServiceError::rejected(
                 "auth.email_code_mode",
@@ -534,6 +543,22 @@ impl<'a> Auth<'a> {
     ) -> ServiceResult<CabinetLogin> {
         self.site_open()?;
         self.email_by_password()?;
+        match self.services.mail().signup_rule() {
+            SignupRule::Open => {}
+            SignupRule::Confirm => return Err(confirm_required()),
+            SignupRule::Closed => return Err(signup_closed()),
+        }
+        self.register_now(email, password, meta, site_start_param(utm, None))
+            .await
+    }
+
+    pub(crate) async fn register_now(
+        &self,
+        email: &str,
+        password: &str,
+        meta: &RequestMeta,
+        start_param: Option<String>,
+    ) -> ServiceResult<CabinetLogin> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
@@ -577,7 +602,7 @@ impl<'a> Auth<'a> {
             .push(&DomainEvent::ClientRegistered {
                 client_id: client.id,
                 source: RegistrationSource::Web,
-                start_param: site_start_param(utm, None),
+                start_param,
             })
             .await?;
         let login = cabinet_session(&mut tx, client.id, now, meta, true).await?;
@@ -660,12 +685,7 @@ impl<'a> Auth<'a> {
         meta: &RequestMeta,
     ) -> ServiceResult<(String, EmailLoginStart)> {
         let email = normalize_identity(IdentityKind::Email, email)?;
-        let code: String = {
-            let mut rng = rand::rngs::OsRng;
-            (0..EMAIL_CODE_DIGITS)
-                .map(|_| char::from(b'0' + rng.gen_range(0..10u8)))
-                .collect()
-        };
+        let code = email_code();
         let now = self.services.now();
         let expires_at = now + Duration::seconds(EMAIL_CODE_TTL_SECONDS);
         let mut tx = self.services.store().begin().await?;
@@ -709,6 +729,17 @@ impl<'a> Auth<'a> {
         code: &str,
         meta: &RequestMeta,
         utm: Option<&Utm>,
+    ) -> ServiceResult<CabinetLogin> {
+        self.email_login_verify_from(email, code, meta, Arrival::site(utm, None))
+            .await
+    }
+
+    pub async fn email_login_verify_from(
+        &self,
+        email: &str,
+        code: &str,
+        meta: &RequestMeta,
+        from: Arrival<'_>,
     ) -> ServiceResult<CabinetLogin> {
         self.site_open()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
@@ -775,7 +806,7 @@ impl<'a> Auth<'a> {
                     .push(&DomainEvent::ClientRegistered {
                         client_id: client.id,
                         source: RegistrationSource::Web,
-                        start_param: site_start_param(utm, None),
+                        start_param: from.start_param(),
                     })
                     .await?;
                 (client.id, true)
@@ -1088,7 +1119,7 @@ impl<'a> Auth<'a> {
 
 pub const UNPROVEN_ACCESS_AUDIT: &str = "client.unproven_access_dropped";
 
-async fn code_strike(limits: &RateLimits<'_>, email: &str) -> ServiceResult<Strike> {
+pub(crate) async fn code_strike(limits: &RateLimits<'_>, email: &str) -> ServiceResult<Strike> {
     limits
         .strike(
             rules::EMAIL_CODE_FAILURES_DAY,

@@ -13,6 +13,13 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "auth.email_code_mode" => "Email sign-in works with a code from the email.",
         "auth.email_password_mode" => "Email sign-in works with a password, no code needed.",
         "auth.email_taken" => "This email is already registered. Sign in with your password.",
+        "auth.email_confirm" => "Email sign-up needs a code from the email.",
+        "auth.signup_closed" => {
+            "Email sign-up is unavailable right now because emails with codes aren't being sent. Sign in with Telegram or contact support."
+        }
+        "auth.signup_expired" => {
+            "The time to confirm your email ran out or sign-up was started again. Please sign up once more."
+        }
         "auth.email_change_off" => {
             "Emails aren't being sent right now, so the email can't be changed."
         }

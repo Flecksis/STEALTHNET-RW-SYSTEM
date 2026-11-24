@@ -12,6 +12,8 @@ type Core = { settings?: { public_url?: string | null } };
 
 const LOGIN_TEXT: Record<string, string> = {
   password: 'по почте и паролю',
+  password_confirm: 'по почте и паролю, при регистрации почта подтверждается кодом из письма',
+  password_closed: 'по почте и паролю; регистрация по почте закрыта, пока письма не отправляются',
   code: 'по почте, кодом из письма',
 };
 
@@ -54,7 +56,9 @@ export function SettingsClientAccess() {
       const mailOn = modules?.modules.find((m) => m.info.id === 'mail')?.active ?? false;
       const transport = String(mail?.config.transport ?? 'none');
       const login = mail?.config.login;
-      setMailMode(mailOn && transport !== 'none' && login !== 'password' ? 'code' : 'password');
+      const sends = mailOn && transport !== 'none';
+      const confirm = mail?.config.confirm_signup === true && login === 'password';
+      setMailMode(sends && login !== 'password' ? 'code' : confirm ? (sends ? 'password_confirm' : 'password_closed') : 'password');
       setOauthOn(modules?.modules.find((m) => m.info.id === 'oauth')?.active ?? false);
       setError(null);
     } catch (err) {

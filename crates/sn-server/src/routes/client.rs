@@ -19,6 +19,7 @@ use sn_services::checkout::{
     ItemRequest,
 };
 use sn_services::login::TelegramLoginStatus;
+use sn_services::signup::{Arrival, Registration, SignupStart};
 use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
 use sn_services::two_factor::{CabinetLogin, TwoFactor};
 use sn_services::utm_tracking::site_utm;
@@ -33,6 +34,8 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/email", post(email_start))
         .route("/auth/email/verify", post(email_verify))
         .route("/auth/email/register", post(email_register))
+        .route("/auth/email/register/resend", post(email_signup_resend))
+        .route("/auth/email/register/confirm", post(email_signup_confirm))
         .route("/auth/email/password", post(email_password))
         .route("/auth/email/reset", post(email_reset_start))
         .route("/auth/email/reset/confirm", post(email_reset_confirm))
@@ -179,6 +182,8 @@ struct EmailVerify {
     code: String,
     #[serde(default)]
     utm: Option<serde_json::Value>,
+    #[serde(default, rename = "ref")]
+    referral: Option<String>,
 }
 
 async fn email_verify(
@@ -187,10 +192,11 @@ async fn email_verify(
     ApiJson(body): ApiJson<EmailVerify>,
 ) -> ApiResult<Response> {
     let utm = body.utm.as_ref().and_then(site_utm);
+    let from = Arrival::site(utm.as_ref(), body.referral.as_deref());
     let login = state
         .services
         .auth()
-        .email_login_verify_with(&body.email, &body.code, &meta, utm.as_ref())
+        .email_login_verify_from(&body.email, &body.code, &meta, from)
         .await?;
     Ok(match &login {
         CabinetLogin::Session(session) => session_response(&state, session, &login),
@@ -204,6 +210,8 @@ struct EmailPassword {
     password: String,
     #[serde(default)]
     utm: Option<serde_json::Value>,
+    #[serde(default, rename = "ref")]
+    referral: Option<String>,
 }
 
 fn cabinet_response(state: &AppState, login: &CabinetLogin) -> Response {
@@ -219,10 +227,54 @@ async fn email_register(
     ApiJson(body): ApiJson<EmailPassword>,
 ) -> ApiResult<Response> {
     let utm = body.utm.as_ref().and_then(site_utm);
+    let from = Arrival::site(utm.as_ref(), body.referral.as_deref());
+    let registration = state
+        .services
+        .auth()
+        .email_signup(&body.email, &body.password, &meta, from)
+        .await?;
+    Ok(match &registration {
+        Registration::Login(login) => cabinet_response(&state, login),
+        Registration::CodeSent(_) => cookies::with_cookie(None, Json(&registration)),
+    })
+}
+
+#[derive(Deserialize)]
+struct SignupResend {
+    email: String,
+    signup_token: String,
+}
+
+async fn email_signup_resend(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<SignupResend>,
+) -> ApiResult<Json<SignupStart>> {
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .email_signup_resend(&body.email, &body.signup_token, &meta)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct SignupConfirm {
+    email: String,
+    signup_token: String,
+    code: String,
+}
+
+async fn email_signup_confirm(
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<SignupConfirm>,
+) -> ApiResult<Response> {
     let login = state
         .services
         .auth()
-        .email_register_with(&body.email, &body.password, &meta, utm.as_ref())
+        .email_signup_confirm(&body.email, &body.signup_token, &body.code, &meta)
         .await?;
     Ok(cabinet_response(&state, &login))
 }
