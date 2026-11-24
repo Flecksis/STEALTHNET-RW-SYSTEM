@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use sn_server::ServerConfig;
 use sn_server::extract::parse_proxy_list;
+use sn_server::security::{CspMode, HSTS_MAX_AGE};
 use sn_services::updates::{BuildInfo, UpdateConfig};
 use sn_services::{EnvFallbacks, RemnaConnection};
 use std::collections::HashMap;
@@ -133,6 +134,18 @@ impl Config {
             Some("json") => LogFormat::Json,
             Some(other) => bail!("SN_LOG_FORMAT: text или json, получено «{other}»"),
         };
+        let csp = match text(vars, "SN_CSP") {
+            None => CspMode::default(),
+            Some(raw) => CspMode::parse(&raw)
+                .ok_or_else(|| anyhow!("SN_CSP: admin, all или report, получено «{raw}»"))?,
+        };
+        let hsts_max_age = text(vars, "SN_HSTS_MAX_AGE")
+            .map(|v| {
+                v.parse::<u64>()
+                    .context("SN_HSTS_MAX_AGE: ожидается число секунд, 0 — выключить")
+            })
+            .transpose()?
+            .unwrap_or(HSTS_MAX_AGE);
         let remna = match (text(vars, "REMNAWAVE_URL"), text(vars, "REMNAWAVE_TOKEN")) {
             (url, token)
                 if url.is_some()
@@ -166,6 +179,8 @@ impl Config {
                 trusted_proxies: proxies.networks,
                 cors_origins: list(vars, "SN_CORS_ORIGINS"),
                 web_dir: text(vars, "SN_WEB_DIR").map(std::path::PathBuf::from),
+                csp,
+                hsts_max_age,
                 ..ServerConfig::default()
             },
             env: EnvFallbacks {
@@ -212,6 +227,25 @@ mod tests {
         assert_eq!(config.telegram_api, "https://api.telegram.org");
         assert!(config.backup_dir.is_none());
         assert!(!config.env.ext_modules_loopback);
+    }
+
+    #[test]
+    fn политика_csp_и_hsts_задаются_переменными() {
+        let config = Config::from_vars(&vars(&[("DATABASE_URL", "postgres://sn@db/sn")])).unwrap();
+        assert_eq!(config.server.csp, CspMode::Admin);
+        assert_eq!(config.server.hsts_max_age, 31_536_000);
+        let config = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_CSP", "all"),
+            ("SN_HSTS_MAX_AGE", "0"),
+        ]))
+        .unwrap();
+        assert_eq!(config.server.csp, CspMode::All);
+        assert_eq!(config.server.hsts_max_age, 0);
+        assert!(Config::from_vars(&vars(&[("DATABASE_URL", "x"), ("SN_CSP", "строго")])).is_err());
+        assert!(
+            Config::from_vars(&vars(&[("DATABASE_URL", "x"), ("SN_HSTS_MAX_AGE", "год")])).is_err()
+        );
     }
 
     #[test]

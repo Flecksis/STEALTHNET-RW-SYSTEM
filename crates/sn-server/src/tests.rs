@@ -64,6 +64,7 @@ mod remna_link;
 mod robokassa;
 mod robots;
 mod rollypay;
+mod security_headers;
 mod support_files;
 mod support_mode;
 mod telegram_webhook;

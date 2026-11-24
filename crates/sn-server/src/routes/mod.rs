@@ -135,6 +135,7 @@ pub fn router(state: AppState) -> Router {
         .merge(public_pay::routes())
         .merge(webhooks::routes())
         .merge(support_files::public_routes())
+        .merge(crate::security::routes())
         .nest(
             "/api/admin",
             admin::routes()
@@ -172,6 +173,10 @@ pub fn router(state: AppState) -> Router {
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
+        ))
+        .layer(from_fn_with_state(
+            state.clone(),
+            crate::security::transport_security,
         ))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(TraceLayer::new_for_http().make_span_with(request_span))

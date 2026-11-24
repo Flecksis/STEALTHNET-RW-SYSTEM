@@ -4,6 +4,7 @@ pub mod error;
 pub mod extract;
 pub mod lang;
 pub mod routes;
+pub mod security;
 pub mod state;
 pub mod web;
 

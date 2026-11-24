@@ -1,4 +1,5 @@
 use crate::extract::ProxyNet;
+use crate::security::{CspMode, HSTS_MAX_AGE};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
@@ -10,6 +11,8 @@ pub struct ServerConfig {
     pub cors_origins: Vec<String>,
     pub body_limit_bytes: usize,
     pub web_dir: Option<PathBuf>,
+    pub csp: CspMode,
+    pub hsts_max_age: u64,
 }
 
 impl Default for ServerConfig {
@@ -21,6 +24,8 @@ impl Default for ServerConfig {
             cors_origins: Vec::new(),
             body_limit_bytes: 1024 * 1024,
             web_dir: None,
+            csp: CspMode::default(),
+            hsts_max_age: HSTS_MAX_AGE,
         }
     }
 }

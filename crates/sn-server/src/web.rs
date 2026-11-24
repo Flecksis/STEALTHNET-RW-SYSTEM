@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use crate::security::Section;
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::State;
@@ -71,6 +72,15 @@ fn frame_option(path: &str) -> Option<&'static str> {
         Some("SAMEORIGIN")
     } else {
         Some("DENY")
+    }
+}
+
+fn section(path: &str) -> Section {
+    match Page::of(path) {
+        Page::MiniApp => Section::MiniApp,
+        Page::Admin if landing_preview(path) => Section::AdminFrame,
+        Page::Admin => Section::Admin,
+        Page::Landing | Page::Cabinet | Page::Other => Section::Site,
     }
 }
 
@@ -302,7 +312,7 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         let wanted = crate::lang::from_cookie(request.headers());
         return page(&state, &dir, &path, wanted).await;
     }
-    serve(&dir, &path, request).await
+    serve(&state, &dir, &path, request).await
 }
 
 fn cabinet_instead(query: Option<&str>) -> Response {
@@ -329,19 +339,25 @@ async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) 
     };
     let html = with_lang(inject(&template, &head(&settings, page, locale)), locale);
     let mut response = Html(html).into_response();
-    protect(&mut response, path, REVALIDATE);
+    protect(&mut response, state, path, REVALIDATE);
     response
 }
 
-fn protect(response: &mut Response, path: &str, cache: &'static str) {
+fn protect(response: &mut Response, state: &AppState, path: &str, cache: &'static str) {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     if let Some(option) = frame_option(path) {
         headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static(option));
     }
+    crate::security::apply(
+        headers,
+        section(path),
+        state.config.csp,
+        state.services.env().ext_modules_loopback,
+    );
 }
 
-async fn serve(dir: &Path, path: &str, request: Request<Body>) -> Response {
+async fn serve(state: &AppState, dir: &Path, path: &str, request: Request<Body>) -> Response {
     let index = dir.join("index.html");
     let service = ServeDir::new(dir)
         .precompressed_br()
@@ -356,7 +372,7 @@ async fn serve(dir: &Path, path: &str, request: Request<Body>) -> Response {
     } else {
         REVALIDATE
     };
-    protect(&mut response, path, cache);
+    protect(&mut response, state, path, cache);
     response
 }
 
@@ -417,6 +433,21 @@ mod tests {
         assert_eq!(frame_option("/admin/settings/landing"), Some("DENY"));
         assert_eq!(frame_option("/"), Some("DENY"));
         assert_eq!(frame_option("/landing-preview"), Some("DENY"));
+    }
+
+    #[test]
+    fn у_каждого_раздела_своя_политика_csp() {
+        assert_eq!(section("/"), Section::Site);
+        assert_eq!(section("/cabinet/pay"), Section::Site);
+        assert_eq!(section("/pay/42"), Section::Site);
+        assert_eq!(section("/assets/index-1a2b.js"), Section::Site);
+        assert_eq!(section("/app"), Section::MiniApp);
+        assert_eq!(section("/app/plans"), Section::MiniApp);
+        assert_eq!(section("/application"), Section::Site);
+        assert_eq!(section("/admin"), Section::Admin);
+        assert_eq!(section("/admin/m/ext/7"), Section::Admin);
+        assert_eq!(section("/admin/landing-preview"), Section::AdminFrame);
+        assert_eq!(section("/admin/landing-previewer"), Section::Admin);
     }
 
     #[test]
