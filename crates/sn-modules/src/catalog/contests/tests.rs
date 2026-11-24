@@ -67,7 +67,7 @@ fn тексты_условий_и_подстановки() {
     let rendered = render(
         "<b>{title}</b>: {prize}, {winners}, {date}",
         "Новый <год>",
-        Prize::Days { days: 7 },
+        &PrizeConfig::Single(Prize::Days { days: 7 }),
         3,
         end,
         offset,
@@ -76,14 +76,189 @@ fn тексты_условий_и_подстановки() {
         rendered,
         "<b>Новый &lt;год&gt;</b>: +7\u{a0}дней к подписке, 3, 31\u{a0}декабря в 20:00"
     );
-    let messages = default_messages(start, end);
+    let messages = default_messages(start, end, false);
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[0].send_at, Some(start));
     assert_eq!(messages[3].audience, Audience::Results);
     assert!(
-        default_messages(start, start + Duration::hours(1))
+        default_messages(start, start + Duration::hours(1), false)
             .iter()
             .all(|m| m.audience != Audience::Participants)
+    );
+}
+
+#[test]
+fn призы_по_местам_читаются_в_старом_и_новом_виде() {
+    let legacy: PrizeConfig =
+        serde_json::from_value(serde_json::json!({ "kind": "days", "days": 7 })).unwrap();
+    assert_eq!(legacy, PrizeConfig::Single(Prize::Days { days: 7 }));
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap(),
+        serde_json::json!({ "kind": "days", "days": 7 })
+    );
+    assert_eq!(legacy.prize_for(3), Some(&Prize::Days { days: 7 }));
+    let places = legacy.places(3);
+    assert_eq!(places.len(), 1);
+    assert_eq!(places[0].places, "1–3\u{a0}места");
+    assert_eq!(legacy.list(), "+7\u{a0}дней к подписке");
+
+    let raw = serde_json::json!({
+        "kind": "tiered",
+        "tiers": [
+            { "from_place": 1, "to_place": 1, "prize": {
+                "kind": "custom", "title": "Telegram Premium на год", "instruction": "Напишите в поддержку"
+            } },
+            { "from_place": 2, "to_place": 3, "prize": { "kind": "days", "days": 30 } },
+            { "from_place": 4, "to_place": 10, "prize": { "kind": "promo", "percent": 20, "valid_days": 14 } }
+        ]
+    });
+    let tiered: PrizeConfig = serde_json::from_value(raw.clone()).unwrap();
+    assert!(tiered.is_tiered());
+    assert_eq!(serde_json::to_value(&tiered).unwrap(), raw);
+    assert!(tiered.prize_for(1).unwrap().is_custom());
+    assert_eq!(tiered.prize_for(3), Some(&Prize::Days { days: 30 }));
+    assert_eq!(
+        tiered.prize_for(10),
+        Some(&Prize::Promo {
+            percent: 20,
+            valid_days: 14
+        })
+    );
+    assert_eq!(tiered.prize_for(11), None);
+    assert_eq!(tiered.prize_for(0), None);
+    assert!(tiered.any(|p| matches!(p, Prize::Promo { .. })));
+    assert_eq!(
+        tiered.list(),
+        "1\u{a0}место — Telegram Premium на год\n2–3\u{a0}места — +30\u{a0}дней к подписке\n4–10\u{a0}места — Промокод на скидку 20%"
+    );
+    assert_eq!(
+        tiered.label(),
+        "1\u{a0}место — Telegram Premium на год; 2–3\u{a0}места — +30\u{a0}дней к подписке; 4–10\u{a0}места — Промокод на скидку 20%"
+    );
+    let english = lang::sync_scope(Locale::En, || {
+        (
+            tiered.list(),
+            place_word(2),
+            places_title(11, 13),
+            place_word(21),
+            place_word(112),
+        )
+    });
+    assert_eq!(
+        english.0,
+        "1st\u{a0}place — Telegram Premium на год\n2nd–3rd\u{a0}place — +30\u{a0}days of subscription\n4th–10th\u{a0}place — A 20% discount code"
+    );
+    assert_eq!(english.1, "2nd");
+    assert_eq!(english.2, "11th–13th\u{a0}place");
+    assert_eq!(english.3, "21st");
+    assert_eq!(english.4, "112th");
+    assert_eq!(place_word(2), "2");
+    assert!(
+        serde_json::from_value::<PrizeConfig>(serde_json::json!({ "kind": "tiered", "tiers": 5 }))
+            .is_err()
+    );
+    let end = DateTime::parse_from_rfc3339("2026-12-31T17:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    assert_eq!(
+        render(
+            "Призы:\n{prizes}\nКоротко: {prize}. Победителей: {winners}",
+            "Зима",
+            &tiered,
+            10,
+            end,
+            offset_of(0)
+        ),
+        format!(
+            "Призы:\n{}\nКоротко: {}. Победителей: 10",
+            tiered.list(),
+            tiered.label()
+        )
+    );
+    let messages = default_messages(end - Duration::days(3), end, true);
+    assert!(messages[0].text.contains("{prizes}"));
+    assert!(
+        !default_messages(end - Duration::days(3), end, false)[0]
+            .text
+            .contains("{prizes}")
+    );
+
+    let draft: PrizeConfigDraft = serde_json::from_value(serde_json::json!({
+        "kind": "tiered",
+        "tiers": [{ "from_place": 1, "to_place": 2, "prize": { "kind": "custom", "title": "Мерч" } }]
+    }))
+    .unwrap();
+    assert_eq!(
+        draft,
+        PrizeConfigDraft::Tiered(vec![PrizeTierDraft {
+            from_place: 1,
+            to_place: 2,
+            prize: PrizeDraft::Custom {
+                title: "Мерч".into(),
+                instruction: None,
+            },
+        }])
+    );
+    let single: PrizeConfigDraft =
+        serde_json::from_value(serde_json::json!({ "kind": "balance", "amount": "5" })).unwrap();
+    assert_eq!(
+        single,
+        PrizeConfigDraft::Single(PrizeDraft::Balance { amount: "5".into() })
+    );
+}
+
+#[test]
+fn места_в_призах_идут_подряд_с_первого() {
+    let tier = |from: u32, to: u32| PrizeTierDraft {
+        from_place: from,
+        to_place: to,
+        prize: PrizeDraft::Days { days: 3 },
+    };
+    let clean = |tiers: Vec<PrizeTierDraft>| {
+        clean_prize(&PrizeConfigDraft::Tiered(tiers), 0, Currency::Rub)
+    };
+    let (config, winners) = clean(vec![tier(4, 10), tier(1, 1), tier(2, 3)]).unwrap();
+    assert_eq!(winners, 10);
+    assert_eq!(
+        config
+            .tiers(winners)
+            .iter()
+            .map(|t| (t.from_place, t.to_place))
+            .collect::<Vec<_>>(),
+        [(1, 1), (2, 3), (4, 10)]
+    );
+    assert_eq!(
+        clean(vec![tier(1, 5)]).unwrap(),
+        (PrizeConfig::Single(Prize::Days { days: 3 }), 5)
+    );
+    let fails = |tiers: Vec<PrizeTierDraft>, text: &str| {
+        let err = clean(tiers).unwrap_err().to_string();
+        assert!(err.contains(text), "{err}");
+    };
+    fails(Vec::new(), "хотя бы для первого места");
+    fails(vec![tier(2, 3)], "Нет приза для места 1");
+    fails(vec![tier(1, 1), tier(3, 4)], "Нет приза для места 2");
+    fails(vec![tier(1, 2), tier(2, 3)], "уже отданы другому призу");
+    fails(vec![tier(1, 101)], "не больше 100");
+    fails(vec![tier(3, 2)], "от меньшего к большему");
+    fails((1..=21).map(|n| tier(n, n)).collect(), "не больше 20");
+    fails(
+        vec![
+            tier(1, 1),
+            PrizeTierDraft {
+                from_place: 2,
+                to_place: 3,
+                prize: PrizeDraft::Days { days: 0 },
+            },
+        ],
+        "2–3\u{a0}места: дней — от 1 до 365",
+    );
+    assert!(clean_prize(&PrizeDraft::Days { days: 3 }.into(), 0, Currency::Rub).is_err());
+    assert_eq!(
+        clean_prize(&PrizeDraft::Days { days: 3 }.into(), 4, Currency::Rub)
+            .unwrap()
+            .1,
+        4
     );
 }
 
@@ -158,7 +333,7 @@ fn draft(prize: PrizeDraft, winners: u32) -> ContestDraft {
     ContestDraft {
         title: "Новогодний розыгрыш".into(),
         description: Some("Разыгрываем призы среди клиентов".into()),
-        prize,
+        prize: prize.into(),
         winners,
         starts_at: None,
         ends_at: Utc::now() + Duration::hours(1),
@@ -559,7 +734,7 @@ async fn правки_конкурса_зависят_от_этапа() {
     assert!(planned.editable.all);
     assert_eq!(planned.messages.len(), 4);
     let mut changed = later.clone();
-    changed.prize = PrizeDraft::Days { days: 5 };
+    changed.prize = PrizeDraft::Days { days: 5 }.into();
     changed.messages = Some(vec![MessageDraft {
         id: None,
         audience: Audience::Results,
@@ -568,7 +743,7 @@ async fn правки_конкурса_зависят_от_этапа() {
         text: "Итоги".into(),
     }]);
     let updated = update(&ctx, planned.id, &changed, None).await.unwrap();
-    assert_eq!(updated.prize, Prize::Days { days: 5 });
+    assert_eq!(updated.prize, PrizeConfig::Single(Prize::Days { days: 5 }));
     assert_eq!(updated.messages.len(), 1);
     delete(&ctx, planned.id, None).await.unwrap();
 
@@ -1312,6 +1487,376 @@ async fn оплаченной_считается_только_купленная
             JoinOutcome::NotEligible,
             JoinOutcome::NotEligible,
         ]
+    );
+    db.cleanup().await;
+}
+
+async fn owner(store: &Store, email: &str) -> AdminId {
+    let mut conn = store.conn().await.unwrap();
+    conn.admins()
+        .create(&sn_store::NewAdmin {
+            email: email.into(),
+            password_hash: "x".into(),
+            role: sn_domain::access::AdminRole::Owner,
+            must_change_password: false,
+        })
+        .await
+        .unwrap()
+        .id
+}
+
+fn tiered_draft() -> ContestDraft {
+    let mut new = draft(PrizeDraft::Days { days: 1 }, 0);
+    new.prize = PrizeConfigDraft::Tiered(vec![
+        PrizeTierDraft {
+            from_place: 3,
+            to_place: 4,
+            prize: PrizeDraft::Balance { amount: "5".into() },
+        },
+        PrizeTierDraft {
+            from_place: 1,
+            to_place: 1,
+            prize: PrizeDraft::Custom {
+                title: "Telegram Premium на год".into(),
+                instruction: Some("Напишите @sn_support слово ПОБЕДА".into()),
+            },
+        },
+        PrizeTierDraft {
+            from_place: 2,
+            to_place: 2,
+            prize: PrizeDraft::Days { days: 30 },
+        },
+    ]);
+    new
+}
+
+async fn audit_count(store: &Store, action: &str) -> i64 {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = $1")
+        .bind(action)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn призы_по_местам_и_свой_приз_с_отметкой_о_выдаче() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let admin = owner(&db.store, "owner@example.com").await;
+    let mut people = Vec::new();
+    for chat in 9401..=9405 {
+        let id = tg_client(&db.store, chat).await;
+        live_sub(&db.store, id, SubscriptionKind::Paid).await;
+        people.push(id);
+    }
+    let created = create(&ctx, &tiered_draft(), None).await.unwrap();
+    assert_eq!(created.winners, 4);
+    assert!(created.prize.is_tiered());
+    let shown: Vec<(u32, u32, &str)> = created
+        .prizes
+        .iter()
+        .map(|p| (p.from_place, p.to_place, p.places.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (1, 1, "1\u{a0}место"),
+            (2, 2, "2\u{a0}место"),
+            (3, 4, "3–4\u{a0}места")
+        ]
+    );
+    assert!(
+        created
+            .messages
+            .iter()
+            .any(|m| m.audience == Audience::Outsiders && m.text.contains("{prizes}"))
+    );
+    for client in &people {
+        assert_eq!(
+            join(&ctx, created.id, *client).await.unwrap(),
+            JoinOutcome::Joined
+        );
+    }
+    let card = client_view(&ctx, created.id, people[0])
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(card.prize.is_tiered());
+    assert_eq!(card.prizes.len(), 3);
+
+    finish_now(&db.store, created.id).await;
+    let report = run(&ctx).await.unwrap();
+    assert_eq!(report.drawn, 1);
+    assert_eq!(report.prizes, 4);
+    let done = contest(&ctx, created.id).await.unwrap();
+    let seed = hex::decode(done.seed.clone().unwrap()).unwrap();
+    let ids: Vec<i64> = people.iter().map(|c| c.0).collect();
+    let order: Vec<ClientId> = draw::tickets(&seed, &ids)
+        .into_iter()
+        .map(|d| ClientId(d.client_id))
+        .collect();
+    let cash = Prize::Balance {
+        amount: Money::new(500, Currency::Usd),
+    }
+    .label();
+    let table: Vec<(i32, ClientId, Option<&str>, Option<&str>)> = done
+        .winners_list
+        .iter()
+        .map(|w| {
+            (
+                w.place,
+                w.client_id,
+                w.prize_label.as_deref(),
+                w.prize_state.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        table,
+        [
+            (1, order[0], Some("Telegram Premium на год"), Some("manual")),
+            (
+                2,
+                order[1],
+                Some("+30\u{a0}дней к подписке"),
+                Some("issued")
+            ),
+            (3, order[2], Some(cash.as_str()), Some("issued")),
+            (4, order[3], Some(cash.as_str()), Some("issued")),
+        ]
+    );
+    assert_eq!(done.counts.manual, 1);
+    assert_eq!(done.counts.issued, 3);
+    assert_eq!(
+        done.winners_list[0].prize_note.as_deref(),
+        Some("Напишите @sn_support слово ПОБЕДА")
+    );
+    assert!(core.days().iter().any(|(_, days, _)| *days == 30));
+    assert_eq!(balance(&db.store, order[2]).await, 500);
+    assert_eq!(balance(&db.store, order[3]).await, 500);
+    assert_eq!(balance(&db.store, order[4]).await, 0);
+    let notes = core.notifications();
+    let won = |client: ClientId| {
+        notes
+            .iter()
+            .find(|(c, n)| *c == client && n.template == TEMPLATE_WON)
+            .map(|(_, n)| n.params.clone())
+            .unwrap()
+    };
+    let custom = won(order[0]);
+    assert_eq!(custom["place"], 1);
+    assert_eq!(custom["tiered"], true);
+    assert_eq!(custom["prize_data"]["kind"], "custom");
+    assert_eq!(custom["note"], "Напишите @sn_support слово ПОБЕДА");
+    assert_eq!(won(order[2])["place"], 3);
+    assert!(
+        !notes
+            .iter()
+            .any(|(c, n)| *c == order[4] && n.template == TEMPLATE_WON)
+    );
+    let seen = client_view(&ctx, created.id, order[0])
+        .await
+        .unwrap()
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(seen.place, Some(1));
+    assert_eq!(seen.prize_label.as_deref(), Some("Telegram Premium на год"));
+    assert_eq!(seen.prize_state.as_deref(), Some("manual"));
+
+    let refused = |err: ModuleError, text: &str| {
+        assert!(err.to_string().contains(text), "{err}");
+    };
+    refused(
+        hand_prize(&ctx, created.id, order[1], true, Some(admin))
+            .await
+            .unwrap_err(),
+        "бот выдаёт сам",
+    );
+    refused(
+        hand_prize(&ctx, created.id, order[4], true, Some(admin))
+            .await
+            .unwrap_err(),
+        "не победитель",
+    );
+    refused(
+        hand_prize(&ctx, created.id, order[0], false, Some(admin))
+            .await
+            .unwrap_err(),
+        "ещё не отмечен",
+    );
+    let handed = hand_prize(&ctx, created.id, order[0], true, Some(admin))
+        .await
+        .unwrap();
+    let first = &handed.winners_list[0];
+    assert_eq!(first.prize_state.as_deref(), Some("issued"));
+    assert!(first.prize_at.is_some());
+    assert_eq!(first.prize_by.as_deref(), Some("owner@example.com"));
+    assert_eq!(handed.counts.manual, 0);
+    assert_eq!(handed.counts.issued, 4);
+    assert!(handed.log.iter().any(|l| l.kind == "prize_handed"));
+    refused(
+        hand_prize(&ctx, created.id, order[0], true, Some(admin))
+            .await
+            .unwrap_err(),
+        "уже отмечен",
+    );
+    let undone = hand_prize(&ctx, created.id, order[0], false, Some(admin))
+        .await
+        .unwrap();
+    let first = &undone.winners_list[0];
+    assert_eq!(first.prize_state.as_deref(), Some("manual"));
+    assert_eq!(first.prize_at, None);
+    assert_eq!(first.prize_by, None);
+    assert_eq!(audit_count(&db.store, "contest.prize_handed").await, 1);
+    assert_eq!(audit_count(&db.store, "contest.prize_unhanded").await, 1);
+
+    assert_eq!(run(&ctx).await.unwrap(), RunReport::default());
+    let csv = entries_csv(&ctx, created.id).await.unwrap();
+    assert!(csv.starts_with("client_id,joined_at,in_draw,excluded,ticket,place,prize\n"));
+    assert!(csv.contains(",1,\"Telegram Premium на год\"\n"));
+    assert!(csv.contains(&format!(",4,\"{cash}\"\n")));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn призы_по_местам_нельзя_поменять_после_старта() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let new = tiered_draft();
+    let created = create(&ctx, &new, None).await.unwrap();
+    assert_eq!(created.status, Status::Running);
+    let mut reordered = new.clone();
+    if let PrizeConfigDraft::Tiered(tiers) = &mut reordered.prize {
+        tiers.reverse();
+    }
+    reordered.title = "Тот же розыгрыш".into();
+    let saved = update(&ctx, created.id, &reordered, None).await.unwrap();
+    assert_eq!(saved.title, "Тот же розыгрыш");
+    assert_eq!(saved.prize, created.prize);
+    let mut changed = new.clone();
+    if let PrizeConfigDraft::Tiered(tiers) = &mut changed.prize {
+        tiers[2].prize = PrizeDraft::Days { days: 60 };
+    }
+    let err = update(&ctx, created.id, &changed, None).await.unwrap_err();
+    assert!(err.to_string().contains("менять нельзя"), "{err}");
+    let mut widened = new.clone();
+    if let PrizeConfigDraft::Tiered(tiers) = &mut widened.prize {
+        tiers[0].to_place = 5;
+    }
+    let err = update(&ctx, created.id, &widened, None).await.unwrap_err();
+    assert!(err.to_string().contains("менять нельзя"), "{err}");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отметка_о_выдаче_своего_приза_через_маршрут() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use sn_domain::access::{AdminPrincipal, AdminRole};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let registry = Arc::new(crate::registry::ModuleRegistry::new(crate::catalog::all()).unwrap());
+    registry
+        .set_enabled(&db.store, ModuleId::Contests, true, None)
+        .await
+        .unwrap();
+    let admin_id = owner(&db.store, "marketing@example.com").await;
+    let as_role = |role: AdminRole| AdminPrincipal {
+        admin_id,
+        role,
+        permissions: Vec::new(),
+        session_id: 1,
+        api_key: None,
+    };
+    let body = serde_json::json!({
+        "title": "Мерч за первое место",
+        "prize": {
+            "kind": "tiered",
+            "tiers": [
+                { "from_place": 1, "to_place": 1, "prize": { "kind": "custom", "title": "Худи" } },
+                { "from_place": 2, "to_place": 3, "prize": { "kind": "days", "days": 7 } }
+            ]
+        },
+        "ends_at": (Utc::now() + Duration::days(2)).to_rfc3339()
+    });
+    let router = registry.admin_router(ctx.clone());
+    let created = router
+        .clone()
+        .oneshot(
+            Request::post("/contests/contests")
+                .header("content-type", "application/json")
+                .extension(as_role(AdminRole::Admin))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let created = json_of(created).await;
+    assert_eq!(created["winners"], 3);
+    assert_eq!(created["prize"]["kind"], "tiered");
+    assert_eq!(created["prizes"][0]["label"], "Худи");
+    assert_eq!(created["prizes"][1]["places"], "2–3\u{a0}места");
+    let id = created["id"].as_i64().unwrap();
+    let winner = tg_client(&db.store, 9501).await;
+    assert_eq!(join(&ctx, id, winner).await.unwrap(), JoinOutcome::Joined);
+    finish_now(&db.store, id).await;
+    run(&ctx).await.unwrap();
+    let path = format!("/contests/contests/{id}/winners/{}/handed", winner.0);
+    let call = |method: &str, role: AdminRole| {
+        Request::builder()
+            .method(method)
+            .uri(path.clone())
+            .extension(as_role(role))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let denied = router
+        .clone()
+        .oneshot(call("POST", AdminRole::Support))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let handed = router
+        .clone()
+        .oneshot(call("POST", AdminRole::Admin))
+        .await
+        .unwrap();
+    assert_eq!(handed.status(), StatusCode::OK);
+    let handed = json_of(handed).await;
+    assert_eq!(handed["winners_list"][0]["prize_state"], "issued");
+    assert_eq!(handed["winners_list"][0]["prize_label"], "Худи");
+    assert_eq!(
+        handed["winners_list"][0]["prize_by"],
+        "marketing@example.com"
+    );
+    let again = router
+        .clone()
+        .oneshot(call("POST", AdminRole::Admin))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let undone = router
+        .oneshot(call("DELETE", AdminRole::Admin))
+        .await
+        .unwrap();
+    assert_eq!(undone.status(), StatusCode::OK);
+    assert_eq!(
+        json_of(undone).await["winners_list"][0]["prize_state"],
+        "manual"
     );
     db.cleanup().await;
 }

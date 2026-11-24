@@ -75,6 +75,11 @@ function entriesText(item: ListItem): string {
 }
 
 function prizeLine(item: ListItem): string {
+  if (item.prize.kind === 'tiered') {
+    const first = item.prizes[0];
+    const rest = item.prizes.length - 1;
+    return first ? `${first.places} — ${first.label} · ещё ${count(rest, 'приз', 'приза', 'призов')}` : item.prize_label;
+  }
   return item.winners > 1 ? `${item.prize_label} × ${item.winners}` : item.prize_label;
 }
 
@@ -263,6 +268,7 @@ function List() {
                 <span role="cell" className={`pr-cell ct-state ${statusTone(item.status)}`}>
                   {item.status_title}
                   {item.counts.failed ? <span className="pr-sub bad">не выдано призов: {item.counts.failed}</span> : null}
+                  {item.counts.manual ? <span className="pr-sub warn">ждут выдачи: {item.counts.manual}</span> : null}
                 </span>
                 <span role="cell" className="pr-cell ct-go">
                   <Icon name="chevron-right" size={16} />

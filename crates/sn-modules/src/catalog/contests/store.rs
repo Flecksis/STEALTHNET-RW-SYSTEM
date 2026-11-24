@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_store::{Db, StoreError, StoreResult};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ContestRow {
@@ -37,6 +38,7 @@ pub struct Counts {
     pub waiting: i64,
     pub failed: i64,
     pub pending: i64,
+    pub manual: i64,
 }
 
 const COUNTS: &str = "(SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id) AS entries, \
@@ -44,7 +46,8 @@ const COUNTS: &str = "(SELECT count(*) FROM contest_entries e WHERE e.contest_id
                       (SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id AND e.prize_state = 'issued') AS issued, \
                       (SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id AND e.prize_state = 'waiting') AS waiting, \
                       (SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id AND e.prize_state = 'failed') AS failed, \
-                      (SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id AND e.prize_state IN ('pending', 'issuing')) AS pending";
+                      (SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id AND e.prize_state IN ('pending', 'issuing')) AS pending, \
+                      (SELECT count(*) FROM contest_entries e WHERE e.contest_id = c.id AND e.prize_state = 'manual') AS manual";
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ListRow {
@@ -67,7 +70,7 @@ pub async fn insert(
     )
     .bind(&content.title)
     .bind(content.description.as_deref())
-    .bind(serde_json::to_value(content.prize).map_err(|e| StoreError::Invalid(e.to_string()))?)
+    .bind(serde_json::to_value(&content.prize).map_err(|e| StoreError::Invalid(e.to_string()))?)
     .bind(i32::try_from(content.winners).unwrap_or(i32::MAX))
     .bind(serde_json::to_value(&content.conditions).map_err(|e| StoreError::Invalid(e.to_string()))?)
     .bind(content.starts_at)
@@ -87,7 +90,7 @@ pub async fn update(db: &mut impl Db, id: i64, content: &Content) -> StoreResult
     .bind(id)
     .bind(&content.title)
     .bind(content.description.as_deref())
-    .bind(serde_json::to_value(content.prize).map_err(|e| StoreError::Invalid(e.to_string()))?)
+    .bind(serde_json::to_value(&content.prize).map_err(|e| StoreError::Invalid(e.to_string()))?)
     .bind(i32::try_from(content.winners).unwrap_or(i32::MAX))
     .bind(serde_json::to_value(&content.conditions).map_err(|e| StoreError::Invalid(e.to_string()))?)
     .bind(content.starts_at)
@@ -451,11 +454,12 @@ pub struct EntryRow {
     pub prize_code: Option<String>,
     pub prize_error: Option<String>,
     pub prize_at: Option<DateTime<Utc>>,
+    pub prize_by: Option<i64>,
     pub notified: Option<String>,
 }
 
 const ENTRY_COLUMNS: &str = "e.contest_id, e.client_id, e.joined_at, e.excluded, e.ticket, e.place, e.prize_state, \
-                             e.prize_note, e.prize_code, e.prize_error, e.prize_at, e.notified";
+                             e.prize_note, e.prize_code, e.prize_error, e.prize_at, e.prize_by, e.notified";
 
 pub async fn entry(
     db: &mut impl Db,
@@ -653,6 +657,40 @@ pub async fn set_prize(
     .execute(db.conn())
     .await?;
     Ok(())
+}
+
+pub async fn hand(
+    db: &mut impl Db,
+    contest_id: i64,
+    client_id: i64,
+    state: &str,
+    by: Option<AdminId>,
+    at: Option<DateTime<Utc>>,
+) -> StoreResult<()> {
+    sqlx::query(
+        "UPDATE contest_entries SET prize_state = $3, prize_by = $4, prize_at = $5 \
+         WHERE contest_id = $1 AND client_id = $2",
+    )
+    .bind(contest_id)
+    .bind(client_id)
+    .bind(state)
+    .bind(by.map(|a| a.0))
+    .bind(at)
+    .execute(db.conn())
+    .await?;
+    Ok(())
+}
+
+pub async fn admin_emails(db: &mut impl Db, ids: &[i64]) -> StoreResult<HashMap<i64, String>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, email FROM admins WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(db.conn())
+            .await?;
+    Ok(rows.into_iter().collect())
 }
 
 pub async fn set_notified(

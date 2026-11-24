@@ -235,6 +235,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "contest.none" => "No giveaways right now. The bot will message you when a new one starts.",
         "contest.title" => "<b>{title}</b>",
         "contest.prize" => "Prize: {prize}. Winners: {winners}.",
+        "contest.prizes" => "Prizes:",
+        "contest.prize_line" => "{places} — {prize}",
+        "contest.winners" => "Winners: {winners}.",
         "contest.until" => "Results on {date}.",
         "contest.conditions" => "\n<b>Requirements</b>",
         "contest.condition_ok" => "✅ {condition}",
@@ -251,6 +254,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "contest.fair" => "\nDraw fingerprint: <code>{hash}</code>",
         "contest.drawing" => "\nEntries are closed, the bot is drawing the winners.",
         "contest.won" => "\nYou won! Prize: {prize}. {result}",
+        "contest.won_place" => "\nYou took {place} place! Prize: {prize}. {result}",
         "contest.won_code" => "Your promo code: <code>{code}</code>. Enter it at checkout.",
         "contest.lost" => {
             "\nThe results are in. This time the prize went to others. Thanks for taking part!"
@@ -533,6 +537,12 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.contest_won_code" => "Your promo code: <code>{code}</code>. Enter it at checkout.",
         "notify.contest_waiting" => {
             "You won the “{title}” giveaway!\nPrize: {prize}. The days will be added as soon as you have a subscription."
+        }
+        "notify.contest_won_place" => {
+            "You took {place} place in the “{title}” giveaway!\nPrize: {prize}. {result}"
+        }
+        "notify.contest_waiting_place" => {
+            "You took {place} place in the “{title}” giveaway!\nPrize: {prize}. The days will be added as soon as you have a subscription."
         }
         "notify.withdrawal_rejected_plain" => {
             "Your withdrawal of {amount} was declined. The money is back on your referral balance."

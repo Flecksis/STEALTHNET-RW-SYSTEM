@@ -9,15 +9,22 @@ export type Prize =
   | { kind: 'days'; days: number }
   | { kind: 'balance'; amount: Money }
   | { kind: 'promo'; percent: number; valid_days: number }
+  | { kind: 'custom'; title: string; instruction?: string | null }
   | { kind: 'empty' };
 
-export type PrizeKind = 'days' | 'balance' | 'promo';
+export type PrizeTier = { from_place: number; to_place: number; prize: Prize };
+
+export type PrizeConfig = Prize | { kind: 'tiered'; tiers: PrizeTier[] };
+
+export type PlaceView = { from_place: number; to_place: number; places: string; prize: Prize; label: string };
+
+export type PrizeKind = 'days' | 'balance' | 'promo' | 'custom';
 
 export type Status = 'scheduled' | 'running' | 'drawing' | 'finished' | 'canceled';
 
 export type Audience = 'outsiders' | 'participants' | 'results';
 
-export type Counts = { entries: number; excluded: number; issued: number; waiting: number; failed: number; pending: number };
+export type Counts = { entries: number; excluded: number; issued: number; waiting: number; failed: number; pending: number; manual: number };
 
 export type Conditions = {
   subscription?: { paid_only: boolean };
@@ -51,12 +58,15 @@ export type Person = {
   email: string | null;
 };
 
-export type PrizeState = 'pending' | 'waiting' | 'issuing' | 'issued' | 'failed';
+export type PrizeState = 'pending' | 'waiting' | 'issuing' | 'issued' | 'failed' | 'manual';
 
 export type Winner = {
   place: number;
   client_id: number;
   client: Person | null;
+  prize: Prize | null;
+  prize_label: string | null;
+  prize_by: string | null;
   prize_state: PrizeState | null;
   prize_note: string | null;
   prize_code: string | null;
@@ -71,8 +81,9 @@ export type Contest = {
   id: number;
   title: string;
   description: string | null;
-  prize: Prize;
+  prize: PrizeConfig;
   prize_label: string;
+  prizes: PlaceView[];
   winners: number;
   conditions: Conditions;
   condition_lines: ConditionLine[];
@@ -97,8 +108,9 @@ export type Contest = {
 export type ListItem = {
   id: number;
   title: string;
-  prize: Prize;
+  prize: PrizeConfig;
   prize_label: string;
+  prizes: PlaceView[];
   winners: number;
   starts_at: string;
   ends_at: string;
@@ -144,6 +156,7 @@ export const PRIZE_KINDS: Array<[PrizeKind, string]> = [
   ['days', 'Дни подписки'],
   ['balance', 'Деньги на баланс'],
   ['promo', 'Промокод на скидку'],
+  ['custom', 'Свой приз'],
 ];
 
 export const AUDIENCES: Array<[Audience, string]> = [
@@ -214,6 +227,10 @@ export function statusTone(status: Status): string {
   }
 }
 
+export function placesLabel(from: number, to: number): string {
+  return from === to ? `${from}${NBSP}место` : `${from}–${to}${NBSP}места`;
+}
+
 export function prizeEach(prize: Prize, winners: number): string {
   const label = prizeText(prize);
   return winners > 1 ? `${label} — каждому из ${count(winners, 'победителя', 'победителей', 'победителей')}` : `${label} — одному победителю`;
@@ -227,15 +244,32 @@ export function prizeText(prize: Prize): string {
       return `${money(prize.amount)} на баланс`;
     case 'promo':
       return `Промокод на скидку ${prize.percent}%, действует ${days(prize.valid_days)}`;
+    case 'custom':
+      return prize.title;
     default:
       return 'Без приза';
   }
 }
 
-export function prizeStateText(w: { prize_state: PrizeState | null; prize_note: string | null; prize_error: string | null; prize_at: string | null }): { text: string; tone: string } {
+export function prizeNote(prize: Prize): string | null {
+  return prize.kind === 'custom' ? (prize.instruction ?? null) : null;
+}
+
+export function prizeStateText(w: {
+  prize_state: PrizeState | null;
+  prize_note: string | null;
+  prize_error: string | null;
+  prize_at: string | null;
+  prize_by?: string | null;
+}): { text: string; tone: string } {
   switch (w.prize_state) {
     case 'issued':
+      if (w.prize_by) {
+        return { text: w.prize_at ? `Выдан ${when(w.prize_at)}, отметил ${w.prize_by}` : `Выдан, отметил ${w.prize_by}`, tone: 'ok' };
+      }
       return { text: w.prize_at ? `Выдан ${when(w.prize_at)}` : 'Выдан', tone: 'ok' };
+    case 'manual':
+      return { text: 'Ждёт выдачи', tone: 'warn' };
     case 'waiting':
       return { text: 'Ждёт подписку: дни добавятся, когда она появится', tone: 'warn' };
     case 'failed':
@@ -286,15 +320,22 @@ export function groups(hash: string): string {
 
 export type MessageDraft = { key: string; id: number | null; audience: Audience; onlyEligible: boolean; sendAt: string; text: string; locked: boolean };
 
-export type Draft = {
-  title: string;
-  description: string;
-  prizeKind: PrizeKind;
+export type PrizeFields = {
+  kind: PrizeKind;
   days: string;
   amount: string;
   percent: string;
   validDays: string;
-  winners: string;
+  customTitle: string;
+  instruction: string;
+};
+
+export type PrizeRow = PrizeFields & { key: string; count: string };
+
+export type Draft = {
+  title: string;
+  description: string;
+  rows: PrizeRow[];
   startNow: boolean;
   startsAt: string;
   endsAt: string;
@@ -307,7 +348,7 @@ export type Draft = {
   messages: MessageDraft[] | null;
 };
 
-export type DraftErrors = Partial<Record<'title' | 'description' | 'value' | 'winners' | 'startsAt' | 'endsAt' | 'purchaseMin' | 'friends' | 'messages', string>>;
+export type DraftErrors = Partial<Record<'title' | 'description' | 'value' | 'prizes' | 'winners' | 'startsAt' | 'endsAt' | 'purchaseMin' | 'friends' | 'messages', string>>;
 
 function pad(n: number): string {
   return String(n).padStart(2, '0');
@@ -332,6 +373,41 @@ export function fromLocal(value: string): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+const BLANK: PrizeFields = { kind: 'days', days: '30', amount: '', percent: '20', validDays: '14', customTitle: '', instruction: '' };
+
+function units(m: Money | null | undefined): string {
+  return m ? (m.currency === 'RUB' ? String(Math.round(m.minor / 100)) : (m.minor / 100).toFixed(2).replace(/\.00$/, '')) : '';
+}
+
+export function fieldsOf(prize: Prize): PrizeFields {
+  switch (prize.kind) {
+    case 'days':
+      return { ...BLANK, days: String(prize.days) };
+    case 'balance':
+      return { ...BLANK, kind: 'balance', amount: units(prize.amount) };
+    case 'promo':
+      return { ...BLANK, kind: 'promo', percent: String(prize.percent), validDays: String(prize.valid_days) };
+    case 'custom':
+      return { ...BLANK, kind: 'custom', customTitle: prize.title, instruction: prize.instruction ?? '' };
+    default:
+      return { ...BLANK };
+  }
+}
+
+export function prizeRow(count: number, fields: PrizeFields = BLANK): PrizeRow {
+  return { ...fields, key: messageKey(), count: String(count) };
+}
+
+export function rowPlaces(rows: PrizeRow[]): Array<[number, number]> {
+  let next = 1;
+  return rows.map((row) => {
+    const n = Math.max(1, whole(row.count) ?? 1);
+    const range: [number, number] = [next, next + n - 1];
+    next += n;
+    return range;
+  });
+}
+
 export function emptyDraft(): Draft {
   const end = new Date();
   end.setDate(end.getDate() + 7);
@@ -339,12 +415,7 @@ export function emptyDraft(): Draft {
   return {
     title: '',
     description: '',
-    prizeKind: 'days',
-    days: '30',
-    amount: '',
-    percent: '20',
-    validDays: '14',
-    winners: '3',
+    rows: [prizeRow(3)],
     startNow: true,
     startsAt: '',
     endsAt: localInput(end.toISOString()),
@@ -366,16 +437,10 @@ export function messageKey(): string {
 }
 
 export function draftOf(c: Contest): Draft {
-  const units = (m: Money | null | undefined) => (m ? (m.currency === 'RUB' ? String(Math.round(m.minor / 100)) : (m.minor / 100).toFixed(2).replace(/\.00$/, '')) : '');
   return {
     title: c.title,
     description: c.description ?? '',
-    prizeKind: c.prize.kind === 'empty' ? 'days' : c.prize.kind,
-    days: c.prize.kind === 'days' ? String(c.prize.days) : '30',
-    amount: c.prize.kind === 'balance' ? units(c.prize.amount) : '',
-    percent: c.prize.kind === 'promo' ? String(c.prize.percent) : '20',
-    validDays: c.prize.kind === 'promo' ? String(c.prize.valid_days) : '14',
-    winners: String(c.winners),
+    rows: c.prizes.map((p) => prizeRow(p.to_place - p.from_place + 1, fieldsOf(p.prize))),
     startNow: false,
     startsAt: localInput(c.starts_at),
     endsAt: localInput(c.ends_at),
@@ -410,38 +475,77 @@ function amountOk(raw: string, currency: Currency): boolean {
   return currency === 'RUB' ? /^\d+$/.test(t) && Number(t) > 0 : /^\d+(\.\d{1,2})?$/.test(t) && Number(t) > 0;
 }
 
+export function buildPrize(fields: PrizeFields, currency: Currency): { value: unknown; error?: string } {
+  if (fields.kind === 'days') {
+    const n = whole(fields.days);
+    return { value: { kind: 'days', days: n ?? 0 }, error: n === null || n < 1 || n > 365 ? 'От 1 до 365 дней' : undefined };
+  }
+  if (fields.kind === 'balance') {
+    const amount = fields.amount.trim().replace(',', '.');
+    return {
+      value: { kind: 'balance', amount },
+      error: amountOk(fields.amount, currency) ? undefined : currency === 'RUB' ? 'Целое число рублей' : 'Сумма вида 5 или 2.50',
+    };
+  }
+  if (fields.kind === 'promo') {
+    const p = whole(fields.percent);
+    const v = whole(fields.validDays);
+    const error = p === null || p < 1 || p > 100 ? 'Скидка от 1 до 100 %' : v === null || v < 1 || v > 365 ? 'Срок промокода — от 1 до 365 дней' : undefined;
+    return { value: { kind: 'promo', percent: p ?? 0, valid_days: v ?? 0 }, error };
+  }
+  const title = fields.customTitle.trim();
+  const instruction = fields.instruction.trim();
+  const error = !title ? 'Напишите название приза' : title.length > 100 ? 'Название — до 100 знаков' : instruction.length > 500 ? 'Инструкция — до 500 знаков' : undefined;
+  return { value: { kind: 'custom', title, instruction: instruction || null }, error };
+}
+
+function placeRows(rows: PrizeRow[], max: number): { tiers: Array<{ from: number; to: number; row: PrizeRow }>; error?: string } {
+  const tiers: Array<{ from: number; to: number; row: PrizeRow }> = [];
+  let next = 1;
+  for (const row of rows) {
+    const n = whole(row.count);
+    if (n === null || n < 1) {
+      return { tiers, error: 'Сколько победителей получат приз — число от 1' };
+    }
+    tiers.push({ from: next, to: next + n - 1, row });
+    next += n;
+  }
+  if (next - 1 > max) {
+    return { tiers, error: `Победителей — не больше ${max}` };
+  }
+  return { tiers };
+}
+
 export function buildBody(draft: Draft, currency: Currency, options: Options | null): { body: unknown; errors: DraftErrors } {
   const errors: DraftErrors = {};
   const title = draft.title.trim();
   if (!title) {
     errors.title = 'Напишите название';
   }
-  let prize: unknown = null;
-  if (draft.prizeKind === 'days') {
-    const n = whole(draft.days);
-    if (n === null || n < 1 || n > 365) {
-      errors.value = 'От 1 до 365 дней';
-    }
-    prize = { kind: 'days', days: n ?? 0 };
-  } else if (draft.prizeKind === 'balance') {
-    if (!amountOk(draft.amount, currency)) {
-      errors.value = currency === 'RUB' ? 'Целое число рублей' : 'Сумма вида 5 или 2.50';
-    }
-    prize = { kind: 'balance', amount: draft.amount.trim().replace(',', '.') };
-  } else {
-    const p = whole(draft.percent);
-    const v = whole(draft.validDays);
-    if (p === null || p < 1 || p > 100) {
-      errors.value = 'Скидка от 1 до 100 %';
-    } else if (v === null || v < 1 || v > 365) {
-      errors.value = 'Срок промокода — от 1 до 365 дней';
-    }
-    prize = { kind: 'promo', percent: p ?? 0, valid_days: v ?? 0 };
-  }
-  const winners = whole(draft.winners);
   const max = options?.winners_max ?? 100;
-  if (winners === null || winners < 1 || winners > max) {
-    errors.winners = `От 1 до ${max}`;
+  let prize: unknown = null;
+  let winners: number | null = null;
+  if (draft.rows.length > 1) {
+    const placed = placeRows(draft.rows, max);
+    errors.prizes = placed.error;
+    const tiers = placed.tiers.map(({ from, to, row }) => {
+      const built = buildPrize(row, currency);
+      if (built.error && !errors.prizes) {
+        errors.prizes = `${placesLabel(from, to)}: ${built.error}`;
+      }
+      return { from_place: from, to_place: to, prize: built.value };
+    });
+    prize = { kind: 'tiered', tiers };
+    winners = tiers.reduce((m, t) => Math.max(m, t.to_place), 0);
+  } else {
+    const first = draft.rows[0] ?? prizeRow(1);
+    const built = buildPrize(first, currency);
+    errors.value = built.error;
+    prize = built.value;
+    winners = whole(first.count);
+    if (winners === null || winners < 1 || winners > max) {
+      errors.winners = `От 1 до ${max}`;
+    }
   }
   const startsAt = draft.startNow ? null : fromLocal(draft.startsAt);
   if (!draft.startNow && !startsAt) {
@@ -501,6 +605,7 @@ export function buildBody(draft: Draft, currency: Currency, options: Options | n
 export const PLACEHOLDERS: Array<[string, string]> = [
   ['{title}', 'название'],
   ['{prize}', 'приз'],
+  ['{prizes}', 'призы по местам списком'],
   ['{winners}', 'победителей'],
   ['{date}', 'когда итоги'],
 ];

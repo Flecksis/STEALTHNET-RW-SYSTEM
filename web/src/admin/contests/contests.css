@@ -865,3 +865,137 @@ a.ct-trow:hover {
   flex-direction: column;
   gap: 2px;
 }
+
+.ct-tier {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.ct-tier .field {
+  background: var(--surface);
+}
+
+.ct-tier-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ct-tier-title {
+  flex: 1 1 auto;
+}
+
+.ct-tier-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.ct-one,
+.ct-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ct-wide2 {
+  grid-column: span 2;
+}
+
+.ct-wrow.ct-placed {
+  grid-template-columns: 44px minmax(190px, 1fr) minmax(150px, 0.9fr) minmax(170px, 1fr) 172px;
+}
+
+.ct-place-n {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.ct-won {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ct-wlist.phone .ct-wrow.ct-placed {
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+}
+
+.ct-wlist.phone .ct-placed .ct-won,
+.ct-wlist.phone .ct-placed .ct-prize,
+.ct-wlist.phone .ct-placed .ct-wact {
+  grid-column: 2 / -1;
+  padding-left: 0;
+}
+
+.ct-wlist.phone .ct-placed .ct-wact {
+  justify-content: flex-start;
+}
+
+.ct-places {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ct-places b {
+  font-weight: 700;
+}
+
+.ct-how-get {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 860px) {
+  .ct-wide2 {
+    grid-column: 1 / -1;
+  }
+
+  .ct-wrow.ct-placed {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+  }
+
+  .ct-placed .ct-won,
+  .ct-placed .ct-prize,
+  .ct-placed .ct-wact {
+    grid-column: 2 / -1;
+  }
+
+  .ct-placed .ct-wact {
+    justify-content: flex-start;
+  }
+}
+
+.pr-sub.warn {
+  color: var(--warn);
+}
+
+.ct-undo {
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.pf-psegs.ct-kinds {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}

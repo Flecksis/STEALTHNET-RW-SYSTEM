@@ -3,14 +3,16 @@ use chrono::{Duration, Utc};
 use sn_domain::bot_content::Content;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::keys;
-use sn_modules::catalog::contests::{self, ConditionsDraft, ContestDraft};
+use sn_modules::catalog::contests::{
+    self, ConditionsDraft, ContestDraft, PrizeConfigDraft, PrizeTierDraft,
+};
 use sn_modules::catalog::prize::PrizeDraft;
 
 fn draft(title: &str, subscription: bool) -> ContestDraft {
     ContestDraft {
         title: title.into(),
         description: Some("Разыгрываем призы среди клиентов бота".into()),
-        prize: PrizeDraft::Days { days: 7 },
+        prize: PrizeDraft::Days { days: 7 }.into(),
         winners: 2,
         starts_at: None,
         ends_at: Utc::now() + Duration::days(3),
@@ -167,6 +169,131 @@ fn уведомление_победителю_с_промокодом_и_кно
     )
     .unwrap();
     assert!(waiting.text.contains("как только у вас появится подписка"));
+}
+
+fn tiered(title: &str) -> ContestDraft {
+    let mut new = draft(title, false);
+    new.prize = PrizeConfigDraft::Tiered(vec![
+        PrizeTierDraft {
+            from_place: 1,
+            to_place: 1,
+            prize: PrizeDraft::Custom {
+                title: "Telegram Premium на год".into(),
+                instruction: Some("Напишите @sn_support слово ПОБЕДА".into()),
+            },
+        },
+        PrizeTierDraft {
+            from_place: 2,
+            to_place: 3,
+            prize: PrizeDraft::Days { days: 7 },
+        },
+    ]);
+    new
+}
+
+#[tokio::test]
+async fn призы_по_местам_в_карточке_и_место_победителя() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    services
+        .modules()
+        .set_enabled(services.store(), ModuleId::Contests, true, None)
+        .await
+        .unwrap();
+    let module = services.module_context();
+    let created = contests::create(&module, &tiered("Зимний розыгрыш"), None)
+        .await
+        .unwrap();
+    handle_update(&ctx, text_update(1, 611, "/start")).await;
+    handle_update(&ctx, callback_update(2, 611, &format!("ct:{}", created.id))).await;
+    let card = last_text(&server).await;
+    assert!(
+        card.contains(
+            "Призы:\n1\u{a0}место — Telegram Premium на год\n2–3\u{a0}места — +7\u{a0}дней к подписке\nПобедителей: 3."
+        ),
+        "{card}"
+    );
+    assert!(!card.contains("Приз: "), "{card}");
+    handle_update(&ctx, callback_update(3, 611, &format!("cj:{}", created.id))).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE contests SET starts_at = now() - interval '2 hours', \
+             ends_at = now() - interval '1 minute' WHERE id = $1",
+        )
+        .bind(created.id)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    contests::run(&module).await.unwrap();
+    handle_update(&ctx, callback_update(4, 611, &format!("ct:{}", created.id))).await;
+    let card = last_text(&server).await;
+    assert!(
+        card.contains(
+            "Вы заняли 1 место! Приз: Telegram Premium на год. Напишите @sn_support слово ПОБЕДА"
+        ),
+        "{card}"
+    );
+    db.cleanup().await;
+}
+
+#[test]
+fn уведомление_о_месте_и_своём_призе() {
+    let content = Content::default();
+    let offset = chrono::FixedOffset::east_opt(0).unwrap();
+    let won = notify::render(
+        &content,
+        contests::TEMPLATE_WON,
+        &serde_json::json!({
+            "title": "Зимний", "prize": "Telegram Premium на год", "place": 1, "tiered": true,
+            "prize_data": { "kind": "custom", "title": "Telegram Premium на год" },
+            "note": "Напишите @sn_support слово ПОБЕДА"
+        }),
+        offset,
+    )
+    .unwrap();
+    assert_eq!(
+        won.text,
+        "Вы заняли 1 место в конкурсе «Зимний»!\nПриз: Telegram Premium на год. Напишите @sn_support слово ПОБЕДА"
+    );
+    let single = notify::render(
+        &content,
+        contests::TEMPLATE_WON,
+        &serde_json::json!({
+            "title": "Зимний", "prize": "Мерч", "place": 2, "tiered": false,
+            "prize_data": { "kind": "custom", "title": "Мерч" },
+            "note": contests_note()
+        }),
+        offset,
+    )
+    .unwrap();
+    assert_eq!(
+        single.text,
+        "Вы победили в конкурсе «Зимний»!\nПриз: Мерч. Чтобы получить приз, напишите в поддержку."
+    );
+    let waiting = notify::render(
+        &content,
+        contests::TEMPLATE_WAITING,
+        &serde_json::json!({
+            "title": "Зимний", "prize": "+7 дней к подписке", "place": 3, "tiered": true,
+            "prize_data": { "kind": "days", "days": 7 }
+        }),
+        offset,
+    )
+    .unwrap();
+    assert!(
+        waiting
+            .text
+            .starts_with("Вы заняли 3 место в конкурсе «Зимний»!"),
+        "{}",
+        waiting.text
+    );
+}
+
+fn contests_note() -> &'static str {
+    sn_modules::catalog::prize::CUSTOM_NOTE
 }
 
 #[tokio::test]

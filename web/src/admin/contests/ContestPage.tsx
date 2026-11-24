@@ -15,6 +15,7 @@ import {
   personName,
   personSub,
   prizeEach,
+  prizeNote,
   prizeStateText,
   ROOT,
   shortHash,
@@ -60,7 +61,7 @@ function left(iso: string): string {
 function Summary({ c }: { c: Contest }) {
   const lead =
     c.status === 'finished'
-      ? `Жеребьёвка прошла ${when(c.drawn_at)}. Призы выдаются автоматически.`
+      ? `Жеребьёвка прошла ${when(c.drawn_at)}. ${c.counts.manual ? 'Свои призы передаёт администратор и отмечает ниже, остальные бот выдал сам.' : 'Призы выдаются автоматически.'}`
       : c.status === 'canceled'
         ? `Конкурс отменён ${when(c.canceled_at)}, жеребьёвки не будет.`
         : c.status === 'drawing'
@@ -72,6 +73,9 @@ function Summary({ c }: { c: Contest }) {
   if (c.status === 'finished') {
     stats.push([String(c.winners_list.length), plural(c.winners_list.length, 'победитель', 'победителя', 'победителей')]);
     stats.push([`${c.counts.issued} из ${c.winners_list.length}`, 'призов выдано']);
+    if (c.counts.manual) {
+      stats.push([String(c.counts.manual), plural(c.counts.manual, 'приз ждёт выдачи', 'приза ждут выдачи', 'призов ждут выдачи')]);
+    }
   } else {
     stats.push([String(c.winners), plural(c.winners, 'победитель', 'победителя', 'победителей')]);
   }
@@ -90,15 +94,50 @@ function Summary({ c }: { c: Contest }) {
   );
 }
 
-function Winners({ c, phone, onRetry, busy }: { c: Contest; phone: boolean; onRetry: (id: number) => void; busy: number | null }) {
+type WinnerActions = {
+  onRetry: (id: number) => void;
+  onHand: (id: number, handed: boolean) => void;
+  busy: number | null;
+};
+
+function WinnerAction({ w, act }: { w: Winner; act: WinnerActions }) {
+  const custom = w.prize?.kind === 'custom';
+  if (w.prize_state === 'failed') {
+    return (
+      <button type="button" className="b34 hov" disabled={act.busy !== null} onClick={() => act.onRetry(w.client_id)}>
+        {act.busy === w.client_id ? 'Ставим…' : 'Выдать снова'}
+      </button>
+    );
+  }
+  if (custom && w.prize_state === 'manual') {
+    return (
+      <button type="button" className="b34 hov" disabled={act.busy !== null} onClick={() => act.onHand(w.client_id, true)}>
+        {act.busy === w.client_id ? 'Отмечаем…' : 'Отметить выданным'}
+      </button>
+    );
+  }
+  if (custom && w.prize_state === 'issued') {
+    return (
+      <button type="button" className="ct-undo hov" disabled={act.busy !== null} onClick={() => act.onHand(w.client_id, false)}>
+        Снять отметку
+      </button>
+    );
+  }
+  return null;
+}
+
+function Winners({ c, phone, act }: { c: Contest; phone: boolean; act: WinnerActions }) {
   if (!c.winners_list.length) {
     return c.status === 'finished' ? <p className="ct-pad muted">В розыгрыше никого не оказалось — призы не выданы.</p> : null;
   }
+  const placed = c.prize.kind === 'tiered';
   return (
     <div role="table" aria-label="Победители" className={phone ? 'ct-wlist phone' : 'ct-wlist'}>
       {phone ? null : (
-        <div role="row" className="ct-wrow ct-th">
+        <div role="row" className={placed ? 'ct-wrow ct-th ct-placed' : 'ct-wrow ct-th'}>
+          {placed ? <span role="columnheader">Место</span> : null}
           <span role="columnheader">Победитель</span>
+          {placed ? <span role="columnheader">Приз</span> : null}
           <span role="columnheader">Выдача приза</span>
           <span role="columnheader">
             <span className="sr-only">Действия</span>
@@ -108,7 +147,12 @@ function Winners({ c, phone, onRetry, busy }: { c: Contest; phone: boolean; onRe
       {c.winners_list.map((w) => {
         const state = prizeStateText(w);
         return (
-          <div role="row" key={w.client_id} className="ct-wrow">
+          <div role="row" key={w.client_id} className={placed ? 'ct-wrow ct-placed' : 'ct-wrow'}>
+            {placed ? (
+              <span role="cell" className="ct-place-n">
+                {w.place}
+              </span>
+            ) : null}
             <span role="cell" className="ct-who">
               <Avatar person={w.client} id={w.client_id} />
               <span>
@@ -118,6 +162,11 @@ function Winners({ c, phone, onRetry, busy }: { c: Contest; phone: boolean; onRe
                 <span className="ct-sub">{personSub(w.client, w.client_id)}</span>
               </span>
             </span>
+            {placed ? (
+              <span role="cell" className="ct-won">
+                {w.prize_label}
+              </span>
+            ) : null}
             <span role="cell" className={`ct-prize ${state.tone}`}>
               {state.text}
               {w.prize_code ? (
@@ -127,16 +176,37 @@ function Winners({ c, phone, onRetry, busy }: { c: Contest; phone: boolean; onRe
               ) : null}
             </span>
             <span role="cell" className="ct-wact">
-              {w.prize_state === 'failed' ? (
-                <button type="button" className="b34 hov" disabled={busy !== null} onClick={() => onRetry(w.client_id)}>
-                  {busy === w.client_id ? 'Ставим…' : 'Выдать снова'}
-                </button>
-              ) : null}
+              <WinnerAction w={w} act={act} />
             </span>
           </div>
         );
       })}
     </div>
+  );
+}
+
+function PrizeList({ c }: { c: Contest }) {
+  if (c.prize.kind !== 'tiered') {
+    const note = prizeNote(c.prize);
+    return (
+      <>
+        {prizeEach(c.prize, c.winners)}
+        {note ? <span className="ct-how-get">Как получить: {note}</span> : null}
+      </>
+    );
+  }
+  return (
+    <ul className="ct-places">
+      {c.prizes.map((p) => {
+        const note = prizeNote(p.prize);
+        return (
+          <li key={p.from_place}>
+            <b>{p.places}</b> — {p.label}
+            {note ? <span className="ct-how-get">Как получить: {note}</span> : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -178,7 +248,8 @@ function Fairness({ c }: { c: Contest }) {
         <p className="cap ct-how-text">
           Зерно — 64 знака, которые бот выбирает случайно при создании конкурса. До итогов виден только его отпечаток sha256, поэтому зерно нельзя подменить после того, как
           стали известны участники. После итогов зерно открывается: для каждого участника считается sha256 от строки «зерно:номер клиента», побеждают самые маленькие
-          значения. Отпечаток зерна — sha256 от самого зерна, отпечаток списка — sha256 от номеров участников по возрастанию через перевод строки.
+          значения. Самое маленькое — первое место, следующее — второе и так далее; если призы разные, приз зависит от места. Отпечаток зерна — sha256 от самого зерна,
+          отпечаток списка — sha256 от номеров участников по возрастанию через перевод строки.
         </p>
       ) : null}
     </div>
@@ -207,6 +278,7 @@ function filled(text: string, c: Contest): string {
   return text
     .replace(/<[^>]+>/g, '')
     .replaceAll('{title}', c.title)
+    .replaceAll('{prizes}', c.prizes.map((p) => (c.prize.kind === 'tiered' ? `${p.places} — ${p.label}` : p.label)).join('; '))
     .replaceAll('{prize}', c.prize_label)
     .replaceAll('{winners}', String(c.winners))
     .replaceAll('{date}', when(c.ends_at));
@@ -234,7 +306,15 @@ function preview(c: Contest): { text: string[]; buttons: string[] } {
   if (c.description) {
     lines.push(c.description);
   }
-  lines.push(`Приз: ${c.prize_label}. Победителей: ${c.winners}.`);
+  if (c.prize.kind === 'tiered') {
+    lines.push('Призы:');
+    for (const p of c.prizes) {
+      lines.push(`${p.places} — ${p.label}`);
+    }
+    lines.push(`Победителей: ${c.winners}.`);
+  } else {
+    lines.push(`Приз: ${c.prize_label}. Победителей: ${c.winners}.`);
+  }
   lines.push(`Итоги — ${when(c.ends_at)}.`);
   if (c.condition_lines.length) {
     lines.push('', 'Условия');
@@ -399,6 +479,7 @@ export function ContestPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [retrying, setRetrying] = useState<number | null>(null);
+  const [handing, setHanding] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>((location.state as { saved?: boolean } | null)?.saved ? 'Изменения сохранены' : null);
 
   useEffect(() => {
@@ -469,6 +550,21 @@ export function ContestPage() {
     }
   };
 
+  const hand = async (client: number, handed: boolean) => {
+    if (!c) {
+      return;
+    }
+    setHanding(client);
+    try {
+      setC(await api<Contest>(`${BASE}/contests/${c.id}/winners/${client}/handed`, { method: handed ? 'POST' : 'DELETE' }));
+      setToast(handed ? 'Приз отмечен выданным' : 'Отметка о выдаче снята');
+    } catch (err) {
+      setToast(failText(err, 'Не получилось'));
+    } finally {
+      setHanding(null);
+    }
+  };
+
   if (error && !c) {
     return phone ? (
       <div className="hp">
@@ -498,7 +594,11 @@ export function ContestPage() {
   const result = (
     <>
       <Summary c={c} />
-      <Winners c={c} phone={phone} onRetry={(client) => void retry(client)} busy={retrying} />
+      <Winners
+        c={c}
+        phone={phone}
+        act={{ onRetry: (client) => void retry(client), onHand: (client, handed) => void hand(client, handed), busy: retrying ?? handing }}
+      />
     </>
   );
 
@@ -526,7 +626,9 @@ export function ContestPage() {
             Приз и условия
           </h2>
           <div className="hp-card ct-pcard ct-rules">
-            <p>{prizeEach(c.prize, c.winners)}</p>
+            <div>
+              <PrizeList c={c} />
+            </div>
             <p className="ct-sub">
               {when(c.starts_at)} — {when(c.ends_at)}
             </p>
@@ -594,8 +696,10 @@ export function ContestPage() {
               Приз и условия
             </h2>
             <dl className="ct-dl ct-dl-pad">
-              <dt>Приз</dt>
-              <dd>{prizeEach(c.prize, c.winners)}</dd>
+              <dt>{c.prize.kind === 'tiered' ? 'Призы' : 'Приз'}</dt>
+              <dd>
+                <PrizeList c={c} />
+              </dd>
               <dt>Сроки</dt>
               <dd>
                 С {when(c.starts_at)} по {when(c.ends_at)}

@@ -116,7 +116,7 @@ impl Sector {
     }
 }
 
-fn shown_title(stored: String, prize: Prize) -> String {
+fn shown_title(stored: String, prize: &Prize) -> String {
     if sn_domain::lang::current() == sn_domain::client::Locale::Ru {
         return stored;
     }
@@ -350,7 +350,7 @@ fn sector_views(config: &Config) -> Vec<SectorView> {
         .enumerate()
         .map(|(index, s)| SectorView {
             index,
-            prize: s.prize,
+            prize: s.prize.clone(),
             kind: s.prize.kind(),
             title: s.title(),
             custom: s.label.is_some(),
@@ -375,6 +375,11 @@ pub fn validate(draft: &ConfigDraft, currency: Currency) -> Result<Config, Modul
         let n = index + 1;
         let prize = prize::validate(&sector.prize, currency, true)
             .map_err(|err| invalid(format!("Приз {n}: {}", strip(&err))))?;
+        if prize.is_custom() {
+            return Err(invalid(format!(
+                "Приз {n}: свой приз разыгрывается только в конкурсах"
+            )));
+        }
         if sector.weight > WEIGHT_MAX {
             return Err(invalid(format!("Приз {n}: вес — от 0 до {WEIGHT_MAX}")));
         }
@@ -638,11 +643,12 @@ fn shown_note(note: String) -> String {
 
 fn history_item(row: store::SpinRow) -> HistoryItem {
     let prize: Prize = serde_json::from_value(row.prize).unwrap_or(Prize::Empty);
+    let title = shown_title(row.label, &prize);
     HistoryItem {
         id: row.id,
         sector: row.sector,
         prize,
-        title: shown_title(row.label, prize),
+        title,
         state: row.state,
         note: row.note.map(shown_note),
         code: row.code,
@@ -800,6 +806,7 @@ fn available(
                     .promos
                     .is_none_or(|limit| spent.promo < i64::from(limit))
         }
+        Prize::Custom { .. } => false,
     }
 }
 
@@ -937,14 +944,17 @@ async fn spin_now(
     let sector = &config.sectors[index];
     let currency = installation_currency(&mut tx).await?;
     let label = sector.stored_title();
-    let (balance_minor, days, promo, state) = match sector.prize {
+    let (balance_minor, days, promo, state) = match &sector.prize {
         Prize::Empty => (0, 0, 0, "empty"),
         Prize::Balance { amount } => {
-            prize::check_currency(sector.prize, currency)?;
+            prize::check_currency(&sector.prize, currency)?;
             (amount.minor, 0, 0, "issued")
         }
-        Prize::Days { days } => (0, i32::try_from(days).unwrap_or(i32::MAX), 0, "issuing"),
+        Prize::Days { days } => (0, i32::try_from(*days).unwrap_or(i32::MAX), 0, "issuing"),
         Prize::Promo { .. } => (0, 0, 1, "issued"),
+        Prize::Custom { .. } => {
+            return Err(invalid("Свой приз разыгрывается только в конкурсах").into());
+        }
     };
     let spin_id = store::insert_spin(
         &mut tx,
@@ -955,7 +965,7 @@ async fn spin_now(
             ticket_id: ticket,
             config_version: version,
             sector: i32::try_from(index).unwrap_or(0),
-            prize: serde_json::to_value(sector.prize)
+            prize: serde_json::to_value(&sector.prize)
                 .map_err(|e| ModuleError::Core(e.to_string()))?,
             label: &label,
             balance_minor,
@@ -972,10 +982,10 @@ async fn spin_now(
     if let Some(ticket) = ticket {
         store::use_ticket(&mut tx, ticket, now).await?;
     }
-    issue_in_tx(&mut tx, spin_id, client_id, sector.prize, now).await?;
+    issue_in_tx(&mut tx, spin_id, client_id, &sector.prize, now).await?;
     tx.commit().await?;
-    if let (Prize::Days { days }, Some(sub)) = (sector.prize, subscription) {
-        let applied = ctx.core.add_days(sub.id, days, "рулетка").await;
+    if let (Prize::Days { days }, Some(sub)) = (&sector.prize, subscription) {
+        let applied = ctx.core.add_days(sub.id, *days, "рулетка").await;
         let mut conn = ctx.store.conn().await?;
         match applied {
             Ok(()) => {
@@ -1034,7 +1044,7 @@ async fn issue_in_tx(
     tx: &mut Tx,
     spin_id: i64,
     client_id: ClientId,
-    prize: Prize,
+    prize: &Prize,
     now: DateTime<Utc>,
 ) -> Result<(), ModuleError> {
     match prize {
@@ -1042,7 +1052,7 @@ async fn issue_in_tx(
             prize::credit(
                 tx,
                 client_id,
-                amount,
+                *amount,
                 LedgerKind::Roulette,
                 format!("roulette:{spin_id}"),
                 "Приз рулетки".into(),
@@ -1063,10 +1073,10 @@ async fn issue_in_tx(
             percent,
             valid_days,
         } => {
-            let until = prize::promo_until(now, valid_days);
+            let until = prize::promo_until(now, *valid_days);
             let code = prize::personal_code(
                 tx,
-                PromoKind::Percent { percent },
+                PromoKind::Percent { percent: *percent },
                 Some(until),
                 &format!("Приз рулетки, клиент #{}", client_id.0),
                 client_id,
@@ -1076,14 +1086,14 @@ async fn issue_in_tx(
                 tx,
                 spin_id,
                 "issued",
-                Some(&format!("Промокод действует {}", format::days(valid_days))),
+                Some(&format!("Промокод действует {}", format::days(*valid_days))),
                 Some(&code),
                 None,
                 Some(now),
             )
             .await?;
         }
-        Prize::Days { .. } | Prize::Empty => {}
+        Prize::Days { .. } | Prize::Empty | Prize::Custom { .. } => {}
     }
     Ok(())
 }

@@ -534,6 +534,14 @@ const WINNERS: Var = Var {
     name: "winners",
     hint: "число победителей",
 };
+const PLACE: Var = Var {
+    name: "place",
+    hint: "место победителя",
+};
+const PLACES: Var = Var {
+    name: "places",
+    hint: "места, например «2–3 места»",
+};
 const CONDITION: Var = Var {
     name: "condition",
     hint: "условие участия",
@@ -1834,6 +1842,27 @@ pub static CATALOG: &[Entry] = &[
         &[PRIZE, WINNERS],
     ),
     text(
+        "contest.prizes",
+        Contests,
+        "Заголовок призов по местам",
+        "Призы:",
+        &[],
+    ),
+    text(
+        "contest.prize_line",
+        Contests,
+        "Приз за места",
+        "{places} — {prize}",
+        &[PLACES, PRIZE],
+    ),
+    text(
+        "contest.winners",
+        Contests,
+        "Число победителей при призах по местам",
+        "Победителей: {winners}.",
+        &[WINNERS],
+    ),
+    text(
         "contest.until",
         Contests,
         "Когда итоги",
@@ -1944,6 +1973,13 @@ pub static CATALOG: &[Entry] = &[
         "Клиент победил",
         "\nВы победили! Приз: {prize}. {result}",
         &[PRIZE, RESULT],
+    ),
+    text(
+        "contest.won_place",
+        Contests,
+        "Клиент занял призовое место",
+        "\nВы заняли {place} место! Приз: {prize}. {result}",
+        &[PLACE, PRIZE, RESULT],
     ),
     text(
         "contest.won_code",
@@ -3001,6 +3037,20 @@ pub static CATALOG: &[Entry] = &[
         "Победа, приз ждёт подписку",
         "Вы победили в конкурсе «{title}»!\nПриз: {prize}. Дни добавятся, как только у вас появится подписка.",
         &[TITLE, PRIZE],
+    ),
+    text(
+        "notify.contest_won_place",
+        Notify,
+        "Призовое место в конкурсе",
+        "Вы заняли {place} место в конкурсе «{title}»!\nПриз: {prize}. {result}",
+        &[PLACE, TITLE, PRIZE, RESULT],
+    ),
+    text(
+        "notify.contest_waiting_place",
+        Notify,
+        "Призовое место, приз ждёт подписку",
+        "Вы заняли {place} место в конкурсе «{title}»!\nПриз: {prize}. Дни добавятся, как только у вас появится подписка.",
+        &[PLACE, TITLE, PRIZE],
     ),
     text(
         "notify.withdrawal_rejected_plain",

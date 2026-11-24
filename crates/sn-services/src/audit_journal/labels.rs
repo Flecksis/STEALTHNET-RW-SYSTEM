@@ -735,6 +735,16 @@ pub const ACTIONS: &[ActionLabel] = &[
         "Приз конкурса выдан повторно",
         Area::Marketing,
     ),
+    a(
+        "contest.prize_handed",
+        "Свой приз конкурса отмечен выданным",
+        Area::Marketing,
+    ),
+    a(
+        "contest.prize_unhanded",
+        "Снята отметка о выдаче приза конкурса",
+        Area::Marketing,
+    ),
     a("roulette.saved", "Изменены призы рулетки", Area::Marketing),
     a("admin.created", "Добавлен администратор", Area::Admins),
     a(

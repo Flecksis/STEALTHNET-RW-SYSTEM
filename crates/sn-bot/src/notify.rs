@@ -174,6 +174,22 @@ fn prize_param(params: &serde_json::Value) -> Option<String> {
         .or_else(|| param(params, "prize"))
 }
 
+fn place_param(params: &serde_json::Value) -> Option<String> {
+    if !params
+        .get("tiered")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    params
+        .get("place")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|place| u32::try_from(place).ok())
+        .filter(|place| *place > 0)
+        .map(contests::place_word)
+}
+
 fn note_param(params: &serde_json::Value) -> Option<String> {
     params
         .get("note")
@@ -469,30 +485,53 @@ pub fn render(
             Some(("notify.btn.support", "sup")),
         ),
         contests::TEMPLATE_WON => {
-            let mut text = t(
-                "notify.contest_won",
-                &[
-                    ("title", Html(&param(params, "title")?)),
-                    ("prize", Html(&prize_param(params)?)),
-                    ("result", Html(&note_param(params).unwrap_or_default())),
-                ],
-            );
+            let title = param(params, "title")?;
+            let prize = prize_param(params)?;
+            let result = note_param(params).unwrap_or_default();
+            let mut text = match place_param(params) {
+                Some(place) => t(
+                    "notify.contest_won_place",
+                    &[
+                        ("place", Html(&place)),
+                        ("title", Html(&title)),
+                        ("prize", Html(&prize)),
+                        ("result", Html(&result)),
+                    ],
+                ),
+                None => t(
+                    "notify.contest_won",
+                    &[
+                        ("title", Html(&title)),
+                        ("prize", Html(&prize)),
+                        ("result", Html(&result)),
+                    ],
+                ),
+            };
             if let Some(code) = param(params, "code") {
                 text.push('\n');
                 text.push_str(&t("notify.contest_won_code", &[("code", Html(&code))]));
             }
             (text, Some(("notify.btn.contests", "x:contests")))
         }
-        contests::TEMPLATE_WAITING => (
-            t(
-                "notify.contest_waiting",
-                &[
-                    ("title", Html(&param(params, "title")?)),
-                    ("prize", Html(&prize_param(params)?)),
-                ],
-            ),
-            Some(("notify.btn.contests", "x:contests")),
-        ),
+        contests::TEMPLATE_WAITING => {
+            let title = param(params, "title")?;
+            let prize = prize_param(params)?;
+            let text = match place_param(params) {
+                Some(place) => t(
+                    "notify.contest_waiting_place",
+                    &[
+                        ("place", Html(&place)),
+                        ("title", Html(&title)),
+                        ("prize", Html(&prize)),
+                    ],
+                ),
+                None => t(
+                    "notify.contest_waiting",
+                    &[("title", Html(&title)), ("prize", Html(&prize))],
+                ),
+            };
+            (text, Some(("notify.btn.contests", "x:contests")))
+        }
         referral::TEMPLATE_WITHDRAWAL_PAID => (
             t(
                 "notify.withdrawal_paid",

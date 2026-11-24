@@ -20,6 +20,10 @@ pub fn admin(ctx: ModuleContext) -> Router {
         .route("/contests/{id}/entries", get(entries))
         .route("/contests/{id}/entries.csv", get(csv))
         .route("/contests/{id}/winners/{client}/retry", post(retry))
+        .route(
+            "/contests/{id}/winners/{client}/handed",
+            post(handed).delete(unhanded),
+        )
         .with_state(ctx)
 }
 
@@ -162,5 +166,27 @@ async fn retry(
     admin.require(Permission::Marketing)?;
     Ok(Json(
         super::retry_prize(&ctx, id, ClientId(client), Some(admin.0.admin_id)).await?,
+    ))
+}
+
+async fn handed(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Path((id, client)): Path<(i64, i64)>,
+) -> Result<Json<Contest>, WebError> {
+    admin.require(Permission::Marketing)?;
+    Ok(Json(
+        super::hand_prize(&ctx, id, ClientId(client), true, Some(admin.0.admin_id)).await?,
+    ))
+}
+
+async fn unhanded(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Path((id, client)): Path<(i64, i64)>,
+) -> Result<Json<Contest>, WebError> {
+    admin.require(Permission::Marketing)?;
+    Ok(Json(
+        super::hand_prize(&ctx, id, ClientId(client), false, Some(admin.0.admin_id)).await?,
     ))
 }

@@ -98,6 +98,18 @@ fn настройки_рулетки_проверяются() {
     ]);
     let err = validate(&rub, Currency::Rub).unwrap_err();
     assert!(err.to_string().contains("Приз 2"));
+    let custom = config(vec![
+        sector(PrizeDraft::Empty, 1),
+        sector(
+            PrizeDraft::Custom {
+                title: "Мерч".into(),
+                instruction: None,
+            },
+            1,
+        ),
+    ]);
+    let err = validate(&custom, Currency::Rub).unwrap_err();
+    assert!(err.to_string().contains("только в конкурсах"), "{err}");
     rub.sectors[1].prize = PrizeDraft::Balance {
         amount: "10".into(),
     };

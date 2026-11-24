@@ -36,6 +36,7 @@ pub const ENTITY: &str = "contest";
 pub const TITLE_MAX: usize = 100;
 pub const DESCRIPTION_MAX: usize = 1000;
 pub const WINNERS_MAX: u32 = 100;
+pub const TIERS_MAX: usize = 20;
 pub const MESSAGES_MAX: usize = 6;
 pub const FRIENDS_MAX: u32 = 100;
 pub const DURATION_MIN_MINUTES: i64 = 10;
@@ -50,6 +51,7 @@ const NAMED_MAX: usize = 20;
 const PRIZES_BATCH: i64 = 50;
 const FACTS_CHUNK: usize = 2000;
 const LOG_LIMIT: i64 = 100;
+const TIERED: &str = "tiered";
 
 const MONTHS: [&str; 12] = [
     "января",
@@ -279,12 +281,211 @@ pub struct MessageDraft {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrizeTier {
+    pub from_place: u32,
+    pub to_place: u32,
+    pub prize: Prize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrizeConfig {
+    Single(Prize),
+    Tiered(Vec<PrizeTier>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlaceView {
+    pub from_place: u32,
+    pub to_place: u32,
+    pub places: String,
+    pub prize: Prize,
+    pub label: String,
+}
+
+impl PrizeConfig {
+    pub const fn is_tiered(&self) -> bool {
+        matches!(self, PrizeConfig::Tiered(_))
+    }
+
+    pub fn tiers(&self, winners: u32) -> Vec<PrizeTier> {
+        match self {
+            PrizeConfig::Single(prize) => vec![PrizeTier {
+                from_place: 1,
+                to_place: winners.max(1),
+                prize: prize.clone(),
+            }],
+            PrizeConfig::Tiered(tiers) => tiers.clone(),
+        }
+    }
+
+    pub fn prize_for(&self, place: u32) -> Option<&Prize> {
+        match self {
+            PrizeConfig::Single(prize) => (place > 0).then_some(prize),
+            PrizeConfig::Tiered(tiers) => tiers
+                .iter()
+                .find(|t| (t.from_place..=t.to_place).contains(&place))
+                .map(|t| &t.prize),
+        }
+    }
+
+    pub fn any(&self, check: impl Fn(&Prize) -> bool) -> bool {
+        match self {
+            PrizeConfig::Single(prize) => check(prize),
+            PrizeConfig::Tiered(tiers) => tiers.iter().any(|t| check(&t.prize)),
+        }
+    }
+
+    fn lines(&self) -> Vec<String> {
+        match self {
+            PrizeConfig::Single(prize) => vec![prize.label()],
+            PrizeConfig::Tiered(tiers) => tiers
+                .iter()
+                .map(|t| {
+                    format!(
+                        "{} — {}",
+                        places_title(t.from_place, t.to_place),
+                        t.prize.label()
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        self.lines().join("; ")
+    }
+
+    pub fn list(&self) -> String {
+        self.lines().join("\n")
+    }
+
+    pub fn places(&self, winners: u32) -> Vec<PlaceView> {
+        self.tiers(winners)
+            .into_iter()
+            .map(|t| PlaceView {
+                places: places_title(t.from_place, t.to_place),
+                label: t.prize.label(),
+                from_place: t.from_place,
+                to_place: t.to_place,
+                prize: t.prize,
+            })
+            .collect()
+    }
+}
+
+impl Serialize for PrizeConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self {
+            PrizeConfig::Single(prize) => prize.serialize(serializer),
+            PrizeConfig::Tiered(tiers) => {
+                let mut out = serializer.serialize_struct("PrizeConfig", 2)?;
+                out.serialize_field("kind", TIERED)?;
+                out.serialize_field("tiers", tiers)?;
+                out.end()
+            }
+        }
+    }
+}
+
+enum Shape<T, P> {
+    Single(P),
+    Tiered(Vec<T>),
+}
+
+fn shape<T, P, E>(value: serde_json::Value) -> Result<Shape<T, P>, E>
+where
+    T: serde::de::DeserializeOwned,
+    P: serde::de::DeserializeOwned,
+    E: serde::de::Error,
+{
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some(TIERED) {
+        let tiers = value.get("tiers").cloned().unwrap_or_default();
+        return serde_json::from_value(tiers)
+            .map(Shape::Tiered)
+            .map_err(E::custom);
+    }
+    serde_json::from_value(value)
+        .map(Shape::Single)
+        .map_err(E::custom)
+}
+
+impl<'de> Deserialize<'de> for PrizeConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match shape::<PrizeTier, Prize, D::Error>(value)? {
+            Shape::Single(prize) => PrizeConfig::Single(prize),
+            Shape::Tiered(tiers) => PrizeConfig::Tiered(tiers),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PrizeTierDraft {
+    pub from_place: u32,
+    pub to_place: u32,
+    pub prize: PrizeDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrizeConfigDraft {
+    Single(PrizeDraft),
+    Tiered(Vec<PrizeTierDraft>),
+}
+
+impl From<PrizeDraft> for PrizeConfigDraft {
+    fn from(prize: PrizeDraft) -> Self {
+        PrizeConfigDraft::Single(prize)
+    }
+}
+
+impl<'de> Deserialize<'de> for PrizeConfigDraft {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let found = shape::<PrizeTierDraft, PrizeDraft, D::Error>(value)?;
+        Ok(match found {
+            Shape::Single(prize) => PrizeConfigDraft::Single(prize),
+            Shape::Tiered(tiers) => PrizeConfigDraft::Tiered(tiers),
+        })
+    }
+}
+
+fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+pub fn places_title(from: u32, to: u32) -> String {
+    let space = format::NBSP;
+    match lang::current() {
+        Locale::En if from == to => format!("{}{space}place", ordinal(from)),
+        Locale::En => format!("{}–{}{space}place", ordinal(from), ordinal(to)),
+        Locale::Ru if from == to => format!("{from}{space}место"),
+        Locale::Ru => format!("{from}–{to}{space}места"),
+    }
+}
+
+pub fn place_word(place: u32) -> String {
+    match lang::current() {
+        Locale::En => ordinal(place),
+        Locale::Ru => place.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ContestDraft {
     pub title: String,
     #[serde(default)]
     pub description: Option<String>,
-    pub prize: PrizeDraft,
+    pub prize: PrizeConfigDraft,
+    #[serde(default)]
     pub winners: u32,
     #[serde(default)]
     pub starts_at: Option<DateTime<Utc>>,
@@ -299,7 +500,7 @@ pub struct ContestDraft {
 pub struct Content {
     pub title: String,
     pub description: Option<String>,
-    pub prize: Prize,
+    pub prize: PrizeConfig,
     pub winners: u32,
     pub conditions: Conditions,
     pub starts_at: DateTime<Utc>,
@@ -355,6 +556,9 @@ pub struct Winner {
     pub place: i32,
     pub client_id: ClientId,
     pub client: Option<ClientPerson>,
+    pub prize: Option<Prize>,
+    pub prize_label: Option<String>,
+    pub prize_by: Option<String>,
     pub prize_state: Option<String>,
     pub prize_note: Option<String>,
     pub prize_code: Option<String>,
@@ -376,8 +580,9 @@ pub struct Contest {
     pub id: i64,
     pub title: String,
     pub description: Option<String>,
-    pub prize: Prize,
+    pub prize: PrizeConfig,
     pub prize_label: String,
+    pub prizes: Vec<PlaceView>,
     pub winners: u32,
     pub conditions: Conditions,
     pub condition_lines: Vec<ConditionLine>,
@@ -403,8 +608,9 @@ pub struct Contest {
 pub struct ListItem {
     pub id: i64,
     pub title: String,
-    pub prize: Prize,
+    pub prize: PrizeConfig,
     pub prize_label: String,
+    pub prizes: Vec<PlaceView>,
     pub winners: u32,
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
@@ -435,6 +641,8 @@ pub struct Check {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClientResult {
     pub won: bool,
+    pub place: Option<i32>,
+    pub prize_label: Option<String>,
     pub excluded: Option<String>,
     pub prize_state: Option<String>,
     pub prize_note: Option<String>,
@@ -446,8 +654,9 @@ pub struct ClientContest {
     pub id: i64,
     pub title: String,
     pub description: Option<String>,
-    pub prize: Prize,
+    pub prize: PrizeConfig,
     pub prize_label: String,
+    pub prizes: Vec<PlaceView>,
     pub winners: u32,
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
@@ -504,7 +713,7 @@ fn decode(what: &str) -> ModuleError {
     ModuleError::Store(StoreError::Decode(format!("конкурс: {what}")))
 }
 
-fn parse_prize(row: &store::ContestRow) -> Result<Prize, ModuleError> {
+fn parse_prize(row: &store::ContestRow) -> Result<PrizeConfig, ModuleError> {
     serde_json::from_value(row.prize.clone()).map_err(|_| decode("приз"))
 }
 
@@ -873,6 +1082,76 @@ fn clean_conditions(
     })
 }
 
+fn reason(err: &ModuleError) -> String {
+    match err {
+        ModuleError::Invalid(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn clean_prize(
+    draft: &PrizeConfigDraft,
+    winners: u32,
+    currency: Currency,
+) -> Result<(PrizeConfig, u32), ModuleError> {
+    let drafts = match draft {
+        PrizeConfigDraft::Single(prize) => {
+            if !(1..=WINNERS_MAX).contains(&winners) {
+                return Err(invalid(format!("Победителей — от 1 до {WINNERS_MAX}")));
+            }
+            let prize = prize::validate(prize, currency, false)?;
+            return Ok((PrizeConfig::Single(prize), winners));
+        }
+        PrizeConfigDraft::Tiered(drafts) => drafts,
+    };
+    if drafts.is_empty() {
+        return Err(invalid("Укажите приз хотя бы для первого места"));
+    }
+    if drafts.len() > TIERS_MAX {
+        return Err(invalid(format!("Разных призов — не больше {TIERS_MAX}")));
+    }
+    let mut sorted: Vec<&PrizeTierDraft> = drafts.iter().collect();
+    sorted.sort_by_key(|t| (t.from_place, t.to_place));
+    let mut tiers: Vec<PrizeTier> = Vec::with_capacity(sorted.len());
+    let mut next = 1;
+    for tier in sorted {
+        let (from, to) = (tier.from_place, tier.to_place);
+        if from == 0 || to < from {
+            return Err(invalid(
+                "Места указываются от меньшего к большему, начиная с первого",
+            ));
+        }
+        if to > WINNERS_MAX {
+            return Err(invalid(format!("Победителей — не больше {WINNERS_MAX}")));
+        }
+        if from < next {
+            return Err(invalid(format!(
+                "{}: эти места уже отданы другому призу",
+                places_title(from, to)
+            )));
+        }
+        if from > next {
+            return Err(invalid(format!(
+                "Нет приза для места {next}: места идут подряд, без пропусков"
+            )));
+        }
+        let prize = prize::validate(&tier.prize, currency, false)
+            .map_err(|err| invalid(format!("{}: {}", places_title(from, to), reason(&err))))?;
+        tiers.push(PrizeTier {
+            from_place: from,
+            to_place: to,
+            prize,
+        });
+        next = to + 1;
+    }
+    let winners = next - 1;
+    if tiers.len() == 1 {
+        let only = tiers.remove(0);
+        return Ok((PrizeConfig::Single(only.prize), winners));
+    }
+    Ok((PrizeConfig::Tiered(tiers), winners))
+}
+
 async fn clean_content(
     db: &mut impl Db,
     draft: &ContestDraft,
@@ -880,14 +1159,11 @@ async fn clean_content(
     keep_start: Option<DateTime<Utc>>,
 ) -> Result<Content, ModuleError> {
     let currency = installation_currency(db).await?;
-    let prize = prize::validate(&draft.prize, currency, false)?;
-    if matches!(prize, Prize::Promo { .. }) && !prize::promo_enabled(db).await? {
+    let (prize, winners) = clean_prize(&draft.prize, draft.winners, currency)?;
+    if prize.any(|p| matches!(p, Prize::Promo { .. })) && !prize::promo_enabled(db).await? {
         return Err(invalid(
             "Промокод в призе работает, только когда включён модуль «Промокоды»",
         ));
-    }
-    if !(1..=WINNERS_MAX).contains(&draft.winners) {
-        return Err(invalid(format!("Победителей — от 1 до {WINNERS_MAX}")));
     }
     let starts_at = match keep_start {
         Some(start) => start,
@@ -905,7 +1181,7 @@ async fn clean_content(
         title: clean_title(&draft.title)?,
         description: clean_description(draft.description.as_deref())?,
         prize,
-        winners: draft.winners,
+        winners,
         conditions: clean_conditions(&draft.conditions, currency)?,
         starts_at,
         ends_at: draft.ends_at,
@@ -968,15 +1244,23 @@ fn clean_messages(
         .collect()
 }
 
-pub fn default_messages(starts_at: DateTime<Utc>, ends_at: DateTime<Utc>) -> Vec<MessageContent> {
+pub fn default_messages(
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    tiered: bool,
+) -> Vec<MessageContent> {
     let span = ends_at - starts_at;
+    let announce = if tiered {
+        "<b>{title}</b>\nПризы:\n{prizes}\nПобедителей: {winners}. Итоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш."
+    } else {
+        "<b>{title}</b>\nПриз: {prize}. Победителей: {winners}.\nИтоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш."
+    };
     let mut out = vec![MessageContent {
         id: None,
         audience: Audience::Outsiders,
         only_eligible: false,
         send_at: Some(starts_at),
-        text: "<b>{title}</b>\nПриз: {prize}. Победителей: {winners}.\nИтоги — {date}. Нажмите «Участвовать», чтобы попасть в розыгрыш."
-            .into(),
+        text: announce.into(),
     }];
     if span >= Duration::days(2) {
         out.push(MessageContent {
@@ -1010,12 +1294,13 @@ pub fn default_messages(starts_at: DateTime<Utc>, ends_at: DateTime<Utc>) -> Vec
 pub fn render(
     text: &str,
     row_title: &str,
-    prize: Prize,
+    prize: &PrizeConfig,
     winners: u32,
     ends_at: DateTime<Utc>,
     offset: FixedOffset,
 ) -> String {
     text.replace("{title}", &escape(row_title))
+        .replace("{prizes}", &escape(&prize.list()))
         .replace("{prize}", &escape(&prize.label()))
         .replace("{winners}", &winners.to_string())
         .replace("{date}", &when(ends_at, offset))
@@ -1109,18 +1394,36 @@ async fn view(db: &mut impl Db, id: i64, now: DateTime<Utc>) -> Result<Contest, 
                 .collect::<Vec<_>>(),
         )
         .await?;
+    let handers = store::admin_emails(
+        db,
+        &winner_rows
+            .iter()
+            .filter_map(|w| w.prize_by)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     let winners_list = winner_rows
         .into_iter()
-        .map(|w| Winner {
-            place: w.place.unwrap_or_default(),
-            client_id: ClientId(w.client_id),
-            client: people.get(&ClientId(w.client_id)).cloned(),
-            prize_state: w.prize_state,
-            prize_note: w.prize_note,
-            prize_code: w.prize_code,
-            prize_error: w.prize_error,
-            prize_at: w.prize_at,
-            ticket: w.ticket,
+        .map(|w| {
+            let won = w
+                .place
+                .and_then(|p| u32::try_from(p).ok())
+                .and_then(|p| prize.prize_for(p))
+                .cloned();
+            Winner {
+                place: w.place.unwrap_or_default(),
+                client_id: ClientId(w.client_id),
+                client: people.get(&ClientId(w.client_id)).cloned(),
+                prize_label: won.as_ref().map(Prize::label),
+                prize: won,
+                prize_by: w.prize_by.and_then(|a| handers.get(&a).cloned()),
+                prize_state: w.prize_state,
+                prize_note: w.prize_note,
+                prize_code: w.prize_code,
+                prize_error: w.prize_error,
+                prize_at: w.prize_at,
+                ticket: w.ticket,
+            }
         })
         .collect();
     let log = store::log_rows(db, id, LOG_LIMIT)
@@ -1136,6 +1439,7 @@ async fn view(db: &mut impl Db, id: i64, now: DateTime<Utc>) -> Result<Contest, 
     Ok(Contest {
         id: row.id,
         prize_label: prize.label(),
+        prizes: prize.places(winners_of(&row)),
         winners: winners_of(&row),
         condition_lines: condition_lines(&conditions, row.starts_at, row.ends_at, offset),
         conditions,
@@ -1187,6 +1491,7 @@ pub async fn list(
             Ok(ListItem {
                 id: r.contest.id,
                 prize_label: prize.label(),
+                prizes: prize.places(winners_of(&r.contest)),
                 prize,
                 winners: winners_of(&r.contest),
                 starts_at: r.contest.starts_at,
@@ -1246,11 +1551,18 @@ pub async fn entries_csv(ctx: &ModuleContext, id: i64) -> Result<String, ModuleE
     let mut conn = ctx.store.conn().await?;
     let row = store::row(&mut conn, id).await?;
     let rows = store::all_entries(&mut conn, id).await?;
-    let mut out = String::from("client_id,joined_at,in_draw,excluded,ticket,place\n");
+    let config = parse_prize(&row)?;
+    let mut out = String::from("client_id,joined_at,in_draw,excluded,ticket,place,prize\n");
     for e in rows {
         let excluded = e.excluded.unwrap_or_default().replace('"', "'");
+        let won = e
+            .place
+            .and_then(|p| u32::try_from(p).ok())
+            .and_then(|p| config.prize_for(p))
+            .map(|p| p.label().replace('"', "'"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{},{},{},\"{}\",{},{}\n",
+            "{},{},{},\"{}\",{},{},\"{}\"\n",
             e.client_id,
             e.joined_at.to_rfc3339(),
             if excluded.is_empty() && row.drawn_at.is_some() {
@@ -1263,6 +1575,7 @@ pub async fn entries_csv(ctx: &ModuleContext, id: i64) -> Result<String, ModuleE
             excluded,
             e.ticket.unwrap_or_default(),
             e.place.map(|p| p.to_string()).unwrap_or_default(),
+            won,
         ));
     }
     Ok(out)
@@ -1278,7 +1591,11 @@ pub async fn create(
     let content = clean_content(&mut tx, draft, now, None).await?;
     let messages = match &draft.messages {
         Some(drafts) => clean_messages(drafts, &content, now, &HashSet::new())?,
-        None => default_messages(content.starts_at, content.ends_at),
+        None => default_messages(
+            content.starts_at,
+            content.ends_at,
+            content.prize.is_tiered(),
+        ),
     };
     let seed = draw::new_seed();
     let seed_hash = draw::seed_hash(&seed);
@@ -1300,7 +1617,7 @@ pub async fn create(
             "contest.created",
             admin,
             id,
-            serde_json::json!({ "title": content.title, "prize": content.prize, "winners": content.winners }),
+            serde_json::json!({ "title": content.title, "prize": &content.prize, "winners": content.winners }),
         ))
         .await?;
     let created = view(&mut tx, id, now).await?;
@@ -1503,6 +1820,86 @@ pub async fn retry_prize(
     Ok(updated)
 }
 
+pub async fn hand_prize(
+    ctx: &ModuleContext,
+    id: i64,
+    client_id: ClientId,
+    handed: bool,
+    admin: Option<AdminId>,
+) -> Result<Contest, ModuleError> {
+    let mut tx = ctx.store.begin().await?;
+    let now = db_now(&mut tx).await?;
+    let row = store::lock(&mut tx, id).await?;
+    if row.canceled_at.is_some() {
+        return Err(invalid("Конкурс отменён"));
+    }
+    let entry = store::lock_entry(&mut tx, id, client_id)
+        .await?
+        .ok_or(ModuleError::NotFound("участник"))?;
+    let place = entry
+        .place
+        .and_then(|p| u32::try_from(p).ok())
+        .ok_or_else(|| invalid("Этот участник не победитель"))?;
+    let config = parse_prize(&row)?;
+    let Some(won) = config.prize_for(place).filter(|p| p.is_custom()) else {
+        return Err(invalid("Этот приз бот выдаёт сам, отмечать его не нужно"));
+    };
+    let state = entry.prize_state.as_deref().unwrap_or_default();
+    let (next, by, at, text) = match (handed, state) {
+        (true, "manual") => (
+            "issued",
+            admin,
+            Some(now),
+            format!(
+                "Свой приз «{}» клиенту #{} отмечен выданным",
+                won.label(),
+                client_id.0
+            ),
+        ),
+        (false, "issued") => (
+            "manual",
+            None,
+            None,
+            format!(
+                "Снята отметка о выдаче приза «{}» клиенту #{}",
+                won.label(),
+                client_id.0
+            ),
+        ),
+        (true, "issued") => return Err(invalid("Приз уже отмечен выданным")),
+        (false, "manual") => return Err(invalid("Приз ещё не отмечен выданным")),
+        _ => return Err(invalid("Приз ещё не готов к выдаче")),
+    };
+    store::hand(&mut tx, id, client_id.0, next, by, at).await?;
+    store::log(
+        &mut tx,
+        id,
+        if handed {
+            "prize_handed"
+        } else {
+            "prize_unhanded"
+        },
+        &text,
+        serde_json::json!({ "client_id": client_id.0, "place": place }),
+    )
+    .await?;
+    tx.audit()
+        .record(&audit(
+            if handed {
+                "contest.prize_handed"
+            } else {
+                "contest.prize_unhanded"
+            },
+            admin,
+            id,
+            serde_json::json!({ "client_id": client_id.0, "place": place, "prize": won.label() }),
+        ))
+        .await?;
+    let updated = view(&mut tx, id, now).await?;
+    tx.commit().await?;
+    Ok(updated)
+}
+
 fn english_months(text: &str) -> String {
     let mut out = text.to_string();
     for (ru, en) in MONTHS.iter().zip(MONTHS_EN) {
@@ -1525,6 +1922,7 @@ pub fn shown_note(note: &str) -> String {
         "Дни добавятся, когда у клиента появится подписка" => {
             "The days will be added as soon as you have a subscription.".into()
         }
+        prize::CUSTOM_NOTE => "To get your prize, write to support.".into(),
         other => match other
             .strip_prefix("Промокод действует до ")
             .and_then(|rest| rest.strip_suffix('.'))
@@ -1575,6 +1973,12 @@ fn client_contest(
     let result = match (status, entry) {
         (Status::Finished, Some(entry)) => Some(ClientResult {
             won: entry.place.is_some(),
+            place: entry.place,
+            prize_label: entry
+                .place
+                .and_then(|p| u32::try_from(p).ok())
+                .and_then(|p| prize.prize_for(p))
+                .map(Prize::label),
             excluded: entry.excluded.as_deref().map(|reason| {
                 if reason == ANTIBOT_EXCLUDED {
                     shown_exclusion(UNAVAILABLE)
@@ -1591,6 +1995,7 @@ fn client_contest(
     Ok(ClientContest {
         id: row.id,
         prize_label: prize.label(),
+        prizes: prize.places(winners_of(&row)),
         prize,
         winners: winners_of(&row),
         starts_at: row.starts_at,
@@ -1997,7 +2402,28 @@ async fn issue_one(
     if row.canceled_at.is_some() || !matches!(state, "pending" | "waiting") {
         return Ok(false);
     }
-    let prize = parse_prize(&row)?;
+    let config = parse_prize(&row)?;
+    let place = entry
+        .place
+        .and_then(|p| u32::try_from(p).ok())
+        .unwrap_or_default();
+    let Some(prize) = config.prize_for(place).cloned() else {
+        store::set_prize(
+            &mut tx,
+            contest_id,
+            client_id.0,
+            &store::PrizeUpdate {
+                state: "failed",
+                note: None,
+                code: None,
+                error: Some("Для этого места в конкурсе нет приза"),
+                at: None,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    };
     let offset = offset(&mut tx).await?;
     let blocked: bool = sqlx::query_scalar(
         "SELECT status <> 'active' OR deleted_at IS NOT NULL FROM clients WHERE id = $1",
@@ -2007,7 +2433,14 @@ async fn issue_one(
     .await
     .map_err(StoreError::from)?
     .unwrap_or(true);
-    let base = serde_json::json!({ "title": row.title, "prize": prize.label(), "prize_data": prize, "contest_id": contest_id });
+    let base = serde_json::json!({
+        "title": row.title,
+        "prize": prize.label(),
+        "prize_data": &prize,
+        "contest_id": contest_id,
+        "place": place,
+        "tiered": config.is_tiered(),
+    });
     if blocked {
         store::set_prize(
             &mut tx,
@@ -2036,14 +2469,14 @@ async fn issue_one(
         tx.commit().await?;
         return Ok(false);
     }
-    match prize {
+    match &prize {
         Prize::Balance { amount } => {
             let currency = installation_currency(&mut tx).await?;
-            prize::check_currency(prize, currency)?;
+            prize::check_currency(&prize, currency)?;
             prize::credit(
                 &mut tx,
                 client_id,
-                amount,
+                *amount,
                 LedgerKind::Contest,
                 format!("contest:{contest_id}:{}", client_id.0),
                 format!("Приз конкурса «{}»", row.title),
@@ -2067,10 +2500,10 @@ async fn issue_one(
             percent,
             valid_days,
         } => {
-            let until = prize::promo_until(now, valid_days);
+            let until = prize::promo_until(now, *valid_days);
             let code = prize::personal_code(
                 &mut tx,
-                PromoKind::Percent { percent },
+                PromoKind::Percent { percent: *percent },
                 Some(until),
                 &format!("Приз конкурса «{}», клиент #{}", row.title, client_id.0),
                 client_id,
@@ -2150,7 +2583,7 @@ async fn issue_one(
             tx.commit().await?;
             let applied = ctx
                 .core
-                .add_days(sub.id, days, &format!("конкурс «{}»", row.title))
+                .add_days(sub.id, *days, &format!("конкурс «{}»", row.title))
                 .await;
             let mut conn = ctx.store.conn().await?;
             match applied {
@@ -2216,6 +2649,45 @@ async fn issue_one(
                     Ok(false)
                 }
             }
+        }
+        Prize::Custom { .. } => {
+            let note = prize.note().unwrap_or(prize::CUSTOM_NOTE).to_string();
+            store::set_prize(
+                &mut tx,
+                contest_id,
+                client_id.0,
+                &store::PrizeUpdate {
+                    state: "manual",
+                    note: Some(&note),
+                    code: None,
+                    error: None,
+                    at: None,
+                },
+            )
+            .await?;
+            store::log(
+                &mut tx,
+                contest_id,
+                "prize_manual",
+                &format!(
+                    "Клиенту #{} положен свой приз «{}» — его выдаёт администратор",
+                    client_id.0,
+                    prize.label()
+                ),
+                serde_json::json!({ "client_id": client_id.0, "place": place }),
+            )
+            .await?;
+            tx.commit().await?;
+            notify_winner(
+                ctx,
+                contest_id,
+                client_id,
+                TEMPLATE_WON,
+                with(base, &note, None),
+                "issued",
+            )
+            .await;
+            Ok(true)
         }
         Prize::Empty => {
             finish(&mut tx, contest_id, client_id, "Без приза", None, now).await?;
@@ -2329,7 +2801,7 @@ async fn queue_one(ctx: &ModuleContext, message_id: i64) -> Result<bool, ModuleE
     let rendered = render(
         &message.text,
         &row.title,
-        prize,
+        &prize,
         winners_of(&row),
         row.ends_at,
         offset,

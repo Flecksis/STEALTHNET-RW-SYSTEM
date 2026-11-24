@@ -244,6 +244,18 @@ fn уведомления_и_их_параметры_по_английски() {
         won.contains("The days are already added to your subscription."),
         "{won}"
     );
+    let placed = render(
+        "contest_won",
+        serde_json::json!({
+            "title": "Зимний", "prize": "Мерч", "place": 2, "tiered": true,
+            "prize_data": { "kind": "custom", "title": "Мерч" },
+            "note": sn_modules::catalog::prize::CUSTOM_NOTE
+        }),
+    );
+    assert_eq!(
+        placed,
+        "You took 2nd place in the “Зимний” giveaway!\nPrize: Мерч. To get your prize, write to support."
+    );
     let russian = sn_services::bot_content::BotContent::default();
     let plain = crate::notify::render(
         &russian.content,
@@ -282,7 +294,7 @@ async fn конкурс_в_боте_по_английски_с_условиям�
         &ContestDraft {
             title: "Зимний розыгрыш".into(),
             description: None,
-            prize: PrizeDraft::Days { days: 7 },
+            prize: PrizeDraft::Days { days: 7 }.into(),
             winners: 2,
             starts_at: None,
             ends_at: Utc::now() + Duration::days(3),
@@ -317,5 +329,40 @@ async fn конкурс_в_боте_по_английски_с_условиям�
     assert!(card.contains("Results on "), "{card}");
     assert!(!card.contains("Итоги"), "{card}");
     assert!(last_labels(&server).await.contains(&"Join".to_string()));
+    let tiered = contests::create(
+        &services.module_context(),
+        &ContestDraft {
+            title: "По местам".into(),
+            description: None,
+            prize: contests::PrizeConfigDraft::Tiered(vec![
+                contests::PrizeTierDraft {
+                    from_place: 1,
+                    to_place: 1,
+                    prize: PrizeDraft::Days { days: 30 },
+                },
+                contests::PrizeTierDraft {
+                    from_place: 2,
+                    to_place: 3,
+                    prize: PrizeDraft::Days { days: 7 },
+                },
+            ]),
+            winners: 0,
+            starts_at: None,
+            ends_at: Utc::now() + Duration::days(3),
+            conditions: ConditionsDraft::default(),
+            messages: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    handle_update(&ctx, english_callback(3, 955, &format!("ct:{}", tiered.id))).await;
+    let card = last_text(&server).await;
+    assert!(
+        card.contains(
+            "Prizes:\n1st\u{a0}place — +30\u{a0}days of subscription\n2nd–3rd\u{a0}place — +7\u{a0}days of subscription\nWinners: 3."
+        ),
+        "{card}"
+    );
     db.cleanup().await;
 }

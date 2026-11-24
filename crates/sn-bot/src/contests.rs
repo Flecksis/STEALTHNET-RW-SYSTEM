@@ -27,14 +27,33 @@ fn card_text(c: &BotContent, contest: &ClientContest, offset: FixedOffset) -> St
     if let Some(description) = &contest.description {
         lines.add(escape(description));
     }
-    lines.add(ui::text(
-        c,
-        "contest.prize",
-        &[
-            ("prize", Text(&contest.prize_label)),
-            ("winners", Text(&contest.winners.to_string())),
-        ],
-    ));
+    if contest.prize.is_tiered() {
+        lines.add(ui::text(c, "contest.prizes", &[]));
+        for place in &contest.prizes {
+            lines.add(ui::text(
+                c,
+                "contest.prize_line",
+                &[
+                    ("places", Text(&place.places)),
+                    ("prize", Text(&place.label)),
+                ],
+            ));
+        }
+        lines.add(ui::text(
+            c,
+            "contest.winners",
+            &[("winners", Text(&contest.winners.to_string()))],
+        ));
+    } else {
+        lines.add(ui::text(
+            c,
+            "contest.prize",
+            &[
+                ("prize", Text(&contest.prize_label)),
+                ("winners", Text(&contest.winners.to_string())),
+            ],
+        ));
+    }
     lines.add(ui::text(
         c,
         "contest.until",
@@ -69,17 +88,31 @@ fn card_text(c: &BotContent, contest: &ClientContest, offset: FixedOffset) -> St
         Status::Drawing => lines.add(ui::text(c, "contest.drawing", &[])),
         Status::Finished => match &contest.result {
             Some(result) if result.won => {
-                lines.add(ui::text(
-                    c,
-                    "contest.won",
-                    &[
-                        ("prize", Text(&contest.prize_label)),
-                        (
-                            "result",
-                            Text(result.prize_note.as_deref().unwrap_or_default()),
-                        ),
-                    ],
-                ));
+                let prize = result
+                    .prize_label
+                    .as_deref()
+                    .unwrap_or(&contest.prize_label);
+                let note = result.prize_note.as_deref().unwrap_or_default();
+                let place = result
+                    .place
+                    .and_then(|p| u32::try_from(p).ok())
+                    .filter(|_| contest.prize.is_tiered());
+                match place {
+                    Some(place) => lines.add(ui::text(
+                        c,
+                        "contest.won_place",
+                        &[
+                            ("place", Text(&contests::place_word(place))),
+                            ("prize", Text(prize)),
+                            ("result", Text(note)),
+                        ],
+                    )),
+                    None => lines.add(ui::text(
+                        c,
+                        "contest.won",
+                        &[("prize", Text(prize)), ("result", Text(note))],
+                    )),
+                }
                 if let Some(code) = &result.prize_code {
                     lines.add(ui::text(c, "contest.won_code", &[("code", Text(code))]));
                 }
