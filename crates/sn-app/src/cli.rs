@@ -30,6 +30,19 @@ pub enum Command {
         password_stdin: bool,
     },
     GenSecretKey,
+    ModuleKeygen {
+        file: String,
+    },
+    ModulePack {
+        dir: String,
+        key: Option<String>,
+        out: Option<String>,
+    },
+    ModuleUnpack {
+        package: String,
+        out: String,
+        platform: Option<String>,
+    },
     Version,
     Help,
 }
@@ -69,6 +82,11 @@ pub const USAGE: &str = "stealthnet — панель продажи VPN пове
                                 пароль зашифрованной копии — из SN_BACKUP_PASSWORD или
                                 первой строки stdin с --password-stdin
   gen-secret-key                напечатать новый ключ для SN_SECRET_KEY
+  module keygen <файл>          создать ключ подписи архивов модулей; файл не перезаписывается
+  module pack <папка> [--key <файл>] [--out <архив.zip>]
+                                собрать архив модуля из папки с module.json и образами
+                                image-linux-amd64.tar и image-linux-arm64.tar (docker save),
+                                проверить его и подписать ключом из module keygen
   version                       показать версию
   help                          эта справка";
 
@@ -194,6 +212,65 @@ pub fn parse(args: &[String]) -> Result<Command> {
             Command::UnlockLogin {
                 email: email(found)?,
                 addresses,
+            }
+        }
+        "module" => match rest.next().map(String::as_str) {
+            Some("keygen") => {
+                let file = rest.next().cloned().ok_or_else(|| {
+                    anyhow!("укажите файл ключа: stealthnet module keygen <файл>")
+                })?;
+                if let Some(extra) = rest.next() {
+                    bail!("лишний аргумент: {extra}");
+                }
+                Command::ModuleKeygen { file }
+            }
+            Some("pack") => {
+                let mut dir = None;
+                let mut key = None;
+                let mut out = None;
+                while let Some(arg) = rest.next() {
+                    if let Some(value) = option(arg, "--key", &mut rest)? {
+                        key = Some(value);
+                    } else if let Some(value) = option(arg, "--out", &mut rest)? {
+                        out = Some(value);
+                    } else if arg.starts_with('-') {
+                        bail!("неизвестный аргумент: {arg}");
+                    } else if dir.is_none() {
+                        dir = Some(arg.clone());
+                    } else {
+                        bail!("лишний аргумент: {arg}");
+                    }
+                }
+                Command::ModulePack {
+                    dir: dir.ok_or_else(|| {
+                        anyhow!("укажите папку модуля: stealthnet module pack <папка>")
+                    })?,
+                    key,
+                    out,
+                }
+            }
+            Some(other) => bail!("после module нужно keygen или pack, а не {other}"),
+            None => bail!("после module нужно keygen или pack"),
+        },
+        "module-unpack" => {
+            let mut paths = Vec::new();
+            let mut platform = None;
+            while let Some(arg) = rest.next() {
+                if let Some(value) = option(arg, "--platform", &mut rest)? {
+                    platform = Some(value);
+                } else if arg.starts_with('-') {
+                    bail!("неизвестный аргумент: {arg}");
+                } else {
+                    paths.push(arg.clone());
+                }
+            }
+            let [package, out]: [String; 2] = paths
+                .try_into()
+                .map_err(|_| anyhow!("нужно: module-unpack <архив> <папка>"))?;
+            Command::ModuleUnpack {
+                package,
+                out,
+                platform,
             }
         }
         other => bail!("неизвестная команда: {other}\n\n{USAGE}"),

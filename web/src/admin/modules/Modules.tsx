@@ -4,6 +4,7 @@ import { api, ApiError } from '../../lib/api';
 import { useSession } from '../session';
 import { extLink, type ExtCard, type ExtSummary } from './ext';
 import { GROUPS, setupLink, setupText, type ModulesData, type ModuleView } from './model';
+import { stateTitle } from './package';
 import '../form.css';
 import './modules.css';
 import './ext.css';
@@ -71,6 +72,9 @@ export function Modules() {
     try {
       const card = await api<ExtCard>(`/api/admin/ext-modules/${m.id}`, { method: 'PATCH', body: { enabled } });
       swap({ ...m, enabled: card.enabled, warning: card.warning });
+      if (m.managed) {
+        await load();
+      }
     } catch (err) {
       swap(m);
       setError(failText(err, `Модуль «${m.name}» не переключился`));
@@ -200,9 +204,15 @@ export function Modules() {
                   <div className="md-text">
                     <span className="md-name">{m.name}</span>
                     {m.description ? <span className="md-desc">{m.description}</span> : null}
-                    <span className="md-where">
-                      Внешний · версия {m.version} · {m.author}
-                    </span>
+                    {m.managed ? (
+                      <span className="md-where">
+                        <span className={m.state === 'running' ? 'mz-state ok' : 'mz-state'}>{stateTitle(m.state)}</span> · {m.version}
+                      </span>
+                    ) : (
+                      <span className="md-where">
+                        Внешний · версия {m.version} · {m.author}
+                      </span>
+                    )}
                     {m.enabled && m.warning ? <span className="md-warn">{m.warning}</span> : null}
                   </div>
                   <Link to={extLink(m.id)} className="md-link" aria-label={`Открыть: ${m.name}`}>

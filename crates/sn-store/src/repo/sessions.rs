@@ -178,6 +178,31 @@ impl<'c> SessionsRepo<'c> {
         ))
     }
 
+    pub async fn admin_by_id(
+        &mut self,
+        session_id: i64,
+        admin_id: AdminId,
+    ) -> StoreResult<Option<AdminSessionRecord>> {
+        let row: Option<(i64, i64, DateTime<Utc>, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT s.id, s.admin_id, s.expires_at, s.last_seen_at FROM admin_sessions s \
+             JOIN admins a ON a.id = s.admin_id \
+             WHERE s.id = $1 AND s.admin_id = $2 AND s.revoked_at IS NULL AND s.expires_at > now() \
+             AND a.disabled_at IS NULL AND NOT a.must_change_password",
+        )
+        .bind(session_id)
+        .bind(admin_id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(row.map(
+            |(id, admin_id, expires_at, last_seen_at)| AdminSessionRecord {
+                id,
+                admin_id: AdminId(admin_id),
+                expires_at,
+                last_seen_at,
+            },
+        ))
+    }
+
     pub async fn touch_admin(&mut self, session_id: i64) -> StoreResult<()> {
         sqlx::query("UPDATE admin_sessions SET last_seen_at = now() WHERE id = $1")
             .bind(session_id)

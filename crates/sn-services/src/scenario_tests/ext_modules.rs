@@ -531,12 +531,17 @@ async fn удаление_отзывает_ключ_и_стирает_секре
     assert_eq!(queued(&env).await, 1);
     let support = session(owner, AdminRole::Support, &[Permission::Modules]);
     assert_eq!(
-        code(services.ext_modules().remove(&support, "hello").await),
+        code(
+            services
+                .ext_modules()
+                .remove(&support, "hello", &Default::default())
+                .await
+        ),
         "auth.forbidden"
     );
     services
         .ext_modules()
-        .remove(&by_owner, "hello")
+        .remove(&by_owner, "hello", &Default::default())
         .await
         .unwrap();
     assert!(

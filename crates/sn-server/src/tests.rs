@@ -56,6 +56,7 @@ mod mail;
 mod mail_errors;
 mod migrated_providers;
 mod mini_account;
+mod module_packages;
 mod multi_subscriptions;
 mod oauth;
 mod password_reset;

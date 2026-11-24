@@ -117,3 +117,289 @@
     min-height: 420px;
   }
 }
+
+.mz-page {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 1120px;
+}
+
+.mz-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 16px 12px 20px;
+}
+
+.mz-file .adm-who {
+  flex: 1 1 240px;
+}
+
+.mz-bar {
+  display: block;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.mz-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.mz-problems {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 20px 16px;
+}
+
+.mz-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px;
+  align-items: start;
+}
+
+.mz-main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.mz-side {
+  position: sticky;
+  top: 20px;
+}
+
+.adm[data-layout='top'] .mz-side {
+  top: 86px;
+}
+
+.mz-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px 20px;
+}
+
+.mz-title {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.mz-meta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.mz-meta .ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.mz-desc {
+  color: var(--ink-2);
+}
+
+.mz-plain {
+  color: var(--ink);
+  font-size: 15.5px;
+  line-height: 1.55;
+  max-width: 62ch;
+  text-wrap: pretty;
+}
+
+.mz-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.mz-decide {
+  display: flex;
+  flex-direction: column;
+}
+
+.mz-decide .mz-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 20px 20px;
+}
+
+.mz-decide .upd-field {
+  flex: 0 0 auto;
+  max-width: none;
+}
+
+.mz-decide .upd-steps {
+  margin: 0;
+}
+
+.mz-wide {
+  width: 100%;
+}
+
+.mz-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mz-check input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.mz-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+
+.mz-fields .upd-field {
+  flex: 1 1 200px;
+  max-width: 260px;
+}
+
+.mz-confirm-row {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.mz-erase {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mz-erase .cap {
+  padding-left: 28px;
+}
+
+.mz-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 20px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mz-more .cap {
+  font-weight: 400;
+}
+
+.mz-more svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.mz-more[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+.mz-ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--ink-2);
+}
+
+.mz-ol li {
+  text-wrap: pretty;
+}
+
+.mz-cmd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.mz-cmd code {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.mz-state {
+  font-weight: 700;
+}
+
+.mz-state.ok {
+  color: var(--ok);
+}
+
+.mz-split {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.mz-log {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 840px) {
+  .mz-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mz-side {
+    position: static;
+  }
+}
+
+.adm[data-layout='phone'] .mz-fields .upd-field {
+  max-width: none;
+}
+
+.adm[data-layout='phone'] .mz-title {
+  font-size: 19px;
+}
+
+.adm[data-layout='phone'] .mz-plain {
+  font-size: 15px;
+}

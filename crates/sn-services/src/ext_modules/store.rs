@@ -18,6 +18,10 @@ pub struct ModuleRow {
     pub installed_by_email: String,
     pub installed_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub managed: bool,
+    pub package: Option<Value>,
+    pub job: Option<Value>,
+    pub health: Option<Value>,
 }
 
 impl ModuleRow {
@@ -36,10 +40,14 @@ struct RawModule {
     installed_by_email: String,
     installed_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    managed: bool,
+    package: Option<Json<Value>>,
+    job: Option<Json<Value>>,
+    health: Option<Json<Value>>,
 }
 
 const COLUMNS: &str = "m.manifest, m.enabled, m.config, m.api_key_id, m.installed_by, \
-     a.email AS installed_by_email, m.installed_at, m.updated_at";
+     a.email AS installed_by_email, m.installed_at, m.updated_at, m.managed, m.package, m.job, m.health";
 
 fn row(raw: RawModule) -> ServiceResult<ModuleRow> {
     let manifest: Manifest = serde_json::from_value(raw.manifest.0).map_err(|e| {
@@ -54,6 +62,10 @@ fn row(raw: RawModule) -> ServiceResult<ModuleRow> {
         installed_by_email: raw.installed_by_email,
         installed_at: raw.installed_at,
         updated_at: raw.updated_at,
+        managed: raw.managed,
+        package: raw.package.map(|v| v.0),
+        job: raw.job.map(|v| v.0),
+        health: raw.health.map(|v| v.0),
     })
 }
 
@@ -199,6 +211,67 @@ pub async fn set_key(db: &mut impl Db, id: &str, key_id: i64, by: AdminId) -> Se
     .execute(db.conn())
     .await?;
     Ok(())
+}
+
+pub async fn insert_managed(
+    db: &mut impl Db,
+    manifest: &Manifest,
+    api_key_id: i64,
+    package: &Value,
+    job: &Value,
+    by: AdminId,
+) -> ServiceResult<()> {
+    sqlx::query(
+        "INSERT INTO ext_modules (id, manifest, events, api_key_id, installed_by, updated_by, managed, package, job) \
+         VALUES ($1, $2, $3, $4, $5, $5, true, $6, $7)",
+    )
+    .bind(&manifest.id)
+    .bind(Json(manifest_json(manifest)?))
+    .bind(&manifest.events)
+    .bind(api_key_id)
+    .bind(by.0)
+    .bind(Json(package))
+    .bind(Json(job))
+    .execute(db.conn())
+    .await?;
+    Ok(())
+}
+
+pub async fn set_package(db: &mut impl Db, id: &str, package: &Value) -> ServiceResult<()> {
+    sqlx::query("UPDATE ext_modules SET package = $2 WHERE id = $1")
+        .bind(id)
+        .bind(Json(package))
+        .execute(db.conn())
+        .await?;
+    Ok(())
+}
+
+pub async fn set_job(db: &mut impl Db, id: &str, job: &Value) -> ServiceResult<()> {
+    sqlx::query("UPDATE ext_modules SET job = $2 WHERE id = $1")
+        .bind(id)
+        .bind(Json(job))
+        .execute(db.conn())
+        .await?;
+    Ok(())
+}
+
+pub async fn set_health(db: &mut impl Db, id: &str, health: &Value) -> ServiceResult<()> {
+    sqlx::query("UPDATE ext_modules SET health = $2 WHERE id = $1")
+        .bind(id)
+        .bind(Json(health))
+        .execute(db.conn())
+        .await?;
+    Ok(())
+}
+
+pub async fn managed_enabled(db: &mut impl Db) -> ServiceResult<Vec<ModuleRow>> {
+    let rows: Vec<RawModule> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM ext_modules m JOIN admins a ON a.id = m.installed_by \
+         WHERE m.managed AND m.enabled ORDER BY m.id"
+    ))
+    .fetch_all(db.conn())
+    .await?;
+    rows.into_iter().map(row).collect()
 }
 
 pub async fn delete(db: &mut impl Db, id: &str) -> ServiceResult<bool> {

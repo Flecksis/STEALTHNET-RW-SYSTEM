@@ -23,6 +23,8 @@ fn config(server: &MockServer, arch: &str) -> UpdateConfig {
         repository: "stealthnet-app/stealthnet-rw-system".into(),
         tag: "main".into(),
         checks_allowed: true,
+        helper_why: None,
+        modules_host: None,
     }
 }
 

@@ -43,9 +43,11 @@ export function ExtPage() {
     if (!page) {
       return;
     }
+    const expected = page.proxied ? 'null' : page.origin;
+    const reply = page.proxied ? '*' : page.origin;
     const answer = async (event: MessageEvent) => {
       const target = frame.current?.contentWindow;
-      if (!target || event.source !== target || event.origin !== page.origin) {
+      if (!target || event.source !== target || event.origin !== expected) {
         return;
       }
       const data = event.data as { type?: unknown } | null;
@@ -54,9 +56,9 @@ export function ExtPage() {
       }
       try {
         const fresh = await api<PageToken>(`/api/admin/ext-modules/${pathPart(id)}/page-token`, { method: 'POST', body: {} });
-        target.postMessage({ type: TOKEN_MESSAGE, token: fresh.token, expires_at: fresh.expires_at }, page.origin);
+        target.postMessage({ type: TOKEN_MESSAGE, token: fresh.token, expires_at: fresh.expires_at }, reply);
       } catch {
-        target.postMessage({ type: TOKEN_MESSAGE, token: null, expires_at: null }, page.origin);
+        target.postMessage({ type: TOKEN_MESSAGE, token: null, expires_at: null }, reply);
       }
     };
     const listener = (event: MessageEvent) => void answer(event);
@@ -64,8 +66,9 @@ export function ExtPage() {
     return () => window.removeEventListener('message', listener);
   }, [id, page]);
 
-  const sameOrigin = page !== null && page.origin === window.location.origin;
+  const isolated = page !== null && (page.proxied || page.origin === window.location.origin);
   const title = card?.page?.title ?? card?.name ?? 'Страница модуля';
+  const where = page?.proxied ? 'через панель' : (page?.origin ?? '');
 
   return (
     <div className="md ext-frame-page">
@@ -76,7 +79,7 @@ export function ExtPage() {
         <h1 className="page-title tight">{title}</h1>
         {card ? (
           <span className="md-where">
-            Страница внешнего модуля «{card.name}» · {page?.origin ?? ''}
+            Страница внешнего модуля «{card.name}» · {where}
           </span>
         ) : null}
       </div>
@@ -91,7 +94,7 @@ export function ExtPage() {
           className="card ext-frame"
           title={title}
           src={page.url}
-          sandbox={sameOrigin ? SANDBOX : `${SANDBOX} allow-same-origin`}
+          sandbox={isolated ? SANDBOX : `${SANDBOX} allow-same-origin`}
           referrerPolicy="no-referrer"
         />
       ) : !error ? (

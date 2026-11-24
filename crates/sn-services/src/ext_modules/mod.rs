@@ -1,6 +1,10 @@
 pub mod address;
 pub mod delivery;
 pub mod manifest;
+pub mod package;
+pub mod packages;
+pub mod proxy;
+pub mod runtime;
 pub mod signing;
 pub mod store;
 #[cfg(test)]
@@ -99,6 +103,7 @@ pub struct PermissionView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PageView {
     pub url: String,
+    pub path: Option<String>,
     pub title: String,
     pub permission: Permission,
     pub permission_title: &'static str,
@@ -147,6 +152,7 @@ fn moved_addresses(manifest: &Manifest, old: Option<&Manifest>) -> Vec<Moved> {
 fn page_view(manifest: &Manifest) -> Option<PageView> {
     manifest.page.as_ref().map(|page| PageView {
         url: page.url.clone(),
+        path: page.path.clone(),
         title: page.title.clone(),
         permission: page.permission,
         permission_title: permission_title(page.permission),
@@ -298,6 +304,8 @@ pub struct Summary {
     pub has_settings: bool,
     pub page: Option<PageView>,
     pub warning: Option<String>,
+    pub managed: bool,
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -320,6 +328,7 @@ pub struct Card {
     pub updated_at: DateTime<Utc>,
     pub stats: Stats,
     pub warning: Option<String>,
+    pub managed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -376,6 +385,7 @@ pub struct PageToken {
     pub origin: String,
     pub token: String,
     pub expires_at: DateTime<Utc>,
+    pub proxied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -565,6 +575,32 @@ fn blank(value: &Value) -> bool {
     }
 }
 
+pub(crate) fn build_preview(manifest: Manifest, existing: Option<&ModuleRow>) -> Preview {
+    let old = existing.map(|row| &row.manifest);
+    let permissions = permissions_diff(&manifest, old);
+    Preview {
+        moved: moved_addresses(&manifest, old),
+        sensitive: permissions
+            .iter()
+            .any(|p| p.sensitive && p.change != Change::Removed),
+        events: events_diff(&manifest, old),
+        permissions,
+        page: page_view(&manifest),
+        settings: manifest.settings.iter().map(|f| f.label.clone()).collect(),
+        installed: existing.map(|row| InstalledVersion {
+            version: row.manifest.version.clone(),
+            enabled: row.enabled,
+        }),
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        author: manifest.author,
+        description: manifest.description,
+        site: manifest.site,
+        webhook: manifest.webhook,
+    }
+}
+
 pub struct ExtModulesOps<'a> {
     services: &'a Services,
 }
@@ -675,32 +711,21 @@ impl<'a> ExtModulesOps<'a> {
             let mut conn = self.services.store().conn().await?;
             store::get(&mut conn, &manifest.id).await?
         };
-        let old = existing.as_ref().map(|row| &row.manifest);
-        let permissions = permissions_diff(&manifest, old);
-        let moved = moved_addresses(&manifest, old);
+        if let Some(row) = existing.as_ref().filter(|row| row.managed) {
+            return Ok(PreviewResult {
+                errors: vec![problem(
+                    "id",
+                    format!(
+                        "модуль «{}» установлен из архива: обновляйте его новым архивом",
+                        row.manifest.name
+                    ),
+                )],
+                preview: None,
+            });
+        }
         Ok(PreviewResult {
             errors,
-            preview: Some(Preview {
-                moved,
-                sensitive: permissions
-                    .iter()
-                    .any(|p| p.sensitive && p.change != Change::Removed),
-                events: events_diff(&manifest, old),
-                permissions,
-                page: page_view(&manifest),
-                settings: manifest.settings.iter().map(|f| f.label.clone()).collect(),
-                installed: existing.as_ref().map(|row| InstalledVersion {
-                    version: row.manifest.version.clone(),
-                    enabled: row.enabled,
-                }),
-                id: manifest.id,
-                name: manifest.name,
-                version: manifest.version,
-                author: manifest.author,
-                description: manifest.description,
-                site: manifest.site,
-                webhook: manifest.webhook,
-            }),
+            preview: Some(build_preview(manifest, existing.as_ref())),
         })
     }
 
@@ -829,6 +854,15 @@ impl<'a> ExtModulesOps<'a> {
                     signing_secret: secret,
                 })
             }
+            Some(row) if row.managed => {
+                return Err(rejected(
+                    "ext_modules.managed",
+                    format!(
+                        "Модуль «{}» установлен из архива: обновляйте его новым архивом",
+                        row.manifest.name
+                    ),
+                ));
+            }
             Some(row) => {
                 let moved = moved_addresses(&manifest, Some(&row.manifest));
                 if !moved.iter().all(|m| request.confirms(m)) {
@@ -908,6 +942,7 @@ impl<'a> ExtModulesOps<'a> {
         if !actor.can(Permission::Modules) {
             return Err(ServiceError::Forbidden);
         }
+        self.settle_all().await?;
         let rows = {
             let mut conn = self.services.store().conn().await?;
             store::list(&mut conn).await?
@@ -916,6 +951,8 @@ impl<'a> ExtModulesOps<'a> {
         for row in rows {
             let (key, stats) = self.view_parts(&row).await?;
             out.push(Summary {
+                managed: row.managed,
+                state: self.state_of(&row),
                 warning: warning(&row, &key, &stats, self.loopback()),
                 id: row.manifest.id.clone(),
                 name: row.manifest.name.clone(),
@@ -934,6 +971,7 @@ impl<'a> ExtModulesOps<'a> {
         let row = self.row(id).await?;
         let (key, stats) = self.view_parts(&row).await?;
         Ok(Card {
+            managed: row.managed,
             warning: warning(&row, &key, &stats, self.loopback()),
             events: events_diff(&row.manifest, None),
             permissions: permissions_diff(&row.manifest, None),
@@ -959,6 +997,7 @@ impl<'a> ExtModulesOps<'a> {
         if !actor.can(Permission::Modules) {
             return Err(ServiceError::Forbidden);
         }
+        self.settle(id).await?;
         self.card(id).await
     }
 
@@ -969,6 +1008,14 @@ impl<'a> ExtModulesOps<'a> {
         enabled: bool,
     ) -> ServiceResult<Card> {
         manager(actor)?;
+        let current = self.row(id).await?;
+        if current.managed {
+            if current.enabled != enabled {
+                self.switch_managed(actor, id, enabled).await?;
+                proxy::forget(id);
+            }
+            return self.card(id).await;
+        }
         let mut tx = self.services.store().begin().await?;
         let row = store::lock(&mut tx, id).await?.ok_or_else(missing)?;
         if row.enabled != enabled {
@@ -990,8 +1037,19 @@ impl<'a> ExtModulesOps<'a> {
         self.card(id).await
     }
 
-    pub async fn remove(&self, actor: &AdminPrincipal, id: &str) -> ServiceResult<()> {
+    pub async fn remove(
+        &self,
+        actor: &AdminPrincipal,
+        id: &str,
+        body: &packages::RemoveRequest,
+    ) -> ServiceResult<()> {
         installer(actor)?;
+        let current = self.row(id).await?;
+        if current.managed {
+            self.remove_managed(actor, &current, body).await?;
+            proxy::forget(id);
+            return Ok(());
+        }
         let mut tx = self.services.store().begin().await?;
         let row = store::lock(&mut tx, id).await?.ok_or_else(missing)?;
         let revoked = match row.api_key_id {
@@ -1019,8 +1077,17 @@ impl<'a> ExtModulesOps<'a> {
         Ok(())
     }
 
-    pub async fn reissue(&self, actor: &AdminPrincipal, id: &str) -> ServiceResult<Credentials> {
+    pub async fn reissue(
+        &self,
+        actor: &AdminPrincipal,
+        id: &str,
+    ) -> ServiceResult<packages::Reissued> {
         installer(actor)?;
+        if self.row(id).await?.managed {
+            let reissued = self.reissue_managed(actor, id).await?;
+            proxy::forget(id);
+            return Ok(reissued);
+        }
         let mut tx = self.services.store().begin().await?;
         let row = store::lock(&mut tx, id).await?.ok_or_else(missing)?;
         if let Some(first) = self
@@ -1049,9 +1116,12 @@ impl<'a> ExtModulesOps<'a> {
             ))
             .await?;
         tx.commit().await?;
-        Ok(Credentials {
-            api_key: token,
-            signing_secret: secret,
+        Ok(packages::Reissued {
+            credentials: Some(Credentials {
+                api_key: token,
+                signing_secret: secret,
+            }),
+            runtime: None,
         })
     }
 
@@ -1318,7 +1388,15 @@ impl<'a> ExtModulesOps<'a> {
                 "Модуль выключен: включите его, чтобы проверить связь",
             ));
         }
-        if row.manifest.webhook.is_none() {
+        let no_events = if row.managed {
+            row.manifest
+                .run
+                .as_ref()
+                .is_none_or(|r| r.events_path.is_none())
+        } else {
+            row.manifest.webhook.is_none()
+        };
+        if no_events {
             return Err(rejected(
                 "ext_modules.no_webhook",
                 "У модуля нет адреса для событий: проверять нечего",
@@ -1376,15 +1454,16 @@ impl<'a> ExtModulesOps<'a> {
                 "Модуль выключен: включите его, чтобы открыть страницу",
             ));
         }
-        if !self.loopback() && address::local(&page.url) {
+        if !row.managed && !self.loopback() && address::local(&page.url) {
             return Err(rejected("ext_modules.page", loopback_warning()));
         }
-        if self
-            .services
-            .settings()
-            .public_url
-            .as_deref()
-            .is_some_and(|panel| same_origin(&page.url, panel))
+        if !row.managed
+            && self
+                .services
+                .settings()
+                .public_url
+                .as_deref()
+                .is_some_and(|panel| same_origin(&page.url, panel))
         {
             return Err(rejected(
                 "ext_modules.page",
@@ -1423,6 +1502,32 @@ impl<'a> ExtModulesOps<'a> {
         };
         let token = signing::page_token(&key, &claims)
             .ok_or_else(|| ServiceError::Internal("токен страницы не подписан".into()))?;
+        if row.managed {
+            let cap = proxy::cap(
+                &key,
+                id,
+                actor.admin_id.0,
+                actor.session_id,
+                (now + Duration::hours(proxy::CAP_HOURS)).timestamp(),
+            );
+            let path = page.path.as_deref().unwrap_or("/");
+            let mut url = reqwest::Url::parse("http://panel.invalid")
+                .and_then(|base| base.join(&format!("{}{id}/{cap}{path}", proxy::PREFIX)))
+                .map_err(|_| rejected("ext_modules.page", "Адрес страницы модуля не разобран"))?;
+            url.query_pairs_mut()
+                .append_pair(signing::TOKEN_PARAM, &token);
+            let relative = match url.query() {
+                Some(query) => format!("{}?{query}", url.path()),
+                None => url.path().to_string(),
+            };
+            return Ok(PageToken {
+                origin: "null".into(),
+                url: relative,
+                token,
+                expires_at,
+                proxied: true,
+            });
+        }
         let mut url = reqwest::Url::parse(&page.url)
             .map_err(|_| rejected("ext_modules.page", "Адрес страницы модуля не разобран"))?;
         url.query_pairs_mut()
@@ -1432,6 +1537,7 @@ impl<'a> ExtModulesOps<'a> {
             url: url.to_string(),
             token,
             expires_at,
+            proxied: false,
         })
     }
 

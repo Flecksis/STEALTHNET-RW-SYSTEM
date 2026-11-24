@@ -227,6 +227,89 @@ pub fn client(loopback: bool) -> &'static reqwest::Client {
     })
 }
 
+pub fn inside(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            v4.is_loopback() || v4.is_private() || (a == 100 && (64..128).contains(&b))
+        }
+        IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outside(pub IpAddr);
+
+impl fmt::Display for Outside {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "адрес {} — не из сети модулей на этом сервере", self.0)
+    }
+}
+
+impl Error for Outside {}
+
+struct Inside;
+
+impl Resolve for Inside {
+    fn resolve(&self, name: Name) -> Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let addrs: Vec<SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("модуль {host} не найден в сети модулей"),
+                )) as Box<dyn Error + Send + Sync>);
+            }
+            if let Some(ip) = addrs.iter().map(SocketAddr::ip).find(|ip| !inside(*ip)) {
+                return Err(Box::new(Outside(ip)) as Box<dyn Error + Send + Sync>);
+            }
+            Ok(Box::new(addrs.into_iter()) as Addrs)
+        })
+    }
+}
+
+fn inside_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .dns_resolver(Arc::new(Inside))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
+}
+
+pub fn internal_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        inside_builder()
+            .timeout(TIMEOUT)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+pub fn page_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        inside_builder()
+            .read_timeout(Duration::from_secs(120))
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+pub fn outside_in(err: &(dyn Error + 'static)) -> Option<Outside> {
+    let mut current: Option<&(dyn Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(outside) = e.downcast_ref::<Outside>() {
+            return Some(*outside);
+        }
+        current = e.source();
+    }
+    None
+}
+
 pub fn blocked_in(err: &(dyn Error + 'static)) -> Option<Blocked> {
     let mut current: Option<&(dyn Error + 'static)> = Some(err);
     while let Some(e) = current {

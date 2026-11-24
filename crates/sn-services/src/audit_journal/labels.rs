@@ -826,6 +826,26 @@ pub const ACTIONS: &[ActionLabel] = &[
     a("ext_module.disabled", "Внешний модуль выключен", Area::Keys),
     a("ext_module.removed", "Внешний модуль удалён", Area::Keys),
     a(
+        "ext_module.package_installed",
+        "Запрошена установка модуля из архива",
+        Area::Keys,
+    ),
+    a(
+        "ext_module.package_updated",
+        "Запрошено обновление модуля из архива",
+        Area::Keys,
+    ),
+    a(
+        "ext_module.package_removed",
+        "Запрошено удаление модуля из архива",
+        Area::Keys,
+    ),
+    a(
+        "ext_module.restarted",
+        "Запрошен перезапуск модуля из архива",
+        Area::Keys,
+    ),
+    a(
         "ext_module.settings",
         "Изменены настройки внешнего модуля",
         Area::Keys,

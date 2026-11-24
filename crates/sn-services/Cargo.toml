@@ -41,6 +41,7 @@ aes-gcm.workspace = true
 scrypt.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+ring.workspace = true
 
 [dev-dependencies]
 sn-remnawave = { workspace = true, features = ["fake"] }

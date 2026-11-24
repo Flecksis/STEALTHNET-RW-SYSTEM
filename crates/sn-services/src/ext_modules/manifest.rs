@@ -20,8 +20,8 @@ const HINT_MAX: usize = 300;
 const OPTIONS_MAX: usize = 50;
 pub const TEXT_MAX: usize = 300;
 pub const LARGE_TEXT_MAX: usize = 4000;
-const RESERVED_IDS: [&str; 3] = ["me", "install", "ext"];
-const TOP_FIELDS: [&str; 12] = [
+const RESERVED_IDS: [&str; 5] = ["me", "install", "ext", "packages", "install-info"];
+const TOP_FIELDS: [&str; 13] = [
     "format",
     "id",
     "name",
@@ -34,8 +34,43 @@ const TOP_FIELDS: [&str; 12] = [
     "permissions",
     "page",
     "settings",
+    "run",
 ];
-const PAGE_FIELDS: [&str; 3] = ["url", "title", "permission"];
+const PAGE_FIELDS: [&str; 4] = ["url", "path", "title", "permission"];
+const RUN_FIELDS: [&str; 8] = [
+    "port",
+    "events_path",
+    "health_path",
+    "memory_mb",
+    "cpus",
+    "internet",
+    "volumes",
+    "images",
+];
+const VOLUME_FIELDS: [&str; 2] = ["name", "path"];
+const IMAGE_FIELDS: [&str; 3] = ["file", "sha256", "bytes"];
+pub const PLATFORMS: [(&str, &str); 2] = [
+    ("linux/amd64", "image-linux-amd64.tar"),
+    ("linux/arm64", "image-linux-arm64.tar"),
+];
+pub const PORT_MIN: u16 = 1024;
+pub const MEMORY_MIN_MB: u32 = 64;
+pub const MEMORY_MAX_MB: u32 = 2048;
+pub const MEMORY_DEFAULT_MB: u32 = 256;
+pub const CPU_MIN_TENTHS: u32 = 1;
+pub const CPU_MAX_TENTHS: u32 = 20;
+pub const CPU_DEFAULT_TENTHS: u32 = 10;
+pub const VOLUMES_MAX: usize = 3;
+pub const IMAGE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const INNER_PATH_MAX: usize = 200;
+const VOLUME_NAME_MAX: usize = 16;
+const RESERVED_MOUNTS: [&str; 5] = ["/proc", "/sys", "/dev", "/tmp", "/run"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    External,
+    Package,
+}
 const SETTING_FIELDS: [&str; 9] = [
     "key", "type", "label", "hint", "required", "default", "large", "options", "labels",
 ];
@@ -202,9 +237,51 @@ pub const fn sensitive(permission: Permission) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page {
+    #[serde(default)]
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub title: String,
     pub permission: Permission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Volume {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageFile {
+    pub platform: String,
+    pub file: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Run {
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_path: Option<String>,
+    pub health_path: String,
+    pub memory_mb: u32,
+    pub cpu_tenths: u32,
+    pub internet: bool,
+    #[serde(default)]
+    pub volumes: Vec<Volume>,
+    #[serde(default)]
+    pub images: Vec<ImageFile>,
+}
+
+impl Run {
+    pub fn image(&self, platform: &str) -> Option<&ImageFile> {
+        self.images.iter().find(|i| i.platform == platform)
+    }
+
+    pub fn cpus_text(&self) -> String {
+        format!("{}.{}", self.cpu_tenths / 10, self.cpu_tenths % 10)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,6 +341,14 @@ pub struct Manifest {
     pub permissions: Vec<Permission>,
     pub page: Option<Page>,
     pub settings: Vec<Field>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Run>,
+}
+
+impl Manifest {
+    pub const fn packaged(&self) -> bool {
+        self.run.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -528,7 +613,43 @@ fn url(
     }
 }
 
-fn page(map: &Map<String, Value>, name: &str, problems: &mut Problems) -> Option<Page> {
+pub fn inner_path_problem(raw: &str) -> Option<&'static str> {
+    if !raw.starts_with('/') {
+        return Some("путь внутри модуля начинается с /, например /events");
+    }
+    if raw.len() > INNER_PATH_MAX {
+        return Some("путь не длиннее 200 символов");
+    }
+    if !raw
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~'))
+    {
+        return Some("в пути только латинские буквы, цифры и знаки / - _ . ~");
+    }
+    if raw.contains("//") || raw.split('/').any(|part| part == "." || part == "..") {
+        return Some("в пути не бывает //, . и ..");
+    }
+    None
+}
+
+fn inner_path(
+    map: &Map<String, Value>,
+    key: &str,
+    path: &str,
+    required: bool,
+    problems: &mut Problems,
+) -> Option<String> {
+    let raw = text(map, key, path, INNER_PATH_MAX + 1, required, problems)?;
+    match inner_path_problem(&raw) {
+        Some(message) => {
+            problems.add(path, message);
+            None
+        }
+        None => Some(raw),
+    }
+}
+
+fn page(map: &Map<String, Value>, name: &str, kind: Kind, problems: &mut Problems) -> Option<Page> {
     let value = map.get("page")?;
     if value.is_null() {
         return None;
@@ -541,7 +662,29 @@ fn page(map: &Map<String, Value>, name: &str, problems: &mut Problems) -> Option
         return None;
     };
     unknown(page, &PAGE_FIELDS, "page", problems);
-    let url = url(page, "url", "page.url", true, problems);
+    let (url, path) = match kind {
+        Kind::External => {
+            if page.contains_key("path") {
+                problems.add(
+                    "page.path",
+                    "page.path бывает только в архиве модуля, для модуля на своём сервере укажите page.url",
+                );
+            }
+            (url(page, "url", "page.url", true, problems), None)
+        }
+        Kind::Package => {
+            if page.contains_key("url") {
+                problems.add(
+                    "page.url",
+                    "в архиве модуля адреса страницы нет: укажите page.path внутри контейнера, например \"/\"",
+                );
+            }
+            match inner_path(page, "path", "page.path", true, problems) {
+                Some(path) => (Some(String::new()), Some(path)),
+                None => (None, None),
+            }
+        }
+    };
     let title = text(page, "title", "page.title", PAGE_TITLE_MAX, false, problems)
         .unwrap_or_else(|| name.chars().take(PAGE_TITLE_MAX).collect());
     let permission = match page.get("permission") {
@@ -560,8 +703,315 @@ fn page(map: &Map<String, Value>, name: &str, problems: &mut Problems) -> Option
     };
     Some(Page {
         url: url?,
+        path,
         title,
         permission: permission?,
+    })
+}
+
+fn whole(
+    map: &Map<String, Value>,
+    key: &str,
+    path: &str,
+    range: std::ops::RangeInclusive<u64>,
+    problems: &mut Problems,
+) -> Option<u64> {
+    match map.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => match n.as_u64().filter(|v| range.contains(v)) {
+            Some(v) => Some(v),
+            None => {
+                problems.add(
+                    path,
+                    format!(
+                        "ожидается целое число от {} до {}",
+                        range.start(),
+                        range.end()
+                    ),
+                );
+                None
+            }
+        },
+        Some(_) => {
+            problems.add(path, "ожидается число без кавычек");
+            None
+        }
+    }
+}
+
+fn cpus(map: &Map<String, Value>, problems: &mut Problems) -> Option<u32> {
+    let value = map.get("cpus")?;
+    let parsed = value.as_f64().filter(|f| f.is_finite()).and_then(|f| {
+        let tenths = (f * 10.0).round();
+        ((f * 10.0 - tenths).abs() < 1e-6
+            && (f64::from(CPU_MIN_TENTHS)..=f64::from(CPU_MAX_TENTHS)).contains(&tenths))
+        .then_some(tenths as u32)
+    });
+    if parsed.is_none() {
+        problems.add(
+            "run.cpus",
+            "ожидается число ядер от 0.1 до 2 с шагом 0.1, например 0.5",
+        );
+    }
+    parsed
+}
+
+fn volumes(map: &Map<String, Value>, problems: &mut Problems) -> Vec<Volume> {
+    let items = match map.get("volumes") {
+        None | Some(Value::Null) => return Vec::new(),
+        Some(Value::Array(items)) => items,
+        Some(_) => {
+            problems.add("run.volumes", "ожидается список в квадратных скобках [ … ]");
+            return Vec::new();
+        }
+    };
+    if items.len() > VOLUMES_MAX {
+        problems.add(
+            "run.volumes",
+            format!("не больше {VOLUMES_MAX} папок данных"),
+        );
+        return Vec::new();
+    }
+    let mut out: Vec<Volume> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let path = format!("run.volumes[{i}]");
+        let Value::Object(volume) = item else {
+            problems.add(&path, "ожидается объект { \"name\": …, \"path\": … }");
+            continue;
+        };
+        unknown(volume, &VOLUME_FIELDS, &path, problems);
+        let name = text(
+            volume,
+            "name",
+            &format!("{path}.name"),
+            VOLUME_NAME_MAX + 10,
+            true,
+            problems,
+        )
+        .filter(|name| {
+            let ok = name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name.len() <= VOLUME_NAME_MAX
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+            if !ok {
+                problems.add(
+                    format!("{path}.name"),
+                    "до 16 символов: латинские буквы в нижнем регистре и цифры, первая — буква",
+                );
+            }
+            ok
+        });
+        let mount = inner_path(volume, "path", &format!("{path}.path"), true, problems).filter(
+            |mount| {
+                let trimmed = mount.trim_end_matches('/');
+                let bad = trimmed.is_empty()
+                    || RESERVED_MOUNTS
+                        .iter()
+                        .any(|r| trimmed == *r || trimmed.starts_with(&format!("{r}/")));
+                if bad {
+                    problems.add(
+                        format!("{path}.path"),
+                        "нельзя /, /proc, /sys, /dev, /tmp и /run: выберите свою папку, например /data",
+                    );
+                }
+                !bad
+            },
+        );
+        let (Some(name), Some(mount)) = (name, mount) else {
+            continue;
+        };
+        let mount = mount.trim_end_matches('/').to_string();
+        if out.iter().any(|v| v.name == name) {
+            problems.add(format!("{path}.name"), format!("папка «{name}» уже есть"));
+            continue;
+        }
+        if out.iter().any(|v| {
+            v.path == mount
+                || v.path.starts_with(&format!("{mount}/"))
+                || mount.starts_with(&format!("{}/", v.path))
+        }) {
+            problems.add(
+                format!("{path}.path"),
+                "папки данных не могут совпадать или лежать одна в другой",
+            );
+            continue;
+        }
+        out.push(Volume { name, path: mount });
+    }
+    out
+}
+
+fn images(map: &Map<String, Value>, problems: &mut Problems) -> Vec<ImageFile> {
+    let items = match map.get("images") {
+        None | Some(Value::Null) => {
+            problems.add(
+                "run.images",
+                "укажите образы модуля: соберите архив командой stealthnet module pack",
+            );
+            return Vec::new();
+        }
+        Some(Value::Object(items)) => items,
+        Some(_) => {
+            problems.add(
+                "run.images",
+                "ожидается объект { \"linux/amd64\": { … } } в фигурных скобках",
+            );
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for (platform, item) in items {
+        let path = format!("run.images.{platform}");
+        let Some((_, expected)) = PLATFORMS.iter().find(|(p, _)| p == platform) else {
+            problems.add(
+                &path,
+                format!(
+                    "неизвестная платформа «{platform}». Есть: {}",
+                    PLATFORMS
+                        .iter()
+                        .map(|(p, _)| *p)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+            continue;
+        };
+        let Value::Object(image) = item else {
+            problems.add(
+                &path,
+                "ожидается объект { \"file\": …, \"sha256\": …, \"bytes\": … }",
+            );
+            continue;
+        };
+        unknown(image, &IMAGE_FIELDS, &path, problems);
+        let file =
+            text(image, "file", &format!("{path}.file"), 80, true, problems).filter(|file| {
+                let ok = file == expected;
+                if !ok {
+                    problems.add(
+                        format!("{path}.file"),
+                        format!("файл образа для {platform} называется {expected}"),
+                    );
+                }
+                ok
+            });
+        let sha256 = text(
+            image,
+            "sha256",
+            &format!("{path}.sha256"),
+            80,
+            true,
+            problems,
+        )
+        .filter(|sum| {
+            let ok = sum.len() == 64
+                && sum
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            if !ok {
+                problems.add(
+                    format!("{path}.sha256"),
+                    "ожидается sha256: 64 знака 0-9 и a-f",
+                );
+            }
+            ok
+        });
+        let bytes = whole(
+            image,
+            "bytes",
+            &format!("{path}.bytes"),
+            1..=IMAGE_MAX_BYTES,
+            problems,
+        );
+        if image.get("bytes").is_none_or(Value::is_null) {
+            problems.add(format!("{path}.bytes"), "поле обязательно");
+        }
+        if let (Some(file), Some(sha256), Some(bytes)) = (file, sha256, bytes) {
+            out.push(ImageFile {
+                platform: platform.clone(),
+                file,
+                sha256,
+                bytes,
+            });
+        }
+    }
+    if out.is_empty() && problems.0.iter().all(|p| !p.path.starts_with("run.images")) {
+        problems.add("run.images", "в архиве нет ни одного образа");
+    }
+    out.sort_by_key(|i| PLATFORMS.iter().position(|(p, _)| *p == i.platform));
+    out
+}
+
+fn run(map: &Map<String, Value>, kind: Kind, problems: &mut Problems) -> Option<Run> {
+    let value = map.get("run");
+    match kind {
+        Kind::External => {
+            if value.is_some_and(|v| !v.is_null()) {
+                problems.add(
+                    "run",
+                    "раздел run бывает только в архиве модуля: загрузите zip, собранный командой stealthnet module pack",
+                );
+            }
+            return None;
+        }
+        Kind::Package => {}
+    }
+    let run = match value {
+        None | Some(Value::Null) => {
+            problems.add(
+                "run",
+                "в архиве модуля нужен раздел run: порт, проверка работы, память и образы",
+            );
+            return None;
+        }
+        Some(Value::Object(run)) => run,
+        Some(_) => {
+            problems.add(
+                "run",
+                "ожидается объект { \"port\": …, … } в фигурных скобках",
+            );
+            return None;
+        }
+    };
+    unknown(run, &RUN_FIELDS, "run", problems);
+    let port = whole(
+        run,
+        "port",
+        "run.port",
+        u64::from(PORT_MIN)..=u64::from(u16::MAX),
+        problems,
+    );
+    if run.get("port").is_none_or(Value::is_null) {
+        problems.add(
+            "run.port",
+            "укажите порт, на котором модуль слушает внутри контейнера",
+        );
+    }
+    let events_path = inner_path(run, "events_path", "run.events_path", false, problems);
+    let health_path = inner_path(run, "health_path", "run.health_path", true, problems);
+    let memory_mb = whole(
+        run,
+        "memory_mb",
+        "run.memory_mb",
+        u64::from(MEMORY_MIN_MB)..=u64::from(MEMORY_MAX_MB),
+        problems,
+    )
+    .map(|m| m as u32)
+    .unwrap_or(MEMORY_DEFAULT_MB);
+    let cpu_tenths = cpus(run, problems).unwrap_or(CPU_DEFAULT_TENTHS);
+    let internet = flag(run, "internet", "run.internet", problems);
+    let volumes = volumes(run, problems);
+    let images = images(run, problems);
+    Some(Run {
+        port: u16::try_from(port?).ok()?,
+        events_path,
+        health_path: health_path?,
+        memory_mb,
+        cpu_tenths,
+        internet,
+        volumes,
+        images,
     })
 }
 
@@ -805,6 +1255,14 @@ fn settings(map: &Map<String, Value>, problems: &mut Problems) -> Vec<Field> {
 }
 
 pub fn parse(source: &str) -> Result<Manifest, Vec<Problem>> {
+    parse_as(source, Kind::External)
+}
+
+pub fn parse_package(source: &str) -> Result<Manifest, Vec<Problem>> {
+    parse_as(source, Kind::Package)
+}
+
+pub fn parse_as(source: &str, kind: Kind) -> Result<Manifest, Vec<Problem>> {
     let mut problems = Problems::default();
     let source = source.trim_start_matches('\u{feff}');
     if source.trim().is_empty() {
@@ -862,15 +1320,44 @@ pub fn parse(source: &str) -> Result<Manifest, Vec<Problem>> {
     let site = url(&map, "site", "site", false, &mut problems);
     let permissions = permissions(&map, &mut problems);
     let events = events(&map, &permissions, &mut problems);
-    let webhook = url(&map, "webhook", "webhook", false, &mut problems);
-    if webhook.is_none() && !events.is_empty() && !map.contains_key("webhook") {
+    let webhook = match kind {
+        Kind::External => {
+            let webhook = url(&map, "webhook", "webhook", false, &mut problems);
+            if webhook.is_none() && !events.is_empty() && !map.contains_key("webhook") {
+                problems.add(
+                    "webhook",
+                    "укажите адрес, куда слать события: модуль подписан на события",
+                );
+            }
+            webhook
+        }
+        Kind::Package => {
+            if map.get("webhook").is_some_and(|v| !v.is_null()) {
+                problems.add(
+                    "webhook",
+                    "в архиве модуля адреса нет: события приходят на run.events_path внутри контейнера",
+                );
+            }
+            None
+        }
+    };
+    let page = page(
+        &map,
+        name.as_deref().unwrap_or_default(),
+        kind,
+        &mut problems,
+    );
+    let settings = settings(&map, &mut problems);
+    let run = run(&map, kind, &mut problems);
+    if kind == Kind::Package
+        && !events.is_empty()
+        && run.as_ref().is_some_and(|r| r.events_path.is_none())
+    {
         problems.add(
-            "webhook",
-            "укажите адрес, куда слать события: модуль подписан на события",
+            "run.events_path",
+            "модуль подписан на события: укажите путь, куда их слать, например \"/events\"",
         );
     }
-    let page = page(&map, name.as_deref().unwrap_or_default(), &mut problems);
-    let settings = settings(&map, &mut problems);
     if !problems.0.is_empty() {
         return Err(problems.0);
     }
@@ -888,6 +1375,7 @@ pub fn parse(source: &str) -> Result<Manifest, Vec<Problem>> {
             permissions,
             page,
             settings,
+            run,
         }),
         _ => {
             problems.add("", "описание модуля не разобрано");

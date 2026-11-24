@@ -1,0 +1,19 @@
+services:
+  app:
+    networks:
+      default:
+        priority: 100
+      modules:
+        aliases:
+          - stealthnet-panel
+      modules-internal:
+        aliases:
+          - stealthnet-panel
+
+networks:
+  modules:
+    name: stealthnet-modules
+    external: true
+  modules-internal:
+    name: stealthnet-modules-internal
+    external: true

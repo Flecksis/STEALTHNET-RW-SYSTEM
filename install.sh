@@ -28,6 +28,31 @@ STATUS_DIR="$IPC_DIR/status"
 REQUEST_DIR="$IPC_DIR/request"
 RUN_DIR="$UPDATER_STATE/run"
 CLI_UPDATE=""
+MODULES_DIR="$UPDATER_STATE/modules"
+MODULE_STATUS_DIR="$STATUS_DIR/modules"
+MODULE_UID=${SN_MODULE_UID:-10100}
+MODULES_NET=stealthnet-modules
+MODULES_INNER=stealthnet-modules-internal
+PANEL_ALIAS=stealthnet-panel
+HELPER_CODE=""
+M_ID=""
+M_ACTION=""
+M_MODULE=""
+M_PACKAGE=""
+M_DATA=""
+M_STATE=""
+M_ERROR=""
+M_MESSAGE=null
+M_STARTED=""
+M_FINISHED=""
+M_STEPS=""
+M_MEMORY=""
+M_DATA_BYTES=""
+M_RESTORED=""
+M_WORK=""
+M_DIR=""
+M_IMAGE=""
+M_LIMIT=0
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     BOLD=$(printf '\033[1m')
@@ -117,6 +142,7 @@ usage() {
     printf '  %s\n      восстановить базу из резервной копии; части из Telegram (.part001…)\n      соберутся сами, пароль копии спросит или возьмёт из SN_BACKUP_PASSWORD\n' "$(command_for 'restore файл')"
     printf '  %s\n      показать версию, состояние и итог последнего обновления\n' "$(command_for status)"
     printf '  %s\n      разрешить или запретить обновление из админки\n' "$(command_for 'helper on|off')"
+    printf '  %s\n      разрешить или запретить установку модулей из архива в админке;\n      без слова — список модулей\n' "$(command_for 'modules on|off')"
     printf '  %s\n      запустить систему, например после перезагрузки сервера\n' "$(command_for start)"
     printf '  %s\n      перезапустить систему\n' "$(command_for restart)"
     printf '  %s\n      остановить систему\n' "$(command_for stop)"
@@ -225,6 +251,13 @@ random_password() {
 }
 
 compose() {
+    case "${1:-}" in
+        up|run)
+            if [ -f "$ENV_FILE" ]; then
+                ensure_networks
+            fi
+            ;;
+    esac
     (cd "$DEPLOY" && docker compose "$@")
 }
 
@@ -643,7 +676,7 @@ write_compose_files() {
     case "$(env_value SN_UPDATER)" in
         1|off)
             if [ -n "$(env_value SN_UPDATER_STATE)" ]; then
-                files="$files:compose.updater.yml"
+                files="$files:compose.modules.yml:compose.updater.yml"
             fi
             ;;
     esac
@@ -1321,25 +1354,30 @@ owned_by_root() {
 
 helper_possible() {
     HELPER_WHY=""
+    HELPER_CODE=""
     if [ -n "${SN_HELPER_TEST:-}" ]; then
         return 0
     fi
     if [ "$(id -u)" -ne 0 ]; then
         HELPER_WHY="нужны права root"
+        HELPER_CODE=no_root
         return 1
     fi
     if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
         HELPER_WHY="на сервере нет systemd"
+        HELPER_CODE=no_systemd
         return 1
     fi
     case "$ROOT$UPDATER_STATE" in
         *[!A-Za-z0-9._/-]*)
             HELPER_WHY="в пути к папке системы есть пробелы или особые знаки"
+            HELPER_CODE=path
             return 1
             ;;
     esac
     if ! owned_by_root "$ROOT" || ! owned_by_root "$ROOT/install.sh" || ! owned_by_root "$DEPLOY"; then
         HELPER_WHY="папку $ROOT может менять не только root"
+        HELPER_CODE=owner
         return 1
     fi
     return 0
@@ -1352,8 +1390,12 @@ helper_blocked() {
 write_helper_json() {
     enabled=$1
     blocked=${2-$(helper_blocked)}
+    modules=false
+    if [ "$enabled" = "true" ] && modules_on; then
+        modules=true
+    fi
     tmp="$STATUS_DIR/.helper.json.$$"
-    printf '{"schema":1,"panel_updates":%s,"blocked":%s}\n' "$enabled" "$(json_str "$blocked")" > "$tmp"
+    printf '{"schema":2,"panel_updates":%s,"modules":%s,"blocked":%s}\n' "$enabled" "$modules" "$(json_str "$blocked")" > "$tmp"
     chmod 644 "$tmp"
     mv -f "$tmp" "$STATUS_DIR/helper.json"
 }
@@ -1386,10 +1428,11 @@ write_units() {
 }
 
 helper_dirs() {
-    mkdir -p "$REQUEST_DIR" "$STATUS_DIR" "$RUN_DIR"
+    mkdir -p "$REQUEST_DIR" "$STATUS_DIR" "$RUN_DIR" "$MODULE_STATUS_DIR" "$MODULES_DIR"
     chmod 755 "$UPDATER_STATE" "$IPC_DIR" "$STATUS_DIR"
-    chmod 700 "$RUN_DIR" "$REQUEST_DIR"
+    chmod 700 "$RUN_DIR" "$REQUEST_DIR" "$MODULE_STATUS_DIR" "$MODULES_DIR"
     if [ -z "${SN_HELPER_TEST:-}" ]; then
+        chown "$APP_UID:$APP_UID" "$MODULE_STATUS_DIR"
         chown "$APP_UID:$APP_UID" "$REQUEST_DIR"
     fi
 }
@@ -1405,10 +1448,12 @@ helper_on() {
         set_env SN_IMAGE_REPO "$SN_IMAGE_REPO"
     fi
     write_compose_files
+    ensure_networks
     if ! systemctl daemon-reload >/dev/null 2>&1 \
         || ! systemctl enable --now stealthnet-rw-update.path >/dev/null 2>&1 \
         || ! systemctl enable stealthnet-rw-recover.service >/dev/null 2>&1; then
         HELPER_WHY="systemd не принял службу обновления"
+        HELPER_CODE=systemd_failed
         write_helper_json false
         return 1
     fi
@@ -1425,8 +1470,13 @@ prepare_helper() {
     esac
     step "Обновление из админки"
     if helper_on; then
+        set_env SN_HELPER_WHY ""
         done_line "включено, обновлять может только владелец с паролем"
+        if modules_on; then
+            done_line "модули из архива ставит владелец в админке"
+        fi
     else
+        set_env SN_HELPER_WHY "$HELPER_CODE"
         hint "не включено: $HELPER_WHY. Обновлять можно командой $(command_for update)"
     fi
 }
@@ -2017,6 +2067,14 @@ take_request() {
     fi
     line=$(head -c 1100 "$taken" | head -n 1)
     rm -f "$taken"
+    case "$line" in
+        *'"action":"module-'*)
+            if take_module_request "$line"; then
+                return 0
+            fi
+            return 1
+            ;;
+    esac
     REQ_ID=$(printf '%s' "$line" | sed -n 's/^{"id":"\([0-9a-f-]\{36\}\)".*/\1/p')
     if ! printf '%s\n' "$line" | grep -Eqx '\{"id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}","action":"update","target":"[0-9a-f]{40}","requested_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z","admin_id":[0-9]{1,18}\}'; then
         log_line "заявка отклонена: неверный вид"
@@ -2049,7 +2107,12 @@ take_request() {
 updater_run() {
     trap - INT TERM
     reset_run
+    M_ID=""
     if ! take_request; then
+        return 0
+    fi
+    if [ -n "$M_ID" ]; then
+        module_run
         return 0
     fi
     U_ID=$REQ_ID
@@ -2071,6 +2134,9 @@ updater_run() {
 }
 
 updater_recover() {
+    if [ -f "$RUN_DIR/module-current" ]; then
+        module_recover
+    fi
     if [ ! -f "$RUN_DIR/current" ]; then
         return 0
     fi
@@ -2097,6 +2163,858 @@ updater_recover() {
     fi
     lock_release
     return 0
+}
+
+modules_on() {
+    [ "$(env_value SN_MODULES)" != "off" ]
+}
+
+modules_enabled() {
+    grep -q '"modules":true' "$STATUS_DIR/helper.json" 2>/dev/null
+}
+
+panel_image() {
+    image=$(env_value SN_IMAGE)
+    printf '%s' "${image:-stealthnet:local}"
+}
+
+ensure_networks() {
+    case ":$(env_value COMPOSE_FILE):" in
+        *:compose.modules.yml:*) ;;
+        *) return 0 ;;
+    esac
+    if ! docker network inspect "$MODULES_NET" >/dev/null 2>&1; then
+        docker network create --label org.stealthnet.modules=1 "$MODULES_NET" >/dev/null 2>&1 || true
+    fi
+    if ! docker network inspect "$MODULES_INNER" >/dev/null 2>&1; then
+        docker network create --internal --label org.stealthnet.modules=1 "$MODULES_INNER" >/dev/null 2>&1 || true
+    fi
+}
+
+valid_module_id() {
+    printf '%s' "$1" | grep -Eqx '[a-z][a-z0-9-]{1,39}'
+}
+
+valid_module_image() {
+    printf '%s' "$1" | grep -Eqx 'stealthnet-module/[a-z][a-z0-9-]{1,39}:[0-9a-f]{12}'
+}
+
+m_own() {
+    chmod 600 "$1"
+    if [ -z "${SN_HELPER_TEST:-}" ]; then
+        chown "$APP_UID:$APP_UID" "$1" 2>/dev/null || true
+    fi
+}
+
+module_steps_for() {
+    case "$1" in
+        module-install|module-update) printf 'check load start verify' ;;
+        module-start|module-restart|module-secrets) printf 'start verify' ;;
+        module-stop) printf 'stop' ;;
+        module-logs) printf 'logs' ;;
+        module-remove) printf 'stop clean' ;;
+    esac
+}
+
+m_reset() {
+    M_STATE=running
+    M_ERROR=""
+    M_MESSAGE=null
+    M_FINISHED=""
+    M_MEMORY=""
+    M_DATA_BYTES=""
+    M_RESTORED=""
+    M_STARTED=$(now_iso)
+    M_STEPS=$(module_steps_for "$M_ACTION")
+    for key in check load start verify stop clean logs; do
+        eval "MS_$key=pending; MT_$key=''; MB_$key=''"
+    done
+}
+
+m_container_json() {
+    info=$(docker inspect -f '{{.State.Status}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.Config.Image}}' "sn-mod-$M_MODULE" 2>/dev/null || true)
+    if [ -z "$info" ]; then
+        printf '{"state":"missing","checked_at":"%s"}' "$(now_iso)"
+        return 0
+    fi
+    c_status=${info%%|*}
+    rest=${info#*|}
+    c_started=${rest%%|*}
+    rest=${rest#*|}
+    c_restarts=${rest%%|*}
+    c_image=${rest#*|}
+    case "$c_status" in
+        created|running|paused|restarting|removing|exited|dead) ;;
+        *) c_status=unknown ;;
+    esac
+    printf '%s' "$c_started" | grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' || c_started=""
+    case "$c_started" in 0001-*) c_started="" ;; esac
+    case "$c_restarts" in ""|*[!0-9]*) c_restarts="" ;; esac
+    valid_module_image "$c_image" || c_image=""
+    printf '{"state":"%s","started_at":%s,"restarts":%s,"image":%s,"memory_bytes":%s,"data_bytes":%s,"checked_at":"%s"}' \
+        "$c_status" "$(json_str "$c_started")" "$(json_num "$c_restarts")" "$(json_str "$c_image")" \
+        "$(json_num "$M_MEMORY")" "$(json_num "$M_DATA_BYTES")" "$(now_iso)"
+}
+
+m_status_json() {
+    printf '{"schema":1,"module":"%s","job":{"id":"%s","action":"%s","state":"%s","steps":[' "$M_MODULE" "$M_ID" "$M_ACTION" "$M_STATE"
+    sep=""
+    for key in $M_STEPS; do
+        eval "st=\${MS_$key:-pending}; sec=\${MT_$key:-}"
+        printf '%s{"key":"%s","state":"%s","seconds":%s}' "$sep" "$key" "$st" "$(json_num "$sec")"
+        sep=","
+    done
+    printf '],"error":%s,"message":%s,"restored":%s,"started_at":%s,"finished_at":%s},"container":' \
+        "$(json_str "$M_ERROR")" "${M_MESSAGE:-null}" "${M_RESTORED:-null}" "$(json_str "$M_STARTED")" "$(json_str "$M_FINISHED")"
+    m_container_json
+    printf '}\n'
+}
+
+m_write_status() {
+    if [ ! -d "$MODULE_STATUS_DIR" ]; then
+        return 0
+    fi
+    tmp="$MODULE_STATUS_DIR/.$M_MODULE.json.$$"
+    m_status_json > "$tmp"
+    m_own "$tmp"
+    mv -f "$tmp" "$MODULE_STATUS_DIR/$M_MODULE.json"
+}
+
+m_step_begin() {
+    eval "MS_$1=running; MB_$1=$(date +%s)"
+    m_write_status
+}
+
+m_step_end() {
+    eval "began=\${MB_$1:-}"
+    eval "MS_$1=$2; MT_$1=$(( $(date +%s) - ${began:-$(date +%s)} ))"
+    m_write_status
+}
+
+m_fail() {
+    M_ERROR=$1
+    for key in $M_STEPS; do
+        eval "st=\${MS_$key:-pending}"
+        if [ "$st" = "running" ]; then
+            m_step_end "$key" failed
+        fi
+    done
+    log_line "модуль $M_MODULE, заявка $M_ID: шаг не прошёл, код $1"
+    return 1
+}
+
+m_finish() {
+    if [ "$M_STATE" = "running" ]; then
+        M_STATE=$1
+        if [ "$1" = "failed" ] && [ -n "$M_RESTORED" ]; then
+            M_STATE=rolled_back
+        fi
+    fi
+    if [ -n "${2:-}" ]; then
+        M_ERROR=$2
+    fi
+    if [ "$M_ACTION" != "module-remove" ] && [ -z "$M_MEMORY$M_DATA_BYTES" ] && valid_module_id "$M_MODULE"; then
+        m_collect_stats
+    fi
+    M_FINISHED=$(now_iso)
+    m_write_status
+    rm -f "${RUN_DIR:?}/module-current"
+    log_line "модуль $M_MODULE, заявка $M_ID ($M_ACTION): итог $M_STATE $M_ERROR"
+}
+
+read_spec() {
+    SP_MODULE=""
+    SP_IMAGE=""
+    SP_PORT=""
+    SP_HEALTH=""
+    SP_MEMORY=""
+    SP_CPUS=""
+    SP_INTERNET=""
+    SP_VOLUMES=""
+    if [ ! -f "$1" ] || [ -L "$1" ]; then
+        return 1
+    fi
+    size=$(wc -c < "$1" | tr -d ' ')
+    if [ "${size:-99999}" -gt 4096 ]; then
+        return 1
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            module=*)
+                v=${line#module=}
+                valid_module_id "$v" || return 1
+                SP_MODULE=$v
+                ;;
+            image=*)
+                v=${line#image=}
+                valid_module_image "$v" || return 1
+                SP_IMAGE=$v
+                ;;
+            port=*)
+                v=${line#port=}
+                printf '%s' "$v" | grep -Eqx '[1-9][0-9]{3,4}' || return 1
+                if [ "$v" -lt 1024 ] || [ "$v" -gt 65535 ]; then
+                    return 1
+                fi
+                SP_PORT=$v
+                ;;
+            health=*)
+                v=${line#health=}
+                printf '%s' "$v" | grep -Eqx '/[A-Za-z0-9._~/-]{0,199}' || return 1
+                case "$v" in *//*|*/./*|*/../*|*/.|*/..) return 1 ;; esac
+                SP_HEALTH=$v
+                ;;
+            memory=*)
+                v=${line#memory=}
+                printf '%s' "$v" | grep -Eqx '[1-9][0-9]{1,3}' || return 1
+                if [ "$v" -lt 64 ] || [ "$v" -gt 2048 ]; then
+                    return 1
+                fi
+                SP_MEMORY=$v
+                ;;
+            cpus=*)
+                v=${line#cpus=}
+                printf '%s' "$v" | grep -Eqx '0\.[1-9]|1\.[0-9]|2\.0' || return 1
+                SP_CPUS=$v
+                ;;
+            internet=*)
+                v=${line#internet=}
+                case "$v" in
+                    0|1) SP_INTERNET=$v ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            volume=*)
+                v=${line#volume=}
+                printf '%s' "$v" | grep -Eqx '[a-z][a-z0-9]{0,15}:/[A-Za-z0-9._~-][A-Za-z0-9._~/-]{0,198}' || return 1
+                case "$v" in
+                    *//*|*/./*|*/../*|*/.|*/..) return 1 ;;
+                    *:/proc|*:/proc/*|*:/sys|*:/sys/*|*:/dev|*:/dev/*|*:/tmp|*:/tmp/*|*:/run|*:/run/*) return 1 ;;
+                esac
+                SP_VOLUMES="$SP_VOLUMES $v"
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$1"
+    count=$(printf '%s' "$SP_VOLUMES" | wc -w | tr -d ' ')
+    if [ "$count" -gt 3 ]; then
+        return 1
+    fi
+    [ -n "$SP_MODULE" ] && [ -n "$SP_IMAGE" ] && [ -n "$SP_PORT" ] && [ -n "$SP_HEALTH" ] \
+        && [ -n "$SP_MEMORY" ] && [ -n "$SP_CPUS" ] && [ -n "$SP_INTERNET" ]
+}
+
+m_file_from_app() {
+    if [ -L "$1" ] || [ ! -f "$1" ]; then
+        return 1
+    fi
+    info=$(ls -ln "$1" 2>/dev/null || true)
+    set -- $info
+    links=${2:-0}
+    uid=${3:-}
+    size=${5:-}
+    case "$size" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$links" = "1" ] && [ "$uid" = "$APP_UID" ] && [ "$size" -le "$M_LIMIT" ]
+}
+
+m_take_package() {
+    pkg="$REQUEST_DIR/pkg-$M_PACKAGE.zip"
+    M_WORK="${MODULES_DIR:?}/.work/${M_ID:?}"
+    if [ ! -e "$pkg" ] && [ ! -L "$pkg" ]; then
+        return 1
+    fi
+    mkdir -p "$MODULES_DIR/.work"
+    chmod 700 "$MODULES_DIR" "$MODULES_DIR/.work"
+    rm -rf "${M_WORK:?}"
+    mkdir -p "$M_WORK/in" "$M_WORK/out"
+    chmod 700 "$M_WORK"
+    chmod 755 "$M_WORK/in"
+    if ! mv -f "$pkg" "$M_WORK/in/package.zip" 2>/dev/null; then
+        rm -rf "${REQUEST_DIR:?}/pkg-${M_PACKAGE:?}.zip"
+        return 1
+    fi
+    M_LIMIT=524288000
+    if ! m_file_from_app "$M_WORK/in/package.zip"; then
+        log_line "модуль $M_MODULE, заявка $M_ID: архив отклонён — чужой, большой или связанный файл"
+        rm -rf "${M_WORK:?}"
+        return 1
+    fi
+    chmod 644 "$M_WORK/in/package.zip"
+    chmod 700 "$M_WORK/out"
+    if [ -z "${SN_HELPER_TEST:-}" ]; then
+        chown 0:0 "$M_WORK/in/package.zip"
+        chown "$APP_UID:$APP_UID" "$M_WORK/out"
+    fi
+    return 0
+}
+
+m_space_ok() {
+    size=$(wc -c < "$M_WORK/in/package.zip" 2>/dev/null | tr -d ' ')
+    case "$size" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    need=$(( size / 1024 * 6 + 524288 ))
+    free=$(df -Pk "$MODULES_DIR" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)
+    case "$free" in
+        ""|*[!0-9]*) return 0 ;;
+    esac
+    [ "$free" -ge "$need" ]
+}
+
+m_unpack() {
+    docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+        --user "$APP_UID:$APP_UID" --memory 1g --pids-limit 64 \
+        --mount "type=bind,source=$M_WORK/in,target=/in,readonly" \
+        --mount "type=bind,source=$M_WORK/out,target=/out" \
+        --entrypoint stealthnet "$(panel_image)" module-unpack /in/package.zip /out >> "$RUN_DIR/updater.log" 2>&1
+}
+
+m_error_message() {
+    file="$M_WORK/out/error.json"
+    if [ -L "$file" ] || [ ! -f "$file" ]; then
+        printf 'null'
+        return 0
+    fi
+    text=$(head -c 2000 "$file" | sed -n '1p')
+    if printf '%s' "$text" | grep -Eqx '"([^"\\[:cntrl:]]|\\["\\/bfnrtu])*"'; then
+        printf '%s' "$text"
+    else
+        printf 'null'
+    fi
+}
+
+m_load() {
+    loaded=$(docker load -i "$M_WORK/out/image.tar" 2>>"$RUN_DIR/updater.log") || return 1
+    printf '%s\n' "$loaded" >> "$RUN_DIR/updater.log"
+    count=$(printf '%s\n' "$loaded" | grep -c '^Loaded image' || true)
+    if [ "$count" != "1" ]; then
+        return 1
+    fi
+    printf '%s\n' "$loaded" | grep -Eqx "Loaded image: (docker\.io/)?$SP_IMAGE" || return 1
+    if [ "$(docker image inspect -f '{{.Architecture}}' "$SP_IMAGE" 2>/dev/null || true)" != "$(host_arch)" ]; then
+        return 2
+    fi
+    return 0
+}
+
+m_install_secrets() {
+    cred="$REQUEST_DIR/$M_ID.cred"
+    if [ ! -e "$cred" ] && [ ! -L "$cred" ]; then
+        return 1
+    fi
+    mkdir -p "$RUN_DIR/taken"
+    chmod 700 "$RUN_DIR/taken"
+    taken="${RUN_DIR:?}/taken/cred.$$"
+    rm -rf "$taken"
+    if ! mv -f "$cred" "$taken" 2>/dev/null; then
+        rm -rf "${REQUEST_DIR:?}/${M_ID:?}.cred"
+        return 1
+    fi
+    M_LIMIT=512
+    if ! m_file_from_app "$taken"; then
+        rm -rf "$taken"
+        return 1
+    fi
+    key=$(sed -n '1p' "$taken")
+    secret=$(sed -n '2p' "$taken")
+    lines=$(wc -l < "$taken" | tr -d ' ')
+    rm -f "$taken"
+    [ "$lines" = "2" ] || return 1
+    printf '%s' "$key" | grep -Eqx 'snk_[0-9a-f]{48}' || return 1
+    printf '%s' "$secret" | grep -Eqx 'whsec_[A-Za-z0-9+/]{43}=' || return 1
+    dir="$MODULES_DIR/$M_MODULE/secrets"
+    mkdir -p "$dir"
+    chmod 700 "$dir"
+    (
+        umask 077
+        printf '%s\n' "$key" > "$dir/.sn_api_key.$$" && mv -f "$dir/.sn_api_key.$$" "$dir/sn_api_key"
+        printf '%s\n' "$secret" > "$dir/.sn_signing_secret.$$" && mv -f "$dir/.sn_signing_secret.$$" "$dir/sn_signing_secret"
+    ) || return 1
+    chmod 400 "$dir/sn_api_key" "$dir/sn_signing_secret"
+    chmod 500 "$dir"
+    if [ -z "${SN_HELPER_TEST:-}" ]; then
+        chown "$MODULE_UID:$MODULE_UID" "$dir" "$dir/sn_api_key" "$dir/sn_signing_secret"
+    fi
+    return 0
+}
+
+m_connect_app() {
+    app=$(compose ps -q app 2>/dev/null || true)
+    if [ -z "$app" ]; then
+        return 0
+    fi
+    for net in "$MODULES_NET" "$MODULES_INNER"; do
+        docker network connect --alias "$PANEL_ALIAS" "$net" "$app" >/dev/null 2>&1 || true
+    done
+}
+
+m_prepare_volumes() {
+    for vol in $SP_VOLUMES; do
+        vname="sn-mod-$M_MODULE-${vol%%:*}"
+        if ! docker volume inspect "$vname" >/dev/null 2>&1; then
+            docker volume create --label "org.stealthnet.module=$M_MODULE" "$vname" >/dev/null 2>>"$RUN_DIR/updater.log" || return 1
+        fi
+        docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN \
+            --mount "type=volume,source=$vname,target=/v" \
+            --entrypoint chown "$(panel_image)" "$MODULE_UID:$MODULE_UID" /v >/dev/null 2>>"$RUN_DIR/updater.log" || return 1
+    done
+    return 0
+}
+
+m_run_container() {
+    run_image=$1
+    net=$MODULES_NET
+    if [ "$SP_INTERNET" != "1" ]; then
+        net=$MODULES_INNER
+    fi
+    public=$(env_value SN_PUBLIC_URL)
+    printf '%s' "$public" | grep -Eqx 'https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?' || public=""
+    set -- run -d --name "sn-mod-$M_MODULE" --hostname "sn-mod-$M_MODULE" \
+        --label "org.stealthnet.module=$M_MODULE" --restart unless-stopped \
+        --network "$net" --user "$MODULE_UID:$MODULE_UID" --read-only \
+        --tmpfs "/tmp:rw,noexec,nosuid,nodev,size=64m" \
+        --cap-drop ALL --security-opt no-new-privileges \
+        --memory "${SP_MEMORY}m" --memory-swap "${SP_MEMORY}m" --cpus "$SP_CPUS" --pids-limit 256 \
+        --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+        -e "SN_PANEL_URL=http://$PANEL_ALIAS:8080" -e "SN_PUBLIC_URL=$public" -e "SN_MODULE_ID=$M_MODULE" \
+        -e "SN_API_KEY_FILE=/run/secrets/sn_api_key" -e "SN_SIGNING_SECRET_FILE=/run/secrets/sn_signing_secret" \
+        --mount "type=bind,source=$MODULES_DIR/$M_MODULE/secrets,target=/run/secrets,readonly"
+    for vol in $SP_VOLUMES; do
+        set -- "$@" --mount "type=volume,source=sn-mod-$M_MODULE-${vol%%:*},target=${vol#*:},volume-nocopy"
+    done
+    set -- "$@" "$run_image"
+    docker "$@" >/dev/null 2>>"$RUN_DIR/updater.log"
+}
+
+m_probe() {
+    app=$(compose ps -q app 2>/dev/null || true)
+    if [ -z "$app" ]; then
+        return 2
+    fi
+    docker exec "$app" curl -fsS -o /dev/null --max-time 3 "http://sn-mod-$M_MODULE:$SP_PORT$SP_HEALTH" >/dev/null 2>&1
+}
+
+m_wait_healthy() {
+    waited=0
+    limit=${SN_MODULE_VERIFY_TIMEOUT:-90}
+    while [ "$waited" -lt "$limit" ]; do
+        state=$(docker inspect -f '{{.State.Status}}' "sn-mod-$M_MODULE" 2>/dev/null || true)
+        if [ "$state" = "running" ]; then
+            m_probe
+            case $? in
+                0|2) return 0 ;;
+            esac
+        fi
+        sleep "$VERIFY_PAUSE"
+        waited=$((waited + 2))
+    done
+    return 1
+}
+
+m_write_logs() {
+    if [ ! -d "$MODULE_STATUS_DIR" ]; then
+        return 0
+    fi
+    tmp="$MODULE_STATUS_DIR/.$M_MODULE.log.$$"
+    docker logs --tail 200 "sn-mod-$M_MODULE" 2>&1 | tail -c 65536 > "$tmp" || true
+    m_own "$tmp"
+    mv -f "$tmp" "$MODULE_STATUS_DIR/$M_MODULE.log"
+}
+
+m_volumes() {
+    docker volume ls -q --filter "label=org.stealthnet.module=$M_MODULE" 2>/dev/null \
+        | grep -Ex "sn-mod-$M_MODULE-[a-z][a-z0-9]{0,15}" || true
+}
+
+m_collect_stats() {
+    M_MEMORY=""
+    if [ "$(docker inspect -f '{{.State.Status}}' "sn-mod-$M_MODULE" 2>/dev/null || true)" = "running" ]; then
+        M_MEMORY=$(docker stats --no-stream --format '{{.MemUsage}}' "sn-mod-$M_MODULE" 2>/dev/null | awk '
+        NR == 1 {
+            v = $1; u = $1
+            sub(/[A-Za-z]+$/, "", v); sub(/^[0-9.]+/, "", u)
+            m = 1
+            if (u == "KiB") m = 1024; else if (u == "MiB") m = 1048576; else if (u == "GiB") m = 1073741824
+            else if (u == "kB") m = 1000; else if (u == "MB") m = 1000000; else if (u == "GB") m = 1000000000
+            if (v ~ /^[0-9.]+$/) printf "%d", v * m
+        }' || true)
+    fi
+    case "$M_MEMORY" in ""|*[!0-9]*) M_MEMORY="" ;; esac
+    total=""
+    for vname in $(m_volumes); do
+        point=$(docker volume inspect -f '{{.Mountpoint}}' "$vname" 2>/dev/null || true)
+        if [ -z "$point" ] || [ ! -d "$point" ]; then
+            continue
+        fi
+        kb=$(du -sk "$point" 2>/dev/null | awk '{ print $1 }')
+        case "$kb" in ""|*[!0-9]*) continue ;; esac
+        total=$(( ${total:-0} + kb * 1024 ))
+    done
+    M_DATA_BYTES=$total
+}
+
+m_prune_images() {
+    docker image ls --format '{{.Repository}}:{{.Tag}}' "stealthnet-module/$M_MODULE" 2>/dev/null | while IFS= read -r ref; do
+        valid_module_image "$ref" || continue
+        if [ "$ref" = "${1:-}" ] || [ "$ref" = "${2:-}" ]; then
+            continue
+        fi
+        docker image rm "$ref" >/dev/null 2>&1 || true
+    done
+}
+
+m_saved() {
+    M_DIR="$MODULES_DIR/$M_MODULE"
+    if ! read_spec "$M_DIR/spec" || [ "$SP_MODULE" != "$M_MODULE" ]; then
+        return 1
+    fi
+    M_IMAGE=$(sed -n '1p' "$M_DIR/image" 2>/dev/null || true)
+    valid_module_image "$M_IMAGE"
+}
+
+m_rollback() {
+    old_image=$1
+    docker rm -f "sn-mod-$M_MODULE" >/dev/null 2>&1 || true
+    if [ -z "$old_image" ] || [ ! -f "$M_DIR/spec.previous" ]; then
+        return 1
+    fi
+    cp "$M_DIR/spec.previous" "$M_DIR/spec"
+    printf '%s\n' "$old_image" > "$M_DIR/image"
+    if ! read_spec "$M_DIR/spec" || ! m_run_container "$old_image"; then
+        return 1
+    fi
+    if m_wait_healthy; then
+        M_RESTORED=true
+    else
+        M_RESTORED=false
+    fi
+    return 0
+}
+
+module_install() {
+    M_DIR="$MODULES_DIR/$M_MODULE"
+    m_step_begin check
+    if ! docker info >/dev/null 2>&1; then
+        m_fail docker_unavailable
+        return 1
+    fi
+    if ! m_take_package; then
+        m_fail package_missing
+        return 1
+    fi
+    if ! m_space_ok; then
+        rm -rf "${M_WORK:?}"
+        m_fail no_space
+        return 1
+    fi
+    if ! m_unpack; then
+        M_MESSAGE=$(m_error_message)
+        rm -rf "${M_WORK:?}"
+        m_fail package_invalid
+        return 1
+    fi
+    if ! read_spec "$M_WORK/out/spec" || [ "$SP_MODULE" != "$M_MODULE" ]; then
+        rm -rf "${M_WORK:?}"
+        m_fail package_invalid
+        return 1
+    fi
+    mkdir -p "$M_DIR"
+    chmod 700 "$M_DIR"
+    cp "$M_WORK/out/spec" "$M_DIR/spec.next"
+    m_step_end check done
+
+    m_step_begin load
+    if m_load; then
+        loaded=0
+    else
+        loaded=$?
+    fi
+    rm -rf "${M_WORK:?}"
+    case "$loaded" in
+        0) ;;
+        2)
+            docker image rm "$SP_IMAGE" >/dev/null 2>&1 || true
+            m_fail wrong_arch
+            return 1
+            ;;
+        *)
+            m_fail load_failed
+            return 1
+            ;;
+    esac
+    m_step_end load done
+
+    m_step_begin start
+    if [ "$M_ACTION" = "module-install" ] || [ ! -f "$M_DIR/secrets/sn_api_key" ]; then
+        if ! m_install_secrets; then
+            m_fail invalid_request
+            return 1
+        fi
+    fi
+    ensure_networks
+    m_connect_app
+    if ! m_prepare_volumes; then
+        m_fail start_failed
+        return 1
+    fi
+    old_image=$(sed -n '1p' "$M_DIR/image" 2>/dev/null || true)
+    valid_module_image "$old_image" || old_image=""
+    rm -f "${M_DIR:?}/spec.previous"
+    if [ -n "$old_image" ] && [ -f "$M_DIR/spec" ]; then
+        cp "$M_DIR/spec" "$M_DIR/spec.previous"
+    fi
+    new_image=$SP_IMAGE
+    docker rm -f "sn-mod-$M_MODULE" >/dev/null 2>&1 || true
+    if ! m_run_container "$new_image"; then
+        m_rollback "$old_image" || true
+        m_fail start_failed
+        return 1
+    fi
+    mv -f "$M_DIR/spec.next" "$M_DIR/spec"
+    printf '%s\n' "$new_image" > "$M_DIR/image"
+    m_step_end start done
+
+    m_step_begin verify
+    if ! m_wait_healthy; then
+        m_write_logs
+        if ! m_rollback "$old_image"; then
+            docker stop -t 10 "sn-mod-$M_MODULE" >/dev/null 2>&1 || true
+        fi
+        m_fail unhealthy
+        return 1
+    fi
+    m_step_end verify done
+    m_write_logs
+    m_prune_images "$new_image" "$old_image"
+    return 0
+}
+
+module_start() {
+    m_step_begin start
+    if ! m_saved; then
+        m_fail not_installed
+        return 1
+    fi
+    started=0
+    if docker inspect "sn-mod-$M_MODULE" >/dev/null 2>&1; then
+        if [ "$M_ACTION" = "module-start" ]; then
+            docker start "sn-mod-$M_MODULE" >/dev/null 2>>"$RUN_DIR/updater.log" || started=1
+        else
+            docker restart -t 20 "sn-mod-$M_MODULE" >/dev/null 2>>"$RUN_DIR/updater.log" || started=1
+        fi
+    else
+        ensure_networks
+        m_connect_app
+        if ! m_prepare_volumes || ! m_run_container "$M_IMAGE"; then
+            started=1
+        fi
+    fi
+    if [ "$started" -ne 0 ]; then
+        m_fail start_failed
+        return 1
+    fi
+    m_step_end start done
+    m_step_begin verify
+    if ! m_wait_healthy; then
+        m_write_logs
+        m_fail unhealthy
+        return 1
+    fi
+    m_step_end verify done
+    m_write_logs
+    return 0
+}
+
+module_secrets() {
+    if ! m_install_secrets; then
+        m_step_begin start
+        m_fail invalid_request
+        return 1
+    fi
+    module_start
+}
+
+module_stop() {
+    m_step_begin stop
+    docker stop -t 20 "sn-mod-$M_MODULE" >/dev/null 2>&1 || true
+    m_step_end stop done
+    return 0
+}
+
+module_logs() {
+    m_step_begin logs
+    m_collect_stats
+    m_write_logs
+    m_step_end logs done
+    return 0
+}
+
+module_remove() {
+    m_step_begin stop
+    docker rm -f "sn-mod-$M_MODULE" >/dev/null 2>&1 || true
+    m_step_end stop done
+    m_step_begin clean
+    m_prune_images "" ""
+    if [ "$M_DATA" = "erase" ]; then
+        for vname in $(m_volumes); do
+            docker volume rm "$vname" >/dev/null 2>>"$RUN_DIR/updater.log" || true
+        done
+        rm -f "${MODULE_STATUS_DIR:?}/${M_MODULE:?}.log"
+    fi
+    if [ -d "${MODULES_DIR:?}/${M_MODULE:?}" ]; then
+        chmod -R u+w "${MODULES_DIR:?}/${M_MODULE:?}" 2>/dev/null || true
+        rm -rf "${MODULES_DIR:?}/${M_MODULE:?}"
+    fi
+    m_step_end clean done
+    return 0
+}
+
+module_run() {
+    m_reset
+    if ! modules_enabled; then
+        m_finish failed modules_off
+        return 0
+    fi
+    if ! lock_take 180; then
+        m_finish failed busy
+        return 0
+    fi
+    printf '%s %s %s\n' "$M_MODULE" "$M_ID" "$M_ACTION" > "$RUN_DIR/module-current"
+    m_write_status
+    log_line "модуль $M_MODULE, заявка $M_ID ($M_ACTION): начало"
+    result=0
+    case "$M_ACTION" in
+        module-install|module-update) module_install || result=1 ;;
+        module-start|module-restart) module_start || result=1 ;;
+        module-secrets) module_secrets || result=1 ;;
+        module-stop) module_stop || result=1 ;;
+        module-logs) module_logs || result=1 ;;
+        module-remove) module_remove || result=1 ;;
+        *) m_fail invalid_request || result=1 ;;
+    esac
+    if [ "$result" -eq 0 ]; then
+        m_finish done
+    else
+        m_finish failed
+    fi
+    lock_release
+    return 0
+}
+
+module_recover() {
+    line=$(sed -n '1p' "$RUN_DIR/module-current" 2>/dev/null || true)
+    rm -f "${RUN_DIR:?}/module-current"
+    set -- $line
+    if [ "$#" -ne 3 ] || ! valid_module_id "$1"; then
+        return 0
+    fi
+    printf '%s' "$2" | grep -Eqx '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || return 0
+    case "$3" in
+        module-install|module-update|module-start|module-stop|module-restart|module-logs|module-secrets|module-remove) ;;
+        *) return 0 ;;
+    esac
+    M_MODULE=$1
+    M_ID=$2
+    M_ACTION=$3
+    m_reset
+    m_finish failed interrupted
+}
+
+take_module_request() {
+    req_line=$1
+    M_ID=""
+    M_ACTION=""
+    M_MODULE=""
+    M_PACKAGE=""
+    M_DATA=""
+    uuid='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+    stamp='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
+    module='[a-z][a-z0-9-]{1,39}'
+    tail="\"requested_at\":\"$stamp\",\"admin_id\":[0-9]{1,18}\\}"
+    if printf '%s\n' "$req_line" | grep -Eqx "\\{\"id\":\"$uuid\",\"action\":\"module-(install|update)\",\"module\":\"$module\",\"package\":\"$uuid\",$tail"; then
+        M_PACKAGE=$(printf '%s' "$req_line" | sed -n 's/.*"package":"\([0-9a-f-]\{36\}\)".*/\1/p')
+    elif printf '%s\n' "$req_line" | grep -Eqx "\\{\"id\":\"$uuid\",\"action\":\"module-remove\",\"module\":\"$module\",\"data\":\"(keep|erase)\",$tail"; then
+        M_DATA=$(printf '%s' "$req_line" | sed -n 's/.*"data":"\([a-z]*\)".*/\1/p')
+    elif ! printf '%s\n' "$req_line" | grep -Eqx "\\{\"id\":\"$uuid\",\"action\":\"module-(start|stop|restart|logs|secrets)\",\"module\":\"$module\",$tail"; then
+        log_line "заявка модуля отклонена: неверный вид"
+        return 1
+    fi
+    M_ID=$(printf '%s' "$req_line" | sed -n 's/^{"id":"\([0-9a-f-]\{36\}\)".*/\1/p')
+    M_ACTION=$(printf '%s' "$req_line" | sed -n 's/.*"action":"\(module-[a-z]*\)".*/\1/p')
+    M_MODULE=$(printf '%s' "$req_line" | sed -n 's/.*"module":"\([a-z0-9-]*\)".*/\1/p')
+    req_at=$(printf '%s' "$req_line" | sed -n 's/.*"requested_at":"\([^"]*\)".*/\1/p')
+    at=$(iso_epoch "$req_at")
+    if [ -n "$at" ] && [ $(( $(date +%s) - at )) -gt 600 ]; then
+        m_reset
+        m_finish failed expired
+        rm -f "${REQUEST_DIR:?}/${M_ID:?}.cred"
+        if [ -n "$M_PACKAGE" ]; then
+            rm -f "${REQUEST_DIR:?}/pkg-${M_PACKAGE:?}.zip"
+        fi
+        M_ID=""
+        return 1
+    fi
+    return 0
+}
+
+modules_command() {
+    printf '%sSTEALTHNET RW SYSTEM — модули из архива%s\n\n' "$BOLD" "$RESET"
+    if [ ! -f "$ENV_FILE" ]; then
+        die "система ещё не установлена" "Запустите $(command_for install)"
+    fi
+    case "${1:-}" in
+        on|off)
+            if [ "$(id -u)" -ne 0 ] && [ -z "${SN_HELPER_TEST:-}" ]; then
+                die "нужны права root" "Запустите: sudo $(command_for "modules $1")"
+            fi
+            set_env SN_MODULES "$1"
+            if [ -d "$STATUS_DIR" ]; then
+                if helper_enabled; then
+                    write_helper_json true
+                else
+                    write_helper_json false
+                fi
+            fi
+            if [ "$1" = "off" ]; then
+                done_line "Модули из админки запрещены: их нельзя ставить, обновлять, перезапускать и удалять. Уже поставленные модули продолжают работать."
+            elif helper_enabled; then
+                done_line "Модули из админки разрешены: ставить, обновлять и удалять их может владелец."
+            else
+                done_line "Разрешено, но помощник на сервере выключен. Включить: sudo $(command_for 'helper on')"
+            fi
+            ;;
+        "")
+            list_modules
+            ;;
+        *)
+            die "нужно слово on или off" "Разрешить: $(command_for 'modules on')" "Запретить: $(command_for 'modules off')"
+            ;;
+    esac
+}
+
+list_modules() {
+    if modules_on; then
+        printf '  Модули из админки: разрешены (запретить: %s)\n' "$(command_for 'modules off')"
+    else
+        printf '  Модули из админки: запрещены (разрешить: %s)\n' "$(command_for 'modules on')"
+    fi
+    found=$(docker ps -a --filter label=org.stealthnet.module --format '{{.Label "org.stealthnet.module"}}|{{.State}}|{{.Image}}' 2>/dev/null || true)
+    if [ -z "$found" ]; then
+        printf '  Модулей из архива нет\n'
+        return 0
+    fi
+    printf '%s\n' "$found" | while IFS='|' read -r name state image; do
+        valid_module_id "$name" || continue
+        case "$state" in
+            running) shown="работает" ;;
+            exited|created) shown="остановлен" ;;
+            restarting) shown="перезапускается" ;;
+            *) shown=$state ;;
+        esac
+        printf '  Модуль %s: %s (%s)\n' "$name" "$shown" "$image"
+    done
 }
 
 run_dir_ready() {
@@ -2154,6 +3072,9 @@ show_status() {
         printf '  Обновление из админки: включено\n'
     else
         printf '  Обновление из админки: выключено (включить: %s)\n' "$(command_for 'helper on')"
+    fi
+    if [ -d "$MODULES_DIR" ]; then
+        list_modules
     fi
     if [ -f "$STATUS_DIR/update.json" ]; then
         last_state=$(sed -n 's/.*"state":"\([a-z_]*\)","steps".*/\1/p' "$STATUS_DIR/update.json" | sed -n '1p')
@@ -2501,6 +3422,7 @@ case "${1:-}" in
     backup|--backup) backup_command ;;
     restore|--restore) shift; restore_command "$@" ;;
     helper|--helper) helper_command "${2:-}" ;;
+    modules|--modules) modules_command "${2:-}" ;;
     updater) updater_command "${2:-}" ;;
     start|--start) start_system ;;
     restart|--restart) restart_system ;;

@@ -83,6 +83,8 @@ fn updates(vars: &HashMap<String, String>) -> Result<UpdateConfig> {
         config.tag = tag;
     }
     config.checks_allowed = flag(vars, "SN_UPDATE_CHECK", true)?;
+    config.helper_why = text(vars, "SN_HELPER_WHY");
+    config.modules_host = text(vars, "SN_MODULES_HOST");
     Ok(config)
 }
 

@@ -20,7 +20,7 @@ fresh() {
     WORK=$(mktemp -d "$TMP_ROOT/work.XXXXXX")
     mkdir -p "$WORK/repo/deploy" "$WORK/state" "$WORK/bin"
     cp "$SRC/install.sh" "$WORK/repo/"
-    cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$SRC/deploy/compose.https.yml" "$SRC/deploy/compose.updater.yml" "$SRC/deploy/Caddyfile" "$WORK/repo/deploy/"
+    cp "$SRC/deploy/.env.example" "$SRC/deploy/docker-compose.yml" "$SRC/deploy/compose.remnawave.yml" "$SRC/deploy/compose.https.yml" "$SRC/deploy/compose.updater.yml" "$SRC/deploy/compose.modules.yml" "$SRC/deploy/Caddyfile" "$WORK/repo/deploy/"
     R="$WORK/repo"
     S="$WORK/state"
     FAKE_STATE="$S"
@@ -816,6 +816,183 @@ run "$SHELL_BIN" "$R/install.sh" restore "$WORK/copy.tar.gz.enc" > "$WORK/restor
 [ $? -eq 1 ] && grep -q 'некому ввести пароль копии' "$WORK/restore6.txt" && check ok "без терминала пароль копии просит через SN_BACKUP_PASSWORD" || check no "пароль без терминала: $(tail -2 "$WORK/restore6.txt")"
 env FAKE_STATE="$S" SN_BIN_DIR="$WORK/bin" PATH="$HERE/bin:$WORK/bin:$PATH" stealthnet help > "$WORK/help.txt" 2>&1 </dev/null
 grep -q '^  stealthnet backup$' "$WORK/help.txt" && grep -q '^  stealthnet restore файл$' "$WORK/help.txt" && check ok "команды копий есть в справке" || check no "в справке нет команд копий"
+
+module_request() {
+    printf '{"id":"%s","action":"%s","module":"%s"%s,"requested_at":"%s","admin_id":1}\n' "$1" "$2" "$3" "$4" "${5:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" > "$U/ipc/request/.tmp"
+    mv "$U/ipc/request/.tmp" "$U/ipc/request/request.json"
+}
+
+module_status() {
+    cat "$U/ipc/status/modules/$1.json" 2>/dev/null
+}
+
+json_ok() {
+    python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null
+}
+
+zeros=$(printf '%048d' 0)
+KEY="snk_$zeros"
+SECRET="whsec_$(printf 'A%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43)="
+TAG_A=stealthnet-module/nodes:0123456789ab
+TAG_B=stealthnet-module/nodes:bbbbbbbbbbbb
+
+echo "=== AW. модуль из архива ставится по заявке"
+helper_install
+grep -q '"modules":true' "$U/ipc/status/helper.json" && check ok "приложение видит, что модули можно ставить" || check no "helper.json: $(cat "$U/ipc/status/helper.json")"
+grep -q '^COMPOSE_FILE=.*compose.modules.yml' "$R/deploy/.env" && check ok "приложение подключается к сети модулей" || check no "COMPOSE_FILE: $(grep '^COMPOSE_FILE' "$R/deploy/.env")"
+[ "$(ls -ld "$U/ipc/status/modules" | cut -c1-10)" = "drwx------" ] && [ "$(ls -ld "$U/modules" | cut -c1-10)" = "drwx------" ] && check ok "папки модулей закрыты от посторонних" || check no "права: $(ls -ld "$U/ipc/status/modules" "$U/modules")"
+J=6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e10
+P=1b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e11
+printf 'PK fake package' > "$U/ipc/request/pkg-$P.zip"
+printf '%s\n%s\n' "$KEY" "$SECRET" > "$U/ipc/request/$J.cred"
+module_request "$J" module-install nodes ",\"package\":\"$P\""
+: > "$S/calls.log"
+updater SN_MODULE_VERIFY_TIMEOUT=6
+module_status nodes | grep -q '"action":"module-install","state":"done"' && check ok "модуль установлен" || check no "состояние: $(module_status nodes)"
+json_ok "$U/ipc/status/modules/nodes.json" && check ok "файл состояния — правильный JSON" || check no "файл состояния не JSON"
+module_status nodes | grep -q '"container":{"state":"running","started_at":"2026-11-24T10:00:00.123456789Z","restarts":0,"image":"'"$TAG_A"'"' && check ok "контейнер работает с образом из архива" || check no "контейнер: $(module_status nodes)"
+[ ! -e "$U/ipc/request/request.json" ] && [ ! -e "$U/ipc/request/pkg-$P.zip" ] && [ ! -e "$U/ipc/request/$J.cred" ] && check ok "заявка, архив и ключи забраны" || check no "в папке заявок: $(ls -a "$U/ipc/request")"
+[ ! -d "$U/modules/.work/$J" ] && check ok "временная папка распаковки удалена" || check no "папка распаковки осталась"
+[ "$(cat "$U/modules/nodes/secrets/sn_api_key" 2>/dev/null)" = "$KEY" ] && [ "$(cat "$U/modules/nodes/secrets/sn_signing_secret" 2>/dev/null)" = "$SECRET" ] && check ok "ключ и секрет переданы модулю файлами" || check no "файлы ключей"
+[ "$(ls -l "$U/modules/nodes/secrets/sn_api_key" | cut -c1-10)" = "-r--------" ] && check ok "файлы ключей читает только модуль" || check no "права ключей: $(ls -l "$U/modules/nodes/secrets")"
+[ "$(cat "$U/modules/nodes/image")" = "$TAG_A" ] && grep -qx 'port=8095' "$U/modules/nodes/spec" && check ok "образ и описание запуска сохранены для перезапусков" || check no "сохранённое описание"
+unpack=$(grep 'module-unpack' "$S/calls.log" | head -1)
+case "$unpack" in
+    "run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user $ME:$ME --memory 1g --pids-limit 64 "*"--entrypoint stealthnet $REPO:sha-$SHA module-unpack /in/package.zip /out") check ok "архив распакован образом самой панели без сети и root" ;;
+    *) check no "распаковка: $unpack" ;;
+esac
+run_line=$(sed -n '1p' "$S/module_runs" 2>/dev/null)
+for want in "--name sn-mod-nodes" "--restart unless-stopped" "--network stealthnet-modules " "--user 10100:10100" "--read-only" "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m" "--cap-drop ALL" "--security-opt no-new-privileges" "--memory 128m" "--memory-swap 128m" "--cpus 0.5" "--pids-limit 256" "--log-opt max-size=10m" "SN_PANEL_URL=http://stealthnet-panel:8080" "SN_PUBLIC_URL=https://panel.test" "SN_MODULE_ID=nodes" "SN_API_KEY_FILE=/run/secrets/sn_api_key" "type=bind,source=$U/modules/nodes/secrets,target=/run/secrets,readonly" "type=volume,source=sn-mod-nodes-data,target=/data,volume-nocopy"; do
+    case "$run_line" in
+        *"$want"*) ;;
+        *) check no "в запуске нет «$want»: $run_line" ;;
+    esac
+done
+case "$run_line" in
+    *" $TAG_A") check ok "контейнер запущен со всеми ограничениями" ;;
+    *) check no "образ запуска: $run_line" ;;
+esac
+case "$run_line" in
+    *--privileged*|*docker.sock*|*" -p "*|*--publish*|*"--network host"*|*--cap-add*|*--device*) check no "лишние права в запуске: $run_line" ;;
+    *) check ok "без привилегий, сокета Docker, сети хоста и портов наружу" ;;
+esac
+[ -f "$S/net_modules" ] && [ -f "$S/net_inner" ] && check ok "сети модулей созданы" || check no "сетей модулей нет"
+[ -f "$S/vol_sn-mod-nodes-data" ] && grep -q 'chown .*10100:10100 /v' "$S/calls.log" && check ok "том данных создан и отдан пользователю модуля" || check no "том данных"
+grep -q 'http://sn-mod-nodes:8095/healthz' "$S/module_probes" && check ok "работа проверена через сеть модулей" || check no "проверка: $(cat "$S/module_probes" 2>/dev/null)"
+[ -f "$U/ipc/status/modules/nodes.log" ] && [ "$(ls -l "$U/ipc/status/modules/nodes.log" | cut -c1-10)" = "-rw-------" ] && check ok "журнал модуля сохранён для админки" || check no "журнал модуля"
+
+echo "=== AX. неработающая новая версия откатывается"
+J2=6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e20
+P2=1b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e21
+printf 'PK new' > "$U/ipc/request/pkg-$P2.zip"
+module_request "$J2" module-update nodes ",\"package\":\"$P2\""
+: > "$S/module_runs"
+updater FAKE_TAG="$TAG_B" FAKE_BAD_IMAGE="$TAG_B" SN_MODULE_VERIFY_TIMEOUT=4
+module_status nodes | grep -q '"action":"module-update","state":"rolled_back"' && module_status nodes | grep -q '"error":"unhealthy"' && module_status nodes | grep -Eq '"finished_at":"[0-9]{4}-' && [ ! -d "$U/run/lock" ] && check ok "обновление откачено: новая версия не ответила" || check no "состояние: $(module_status nodes)"
+[ "$(cut -d'|' -f2 "$S/mod_sn-mod-nodes")" = "$TAG_A" ] && [ "$(cat "$U/modules/nodes/image")" = "$TAG_A" ] && check ok "снова работает прежний образ" || check no "образ: $(cat "$S/mod_sn-mod-nodes")"
+module_status nodes | grep -q '"restored":true' && check ok "прежняя версия после отката отвечает" || check no "после отката: $(module_status nodes)"
+[ "$(wc -l < "$S/module_runs" | tr -d ' ')" = "2" ] && check ok "запущены новая версия и снова прежняя" || check no "запуски: $(cat "$S/module_runs")"
+[ "$(cat "$U/modules/nodes/secrets/sn_api_key")" = "$KEY" ] && check ok "ключи при обновлении не тронуты" || check no "ключи после обновления"
+
+echo "=== AY. архив, не прошедший проверку на сервере"
+J3=6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e30
+P3=1b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e31
+printf 'PK bad' > "$U/ipc/request/pkg-$P3.zip"
+module_request "$J3" module-update nodes ",\"package\":\"$P3\""
+: > "$S/calls.log"
+updater FAKE_UNPACK=fail FAKE_UNPACK_ERROR='в архиве нет module.json'
+module_status nodes | grep -q '"state":"failed","steps":\[{"key":"check","state":"failed"' && module_status nodes | grep -q '"error":"package_invalid","message":"в архиве нет module.json"' && module_status nodes | grep -Eq '"finished_at":"[0-9]{4}-' && check ok "отказ распаковки объяснён" || check no "состояние: $(module_status nodes)"
+json_ok "$U/ipc/status/modules/nodes.json" && check ok "файл состояния с сообщением — правильный JSON" || check no "файл состояния не JSON"
+grep -q '^load ' "$S/calls.log" && check no "образ загружался после отказа" || check ok "образ не загружался"
+[ "$(cut -d'|' -f1,2 "$S/mod_sn-mod-nodes")" = "running|$TAG_A" ] && check ok "работающий модуль не тронут" || check no "модуль: $(cat "$S/mod_sn-mod-nodes")"
+P4=1b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e41
+printf 'PK quoted' > "$U/ipc/request/pkg-$P4.zip"
+module_request "$J3" module-update nodes ",\"package\":\"$P4\""
+updater FAKE_UNPACK=fail FAKE_UNPACK_ERROR='сломано", "state":"done'
+json_ok "$U/ipc/status/modules/nodes.json" && module_status nodes | grep -q '"message":null' && check ok "сообщение с кавычками не ломает файл состояния" || check no "состояние: $(module_status nodes)"
+
+echo "=== AZ. неверные заявки модулей"
+: > "$S/calls.log"
+for bad in \
+    '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e50","action":"module-restart","module":"Nodes","requested_at":"%s","admin_id":1}' \
+    '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e50","action":"module-restart","module":"../etc","requested_at":"%s","admin_id":1}' \
+    '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e50","action":"module-restart","module":"nodes","extra":"x","requested_at":"%s","admin_id":1}' \
+    '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e50","action":"module-remove","module":"nodes","data":"wipe","requested_at":"%s","admin_id":1}' \
+    '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e50","action":"module-install","module":"nodes","package":"../../etc/passwd","requested_at":"%s","admin_id":1}' \
+    '{"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e50","action":"module-exec","module":"nodes","requested_at":"%s","admin_id":1}'; do
+    printf "$bad\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$U/ipc/request/request.json"
+    updater
+done
+grep -q 'sn-mod-' "$S/calls.log" && check no "по неверной заявке что-то делалось: $(grep sn-mod- "$S/calls.log" | head -2)" || check ok "неверные заявки отклонены без действий"
+[ ! -e "$U/ipc/request/request.json" ] && [ "$(ls "$U/ipc/status/modules" | tr '\n' ' ')" = "nodes.json nodes.log " ] && check ok "заявки убраны, лишних файлов состояния нет" || check no "папки: $(ls "$U/ipc/request" "$U/ipc/status/modules")"
+J5=6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e60
+P5=1b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e61
+printf 'secret' > "$WORK/outside.txt"
+ln -s "$WORK/outside.txt" "$U/ipc/request/pkg-$P5.zip"
+module_request "$J5" module-install crm ",\"package\":\"$P5\""
+updater
+module_status crm | grep -q '"error":"package_missing"' && [ "$(cat "$WORK/outside.txt")" = "secret" ] && [ ! -L "$U/ipc/request/pkg-$P5.zip" ] && check ok "ссылка вместо архива отклонена и убрана" || check no "ссылка: $(module_status crm)"
+printf 'PK crm' > "$U/ipc/request/pkg-$P5.zip"
+printf 'snk_short\n%s\n' "$SECRET" > "$U/ipc/request/$J5.cred"
+module_request "$J5" module-install crm ",\"package\":\"$P5\""
+updater FAKE_MODULE=crm FAKE_TAG=stealthnet-module/crm:cccccccccccc
+module_status crm | grep -q '"error":"invalid_request"' && [ ! -e "$S/mod_sn-mod-crm" ] && check ok "ключ неверного вида не принят, модуль не запущен" || check no "ключ: $(module_status crm)"
+printf 'PK crm2' > "$U/ipc/request/pkg-$P5.zip"
+module_request "$J5" module-install crm ",\"package\":\"$P5\""
+updater FAKE_MODULE=crm FAKE_TAG=stealthnet-module/crm:cccccccccccc FAKE_LOADED=postgres:16-alpine
+module_status crm | grep -q '"error":"load_failed"' && [ ! -e "$S/mod_sn-mod-crm" ] && check ok "образ с чужой меткой не запускается" || check no "чужая метка: $(module_status crm)"
+printf 'PK crm3' > "$U/ipc/request/pkg-$P5.zip"
+module_request "$J5" module-install crm ",\"package\":\"$P5\""
+updater FAKE_MODULE=crm FAKE_TAG=stealthnet-module/crm:cccccccccccc FAKE_SPEC_EXTRA='volume=data:/proc/self'
+module_status crm | grep -q '"error":"package_invalid"' && check ok "описание запуска с опасной папкой не принято" || check no "опасная папка: $(module_status crm)"
+printf 'PK crm4' > "$U/ipc/request/pkg-$P5.zip"
+module_request "$J5" module-install crm ",\"package\":\"$P5\"" "2026-01-01T00:00:00Z"
+updater
+module_status crm | grep -q '"error":"expired"' && [ ! -e "$U/ipc/request/pkg-$P5.zip" ] && check ok "старая заявка не выполняется, архив удалён" || check no "старая заявка: $(module_status crm)"
+
+echo "=== BA. запрет установки модулей командой"
+run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" "$SHELL_BIN" "$R/install.sh" modules off > "$WORK/modules.txt" 2>&1 </dev/null
+grep -q '"modules":false' "$U/ipc/status/helper.json" && grep -q '"panel_updates":true' "$U/ipc/status/helper.json" && grep -qx 'SN_MODULES=off' "$R/deploy/.env" && check ok "модули запрещены, обновление из админки осталось" || check no "helper.json: $(cat "$U/ipc/status/helper.json")"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e70 module-restart nodes ""
+updater
+module_status nodes | grep -q '"error":"modules_off"' && check ok "заявка при запрете отклонена" || check no "запрет: $(module_status nodes)"
+run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" "$SHELL_BIN" "$R/install.sh" modules on > "$WORK/modules.txt" 2>&1 </dev/null
+grep -q '"modules":true' "$U/ipc/status/helper.json" && check ok "модули снова разрешены" || check no "helper.json: $(cat "$U/ipc/status/helper.json")"
+run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" "$SHELL_BIN" "$R/install.sh" modules > "$WORK/modules.txt" 2>&1 </dev/null
+grep -q "Модуль nodes: работает ($TAG_A)" "$WORK/modules.txt" && check ok "список модулей показан" || check no "список: $(cat "$WORK/modules.txt")"
+
+echo "=== BB. перезапуск, журнал, остановка и удаление"
+: > "$S/calls.log"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e80 module-restart nodes ""
+updater
+module_status nodes | grep -q '"action":"module-restart","state":"done"' && grep -q '^restart -t 20 sn-mod-nodes$' "$S/calls.log" && check ok "перезапуск прошёл" || check no "перезапуск: $(module_status nodes)"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e81 module-logs nodes ""
+updater
+module_status nodes | grep -q '"memory_bytes":64172851' && module_status nodes | grep -Eq '"data_bytes":[1-9][0-9]*,' && check ok "память и размер данных посчитаны" || check no "журнал: $(module_status nodes)"
+grep -q 'красная строка' "$U/ipc/status/modules/nodes.log" && check ok "журнал записан" || check no "журнал: $(cat "$U/ipc/status/modules/nodes.log")"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e82 module-stop nodes ""
+updater
+[ "$(cut -d'|' -f1 "$S/mod_sn-mod-nodes")" = "exited" ] && check ok "модуль остановлен" || check no "остановка: $(cat "$S/mod_sn-mod-nodes")"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e83 module-start nodes ""
+updater
+[ "$(cut -d'|' -f1 "$S/mod_sn-mod-nodes")" = "running" ] && module_status nodes | grep -q '"action":"module-start","state":"done"' && check ok "модуль запущен снова" || check no "запуск: $(module_status nodes)"
+J9=6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e84
+printf '%s\n%s\n' "snk_$(printf '%048d' 1)" "$SECRET" > "$U/ipc/request/$J9.cred"
+module_request "$J9" module-secrets nodes ""
+updater
+[ "$(cat "$U/modules/nodes/secrets/sn_api_key")" = "snk_$(printf '%048d' 1)" ] && module_status nodes | grep -q '"action":"module-secrets","state":"done"' && check ok "новые ключи переданы и модуль перезапущен" || check no "ключи: $(module_status nodes)"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e85 module-remove nodes ',"data":"keep"'
+updater
+[ ! -e "$S/mod_sn-mod-nodes" ] && [ -f "$S/vol_sn-mod-nodes-data" ] && [ ! -d "$U/modules/nodes" ] && check ok "удалён без данных: контейнер и ключи убраны, том остался" || check no "удаление: $(ls "$S" | tr '\n' ' ')"
+grep -q "^image rm $TAG_A$" "$S/calls.log" && check ok "образы модуля удалены" || check no "образы: $(grep 'image rm' "$S/calls.log")"
+module_request 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e86 module-remove nodes ',"data":"erase"'
+updater
+[ ! -f "$S/vol_sn-mod-nodes-data" ] && [ ! -f "$U/ipc/status/modules/nodes.log" ] && check ok "удаление с данными стёрло том и журнал" || check no "стирание данных"
+
+echo "=== BC. прерванная заявка модуля"
+printf 'nodes 6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e90 module-update\n' > "$U/run/module-current"
+run SN_HELPER_TEST=1 SN_UPDATER_APP_UID="$ME" "$SHELL_BIN" "$R/install.sh" updater recover > "$WORK/recover.txt" 2>&1 </dev/null
+module_status nodes | grep -q '"id":"6b6c5d0e-6a1f-4c1e-9d55-3f0c2a7b9e90","action":"module-update","state":"failed"' && module_status nodes | grep -q '"error":"interrupted"' && [ ! -e "$U/run/module-current" ] && check ok "прерванная заявка отмечена" || check no "прерванная: $(module_status nodes)"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "ИТОГ ($SHELL_BIN): все проверки прошли"; else echo "ИТОГ ($SHELL_BIN): есть ошибки"; fi

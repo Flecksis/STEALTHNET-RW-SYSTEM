@@ -94,8 +94,115 @@ sql() {
     return 0
 }
 
+mod_file() {
+    printf '%s/mod_%s' "$STATE" "$1"
+}
+
+mod_set() {
+    printf '%s|%s\n' "$2" "$3" > "$(mod_file "$1")"
+}
+
+last_word() {
+    all="$*"
+    printf '%s' "${all##* }"
+}
+
 case "$*" in
     "compose version"*) exit 0 ;;
+    "network inspect stealthnet-modules-internal"*) [ -f "$STATE/net_inner" ]; exit $? ;;
+    "network inspect stealthnet-modules"*) [ -f "$STATE/net_modules" ]; exit $? ;;
+    "network create"*)
+        case "$(last_word "$@")" in
+            stealthnet-modules) : > "$STATE/net_modules" ;;
+            stealthnet-modules-internal) : > "$STATE/net_inner" ;;
+        esac
+        exit 0 ;;
+    "network connect "*) exit 0 ;;
+    "run --rm --network none --read-only "*" module-unpack "*)
+        out=""
+        for a in "$@"; do
+            case "$a" in
+                type=bind,source=*,target=/out) out=${a#type=bind,source=}; out=${out%,target=/out} ;;
+            esac
+        done
+        [ -n "$out" ] || exit 3
+        if [ "${FAKE_UNPACK:-ok}" = "ok" ]; then
+            printf 'module=%s\nimage=%s\nport=8095\nhealth=/healthz\nmemory=128\ncpus=0.5\ninternet=1\nvolume=data:/data\n' \
+                "${FAKE_MODULE:-nodes}" "${FAKE_TAG:-stealthnet-module/nodes:0123456789ab}" > "$out/spec"
+            if [ -n "${FAKE_SPEC_EXTRA:-}" ]; then printf '%s\n' "$FAKE_SPEC_EXTRA" >> "$out/spec"; fi
+            printf 'image' > "$out/image.tar"
+            exit 0
+        fi
+        printf '"%s"\n' "${FAKE_UNPACK_ERROR:-образ не тот}" > "$out/error.json"
+        exit 1 ;;
+    "load -i "*)
+        tag=${FAKE_LOADED:-${FAKE_TAG:-stealthnet-module/nodes:0123456789ab}}
+        echo "Loaded image: $tag"
+        printf '%s\n' "$tag" >> "$STATE/images"
+        exit "${FAKE_LOAD_EXIT:-0}" ;;
+    "volume inspect -f {{.Mountpoint}} "*)
+        dir="$STATE/volroot/$(last_word "$@")"
+        mkdir -p "$dir"
+        printf 'x' > "$dir/file"
+        echo "$dir"
+        exit 0 ;;
+    "volume inspect "*) [ -f "$STATE/vol_$(last_word "$@")" ]; exit $? ;;
+    "volume create "*) : > "$STATE/vol_$(last_word "$@")"; exit 0 ;;
+    "volume ls -q --filter label=org.stealthnet.module="*)
+        for f in "$STATE"/vol_*; do
+            if [ -f "$f" ]; then echo "${f##*/vol_}"; fi
+        done
+        exit 0 ;;
+    "volume rm "*) rm -f "$STATE/vol_$(last_word "$@")"; exit 0 ;;
+    "run --rm --network none --user 0:0 "*" chown "*) exit 0 ;;
+    "run -d --name sn-mod-"*)
+        printf '%s\n' "$*" >> "$STATE/module_runs"
+        [ "${FAKE_RUN_EXIT:-0}" -eq 0 ] || exit "$FAKE_RUN_EXIT"
+        name=${4:-}
+        mod_set "$name" running "$(last_word "$@")"
+        exit 0 ;;
+    "rm -f sn-mod-"*) rm -f "$(mod_file "$(last_word "$@")")"; exit 0 ;;
+    "stop -t "*" sn-mod-"*)
+        f=$(mod_file "$(last_word "$@")")
+        if [ -f "$f" ]; then mod_set "$(last_word "$@")" exited "$(cut -d'|' -f2 "$f")"; fi
+        exit 0 ;;
+    "start sn-mod-"*|"restart -t 20 sn-mod-"*)
+        f=$(mod_file "$(last_word "$@")")
+        [ -f "$f" ] || exit 1
+        mod_set "$(last_word "$@")" running "$(cut -d'|' -f2 "$f")"
+        exit 0 ;;
+    "inspect -f {{.State.Status}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.Config.Image}} sn-mod-"*)
+        f=$(mod_file "$(last_word "$@")")
+        [ -f "$f" ] || exit 1
+        echo "$(cut -d'|' -f1 "$f")|2026-11-24T10:00:00.123456789Z|0|$(cut -d'|' -f2 "$f")"
+        exit 0 ;;
+    "inspect -f {{.State.Status}} sn-mod-"*)
+        f=$(mod_file "$(last_word "$@")")
+        [ -f "$f" ] || exit 1
+        cut -d'|' -f1 "$f"
+        exit 0 ;;
+    "inspect sn-mod-"*) [ -f "$(mod_file "$(last_word "$@")")" ]; exit $? ;;
+    "exec abc123 curl -fsS -o /dev/null --max-time 3 http://sn-mod-"*)
+        printf '%s\n' "$(last_word "$@")" >> "$STATE/module_probes"
+        current=$(cut -d'|' -f2 "$(mod_file sn-mod-"${FAKE_MODULE:-nodes}")" 2>/dev/null || true)
+        if [ -n "${FAKE_BAD_IMAGE:-}" ] && [ "$current" = "$FAKE_BAD_IMAGE" ]; then exit 1; fi
+        exit "${FAKE_MODULE_HEALTH:-0}" ;;
+    "logs --tail 200 sn-mod-"*)
+        echo "модуль слушает 0.0.0.0:8095"
+        printf '\033[31mкрасная строка\033[0m\n'
+        exit 0 ;;
+    "stats --no-stream --format {{.MemUsage}} sn-mod-"*) echo "61.2MiB / 128MiB"; exit 0 ;;
+    "image ls --format {{.Repository}}:{{.Tag}} stealthnet-module/"*)
+        grep '^stealthnet-module/' "$STATE/images" 2>/dev/null | sort -u
+        exit 0 ;;
+    "ps -a --filter label=org.stealthnet.module "*)
+        for f in "$STATE"/mod_sn-mod-*; do
+            if [ -f "$f" ]; then
+                name=${f##*/mod_sn-mod-}
+                echo "$name|$(cut -d'|' -f1 "$f")|$(cut -d'|' -f2 "$f")"
+            fi
+        done
+        exit 0 ;;
     "info -f"*) echo "${FAKE_HOST_ARCH:-x86_64}"; exit 0 ;;
     "info"*) exit "${FAKE_INFO_EXIT:-0}" ;;
     pull*)

@@ -3,6 +3,7 @@ pub mod client;
 mod client_email;
 mod client_oauth;
 mod client_photo;
+mod module_pages;
 mod public_pay;
 mod public_verify;
 pub mod support_files;
@@ -73,6 +74,10 @@ const SECRET_PATHS: [&str; 6] = [
 ];
 
 pub fn shown_path(path: &str) -> std::borrow::Cow<'_, str> {
+    let pages = sn_services::ext_modules::proxy::PREFIX;
+    if path.starts_with(pages) {
+        return std::borrow::Cow::Owned(format!("{pages}…"));
+    }
     SECRET_PATHS
         .iter()
         .find_map(|prefix| {
@@ -132,7 +137,15 @@ pub fn router(state: AppState) -> Router {
         .public_router(ctx)
         .layer(from_fn_with_state(state.clone(), with_client_address));
     let request_id = HeaderName::from_static(REQUEST_ID);
-    Router::new()
+    let pages = module_pages::routes()
+        .layer(from_fn_with_state(
+            state.clone(),
+            crate::security::transport_security,
+        ))
+        .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(CatchPanicLayer::new())
+        .with_state(state.clone());
+    let main = Router::new()
         .merge(system::routes())
         .merge(public_pay::routes())
         .merge(public_verify::routes())
@@ -185,7 +198,8 @@ pub fn router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
         .layer(CatchPanicLayer::new())
-        .with_state(state)
+        .with_state(state);
+    pages.merge(main)
 }
 
 #[cfg(test)]
@@ -213,6 +227,7 @@ mod tests {
                 "/api/public/m/broadcast/resubscribe/…",
             ),
             ("/api/webhooks/telegram/abc", "/api/webhooks/telegram/…"),
+            ("/m/nodes/AAAAAAAAAAE.c2VjcmV0/api/state", "/m/…"),
         ] {
             assert_eq!(shown_path(path), shown, "{path}");
         }

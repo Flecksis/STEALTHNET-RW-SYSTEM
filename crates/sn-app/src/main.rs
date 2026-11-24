@@ -2,6 +2,7 @@ mod backups;
 mod cli;
 mod config;
 mod legacy;
+mod modules;
 mod remna;
 mod updates;
 mod watch;
@@ -332,7 +333,12 @@ async fn run(command: Command) -> Result<()> {
                 _ => backups::backup(&services).await,
             }
         }
-        Command::GenSecretKey | Command::Version | Command::Help => Ok(()),
+        Command::GenSecretKey
+        | Command::ModuleKeygen { .. }
+        | Command::ModulePack { .. }
+        | Command::ModuleUnpack { .. }
+        | Command::Version
+        | Command::Help => Ok(()),
     }
 }
 
@@ -372,6 +378,15 @@ fn main() -> ExitCode {
             println!("{}", SecretBox::generate_key_base64());
             return ExitCode::SUCCESS;
         }
+        Command::ModuleKeygen { file } => return modules::keygen(&file),
+        Command::ModulePack { dir, key, out } => {
+            return modules::pack(&dir, key.as_deref(), out.as_deref());
+        }
+        Command::ModuleUnpack {
+            package,
+            out,
+            platform,
+        } => return modules::unpack(&package, &out, platform.as_deref()),
         _ => {}
     }
     let runtime = match tokio::runtime::Builder::new_multi_thread()

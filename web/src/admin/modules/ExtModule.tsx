@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { pathPart } from '../../lib/apiPath';
@@ -7,9 +7,23 @@ import { changedConfig, initialValues, missingRequired, SchemaFields, type Field
 import { useSession } from '../session';
 import { Switch } from '../ui';
 import { CredentialsBlock } from './ExtCredentials';
-import { KEY_TEXT, extLink, type Attempt, type Credentials, type ExtCard, type ExtConfig, type Journal, type PingResult } from './ext';
+import { ManagedManage, RuntimeSection, useRuntimeWatch } from './ExtRuntime';
+import {
+  KEY_TEXT,
+  extLink,
+  type Attempt,
+  type Credentials,
+  type ExtCard,
+  type ExtConfig,
+  type Journal,
+  type PingResult,
+  type Reissued,
+  type RuntimeView,
+} from './ext';
+import { signatureNote } from './package';
 import '../form.css';
 import '../pages/admins.css';
+import '../pages/updates.css';
 import './modules.css';
 import './ext.css';
 
@@ -250,7 +264,7 @@ function DeliveryLog({ id, version }: { id: string; version: number }) {
 
 export function ExtModule() {
   const { id = '' } = useParams();
-  const { can } = useSession();
+  const { can, me } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
   const [card, setCard] = useState<ExtCard | null>(null);
@@ -262,7 +276,11 @@ export function ExtModule() {
   const [issued, setIssued] = useState<Credentials | null>(null);
   const [ping, setPing] = useState<PingResult | null>(null);
   const [version, setVersion] = useState(0);
+  const [runtime, setRuntime] = useState<RuntimeView | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const canInstall = can('modules') && can('settings');
+  const managed = card?.managed ?? false;
+  const owner = me.admin.role === 'owner';
 
   const load = useCallback(async () => {
     try {
@@ -277,9 +295,34 @@ export function ExtModule() {
     }
   }, [id]);
 
+  const loadRuntime = useCallback(async () => {
+    try {
+      setRuntime(await api<RuntimeView>(`/api/admin/ext-modules/${pathPart(id)}/runtime`));
+      setRuntimeError(null);
+    } catch (err) {
+      setRuntimeError(failText(err, 'Состояние модуля на сервере не загрузилось'));
+    }
+  }, [id]);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (managed) {
+      void loadRuntime();
+    }
+  }, [managed, loadRuntime]);
+
+  const running = useRuntimeWatch(managed ? id : null, runtime, setRuntime);
+  const wasRunning = useRef(false);
+
+  useEffect(() => {
+    if (wasRunning.current && !running) {
+      void load();
+    }
+    wasRunning.current = running;
+  }, [running, load]);
 
   const toggle = async () => {
     if (!card || busy) {
@@ -289,6 +332,9 @@ export function ExtModule() {
     setNote(null);
     try {
       setCard(await api<ExtCard>(`/api/admin/ext-modules/${pathPart(id)}`, { method: 'PATCH', body: { enabled: !card.enabled } }));
+      if (card.managed) {
+        await loadRuntime();
+      }
     } catch (err) {
       setError(failText(err, 'Модуль не переключился'));
     } finally {
@@ -315,7 +361,14 @@ export function ExtModule() {
     setBusy('reissue');
     setError(null);
     try {
-      setIssued(await api<Credentials>(`/api/admin/ext-modules/${pathPart(id)}/credentials`, { method: 'POST', body: {} }));
+      const next = await api<Reissued>(`/api/admin/ext-modules/${pathPart(id)}/credentials`, { method: 'POST', body: {} });
+      if (next.credentials) {
+        setIssued(next.credentials);
+      }
+      if (next.runtime) {
+        setRuntime(next.runtime);
+        setNote('Ключ и секрет обновлены, модуль перезапускается с новыми');
+      }
       setAsking(null);
       await load();
     } catch (err) {
@@ -367,6 +420,9 @@ export function ExtModule() {
   }
 
   const keyBad = card.key.state !== 'active';
+  const signed = card.managed && runtime?.package ? signatureNote(runtime.package.signature, card.author) : null;
+  const eventsPath = runtime?.run?.events_path ?? null;
+  const canPing = card.enabled && (card.managed ? eventsPath !== null : card.webhook !== null);
 
   return (
     <div className="md-page">
@@ -377,7 +433,8 @@ export function ExtModule() {
         <h1 className="page-title tight">{card.name}</h1>
         {card.description ? <p>{card.description}</p> : null}
         <span className="md-where">
-          Внешний модуль · версия {card.version} · автор {card.author}
+          {card.managed ? `Модуль из архива · версия ${card.version} · ${card.author}` : `Внешний модуль · версия ${card.version} · автор ${card.author}`}
+          {signed ? `, ${signed.text}` : null}
           {card.site ? (
             <>
               {' · '}
@@ -402,7 +459,7 @@ export function ExtModule() {
           </span>
           {card.warning ? <span className="md-warn">{card.warning}</span> : null}
         </div>
-        <Switch on={card.enabled} onToggle={() => void toggle()} label={card.name} disabled={busy !== null} />
+        <Switch on={card.enabled} onToggle={() => void toggle()} label={card.name} disabled={busy !== null || running} />
       </section>
       {card.page && card.enabled && can(card.page.permission) ? (
         <Link to={`${extLink(card.id)}/page`} className="md-back">
@@ -415,13 +472,21 @@ export function ExtModule() {
         </p>
       ) : null}
       {issued ? <CredentialsBlock credentials={issued} onDone={() => setIssued(null)} /> : null}
+      {card.managed && runtime ? <RuntimeSection id={card.id} runtime={runtime} onRuntime={setRuntime} /> : null}
+      {card.managed && !runtime && runtimeError ? (
+        <p className="err" role="alert">
+          {runtimeError}
+        </p>
+      ) : null}
       {card.has_settings ? <Settings id={card.id} onSaved={() => setVersion((n) => n + 1)} /> : null}
       <section className="sec ext-facts" aria-labelledby="ext-access-h">
         <div className="sec-head">
           <h2 id="ext-access-h" className="section-title">
             Доступ
           </h2>
-          <span className="cap">Что вы подтвердили при установке. Чтобы изменить — загрузите новый файл описания.</span>
+          <span className="cap">
+            Что вы подтвердили при установке. Чтобы изменить — загрузите {card.managed ? 'архив новой версии' : 'новый файл описания'}.
+          </span>
         </div>
         <div className="row">
           <span className="rl">События</span>
@@ -460,14 +525,27 @@ export function ExtModule() {
         <div className="row adm-row">
           <span className="adm-who">
             <span className="ext-cred-label">Адрес для событий</span>
-            {card.webhook ? <span className="mono ext-url">{card.webhook}</span> : <span className="cap">Не указан.</span>}
+            {card.managed ? (
+              eventsPath ? (
+                <>
+                  <span className="mono ext-url">{eventsPath}</span>
+                  <span className="cap">Путь внутри модуля: панель шлёт ему события по внутренней сети сервера.</span>
+                </>
+              ) : runtime ? (
+                <span className="cap">Нет: модуль не принимает события.</span>
+              ) : null
+            ) : card.webhook ? (
+              <span className="mono ext-url">{card.webhook}</span>
+            ) : (
+              <span className="cap">Не указан.</span>
+            )}
             {ping ? (
               <span className={`adm-status ${ping.ok ? '' : 'bad'}`} role="status">
                 {ping.ok ? `Модуль ответил: код ${ping.http_status} за ${ping.duration_ms} мс` : ping.error}
               </span>
             ) : null}
           </span>
-          {card.webhook && card.enabled ? (
+          {canPing ? (
             <span className="adm-acts">
               <button type="button" className="b34 hov" onClick={() => void check()} disabled={busy !== null}>
                 {busy === 'ping' ? 'Проверяем…' : 'Проверить связь'}
@@ -503,7 +581,9 @@ export function ExtModule() {
         {asking === 'reissue' ? (
           <div className="row adm-ask">
             <span className="cap">
-              Панель отзовёт старый ключ API и сменит секрет подписи. Модуль перестанет работать, пока вы не передадите ему новые значения.
+              {card.managed
+                ? 'Ключ и секрет обновятся, модуль перезапустится.'
+                : 'Панель отзовёт старый ключ API и сменит секрет подписи. Модуль перестанет работать, пока вы не передадите ему новые значения.'}
             </span>
             <span className="adm-acts">
               <button type="button" className="btn-main btn" onClick={() => void reissue()} disabled={busy !== null}>
@@ -517,7 +597,8 @@ export function ExtModule() {
         ) : null}
       </section>
       <DeliveryLog id={card.id} version={version} />
-      {canInstall ? (
+      {canInstall && card.managed ? <ManagedManage card={card} runtime={runtime} owner={owner} /> : null}
+      {canInstall && !card.managed ? (
         <section className="sec" aria-labelledby="ext-manage-h">
           <div className="sec-head">
             <h2 id="ext-manage-h" className="section-title">

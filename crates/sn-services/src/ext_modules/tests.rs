@@ -406,3 +406,111 @@ fn событие_не_отправляется_без_действующего_
         assert_eq!(withheld(&access, "ping"), None);
     }
 }
+
+#[test]
+fn свежая_проверка_помощника_считается_ответом_модуля() {
+    use super::packages::{Health, overall};
+    use super::runtime::{ContainerView, JobView, StepView};
+    let now = Utc.with_ymd_and_hms(2026, 11, 24, 12, 0, 0).unwrap();
+    let container = ContainerView {
+        state: "running".into(),
+        started_at: None,
+        restarts: None,
+        image: None,
+        memory_bytes: None,
+        data_bytes: None,
+        checked_at: None,
+    };
+    let job = |ago: i64, verify: &str| JobView {
+        id: "r1".into(),
+        action: "module-install".into(),
+        state: "done".into(),
+        steps: vec![StepView {
+            key: "verify".into(),
+            state: verify.into(),
+            seconds: Some(1),
+        }],
+        error: None,
+        restored: None,
+        requested_at: Some(now - Duration::seconds(ago + 5)),
+        finished_at: Some(now - Duration::seconds(ago)),
+    };
+    let health = |ago: i64, ok: bool| Health {
+        ok,
+        at: now - Duration::seconds(ago),
+        error: (!ok).then(|| "модуль ответил кодом 500".to_string()),
+        since: None,
+    };
+    let fresh = job(10, "done");
+    assert_eq!(
+        overall(true, Some(&fresh), Some(&container), None, now),
+        "running"
+    );
+    assert_eq!(
+        overall(true, Some(&job(600, "done")), Some(&container), None, now),
+        "starting"
+    );
+    assert_eq!(
+        overall(true, Some(&job(10, "skipped")), Some(&container), None, now),
+        "starting"
+    );
+    assert_eq!(
+        overall(
+            true,
+            Some(&fresh),
+            Some(&container),
+            Some(&health(5, false)),
+            now
+        ),
+        "unhealthy"
+    );
+    assert_eq!(
+        overall(
+            true,
+            Some(&fresh),
+            Some(&container),
+            Some(&health(60, false)),
+            now
+        ),
+        "running"
+    );
+    assert_eq!(
+        overall(true, None, Some(&container), Some(&health(60, true)), now),
+        "running"
+    );
+    assert_eq!(
+        overall(false, Some(&fresh), Some(&container), None, now),
+        "stopped"
+    );
+    let rolled = |restored: Option<bool>| JobView {
+        state: "rolled_back".into(),
+        action: "module-update".into(),
+        restored,
+        ..job(10, "failed")
+    };
+    let sick = health(30, false);
+    assert_eq!(
+        overall(
+            true,
+            Some(&rolled(Some(true))),
+            Some(&container),
+            Some(&sick),
+            now
+        ),
+        "running"
+    );
+    assert_eq!(
+        overall(
+            true,
+            Some(&rolled(Some(false))),
+            Some(&container),
+            Some(&sick),
+            now
+        ),
+        "unhealthy"
+    );
+    assert_eq!(
+        overall(true, Some(&rolled(None)), Some(&container), None, now),
+        "starting"
+    );
+}

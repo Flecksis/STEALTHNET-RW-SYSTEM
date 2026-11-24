@@ -24,6 +24,7 @@ const ERROR_MAX: usize = 300;
 const KEEP_DAYS: i64 = 14;
 const TICK: std::time::Duration = std::time::Duration::from_secs(1);
 const CLEANUP_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+const HEALTH_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub const PING: &str = "ping";
 pub const SETTINGS_CHANGED: &str = "settings_changed";
@@ -66,6 +67,7 @@ pub struct Target {
     pub url: String,
     pub key: Vec<u8>,
     pub loopback: bool,
+    pub internal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +123,9 @@ fn transport(err: &reqwest::Error) -> String {
     if let Some(blocked) = address::blocked_in(err) {
         return blocked.to_string();
     }
+    if let Some(outside) = address::outside_in(err) {
+        return outside.to_string();
+    }
     if err.is_timeout() {
         "модуль не ответил за 10 секунд".into()
     } else if not_found(err) {
@@ -150,9 +155,21 @@ fn elapsed(started: Instant) -> u32 {
 }
 
 pub async fn send(target: &Target, delivery: &Claimed, now: DateTime<Utc>) -> Sent {
-    let url = match address::check_with(&target.url, target.loopback) {
-        Ok(url) => url,
-        Err(message) => return Sent::refused(message),
+    let url = if target.internal {
+        match reqwest::Url::parse(&target.url) {
+            Ok(url) if url.scheme() == "http" => url,
+            _ => return Sent::refused("адрес модуля внутри сервера не разобран"),
+        }
+    } else {
+        match address::check_with(&target.url, target.loopback) {
+            Ok(url) => url,
+            Err(message) => return Sent::refused(message),
+        }
+    };
+    let client = if target.internal {
+        address::internal_client()
+    } else {
+        address::client(target.loopback)
     };
     let id = message_id(delivery);
     let timestamp = now.timestamp();
@@ -161,7 +178,7 @@ pub async fn send(target: &Target, delivery: &Claimed, now: DateTime<Utc>) -> Se
         return Sent::failed("секрет подписи не прочитан");
     };
     let started = Instant::now();
-    let result = address::client(target.loopback)
+    let result = client
         .post(url)
         .header(CONTENT_TYPE, "application/json")
         .header("webhook-id", &id)
@@ -255,7 +272,19 @@ impl Deliverer {
         let Some(row) = store::get(&mut conn, module).await? else {
             return Ok(None);
         };
-        let Some(url) = row.manifest.webhook.clone() else {
+        let internal = row.managed;
+        let url = match &row.manifest.run {
+            Some(run) if internal => run.events_path.as_deref().map(|path| {
+                super::runtime::url(
+                    self.services.update_config().as_deref(),
+                    module,
+                    run.port,
+                    path,
+                )
+            }),
+            _ => row.manifest.webhook.clone(),
+        };
+        let Some(url) = url else {
             return Ok(Some((
                 row.enabled,
                 Err("у модуля нет адреса для событий".to_string()),
@@ -270,6 +299,7 @@ impl Deliverer {
                 url,
                 key,
                 loopback: self.services.env().ext_modules_loopback,
+                internal,
             })
             .ok_or_else(|| {
                 "секрет подписи не прочитан: проверьте, что SN_SECRET_KEY не менялся".to_string()
@@ -415,6 +445,9 @@ impl Deliverer {
         tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut cleanup = interval(CLEANUP_EVERY);
         cleanup.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut health = interval(HEALTH_EVERY);
+        health.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut probing: Option<tokio::task::JoinHandle<()>> = None;
         let mut tasks: JoinSet<()> = JoinSet::new();
         let mut busy: HashMap<tokio::task::Id, String> = HashMap::new();
         loop {
@@ -434,6 +467,20 @@ impl Deliverer {
                     if let Err(err) = self.cleanup().await {
                         tracing::warn!(error = %err, "старые доставки внешним модулям не удалены");
                     }
+                    self.services.ext_modules().cleanup_uploads();
+                }
+                _ = health.tick() => {
+                    if self.services.pause_gate().is_paused()
+                        || probing.as_ref().is_some_and(|h| !h.is_finished())
+                    {
+                        continue;
+                    }
+                    let services = self.services.clone();
+                    probing = Some(tokio::spawn(async move {
+                        if let Err(err) = services.ext_modules().probe_health().await {
+                            tracing::warn!(error = %err, "проверка модулей из архива не прошла");
+                        }
+                    }));
                 }
                 _ = tick.tick() => {
                     if self.services.pause_gate().is_paused() {
@@ -463,5 +510,8 @@ impl Deliverer {
             }
         }
         tasks.shutdown().await;
+        if let Some(handle) = probing {
+            handle.abort();
+        }
     }
 }

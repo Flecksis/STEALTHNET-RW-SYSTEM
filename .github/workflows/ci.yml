@@ -374,6 +374,56 @@ jobs:
           sudo stealthnet status | tee "$RUNNER_TEMP/status.log"
           grep -q 'Последнее обновление: .*установлено (версия 0.1.99999)' "$RUNNER_TEMP/status.log"
           grep -q 'Версия:            0.1.99999 от ' "$RUNNER_TEMP/status.log"
+      - name: the owner installs a module from a zip and the helper runs it
+        run: |
+          set -x
+          mod="$RUNNER_TEMP/module"
+          mkdir -p "$mod/pack"
+          printf 'FROM busybox:1.36\nRUN mkdir -p /www /data && printf ok > /www/healthz && printf "<p>module page</p>" > /www/index.html\nCMD ["httpd", "-f", "-p", "8095", "-h", "/www"]\n' > "$mod/Dockerfile"
+          docker build -t ci-module:1 "$mod"
+          docker save -o "$mod/pack/image-linux-amd64.tar" ci-module:1
+          printf '{"format":1,"id":"ci-demo","name":"Проверка CI","version":"1.0.0","author":"CI","page":{"path":"/","title":"CI"},"run":{"port":8095,"health_path":"/healthz","memory_mb":64,"cpus":0.2,"volumes":[{"name":"data","path":"/data"}]}}' > "$mod/pack/module.json"
+          image=$(sudo sed -n 's/^SN_IMAGE=//p' /opt/stealthnet-rw/deploy/.env | tail -n 1)
+          docker run --rm --user "$(id -u):$(id -g)" -v "$mod:/w" -w /w "$image" module pack /w/pack --out /w/ci-demo.zip
+          password=$(sed -n 's/^ *Пароль владельца: *//p' "$RUNNER_TEMP/install.log" | tail -n 1)
+          token=$(curl -fsS -H 'content-type: application/json' \
+            -d "{\"email\":\"owner@example.com\",\"password\":\"$password\"}" "$URL/api/admin/auth/login" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          test -n "$token"
+          auth="Authorization: Bearer $token"
+          curl -fsS -H "$auth" "$URL/api/admin/ext-modules/install-info" | tee "$RUNNER_TEMP/info.json"
+          grep -q '"state":"ready"' "$RUNNER_TEMP/info.json"
+          upload=$(curl -fsS -H "$auth" -H 'content-type: application/zip' --data-binary @"$mod/ci-demo.zip" "$URL/api/admin/ext-modules/packages" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+          test -n "$upload"
+          curl -fsS -H "$auth" -H 'content-type: application/json' -d '{}' "$URL/api/admin/ext-modules/packages/$upload/check" | tee "$RUNNER_TEMP/check-module.json"
+          grep -q '"id":"ci-demo"' "$RUNNER_TEMP/check-module.json"
+          curl -fsS -H "$auth" -H 'content-type: application/json' \
+            -d "{\"password\":\"$password\",\"permissions\":[],\"events\":[],\"trust_unsigned\":true}" "$URL/api/admin/ext-modules/packages/$upload/install" > "$RUNNER_TEMP/installed.json"
+          for i in $(seq 1 60); do
+            curl -fsS -H "$auth" "$URL/api/admin/ext-modules/ci-demo/runtime" > "$RUNNER_TEMP/runtime.json"
+            state=$(python3 -c 'import json, sys; print((json.load(open(sys.argv[1])).get("job") or {}).get("state", ""))' "$RUNNER_TEMP/runtime.json")
+            case "$state" in
+              done|failed|rolled_back) break ;;
+            esac
+            sleep 3
+          done
+          cat "$RUNNER_TEMP/runtime.json"
+          sudo journalctl -u stealthnet-rw-update.service --no-pager | tail -n 30
+          test "$state" = done
+          test "$(sudo docker inspect -f '{{.State.Status}} {{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.Privileged}}' sn-mod-ci-demo)" = "running 10100:10100 true false"
+          sudo stealthnet modules | tee "$RUNNER_TEMP/modules.log"
+          grep -q 'Модуль ci-demo: работает' "$RUNNER_TEMP/modules.log"
+          page=$(curl -fsS -H "$auth" -X POST -H 'content-type: application/json' -d '{}' "$URL/api/admin/ext-modules/ci-demo/page-token" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+          case "$page" in /m/ci-demo/*) ;; *) echo "page: $page"; exit 1 ;; esac
+          curl -fsS -D "$RUNNER_TEMP/page.headers" "$URL$page" | grep -q 'module page'
+          grep -qi '^content-security-policy: sandbox' "$RUNNER_TEMP/page.headers"
+          curl -fsS -H "$auth" -X DELETE -H 'content-type: application/json' \
+            -d "{\"password\":\"$password\",\"erase_data\":true}" "$URL/api/admin/ext-modules/ci-demo"
+          for i in $(seq 1 40); do
+            if ! sudo docker inspect sn-mod-ci-demo >/dev/null 2>&1; then break; fi
+            sleep 3
+          done
+          ! sudo docker inspect sn-mod-ci-demo >/dev/null 2>&1
+          test -z "$(sudo docker volume ls -q --filter label=org.stealthnet.module=ci-demo)"
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

@@ -95,6 +95,8 @@ pub struct UpdateConfig {
     pub repository: String,
     pub tag: String,
     pub checks_allowed: bool,
+    pub helper_why: Option<String>,
+    pub modules_host: Option<String>,
 }
 
 impl UpdateConfig {
@@ -106,6 +108,8 @@ impl UpdateConfig {
             repository: DEFAULT_REPOSITORY.to_string(),
             tag: DEFAULT_TAG.to_string(),
             checks_allowed: true,
+            helper_why: None,
+            modules_host: None,
         }
     }
 }
@@ -508,9 +512,11 @@ struct RequestMarker {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-struct HelperFile {
+pub(crate) struct HelperFile {
     #[serde(default)]
-    panel_updates: bool,
+    pub(crate) panel_updates: bool,
+    #[serde(default)]
+    pub(crate) modules: Option<bool>,
     #[serde(default)]
     blocked: Option<String>,
 }
@@ -673,7 +679,7 @@ fn source_url(commit: &str) -> String {
     format!("{SOURCE_URL}/tree/{commit}")
 }
 
-fn read_small(path: &Path) -> Option<String> {
+pub(crate) fn read_small(path: &Path) -> Option<String> {
     use std::io::Read;
     let file = std::fs::File::open(path).ok()?;
     if !file.metadata().ok()?.is_file() {
@@ -686,7 +692,7 @@ fn read_small(path: &Path) -> Option<String> {
     (text.len() <= FILE_LIMIT).then_some(text)
 }
 
-fn read_helper(dir: &Path) -> Option<HelperFile> {
+pub(crate) fn read_helper(dir: &Path) -> Option<HelperFile> {
     serde_json::from_str(&read_small(&dir.join("status").join("helper.json"))?).ok()
 }
 

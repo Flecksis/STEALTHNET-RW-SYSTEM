@@ -7,7 +7,7 @@ export type ExtEvent = { kind: string; title: string; about: string; change: Cha
 
 export type ExtPermission = { key: Permission; title: string; about: string; sensitive: boolean; change: Change };
 
-export type ExtPage = { url: string; title: string; permission: Permission; permission_title: string };
+export type ExtPage = { url: string; path: string | null; title: string; permission: Permission; permission_title: string };
 
 export type ExtSummary = {
   id: string;
@@ -19,6 +19,8 @@ export type ExtSummary = {
   has_settings: boolean;
   page: ExtPage | null;
   warning: string | null;
+  managed: boolean;
+  state: string | null;
 };
 
 export type KeyState = 'active' | 'missing' | 'revoked' | 'expired' | 'owner_disabled';
@@ -42,6 +44,7 @@ export type ExtCard = {
   updated_at: string;
   stats: { pending: number; failed: number; last_ok: boolean | null; last_at: string | null };
   warning: string | null;
+  managed: boolean;
 };
 
 export type Problem = { path: string; message: string };
@@ -94,7 +97,114 @@ export type Journal = { attempts: Attempt[]; stats: ExtCard['stats'] };
 
 export type PingResult = { ok: boolean; http_status: number | null; duration_ms: number; error: string | null; response: string | null };
 
-export type PageToken = { url: string; origin: string; token: string; expires_at: string };
+export type PageToken = { url: string; origin: string; token: string; expires_at: string; proxied: boolean };
+
+export type HelperAvailability = 'ready' | 'no_helper' | 'helper_off' | 'outdated' | 'modules_off';
+
+export type HelperState = { state: HelperAvailability; why: string | null; busy: boolean };
+
+export type InstallInfo = {
+  owner: boolean;
+  totp_required: boolean;
+  packages: HelperState;
+  reason: string;
+  processor: string | null;
+  max_bytes: number;
+};
+
+export type Volume = { name: string; path: string };
+
+export type RunView = {
+  port: number;
+  memory_mb: number;
+  cpus: string;
+  internet: boolean;
+  volumes: Volume[];
+  health_path: string;
+  events_path: string | null;
+  page_path: string | null;
+};
+
+export type Signature = { state: 'verified'; signer: string; fingerprint: string } | { state: 'unknown'; fingerprint: string } | { state: 'unsigned' };
+
+export type PackageView = {
+  bytes: number;
+  sha256: string;
+  signature: Signature;
+  platforms: string[];
+  processor: string;
+  image_bytes: number;
+};
+
+export type PackagePreview = Preview & { run: RunView; previous_run: RunView | null; package: PackageView };
+
+export type PackageCheck = { errors: Problem[]; preview: PackagePreview | null };
+
+export type Uploaded = { id: string; size: number };
+
+export type RuntimeState =
+  | 'running'
+  | 'starting'
+  | 'unhealthy'
+  | 'restarting'
+  | 'stopped'
+  | 'missing'
+  | 'failed'
+  | 'unknown'
+  | 'installing'
+  | 'updating'
+  | 'stopping'
+  | 'removing';
+
+export type JobStep = { key: string; state: 'pending' | 'running' | 'done' | 'failed'; seconds: number | null };
+
+export type RuntimeJob = {
+  id: string;
+  action: string;
+  state: 'waiting' | 'running' | 'done' | 'failed' | 'rolled_back';
+  steps: JobStep[];
+  error: string | null;
+  restored: boolean | null;
+  requested_at: string | null;
+  finished_at: string | null;
+};
+
+export type ContainerInfo = {
+  state: string;
+  started_at: string | null;
+  restarts: number | null;
+  image: string | null;
+  memory_bytes: number | null;
+  data_bytes: number | null;
+  checked_at: string | null;
+};
+
+export type Health = { ok: boolean; at: string; error: string | null; since: string | null };
+
+export type InstalledPackage = { sha256: string; bytes: number; signature: Signature; platforms?: string[]; image_bytes?: number; installed_at?: string };
+
+export type RuntimeView = {
+  module: string;
+  state: RuntimeState;
+  enabled: boolean;
+  version: string;
+  run: RunView | null;
+  job: RuntimeJob | null;
+  container: ContainerInfo | null;
+  health: Health | null;
+  package: InstalledPackage | null;
+  helper: HelperState;
+  reason: string;
+  owner: boolean;
+  totp_required: boolean;
+  can_logs: boolean;
+};
+
+export type PackageInstalled = { module: ExtCard; runtime: RuntimeView };
+
+export type Reissued = { credentials: Credentials | null; runtime: RuntimeView | null };
+
+export type LogsView = { lines: string[]; at: string | null };
 
 export const KEY_TEXT: Record<KeyState, string> = {
   active: 'работает',
