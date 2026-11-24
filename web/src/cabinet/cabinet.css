@@ -1308,6 +1308,10 @@
   flex-wrap: wrap;
 }
 
+.cb-phone .cb-tariffs {
+  align-self: flex-start;
+}
+
 .cb-phone .cb-term {
   justify-content: space-between;
 }

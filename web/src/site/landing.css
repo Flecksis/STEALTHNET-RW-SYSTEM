@@ -482,6 +482,13 @@
   gap: 12px 20px;
 }
 
+.ld-plans-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .ld-seg {
   display: flex;
   gap: 2px;
@@ -813,6 +820,10 @@
 
 .ld-phone .ld-plans-head {
   flex-direction: column;
+  align-items: stretch;
+}
+
+.ld-phone .ld-plans-pick {
   align-items: stretch;
 }
 

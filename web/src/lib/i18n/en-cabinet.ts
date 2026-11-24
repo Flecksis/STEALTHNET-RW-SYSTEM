@@ -78,6 +78,7 @@ export const CABINET: Record<string, string> = {
   'Сейчас: {name} до {date}. Новый срок добавится к текущему.': 'Now active: {name} until {date}. The new period will be added on top.',
   'текущий тариф': 'your current plan',
   'Сейчас: {name}. Новый срок добавится к текущему.': 'Now active: {name}. The new period will be added on top.',
+  'Тариф сменится на «{name}».': 'The plan will change to “{name}”.',
   'Трафик: {traffic} {plan}.': 'Traffic: {traffic} {plan}.',
   '{name} будет действовать до {date}.': '{name} will run until {date}.',
   'Подписка продлится до {date}.': 'Your subscription will run until {date}.',

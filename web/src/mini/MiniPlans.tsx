@@ -9,6 +9,7 @@ import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, re
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
+import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -32,8 +33,8 @@ export function MiniPlans() {
   const multi = me.multi_subscriptions === true;
   const [picked, setPicked] = useState<PayTarget | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [cat, setCat] = useState<number | null>(null);
-  const chosenOffer = catalog?.tariffs.find((o) => o.category.id === cat) ?? null;
+  const [tariffId, setTariffId] = useState<number | null>(null);
+  const chosenOffer = offerById(catalog?.tariffs ?? [], tariffId);
   const full = useMemo(() => fullCategory(subs, multi, chosenOffer?.category), [subs, multi, chosenOffer]);
   const targets = useMemo(() => payTargets(subs, multi, full), [subs, multi, full]);
   const wanted = picked ?? shown?.subscription.id ?? null;
@@ -64,27 +65,23 @@ export function MiniPlans() {
   }, []);
 
   const offers = catalog?.tariffs ?? [];
-  const categories = useMemo(() => {
-    const seen = new Map<number, { id: number; name: string; sort: number }>();
-    for (const o of offers) {
-      seen.set(o.category.id, o.category);
-    }
-    return [...seen.values()].sort((a, b) => a.sort - b.sort);
-  }, [offers]);
-  const current = view ? offers.find((o) => o.tariff.id === view.subscription.tariff_id) ?? null : null;
+  const categories = useMemo(() => offerCategories(offers), [offers]);
+  const siblings = useMemo(() => categoryOffers(offers, chosenOffer?.category.id), [offers, chosenOffer]);
+  const current = view ? offerById(offers, view.subscription.tariff_id) : null;
+  const own = view?.subscription ?? null;
 
   useEffect(() => {
-    if (!catalog || cat !== null) {
+    if (!catalog || tariffId !== null) {
       return;
     }
-    const startOffer = current ?? offers[0] ?? null;
-    if (!startOffer) {
+    const start = firstPick(catalog.tariffs, view?.subscription ?? null);
+    if (!start) {
       return;
     }
-    setCat(startOffer.category.id);
-    setPeriod(startOffer.periods[Math.min(1, startOffer.periods.length - 1)]?.period_id ?? null);
-    setDevices(startOffer.tariff.devices.included + (startOffer === current && view ? view.subscription.extra_devices : 0));
-  }, [catalog, cat, current, offers, view]);
+    setTariffId(start.tariffId);
+    setPeriod(start.periodId);
+    setDevices(start.devices);
+  }, [catalog, tariffId, view]);
 
   const offer: TariffOffer | null = chosenOffer;
   const included = offer?.tariff.devices.included ?? 0;
@@ -93,6 +90,16 @@ export function MiniPlans() {
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
   const subscriptionId = typeof target === 'number' ? target : null;
   const another = !view && subs.length > 0;
+  const choice: OfferPick | null = tariffId === null ? null : { tariffId, periodId: period, devices };
+
+  const apply = (next: OfferPick | null) => {
+    if (!next) {
+      return;
+    }
+    setTariffId(next.tariffId);
+    setPeriod(next.periodId);
+    setDevices(next.devices);
+  };
 
   const forced = full && typeof target === 'number' && target !== wanted ? target : null;
   useEffect(() => {
@@ -110,16 +117,7 @@ export function MiniPlans() {
       return;
     }
     setPicked(next);
-    const v = targetView(subs, next, multi);
-    const own = v ? offers.find((o) => o.tariff.id === v.subscription.tariff_id) : undefined;
-    if (v && own) {
-      setCat(own.category.id);
-      const p = own.periods.find((x) => x.days === v.subscription.period_days) ?? own.periods.find((x) => x.months === periodOffer?.months) ?? own.periods[Math.min(1, own.periods.length - 1)];
-      setPeriod(p?.period_id ?? null);
-      setDevices(own.tariff.devices.included + v.subscription.extra_devices);
-    } else {
-      setDevices(included);
-    }
+    apply(targetPick(offers, targetView(subs, next, multi)?.subscription ?? null, choice));
     if (typeof next === 'number') {
       choose(next);
     }
@@ -163,7 +161,8 @@ export function MiniPlans() {
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
   const fromTrial = !!view && view.subscription.kind === 'trial';
-  const sameCategory = current && offer ? current.category.id === offer.category.id : null;
+  const sameCategory = renewsCurrent(current, offer);
+  const switching = sameCategory === true && !fromTrial && !!current && !!offer && current.tariff.id !== offer.tariff.id;
   const change = !!view && !!offer && (fromTrial || (sameCategory === null ? quote?.kind === 'change' : !sameCategory));
   const transition = change && !fromTrial;
   const currentName = view && subs.length > 1 ? subName(view, subs) : (current?.tariff.name ?? view?.tariff?.name ?? null);
@@ -271,23 +270,19 @@ export function MiniPlans() {
       {!catalog ? <p className="mn-muted">{error ?? t('Загружаем тарифы…')}</p> : null}
       {catalog && offers.length === 0 ? <p className="mn-muted">{t('Тарифов пока нет.')}</p> : null}
       {categories.length > 1 ? (
-        <div role="group" aria-label={t('Тариф')} className="mn-seg" style={{ gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))` }}>
+        <div role="group" aria-label={t('Тип тарифа')} className="mn-seg" style={{ gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))` }}>
           {categories.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              aria-pressed={cat === c.id}
-              onClick={() => {
-                const next = offers.find((o) => o.category.id === c.id);
-                setCat(c.id);
-                if (next) {
-                  const keep = next.periods.find((p) => p.months === periodOffer?.months) ?? next.periods[Math.min(1, next.periods.length - 1)];
-                  setPeriod(keep?.period_id ?? null);
-                  setDevices(next.tariff.devices.included);
-                }
-              }}
-            >
+            <button key={c.id} type="button" aria-pressed={offer?.category.id === c.id} onClick={() => apply(categoryPick(offers, c.id, own, choice))}>
               {c.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {siblings.length > 1 ? (
+        <div role="group" aria-label={t('Тариф')} className="mn-seg" style={{ gridTemplateColumns: `repeat(${siblings.length}, minmax(0, 1fr))` }}>
+          {siblings.map((o) => (
+            <button key={o.tariff.id} type="button" aria-pressed={offer?.tariff.id === o.tariff.id} onClick={() => apply(tariffPick(offers, o.tariff.id, own, choice))}>
+              {o.tariff.name}
             </button>
           ))}
         </div>
@@ -298,9 +293,10 @@ export function MiniPlans() {
           <span>{transitionText(currentName)}</span>
         </div>
       ) : null}
-      {(fromTrial && offer) || another || limitBytes || limitNote ? (
+      {(fromTrial && offer) || another || switching || limitBytes || limitNote ? (
         <div className="mn-notes">
           {limitNote ? <span>{limitNote}</span> : null}
+          {switching && offer ? <span>{t('Тариф сменится на «{name}»', { name: offer.tariff.name })}</span> : null}
           {fromTrial && offer ? <span>{t('Пробный период закончится сразу после оплаты, тариф «{name}» начнёт действовать с даты оплаты', { name: offer.tariff.name })}</span> : null}
           {another ? <span>{t('У новой подписки будет своя ссылка, текущие подписки останутся как есть')}</span> : null}
           {limitBytes ? (

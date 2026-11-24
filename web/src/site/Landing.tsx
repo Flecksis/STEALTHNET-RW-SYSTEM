@@ -13,6 +13,7 @@ import './landing.css';
 import { botLink, storedReferral } from '../lib/referral';
 import { reportVisit, storedUtm } from '../lib/utm';
 import { startParam } from '../lib/utmTags';
+import { categoryOffers, categoryPick, offerById, offerCategories, tariffPick, type OfferPick } from '../lib/offers';
 import {
   appsNote,
   CTA_BUTTONS,
@@ -179,7 +180,7 @@ function LandingPage({ mode }: { mode: Mode }) {
   });
   const [forced, setForced] = useState<Theme | null>(null);
   const [catalog, setCatalog] = useState<PublicCatalog | null>(null);
-  const [cat, setCat] = useState<number | null>(null);
+  const [tariffId, setTariffId] = useState<number | null>(null);
   const [term, setTerm] = useState<number | null>(null);
   const [blocks, setBlocks] = useState<Block[] | null>(null);
   const [focus, setFocus] = useState<{ kind: BlockKind; at: number } | null>(null);
@@ -205,7 +206,7 @@ function LandingPage({ mode }: { mode: Mode }) {
     api<PublicCatalog>('/api/public/catalog')
       .then((c) => {
         setCatalog(c);
-        setCat(c.tariffs[0]?.category.id ?? null);
+        setTariffId(c.tariffs[0]?.tariff.id ?? null);
       })
       .catch(() => setCatalog({ currency: site.currency, tariffs: [] }));
   }, [site.currency]);
@@ -266,19 +267,21 @@ function LandingPage({ mode }: { mode: Mode }) {
   }, [focus, blocks]);
 
   const offers = useMemo(() => catalog?.tariffs ?? [], [catalog]);
-  const categories = useMemo(() => {
-    const seen = new Map<number, { id: number; name: string; sort: number }>();
-    for (const o of offers) {
-      seen.set(o.category.id, o.category);
-    }
-    return [...seen.values()].sort((a, b) => a.sort - b.sort);
-  }, [offers]);
-  const offer = offers.find((o) => o.category.id === cat) ?? offers[0] ?? null;
+  const categories = useMemo(() => offerCategories(offers), [offers]);
+  const offer = offerById(offers, tariffId) ?? offers[0] ?? null;
+  const siblings = useMemo(() => categoryOffers(offers, offer?.category.id), [offers, offer]);
   const currency = catalog?.currency ?? site.currency;
   const start = startParam(storedUtm(), storedReferral());
   const bot = site.bot_username ? botLink(site.bot_username, start) : null;
   const trial = site.trial?.enabled ? site.trial.days : 0;
   const selected = offer?.periods.find((p) => p.period_id === term) ?? offer?.periods[Math.min(1, (offer?.periods.length ?? 1) - 1)] ?? null;
+  const shown: OfferPick | null = offer ? { tariffId: offer.tariff.id, periodId: selected?.period_id ?? null, devices: offer.tariff.devices.included } : null;
+  const showPick = (next: OfferPick | null) => {
+    if (next) {
+      setTariffId(next.tariffId);
+      setTerm(next.periodId);
+    }
+  };
   const ctx: LandingContext = landingContext({ phone, currency, trial, bot, support: site.support_url, brand: site.brand_name, offer, offers, botName: site.bot_username, botStart: start });
 
   const flipTheme = () => {
@@ -485,21 +488,26 @@ function LandingPage({ mode }: { mode: Mode }) {
                 {plansText ? <p className="ld-ink2 ld-plans-text">{plansText}</p> : null}
                 {!phone && offer.tariff.description ? <p className="ld-ink2">{offer.tariff.description}</p> : null}
               </div>
-              {categories.length > 1 ? (
-                <div role="group" aria-label={t('Тип тарифа')} className="ld-seg">
-                  {categories.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      aria-pressed={offer.category.id === c.id}
-                      onClick={() => {
-                        setCat(c.id);
-                        setTerm(null);
-                      }}
-                    >
-                      {c.name}
-                    </button>
-                  ))}
+              {categories.length > 1 || siblings.length > 1 ? (
+                <div className="ld-plans-pick">
+                  {categories.length > 1 ? (
+                    <div role="group" aria-label={t('Тип тарифа')} className="ld-seg">
+                      {categories.map((c) => (
+                        <button key={c.id} type="button" aria-pressed={offer.category.id === c.id} onClick={() => showPick(categoryPick(offers, c.id, null, shown))}>
+                          {c.name}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {siblings.length > 1 ? (
+                    <div role="group" aria-label={t('Тариф')} className="ld-seg">
+                      {siblings.map((o) => (
+                        <button key={o.tariff.id} type="button" aria-pressed={offer.tariff.id === o.tariff.id} onClick={() => showPick(tariffPick(offers, o.tariff.id, null, shown))}>
+                          {o.tariff.name}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>

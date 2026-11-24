@@ -17,6 +17,7 @@ export const MINI: Record<string, string> = {
   'Продление': 'Renewal',
   'Тарифов пока нет.': 'No plans yet.',
   'Будет переход на тариф «{name}»': 'You\'ll switch to the “{name}” plan',
+  'Тариф сменится на «{name}»': 'The plan will change to “{name}”',
   'Пробный период закончится сразу после оплаты, тариф «{name}» начнёт действовать с даты оплаты': 'Your free trial ends right after payment, and “{name}” starts from the payment date',
   'У новой подписки будет своя ссылка, текущие подписки останутся как есть': 'The new subscription gets its own link, and your current ones stay as they are',
   'Трафик: {traffic} {reset}': 'Traffic: {traffic} {reset}',

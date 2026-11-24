@@ -10,6 +10,7 @@ import { checkPromo, handedCode, promoFailText } from './promo';
 import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
 import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 import { methodKey } from '../lib/methods';
+import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
 
@@ -43,7 +44,7 @@ export function Pay() {
   const subs = useSubs();
   const multi = me.multi_subscriptions === true;
   const [target, setTarget] = useState<PayTarget | null>(null);
-  const [cat, setCat] = useState<number | null>(null);
+  const [tariffId, setTariffId] = useState<number | null>(null);
   const [period, setPeriod] = useState<number | null>(null);
   const [devices, setDevices] = useState<number>(0);
   const promoOn = me.promo_codes === true;
@@ -69,7 +70,7 @@ export function Pay() {
 
   const list = subs.list ?? [];
   const offers = catalog?.tariffs ?? [];
-  const picked = offers.find((o) => o.category.id === cat) ?? null;
+  const picked = offerById(offers, tariffId);
   const full = useMemo(() => fullCategory(list, multi, picked?.category), [list, multi, picked]);
   const targets = useMemo(() => payTargets(list, multi, full), [list, multi, full]);
   const asked: PayTarget | null = params.get('sub') === 'new' ? 'new' : (subs.chosen?.subscription.id ?? null);
@@ -82,37 +83,24 @@ export function Pay() {
 
   const live = subs.list === undefined || target === null ? undefined : targetView(list, target, multi);
 
-  const categories = useMemo(() => {
-    const seen = new Map<number, { id: number; name: string; sort: number }>();
-    for (const o of offers) {
-      seen.set(o.category.id, o.category);
-    }
-    return [...seen.values()].sort((a, b) => a.sort - b.sort);
-  }, [offers]);
+  const categories = useMemo(() => offerCategories(offers), [offers]);
+  const siblings = useMemo(() => categoryOffers(offers, picked?.category.id), [offers, picked]);
 
-  const current = live ? offers.find((o) => o.tariff.id === live.subscription.tariff_id) ?? null : null;
+  const current = live ? offerById(offers, live.subscription.tariff_id) : null;
+  const own = live?.subscription ?? null;
 
   useEffect(() => {
-    if (!catalog || live === undefined || cat !== null) {
+    if (!catalog || live === undefined || tariffId !== null) {
       return;
     }
-    const wanted = Number(params.get('tariff'));
-    const fromLink = offers.find((o) => o.tariff.id === wanted);
-    const start = fromLink ?? current ?? offers[0] ?? null;
+    const start = firstPick(offers, live?.subscription ?? null, { tariffId: Number(params.get('tariff')), periodId: Number(params.get('period')) });
     if (!start) {
       return;
     }
-    setCat(start.category.id);
-    const wantedPeriod = Number(params.get('period'));
-    const p =
-      start.periods.find((x) => x.period_id === wantedPeriod) ??
-      start.periods.find((x) => live && x.days === live.subscription.period_days && start === current) ??
-      start.periods[Math.min(1, start.periods.length - 1)] ??
-      null;
-    setPeriod(p?.period_id ?? null);
-    const included = start.tariff.devices.included;
-    setDevices(start === current && live ? included + live.subscription.extra_devices : included);
-  }, [catalog, live, cat, offers, current, params]);
+    setTariffId(start.tariffId);
+    setPeriod(start.periodId);
+    setDevices(start.devices);
+  }, [catalog, live, tariffId, offers, params]);
 
   const offer: TariffOffer | null = picked;
   const included = offer?.tariff.devices.included ?? 0;
@@ -120,22 +108,23 @@ export function Pay() {
   const maxDevices = included + (extra?.max ?? 0);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
   const subscriptionId = typeof target === 'number' ? target : null;
+  const choice: OfferPick | null = tariffId === null ? null : { tariffId, periodId: period, devices };
+
+  const apply = (next: OfferPick | null) => {
+    if (!next) {
+      return;
+    }
+    setTariffId(next.tariffId);
+    setPeriod(next.periodId);
+    setDevices(next.devices);
+  };
 
   const chooseTarget = (next: PayTarget) => {
     if (next === target) {
       return;
     }
     setTarget(next);
-    const view = targetView(list, next, multi);
-    const own = view ? offers.find((o) => o.tariff.id === view.subscription.tariff_id) : undefined;
-    if (view && own) {
-      setCat(own.category.id);
-      const p = own.periods.find((x) => x.days === view.subscription.period_days) ?? own.periods.find((x) => x.months === periodOffer?.months) ?? own.periods[Math.min(1, own.periods.length - 1)];
-      setPeriod(p?.period_id ?? null);
-      setDevices(own.tariff.devices.included + view.subscription.extra_devices);
-    } else {
-      setDevices(included);
-    }
+    apply(targetPick(offers, targetView(list, next, multi)?.subscription ?? null, choice));
     if (typeof next === 'number') {
       remember(CABINET_SUB_KEY, next);
     }
@@ -257,7 +246,8 @@ export function Pay() {
 
   const blocked = me.client.status === 'blocked' || live?.status === 'blocked';
   const fromTrial = !!live && live.subscription.kind === 'trial';
-  const sameCategory = current && offer ? current.category.id === offer.category.id : null;
+  const sameCategory = renewsCurrent(current, offer);
+  const switching = sameCategory === true && !fromTrial && !!current && !!offer && current.tariff.id !== offer.tariff.id;
   const change = !!live && !!offer && (fromTrial || (sameCategory === null ? quote?.kind === 'change' : !sameCategory));
   const transition = change && !fromTrial;
   const expired = live?.status === 'expired';
@@ -266,6 +256,7 @@ export function Pay() {
   const title = !live ? (another ? t('Новая подписка') : t('Покупка подписки')) : fromTrial ? t('Оплата подписки') : transition ? t('Переход на другой тариф') : t('Продление подписки');
   const currentName = live && list.length > 1 ? subName(live, list) : (current?.tariff.name ?? live?.tariff?.name ?? null);
   const nextName = offer?.tariff.name ?? t('новый тариф');
+  const withSwitch = (text: string) => (switching ? `${text} ${t('Тариф сменится на «{name}».', { name: nextName })}` : text);
   const lead: { text: ReactNode; tone: string } = blocked
     ? { text: t('Подписка заблокирована, оплата недоступна. Напишите в поддержку.'), tone: 'bad' }
     : !live
@@ -285,11 +276,13 @@ export function Pay() {
               tone: 'warn',
             }
           : expired
-            ? { text: t('Подписка закончилась {date}. Новый срок начнётся с даты оплаты.', { date: expire ? dateLong(expire, false) : '' }), tone: 'muted' }
+            ? { text: withSwitch(t('Подписка закончилась {date}. Новый срок начнётся с даты оплаты.', { date: expire ? dateLong(expire, false) : '' })), tone: 'muted' }
             : {
-                text: expire
-                  ? t('Сейчас: {name} до {date}. Новый срок добавится к текущему.', { name: currentName ?? t('текущий тариф'), date: dateLong(expire, true) })
-                  : t('Сейчас: {name}. Новый срок добавится к текущему.', { name: currentName ?? t('текущий тариф') }),
+                text: withSwitch(
+                  expire
+                    ? t('Сейчас: {name} до {date}. Новый срок добавится к текущему.', { name: currentName ?? t('текущий тариф'), date: dateLong(expire, true) })
+                    : t('Сейчас: {name}. Новый срок добавится к текущему.', { name: currentName ?? t('текущий тариф') }),
+                ),
                 tone: 'muted',
               };
 
@@ -307,7 +300,7 @@ export function Pay() {
   const cutText = (line: QuoteLineView) => `${MINUS}${starsMode && line.stars !== null ? stars(Math.abs(line.stars)) : priceOf({ minor: Math.abs(line.amount.minor), currency: line.amount.currency })}`;
   const after =
     quote?.expire_preview && !blocked
-      ? change || !live
+      ? change || switching || !live
         ? t('{name} будет действовать до {date}.', { name: offer?.tariff.name ?? t('Подписка'), date: dateLong(quote.expire_preview, true) })
         : t('Подписка продлится до {date}.', { date: dateLong(quote.expire_preview, true) })
       : null;
@@ -450,28 +443,24 @@ export function Pay() {
             <div className="cb-row wrap">
               <h2 className="cb-h2">{t('Тариф и срок')}</h2>
               {categories.length > 1 ? (
-                <div role="group" aria-label={t('Тариф')} className="cb-cats">
+                <div role="group" aria-label={t('Тип тарифа')} className="cb-cats">
                   {categories.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      aria-pressed={cat === c.id}
-                      onClick={() => {
-                        const next = offers.find((o) => o.category.id === c.id);
-                        setCat(c.id);
-                        if (next) {
-                          const keep = next.periods.find((p) => p.months === periodOffer?.months) ?? next.periods[Math.min(1, next.periods.length - 1)];
-                          setPeriod(keep?.period_id ?? null);
-                          setDevices(next.tariff.devices.included);
-                        }
-                      }}
-                    >
+                    <button key={c.id} type="button" aria-pressed={offer?.category.id === c.id} onClick={() => apply(categoryPick(offers, c.id, own, choice))}>
                       {c.name}
                     </button>
                   ))}
                 </div>
               ) : null}
             </div>
+            {siblings.length > 1 ? (
+              <div role="group" aria-label={t('Тариф')} className="cb-cats cb-tariffs">
+                {siblings.map((o) => (
+                  <button key={o.tariff.id} type="button" aria-pressed={offer?.tariff.id === o.tariff.id} onClick={() => apply(tariffPick(offers, o.tariff.id, own, choice))}>
+                    {o.tariff.name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
               {offer?.periods.map((p) => {
                 const save = starsMode ? p.stars_savings_percent : p.savings_percent;
