@@ -32,6 +32,7 @@ mod audit_journal;
 mod backups;
 mod balance_off;
 mod bot_content;
+mod broadcast;
 mod channels;
 mod client_access;
 mod client_email;

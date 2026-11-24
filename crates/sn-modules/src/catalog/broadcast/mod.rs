@@ -11,6 +11,8 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+pub use routes::TEST_LETTERS;
+
 use crate::catalog::{contests, options, promo, referral};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;

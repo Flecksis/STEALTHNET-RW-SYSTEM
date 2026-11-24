@@ -5,7 +5,7 @@ use super::{
     TestTarget, Unsubscribe, UnsubscribeView,
 };
 use crate::catalog::web::{Admin, WebError};
-use crate::context::ModuleContext;
+use crate::context::{ModuleContext, RateLimit};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -23,6 +23,12 @@ use sn_domain::paging::{Page, PageRequest};
 use uuid::Uuid;
 
 const UPLOAD_LIMIT: usize = IMAGE_MAX_BYTES + 64 * 1024;
+
+pub const TEST_LETTERS: RateLimit = RateLimit {
+    scope: "broadcast_test_letters",
+    limit: 20,
+    window_seconds: 3600,
+};
 
 impl From<BroadcastError> for WebError {
     fn from(err: BroadcastError) -> Self {
@@ -323,6 +329,18 @@ async fn test(
             ));
         }
     };
+    if matches!(target, TestTarget::Address(_))
+        && !ctx
+            .core
+            .within_rate_limit(TEST_LETTERS, &admin.0.admin_id.0.to_string())
+            .await?
+    {
+        return Err(WebError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "broadcast.rate_limited",
+            "Проверочных писем на адрес — не больше 20 в час. Попробуйте позже или проверьте рассылку на клиенте в боте",
+        ));
+    }
     let draft = Draft {
         channel: match target {
             TestTarget::Address(_) => Channel::Email,
