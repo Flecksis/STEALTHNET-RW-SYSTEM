@@ -3,8 +3,9 @@ use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use sn_domain::payment::PaymentStatus;
 use sn_payments::providers::{Balance, Wata};
-use sn_store::InboxOutcome;
-use wiremock::matchers::{header, method, path};
+use sn_payments::{PaymentRef, ProviderStatus, WebhookOutcome, WebhookReply};
+use sn_store::{InboxOutcome, NewInboundWebhook};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
 
 const PUBLIC: &str = include_str!("../../../sn-payments/src/providers/wata/testdata/public.pem");
@@ -294,6 +295,115 @@ async fn wata_ссылка_подписанное_уведомление_чуж�
             (InboxOutcome::Accepted, true),
         ]
     );
+    drop(conn);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn wata_повтор_оплаченного_уведомления_ищет_платёж_по_номеру_заказа() {
+    let api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/public-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "value": PUBLIC })))
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/links"))
+        .respond_with(Link)
+        .mount(&api)
+        .await;
+    let Some(h) = wata_http(&api).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/core",
+            &owner,
+            json!({ "currency": "RUB" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/payments/providers/wata",
+            &owner,
+            json!({"enabled": true, "config": {"api_token": TOKEN}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let client = h.client(5_093_118_802).await;
+    let token = h.client_token(client).await;
+    let order = top_up(&h, &token, "500").await;
+    Mock::given(method("GET"))
+        .and(path("/v2/transactions"))
+        .and(query_param("OrderId", order.to_string()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [transaction(TX, "Payment", order, 500.0)]
+        })))
+        .mount(&api)
+        .await;
+    let amount = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.payments().by_public_id(order).await.unwrap().amount
+    };
+    let outcome = WebhookOutcome {
+        event_key: format!("{TX}:paid"),
+        payment: Some(PaymentRef::PublicId(order)),
+        provider_txid: Some(TX.into()),
+        status: ProviderStatus::Paid,
+        amount: Some(amount),
+        saved_method: None,
+        reply: WebhookReply::ok(),
+        signal: None,
+    };
+    let id = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        let record = conn
+            .webhooks()
+            .record(&NewInboundWebhook {
+                source: providers::WATA.into(),
+                dedupe_key: format!("{TX}:paid"),
+                remote_ip: Some("198.51.100.7".into()),
+                headers: json!({ "content-type": "application/json" }),
+                body: Some(event("Payment", "Paid", TX, order, "500.00").into_bytes()),
+                parsed: Some(serde_json::to_value(&outcome).unwrap()),
+                event: None,
+            })
+            .await
+            .unwrap();
+        conn.webhooks()
+            .finish(
+                record.id,
+                InboxOutcome::Error,
+                None,
+                Some("база данных недоступна"),
+                None,
+            )
+            .await
+            .unwrap();
+        record.id
+    };
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/webhooks/{id}/retry"),
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["outcome"], "accepted", "{body}");
+    assert_eq!(
+        balance(&h, &token).await,
+        json!({"minor": 50_000, "currency": "RUB"})
+    );
+    let mut conn = h.services().store().conn().await.unwrap();
+    let payment = conn.payments().by_public_id(order).await.unwrap();
+    assert_eq!(payment.status, PaymentStatus::Paid);
+    assert_eq!(payment.provider_txid.as_deref(), Some(TX));
     drop(conn);
     h.db.cleanup().await;
 }

@@ -529,6 +529,10 @@ impl PaymentProvider for Wata {
         true
     }
 
+    fn status_by_order(&self) -> bool {
+        true
+    }
+
     async fn create_invoice(
         &self,
         config: &ProviderConfig,

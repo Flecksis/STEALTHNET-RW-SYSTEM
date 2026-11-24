@@ -741,6 +741,7 @@ fn настройки_wata() {
     assert_eq!(provider.base(&settings()), LIVE);
     assert!(provider.methods(Currency::Rub).is_empty());
     assert_eq!(provider.currencies(), &[Currency::Rub, Currency::Usd]);
+    assert!(provider.polls_by_payment_id() && provider.status_by_order());
     let schema = provider.settings_schema();
     assert!(schema.iter().any(|f| f.key == "api_token" && f.is_secret()));
     for currency in [Currency::Rub, Currency::Usd] {
