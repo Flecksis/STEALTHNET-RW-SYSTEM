@@ -238,6 +238,7 @@ impl Client {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(900))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Client {
@@ -489,6 +490,43 @@ async fn read_range(path: &Path, offset: u64, len: u64) -> Result<Vec<u8>, S3Err
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn хранилище_не_уводит_копию_по_редиректу() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&elsewhere)
+            .await;
+        let storage = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/b/copy.tar.gz", elsewhere.uri())),
+            )
+            .mount(&storage)
+            .await;
+        let client = Client::new(
+            S3Place {
+                endpoint: storage.uri(),
+                region: "us-east-1".into(),
+                bucket: "b".into(),
+                prefix: String::new(),
+                access_key: "AKIAIOSFODNN7EXAMPLE".into(),
+                virtual_host: false,
+            },
+            "secret".into(),
+        )
+        .unwrap();
+        let err = client
+            .put("copy.tar.gz", b"backup".to_vec())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 307);
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+    }
 
     #[test]
     fn подпись_совпадает_с_примером_из_документации_aws() {

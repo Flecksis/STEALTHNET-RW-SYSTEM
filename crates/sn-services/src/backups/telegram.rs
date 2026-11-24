@@ -65,6 +65,7 @@ impl Bot {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(600))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Bot {
@@ -198,6 +199,31 @@ pub fn part_name(file: &str, index: u64, total: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn копия_в_telegram_не_уходит_по_редиректу() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let elsewhere = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"ok": true, "result": {}})),
+            )
+            .mount(&elsewhere)
+            .await;
+        let api = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/elsewhere", elsewhere.uri())),
+            )
+            .mount(&api)
+            .await;
+        let bot = Bot::new(&api.uri(), "123:abc").unwrap();
+        assert!(bot.send_message(-100, None, "проверка").await.is_err());
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+    }
 
     #[test]
     fn большая_копия_делится_на_части_с_именами_по_порядку() {
