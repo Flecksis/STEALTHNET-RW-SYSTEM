@@ -192,20 +192,19 @@ function blocksOf<K extends string, B extends { kind: K }>(raw: unknown, kinds: 
   return out;
 }
 
-function itemsOf(raw: unknown): Item[] {
-  return (Array.isArray(raw) ? raw : []).filter((entry): entry is Item => {
-    const item = record(entry);
-    return !!item && (item.std === undefined || isSection(item.std));
-  });
-}
-
-export function arrangeRows(raw: unknown): Item[] {
+function itemsOf(raw: unknown, sections: SectionKey[]): Item[] {
   const out: Item[] = [];
-  for (const item of itemsOf(raw)) {
-    if (item.std === undefined || (ROW_KEYS.includes(item.std) && !out.some((other) => other.std === item.std))) {
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    const item = record(entry) as Item | null;
+    if (item && (item.std === undefined || (sections.includes(item.std) && !out.some((other) => other.std === item.std)))) {
       out.push(item);
     }
   }
+  return out;
+}
+
+export function arrangeRows(raw: unknown): Item[] {
+  const out = itemsOf(raw, ROW_KEYS);
   ROW_KEYS.forEach((key, place) => {
     if (out.some((item) => item.std === key)) {
       return;
@@ -245,7 +244,7 @@ export function normalizeConfig(raw: unknown): MiniConfig {
       case 'banners':
         return { ...block, items: Array.isArray(block.items) ? block.items.filter((item) => !!record(item)) : [] };
       case 'actions':
-        return { ...block, items: block.items === undefined || block.items === null ? STANDARD_ACTIONS.map((std) => ({ std })) : itemsOf(block.items) };
+        return { ...block, items: block.items === undefined || block.items === null ? STANDARD_ACTIONS.map((std) => ({ std })) : itemsOf(block.items, ACTION_KEYS) };
       case 'sections':
         return { ...block, items: arrangeRows(block.items) };
       default:
@@ -253,7 +252,7 @@ export function normalizeConfig(raw: unknown): MiniConfig {
     }
   });
   const profile = blocksOf<ProfileKind, ProfileBlock>(source.profile, PROFILE_KINDS, standardProfile).map(
-    (block): ProfileBlock => (block.kind === 'links' ? { ...block, items: itemsOf(block.items).filter((item) => item.std === undefined) } : block),
+    (block): ProfileBlock => (block.kind === 'links' ? { ...block, items: itemsOf(block.items, []) } : block),
   );
   return {
     header: { balance: record(source.header)?.balance !== false },

@@ -254,6 +254,23 @@ pub enum Glyph {
     Phone,
 }
 
+impl Glyph {
+    pub const ALL: [Glyph; 12] = [
+        Glyph::Send,
+        Glyph::Globe,
+        Glyph::Chat,
+        Glyph::Mail,
+        Glyph::Book,
+        Glyph::File,
+        Glyph::Gift,
+        Glyph::Percent,
+        Glyph::Trophy,
+        Glyph::Zap,
+        Glyph::Flag,
+        Glyph::Phone,
+    ];
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Phrase {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -615,6 +632,7 @@ impl HomeBlock {
 
     fn arranged(self) -> HomeBlock {
         match self {
+            HomeBlock::Actions(actions) => HomeBlock::Actions(actions.arranged()),
             HomeBlock::Sections(rows) => HomeBlock::Sections(rows.arranged()),
             other => other,
         }
@@ -807,6 +825,16 @@ impl ProfileBlock {
             other => other,
         })
     }
+
+    fn arranged(self) -> ProfileBlock {
+        match self {
+            ProfileBlock::Links(links) => ProfileBlock::Links(Links {
+                items: allowed(links.items, &[]),
+                ..links
+            }),
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -900,6 +928,25 @@ impl MiniAppConfig {
         .arranged())
     }
 
+    pub fn stored(raw: Value) -> Option<MiniAppConfig> {
+        let Value::Object(mut map) = raw else {
+            return None;
+        };
+        let header = map
+            .remove("header")
+            .and_then(|header| serde_json::from_value(header).ok())
+            .unwrap_or_default();
+        Some(
+            MiniAppConfig {
+                header,
+                home: known_list(map.remove("home")),
+                tabs: known_list(map.remove("tabs")),
+                profile: known_list(map.remove("profile")),
+            }
+            .arranged(),
+        )
+    }
+
     pub fn arranged(self) -> MiniAppConfig {
         let mut home: Vec<HomeBlock> = Vec::new();
         for block in self.home {
@@ -916,7 +963,7 @@ impl MiniAppConfig {
         let mut profile: Vec<ProfileBlock> = Vec::new();
         for block in self.profile {
             if profile.iter().all(|b| b.kind() != block.kind()) {
-                profile.push(block);
+                profile.push(block.arranged());
             }
         }
         fill(
@@ -1134,6 +1181,80 @@ fn fill<B, K: Copy + PartialEq>(
             })
             .unwrap_or(0);
         blocks.insert(at, standard(wanted));
+    }
+}
+
+fn allowed(items: Vec<Item>, sections: &[Section]) -> Vec<Item> {
+    let mut kept: Vec<Item> = Vec::with_capacity(items.len());
+    for item in items {
+        let keep = match item.std {
+            Some(section) => {
+                sections.contains(&section) && kept.iter().all(|i| i.std != Some(section))
+            }
+            None => true,
+        };
+        if keep {
+            kept.push(item);
+        }
+    }
+    kept
+}
+
+fn known<T: DeserializeOwned>(value: &Value) -> bool {
+    T::deserialize(value).is_ok()
+}
+
+fn known_target(value: &Value) -> bool {
+    value.as_str().is_some_and(|to| target(to).is_ok())
+}
+
+type Check = fn(&Value) -> bool;
+
+const CHECKED_FIELDS: [(&str, Check); 4] = [
+    ("look", known::<Look>),
+    ("place", known::<FriendsPlace>),
+    ("icon", known::<Option<Glyph>>),
+    ("to", known_target),
+];
+
+fn known_list<T: DeserializeOwned>(raw: Option<Value>) -> Vec<T> {
+    let Some(Value::Array(list)) = raw else {
+        return Vec::new();
+    };
+    list.into_iter()
+        .filter_map(|mut value| {
+            drop_unknown(&mut value);
+            serde_json::from_value(value).ok()
+        })
+        .collect()
+}
+
+fn drop_unknown(value: &mut Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    for (field, check) in CHECKED_FIELDS {
+        if map.get(field).is_some_and(|value| !check(value)) {
+            map.remove(field);
+        }
+    }
+    if let Some(Value::Array(audience)) = map.get_mut("for") {
+        let chosen = audience.len();
+        audience.retain(known::<Audience>);
+        if audience.is_empty() && chosen > 0 {
+            map.insert("on".into(), Value::Bool(false));
+        }
+    }
+    let banners = map.get("kind").and_then(Value::as_str) == Some(HomeKind::Banners.as_str());
+    if let Some(Value::Array(items)) = map.get_mut("items") {
+        items.iter_mut().for_each(drop_unknown);
+        items.retain(|item| {
+            if banners {
+                known::<Banner>(item)
+            } else {
+                Item::deserialize(item).is_ok_and(|item| item.std.is_some() || item.to.is_some())
+            }
+        });
     }
 }
 
@@ -1515,6 +1636,13 @@ impl Actions {
         }
         Ok(Actions { on: self.on, items })
     }
+
+    fn arranged(self) -> Actions {
+        Actions {
+            on: self.on,
+            items: allowed(self.items, &Section::ACTIONS),
+        }
+    }
 }
 
 impl Rows {
@@ -1541,18 +1669,7 @@ impl Rows {
     }
 
     fn arranged(self) -> Rows {
-        let mut items: Vec<Item> = Vec::with_capacity(self.items.len());
-        for item in self.items {
-            let keep = match item.std {
-                Some(section) => {
-                    Section::ROWS.contains(&section) && items.iter().all(|i| i.std != Some(section))
-                }
-                None => true,
-            };
-            if keep {
-                items.push(item);
-            }
-        }
+        let mut items = allowed(self.items, &Section::ROWS);
         for (place, wanted) in Section::ROWS.into_iter().enumerate() {
             if items.iter().any(|item| item.std == Some(wanted)) {
                 continue;
@@ -2308,6 +2425,266 @@ mod tests {
             MiniAppConfig::standard().published(),
             MiniAppConfig::standard()
         );
+    }
+
+    fn stored(value: Value) -> MiniAppConfig {
+        MiniAppConfig::stored(value).unwrap()
+    }
+
+    fn banners(config: &MiniAppConfig) -> Vec<Banner> {
+        config.banners().to_vec()
+    }
+
+    #[test]
+    fn сохранённый_вид_читается_без_частей_которых_в_этой_версии_нет() {
+        let config = stored(json!({
+            "header": { "balance": false, "wallet": "big" },
+            "home": [
+                { "kind": "stories", "items": [{ "title": { "ru": "История" } }] },
+                { "kind": "sections", "items": [
+                    { "std": "club", "label": { "ru": "Клуб" } },
+                    { "std": "support", "label": { "ru": "Помощь" } },
+                    { "label": { "ru": "Канал" }, "to": "https://t.me/news", "icon": "rocket" },
+                    { "label": { "ru": "В клуб" }, "to": "club" },
+                    { "label": { "ru": "Своим" }, "to": "plans", "for": ["vip"] },
+                    { "label": { "ru": "Новым" }, "to": "plans", "for": ["vip", "new"] }
+                ] },
+                { "kind": "banners", "items": [
+                    { "title": { "ru": "Скидка" }, "to": "club" },
+                    { "title": 5 },
+                    { "title": { "ru": "Своим" }, "to": "plans", "for": ["vip"] }
+                ] },
+                { "kind": "greeting", "on": true, "title": { "ru": "Привет" }, "for": ["vip"] },
+                { "kind": "subscription", "look": "wide", "empty": { "button": { "ru": "Купить" } } },
+                { "kind": "actions", "items": [{ "std": "club" }, { "std": "plans" }, { "std": "gifts" }] }
+            ],
+            "tabs": [
+                { "std": "home" },
+                { "std": "club" },
+                { "std": "plans", "label": { "ru": "Купить" } },
+                { "std": "support" },
+                { "std": "profile" }
+            ],
+            "profile": [
+                { "kind": "account" },
+                { "kind": "awards" },
+                { "kind": "friends", "place": "popup", "title": { "ru": "Зовите друзей" } },
+                { "kind": "links", "items": [
+                    { "std": "club" },
+                    { "std": "plans" },
+                    { "label": { "ru": "Сайт" }, "to": "https://example.com" }
+                ] }
+            ]
+        }));
+        assert!(!config.header.balance);
+        assert_eq!(
+            home(&config),
+            ["sections", "banners", "greeting", "subscription", "actions"]
+        );
+        assert_eq!(
+            row_names(&config),
+            [
+                "friends",
+                "roulette",
+                "addons",
+                "gifts",
+                "promo",
+                "payments",
+                "guide",
+                "support",
+                "own:Канал",
+                "own:Своим",
+                "own:Новым"
+            ]
+        );
+        let rows = rows(&config);
+        let row = |name: &str| {
+            rows.iter()
+                .find(|item| item.label.ru.as_deref() == Some(name))
+                .unwrap()
+        };
+        assert_eq!(row("Помощь").std, Some(Section::Support));
+        assert_eq!(row("Канал").icon, None);
+        assert!(row("Канал").on);
+        assert!(!row("Своим").on);
+        assert!(row("Новым").on);
+        assert_eq!(row("Новым").audience, [Audience::New]);
+        let banners = banners(&config);
+        assert_eq!(banners.len(), 2);
+        assert_eq!(banners[0].title.ru.as_deref(), Some("Скидка"));
+        assert_eq!(banners[0].to, None);
+        assert!(banners[0].on);
+        assert!(!banners[1].on);
+        assert!(config.home.iter().any(|block| matches!(
+            block,
+            HomeBlock::Greeting(greeting) if !greeting.on && greeting.title.ru.as_deref() == Some("Привет")
+        )));
+        assert!(config.home.iter().any(|block| matches!(
+            block,
+            HomeBlock::Subscription(sub)
+                if sub.look == Look::Ring && sub.empty.button.ru.as_deref() == Some("Купить")
+        )));
+        assert_eq!(actions(&config), [Item::standard(Section::Gifts)]);
+        assert_eq!(tabs(&config), ["home", "plans", "support", "profile"]);
+        assert_eq!(config.tabs[1].label.ru.as_deref(), Some("Купить"));
+        assert_eq!(
+            profile(&config),
+            [
+                "balance",
+                "account",
+                "friends",
+                "help",
+                "links",
+                "documents"
+            ]
+        );
+        assert!(config.profile.iter().any(|block| matches!(
+            block,
+            ProfileBlock::Friends(friends)
+                if friends.place == FriendsPlace::Card
+                    && friends.title.ru.as_deref() == Some("Зовите друзей")
+        )));
+        assert!(config.profile.iter().any(|block| matches!(
+            block,
+            ProfileBlock::Links(links)
+                if links.items.len() == 1 && links.items[0].label.ru.as_deref() == Some("Сайт")
+        )));
+        assert_eq!(parse(serde_json::to_value(&config).unwrap()), Ok(config));
+    }
+
+    #[test]
+    fn обычный_вид_читается_из_базы_целиком() {
+        let config = parse(json!({
+            "header": { "balance": false },
+            "home": [
+                { "kind": "greeting", "on": true, "title": { "ru": "Привет, {name}!", "en": "Hi, {name}!" },
+                  "text": { "ru": "" }, "for": ["new", "ended"] },
+                { "kind": "banners", "items": [
+                    { "image": { "tag": "0123456789abcdef", "kind": "png", "width": 1200, "height": 400 },
+                      "title": { "ru": "Скидка" }, "to": "plans", "for": ["active"] },
+                    { "title": { "ru": "Канал" }, "to": "t.me/news", "on": false }
+                ] },
+                { "kind": "subscription", "look": "compact", "empty": { "title": { "ru": "Пока пусто" } } },
+                { "kind": "actions", "items": [
+                    { "std": "support", "label": { "ru": "Помощь" } },
+                    { "label": { "ru": "Статус" }, "to": "https://example.com/status", "icon": "flag" }
+                ] },
+                { "kind": "sections", "items": [
+                    { "std": "gifts", "on": false },
+                    { "label": { "ru": "Сайт" }, "to": "https://example.com", "icon": "globe", "for": ["trial"] }
+                ] }
+            ],
+            "tabs": [
+                { "std": "profile" }, { "std": "home", "label": { "ru": "Дом" } },
+                { "std": "friends" }, { "std": "plans" }
+            ],
+            "profile": [
+                { "kind": "links", "items": [{ "label": { "ru": "Сайт" }, "to": "https://example.com" }] },
+                { "kind": "friends", "place": "screen", "text": { "ru": "" } },
+                { "kind": "balance", "on": false }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(stored(serde_json::to_value(&config).unwrap()), config);
+        let standard = MiniAppConfig::standard();
+        assert_eq!(stored(serde_json::to_value(&standard).unwrap()), standard);
+        assert_eq!(stored(json!({})), standard);
+        assert_eq!(
+            stored(json!({ "header": 7, "home": 5, "tabs": "нет", "profile": [null, "мусор"] })),
+            standard
+        );
+        for broken in [json!(null), json!([]), json!("мусор"), json!(5)] {
+            assert_eq!(MiniAppConfig::stored(broken), None);
+        }
+    }
+
+    #[test]
+    fn опасные_адреса_из_базы_не_читаются() {
+        for to in [
+            "javascript:alert(1)",
+            "http://example.com",
+            "https://user:pass@example.com",
+            "https://example.com/\"><script>",
+            "renew",
+        ] {
+            let config = stored(json!({
+                "home": [
+                    { "kind": "banners", "items": [{ "title": { "ru": "Баннер" }, "to": to }] },
+                    { "kind": "actions", "items": [{ "label": { "ru": "Кнопка" }, "to": to }] },
+                    { "kind": "sections", "items": [{ "label": { "ru": "Пункт" }, "to": to }] }
+                ],
+                "profile": [{ "kind": "links", "items": [{ "label": { "ru": "Ссылка" }, "to": to }] }]
+            }));
+            assert_eq!(banners(&config).len(), 1, "{to}");
+            assert_eq!(banners(&config)[0].to, None, "{to}");
+            assert!(actions(&config).is_empty(), "{to}");
+            assert_eq!(row_names(&config).len(), Section::ROWS.len(), "{to}");
+            let text = serde_json::to_string(&config).unwrap();
+            assert!(!text.contains("Ссылка"), "{to}");
+        }
+    }
+
+    #[test]
+    fn списки_сервера_и_мини_приложения_совпадают() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/src/mini/config.ts");
+        let source = std::fs::read_to_string(path).unwrap();
+        let body = |start: &str, end: &str| {
+            let at = source
+                .find(start)
+                .unwrap_or_else(|| panic!("нет «{start}»"))
+                + start.len();
+            let rest = &source[at..];
+            rest[..rest.find(end).unwrap()].to_string()
+        };
+        let list = |name: &str| -> Vec<String> {
+            let declared = format!("export const {name}:");
+            let body = body(&declared, "];");
+            let values = body.split_once("= [").unwrap().1;
+            values
+                .split(',')
+                .map(|value| value.trim().trim_matches('\'').to_string())
+                .collect()
+        };
+        let sections = |list: &[Section]| -> Vec<String> {
+            list.iter().map(|s| s.as_str().to_string()).collect()
+        };
+        let named = |value: Value| value.as_str().unwrap().to_string();
+        assert_eq!(list("ROW_KEYS"), sections(&Section::ROWS));
+        assert_eq!(list("ACTION_KEYS"), sections(&Section::ACTIONS));
+        assert_eq!(list("TAB_KEYS"), sections(&Section::TABS));
+        assert_eq!(list("TARGET_KEYS"), sections(&Section::TARGETS));
+        assert_eq!(list("ALWAYS_TABS"), sections(&Section::ALWAYS_TABS));
+        assert_eq!(
+            list("STANDARD_TABS"),
+            sections(&standard_tabs().iter().map(|t| t.std).collect::<Vec<_>>())
+        );
+        assert_eq!(
+            list("STANDARD_ACTIONS"),
+            sections(
+                &standard_actions()
+                    .iter()
+                    .filter_map(|i| i.std)
+                    .collect::<Vec<_>>()
+            )
+        );
+        assert_eq!(list("HOME_KINDS"), HomeKind::ALL.map(HomeKind::as_str));
+        assert_eq!(
+            list("PROFILE_KINDS"),
+            ProfileKind::ALL.map(ProfileKind::as_str)
+        );
+        assert_eq!(list("AUDIENCES"), Audience::ALL.map(|a| named(json!(a))));
+        assert_eq!(list("GLYPHS"), Glyph::ALL.map(|g| named(json!(g))));
+        let icons = body(
+            "export const SECTION_ICONS: Record<SectionKey, IconName> = {",
+            "};",
+        );
+        let keys: Vec<&str> = icons
+            .lines()
+            .filter_map(|line| line.trim().split_once(':').map(|(key, _)| key))
+            .collect();
+        assert_eq!(keys, Section::ALL.map(Section::as_str));
+        assert!(source.contains(&format!("export const TABS_MIN = {TABS_MIN};")));
+        assert!(source.contains(&format!("export const TABS_MAX = {TABS_MAX};")));
     }
 
     #[test]

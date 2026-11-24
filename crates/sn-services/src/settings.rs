@@ -169,11 +169,12 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                     settings.landing = v.arranged();
                 }
             }
-            keys::MINIAPP => {
-                if let Some(v) = parse::<MiniAppConfig>(&key, value) {
-                    settings.miniapp = v.arranged();
+            keys::MINIAPP => match MiniAppConfig::stored(value) {
+                Some(v) => settings.miniapp = v,
+                None => {
+                    tracing::warn!(key, "настройка не разобрана, взято значение по умолчанию");
                 }
-            }
+            },
             keys::LANGUAGES => {
                 if let Some(v) = parse::<Languages>(&key, value) {
                     settings.languages = v;

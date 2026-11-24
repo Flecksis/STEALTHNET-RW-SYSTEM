@@ -81,6 +81,18 @@ test('новый раздел из кода встаёт на своё мест�
   assert.equal(rows[2].on, false);
 });
 
+test('кнопка, которой нет в списке, и повтор пропускаются', () => {
+  const config = normalizeConfig({
+    home: [
+      {
+        kind: 'actions',
+        items: [{ std: 'gifts' }, { std: 'plans' }, { std: 'неизвестно' }, { std: 'gifts' }, { label: { ru: 'Канал' }, to: 'https://t.me/news' }, null],
+      },
+    ],
+  });
+  assert.deepEqual(rowNames(homeBlock(config, 'actions').items), ['gifts', 'own:Канал']);
+});
+
 test('без обязательных вкладок меню остаётся стандартным', () => {
   const tabs = (list) => keys(normalizeConfig({ tabs: list }).tabs);
   assert.deepEqual(tabs([{ std: 'profile' }, { std: 'plans' }, { std: 'home' }]), ['profile', 'plans', 'home']);

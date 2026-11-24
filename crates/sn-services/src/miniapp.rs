@@ -606,6 +606,64 @@ mod tests {
         env.db.cleanup().await;
     }
 
+    async fn saved(env: &Env) -> Option<Value> {
+        let mut conn = env.db.store.conn().await.unwrap();
+        conn.settings()
+            .get_as::<Value>(keys::MINIAPP)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn вид_с_незнакомыми_частями_читается_а_лишнее_уходит_при_правке() {
+        let Some(env) = env().await else { return };
+        let raw = json!({
+            "home": [
+                { "kind": "stories", "items": [{ "title": { "ru": "История" } }] },
+                { "kind": "greeting", "on": true, "title": { "ru": "Привет" } },
+                { "kind": "actions", "items": [{ "std": "club" }, { "std": "support" }] }
+            ],
+            "tabs": [
+                { "std": "home" }, { "std": "club" }, { "std": "plans" }, { "std": "profile" }
+            ],
+            "profile": [{ "kind": "awards" }, { "kind": "account" }]
+        });
+        {
+            let mut conn = env.db.store.conn().await.unwrap();
+            conn.settings()
+                .set_as(keys::MINIAPP, &raw, Some(env.admin))
+                .await
+                .unwrap();
+        }
+        env.services.reload().await.unwrap();
+        let ops = env.services.miniapp();
+        assert!(!ops.config().is_standard());
+        let public = ops.public().await.unwrap();
+        let tabs: Vec<Section> = public.tabs.iter().map(|tab| tab.std).collect();
+        assert_eq!(tabs, [Section::Home, Section::Plans, Section::Profile]);
+        let text = serde_json::to_string(&public).unwrap();
+        assert!(text.contains("Привет"), "{text}");
+        for gone in ["stories", "club", "awards"] {
+            assert!(!text.contains(gone), "{text}");
+        }
+
+        let view = serde_json::to_value(ops.view().await.unwrap()).unwrap();
+        ops.update(&view, env.admin).await.unwrap();
+        assert_eq!(saved(&env).await, Some(raw));
+        assert!(audits(&env, "settings.miniapp").await.is_empty());
+
+        let mut next = view;
+        next["header"] = json!({ "balance": false });
+        ops.update(&next, env.admin).await.unwrap();
+        let text = saved(&env).await.unwrap().to_string();
+        assert!(text.contains("Привет"), "{text}");
+        for gone in ["stories", "club", "awards"] {
+            assert!(!text.contains(gone), "{text}");
+        }
+        assert_eq!(audits(&env, "settings.miniapp").await.len(), 1);
+        env.db.cleanup().await;
+    }
+
     #[tokio::test]
     async fn недоступные_разделы_названы_а_их_вкладки_клиенту_не_отдаются() {
         let Some(env) = env().await else { return };
