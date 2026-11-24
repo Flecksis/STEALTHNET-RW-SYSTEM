@@ -143,6 +143,42 @@ class Hub:
 
 HUB = Hub()
 
+MARK = "BCAST-MARK"
+
+
+class Wire:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.limit = 0
+        self.window = []
+        self.sends = []
+        self.rejected = 0
+        self.uploads = 0
+        self.file_ids = 0
+
+    def admit(self, now):
+        with self.lock:
+            if self.limit:
+                cutoff = now - 1.0
+                while self.window and self.window[0] < cutoff:
+                    self.window.pop(0)
+                if len(self.window) >= self.limit:
+                    self.rejected += 1
+                    return False
+                self.window.append(now)
+            return True
+
+    def note(self, now, method, bulk, upload, file_id):
+        with self.lock:
+            self.sends.append((now, method, bulk))
+            if upload:
+                self.uploads += 1
+            if file_id:
+                self.file_ids += 1
+
+
+WIRE = Wire()
+
 
 class TelegramHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -153,6 +189,17 @@ class TelegramHandler(BaseHTTPRequestHandler):
     def reply(self, result):
         body = json.dumps({"ok": True, "result": result}).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def fail(self, code, description, parameters=None):
+        payload = {"ok": False, "error_code": code, "description": description}
+        if parameters:
+            payload["parameters"] = parameters
+        body = json.dumps(payload).encode()
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -174,11 +221,13 @@ class TelegramHandler(BaseHTTPRequestHandler):
                 params = {}
         elif "multipart" in ctype:
             text = raw.decode(errors="replace")
-            marker = 'name="chat_id"'
-            at = text.find(marker)
-            if at >= 0:
-                tail = text[at + len(marker):].lstrip("\r\n")
-                params["chat_id"] = tail.split("\r\n", 1)[0].strip()
+            for field in ("chat_id", "caption"):
+                marker = f'name="{field}"'
+                at = text.find(marker)
+                if at >= 0:
+                    tail = text[at + len(marker):].lstrip("\r\n")
+                    params[field] = tail.split("\r\n--", 1)[0].strip()
+            params["_upload"] = 'name="photo"; filename=' in text
         elif "x-www-form-urlencoded" in ctype:
             params = {k: v[0] for k, v in urllib.parse.parse_qs(raw.decode()).items()}
         if method == "getMe":
@@ -187,8 +236,17 @@ class TelegramHandler(BaseHTTPRequestHandler):
             return self.reply({"url": "", "pending_update_count": 0})
         if method == "getUpdates":
             return self.reply(HUB.take(min(float(params.get("timeout", 1)), 2.0)))
-        HUB.seen(method, params)
         if method in CONTENT:
+            now = time.perf_counter()
+            if not WIRE.admit(now):
+                return self.fail(429, "Too Many Requests: retry after 1", {"retry_after": 1})
+            body_text = str(params.get("text") or params.get("caption") or "")
+            bulk = MARK in body_text
+            upload = method == "sendPhoto" and bool(params.get("_upload"))
+            file_id = method == "sendPhoto" and isinstance(params.get("photo"), str)
+            WIRE.note(now, method, bulk, upload, file_id)
+            if not bulk:
+                HUB.seen(method, params)
             with HUB.lock:
                 HUB.message_id += 1
                 mid = HUB.message_id
@@ -197,7 +255,11 @@ class TelegramHandler(BaseHTTPRequestHandler):
                 chat = int(chat)
             except (TypeError, ValueError):
                 chat = 0
-            return self.reply({"message_id": mid, "date": int(time.time()), "chat": {"id": chat, "type": "private"}, "text": ""})
+            result = {"message_id": mid, "date": int(time.time()), "chat": {"id": chat, "type": "private"}, "text": ""}
+            if method == "sendPhoto":
+                result["photo"] = [{"file_id": "LOAD-FILE-1", "file_unique_id": "LOAD-U-1", "width": 800, "height": 400}]
+            return self.reply(result)
+        HUB.seen(method, params)
         if method == "getUserProfilePhotos":
             return self.reply({"total_count": 0, "photos": []})
         if method == "getChat":
@@ -256,6 +318,118 @@ class Http:
                 if attempt:
                     raise
         raise RuntimeError("unreachable")
+
+
+def upload_raw(api, path, data, content_type):
+    conn = http.client.HTTPConnection(api.host, api.port, timeout=120)
+    headers = {"Content-Type": content_type, "Origin": f"http://{api.host}:{api.port}",
+               "Authorization": f"Bearer {api.token}"}
+    conn.request("POST", path, body=data, headers=headers)
+    response = conn.getresponse()
+    return response.status, response.read()
+
+
+def sample_process(pid, stop, out):
+    while not stop.is_set():
+        r = subprocess.run(["ps", "-o", "%cpu=,rss=", "-p", str(pid)], capture_output=True, text=True)
+        parts = r.stdout.split()
+        if len(parts) == 2:
+            out.append((float(parts[0]), int(parts[1])))
+        stop.wait(1.0)
+
+
+def broadcast(args):
+    WIRE.limit = args.tg_limit
+    start_telegram(args.tg_port)
+    wait_polls(args.wait)
+    time.sleep(args.settle)
+    api = Http(args.base, admin_login(args.base, args.email, args.password))
+    image_id = None
+    if args.photo:
+        with open(args.photo, "rb") as f:
+            data = f.read()
+        ctype = "image/png" if args.photo.endswith(".png") else "image/jpeg"
+        status, payload = upload_raw(api, "/api/admin/m/broadcast/images", data, ctype)
+        if status != 200:
+            sys.exit(f"картинка не загружена: {status} {payload[:200]!r}")
+        image_id = json.loads(payload)["id"]
+    draft = {"text": f"{MARK} Проверка скорости рассылки", "audience": {"kind": args.audience}}
+    if image_id:
+        draft["image_id"] = image_id
+    status, payload, _ = api.call("POST", "/api/admin/m/broadcast/broadcasts", draft)
+    if status >= 400:
+        sys.exit(f"рассылка не создана: {status} {payload[:300]!r}")
+    bid = json.loads(payload)["id"]
+    stats = Stats()
+    stop = threading.Event()
+    threads = []
+    if args.bot_users:
+        for chat, sid in pick_bot_clients(args.dsn, args.bot_users):
+            threads.append(threading.Thread(target=bot_user, args=(stats, stop, chat, sid, args.bot_think, args.timeout, BOT_FLOW), daemon=True))
+    samples = []
+    if args.pid:
+        threads.append(threading.Thread(target=sample_process, args=(args.pid, stop, samples), daemon=True))
+    for t in threads:
+        t.start()
+    if args.bot_users:
+        time.sleep(args.baseline)
+    baseline = stats.rows(args.baseline) if args.bot_users else []
+    stats_bc = Stats()
+    if args.bot_users:
+        stats.timings, stats.errors = {}, {}
+    started = time.perf_counter()
+    status, payload, ms = api.call("POST", f"/api/admin/m/broadcast/broadcasts/{bid}/send")
+    if status >= 400:
+        stop.set()
+        sys.exit(f"рассылка не запущена: {status} {payload[:300]!r}")
+    print(f"рассылка {bid} поставлена в очередь за {ms:.0f} мс: {payload[:160]!r}", flush=True)
+    time.sleep(args.duration)
+    elapsed = time.perf_counter() - started
+    stop.set()
+    api.call("POST", f"/api/admin/m/broadcast/broadcasts/{bid}/cancel")
+    for t in threads:
+        t.join(timeout=args.timeout + 5)
+    with WIRE.lock:
+        sends = list(WIRE.sends)
+        rejected, uploads, file_ids = WIRE.rejected, WIRE.uploads, WIRE.file_ids
+    bulk = [t - started for t, _, b in sends if b and t >= started]
+    every = sorted(t for t, _, _ in sends if t >= started)
+    per_second = {}
+    for t in bulk:
+        per_second[int(t)] = per_second.get(int(t), 0) + 1
+    seconds = [per_second.get(i, 0) for i in range(5, max(6, int(elapsed) - 1))]
+    peak = 0
+    j = 0
+    for i, t in enumerate(every):
+        while every[j] < t - 1.0:
+            j += 1
+        peak = max(peak, i - j + 1)
+    gaps = [b - a for a, b in zip(bulk, bulk[1:])]
+    report = {
+        "broadcast": bid, "elapsed": round(elapsed, 1), "bulk_sent": len(bulk),
+        "bulk_rate": round(len(bulk) / elapsed, 2) if elapsed else None,
+        "per_second_min": min(seconds) if seconds else None,
+        "per_second_median": statistics.median(seconds) if seconds else None,
+        "per_second_max": max(seconds) if seconds else None,
+        "peak_any_second_all_sends": peak, "rejected_429": rejected,
+        "uploads": uploads, "file_id_sends": file_ids,
+        "max_gap_ms": round(max(gaps) * 1000, 1) if gaps else None,
+        "gaps_over_500ms": sum(1 for g in gaps if g > 0.5),
+        "cpu_avg": round(statistics.mean(c for c, _ in samples), 1) if samples else None,
+        "cpu_max": max((c for c, _ in samples), default=None),
+        "rss_max_mb": round(max((r for _, r in samples), default=0) / 1024, 1),
+        "sent_in_db": int(psql(args.dsn, f"SELECT count(*) FROM broadcast_recipients WHERE broadcast_id = {int(bid)} AND state = 'sent'")[0][0]),
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=1), flush=True)
+    rows = stats.rows(elapsed)
+    for title, data in (("бот без рассылки", baseline), ("бот во время рассылки", rows)):
+        print(title, flush=True)
+        for row in data:
+            if "p50" in row:
+                print(f"  {row['name']:36} n={row['count']:5d}  p50 {row['p50']:7.1f}  p95 {row['p95']:7.1f}  p99 {row['p99']:7.1f}  ошибок {row['errors']}", flush=True)
+    if args.out:
+        with open(args.out, "w") as f:
+            json.dump({"report": report, "baseline": baseline, "during": rows, "bulk_times": bulk}, f, ensure_ascii=False)
 
 
 def client_token(dsn, client_id, channel):
@@ -336,11 +510,15 @@ def bot_step(stats, chat, label, kind, value, mid, timeout):
 def bot_user(stats, stop, chat, sid, think, timeout, flow):
     mid = random.randint(1, 10 ** 6)
     rng = random.Random(chat)
+    first = True
     while not stop.is_set():
         for label, make in flow:
             if stop.is_set():
                 return
             kind, value = make(sid)
+            if kind == "text" and value == "/start" and not first:
+                continue
+            first = False
             mid += 1
             bot_step(stats, chat, label, kind, value, mid, timeout)
             stop.wait(rng.uniform(think * 0.5, think * 1.5))
@@ -669,7 +847,7 @@ def jobs(args):
 
 def main():
     parser = argparse.ArgumentParser(description="нагрузка на панель и подсчёт запросов на действие")
-    parser.add_argument("mode", choices=["run", "count", "jobs"])
+    parser.add_argument("mode", choices=["run", "count", "jobs", "broadcast"])
     parser.add_argument("--base", default=os.environ.get("PERF_BASE", "http://127.0.0.1:18124"))
     parser.add_argument("--dsn", default=os.environ.get("PERF_DSN", "postgresql://postgres@127.0.0.1:55432/sn_perf"))
     parser.add_argument("--email", default=os.environ.get("PERF_EMAIL"))
@@ -689,6 +867,12 @@ def main():
     parser.add_argument("--timeout", type=float, default=15)
     parser.add_argument("--wait", type=float, default=90)
     parser.add_argument("--probe-every", type=float, default=0.5)
+    parser.add_argument("--tg-limit", type=int, default=0)
+    parser.add_argument("--photo", default=None)
+    parser.add_argument("--audience", default="all")
+    parser.add_argument("--pid", type=int, default=0)
+    parser.add_argument("--baseline", type=float, default=20)
+    parser.add_argument("--settle", type=float, default=0)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
@@ -700,6 +884,8 @@ def main():
         run(args)
     elif args.mode == "jobs":
         jobs(args)
+    elif args.mode == "broadcast":
+        broadcast(args)
     else:
         count(args)
 
