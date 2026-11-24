@@ -51,6 +51,7 @@ mod landing;
 mod languages;
 mod legacy_webhooks;
 mod mail;
+mod mail_errors;
 mod migrated_providers;
 mod mini_account;
 mod multi_subscriptions;

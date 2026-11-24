@@ -275,7 +275,7 @@ async fn письмо_через_resend_уходит_с_ключом_и_ошиб
     env.db.cleanup().await;
 }
 
-async fn fake_smtp_rejecting(refused: &'static str) -> (u16, Letters) {
+pub(super) async fn fake_smtp_rejecting(refused: &'static str) -> (u16, Letters) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let letters: Letters = Arc::new(StdMutex::new(Vec::new()));

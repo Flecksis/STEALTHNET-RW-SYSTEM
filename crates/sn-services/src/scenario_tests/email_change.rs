@@ -1,4 +1,4 @@
-use super::mail::{Letters, code_in, configure_with, fake_smtp, readable};
+use super::mail::{Letters, code_in, configure_with, fake_smtp, fake_smtp_rejecting, readable};
 use super::*;
 use crate::email_change::{
     APP_CODE_REQUIRED, CURRENT_CODE_REQUIRED, EMAIL_CHANGE_OFF, EMAIL_IN_USE, EMAIL_SAME,
@@ -556,20 +556,65 @@ async fn неотправленный_код_не_ждёт_ввода() {
     };
     configure_with(services, admin, closed, serde_json::json!({})).await;
     let client = telegram_client(services, 5_093_118_422).await;
+    let failed = auth
+        .email_change_start(
+            &principal(client),
+            "alex@example.com",
+            NO_PROOF,
+            &meta("203.0.113.35"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code(), "mail.failed");
     assert_eq!(
-        code(
-            auth.email_change_start(
-                &principal(client),
-                "alex@example.com",
-                NO_PROOF,
-                &meta("203.0.113.35")
-            )
-            .await
-        ),
-        "mail.failed"
+        failed.to_string(),
+        "Не получилось отправить письмо. Попробуйте позже."
     );
     let state = auth.email_state(client).await.unwrap();
     assert!(state.available);
     assert_eq!(state.pending, None);
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn клиент_видит_общую_ошибку_почты_а_проверка_у_администратора_подробную() {
+    let Some((env, admin)) = mail_env().await else {
+        return;
+    };
+    let services = &env.services;
+    let auth = services.auth();
+    let (port, letters) = fake_smtp_rejecting("alex@example.com").await;
+    configure_with(services, admin, port, serde_json::json!({})).await;
+    let client = telegram_client(services, 5_093_118_501).await;
+    let refused = auth
+        .email_change_start(
+            &principal(client),
+            "alex@example.com",
+            NO_PROOF,
+            &meta("203.0.113.36"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "mail.address");
+    assert_eq!(
+        refused.to_string(),
+        "Не получилось отправить письмо на этот адрес. Проверьте адрес почты."
+    );
+    let login = auth
+        .email_login_start("alex@example.com", &meta("203.0.113.37"))
+        .await
+        .unwrap_err();
+    assert_eq!(login.code(), "mail.address");
+    assert!(!login.to_string().contains("550"), "{login}");
+    assert!(!login.to_string().contains("No such user"), "{login}");
+    assert!(sent(&letters).is_empty());
+    let check = services
+        .mail()
+        .test("alex@example.com")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(check.contains("550"), "{check}");
+    assert!(check.contains("No such user here"), "{check}");
     env.db.cleanup().await;
 }

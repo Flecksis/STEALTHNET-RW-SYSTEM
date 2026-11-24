@@ -146,7 +146,7 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "addon.no_tariff" => "This subscription has no plan.",
         "addon.unlimited" => "This subscription has unlimited traffic, nothing to add.",
         "addon.wait" => "The previous order is still being delivered. Please wait a minute.",
-        "mail.address" => "The email address looks wrong.",
+        "mail.address" => "We couldn't send the email to this address. Please check it.",
         "mail.unavailable" | "mail.failed" => "We couldn't send the email. Please try again later.",
         "referral.withdrawals_off" => "Withdrawals aren't accepted right now.",
         "referral.method_unavailable" => {

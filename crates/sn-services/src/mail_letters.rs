@@ -1,4 +1,5 @@
 use crate::Actor;
+use crate::email_change::masked_email;
 use crate::error::{ServiceError, ServiceResult};
 use crate::mail::{RichLetter, Undelivered};
 use crate::services::Services;
@@ -313,6 +314,31 @@ fn lang_title(locale: Locale) -> &'static str {
     }
 }
 
+const CLIENT_FAILED: &str = "Не получилось отправить письмо. Попробуйте позже.";
+const CLIENT_WAIT: &str = "Не получилось отправить письмо. Попробуйте через минуту.";
+const CLIENT_ADDRESS: &str = "Не получилось отправить письмо на этот адрес. Проверьте адрес почты.";
+
+fn client_mail_error(id: LetterId, to: &str, err: Undelivered) -> ServiceError {
+    let (code, shown, detail) = match err {
+        Undelivered::Address(reason) => ("mail.address", CLIENT_ADDRESS, reason),
+        Undelivered::Limited(pause) => (
+            "mail.failed",
+            CLIENT_WAIT,
+            format!("почтовый сервис просит подождать {} с", pause.as_secs()),
+        ),
+        Undelivered::Off(reason) | Undelivered::Failed(reason) => {
+            ("mail.failed", CLIENT_FAILED, reason)
+        }
+    };
+    tracing::warn!(
+        letter = id.as_str(),
+        to = %masked_email(to),
+        error = %detail,
+        "письмо клиенту не отправилось"
+    );
+    rejected(code, shown)
+}
+
 fn mail_error(err: Undelivered) -> ServiceError {
     match err {
         Undelivered::Address(reason) => rejected("mail.address", reason),
@@ -599,15 +625,18 @@ impl<'a> LettersOps<'a> {
     pub async fn send(&self, id: LetterId, to: &str, values: Values) -> ServiceResult<()> {
         let mail = self.services.mail();
         if !mail.available() {
-            return Err(rejected(
-                "mail.unavailable",
-                "Письма не отправляются: в «Почте» не выбран способ отправки",
-            ));
+            tracing::warn!(
+                letter = id.as_str(),
+                "письмо клиенту не отправлено: в «Почте» не выбран способ отправки"
+            );
+            return Err(rejected("mail.unavailable", CLIENT_FAILED));
         }
         let letter = self.letter(id, to, values).await?.ok_or_else(|| {
             ServiceError::Internal(format!("письмо «{}» без нужных данных", id.spec().title))
         })?;
-        mail.deliver(&letter).await.map_err(mail_error)
+        mail.deliver(&letter)
+            .await
+            .map_err(|err| client_mail_error(id, to, err))
     }
 
     pub async fn view(&self) -> ServiceResult<LettersView> {
