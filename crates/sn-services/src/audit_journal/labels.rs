@@ -1209,6 +1209,7 @@ const FIELDS: &[(&str, &str)] = &[
     ("en_texts", "Тексты на английском"),
     ("en_buttons", "Кнопки на английском"),
     ("menu_columns", "Колонок в меню"),
+    ("menu_mode", "Режим меню"),
     ("screens", "Экраны с новым порядком кнопок"),
     ("reset", "Экраны, где вернули порядок как было"),
     ("shown", "Снова показаны"),
@@ -1274,6 +1275,8 @@ const VALUES: &[(&str, &str, &str)] = &[
     ("channel", "bot", "бот"),
     ("channel", "cabinet", "кабинет"),
     ("channel", "miniapp", "мини-приложение"),
+    ("menu_mode", "classic", "Классический"),
+    ("menu_mode", "web", "Веб"),
 ];
 
 pub fn field_label_in(action: &str, key: &str) -> Option<&'static str> {

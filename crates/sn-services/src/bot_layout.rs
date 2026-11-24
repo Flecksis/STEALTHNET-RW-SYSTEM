@@ -6,18 +6,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sn_domain::bot_content::{self as catalog, ButtonStyle, Content, ContentConfig};
 use sn_domain::bot_layout::{
-    self as layout, Audience, MenuFacts, ROW_MAX, Rows, Screen, SubscriptionFacts,
+    self as layout, AppSection, Audience, MenuFacts, MenuMode, ROW_MAX, Rows, Screen,
+    SubscriptionFacts,
 };
 use sn_domain::client::Locale;
 use sn_domain::ids::AdminId;
 use sn_domain::module::ModuleId;
-use sn_modules::catalog::{contests, roulette};
+use sn_modules::catalog::{ai, contests, roulette};
 use sn_store::Db;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Install {
     pub miniapp: Option<String>,
+    pub web: bool,
     pub trial: bool,
     pub balance: bool,
     pub promo: bool,
@@ -36,12 +38,24 @@ pub struct Install {
     pub english: bool,
     pub reissue: bool,
     pub support: Option<String>,
+    pub support_app: bool,
 }
 
 pub fn site_url(services: &Services) -> Option<String> {
     let settings = services.settings();
     let base = settings.public_url.as_deref()?.trim().trim_end_matches('/');
     (base.starts_with("https://") || base.starts_with("http://")).then(|| base.to_string())
+}
+
+pub fn miniapp_off(services: &Services) -> Option<&'static str> {
+    let settings = services.settings();
+    if !settings.client_access.miniapp {
+        Some("Мини-приложение выключено")
+    } else if settings.miniapp_url().is_none() {
+        Some("У адреса сервиса нет https, а Telegram открывает мини-приложение только по https")
+    } else {
+        None
+    }
 }
 
 pub fn email_offered(services: &Services) -> bool {
@@ -83,8 +97,47 @@ impl Install {
                 .support_link()
                 .filter(|u| u.starts_with("https://") && !settings.support_tickets())
                 .map(str::to_string),
+            support_app: settings.support_tickets() && ai::channels(modules).miniapp,
+            web: services.bot_content().content.menu_mode() == MenuMode::Web,
             miniapp,
         }
+    }
+
+    pub fn app_section(&self, key: &str) -> Option<AppSection> {
+        match key {
+            "menu.btn.balance" if !self.balance => Some(layout::APP_PROFILE),
+            "menu.btn.support" if self.support.is_some() || !self.support_app => None,
+            _ => layout::app_section(key),
+        }
+    }
+
+    fn web_note(&self, key: &str) -> Option<String> {
+        if self.app_section(key).is_some() {
+            return None;
+        }
+        match key {
+            "menu.btn.support" if self.support.is_some() => None,
+            "menu.btn.support" => Some(format!(
+                "Обращения принимает бот. Чат поддержки в мини-приложении появляется с модулем «{}» и флажком «Отвечать в мини-приложении»",
+                ModuleId::Ai.info().title
+            )),
+            "menu.btn.contests" => {
+                Some("Конкурсы проходят в боте: в мини-приложении их нет".to_string())
+            }
+            "menu.btn.documents" => {
+                Some("Документы открываются в боте: в мини-приложении их нет".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn app_url(&self, key: &str) -> Option<String> {
+        let app = self.miniapp.as_deref()?;
+        if !self.web && !matches!(key, "menu.btn.app" | "menu.btn.roulette") {
+            return None;
+        }
+        self.app_section(key)
+            .map(|section| format!("{app}{}", section.path))
     }
 
     pub fn email(&self) -> bool {
@@ -201,6 +254,8 @@ pub struct SlotView {
     pub style: Option<ButtonStyle>,
     pub emoji: bool,
     pub kind: Kind,
+    pub web: Option<&'static str>,
+    pub web_note: Option<String>,
     pub shown: Vec<ClientState>,
 }
 
@@ -219,6 +274,8 @@ pub struct ScreenView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LayoutView {
     pub screens: Vec<ScreenView>,
+    pub menu_mode: MenuMode,
+    pub web_off: Option<&'static str>,
     pub row_max: usize,
     pub english: bool,
     pub balance: bool,
@@ -233,6 +290,8 @@ pub struct LayoutUpdate {
     pub layouts: BTreeMap<String, Option<Rows>>,
     #[serde(default)]
     pub hidden: BTreeMap<String, bool>,
+    #[serde(default)]
+    pub menu_mode: Option<MenuMode>,
 }
 
 const PREVIEW_TEXTS: [&str; 20] = [
@@ -322,6 +381,8 @@ fn screen_view(
                     style: own.and_then(|o| o.style),
                     emoji: own.is_some_and(|o| o.emoji_id.is_some()),
                     kind: install.kind(slot.key),
+                    web: install.app_section(slot.key).map(|s| s.title),
+                    web_note: install.web_note(slot.key),
                     shown: shown_in(screen, install, slot.key),
                 }
             })
@@ -354,6 +415,8 @@ impl<'a> BotLayoutOps<'a> {
                 .into_iter()
                 .map(|screen| screen_view(screen, content, &plain, &plain_en, &install))
                 .collect(),
+            menu_mode: content.menu_mode(),
+            web_off: miniapp_off(self.services),
             row_max: ROW_MAX,
             english: install.english,
             balance: install.balance,
@@ -414,25 +477,38 @@ impl<'a> BotLayoutOps<'a> {
                 next.buttons.remove(key);
             }
         }
+        let mut mode = None;
+        if let Some(wanted) = update.menu_mode
+            && wanted != next.menu_mode
+        {
+            if wanted == MenuMode::Web
+                && let Some(off) = miniapp_off(self.services)
+            {
+                return Err(invalid(format!(
+                    "Веб-режим недоступен. {off}. Проверьте «Кабинет и мини-приложение»"
+                )));
+            }
+            next.menu_mode = wanted;
+            mode = Some(wanted);
+        }
         if next == current {
             return self.view().await;
+        }
+        let mut details = json!({
+            "screens": screens,
+            "reset": reset,
+            "hidden": hidden,
+            "shown": shown,
+        });
+        if let Some(mode) = mode {
+            details["menu_mode"] = json!(mode);
         }
         let mut tx = self.services.store().begin().await?;
         tx.settings()
             .set_as(CONTENT_KEY, &next, Some(admin))
             .await?;
         tx.audit()
-            .record(&Actor::Admin(admin).audit(
-                "settings.bot_layout",
-                "settings",
-                None,
-                json!({
-                    "screens": screens,
-                    "reset": reset,
-                    "hidden": hidden,
-                    "shown": shown,
-                }),
-            ))
+            .record(&Actor::Admin(admin).audit("settings.bot_layout", "settings", None, details))
             .await?;
         tx.commit().await?;
         self.services.reload().await?;

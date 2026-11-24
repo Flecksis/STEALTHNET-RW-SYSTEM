@@ -802,12 +802,12 @@ async fn trial_available(services: &Services, client: &Client) -> Result<bool, B
 }
 
 fn menu_button(c: &BotContent, install: &Install, key: &'static str) -> Option<Button> {
+    if let Some(url) = install.app_url(key) {
+        return ui::web_app(c, key, url);
+    }
     let entry = |name: &str| format!("x:{name}");
     match key {
-        "menu.btn.app" => install
-            .miniapp
-            .as_ref()
-            .and_then(|url| ui::web_app(c, key, url.clone())),
+        "menu.btn.app" | "menu.btn.roulette" => None,
         "menu.btn.subscription" => ui::button(c, key, &[], "subs"),
         "menu.btn.trial" => ui::button(c, key, &[], "trial"),
         "menu.btn.buy" | "menu.btn.extend" => ui::button(c, key, &[], "buy"),
@@ -819,10 +819,6 @@ fn menu_button(c: &BotContent, install: &Install, key: &'static str) -> Option<B
         "menu.btn.contests" => {
             ui::button(c, key, &[], entry(sn_modules::catalog::contests::BOT_ENTRY))
         }
-        "menu.btn.roulette" => install
-            .miniapp
-            .as_ref()
-            .and_then(|url| ui::web_app(c, key, format!("{url}/roulette"))),
         "menu.btn.documents" => ui::button(c, key, &[], "docs"),
         "menu.btn.support" => match &install.support {
             Some(url) => ui::link(c, key, &[], url.clone()),

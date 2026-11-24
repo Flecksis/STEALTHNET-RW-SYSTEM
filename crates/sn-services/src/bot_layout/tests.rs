@@ -40,6 +40,7 @@ fn update(screen: &str, layout: Option<Rows>) -> LayoutUpdate {
     LayoutUpdate {
         layouts: BTreeMap::from([(screen.to_string(), layout)]),
         hidden: BTreeMap::new(),
+        menu_mode: None,
     }
 }
 
@@ -211,6 +212,7 @@ async fn кнопку_можно_скрыть_и_вернуть_из_раскл�
     let hide = LayoutUpdate {
         layouts: BTreeMap::new(),
         hidden: BTreeMap::from([("menu.btn.support".to_string(), true)]),
+        menu_mode: None,
     };
     let view = ops.update(&hide, admin).await.unwrap();
     let support = screen(&view, Screen::Menu)
@@ -230,6 +232,7 @@ async fn кнопку_можно_скрыть_и_вернуть_из_раскл�
     let show = LayoutUpdate {
         layouts: BTreeMap::new(),
         hidden: BTreeMap::from([("menu.btn.support".to_string(), false)]),
+        menu_mode: None,
     };
     ops.update(&show, admin).await.unwrap();
     assert!(
@@ -242,13 +245,250 @@ async fn кнопку_можно_скрыть_и_вернуть_из_раскл�
     );
     let fixed = LayoutUpdate {
         layouts: BTreeMap::new(),
-        hidden: BTreeMap::from([("menu.btn.buy".to_string(), true)]),
+        hidden: BTreeMap::from([("sub.btn.extend".to_string(), true)]),
+        menu_mode: None,
     };
     assert_eq!(
         ops.update(&fixed, admin).await.unwrap_err().code(),
         "bot_layout.invalid"
     );
     db.cleanup().await;
+}
+
+#[tokio::test]
+async fn купить_и_продлить_скрываются_для_режима_только_кабинет() {
+    let Some((db, services, admin)) = setup().await else {
+        return;
+    };
+    let ops = services.bot_layout();
+    let before = ops.view().await.unwrap();
+    for key in ["menu.btn.buy", "menu.btn.extend"] {
+        let slot = screen(&before, Screen::Menu)
+            .slots
+            .iter()
+            .find(|s| s.key == key)
+            .unwrap();
+        assert!(slot.hideable, "{key}");
+        assert!(!slot.hidden, "{key}");
+    }
+    let hide = LayoutUpdate {
+        hidden: BTreeMap::from([
+            ("menu.btn.buy".to_string(), true),
+            ("menu.btn.extend".to_string(), true),
+        ]),
+        ..LayoutUpdate::default()
+    };
+    let view = ops.update(&hide, admin).await.unwrap();
+    let content = &services.bot_content().content;
+    for key in ["menu.btn.buy", "menu.btn.extend"] {
+        let slot = screen(&view, Screen::Menu)
+            .slots
+            .iter()
+            .find(|s| s.key == key)
+            .unwrap();
+        assert!(slot.hidden, "{key}");
+        assert!(!slot.text.is_empty(), "{key}");
+        assert!(content.button(key, &[]).is_none(), "{key}");
+    }
+    assert!(content.button("sub.btn.extend", &[]).is_some());
+    assert!(content.button("sub.btn.buy", &[]).is_some());
+    let (action, details) = last_audit(&services).await;
+    assert_eq!(action, "settings.bot_layout");
+    assert_eq!(
+        details["hidden"],
+        serde_json::json!(["menu.btn.buy", "menu.btn.extend"])
+    );
+    let show = LayoutUpdate {
+        hidden: BTreeMap::from([("menu.btn.buy".to_string(), false)]),
+        ..LayoutUpdate::default()
+    };
+    ops.update(&show, admin).await.unwrap();
+    let content = &services.bot_content().content;
+    assert!(content.button("menu.btn.buy", &[]).is_some());
+    assert!(content.button("menu.btn.extend", &[]).is_none());
+    db.cleanup().await;
+}
+
+async fn public_url(services: &Services, url: &str) {
+    let mut conn = services.store().conn().await.unwrap();
+    conn.settings()
+        .set(
+            sn_domain::settings::keys::PUBLIC_URL,
+            &serde_json::json!(url),
+            None,
+        )
+        .await
+        .unwrap();
+    drop(conn);
+    services.reload().await.unwrap();
+}
+
+fn mode(menu_mode: MenuMode) -> LayoutUpdate {
+    LayoutUpdate {
+        menu_mode: Some(menu_mode),
+        ..LayoutUpdate::default()
+    }
+}
+
+#[tokio::test]
+async fn веб_режим_нужен_работающему_мини_приложению() {
+    let Some((db, services, admin)) = setup().await else {
+        return;
+    };
+    let ops = services.bot_layout();
+    let view = ops.view().await.unwrap();
+    assert_eq!(view.menu_mode, MenuMode::Classic);
+    assert!(view.web_off.is_some());
+    let refused = ops.update(&mode(MenuMode::Web), admin).await.unwrap_err();
+    assert_eq!(refused.code(), "bot_layout.invalid");
+    assert!(
+        refused.to_string().contains("Веб-режим недоступен"),
+        "{refused}"
+    );
+    public_url(&services, "http://vpn.example.com").await;
+    let refused = ops.update(&mode(MenuMode::Web), admin).await.unwrap_err();
+    assert!(refused.to_string().contains("https"), "{refused}");
+    public_url(&services, "https://vpn.example.com").await;
+    let view = ops.view().await.unwrap();
+    assert_eq!(view.web_off, None);
+    let saved = ops.update(&mode(MenuMode::Web), admin).await.unwrap();
+    assert_eq!(saved.menu_mode, MenuMode::Web);
+    assert_eq!(
+        services.bot_content().content.config().menu_mode,
+        MenuMode::Web
+    );
+    let (action, details) = last_audit(&services).await;
+    assert_eq!(action, "settings.bot_layout");
+    assert_eq!(details["menu_mode"], "web");
+    let menu = screen(&saved, Screen::Menu);
+    let web = |key: &str| menu.slots.iter().find(|s| s.key == key).unwrap();
+    assert_eq!(web("menu.btn.buy").web, Some("Тарифы"));
+    assert_eq!(web("menu.btn.extend").web, Some("Тарифы"));
+    assert_eq!(web("menu.btn.subscription").web, Some("Главная"));
+    assert_eq!(web("menu.btn.language").web, Some("Язык"));
+    assert_eq!(
+        web("menu.btn.balance").web,
+        Some(if saved.balance {
+            "Пополнение"
+        } else {
+            "Профиль"
+        })
+    );
+    assert_eq!(web("menu.btn.buy").kind, Kind::Callback);
+    assert_eq!(web("menu.btn.documents").web, None);
+    assert!(web("menu.btn.documents").web_note.is_some());
+    assert_eq!(web("menu.btn.support").web, None);
+    assert!(
+        web("menu.btn.support")
+            .web_note
+            .as_deref()
+            .unwrap()
+            .contains("ИИ-чат")
+    );
+    assert!(
+        screen(&saved, Screen::Subscription)
+            .slots
+            .iter()
+            .all(|s| s.web.is_none() && s.web_note.is_none())
+    );
+    let mut access = services.settings().client_access;
+    access.miniapp = false;
+    services
+        .settings_ops()
+        .update_client_access(&access, admin)
+        .await
+        .unwrap();
+    let view = ops.view().await.unwrap();
+    assert_eq!(view.menu_mode, MenuMode::Web);
+    assert_eq!(view.web_off, Some("Мини-приложение выключено"));
+    let again = ops.update(&mode(MenuMode::Web), admin).await.unwrap();
+    assert_eq!(again.menu_mode, MenuMode::Web);
+    let back = ops.update(&mode(MenuMode::Classic), admin).await.unwrap();
+    assert_eq!(back.menu_mode, MenuMode::Classic);
+    let (_, details) = last_audit(&services).await;
+    assert_eq!(details["menu_mode"], "classic");
+    let stored: serde_json::Value = {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings().get(CONTENT_KEY).await.unwrap().unwrap()
+    };
+    assert!(stored.get("menu_mode").is_none(), "{stored}");
+    db.cleanup().await;
+}
+
+#[test]
+fn в_веб_режиме_кнопки_ведут_в_свои_разделы_мини_приложения() {
+    let app = "https://vpn.example.com/app";
+    let install = Install {
+        miniapp: Some(app.to_string()),
+        web: true,
+        balance: true,
+        support_app: true,
+        ..Install::default()
+    };
+    let url = |key: &str| install.app_url(key);
+    assert_eq!(url("menu.btn.app").as_deref(), Some(app));
+    assert_eq!(url("menu.btn.subscription").as_deref(), Some(app));
+    for (key, path) in [
+        ("menu.btn.trial", "/trial"),
+        ("menu.btn.buy", "/plans"),
+        ("menu.btn.extend", "/plans"),
+        ("menu.btn.balance", "/topup"),
+        ("menu.btn.promo", "/promo"),
+        ("menu.btn.options", "/addons"),
+        ("menu.btn.gifts", "/gifts"),
+        ("menu.btn.referral", "/profile"),
+        ("menu.btn.roulette", "/roulette"),
+        ("menu.btn.support", "/support"),
+        ("menu.btn.email", "/profile/email"),
+        ("menu.btn.language", "/profile/language"),
+    ] {
+        assert_eq!(url(key), Some(format!("{app}{path}")), "{key}");
+    }
+    for key in [
+        "menu.btn.contests",
+        "menu.btn.documents",
+        "sub.btn.devices",
+        "sub.btn.extend",
+        "common.btn.menu",
+    ] {
+        assert_eq!(url(key), None, "{key}");
+    }
+    let no_topup = Install {
+        balance: false,
+        ..install.clone()
+    };
+    assert_eq!(
+        no_topup.app_url("menu.btn.balance"),
+        Some(format!("{app}/profile"))
+    );
+    let bot_tickets = Install {
+        support_app: false,
+        ..install.clone()
+    };
+    assert_eq!(bot_tickets.app_url("menu.btn.support"), None);
+    let own_link = Install {
+        support: Some("https://t.me/help".into()),
+        ..install.clone()
+    };
+    assert_eq!(own_link.app_url("menu.btn.support"), None);
+    assert_eq!(own_link.kind("menu.btn.support"), Kind::Link);
+    let classic = Install {
+        web: false,
+        ..install.clone()
+    };
+    assert_eq!(classic.app_url("menu.btn.app").as_deref(), Some(app));
+    assert_eq!(
+        classic.app_url("menu.btn.roulette"),
+        Some(format!("{app}/roulette"))
+    );
+    assert_eq!(classic.app_url("menu.btn.buy"), None);
+    let without_app = Install {
+        miniapp: None,
+        ..install
+    };
+    for key in ["menu.btn.app", "menu.btn.buy", "menu.btn.support"] {
+        assert_eq!(without_app.app_url(key), None, "{key}");
+    }
 }
 
 #[tokio::test]

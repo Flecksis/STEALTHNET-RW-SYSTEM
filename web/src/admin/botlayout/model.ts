@@ -5,6 +5,7 @@ export type Audience = 'all' | 'subscribed' | 'unsubscribed';
 export type Rows = string[][];
 export type ScreenKey = 'menu' | 'subscription';
 export type Lang = 'ru' | 'en';
+export type MenuMode = 'classic' | 'web';
 
 export type Slot = {
   key: string;
@@ -19,6 +20,8 @@ export type Slot = {
   style: Style | null;
   emoji: boolean;
   kind: Kind;
+  web: string | null;
+  web_note: string | null;
   shown: ClientState[];
 };
 
@@ -35,6 +38,8 @@ export type ScreenView = {
 
 export type LayoutView = {
   screens: ScreenView[];
+  menu_mode: MenuMode;
+  web_off: string | null;
   row_max: number;
   english: boolean;
   balance: boolean;
@@ -84,6 +89,38 @@ export function pack<T>(present: Array<[string, T]>, columns: number): T[][] {
     out.push(present.slice(i, i + size).map((item) => item[1]));
   }
   return out;
+}
+
+export const MENU_MODES: Array<{ mode: MenuMode; label: string; text: string }> = [
+  {
+    mode: 'classic',
+    label: 'Классический',
+    text: 'Кнопки главного меню открывают экраны бота прямо в чате.',
+  },
+  {
+    mode: 'web',
+    label: 'Веб',
+    text: 'Кнопки главного меню открывают свои разделы мини-приложения: «Купить» — тарифы, «Баланс» — пополнение, «Пригласить друга» — профиль. Кнопки, у которых в мини-приложении нет раздела, работают в чате, как раньше.',
+  },
+];
+
+export function webOn(view: LayoutView, mode: MenuMode): boolean {
+  return mode === 'web' && view.web_off === null;
+}
+
+export function kindIn(slot: Slot, web: boolean): Kind {
+  return web && slot.web !== null ? 'web_app' : slot.kind;
+}
+
+export function opensText(slot: Slot, web: boolean): string {
+  const kind = kindIn(slot, web);
+  if (kind === 'web_app') {
+    return slot.web ? `Мини-приложение, раздел «${slot.web}»` : 'Мини-приложение';
+  }
+  if (kind === 'link') {
+    return 'Ссылку';
+  }
+  return 'Экран бота в чате';
 }
 
 export function visibleIn(slot: Slot, state: ClientState, hidden: Record<string, boolean>): boolean {

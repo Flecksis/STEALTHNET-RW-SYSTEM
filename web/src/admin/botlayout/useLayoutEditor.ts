@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
-import { sameRows, type Draft, type LayoutView, type Rows, type ScreenKey, type ScreenView } from './model';
+import { sameRows, type Draft, type LayoutView, type MenuMode, type Rows, type ScreenKey, type ScreenView } from './model';
 
 type Drafts = Record<ScreenKey, Draft>;
 type Status = { text: string; bad: boolean } | null;
@@ -21,6 +21,7 @@ export function useLayoutEditor() {
   const [view, setView] = useState<LayoutView | null>(null);
   const [drafts, setDrafts] = useState<Drafts | null>(null);
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
+  const [mode, setMode] = useState<MenuMode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
@@ -29,6 +30,7 @@ export function useLayoutEditor() {
     setView(data);
     setDrafts(draftsOf(data));
     setHidden({});
+    setMode(null);
   }, []);
 
   useEffect(() => {
@@ -71,7 +73,10 @@ export function useLayoutEditor() {
     [view, drafts],
   );
 
-  const unsaved = changedScreens.length + Object.keys(hiddenChanges).length;
+  const menuMode: MenuMode = mode ?? view?.menu_mode ?? 'classic';
+  const modeChanged = view !== null && menuMode !== view.menu_mode;
+
+  const unsaved = changedScreens.length + Object.keys(hiddenChanges).length + (modeChanged ? 1 : 0);
 
   const setRows = useCallback((key: ScreenKey, rows: Rows) => {
     setDrafts((current) => (current ? { ...current, [key]: { rows, custom: true } } : current));
@@ -98,6 +103,11 @@ export function useLayoutEditor() {
     [],
   );
 
+  const setMenuMode = useCallback((next: MenuMode) => {
+    setMode(next);
+    setStatus(null);
+  }, []);
+
   const isHidden = useCallback(
     (key: string, fallback: boolean) => hidden[key] ?? fallback,
     [hidden],
@@ -122,7 +132,8 @@ export function useLayoutEditor() {
     setBusy(true);
     setStatus(null);
     try {
-      const saved = await api<LayoutView>('/api/admin/bot/layout', { method: 'PUT', body: { layouts, hidden: hiddenChanges } });
+      const body = modeChanged ? { layouts, hidden: hiddenChanges, menu_mode: menuMode } : { layouts, hidden: hiddenChanges };
+      const saved = await api<LayoutView>('/api/admin/bot/layout', { method: 'PUT', body });
       apply(saved);
       setStatus({ text: 'Сохранено: бот уже показывает кнопки по-новому', bad: false });
     } catch (err) {
@@ -130,7 +141,7 @@ export function useLayoutEditor() {
     } finally {
       setBusy(false);
     }
-  }, [view, drafts, unsaved, busy, changedScreens, hiddenChanges, apply]);
+  }, [view, drafts, unsaved, busy, changedScreens, hiddenChanges, modeChanged, menuMode, apply]);
 
-  return { view, drafts, error, busy, status, unsaved, setRows, resetScreen, toggleHidden, isHidden, hidden, cancel, save };
+  return { view, drafts, error, busy, status, unsaved, menuMode, modeChanged, setMenuMode, setRows, resetScreen, toggleHidden, isHidden, hidden, cancel, save };
 }

@@ -12,8 +12,11 @@ import {
   dropTarget,
   gapTarget,
   keyboardFor,
+  kindIn,
+  MENU_MODES,
   messageFor,
   moveTarget,
+  opensText,
   pack,
   place,
   placeText,
@@ -29,6 +32,7 @@ import {
   type ScreenView,
   type Slot,
   type Target,
+  webOn,
 } from './model';
 import { labelOf, TgPreview } from './TgPreview';
 import { useLayoutEditor } from './useLayoutEditor';
@@ -141,11 +145,18 @@ export function SettingsBotLayout() {
     const slot = bySlot.get(key);
     return mode === 'all' || (slot !== undefined && slot.shown.includes(mode) && !isHidden(slot));
   };
+  const web = webOn(view, editor.menuMode);
+  const marked = screenKey === 'menu' ? keyboard.map((row) => row.map((slot) => ({ ...slot, kind: kindIn(slot, web) }))) : keyboard;
+  const modeText = MENU_MODES.find((item) => item.mode === editor.menuMode)?.text ?? '';
   const projection = project(draft.rows, visible);
   const pick = selected ? (bySlot.get(selected) ?? null) : null;
   const pickShown = pick !== null && shownKeys.some((row) => row.includes(pick.key));
   const notShown = mode === 'all' ? [] : screen.slots.filter((slot) => !visible(slot.key));
-  const changedHere = draft.custom !== screen.custom || !sameRows(draft.rows, screen.rows);
+  const changedHere =
+    draft.custom !== screen.custom ||
+    !sameRows(draft.rows, screen.rows) ||
+    editor.modeChanged ||
+    screen.slots.some((slot) => editor.hidden[slot.key] !== undefined && editor.hidden[slot.key] !== slot.hidden);
   const standardNow = !draft.custom && sameRows(draft.rows, screen.standard);
   const text = messageFor(view, screenKey, mode === 'all' ? 'active' : mode, shownLang);
 
@@ -308,6 +319,11 @@ export function SettingsBotLayout() {
         <span>{pick.when}</span>
         {pick.off ? <span className="kb-off">Сейчас не видна: {pick.off.charAt(0).toLowerCase() + pick.off.slice(1)}</span> : null}
       </div>
+      <div className="kb-when">
+        <span className="cap">Что открывает</span>
+        <span>{opensText(pick, screenKey === 'menu' && web)}</span>
+        {screenKey === 'menu' && web && pick.web === null && pick.web_note ? <span className="kb-off">{pick.web_note}</span> : null}
+      </div>
       {phone ? null : (
         <Link to="/admin/settings/bot/texts" className="kb-link">
           Надпись, цвет и премиум-эмодзи — в «Тексты и кнопки»
@@ -327,6 +343,41 @@ export function SettingsBotLayout() {
   return (
     <SettingsLayout>
       <BotTabs />
+      <section className="sec kb-mode" aria-labelledby="kb-mode-h">
+        <div className="sec-head">
+          <h2 id="kb-mode-h" className="section-title">
+            Режим меню
+          </h2>
+          <span className="muted">Что открывают кнопки главного меню: экраны бота или разделы мини-приложения</span>
+        </div>
+        <div className="row">
+          <span className="rl">Кнопки меню</span>
+          <div className="rc">
+            <span className="segs" role="group" aria-label="Режим меню">
+              {MENU_MODES.map((item) => (
+                <button
+                  key={item.mode}
+                  type="button"
+                  aria-pressed={editor.menuMode === item.mode}
+                  disabled={editor.busy || (item.mode === 'web' && view.web_off !== null && editor.menuMode !== 'web')}
+                  onClick={() => editor.setMenuMode(item.mode)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </span>
+            {view.web_off ? (
+              <span className={`kb-mode-note ${editor.menuMode === 'web' ? 'warn-line' : 'cap'}`}>
+                {editor.menuMode === 'web' ? 'Сейчас кнопки работают как в классическом режиме. ' : 'Веб-режим недоступен. '}
+                {view.web_off}. <Link to="/admin/settings/client">Кабинет и мини-приложение</Link>
+              </span>
+            ) : (
+              <span className="cap">{modeText}</span>
+            )}
+            {web ? <span className="cap">Стрелка в углу кнопки значит, что она откроет мини-приложение или ссылку, а не экран бота.</span> : null}
+          </div>
+        </div>
+      </section>
       <section className="sec" aria-labelledby="kb-h">
         <div className="sec-head">
           <h2 id="kb-h" className="section-title">
@@ -371,7 +422,7 @@ export function SettingsBotLayout() {
         <div className="kb-stage" ref={stage}>
           <TgPreview
             html={text}
-            rows={keyboard}
+            rows={marked}
             lang={shownLang}
             brand={view.brand}
             empty="Этому клиенту не видно ни одной кнопки"

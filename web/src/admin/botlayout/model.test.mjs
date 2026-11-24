@@ -9,11 +9,14 @@ import {
   project,
   fillTemplate,
   keyboardFor,
+  kindIn,
   messageFor,
+  opensText,
   pack,
   place,
   sameRows,
   spread,
+  webOn,
 } from './model.ts';
 
 const slot = (key, shown, extra = {}) => ({
@@ -29,6 +32,8 @@ const slot = (key, shown, extra = {}) => ({
   style: null,
   emoji: false,
   kind: 'callback',
+  web: null,
+  web_note: null,
   shown,
   ...extra,
 });
@@ -146,4 +151,26 @@ test('место кнопки подписано словами', () => {
   assert.equal(placeText(shown, 'c'), 'Ряд 2, вторая из двух');
   assert.equal(placeText(shown, 'f'), 'Ряд 3, третья из трёх');
   assert.equal(placeText(shown, 'z'), null);
+});
+
+test('в веб-режиме кнопки с разделом мини-приложения открывают его, остальные остаются в чате', () => {
+  const buy = slot('menu.btn.buy', ['new'], { web: 'Тарифы' });
+  const docs = slot('menu.btn.documents', ['new'], { web_note: 'Документы открываются в боте: в мини-приложении их нет' });
+  const support = slot('menu.btn.support', ['new'], { kind: 'link' });
+  const app = slot('menu.btn.app', ['new'], { kind: 'web_app', web: 'Главная' });
+  const ready = { web_off: null };
+  const off = { web_off: 'Мини-приложение выключено' };
+  assert.equal(webOn(ready, 'web'), true);
+  assert.equal(webOn(ready, 'classic'), false);
+  assert.equal(webOn(off, 'web'), false);
+  assert.equal(kindIn(buy, true), 'web_app');
+  assert.equal(kindIn(buy, false), 'callback');
+  assert.equal(kindIn(docs, true), 'callback');
+  assert.equal(kindIn(support, true), 'link');
+  assert.equal(kindIn(app, false), 'web_app');
+  assert.equal(opensText(buy, true), 'Мини-приложение, раздел «Тарифы»');
+  assert.equal(opensText(buy, false), 'Экран бота в чате');
+  assert.equal(opensText(docs, true), 'Экран бота в чате');
+  assert.equal(opensText(support, true), 'Ссылку');
+  assert.equal(opensText(app, false), 'Мини-приложение, раздел «Главная»');
 });

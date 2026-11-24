@@ -254,6 +254,51 @@ impl SubscriptionFacts {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuMode {
+    #[default]
+    Classic,
+    Web,
+}
+
+impl MenuMode {
+    pub fn is_classic(&self) -> bool {
+        *self == MenuMode::Classic
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AppSection {
+    pub path: &'static str,
+    pub title: &'static str,
+}
+
+const fn section(path: &'static str, title: &'static str) -> AppSection {
+    AppSection { path, title }
+}
+
+pub const APP_HOME: AppSection = section("", "Главная");
+pub const APP_PROFILE: AppSection = section("/profile", "Профиль");
+
+pub fn app_section(key: &str) -> Option<AppSection> {
+    Some(match key {
+        "menu.btn.app" | "menu.btn.subscription" => APP_HOME,
+        "menu.btn.trial" => section("/trial", "Пробный период"),
+        "menu.btn.buy" | "menu.btn.extend" => section("/plans", "Тарифы"),
+        "menu.btn.balance" => section("/topup", "Пополнение"),
+        "menu.btn.promo" => section("/promo", "Промокод"),
+        "menu.btn.options" => section("/addons", "Докупить"),
+        "menu.btn.gifts" => section("/gifts", "Подарки"),
+        "menu.btn.referral" => APP_PROFILE,
+        "menu.btn.roulette" => section("/roulette", "Рулетка"),
+        "menu.btn.support" => section("/support", "Поддержка"),
+        "menu.btn.email" => section("/profile/email", "Почта"),
+        "menu.btn.language" => section("/profile/language", "Язык"),
+        _ => return None,
+    })
+}
+
 pub fn arrange<'a, T>(rows: &[Vec<String>], present: Vec<(&'a str, T)>) -> Vec<Vec<T>> {
     let mut left: Vec<Option<(&'a str, T)>> = present.into_iter().map(Some).collect();
     let mut out = Vec::new();
@@ -545,6 +590,65 @@ mod tests {
                 "sub.btn.all",
                 "common.btn.menu"
             ]
+        );
+    }
+
+    #[test]
+    fn режим_меню_по_умолчанию_классический_и_не_пишется_в_настройку() {
+        use crate::bot_content::ContentConfig;
+        let old: ContentConfig = serde_json::from_value(serde_json::json!({
+            "buttons": { "menu.btn.balance": { "hidden": true } }
+        }))
+        .unwrap();
+        assert_eq!(old.menu_mode, MenuMode::Classic);
+        assert!(
+            serde_json::to_value(&old)
+                .unwrap()
+                .get("menu_mode")
+                .is_none()
+        );
+        let web: ContentConfig =
+            serde_json::from_value(serde_json::json!({ "menu_mode": "web" })).unwrap();
+        assert_eq!(web.menu_mode, MenuMode::Web);
+        assert_eq!(serde_json::to_value(&web).unwrap()["menu_mode"], "web");
+        assert!(
+            serde_json::from_value::<ContentConfig>(serde_json::json!({ "menu_mode": "tabs" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn у_раздела_мини_приложения_свой_адрес() {
+        let paths: Vec<(&str, Option<&str>)> = MENU
+            .iter()
+            .map(|s| (s.key, app_section(s.key).map(|a| a.path)))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                ("menu.btn.app", Some("")),
+                ("menu.btn.subscription", Some("")),
+                ("menu.btn.trial", Some("/trial")),
+                ("menu.btn.buy", Some("/plans")),
+                ("menu.btn.extend", Some("/plans")),
+                ("menu.btn.balance", Some("/topup")),
+                ("menu.btn.promo", Some("/promo")),
+                ("menu.btn.options", Some("/addons")),
+                ("menu.btn.gifts", Some("/gifts")),
+                ("menu.btn.referral", Some("/profile")),
+                ("menu.btn.contests", None),
+                ("menu.btn.roulette", Some("/roulette")),
+                ("menu.btn.documents", None),
+                ("menu.btn.support", Some("/support")),
+                ("menu.btn.email", Some("/profile/email")),
+                ("menu.btn.language", Some("/profile/language")),
+            ]
+        );
+        assert!(SUBSCRIPTION.iter().all(|s| app_section(s.key).is_none()));
+        assert!(
+            MENU.iter()
+                .filter_map(|s| app_section(s.key))
+                .all(|a| !a.title.is_empty() && (a.path.is_empty() || a.path.starts_with('/')))
         );
     }
 

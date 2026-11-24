@@ -33,6 +33,7 @@ async fn save(services: &Services, admin: AdminId, screen: &str, layout: Option<
             &LayoutUpdate {
                 layouts: BTreeMap::from([(screen.to_string(), layout)]),
                 hidden: BTreeMap::new(),
+                menu_mode: None,
             },
             admin,
         )
@@ -278,6 +279,7 @@ async fn в_ряду_бота_не_больше_трёх_кнопок() {
                     ]])),
                 )]),
                 hidden: BTreeMap::new(),
+                menu_mode: None,
             },
             admin,
         )

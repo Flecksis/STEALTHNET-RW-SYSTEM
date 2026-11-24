@@ -124,10 +124,25 @@ async fn тексты_и_кнопки_бота_правятся_из_админ�
             Method::PUT,
             "/api/admin/bot/content",
             &owner,
-            json!({ "buttons": { "menu.btn.buy": { "hidden": true } } }),
+            json!({ "buttons": { "sub.btn.extend": { "hidden": true } } }),
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+    let (status, hidden) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/content",
+            &owner,
+            json!({ "buttons": { "menu.btn.buy": { "hidden": true }, "menu.btn.extend": { "hidden": true } } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{hidden}");
+    let entries = hidden["entries"].as_array().unwrap();
+    for key in ["menu.btn.buy", "menu.btn.extend"] {
+        let entry = entries.iter().find(|e| e["key"] == key).unwrap();
+        assert_eq!(entry["optional"], true, "{entry}");
+        assert_eq!(entry["button"]["hidden"], true, "{entry}");
+    }
     let (status, reset) = h
         .write(
             Method::PUT,
@@ -152,7 +167,7 @@ async fn тексты_и_кнопки_бота_правятся_из_админ�
         .recent_by_action("settings.bot_content", 10)
         .await
         .unwrap();
-    assert_eq!(actions.len(), 2);
+    assert_eq!(actions.len(), 3);
     drop(conn);
     h.db.cleanup().await;
 }
@@ -450,4 +465,35 @@ async fn порядок_кнопок_бота_правится_из_админк
     assert_eq!(reset["screens"][0]["rows"][0], json!(["menu.btn.app"]));
     let (_, content) = h.get("/api/admin/bot/content", &owner).await;
     assert_eq!(content["menu_columns"], 1);
+
+    assert_eq!(reset["menu_mode"], "classic");
+    assert!(reset["web_off"].is_string());
+    let (status, refused) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &owner,
+            json!({ "menu_mode": "web" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "bot_layout.invalid");
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &owner,
+            json!({ "menu_mode": "tabs" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            "/api/admin/bot/layout",
+            &support,
+            json!({ "menu_mode": "classic" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

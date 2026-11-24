@@ -685,19 +685,17 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка пробного периода",
         "Попробовать бесплатно",
     ),
-    button(
+    hideable(
         "menu.btn.buy",
         Menu,
         "Кнопка покупки, если подписки нет",
         "Купить подписку",
-        &[],
     ),
-    button(
+    hideable(
         "menu.btn.extend",
         Menu,
         "Кнопка продления",
         "Продлить или сменить тариф",
-        &[],
     ),
     hideable(
         "menu.btn.app",
@@ -3251,6 +3249,11 @@ pub struct ContentConfig {
     pub menu_columns: Option<u8>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layouts: BTreeMap<String, crate::bot_layout::Rows>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::bot_layout::MenuMode::is_classic"
+    )]
+    pub menu_mode: crate::bot_layout::MenuMode,
     #[serde(default, skip_serializing_if = "Translation::is_empty")]
     pub en: Translation,
 }
@@ -3422,6 +3425,10 @@ impl Content {
 
     pub fn has_own_layout(&self, screen: crate::bot_layout::Screen) -> bool {
         self.config.layouts.contains_key(screen.as_str())
+    }
+
+    pub fn menu_mode(&self) -> crate::bot_layout::MenuMode {
+        self.config.menu_mode
     }
 
     pub fn template(&self, key: &str) -> &str {
@@ -4165,7 +4172,7 @@ mod tests {
         assert!(same.is_empty());
         assert!(
             clean_button(
-                "menu.btn.buy",
+                "sub.btn.extend",
                 &ButtonOverride {
                     hidden: true,
                     ..ButtonOverride::default()
@@ -4173,6 +4180,26 @@ mod tests {
             )
             .is_err()
         );
+        for key in ["menu.btn.buy", "menu.btn.extend"] {
+            let hidden = clean_button(
+                key,
+                &ButtonOverride {
+                    hidden: true,
+                    ..ButtonOverride::default()
+                },
+            )
+            .unwrap();
+            assert!(hidden.hidden, "{key}");
+            let mut config = ContentConfig::default();
+            config.buttons.insert(key.into(), hidden);
+            assert!(Content::new(config.clone()).button(key, &[]).is_none());
+            assert!(
+                Content::new(config)
+                    .in_locale(Locale::En)
+                    .button(key, &[])
+                    .is_none()
+            );
+        }
         assert!(
             clean_button(
                 "menu.btn.balance",
