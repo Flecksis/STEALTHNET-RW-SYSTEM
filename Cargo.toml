@@ -33,7 +33,7 @@ sn-bot = { path = "crates/sn-bot" }
 
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-rustix = { version = "1.1", features = ["fs"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
 axum = { version = "0.8", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit", "catch-panic", "request-id", "set-header", "timeout", "fs"] }

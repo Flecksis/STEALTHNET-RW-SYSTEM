@@ -163,9 +163,9 @@ impl Reader<'_> {
 
     fn spool_sqlite(&mut self, mut reader: Box<dyn Read + '_>) -> Result<(), OpenError> {
         let dir = super::import_dir();
-        std::fs::create_dir_all(&dir)?;
+        crate::private_files::private_dir(&dir)?;
         let spool = Spool(dir.join(format!("sqlite-{}.part", uuid::Uuid::new_v4().simple())));
-        let mut file = File::create(&spool.0)?;
+        let mut file = crate::private_files::private_file(&spool.0)?;
         std::io::copy(&mut reader, &mut file)?;
         drop(file);
         sqlite::read(&spool.0, self.wanted, &mut self.dump)
@@ -425,7 +425,7 @@ pub fn extract_zip(
             zip.by_index(i).map_err(zip_error)?
         };
         let target = path.with_extension("inner");
-        let mut out = File::create(&target)?;
+        let mut out = crate::private_files::fresh_private_file(&target)?;
         if let Err(err) = std::io::copy(&mut entry, &mut out) {
             let _ = std::fs::remove_file(&target);
             return Err(if encrypted {

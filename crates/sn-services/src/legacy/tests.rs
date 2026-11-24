@@ -3330,3 +3330,27 @@ async fn выбранную_одну_подписку_перенос_меняе�
     );
     assert!(!s.settings().multi_subscriptions);
 }
+
+#[test]
+fn при_запуске_из_папки_переноса_удаляются_только_её_временные_файлы() {
+    let id = "0123456789abcdef0123456789abcdef";
+    for own in [
+        format!("{id}.upload"),
+        format!("{id}.inner"),
+        format!("sqlite-{id}.part"),
+    ] {
+        assert!(super::own_temp_file(&own), "{own}");
+    }
+    for foreign in [
+        "stealthnet-2026-11-19T04-00-00Z.snbk".to_string(),
+        "backup.sql".to_string(),
+        format!("{id}.snbk"),
+        id.to_string(),
+        format!("{}.upload", &id[..31]),
+        format!("{}.upload", id.to_uppercase()),
+        format!("x{id}.upload"),
+        format!("{id}.upload.inner"),
+    ] {
+        assert!(!super::own_temp_file(&foreign), "{foreign}");
+    }
+}

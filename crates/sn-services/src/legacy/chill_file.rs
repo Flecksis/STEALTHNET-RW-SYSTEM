@@ -100,7 +100,10 @@ pub fn unseal(path: &Path, password: Option<&str>, target: &Path) -> Result<bool
     let sealed = std::fs::read(path)?;
     let plain = open_sealed(&sealed, password)?;
     drop(sealed);
-    std::fs::write(target, plain)?;
+    std::io::Write::write_all(
+        &mut crate::private_files::fresh_private_file(target)?,
+        &plain,
+    )?;
     Ok(true)
 }
 

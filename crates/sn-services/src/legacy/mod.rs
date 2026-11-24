@@ -62,6 +62,19 @@ pub fn free_space(path: &Path) -> Option<u64> {
     Some(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
+pub fn own_temp_file(name: &str) -> bool {
+    let (stem, ext) = match name.split_once('.') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let id = stem.strip_prefix("sqlite-").unwrap_or(stem);
+    matches!(ext, "upload" | "inner" | "part")
+        && id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 pub fn import_dir() -> PathBuf {
     std::env::var(IMPORT_DIR_ENV)
         .ok()
@@ -488,7 +501,10 @@ impl LegacyOps<'_> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let base = path.with_extension("upload");
-                if !keep.contains(&path) && !keep.contains(&base) {
+                if own_temp_file(&entry.file_name().to_string_lossy())
+                    && !keep.contains(&path)
+                    && !keep.contains(&base)
+                {
                     let _ = std::fs::remove_file(&path);
                 }
             }

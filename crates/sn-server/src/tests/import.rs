@@ -116,6 +116,22 @@ async fn перенос_загружается_большим_файлом_пр�
     let ready = wait(&h, &owner, &id, &["ready", "failed"]).await;
     assert_eq!(ready["state"], "ready", "{ready}");
     assert_eq!(ready["preview"]["counts"]["clients"], 6_000);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let stored: String = {
+            let mut conn = h.services().store().conn().await.unwrap();
+            sqlx::query_scalar("SELECT file_path FROM import_runs WHERE public_id = $1::uuid")
+                .bind(&id)
+                .fetch_one(conn.conn())
+                .await
+                .unwrap()
+        };
+        let stored = std::path::Path::new(&stored);
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(stored), 0o600);
+        assert_eq!(mode(stored.parent().unwrap()), 0o700);
+    }
     assert_eq!(ready["preview"]["remna"]["found"], 1);
     assert_eq!(ready["preview"]["remna"]["missing"], 1);
     assert_eq!(ready["preview"]["currency"]["switch"], false);

@@ -120,7 +120,7 @@ async fn upload(
         ));
     }
     let dir = import_dir();
-    tokio::fs::create_dir_all(&dir).await.map_err(|err| {
+    sn_services::private_files::private_dir(&dir).map_err(|err| {
         ApiError::from(ServiceError::Internal(format!(
             "папка для выгрузки не создаётся: {err}"
         )))
@@ -131,11 +131,13 @@ async fn upload(
         return Err(no_room(size, free));
     }
     let path = dir.join(format!("{}.upload", Uuid::new_v4().simple()));
-    let mut file = tokio::fs::File::create(&path).await.map_err(|err| {
-        ApiError::from(ServiceError::Internal(format!(
-            "файл выгрузки не создаётся: {err}"
-        )))
-    })?;
+    let mut file = sn_services::private_files::private_file(&path)
+        .map(tokio::fs::File::from_std)
+        .map_err(|err| {
+            ApiError::from(ServiceError::Internal(format!(
+                "файл выгрузки не создаётся: {err}"
+            )))
+        })?;
     let mut stream = body.into_data_stream();
     let mut size: u64 = 0;
     let failed = loop {

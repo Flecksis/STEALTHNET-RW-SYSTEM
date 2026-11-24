@@ -371,7 +371,7 @@ fn too_big() -> ApiError {
 
 async fn save_body(path: &std::path::Path, body: Body, append: bool) -> ApiResult<u64> {
     if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await.map_err(|err| {
+        sn_services::private_files::private_dir(dir).map_err(|err| {
             ApiError::from(ServiceError::Internal(format!(
                 "папка для загрузки не создаётся: {err}"
             )))
@@ -382,6 +382,8 @@ async fn save_body(path: &std::path::Path, body: Body, append: bool) -> ApiResul
         options.append(true);
     } else {
         options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
     }
     let mut file = options.open(path).await.map_err(|_| {
         ApiError::new(
