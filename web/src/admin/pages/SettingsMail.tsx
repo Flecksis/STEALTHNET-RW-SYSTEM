@@ -22,8 +22,8 @@ const TRANSPORTS: Array<[Transport, string]> = [
 
 const FIELDS: Record<Transport, string[]> = {
   none: [],
-  smtp: ['smtp_host', 'security', 'smtp_port', 'username', 'password', 'from_email'],
-  resend: ['resend_api_key', 'from_email'],
+  smtp: ['smtp_host', 'security', 'smtp_port', 'username', 'password', 'from_email', 'codes_per_hour'],
+  resend: ['resend_api_key', 'from_email', 'codes_per_hour'],
 };
 
 const ABOUT: Record<Transport, string> = {
