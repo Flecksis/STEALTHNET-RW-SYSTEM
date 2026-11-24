@@ -1,13 +1,14 @@
 use super::*;
 use crate::admins::NewAdminRequest;
 use crate::ext_modules::{
-    Change, ConfigUpdate, Credentials, Deliverer, InstallRequest, InstallResult, signing,
+    Change, ConfigUpdate, Credentials, Deliverer, InstallRequest, InstallResult, signing, store,
 };
 use base64::Engine;
 use sn_domain::access::{AdminPrincipal, AdminRole, Permission};
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{OrderId, PaymentId};
 use sn_domain::money::{Amount, PayCurrency};
+use sn_store::NewApiKey;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1301,6 +1302,142 @@ async fn настройки_модуля_сохраняются_и_доходя�
         ops.me(&principal).await.unwrap().settings["crm_token"],
         serde_json::Value::Null
     );
+    env.db.cleanup().await;
+}
+
+fn with_settings(id: &str, webhook: Option<&str>) -> String {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&manifest("https://hello.example.com/events", &[], &[])).unwrap();
+    value["id"] = id.into();
+    value["webhook"] = webhook.into();
+    value.to_string()
+}
+
+async fn install_packaged(
+    services: &Services,
+    admin: AdminId,
+    id: &str,
+    events_path: Option<&str>,
+) {
+    let manifest = crate::ext_modules::manifest::parse_package(
+        &serde_json::json!({
+            "format": 1,
+            "id": id,
+            "name": "Модуль из архива",
+            "version": "1.0.0",
+            "author": "Студия Пример",
+            "settings": [
+                { "key": "greeting", "type": "text", "label": "Текст приветствия", "required": true },
+                { "key": "crm_token", "type": "secret", "label": "Токен CRM" }
+            ],
+            "run": {
+                "port": 8095,
+                "events_path": events_path,
+                "health_path": "/healthz",
+                "images": {
+                    "linux/amd64": {
+                        "file": "image-linux-amd64.tar",
+                        "sha256": "0".repeat(64),
+                        "bytes": 1
+                    }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let token = crate::api_keys::new_token();
+    let mut tx = services.store().begin().await.unwrap();
+    let key = tx
+        .api_keys()
+        .create(&NewApiKey {
+            name: format!("Модуль «{id}»"),
+            token_prefix: token[..crate::api_keys::SHOWN_PREFIX_LEN].to_string(),
+            token_hash: crate::auth::token_hash(&token),
+            permissions: Vec::new(),
+            created_by: admin,
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+    store::insert_managed(
+        &mut tx,
+        &manifest,
+        key.id,
+        &serde_json::Value::Null,
+        &serde_json::Value::Null,
+        admin,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn queued_for(services: &Services, module: &str) -> Vec<(String, serde_json::Value)> {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query_as(
+        "SELECT kind, payload FROM ext_module_deliveries WHERE module_id = $1 ORDER BY id",
+    )
+    .bind(module)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn изменение_настроек_ставит_событие_модулю_у_которого_есть_адрес_для_событий() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let owner = owner(services).await;
+    let by_owner = session(owner, AdminRole::Owner, &[]);
+    let webhook = "https://hello.example.com/events";
+    install(
+        services,
+        &by_owner,
+        &with_settings("by-file", Some(webhook)),
+    )
+    .await;
+    install(services, &by_owner, &with_settings("by-file-silent", None)).await;
+    install_packaged(services, owner, "by-zip", Some("/events")).await;
+    install_packaged(services, owner, "by-zip-silent", None).await;
+    let ops = services.ext_modules();
+    let save = async |id: &str, greeting: &str| {
+        let update = ConfigUpdate {
+            config: serde_json::json!({ "greeting": greeting, "crm_token": "tok-1" })
+                .as_object()
+                .cloned()
+                .unwrap(),
+            clear: Vec::new(),
+        };
+        ops.update_config(&by_owner, id, &update).await.unwrap()
+    };
+    let changed = (
+        "settings_changed".to_string(),
+        serde_json::json!({ "keys": ["crm_token", "greeting"] }),
+    );
+    let switch = "UPDATE ext_modules SET enabled = NOT enabled WHERE installed_by = $1";
+    for (id, expected) in [
+        ("by-file", vec![changed.clone()]),
+        ("by-file-silent", Vec::new()),
+        ("by-zip", vec![changed.clone()]),
+        ("by-zip-silent", Vec::new()),
+    ] {
+        let view = save(id, "Привет").await;
+        assert_eq!(view.config["greeting"], "Привет", "{id}");
+        assert_eq!(view.config["crm_token"]["filled"], true, "{id}");
+        assert_eq!(queued_for(services, id).await, expected, "{id}");
+        if expected.is_empty() {
+            assert_eq!(
+                code(ops.ping(&by_owner, id).await),
+                "ext_modules.no_webhook",
+                "{id}"
+            );
+        }
+        run_sql(services, switch, owner).await;
+        save(id, "Здравствуйте").await;
+        assert_eq!(queued_for(services, id).await, expected, "{id}");
+        run_sql(services, switch, owner).await;
+    }
     env.db.cleanup().await;
 }
 

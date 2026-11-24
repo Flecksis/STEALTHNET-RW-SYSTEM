@@ -28,6 +28,17 @@ impl ModuleRow {
     pub fn id(&self) -> &str {
         &self.manifest.id
     }
+
+    pub fn has_events_address(&self) -> bool {
+        if self.managed {
+            self.manifest
+                .run
+                .as_ref()
+                .is_some_and(|run| run.events_path.is_some())
+        } else {
+            self.manifest.webhook.is_some()
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]

@@ -2,7 +2,7 @@ use super::*;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use base64::Engine;
-use sn_services::ext_modules::package;
+use sn_services::ext_modules::{Deliverer, package, signing};
 use sn_services::updates::{BuildInfo, UpdateConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -773,5 +773,139 @@ async fn страница_модуля_из_архива_открывается_
     assert!(request_line(&dir.0).contains("\"action\":\"module-stop\""));
     let (status, _, _) = page_get(&h, Method::GET, &url, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    h.db.cleanup().await;
+}
+
+async fn save_address(h: &Http, token: &str, address: &str) {
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/ext-modules/nodes/config",
+            token,
+            json!({ "config": { "remna_url": address } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["config"]["remna_url"], address, "{body}");
+}
+
+async fn deliveries(h: &Http) -> Vec<(String, Value, String)> {
+    let mut conn = h.services().store().conn().await.unwrap();
+    sqlx::query_as("SELECT kind, payload, status FROM ext_module_deliveries ORDER BY id")
+        .fetch_all(conn.conn())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn сохранение_настроек_доходит_до_модуля_из_архива_событием() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let (port, seen) = spawn_module().await;
+    let dir = helper_dir(Some(ready()));
+    configure(&h, Some(&dir.0), None, Some("127.0.0.1"));
+    let work = temp("sn-modules-pack");
+    let bytes = build(&work.0, &module("nodes", "1.0.0", port), b"image");
+    let archive = upload(&h, &owner, &bytes).await;
+    let (status, installed) = install(&h, &owner, &archive, true).await;
+    assert_eq!(status, StatusCode::OK, "{installed}");
+    let job = installed["runtime"]["job"]["id"].as_str().unwrap();
+    let cred = std::fs::read_to_string(dir.0.join(format!("request/{job}.cred"))).unwrap();
+    let secret = cred.lines().nth(1).unwrap().to_string();
+    clear_request(&dir.0);
+    save_address(&h, &owner, "https://remna.example.com").await;
+    let changed = |status: &str| {
+        (
+            "settings_changed".to_string(),
+            json!({ "keys": ["remna_url"] }),
+            status.to_string(),
+        )
+    };
+    assert_eq!(deliveries(&h).await, [changed("pending")]);
+    let deliverer = Deliverer::new(h.services().clone());
+    assert_eq!(deliverer.round().await.unwrap(), 1);
+    {
+        let calls = seen.0.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let (line, sent, body) = &calls[0];
+        assert_eq!(line, "POST /events");
+        let header = |name: &str| sent.get(name).unwrap().to_str().unwrap().to_string();
+        let id = header("webhook-id");
+        assert!(id.starts_with("msg_"), "{id}");
+        assert_eq!(
+            header("webhook-signature"),
+            signing::signature(
+                &signing::key(&secret).unwrap(),
+                &id,
+                header("webhook-timestamp").parse().unwrap(),
+                body
+            )
+            .unwrap()
+        );
+        let event: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(event["id"], id.as_str());
+        assert_eq!(event["type"], "settings_changed");
+        assert_eq!(event["module"], "nodes");
+        assert_eq!(event["data"], json!({ "keys": ["remna_url"] }));
+    }
+    assert_eq!(deliveries(&h).await, [changed("done")]);
+    let (status, journal) = h
+        .get("/api/admin/ext-modules/nodes/deliveries", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{journal}");
+    let attempt = &journal["attempts"][0];
+    assert_eq!(attempt["kind"], "settings_changed", "{journal}");
+    assert_eq!(attempt["title"], "Настройки изменены");
+    assert_eq!(attempt["status"], "done");
+    assert_eq!(attempt["http_status"], 200);
+    assert_eq!(attempt["response"], "принято");
+    save_address(&h, &owner, "https://remna.example.com").await;
+    assert_eq!(deliveries(&h).await, [changed("done")]);
+    let (status, body) = h
+        .write(
+            Method::PATCH,
+            "/api/admin/ext-modules/nodes",
+            &owner,
+            json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    clear_request(&dir.0);
+    save_address(&h, &owner, "https://new.example.com").await;
+    assert_eq!(deliveries(&h).await, [changed("done")]);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn модулю_из_архива_без_пути_событий_ничего_не_отправляется() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let (port, seen) = spawn_module().await;
+    let dir = helper_dir(Some(ready()));
+    configure(&h, Some(&dir.0), None, Some("127.0.0.1"));
+    let work = temp("sn-modules-pack");
+    let mut manifest = module("nodes", "1.0.0", port);
+    manifest["run"]
+        .as_object_mut()
+        .unwrap()
+        .remove("events_path");
+    let bytes = build(&work.0, &manifest, b"image");
+    let archive = upload(&h, &owner, &bytes).await;
+    let (status, body) = install(&h, &owner, &archive, true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    clear_request(&dir.0);
+    save_address(&h, &owner, "https://remna.example.com").await;
+    assert_eq!(deliveries(&h).await, []);
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/ext-modules/nodes/ping",
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "ext_modules.no_webhook");
+    assert!(seen.0.lock().unwrap().is_empty());
     h.db.cleanup().await;
 }

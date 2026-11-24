@@ -1278,7 +1278,7 @@ impl<'a> ExtModulesOps<'a> {
                     serde_json::json!({ "module": id, "keys": changed }),
                 ))
                 .await?;
-            if row.enabled && row.manifest.webhook.is_some() {
+            if row.enabled && row.has_events_address() {
                 store::enqueue_service(
                     &mut tx,
                     id,
@@ -1396,15 +1396,7 @@ impl<'a> ExtModulesOps<'a> {
                 "Модуль выключен: включите его, чтобы проверить связь",
             ));
         }
-        let no_events = if row.managed {
-            row.manifest
-                .run
-                .as_ref()
-                .is_none_or(|r| r.events_path.is_none())
-        } else {
-            row.manifest.webhook.is_none()
-        };
-        if no_events {
+        if !row.has_events_address() {
             return Err(rejected(
                 "ext_modules.no_webhook",
                 "У модуля нет адреса для событий: проверять нечего",
