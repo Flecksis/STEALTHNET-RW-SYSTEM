@@ -1080,6 +1080,40 @@ async fn повтор_сверяет_статус_у_кассы() {
 }
 
 #[tokio::test]
+async fn повтор_сверяет_статус_по_номеру_панели_если_касса_знает_только_его() {
+    let kassa = Arc::new(Kassa::default());
+    *kassa.knows_order_only.lock().unwrap() = true;
+    let Some(kit) = kassa_kit(kassa.clone()).await else {
+        return;
+    };
+    let admin = admin(&kit).await;
+    let client_id = client(&kit.services, 8604).await;
+    let tariff = standard(&kit.services).await;
+    let payment = pending(&kit, client_id, &tariff, KASSA, usd(1_000), None).await;
+    let paid = paid_by(&payment, "kt-order");
+    let id = failed_row(&kit, "kt-order", &paid).await;
+    *kassa.status.lock().unwrap() = Some(WebhookOutcome {
+        status: ProviderStatus::Refunded,
+        ..paid.clone()
+    });
+    let refused = kit
+        .services
+        .inbox()
+        .retry_webhook(id, admin)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), RETRY_REVERSED);
+    *kassa.status.lock().unwrap() = Some(paid);
+    let card = kit.services.inbox().retry_webhook(id, admin).await.unwrap();
+    assert_eq!(card.item.outcome, InboxOutcome::Accepted);
+    assert_eq!(
+        kassa.lookups.lock().unwrap().clone(),
+        vec![payment.public_id.to_string(), payment.public_id.to_string()]
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn повтор_запрещён_после_отмены_той_же_транзакции() {
     let Some(kit) = kassa_kit(Arc::new(Kassa::default())).await else {
         return;

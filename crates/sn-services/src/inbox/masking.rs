@@ -17,6 +17,7 @@ enum Rule {
     CardStart,
     Expiry,
     Wallet,
+    PayData,
     Text,
 }
 
@@ -201,6 +202,9 @@ fn rule(parent: Option<&str>, key: &str) -> Option<Rule> {
     if WALLET_KEYS.contains(&k.as_str()) {
         return Some(Rule::Wallet);
     }
+    if k == "paydata" {
+        return Some(Rule::PayData);
+    }
     if TEXT_KEYS.contains(&k.as_str()) {
         return Some(Rule::Text);
     }
@@ -299,6 +303,8 @@ fn masked_text(rule: Rule, text: &str) -> String {
         Rule::CardStart => "••••••".to_string(),
         Rule::Expiry => "••".to_string(),
         Rule::Wallet => head_tail(text),
+        Rule::PayData if text.contains('*') => card(text),
+        Rule::PayData => phone(text),
     }
 }
 
@@ -740,6 +746,43 @@ mod tests {
     fn событие_wata_берётся_из_статуса_транзакции() {
         let body = br#"{"transactionType":"SBP","kind":"Payment","transactionStatus":"Paid","amount":1188.00}"#;
         assert_eq!(prepare(body, None).event.as_deref(), Some("Paid"));
+    }
+
+    #[test]
+    fn уведомление_antilopay_маскируется_вместе_с_данными_оплаты() {
+        let body = |method: &str, data: &str| {
+            json!({
+                "type": "payment", "payment_id": "APAY26110001",
+                "order_id": "6a1c0c8e-3f4b-4d2a-9b7e-51c02d3e4f50",
+                "original_amount": 1500.0, "status": "SUCCESS", "currency": "RUB",
+                "pay_method": method, "pay_data": data, "customer_ip": "203.0.113.45",
+                "customer": {
+                    "email": "ivan.petrov@example.com", "phone": "+7 9161234567",
+                    "ip": "203.0.113.46", "address": "Москва", "fullname": "Иван Петров"
+                }
+            })
+            .to_string()
+        };
+        let card = json_of(body("CARD_RU", "220220******4444").as_bytes());
+        assert_eq!(card["pay_data"], "•••• 4444");
+        assert_eq!(card["customer_ip"], "203.0.113.•");
+        assert_eq!(card["customer"]["email"], "i•••@example.com");
+        assert_eq!(card["customer"]["fullname"], "И•••");
+        assert_eq!(card["original_amount"], 1500.0);
+        assert_eq!(card["payment_id"], "APAY26110001");
+        let raw = body("SBER_PAY", "+7 9161234567");
+        let phone = json_of(raw.as_bytes());
+        assert_eq!(phone["pay_data"], "+• ••••••••67");
+        assert_eq!(phone["customer"]["phone"], "+• ••••••••67");
+        let stored = String::from_utf8(prepare(raw.as_bytes(), None).body).unwrap();
+        for secret in ["9161234567", "ivan.petrov", "Москва", "Петров", "113.46"] {
+            assert!(!stored.contains(secret), "{secret} остался в {stored}");
+        }
+        assert_eq!(
+            prepare(raw.as_bytes(), None).event.as_deref(),
+            Some("payment")
+        );
+        assert_eq!(prepare(stored.as_bytes(), None).body, stored.as_bytes());
     }
 
     #[test]

@@ -27,6 +27,7 @@ use uuid::Uuid;
 mod admins;
 mod alerts;
 mod analytics;
+mod antilopay;
 mod api_keys;
 mod audit_journal;
 mod backups;

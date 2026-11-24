@@ -206,6 +206,7 @@ const ACCEPTS: Record<string, string> = {
   robokassa: 'Карты, СБП, SberPay, T-Pay',
   cispay: 'СБП, карты, криптовалюта',
   paritypay: 'Карты и СБП',
+  antilopay: 'Карты, СБП, SberPay, ЕРИП',
 };
 
 const HOOK_KINDS: Record<string, string[]> = { cloudpayments: ['check', 'pay', 'fail', 'refund'], pal24: ['', 'refund', 'chargeback'] };
@@ -241,6 +242,8 @@ const HOOK_HINTS: Record<string, string> = {
     'У CisPay это адрес для вебхуков в «Настройках магазина». Каждое уведомление панель сверяет запросом статуса к CisPay. Платежи из «Песочницы» засчитываются, только если включено «Засчитывать тестовые платежи». Оплату криптовалютой CisPay не возвращает.',
   paritypay:
     'Панель передаёт этот адрес с каждым счётом. Если в настройках кассы ParityPay стоит адрес старого бота, замените его этим. Возвратов через API у ParityPay нет: деньги возвращает её поддержка, а в панели возврат отмечается вручную.',
+  antilopay:
+    'У Antilopay это адрес для Callback в настройках проекта. Каждое уведомление панель сверяет запросом статуса к Antilopay. Уведомления приходят с адресов 81.177.221.226 и 87.228.9.243. Если Antilopay не пускает к API по IP, разрешите в ней адрес сервера панели.',
 };
 
 function failText(err: unknown, fallback: string): string {

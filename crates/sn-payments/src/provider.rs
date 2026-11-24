@@ -588,6 +588,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
         false
     }
 
+    fn status_by_order(&self) -> bool {
+        false
+    }
+
     fn precheck_reply(&self, _verdict: PrecheckVerdict) -> WebhookReply {
         WebhookReply::ok()
     }

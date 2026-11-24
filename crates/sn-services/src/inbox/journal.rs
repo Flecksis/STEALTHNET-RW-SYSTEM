@@ -707,9 +707,10 @@ impl PaymentInbox<'_> {
         else {
             return Ok(());
         };
-        let external = outcome
-            .provider_txid
-            .clone()
+        let external = payment
+            .filter(|_| provider.status_by_order())
+            .map(|p| p.public_id.to_string())
+            .or_else(|| outcome.provider_txid.clone())
             .or_else(|| payment.and_then(|p| p.provider_txid.clone()))
             .filter(|txid| !txid.trim().is_empty())
             .or_else(|| {

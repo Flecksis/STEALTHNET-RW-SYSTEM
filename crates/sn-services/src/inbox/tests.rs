@@ -48,6 +48,7 @@ struct Kassa {
     lookups: Mutex<Vec<String>>,
     refund_status: Mutex<Option<WebhookOutcome>>,
     finds_by_payment: Mutex<bool>,
+    knows_order_only: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
@@ -93,6 +94,10 @@ impl PaymentProvider for Kassa {
 
     fn polls_by_payment_id(&self) -> bool {
         *self.finds_by_payment.lock().unwrap()
+    }
+
+    fn status_by_order(&self) -> bool {
+        *self.knows_order_only.lock().unwrap()
     }
 
     async fn create_invoice(

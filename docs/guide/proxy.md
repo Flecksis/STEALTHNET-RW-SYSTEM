@@ -65,7 +65,7 @@
 | `SN_PROXY_ROUTES` | Направления через запятую: `telegram`, `payments`, `ai`, `mail`, `updates`. Без переменной — `telegram,ai` |
 | `SN_PROXY_PAYMENTS` | Коды платёжек через запятую, если через прокси идут не все, например `cryptomus,heleket`. Пусто — все платёжки |
 
-Коды платёжек: `cryptopay`, `gram`, `heleket`, `cryptomus`, `lava`, `yookassa`, `platega`, `cloudpayments`, `overpay`, `rollypay`, `mulenpay`, `pal24`, `kassa_ai`, `aurapay`, `tribute`, `wata`, `freekassa`, `robokassa`, `cispay`, `paritypay`. Telegram Stars идут вместе с направлением `telegram`.
+Коды платёжек: `cryptopay`, `gram`, `heleket`, `cryptomus`, `lava`, `yookassa`, `platega`, `cloudpayments`, `overpay`, `rollypay`, `mulenpay`, `pal24`, `kassa_ai`, `aurapay`, `tribute`, `wata`, `freekassa`, `robokassa`, `cispay`, `paritypay`, `antilopay`. Telegram Stars идут вместе с направлением `telegram`.
 
 После правки `deploy/.env` перезапустите панель: `sudo stealthnet restart`. Ошибка в `SN_PROXY_URL` не даст панели запуститься, причину покажет `sudo stealthnet logs`. Пароль в тексте ошибки не печатается.
 

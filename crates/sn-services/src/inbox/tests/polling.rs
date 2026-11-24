@@ -297,3 +297,37 @@ async fn заявка_без_номера_возврата_в_опрос_не_п
     assert_eq!(provider_refunds(&kit, topped.id).await[0].polled_at, None);
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn касса_без_поиска_по_своему_номеру_опрашивается_по_номеру_панели() {
+    let kassa = Arc::new(Kassa::default());
+    *kassa.knows_order_only.lock().unwrap() = true;
+    let Some((kit, _)) = polling_kit(kassa.clone()).await else {
+        return;
+    };
+    let client_id = client(&kit.services, 7707).await;
+    let topped = kassa_topup(&kit, client_id, 1_000).await;
+    let txid = topped.provider_txid.clone().unwrap();
+    let inbox = kit.services.inbox();
+    *kassa.status.lock().unwrap() = Some(outcome(&topped, ProviderStatus::Pending));
+    assert_eq!(
+        inbox.poll_payment(topped.id).await.unwrap(),
+        PollResult::Pending
+    );
+    *kassa.status.lock().unwrap() = Some(outcome(&topped, ProviderStatus::Paid));
+    assert_eq!(
+        inbox.poll_payment(topped.id).await.unwrap(),
+        PollResult::Settled
+    );
+    assert_eq!(
+        lookups(&kassa),
+        vec![topped.public_id.to_string(), topped.public_id.to_string()]
+    );
+    let mut conn = kit.services.store().conn().await.unwrap();
+    let paid = conn.payments().get(topped.id).await.unwrap();
+    assert_eq!(paid.status, PaymentStatus::Paid);
+    assert_eq!(paid.provider_txid.as_deref(), Some(txid.as_str()));
+    drop(conn);
+    assert_eq!(balance(&kit.services, client_id).await, 1_000);
+    kit.db.cleanup().await;
+}

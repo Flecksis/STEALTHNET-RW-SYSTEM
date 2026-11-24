@@ -1,3 +1,4 @@
+mod antilopay;
 mod aurapay;
 mod balance;
 mod cispay;
@@ -24,6 +25,9 @@ mod wata;
 mod yookassa;
 mod yoomoney;
 
+pub use antilopay::{
+    Antilopay, signature as antilopay_signature, verify_signature as antilopay_verify_signature,
+};
 pub use aurapay::{AuraPay, signature as aurapay_signature};
 pub use balance::Balance;
 pub use cispay::{CisPay, signature as cispay_signature};
@@ -88,6 +92,7 @@ pub fn with_telegram_api(telegram_api: &str) -> Vec<Arc<dyn PaymentProvider>> {
         Arc::new(Robokassa::new()),
         Arc::new(CisPay::new()),
         Arc::new(ParityPay::new()),
+        Arc::new(Antilopay::new()),
         Arc::new(TelegramStars::with_api_base(telegram_api)),
         Arc::new(Balance),
     ]
@@ -181,6 +186,12 @@ mod tests {
                 ("secret_key", json!("k1")),
                 ("callback_secret", json!("k2")),
             ]),
+            providers::ANTILOPAY => config(&[
+                ("project_id", json!("P7C10F3A29D54E68")),
+                ("secret_id", json!("sid_5f1c0a7be2d94433")),
+                ("secret_key", json!(antilopay::tests::MERCHANT)),
+                ("callback_key", json!(antilopay::tests::PROJECT_PUBLIC)),
+            ]),
             providers::STARS => config(&[(STARS_TOKEN_FIELD, json!("1:abc"))]),
             providers::TRIBUTE => config(&[
                 ("api_key", json!("k")),
@@ -253,6 +264,7 @@ mod tests {
                     providers::ROBOKASSA,
                     providers::CISPAY,
                     providers::PARITYPAY,
+                    providers::ANTILOPAY,
                     providers::BALANCE,
                 ],
             ),
@@ -303,6 +315,9 @@ mod tests {
             for id in [providers::CISPAY, providers::PARITYPAY] {
                 assert!(registry.accepts_webhooks(id), "{id}");
             }
+            assert!(registry.is_available(providers::ANTILOPAY, Currency::Rub));
+            assert!(!registry.is_available(providers::ANTILOPAY, Currency::Usd));
+            assert!(registry.accepts_webhooks(providers::ANTILOPAY));
         }
     }
 
@@ -335,6 +350,7 @@ mod tests {
             providers::ROBOKASSA,
             providers::CISPAY,
             providers::PARITYPAY,
+            providers::ANTILOPAY,
             providers::STARS,
             providers::BALANCE,
         ] {
@@ -393,6 +409,7 @@ mod tests {
                 providers::FREEKASSA,
                 providers::ROBOKASSA,
                 providers::CISPAY,
+                providers::ANTILOPAY,
                 providers::STARS
             ]
         );
@@ -425,7 +442,8 @@ mod tests {
                 providers::PAL24,
                 providers::WATA,
                 providers::FREEKASSA,
-                providers::ROBOKASSA
+                providers::ROBOKASSA,
+                providers::ANTILOPAY
             ]
         );
     }

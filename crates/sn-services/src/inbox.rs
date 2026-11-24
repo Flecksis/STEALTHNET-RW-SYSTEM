@@ -3355,7 +3355,12 @@ impl<'a> PaymentInbox<'a> {
             return Ok(PollResult::Unsupported);
         };
         let config = self.services.payments().config(provider.id());
-        let outcome = match provider.fetch_status(&config, provider_txid).await {
+        let external = if provider.status_by_order() {
+            payment.public_id.to_string()
+        } else {
+            provider_txid.to_string()
+        };
+        let outcome = match provider.fetch_status(&config, &external).await {
             Ok(Some(outcome)) => outcome,
             Ok(None)
             | Err(PaymentError::NotImplemented(_))

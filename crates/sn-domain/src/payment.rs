@@ -34,6 +34,7 @@ pub mod providers {
     pub const ROBOKASSA: &str = "robokassa";
     pub const CISPAY: &str = "cispay";
     pub const PARITYPAY: &str = "paritypay";
+    pub const ANTILOPAY: &str = "antilopay";
 }
 
 const fn shown() -> bool {
