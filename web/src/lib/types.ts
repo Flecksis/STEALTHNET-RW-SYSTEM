@@ -36,6 +36,7 @@ export type Site = {
   oauth?: { google: boolean; apple: boolean };
   client_access?: { miniapp: boolean; site_login: boolean; devices: boolean; reissue: boolean };
   languages?: { list: Array<'ru' | 'en'>; default: 'ru' | 'en' };
+  miniapp?: unknown;
 };
 
 export type Permission =

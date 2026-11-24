@@ -39,6 +39,7 @@ pub struct Install {
     pub reissue: bool,
     pub support: Option<String>,
     pub support_app: bool,
+    pub friends_screen: bool,
 }
 
 pub fn site_url(services: &Services) -> Option<String> {
@@ -98,6 +99,7 @@ impl Install {
                 .filter(|u| u.starts_with("https://") && !settings.support_tickets())
                 .map(str::to_string),
             support_app: settings.support_tickets() && ai::channels(modules).miniapp,
+            friends_screen: !settings.miniapp.friends_in_profile(),
             web: services.bot_content().content.menu_mode() == MenuMode::Web,
             miniapp,
         }
@@ -106,6 +108,7 @@ impl Install {
     pub fn app_section(&self, key: &str) -> Option<AppSection> {
         match key {
             "menu.btn.balance" if !self.balance => Some(layout::APP_PROFILE),
+            "menu.btn.referral" if self.friends_screen => Some(layout::APP_FRIENDS),
             "menu.btn.support" if self.support.is_some() || !self.support_app => None,
             _ => layout::app_section(key),
         }

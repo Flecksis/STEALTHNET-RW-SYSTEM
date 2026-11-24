@@ -1,56 +1,213 @@
-import { useEffect, useState } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { BrandMark } from '../lib/brand';
-import { api } from '../lib/api';
-import { count, dateLong, money, plural } from '../lib/format';
+import { dateLong, money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon, type IconName } from '../lib/icons';
-import { resetWhen, trafficMeter, type Referral } from '../cabinet/model';
-import { loadTrial } from '../cabinet/trial';
+import { resetWhen, trafficMeter } from '../cabinet/model';
+import {
+  audienceOf,
+  homeOn,
+  imageOf,
+  imageUrl,
+  isSection,
+  linkIcon,
+  pick,
+  say,
+  SECTION_ICONS,
+  shownTo,
+  withName,
+  type ActionsBlock,
+  type Banner,
+  type BannersBlock,
+  type GreetingBlock,
+  type HomeBlock,
+  type SectionsBlock,
+  type SubscriptionBlock,
+} from './config';
+import { EMPTY_TEXTS } from './labels';
 import { MiniSubSwitch, ThemeCirc, useMini } from './MiniApp';
+import { actionLabel, Row, rowLabel, supportUrl, useExtras, useLinkTarget, useRows, useTargets, type Extras, type Target } from './sections';
 import { openExternal } from './telegram';
-import { supportLink, supportTickets } from '../lib/support';
 
 const R = 90;
 const LEN = 2 * Math.PI * R;
 
-export function MiniHome() {
-  const { me, site, view, devices } = useMini();
-  const [referral, setReferral] = useState<Referral | null>(null);
-  const [gifts, setGifts] = useState(false);
-  const [spins, setSpins] = useState<number | null>(null);
-  const [trial, setTrial] = useState(false);
-  const noSub = !view;
-  const trialOn = !!site.trial?.enabled;
+type Btn = { label: string; icon: IconName; target: Target | null };
 
-  useEffect(() => {
-    api<Referral>('/api/client/m/referral/me')
-      .then(setReferral)
-      .catch(() => setReferral(null));
-    api('/api/client/m/gifts/offers')
-      .then(() => setGifts(true))
-      .catch(() => setGifts(false));
-    api<{ ready: boolean; spins: { total: number } }>('/api/client/m/roulette/state')
-      .then((s) => setSpins(s.ready ? s.spins.total : null))
-      .catch(() => setSpins(null));
-  }, []);
+function Act({ button, className, size, part }: { button: Btn; className: string; size: number; part?: string }) {
+  const { target } = button;
+  const inner = (
+    <>
+      <Icon name={button.icon} size={size} />
+      {button.label}
+    </>
+  );
+  return target?.to ? (
+    <Link to={target.to} className={className} data-part={part}>
+      {inner}
+    </Link>
+  ) : (
+    <button type="button" className={className} data-part={part} onClick={target?.url ? () => openExternal(target.url ?? '') : undefined}>
+      {inner}
+    </button>
+  );
+}
 
-  useEffect(() => {
-    if (!noSub || !trialOn) {
-      setTrial(false);
-      return;
+function useStatus() {
+  const { me, view } = useMini();
+  return {
+    blocked: me.client.status === 'blocked' || view?.status === 'blocked',
+    expired: view?.status === 'expired',
+  };
+}
+
+function useConnect(): Btn {
+  const { site, view } = useMini();
+  const mode = site.connect?.mode ?? 'ours';
+  const url = view?.subscription_url ?? null;
+  return mode === 'remnawave' && url ? { label: t('Открыть страницу подключения'), icon: 'external', target: { url } } : { label: t('Подключить'), icon: 'zap', target: { to: '/app/connect' } };
+}
+
+function Header() {
+  const { me, site, config } = useMini();
+  return (
+    <header className="mn-head" data-part="header">
+      <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
+      <h1 className="mn-brand">{site.brand_name.toUpperCase()}</h1>
+      {config.header.balance && (me.balance_enabled !== false || me.balance.minor > 0) ? (
+        <Link
+          to={me.balance_enabled !== false ? '/app/topup' : '/app/plans'}
+          className="mn-balance press"
+          aria-label={me.balance_enabled !== false ? t('Баланс {amount}, пополнить', { amount: money(me.balance) }) : t('Остаток на балансе {amount}', { amount: money(me.balance) })}
+        >
+          <span>{money(me.balance)}</span>
+        </Link>
+      ) : null}
+      <ThemeCirc />
+    </header>
+  );
+}
+
+function BannerCard({ banner, target }: { banner: Banner; target: Target | null }) {
+  const { lang } = useMini();
+  const image = imageOf(banner, lang);
+  const src = imageUrl(image);
+  const title = say(banner.title, lang);
+  const text = say(banner.text, lang);
+  const inner = (
+    <>
+      {src ? <img className="mn-banner-img" src={src} width={image?.width} height={image?.height} alt={title || text ? '' : isSection(banner.to) ? rowLabel(banner.to) : t('Баннер')} draggable={false} /> : null}
+      {title || text ? (
+        <span className="mn-banner-row">
+          <span className="mn-banner-text">
+            {title ? <strong>{title}</strong> : null}
+            {text ? <span>{text}</span> : null}
+          </span>
+          {target ? <Icon name={target.url ? 'external' : 'chevron-right'} size={16} /> : null}
+        </span>
+      ) : null}
+    </>
+  );
+  const cls = src ? 'mn-banner' : 'mn-banner plain';
+  if (target?.to) {
+    return (
+      <Link to={target.to} className={`${cls} press`}>
+        {inner}
+      </Link>
+    );
+  }
+  if (target?.url) {
+    return (
+      <button type="button" className={`${cls} press`} onClick={() => openExternal(target.url ?? '')}>
+        {inner}
+      </button>
+    );
+  }
+  return <div className={cls}>{inner}</div>;
+}
+
+function Banners({ block, extras }: { block: BannersBlock; extras: Extras }) {
+  const { subs, lang } = useMini();
+  const link = useLinkTarget(extras);
+  const state = audienceOf(subs);
+  const shown = (block.items ?? []).flatMap((banner, index) => {
+    if (banner.on === false || !shownTo(banner.for, state) || (!imageOf(banner, lang) && !say(banner.title, lang))) {
+      return [];
     }
-    let live = true;
-    loadTrial()
-      .then((offer) => live && setTrial(offer.available))
-      .catch(() => live && setTrial(false));
-    return () => {
-      live = false;
-    };
-  }, [noSub, trialOn]);
+    const target = banner.to ? link(banner.to) : null;
+    return banner.to && !target ? [] : [{ banner, target, index }];
+  });
+  if (shown.length === 0) {
+    return null;
+  }
+  const [only] = shown;
+  if (shown.length === 1 && only) {
+    return (
+      <div className="mn-banner-one" data-part="banners">
+        <BannerCard banner={only.banner} target={only.target} />
+      </div>
+    );
+  }
+  return (
+    <div role="group" aria-label={t('Новости')} className="mn-banners" data-part="banners">
+      {shown.map(({ banner, target, index }) => (
+        <BannerCard key={index} banner={banner} target={target} />
+      ))}
+    </div>
+  );
+}
 
-  const blocked = me.client.status === 'blocked' || view?.status === 'blocked';
-  const expired = view?.status === 'expired';
+function Greeting({ block }: { block: GreetingBlock }) {
+  const { subs, lang, name } = useMini();
+  if (!shownTo(block.for, audienceOf(subs))) {
+    return null;
+  }
+  const title = withName(say(block.title, lang), name);
+  const text = withName(say(block.text, lang), name);
+  if (!title && !text) {
+    return null;
+  }
+  return (
+    <section className="mn-greet" data-part="greeting">
+      {title ? <h2>{title}</h2> : null}
+      {text ? <p>{text}</p> : null}
+    </section>
+  );
+}
+
+function Ring({ left, share, size }: { left: number; share: number; size: 'big' | 'small' }) {
+  return (
+    <>
+      <svg viewBox="0 0 208 208" width={size === 'big' ? 208 : 76} height={size === 'big' ? 208 : 76} aria-hidden="true">
+        <circle cx="104" cy="104" r={R} fill="none" stroke="var(--track)" strokeWidth={size === 'big' ? 12 : 18} />
+        {share > 0 ? (
+          <circle
+            cx="104"
+            cy="104"
+            r={R}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth={size === 'big' ? 12 : 18}
+            strokeLinecap="round"
+            strokeDasharray={LEN}
+            strokeDashoffset={LEN * (1 - share)}
+            transform="rotate(-90 104 104)"
+          />
+        ) : null}
+      </svg>
+      <span className="mn-ring-in">
+        <strong>{left}</strong>
+        <span>{size === 'big' ? plural(left, 'день остался', 'дня осталось', 'дней осталось') : plural(left, 'день', 'дня', 'дней')}</span>
+      </span>
+    </>
+  );
+}
+
+function Subscription({ block, extras }: { block: SubscriptionBlock; extras: Extras }) {
+  const { me, site, view, lang } = useMini();
+  const { blocked, expired } = useStatus();
+  const connect = useConnect();
   const limited = view?.status === 'limited';
   const left = view?.progress?.days_left ?? 0;
   const total = view?.progress?.days_total ?? 0;
@@ -60,13 +217,11 @@ export function MiniHome() {
   const meter = view && !expired && !blocked ? trafficMeter(view) : null;
   const tight = !!meter && (meter.exhausted || meter.share >= 0.9);
   const reset = view?.tariff?.traffic.reset ?? 'no_reset';
-  const mode = site.connect?.mode ?? 'ours';
-  const url = view?.subscription_url ?? null;
-  const limit = view?.subscription.mirror.hwid_limit ?? view?.tariff?.devices.included ?? null;
-  const devCount = devices?.length ?? view?.subscription.mirror.devices_count ?? 0;
+  const compact = block.look === 'compact';
+  const shownLeft = view && !expired ? left : 0;
 
   const line2 = !view
-    ? { text: t('Подписки пока нет'), tone: 'muted' }
+    ? { text: pick(block.empty?.line, lang, t(EMPTY_TEXTS.line)), tone: 'muted' }
     : blocked
       ? { text: t('Подписка заблокирована'), tone: 'bad' }
       : limited
@@ -75,96 +230,53 @@ export function MiniHome() {
           ? { text: t('Истекла'), tone: 'muted' }
           : { text: view.subscription.autorenew.enabled ? t('Активна, автопродление включено') : t('Активна'), tone: 'ink2' };
 
-  const connect =
-    mode === 'remnawave' && url
-      ? { label: t('Открыть страницу подключения'), icon: 'external' as IconName, run: () => openExternal(url), to: undefined }
-      : { label: t('Подключить'), icon: 'zap' as IconName, run: undefined, to: '/app/connect' };
-
-  const support = supportTickets(site) && site.bot_username ? `https://t.me/${site.bot_username}?start=support` : supportLink(site);
-
-  type Btn = { label: string; icon: IconName; to?: string; run?: () => void; href?: string };
+  const support = supportUrl(site);
   const main: Btn = !view
-    ? { label: t('Выбрать тариф'), icon: 'tag', to: '/app/plans' }
+    ? { label: pick(block.empty?.button, lang, t(EMPTY_TEXTS.button)), icon: 'tag', target: { to: '/app/plans' } }
     : blocked
-      ? { label: t('Написать в поддержку'), icon: 'chat', run: support ? () => openExternal(support) : undefined }
+      ? { label: t('Написать в поддержку'), icon: 'chat', target: support ? { url: support } : null }
       : expired
-        ? { label: t('Продлить'), icon: 'refresh', to: '/app/plans' }
+        ? { label: t('Продлить'), icon: 'refresh', target: { to: '/app/plans' } }
         : connect;
-  const left2: Btn = expired ? { ...connect, label: t('Подключить') } : { label: t('Продлить'), icon: 'refresh', to: '/app/plans' };
 
-  const button = (b: Btn, cls: string, size: number) =>
-    b.to ? (
-      <Link to={b.to} className={cls}>
-        <Icon name={b.icon} size={size} />
-        {b.label}
-      </Link>
-    ) : (
-      <button type="button" className={cls} onClick={b.run}>
-        <Icon name={b.icon} size={size} />
-        {b.label}
-      </button>
-    );
-
-  const rows: Array<{ label: string; icon: IconName; value?: string; to?: string; run?: () => void }> = [];
-  if (referral) {
-    rows.push({ label: t('Друзья'), icon: 'share', value: referral.invited ? `${referral.invited} ${plural(referral.invited, 'пришёл', 'пришли', 'пришли')}` : undefined, to: '/app/profile' });
-  }
-  if (spins !== null) {
-    rows.push({ label: t('Рулетка'), icon: 'trophy', value: spins ? count(spins, 'вращение', 'вращения', 'вращений') : undefined, to: '/app/roulette' });
-  }
-  if (me.options !== false && view && !expired && !blocked && !view.subscription.ended_at) {
-    rows.push({ label: t('Докупить устройства или трафик'), icon: 'plus', to: '/app/addons' });
-  }
-  if (gifts) {
-    rows.push({ label: t('Подарить подписку'), icon: 'gift', to: '/app/gifts' });
-  }
-  if (me.promo_codes === true) {
-    rows.push({ label: t('Промокод'), icon: 'percent', to: '/app/promo' });
-  }
-  rows.push({ label: t('История оплат'), icon: 'receipt', value: me.payments_count ? String(me.payments_count) : undefined, to: '/app/payments' });
-  rows.push({ label: t('Инструкции'), icon: 'book', to: '/app/connect' });
-  if (supportTickets(site) && site.support_ai?.miniapp) {
-    rows.push({ label: t('Поддержка'), icon: 'chat', to: '/app/support' });
-  } else if (support) {
-    rows.push({ label: t('Поддержка'), icon: 'chat', run: () => openExternal(support) });
-  }
+  const title = view
+    ? expire
+      ? expired
+        ? t('{name} · закончилась {date}', { name, date: dateLong(expire, false) })
+        : t('{name} · до {date}', { name, date: dateLong(expire, false) })
+      : `${name} · `
+    : pick(block.empty?.title, lang, t(EMPTY_TEXTS.title));
+  const ringLabel = expired && expire ? t('Подписка закончилась {date}', { date: dateLong(expire, false) }) : t('Осталось {left} из {total}', { left, total });
+  const lines = (
+    <span className="mn-lines">
+      <strong>{title}</strong>
+      {line2.text ? <span className={`mn-tone ${line2.tone}`}>{line2.text}</span> : null}
+    </span>
+  );
 
   return (
-    <main className="mn-page home">
-      <header className="mn-head">
-        <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
-        <h1 className="mn-brand">{site.brand_name.toUpperCase()}</h1>
-        {me.balance_enabled !== false || me.balance.minor > 0 ? (
-          <Link to={me.balance_enabled !== false ? '/app/topup' : '/app/plans'} className="mn-balance press" aria-label={me.balance_enabled !== false ? t('Баланс {amount}, пополнить', { amount: money(me.balance) }) : t('Остаток на балансе {amount}', { amount: money(me.balance) })}>
-            <span>{money(me.balance)}</span>
-          </Link>
-        ) : null}
-        <ThemeCirc />
-      </header>
-
-      <MiniSubSwitch />
-
-      <section aria-label={t('Подписка')} className="mn-sub">
-        <div className="mn-ring" role="img" aria-label={expired && expire ? t('Подписка закончилась {date}', { date: dateLong(expire, false) }) : t('Осталось {left} из {total}', { left, total })}>
-          <svg viewBox="0 0 208 208" width="208" height="208" aria-hidden="true">
-            <circle cx="104" cy="104" r={R} fill="none" stroke="var(--track)" strokeWidth="12" />
-            {share > 0 ? (
-              <circle cx="104" cy="104" r={R} fill="none" stroke="var(--accent)" strokeWidth="12" strokeLinecap="round" strokeDasharray={LEN} strokeDashoffset={LEN * (1 - share)} transform="rotate(-90 104 104)" />
-            ) : null}
-          </svg>
-          <span className="mn-ring-in">
-            <strong>{view && !expired ? left : 0}</strong>
-            <span>{plural(view && !expired ? left : 0, 'день остался', 'дня осталось', 'дней осталось')}</span>
-          </span>
-        </div>
-        <span className="mn-lines">
-          <strong>{view ? (expire ? (expired ? t('{name} · закончилась {date}', { name, date: dateLong(expire, false) }) : t('{name} · до {date}', { name, date: dateLong(expire, false) })) : `${name} · `) : t('Выберите тариф')}</strong>
-          <span className={`mn-tone ${line2.tone}`}>{line2.text}</span>
-        </span>
-      </section>
+    <>
+      <MiniSubSwitch part="subscription" />
+      {compact ? (
+        <section aria-label={t('Подписка')} className="mn-sub compact" data-part="subscription">
+          {view ? (
+            <div className="mn-ring small" role="img" aria-label={ringLabel}>
+              <Ring left={shownLeft} share={share} size="small" />
+            </div>
+          ) : null}
+          {lines}
+        </section>
+      ) : (
+        <section aria-label={t('Подписка')} className="mn-sub" data-part="subscription">
+          <div className="mn-ring" role="img" aria-label={ringLabel}>
+            <Ring left={shownLeft} share={share} size="big" />
+          </div>
+          {lines}
+        </section>
+      )}
 
       {meter ? (
-        <section aria-label={t('Трафик')} className="mn-traffic">
+        <section aria-label={t('Трафик')} className="mn-traffic" data-part="subscription">
           <span className="mn-traffic-top">
             <span className="mn-traffic-name">{t('Трафик')}</span>
             <strong className={tight ? 'warn' : undefined}>{meter.exhausted ? t('закончился') : t('осталось {amount}', { amount: meter.left })}</strong>
@@ -191,42 +303,97 @@ export function MiniHome() {
         </section>
       ) : null}
 
-      {button(main, 'mn-main press', 20)}
-      {noSub && trial ? (
-        <Link to="/app/trial" className="mn-pairbtn mn-trialbtn press">
+      <Act button={main} className="mn-main press" size={20} part="subscription" />
+      {!view && extras.trial ? (
+        <Link to="/app/trial" className="mn-pairbtn mn-trialbtn press" data-part="subscription">
           <Icon name="gift" size={18} />
           {t('Попробовать бесплатно')}
         </Link>
       ) : null}
-      {view ? (
-        <div className="mn-pair">
-          {button(left2, 'mn-pairbtn press', 18)}
-          <Link to="/app/connect" className="mn-pairbtn press">
-            <Icon name="phone" size={18} />
-            {t('Устройства {count}', { count: limit ? `${devCount}/${limit}` : devCount })}
-          </Link>
-        </div>
-      ) : null}
+    </>
+  );
+}
 
-      <nav aria-label={t('Ещё')} className="mn-list">
-        {rows.map((r) =>
-          r.to ? (
-            <Link key={r.label} to={r.to} className="mn-row press">
-              <Icon name={r.icon} size={21} />
-              <span className="mn-row-name">{r.label}</span>
-              {r.value ? <span className="mn-row-val num">{r.value}</span> : null}
-              <Icon name="chevron-right" size={16} />
-            </Link>
-          ) : (
-            <button key={r.label} type="button" className="mn-row press" onClick={r.run}>
-              <Icon name={r.icon} size={21} />
-              <span className="mn-row-name">{r.label}</span>
-              {r.value ? <span className="mn-row-val num">{r.value}</span> : null}
-              <Icon name="chevron-right" size={16} />
-            </button>
-          ),
-        )}
-      </nav>
+function Actions({ block, extras }: { block: ActionsBlock; extras: Extras }) {
+  const { view, devices, subs, lang } = useMini();
+  const { expired } = useStatus();
+  const connect = useConnect();
+  const target = useTargets(extras);
+  const link = useLinkTarget(extras);
+  const state = audienceOf(subs);
+  const limit = view?.subscription.mirror.hwid_limit ?? view?.tariff?.devices.included ?? null;
+  const devCount = devices?.length ?? view?.subscription.mirror.devices_count ?? 0;
+  const count = limit ? `${devCount}/${limit}` : String(devCount);
+
+  const shown = (block.items ?? []).flatMap((item, index): Array<Btn & { key: string }> => {
+    if (!item.std) {
+      const at = shownTo(item.for, state) ? link(item.to) : null;
+      const label = say(item.label, lang);
+      return at && label ? [{ key: `own-${index}`, label, icon: linkIcon(item), target: at }] : [];
+    }
+    const at = target(item.std);
+    if (!at) {
+      return [];
+    }
+    if (item.std === 'renew' && expired) {
+      return [{ key: item.std, ...connect, label: t('Подключить') }];
+    }
+    if (item.std === 'devices') {
+      const own = pick(item.label, lang, '');
+      return [{ key: item.std, label: own ? `${own} ${count}` : t('Устройства {count}', { count }), icon: 'phone', target: at }];
+    }
+    return [{ key: item.std, label: pick(item.label, lang, actionLabel(item.std)), icon: SECTION_ICONS[item.std], target: at }];
+  });
+  if (shown.length === 0) {
+    return null;
+  }
+  return (
+    <div className={shown.length % 2 ? 'mn-pair odd' : 'mn-pair'} data-part="actions">
+      {shown.map(({ key, ...button }) => (
+        <Act key={key} button={button} className="mn-pairbtn press" size={18} />
+      ))}
+    </div>
+  );
+}
+
+function Sections({ block, extras }: { block: SectionsBlock; extras: Extras }) {
+  const { subs } = useMini();
+  const rows = useRows(extras, audienceOf(subs))(block.items ?? []);
+  if (rows.length === 0) {
+    return null;
+  }
+  return (
+    <nav aria-label={t('Ещё')} className="mn-list" data-part="sections">
+      {rows.map((row) => (
+        <Row key={row.key} row={row} />
+      ))}
+    </nav>
+  );
+}
+
+export function MiniHome() {
+  const { config } = useMini();
+  const extras = useExtras();
+  const blocks = (block: HomeBlock): ReactNode => {
+    switch (block.kind) {
+      case 'banners':
+        return <Banners block={block} extras={extras} />;
+      case 'greeting':
+        return <Greeting block={block} />;
+      case 'subscription':
+        return <Subscription block={block} extras={extras} />;
+      case 'actions':
+        return <Actions block={block} extras={extras} />;
+      case 'sections':
+        return <Sections block={block} extras={extras} />;
+    }
+  };
+  return (
+    <main className="mn-page home">
+      <Header />
+      {config.home.filter(homeOn).map((block) => (
+        <Fragment key={block.kind}>{blocks(block)}</Fragment>
+      ))}
     </main>
   );
 }

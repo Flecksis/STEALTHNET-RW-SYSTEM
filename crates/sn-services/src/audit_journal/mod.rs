@@ -652,6 +652,9 @@ fn settings_place(action: &str) -> Option<TargetView> {
         "settings.bot_image" => ("Картинки бота", "/admin/settings/bot/images"),
         "settings.documents" => ("Документы", "/admin/settings/documents"),
         "settings.landing" | "settings.landing_image" => ("Лендинг", "/admin/settings/landing"),
+        "settings.miniapp" | "settings.miniapp_image" => {
+            ("Мини-приложение", "/admin/settings/miniapp")
+        }
         "settings.connect"
         | "settings.connect_apps"
         | "settings.connect_app_icon"

@@ -104,15 +104,27 @@ export function downloadExternal(url: string, name: string): void {
   openExternal(url);
 }
 
-export function telegramLanguage(): string | null {
+type TelegramUser = { language_code?: unknown; first_name?: unknown };
+
+function telegramUser(): TelegramUser | null {
   const data = initData();
   if (!data) {
     return null;
   }
   try {
-    const user = JSON.parse(new URLSearchParams(data).get('user') ?? '{}') as { language_code?: string };
-    return user.language_code ?? null;
+    const user = JSON.parse(new URLSearchParams(data).get('user') ?? '{}') as TelegramUser | null;
+    return user && typeof user === 'object' ? user : null;
   } catch {
     return null;
   }
+}
+
+export function telegramLanguage(): string | null {
+  const code = telegramUser()?.language_code;
+  return typeof code === 'string' ? code : null;
+}
+
+export function telegramName(): string | null {
+  const name = telegramUser()?.first_name;
+  return typeof name === 'string' && name.trim() ? name.trim().slice(0, 40) : null;
 }

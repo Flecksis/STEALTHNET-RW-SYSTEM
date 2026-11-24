@@ -17,6 +17,7 @@ mod import;
 mod infra;
 mod landing;
 mod mail;
+mod miniapp;
 mod money;
 mod overview;
 pub(crate) mod photos;
@@ -56,6 +57,7 @@ pub fn routes() -> Router<AppState> {
         .merge(support::routes())
         .merge(settings::routes())
         .merge(landing::routes())
+        .merge(miniapp::routes())
         .merge(connect_apps::routes())
         .merge(system::routes())
         .merge(backups::routes())

@@ -29,6 +29,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/favicon/{file}", get(favicon))
         .route("/api/public/landing", get(landing))
         .route("/api/public/landing/{file}", get(landing_file))
+        .route("/api/public/miniapp/{file}", get(miniapp_image))
         .route("/api/public/pages/{*path}", get(document_page))
         .route("/api/public/connect-apps", get(connect_apps))
         .route("/api/public/app-icon/{file}", get(app_icon))
@@ -196,6 +197,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 "list": settings.languages.enabled(),
                 "default": settings.languages.fallback(),
             },
+            "miniapp": state.services.miniapp().public().await,
         }),
     )
 }
@@ -320,6 +322,25 @@ async fn landing_file(
         return landing_style(&state, tag, &headers);
     }
     match state.services.landing().image_file(tag).await {
+        Ok(Some((kind, bytes))) if kind.extension() == extension => (
+            [
+                (header::CONTENT_TYPE, kind.content_type()),
+                (header::CACHE_CONTROL, IMAGE_CACHE),
+                (header::CONTENT_SECURITY_POLICY, IMAGE_POLICY),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(_) => ApiError::not_found().into_response(),
+        Err(err) => ApiError::from(err).into_response(),
+    }
+}
+
+async fn miniapp_image(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let Some((tag, extension)) = file.split_once('.') else {
+        return ApiError::not_found().into_response();
+    };
+    match state.services.miniapp().image_file(tag).await {
         Ok(Some((kind, bytes))) if kind.extension() == extension => (
             [
                 (header::CONTENT_TYPE, kind.content_type()),

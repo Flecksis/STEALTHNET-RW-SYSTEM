@@ -124,6 +124,15 @@ export function SettingsClientAccess() {
             <span className="muted">Открывается только внутри Telegram, из бота. Вход без пароля: Telegram сам подтверждает клиента.</span>
           </div>
           <Toggle title="Мини-приложение в Telegram" text={miniText} on={access.miniapp} busy={busy} onToggle={() => void flip('miniapp')} />
+          <div className="row">
+            <span className="cap">
+              Баннеры, порядок блоков, меню внизу и профиль настраиваются в{' '}
+              <Link className="link" to="/admin/settings/miniapp">
+                «Мини-приложении»
+              </Link>
+              .
+            </span>
+          </div>
           {access.miniapp && !httpsReady ? (
             <div className="row">
               <span className="cap">

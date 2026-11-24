@@ -18,6 +18,7 @@ pub mod landing_css;
 pub mod lang;
 pub mod ledger;
 pub mod mail_letters;
+pub mod miniapp;
 pub mod module;
 pub mod money;
 pub mod order;

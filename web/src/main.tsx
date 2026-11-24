@@ -15,6 +15,7 @@ const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m
 const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon })));
 const CabinetApp = lazy(() => import('./cabinet/CabinetApp').then((m) => ({ default: m.CabinetApp })));
 const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.MiniApp })));
+const MiniPreview = lazy(() => import('./mini/MiniPreview').then((m) => ({ default: m.MiniPreview })));
 const Landing = lazy(() => import('./site/Landing').then((m) => ({ default: m.Landing })));
 const LandingPreview = lazy(() => import('./site/Landing').then((m) => ({ default: m.LandingPreview })));
 const PayPage = lazy(() => import('./pay/PayPage').then((m) => ({ default: m.PayPage })));
@@ -48,6 +49,7 @@ function App() {
         <Routes>
           <Route path="/admin/landing-preview" element={<LandingPreview />} />
           <Route path="/admin/document-preview" element={<DocumentPreview />} />
+          <Route path="/admin/mini-preview" element={<MiniPreview />} />
           <Route path="/admin/*" element={<AdminApp />} />
           <Route path="/cabinet/*" element={<CabinetApp />} />
           <Route path="/app/*" element={<MiniApp />} />

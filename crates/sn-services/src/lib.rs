@@ -35,6 +35,7 @@ pub mod limits;
 pub mod login;
 pub mod mail;
 pub mod mail_letters;
+pub mod miniapp;
 pub mod node_watch;
 pub mod oauth;
 pub mod pause;

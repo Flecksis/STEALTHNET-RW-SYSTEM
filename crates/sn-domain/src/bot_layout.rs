@@ -280,6 +280,7 @@ const fn section(path: &'static str, title: &'static str) -> AppSection {
 
 pub const APP_HOME: AppSection = section("", "Главная");
 pub const APP_PROFILE: AppSection = section("/profile", "Профиль");
+pub const APP_FRIENDS: AppSection = section("/friends", "Друзья");
 
 pub fn app_section(key: &str) -> Option<AppSection> {
     Some(match key {

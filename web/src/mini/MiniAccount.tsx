@@ -19,12 +19,12 @@ function grouped(secret: string): string {
   return secret.replace(/(.{4})/g, '$1 ').trim();
 }
 
-export function AccountCard() {
+export function AccountCard({ part }: { part?: string }) {
   const { me, site, lang } = useMini();
   const siteLogin = site.client_access?.site_login !== false;
   const langs = siteLangs(site);
   return (
-    <section aria-label={t('Аккаунт')} className="mn-devsec">
+    <section aria-label={t('Аккаунт')} className="mn-devsec" data-part={part}>
       <div className="mn-devsec-head">
         <h2>{t('Аккаунт')}</h2>
       </div>

@@ -2,6 +2,7 @@ use crate::client::Languages;
 use crate::ids::SquadId;
 use crate::image::{FAVICON_RULES, ImageKind, ImageRules, LOGO_RULES};
 use crate::landing::LandingConfig;
+use crate::miniapp::MiniAppConfig;
 use crate::money::{Currency, Money};
 use crate::payment::providers;
 use crate::pricing::TopUpLimits;
@@ -592,6 +593,8 @@ pub struct CoreSettings {
     #[serde(default)]
     pub landing: LandingConfig,
     #[serde(default)]
+    pub miniapp: MiniAppConfig,
+    #[serde(default)]
     pub multi_subscriptions: bool,
     #[serde(default)]
     pub client_access: ClientAccess,
@@ -796,6 +799,7 @@ impl Default for CoreSettings {
             logo: None,
             favicon: None,
             landing: LandingConfig::standard(),
+            miniapp: MiniAppConfig::standard(),
             multi_subscriptions: false,
             client_access: ClientAccess::default(),
             languages: Languages::default(),
@@ -879,6 +883,7 @@ pub mod keys {
     pub const LOGO: &str = "core.logo";
     pub const FAVICON: &str = "core.favicon";
     pub const LANDING: &str = "core.landing";
+    pub const MINIAPP: &str = "core.miniapp";
     pub const LANGUAGES: &str = "core.languages";
     pub const BOT_UPDATES: &str = "bot.updates";
     pub const BOT_FLOOD: &str = "bot.flood";

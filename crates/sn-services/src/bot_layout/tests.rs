@@ -461,6 +461,14 @@ fn в_веб_режиме_кнопки_ведут_в_свои_разделы_м�
         no_topup.app_url("menu.btn.balance"),
         Some(format!("{app}/profile"))
     );
+    let friends_screen = Install {
+        friends_screen: true,
+        ..install.clone()
+    };
+    assert_eq!(
+        friends_screen.app_url("menu.btn.referral"),
+        Some(format!("{app}/friends"))
+    );
     let bot_tickets = Install {
         support_app: false,
         ..install.clone()

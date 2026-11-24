@@ -2,17 +2,19 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Link, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { api, ApiError, setBearer } from '../lib/api';
 import { BrandMark } from '../lib/brand';
-import { applyLang, guessLang, msg, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
-import { Icon, type IconName } from '../lib/icons';
+import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
+import { Icon } from '../lib/icons';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
-import { initData, loadTelegram, paintTelegram, telegramLanguage, webApp, type WebApp } from './telegram';
+import { initData, loadTelegram, openExternal, paintTelegram, telegramLanguage, telegramName, webApp, type WebApp } from './telegram';
 import { backTarget } from './back';
+import { currentTab, normalizeConfig, pick, SECTION_ICONS, sectionPath, type MiniConfig } from './config';
 import { watchInsets } from './insets';
 import { MiniConnect } from './MiniConnect';
+import { MiniFriends } from './MiniFriends';
 import { MiniHome } from './MiniHome';
 import { MiniPayments } from './MiniPayments';
 import { MiniAddons } from './MiniAddons';
@@ -26,6 +28,7 @@ import { MiniTrial } from './MiniTrial';
 import { MiniRoulette } from './MiniRoulette';
 import { MiniWithdraw } from './MiniWithdraw';
 import { MiniSupport, MiniTicket } from './MiniSupport';
+import { supportTarget, tabLabel, type Extras } from './sections';
 import './mini.css';
 
 const TOKEN_KEY = 'sn.mini.token';
@@ -52,12 +55,15 @@ export type MiniCtx = {
   lang: Lang;
   nextLang: Lang | null;
   switchLang: (next: Lang) => void;
+  config: MiniConfig;
+  name: string | null;
+  demo: Extras | null;
 };
 
-const Ctx = createContext<MiniCtx | null>(null);
+export const MiniContext = createContext<MiniCtx | null>(null);
 
 export function useMini(): MiniCtx {
-  const value = useContext(Ctx);
+  const value = useContext(MiniContext);
   if (!value) {
     throw new Error('нет мини-приложения');
   }
@@ -243,12 +249,14 @@ export function MiniApp() {
   const devices = hit?.devices ?? null;
   const ready = hit !== undefined;
   const nextLang = otherLang(lang, langs);
+  const config = useMemo(() => normalizeConfig(site.miniapp), [site.miniapp]);
+  const name = useMemo(() => (state.kind === 'in' ? telegramName() : null), [state.kind]);
   const ctx = useMemo<MiniCtx | null>(
     () =>
       state.kind === 'in'
-        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang }
+        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang, config, name, demo: null }
         : null,
-    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang],
+    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name],
   );
 
   if (state.kind === 'loading' || !applied) {
@@ -283,7 +291,7 @@ export function MiniApp() {
   }
 
   return (
-    <Ctx.Provider value={ctx}>
+    <MiniContext.Provider value={ctx}>
       <div key={lang} className="mn">
         <Routes>
           <Route index element={<MiniHome />} />
@@ -291,6 +299,7 @@ export function MiniApp() {
           <Route path="trial" element={<MiniTrial />} />
           <Route path="connect" element={<MiniConnect />} />
           <Route path="profile" element={<MiniProfile />} />
+          <Route path="friends" element={<MiniFriends />} />
           <Route path="profile/email" element={<MiniEmail />} />
           <Route path="profile/password" element={<MiniPassword />} />
           <Route path="profile/totp" element={<MiniTotp />} />
@@ -309,7 +318,7 @@ export function MiniApp() {
         <MiniNav />
         <TelegramBack />
       </div>
-    </Ctx.Provider>
+    </MiniContext.Provider>
   );
 }
 
@@ -342,24 +351,32 @@ function TelegramBack() {
   return null;
 }
 
-const TABS: Array<{ to: string; label: string; icon: IconName }> = [
-  { to: '/app', label: msg('Главная'), icon: 'home' },
-  { to: '/app/plans', label: msg('Тарифы'), icon: 'tag' },
-  { to: '/app/connect', label: msg('Подключить'), icon: 'zap' },
-  { to: '/app/profile', label: msg('Профиль'), icon: 'user' },
-];
-
-function MiniNav() {
+export function MiniNav({ path }: { path?: string }) {
   const { pathname } = useLocation();
+  const { config, lang, site } = useMini();
+  const current = currentTab(config.tabs, path ?? pathname);
+  const tabs = config.tabs.flatMap((tab) => {
+    const target = tab.std === 'support' ? supportTarget(site) : { to: sectionPath(tab.std) };
+    return target ? [{ tab, target }] : [];
+  });
+  const own = tabs.length !== 4 || tabs.some(({ tab }) => tab.label);
   return (
-    <nav aria-label={t('Меню')} className="mn-nav">
-      {TABS.map((tab) => {
-        const current = tab.to === '/app' ? ['/app', '/app/', '/app/topup', '/app/payments', '/app/roulette', '/app/promo'].includes(pathname) : pathname.startsWith(tab.to);
-        return (
-          <Link key={tab.to} to={tab.to} className="mn-tab press" aria-current={current ? 'page' : undefined}>
-            <Icon name={tab.icon} size={23} />
-            <span>{t(tab.label)}</span>
+    <nav aria-label={t('Меню')} className={own ? 'mn-nav own' : 'mn-nav'} data-part="tabs" style={tabs.length === 4 ? undefined : { gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
+      {tabs.map(({ tab, target }) => {
+        const inner = (
+          <>
+            <Icon name={SECTION_ICONS[tab.std]} size={23} />
+            <span>{pick(tab.label, lang, tabLabel(tab.std))}</span>
+          </>
+        );
+        return target.to ? (
+          <Link key={tab.std} to={target.to} className="mn-tab press" aria-current={current === tab.std ? 'page' : undefined}>
+            {inner}
           </Link>
+        ) : (
+          <button key={tab.std} type="button" className="mn-tab press" onClick={() => target.url && openExternal(target.url)}>
+            {inner}
+          </button>
         );
       })}
     </nav>
@@ -391,7 +408,7 @@ export function BackHead({ title, to = '/app' }: { title: string; to?: string })
   );
 }
 
-export function MiniSubSwitch() {
+export function MiniSubSwitch({ part }: { part?: string }) {
   const { me, subs, view, choose } = useMini();
   const box = useRef<HTMLDivElement>(null);
   const chosenId = view?.subscription.id ?? null;
@@ -401,7 +418,7 @@ export function MiniSubSwitch() {
   }
   const blocked = me.client.status === 'blocked';
   return (
-    <div ref={box} role="group" aria-label={t('Подписки')} className="mn-subs">
+    <div ref={box} role="group" aria-label={t('Подписки')} className="mn-subs" data-part={part}>
       {subs.map((v) => {
         const on = v.subscription.id === chosenId;
         const state = subState(v, blocked);

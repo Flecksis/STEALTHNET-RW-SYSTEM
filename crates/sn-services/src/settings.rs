@@ -10,6 +10,7 @@ use sn_domain::client::Languages;
 use sn_domain::ids::AdminId;
 use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
+use sn_domain::miniapp::MiniAppConfig;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{
@@ -166,6 +167,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::LANDING => {
                 if let Some(v) = parse::<LandingConfig>(&key, value) {
                     settings.landing = v.arranged();
+                }
+            }
+            keys::MINIAPP => {
+                if let Some(v) = parse::<MiniAppConfig>(&key, value) {
+                    settings.miniapp = v.arranged();
                 }
             }
             keys::LANGUAGES => {

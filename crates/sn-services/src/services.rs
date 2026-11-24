@@ -565,6 +565,10 @@ impl Services {
         crate::landing::LandingOps::new(self)
     }
 
+    pub fn miniapp(&self) -> crate::miniapp::MiniAppOps<'_> {
+        crate::miniapp::MiniAppOps::new(self)
+    }
+
     pub fn connect_apps(&self) -> crate::connect_apps::ConnectAppsOps<'_> {
         crate::connect_apps::ConnectAppsOps::new(self)
     }

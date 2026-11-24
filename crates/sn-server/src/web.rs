@@ -65,9 +65,13 @@ fn embeddable(path: &str) -> bool {
 }
 
 fn landing_preview(path: &str) -> bool {
-    ["/admin/landing-preview", "/admin/document-preview"]
-        .iter()
-        .any(|frame| path == *frame || path.starts_with(&format!("{frame}/")))
+    [
+        "/admin/landing-preview",
+        "/admin/document-preview",
+        "/admin/mini-preview",
+    ]
+    .iter()
+    .any(|frame| path == *frame || path.starts_with(&format!("{frame}/")))
 }
 
 fn frame_option(path: &str) -> Option<&'static str> {
@@ -588,6 +592,9 @@ mod tests {
             Some("SAMEORIGIN")
         );
         assert_eq!(frame_option("/admin/landing-previewer"), Some("DENY"));
+        assert_eq!(frame_option("/admin/mini-preview"), Some("SAMEORIGIN"));
+        assert_eq!(frame_option("/admin/mini-previewer"), Some("DENY"));
+        assert_eq!(frame_option("/admin/settings/miniapp"), Some("DENY"));
         assert_eq!(frame_option("/admin"), Some("DENY"));
         assert_eq!(frame_option("/admin/settings/landing"), Some("DENY"));
         assert_eq!(frame_option("/"), Some("DENY"));
@@ -609,6 +616,7 @@ mod tests {
         assert_eq!(section("/admin"), Section::Admin);
         assert_eq!(section("/admin/m/ext/7"), Section::Admin);
         assert_eq!(section("/admin/landing-preview"), Section::AdminFrame);
+        assert_eq!(section("/admin/mini-preview"), Section::AdminFrame);
         assert_eq!(section("/admin/landing-previewer"), Section::Admin);
         assert_eq!(section("/verify/0123456789abcdef"), Section::MiniApp);
         assert_eq!(section("/verifying"), Section::Site);

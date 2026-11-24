@@ -618,6 +618,16 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Settings,
     ),
     a(
+        "settings.miniapp",
+        "Изменено мини-приложение",
+        Area::Settings,
+    ),
+    a(
+        "settings.miniapp_image",
+        "Изменена картинка мини-приложения",
+        Area::Settings,
+    ),
+    a(
         "settings.connect",
         "Изменена страница подключения",
         Area::Settings,
@@ -1239,6 +1249,7 @@ const FIELDS: &[(&str, &str)] = &[
     ("sha256", "Контрольная сумма"),
     ("removed_icons", "Удалено значков"),
     ("removed_images", "Удалено картинок"),
+    ("blocks", "Блоки"),
     ("event_key", "Ключ события"),
     ("original_payment_id", "Исходный платёж №"),
     ("hold_entry_id", "Удержание №"),
@@ -1278,6 +1289,11 @@ const ACTION_FIELDS: &[(&str, &str, &str)] = &[
         "Дизайн кабинета и мини-приложения",
     ),
     ("settings.appearance", "client_theme", "Тема для клиентов"),
+    ("settings.miniapp", "screens", "Экраны"),
+    ("settings.miniapp", "blocks", "Изменены блоки"),
+    ("settings.miniapp", "order", "Изменён порядок блоков"),
+    ("settings.miniapp", "hidden", "Скрытые блоки"),
+    ("settings.miniapp", "standard", "Стандартный вид"),
 ];
 
 const VALUES: &[(&str, &str, &str)] = &[
@@ -1308,6 +1324,28 @@ const VALUES: &[(&str, &str, &str)] = &[
     ("css", "faq", "вопросы и ответы"),
     ("css", "cta", "призыв в конце"),
     ("css", "footer", "подвал"),
+    ("screens", "home", "Главная"),
+    ("screens", "tabs", "Меню внизу"),
+    ("screens", "profile", "Профиль"),
+    ("blocks", "header", "Шапка"),
+    ("blocks", "banners", "Баннеры"),
+    ("blocks", "greeting", "Приветствие"),
+    ("blocks", "subscription", "Подписка"),
+    ("blocks", "actions", "Кнопки под подпиской"),
+    ("blocks", "sections", "Разделы"),
+    ("blocks", "balance", "Баланс"),
+    ("blocks", "friends", "Друзья"),
+    ("blocks", "links", "Свои ссылки"),
+    ("blocks", "documents", "Документы"),
+    ("blocks", "help", "Оплаты и поддержка"),
+    ("blocks", "account", "Аккаунт"),
+    ("hidden", "banners", "Баннеры"),
+    ("hidden", "greeting", "Приветствие"),
+    ("hidden", "actions", "Кнопки под подпиской"),
+    ("hidden", "sections", "Разделы"),
+    ("hidden", "balance", "Баланс"),
+    ("hidden", "friends", "Друзья"),
+    ("hidden", "links", "Свои ссылки"),
 ];
 
 pub fn field_label_in(action: &str, key: &str) -> Option<&'static str> {
