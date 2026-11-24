@@ -2205,10 +2205,30 @@ async fn отписка_по_ссылке_из_письма_и_картинка_
             .starts_with("public")
     );
     let missing = router
+        .clone()
         .oneshot(get(format!("/broadcast/images/{}", Uuid::new_v4())))
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query("UPDATE broadcast_images SET bytes = '\\x00' WHERE public_key = $1")
+        .bind(key)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    let again = router
+        .oneshot(get(format!("/broadcast/images/{key}")))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(again.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        body.len() > 1,
+        "картинка письма берётся из памяти, а не из базы"
+    );
     db.cleanup().await;
 }
 

@@ -3,6 +3,7 @@ mod auto_store;
 #[cfg(test)]
 mod auto_tests;
 mod engine;
+mod kept;
 mod letter;
 mod page;
 mod presets;
@@ -1307,11 +1308,18 @@ pub async fn resubscribe(
 pub async fn public_image(
     ctx: &ModuleContext,
     key: Uuid,
-) -> Result<Option<(String, Vec<u8>)>, BroadcastError> {
+) -> Result<Option<(String, axum::body::Bytes)>, BroadcastError> {
+    let now = std::time::Instant::now();
+    if let Some(kept) = kept::PUBLIC.get(key, now) {
+        return Ok(Some(kept));
+    }
     let mut conn = ctx.store.conn().await?;
-    Ok(store::image_by_key(&mut conn, key)
-        .await?
-        .map(|image| (image.content_type, image.bytes)))
+    let Some(image) = store::image_by_key(&mut conn, key).await? else {
+        return Ok(None);
+    };
+    let bytes = axum::body::Bytes::from(image.bytes);
+    kept::PUBLIC.put(key, &image.content_type, bytes.clone(), now);
+    Ok(Some((image.content_type, bytes)))
 }
 
 pub async fn cleanup(ctx: &ModuleContext) -> Result<u64, ModuleError> {
