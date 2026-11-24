@@ -320,6 +320,14 @@ async fn paypalych_счёт_постбэк_повтор_чужая_сумма_в
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(balance(&h, &token).await, 50_000);
+    Mock::given(method("GET"))
+        .and(path("/refund/status"))
+        .and(query_param("id", "R1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "id": "R1", "status": "SUCCESS", "amount": "200.00", "currency": "RUB"
+        })))
+        .mount(&api)
+        .await;
     let refund_sign = paypalych_signature(&["200.00", "RUB", "Bill1", "Pay1", "R1"], PALYCH_TOKEN);
     let refund = format!(
         "Id=R1&Amount=200.00&Currency=RUB&Status=SUCCESS&InvId={first}&BillId=Bill1&PaymentId=Pay1&SignatureValue={refund_sign}"

@@ -283,6 +283,30 @@ impl PayPalych {
         }
     }
 
+    async fn bill_ref(
+        &self,
+        config: &ProviderConfig,
+        bill: &str,
+        claimed: Option<&str>,
+    ) -> PaymentResult<PaymentRef> {
+        let found = self
+            .bill(config, bill)
+            .await?
+            .ok_or_else(|| util::bad("счёт из уведомления не найден в PayPalych"))?;
+        if text(&found, "id") != Some(bill) {
+            return Err(util::bad("PayPalych вернула другой счёт"));
+        }
+        let order = util::public_ref(text(&found, "order_id"));
+        if let (Some(order), Some(claimed)) = (&order, util::public_ref(claimed))
+            && *order != claimed
+        {
+            return Err(util::bad(
+                "номер заказа в уведомлении не совпал с заказом счёта PayPalych",
+            ));
+        }
+        Ok(order.unwrap_or_else(|| PaymentRef::ProviderTxid(bill.to_string())))
+    }
+
     async fn bill(&self, config: &ProviderConfig, id: &str) -> PaymentResult<Option<Json>> {
         let id = util::safe_id(id.trim())?;
         let (reply, parsed) = self
@@ -579,23 +603,18 @@ impl PaymentProvider for PayPalych {
                 let bill = util::safe_id(bill)?;
                 let currency = util::pay_currency(currency)?;
                 let refunded = Amount::new(util::minor(amount, currency)?, currency);
-                let status = get("Status").unwrap_or_default().to_ascii_uppercase();
-                let state = match status.as_str() {
-                    "SUCCESS" => ProviderStatus::PartiallyRefunded { refunded },
-                    "FAIL" => ProviderStatus::RefundDeclined,
-                    _ => ProviderStatus::Pending,
-                };
-                Ok(WebhookOutcome {
-                    event_key: format!("{REFUND_PREFIX}{id}"),
-                    payment: util::public_ref(get("InvId"))
-                        .or_else(|| Some(PaymentRef::ProviderTxid(bill.to_string()))),
-                    provider_txid: Some(bill.to_string()),
-                    status: state,
-                    amount: Some(refunded),
-                    saved_method: None,
-                    reply: WebhookReply::ok(),
-                    signal: None,
-                })
+                let mut outcome = self
+                    .fetch_refund(config, &format!("{REFUND_PREFIX}{id}"))
+                    .await?
+                    .ok_or_else(|| util::bad("номер возврата PayPalych не прочитан"))?;
+                if outcome.amount != Some(refunded) {
+                    return Err(util::bad(
+                        "сумма возврата в уведомлении не совпала с ответом PayPalych",
+                    ));
+                }
+                outcome.payment = Some(self.bill_ref(config, bill, get("InvId")).await?);
+                outcome.provider_txid = Some(bill.to_string());
+                Ok(outcome)
             }
             Some(_) => {
                 let (Some(bill), Some(payment), Some(id)) =
@@ -608,8 +627,7 @@ impl PaymentProvider for PayPalych {
                 }
                 let id = util::safe_id(id)?;
                 let bill = util::safe_id(bill)?;
-                let reference = util::public_ref(get("InvId"))
-                    .or_else(|| Some(PaymentRef::ProviderTxid(bill.to_string())));
+                let reference = Some(self.bill_ref(config, bill, get("InvId")).await?);
                 if get("Status").is_none_or(|s| !s.eq_ignore_ascii_case("SUCCESS")) {
                     return Ok(util::skipped(
                         format!(

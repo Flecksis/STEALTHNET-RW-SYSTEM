@@ -306,20 +306,35 @@ fn routed(kind: &str, body: String) -> WebhookRequest {
     request
 }
 
+async fn refund_status_api(status: &str, amount: &str) -> MockServer {
+    let server = api("SUCCESS", json!(1500), "RUB").await;
+    Mock::given(method("GET"))
+        .and(path("/refund/status"))
+        .and(query_param("id", "R77"))
+        .and(header("Authorization", format!("Bearer {TOKEN}").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "id": "R77", "status": status, "amount": amount, "currency": "RUB"
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
 #[tokio::test]
 async fn уведомления_о_возврате_и_чарджбэке() {
-    let server = MockServer::start().await;
     let order = PAYMENT.to_string();
+    let other = Uuid::from_u128(7).to_string();
     let refund_sign = signature(&["500.00", "RUB", BILL, "QSvv3R7123", "R77"], TOKEN);
-    let refund = |status: &str, sign: &str| {
+    let refund = |status: &str, inv: &str, sign: &str| {
         routed(
             "refund",
             format!(
-                "Id=R77&Amount=500.00&Currency=RUB&Status={status}&InvId={order}&BillId={BILL}&PaymentId=QSvv3R7123&SignatureValue={sign}"
+                "Id=R77&Amount=500.00&Currency=RUB&Status={status}&InvId={inv}&BillId={BILL}&PaymentId=QSvv3R7123&SignatureValue={sign}"
             ),
         )
     };
-    let done = parse(&server, &refund("SUCCESS", &refund_sign))
+    let server = refund_status_api("SUCCESS", "500.00").await;
+    let done = parse(&server, &refund("SUCCESS", &order, &refund_sign))
         .await
         .unwrap();
     assert_eq!(
@@ -331,38 +346,64 @@ async fn уведомления_о_возврате_и_чарджбэке() {
     assert_eq!(done.event_key, "refund:R77");
     assert_eq!(done.payment, Some(PaymentRef::PublicId(PAYMENT)));
     assert_eq!(done.provider_txid.as_deref(), Some(BILL));
+    assert!(matches!(
+        parse(&server, &refund("SUCCESS", &other, &refund_sign)).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let processing = refund_status_api("PROCESS", "500.00").await;
     assert_eq!(
-        parse(&server, &refund("FAIL", &refund_sign))
+        parse(&processing, &refund("SUCCESS", &order, &refund_sign))
+            .await
+            .unwrap()
+            .status,
+        ProviderStatus::Pending
+    );
+    let declined = refund_status_api("FAIL", "500.00").await;
+    assert_eq!(
+        parse(&declined, &refund("SUCCESS", &order, &refund_sign))
             .await
             .unwrap()
             .status,
         ProviderStatus::RefundDeclined
     );
+    let bigger = refund_status_api("SUCCESS", "1500.00").await;
+    assert!(matches!(
+        parse(&bigger, &refund("SUCCESS", &order, &refund_sign)).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let quiet = MockServer::start().await;
     assert_eq!(
-        parse(&server, &refund("SUCCESS", "00")).await,
+        parse(&quiet, &refund("SUCCESS", &order, "00")).await,
         Err(PaymentError::BadSignature)
     );
     let chargeback_sign = signature(&[BILL, "QSvv3R7123", "C5"], TOKEN);
-    let chargeback = |status: &str| {
+    let chargeback = |status: &str, inv: &str| {
         routed(
             "chargeback",
             format!(
-                "Id=C5&Status={status}&InvId={order}&BillId={BILL}&PaymentId=QSvv3R7123&SignatureValue={chargeback_sign}"
+                "Id=C5&Status={status}&InvId={inv}&BillId={BILL}&PaymentId=QSvv3R7123&SignatureValue={chargeback_sign}"
             ),
         )
     };
-    let taken = parse(&server, &chargeback("SUCCESS")).await.unwrap();
+    let taken = parse(&server, &chargeback("SUCCESS", &order))
+        .await
+        .unwrap();
     assert_eq!(taken.status, ProviderStatus::Refunded);
     assert_eq!(taken.event_key, "chargeback:C5");
+    assert_eq!(taken.payment, Some(PaymentRef::PublicId(PAYMENT)));
     assert_eq!(taken.notice().map(|n| n.kind), Some(NoticeKind::Chargeback));
-    let lost = parse(&server, &chargeback("FAIL")).await.unwrap();
+    assert!(matches!(
+        parse(&server, &chargeback("SUCCESS", &other)).await,
+        Err(PaymentError::BadPayload(_))
+    ));
+    let lost = parse(&server, &chargeback("FAIL", &order)).await.unwrap();
     assert_eq!(lost.status, ProviderStatus::Pending);
     assert_eq!(lost.notice(), None);
     assert!(matches!(
-        parse(&server, &routed("pay", "a=1".into())).await,
+        parse(&quiet, &routed("pay", "a=1".into())).await,
         Err(PaymentError::BadPayload(_))
     ));
-    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(quiet.received_requests().await.unwrap().is_empty());
 }
 
 fn created() -> ResponseTemplate {
