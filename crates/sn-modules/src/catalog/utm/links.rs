@@ -3,7 +3,7 @@ use crate::catalog::analytics::sources::{SourceStat, stats};
 use crate::catalog::analytics::{self, offset};
 use crate::catalog::installation_currency;
 use crate::catalog::start_param::{MAX_LEN, Utm};
-use crate::catalog::web::{Admin, WebError};
+use crate::catalog::web::{Admin, WebError, drop_fields, json_value};
 use crate::context::ModuleContext;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -269,17 +269,28 @@ pub async fn page(
     })
 }
 
+pub const MONEY_FIELDS: [&str; 2] = ["revenue", "revenue_all"];
+
 pub async fn links_route(
     State(ctx): State<ModuleContext>,
     admin: Admin,
     Query(q): Query<LinksQuery>,
-) -> Result<Json<LinksPage>, WebError> {
+) -> Result<Json<serde_json::Value>, WebError> {
     admin.require(Permission::Marketing)?;
     let now = {
         let mut conn = ctx.store.conn().await?;
         crate::catalog::db_now(&mut conn).await?
     };
-    Ok(Json(page(&ctx, &q, now).await?))
+    let mut value = json_value(&page(&ctx, &q, now).await?)?;
+    if !admin.sees_money() {
+        if let Some(links) = value.get_mut("links").and_then(|l| l.as_array_mut()) {
+            for link in links {
+                drop_fields(link.get_mut("stats"), &MONEY_FIELDS);
+            }
+        }
+        drop_fields(value.get_mut("stray"), &MONEY_FIELDS);
+    }
+    Ok(Json(value))
 }
 
 pub async fn create_route(

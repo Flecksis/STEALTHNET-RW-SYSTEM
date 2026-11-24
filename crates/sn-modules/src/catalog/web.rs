@@ -115,6 +115,36 @@ impl Admin {
             Err(WebError::forbidden())
         }
     }
+
+    pub fn sees_money(&self) -> bool {
+        self.0.can(Permission::Money)
+    }
+}
+
+pub fn json_value<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, WebError> {
+    serde_json::to_value(value).map_err(|err| {
+        tracing::error!(error = %err, "ответ модуля не собран");
+        WebError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "внутренняя ошибка",
+        )
+    })
+}
+
+pub fn drop_fields(value: Option<&mut serde_json::Value>, fields: &[&str]) {
+    let rows: Vec<&mut serde_json::Value> = match value {
+        Some(serde_json::Value::Array(items)) => items.iter_mut().collect(),
+        Some(item) => vec![item],
+        None => Vec::new(),
+    };
+    for row in rows {
+        if let Some(map) = row.as_object_mut() {
+            for field in fields {
+                map.remove(*field);
+            }
+        }
+    }
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for Admin {

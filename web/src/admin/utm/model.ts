@@ -11,8 +11,8 @@ export type Stat = {
   trials: number;
   connected: number;
   paid: number;
-  revenue: number;
-  revenue_all: number;
+  revenue?: number;
+  revenue_all?: number;
   kept_base: number;
   kept: number;
   clicks: number;

@@ -146,8 +146,12 @@ function chain(s: Stat): string {
 function Funnel({ s, trials, since, currency }: { s: Stat; trials: boolean; since: string | null; currency: Currency }) {
   const days = ageDays(since, Date.now());
   const figures: Array<[string, string]> = [
-    ['Выручка за период', money({ minor: s.revenue, currency })],
-    ['На платящего', s.paid ? money({ minor: Math.round(s.revenue_all / s.paid), currency }) : '—'],
+    ...(s.revenue === undefined || s.revenue_all === undefined
+      ? []
+      : ([
+          ['Выручка за период', money({ minor: s.revenue, currency })],
+          ['На платящего', s.paid ? money({ minor: Math.round(s.revenue_all / s.paid), currency }) : '—'],
+        ] as Array<[string, string]>)),
     ['Платят через месяц', percent(s.kept, s.kept_base)],
   ];
   return (
@@ -389,6 +393,7 @@ function csv(data: Data, currency: Currency) {
     return;
   }
   const money = (minor: number) => (currency === 'RUB' ? String(Math.round(minor / 100)) : (minor / 100).toFixed(2).replace('.', ','));
+  const sums = [...page.links.map((r) => r.stats), ...page.stray].some((s) => s.revenue !== undefined);
   const now = Date.now();
   const share = (part: number) => (s: Stat) => (s.registrations ? percentText((part / s.registrations) * 100) : '');
   const row = (title: string, s: Stat, since: string | null) => {
@@ -406,8 +411,7 @@ function csv(data: Data, currency: Currency) {
       share(s.connected)(s),
       s.paid,
       share(s.paid)(s),
-      money(s.revenue),
-      money(s.revenue_all),
+      ...(sums ? [money(s.revenue ?? 0), money(s.revenue_all ?? 0)] : []),
       days ?? '',
       early(days) ? 'рано судить' : '',
     ];
@@ -426,8 +430,7 @@ function csv(data: Data, currency: Currency) {
       'Подключились, доля',
       'Оплатили',
       'Оплатили, доля',
-      'Выручка за период',
-      'За всё время',
+      ...(sums ? ['Выручка за период', 'За всё время'] : []),
       'Дней',
       'Оценка',
     ],

@@ -4,7 +4,7 @@ pub mod visit;
 
 use crate::catalog::installation_currency;
 use crate::catalog::start_param::Utm;
-use crate::catalog::web::{Admin, WebError};
+use crate::catalog::web::{Admin, WebError, drop_fields, json_value};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use crate::module::Module;
@@ -199,24 +199,29 @@ struct ReportQuery {
     group: Option<GroupBy>,
 }
 
+pub const MONEY_FIELDS: [&str; 2] = ["revenue", "stars"];
+
 async fn report_route(
     State(ctx): State<ModuleContext>,
     admin: Admin,
     Query(query): Query<ReportQuery>,
-) -> Result<Json<Vec<UtmRow>>, WebError> {
+) -> Result<Json<serde_json::Value>, WebError> {
     admin.require(Permission::Marketing)?;
     let mut conn = ctx.store.conn().await?;
     let currency = installation_currency(&mut conn).await?;
-    Ok(Json(
-        report(
-            &mut conn,
-            currency,
-            query.from,
-            query.to,
-            query.group.unwrap_or(GroupBy::Campaign),
-        )
-        .await?,
-    ))
+    let rows = report(
+        &mut conn,
+        currency,
+        query.from,
+        query.to,
+        query.group.unwrap_or(GroupBy::Campaign),
+    )
+    .await?;
+    let mut value = json_value(&rows)?;
+    if !admin.sees_money() {
+        drop_fields(Some(&mut value), &MONEY_FIELDS);
+    }
+    Ok(Json(value))
 }
 
 async fn client_route(
@@ -402,6 +407,143 @@ mod tests {
             .unwrap();
         assert_eq!(by_source[0].campaign, None);
         drop(conn);
+        db.cleanup().await;
+    }
+
+    fn marketer(
+        admin_id: sn_domain::ids::AdminId,
+        api_key: Option<i64>,
+        extra: &[Permission],
+    ) -> sn_domain::access::AdminPrincipal {
+        let mut permissions = vec![Permission::Marketing];
+        permissions.extend_from_slice(extra);
+        sn_domain::access::AdminPrincipal {
+            admin_id,
+            role: sn_domain::access::AdminRole::Support,
+            permissions,
+            session_id: 1,
+            api_key,
+        }
+    }
+
+    async fn call(
+        router: &Router,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> serde_json::Value {
+        use tower::ServiceExt;
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn get(
+        path: &str,
+        principal: &sn_domain::access::AdminPrincipal,
+    ) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::get(path)
+            .extension(principal.clone())
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn выручка_по_меткам_видна_только_с_правом_деньги() {
+        let Some(db) = test_store().await else {
+            return;
+        };
+        let core = TestCore::new(&db.store);
+        let ctx = context(&db.store, &core, Currency::Usd);
+        let tiktok = client(&db.store).await;
+        UtmModule
+            .on_event(
+                &ctx,
+                &DomainEvent::ClientRegistered {
+                    client_id: tiktok,
+                    source: RegistrationSource::Bot,
+                    start_param: Some("s_tiktok__k_winter".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let intent = PurchaseIntent::Subscription {
+            tariff_id: TariffId(1),
+            period_id: PeriodId(1),
+            extra_devices: 0,
+            target: None,
+        };
+        let bought = order(&db.store, tiktok, OrderKind::New, intent, empty_quote()).await;
+        paid_payment(
+            &db.store,
+            bought.id,
+            tiktok,
+            "cryptopay",
+            Amount::new(699, PayCurrency::Usd),
+        )
+        .await;
+        let registry = std::sync::Arc::new(
+            crate::registry::ModuleRegistry::new(vec![std::sync::Arc::new(UtmModule)]).unwrap(),
+        );
+        let router = registry.admin_router(ctx.clone());
+        let admin = {
+            let mut conn = db.store.conn().await.unwrap();
+            conn.admins()
+                .create(&sn_store::NewAdmin {
+                    email: "marketing@example.com".into(),
+                    password_hash: "x".into(),
+                    role: sn_domain::access::AdminRole::Support,
+                    must_change_password: false,
+                })
+                .await
+                .unwrap()
+                .id
+        };
+        call(
+            &router,
+            axum::http::Request::post("/utm/links")
+                .header("content-type", "application/json")
+                .extension(marketer(admin, None, &[]))
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "title": "Зима", "source": "tiktok", "campaign": "winter" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        for principal in [marketer(admin, None, &[]), marketer(admin, Some(7), &[])] {
+            let rows = call(&router, get("/utm/report", &principal)).await;
+            assert_eq!(rows[0]["clients"], 1, "{rows}");
+            assert_eq!(rows[0]["paying_clients"], 1, "{rows}");
+            assert!(rows[0].get("revenue").is_none(), "{rows}");
+            assert!(rows[0].get("stars").is_none(), "{rows}");
+            let page = call(&router, get("/utm/links", &principal)).await;
+            let stats = &page["links"][0]["stats"];
+            assert!(stats.get("paid").is_some(), "{page}");
+            assert!(stats.get("revenue").is_none(), "{page}");
+            assert!(stats.get("revenue_all").is_none(), "{page}");
+        }
+        let rows = call(
+            &router,
+            get("/utm/report", &marketer(admin, None, &[Permission::Money])),
+        )
+        .await;
+        assert_eq!(rows[0]["revenue"]["minor"], 699, "{rows}");
+        assert_eq!(rows[0]["stars"], 0, "{rows}");
+        let page = call(
+            &router,
+            get(
+                "/utm/links",
+                &marketer(admin, Some(7), &[Permission::Money]),
+            ),
+        )
+        .await;
+        assert!(page["links"][0]["stats"].get("revenue").is_some(), "{page}");
+        assert!(
+            page["links"][0]["stats"].get("revenue_all").is_some(),
+            "{page}"
+        );
         db.cleanup().await;
     }
 }

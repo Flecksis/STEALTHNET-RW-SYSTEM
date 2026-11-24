@@ -19,7 +19,7 @@ export type AdminGift = {
   created_at: string;
   giver: Person | null;
   recipient: Person | null;
-  paid: Amount | null;
+  paid?: Amount | null;
   refunded: boolean;
 };
 

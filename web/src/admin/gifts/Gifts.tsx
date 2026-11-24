@@ -224,7 +224,7 @@ function GiftsDesk() {
               <span role="columnheader">Подарил</span>
               <span role="columnheader">Активировал</span>
               <span role="columnheader" className="pr-right">
-                Оплата
+                {items.some((g) => g.paid !== undefined) ? 'Оплата' : ''}
               </span>
               <span role="columnheader">Состояние</span>
             </div>
@@ -267,8 +267,12 @@ function GiftRow({ g }: { g: AdminGift }) {
         <Person id={g.recipient?.client_id ?? null} text={who(g.recipient)} />
       </span>
       <span role="cell" className="pr-cell pr-right">
-        <span className="num pr-strong">{paid || '—'}</span>
-        {g.refunded ? <span className="pr-sub">возвращено</span> : null}
+        {g.paid === undefined ? null : (
+          <>
+            <span className="num pr-strong">{paid || '—'}</span>
+            {g.refunded ? <span className="pr-sub">возвращено</span> : null}
+          </>
+        )}
       </span>
       <span role="cell" className={`pr-cell pr-state ${state.tone}`}>
         {state.text}
@@ -395,13 +399,15 @@ function GiftsPhone() {
                           <Person id={g.recipient?.client_id ?? null} text={who(g.recipient)} />
                         </dd>
                       </div>
-                      <div>
-                        <dt>Оплата</dt>
-                        <dd>
-                          {paidText(g) || '—'}
-                          {g.refunded ? ', возвращено' : ''}
-                        </dd>
-                      </div>
+                      {g.paid === undefined ? null : (
+                        <div>
+                          <dt>Оплата</dt>
+                          <dd>
+                            {paidText(g) || '—'}
+                            {g.refunded ? ', возвращено' : ''}
+                          </dd>
+                        </div>
+                      )}
                       {state.note ? (
                         <div>
                           <dt>{g.status === 'active' ? 'Срок кода' : 'Когда'}</dt>

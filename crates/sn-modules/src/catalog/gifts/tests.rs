@@ -682,3 +682,74 @@ async fn админка_видит_подарки_с_поиском_и_сост�
     );
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn суммы_подарков_видны_только_с_правом_деньги() {
+    use crate::catalog::testing::paid_payment;
+    use sn_domain::access::{AdminPrincipal, AdminRole, Permission};
+    use sn_domain::money::{Amount, PayCurrency};
+    use tower::ServiceExt;
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let giver = telegram_client(&db.store, 9_101, "maria_gift").await;
+    let standard = tariff(&db.store, "Стандарт").await;
+    let (paid, gift) = bought(&db.store, &core, giver, &standard, 30).await;
+    paid_payment(
+        &db.store,
+        paid.id,
+        giver,
+        "cryptopay",
+        Amount::new(299, PayCurrency::Usd),
+    )
+    .await;
+    let registry =
+        std::sync::Arc::new(crate::registry::ModuleRegistry::new(crate::catalog::all()).unwrap());
+    registry.apply_rows(&[sn_store::ModuleStateRow {
+        module: ModuleId::Gifts.as_str().into(),
+        enabled: true,
+        config: serde_json::json!({}),
+        updated_at: Utc::now(),
+    }]);
+    let router = registry.admin_router(ctx.clone());
+    let list = |extra: &[Permission], api_key: Option<i64>| {
+        let mut permissions = vec![Permission::Marketing];
+        permissions.extend_from_slice(extra);
+        let principal = AdminPrincipal {
+            admin_id: sn_domain::ids::AdminId(1),
+            role: AdminRole::Support,
+            permissions,
+            session_id: 1,
+            api_key,
+        };
+        let router = router.clone();
+        async move {
+            let response = router
+                .oneshot(
+                    axum::http::Request::get("/gifts/gifts")
+                        .extension(principal)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        }
+    };
+    for api_key in [None, Some(7)] {
+        let page = list(&[], api_key).await;
+        let item = &page["items"][0];
+        assert_eq!(item["code"], gift.code.as_str(), "{page}");
+        assert!(item.get("paid").is_none(), "{page}");
+        assert!(item.get("refunded").is_some(), "{page}");
+    }
+    let page = list(&[Permission::Money], Some(7)).await;
+    assert_eq!(page["items"][0]["paid"]["minor"], 299, "{page}");
+    db.cleanup().await;
+}

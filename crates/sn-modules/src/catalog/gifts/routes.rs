@@ -3,7 +3,7 @@ use super::{
     SettingsUpdate, SettingsView,
 };
 use crate::catalog::installation_currency;
-use crate::catalog::web::{Admin, Customer, WebError};
+use crate::catalog::web::{Admin, Customer, WebError, drop_fields, json_value};
 use crate::context::{GrantTarget, ModuleContext};
 use axum::extract::{Query, State};
 use axum::routing::{get, post};
@@ -57,7 +57,7 @@ async fn list(
     State(ctx): State<ModuleContext>,
     admin: Admin,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Page<AdminGift>>, WebError> {
+) -> Result<Json<serde_json::Value>, WebError> {
     admin.require(Permission::Marketing)?;
     let filter = ListFilter::parse(query.status.as_deref()).ok_or_else(|| {
         WebError::rejected(
@@ -65,15 +65,18 @@ async fn list(
             "фильтр: all, active, redeemed, expired или canceled",
         )
     })?;
-    Ok(Json(
-        super::admin_list(
-            &ctx,
-            filter,
-            query.q.as_deref(),
-            PageRequest::new(query.limit, query.after),
-        )
-        .await?,
-    ))
+    let page: Page<AdminGift> = super::admin_list(
+        &ctx,
+        filter,
+        query.q.as_deref(),
+        PageRequest::new(query.limit, query.after),
+    )
+    .await?;
+    let mut value = json_value(&page)?;
+    if !admin.sees_money() {
+        drop_fields(value.get_mut("items"), &["paid"]);
+    }
+    Ok(Json(value))
 }
 
 async fn summary(State(ctx): State<ModuleContext>, admin: Admin) -> Result<Json<Counts>, WebError> {
