@@ -1,6 +1,6 @@
 use super::captcha::{self, Captcha, Expect, Outcome, Widget};
 use super::store::{Action, NewEvent};
-use crate::context::ModuleContext;
+use crate::context::{ModuleContext, RateLimit};
 use crate::error::ModuleError;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -15,6 +15,11 @@ pub const PASS_MINUTES: i64 = 10;
 pub const WORK_BITS: u8 = 18;
 pub const MAX_FAILURES: i32 = 5;
 pub const MAX_PROOF: usize = 20;
+pub const ANSWERS: RateLimit = RateLimit {
+    scope: "captcha_client",
+    limit: 30,
+    window_seconds: 600,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -84,6 +89,7 @@ pub enum Confirmation {
     Expired,
     Failed,
     Unavailable,
+    TooMany,
 }
 
 fn digest(token: &str) -> Vec<u8> {
@@ -402,6 +408,13 @@ pub async fn confirm(
             let Some(given) = answer.captcha.map(str::trim).filter(|t| !t.is_empty()) else {
                 return Ok(Confirmation::Failed);
             };
+            if !ctx
+                .core
+                .within_rate_limit(ANSWERS, &client_id.0.to_string())
+                .await?
+            {
+                return Ok(Confirmation::TooMany);
+            }
             let bound = cdata(token);
             let outcome = captcha::verify(
                 &ctx.store,

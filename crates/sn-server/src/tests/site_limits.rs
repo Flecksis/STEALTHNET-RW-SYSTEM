@@ -125,3 +125,59 @@ async fn админка_предупреждает_когда_панель_ви�
     assert_eq!(view["site"]["hidden"]["address"], "162.158.40.1");
     assert_eq!(view["site"]["day"]["created"], 3);
 }
+
+#[tokio::test]
+async fn пороги_с_адреса_сохраняются_в_настройках_и_действуют_на_странице_проверки() {
+    let Some(h) = panel().await else { return };
+    let owner = h.owner().await;
+    super::captcha::antibot_on(&h, json!({})).await;
+    let view = summary(&h, &owner, "198.51.100.20").await;
+    assert_eq!(view["settings"]["email_ip"], 5);
+    assert_eq!(view["settings"]["telegram_ip"], 10);
+    assert_eq!(view["settings"]["verify_ip"], 60);
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/modules/antibot/config",
+            &owner,
+            json!({ "config": { "verify_ip": 0 }, "clear": [] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("от 1 до 1000"),
+        "{body}"
+    );
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/modules/antibot/config",
+            &owner,
+            json!({ "config": { "email_ip": 7, "verify_ip": 2 }, "clear": [] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view = summary(&h, &owner, "198.51.100.20").await;
+    assert_eq!(view["settings"]["email_ip"], 7);
+    assert_eq!(view["settings"]["telegram_ip"], 10);
+    assert_eq!(view["settings"]["verify_ip"], 2);
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let (_, _, body) = h
+            .send(
+                Method::POST,
+                "/api/public/verify",
+                None,
+                Some(json!({ "token": "0123456789abcdef0123456789abcdef" })),
+            )
+            .await;
+        seen.push(body["error"]["code"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        seen,
+        ["antibot.expired", "antibot.expired", "auth.rate_limited"]
+    );
+}

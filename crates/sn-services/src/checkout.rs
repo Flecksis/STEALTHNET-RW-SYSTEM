@@ -787,6 +787,10 @@ pub fn antibot_refusal(outcome: antibot::Confirmation) -> ServiceError {
             antibot::UNAVAILABLE,
             "Не удалось проверить, что вы не робот: сервис проверки не ответил. Попробуйте ещё раз через минуту",
         ),
+        antibot::Confirmation::TooMany => crate::limits::rate_limited(
+            "Слишком много попыток.",
+            Duration::seconds(antibot::checks::ANSWERS.window_seconds),
+        ),
         antibot::Confirmation::Expired | antibot::Confirmation::Confirmed => {
             ServiceError::rejected(
                 antibot::EXPIRED,

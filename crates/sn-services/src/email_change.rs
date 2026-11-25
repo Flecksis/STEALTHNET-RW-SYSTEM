@@ -1,7 +1,7 @@
 use crate::Actor;
 use crate::auth::{Auth, RequestMeta, check_password, token_hash};
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::rules;
+use crate::limits::{RateLimits, RateRule, rules};
 use crate::login::{
     EMAIL_CODE_DIGITS, EMAIL_CODE_MAX_ATTEMPTS, EMAIL_CODE_TTL_SECONDS, code_invalid, same,
 };
@@ -149,6 +149,13 @@ fn source(principal: &ClientPrincipal, meta: &RequestMeta) -> String {
     }
 }
 
+fn start_rule(limits: &RateLimits<'_>, principal: &ClientPrincipal) -> RateRule {
+    match principal.channel {
+        ClientChannel::Bot => rules::EMAIL_START_IP,
+        ClientChannel::Cabinet | ClientChannel::Miniapp => limits.email_start(),
+    }
+}
+
 async fn email_owner(db: &mut impl Db, email: &str) -> ServiceResult<Option<ClientId>> {
     let owner: Option<i64> = sqlx::query_scalar(
         "SELECT client_id FROM client_identities WHERE kind = 'email' AND value = $1",
@@ -261,7 +268,7 @@ impl<'a> Auth<'a> {
             .hit(rules::EMAIL_CHANGE_CLIENT, &client_id.to_string())
             .await?;
         limits
-            .hit(rules::EMAIL_START_IP, &source(principal, meta))
+            .hit(start_rule(&limits, principal), &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &current).await?;
         limits
@@ -441,7 +448,7 @@ impl<'a> Auth<'a> {
             .hit(rules::EMAIL_CHANGE_CLIENT, &client_id.to_string())
             .await?;
         limits
-            .hit(rules::EMAIL_START_IP, &source(principal, meta))
+            .hit(start_rule(&limits, principal), &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         let confirms = {
@@ -636,7 +643,7 @@ impl<'a> Auth<'a> {
             .hit(rules::EMAIL_CHANGE_CLIENT, &client_id.to_string())
             .await?;
         limits
-            .hit(rules::EMAIL_START_IP, &source(principal, meta))
+            .hit(start_rule(&limits, principal), &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         {

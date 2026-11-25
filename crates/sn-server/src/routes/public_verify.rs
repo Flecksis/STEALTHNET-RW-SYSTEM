@@ -11,7 +11,6 @@ use sn_domain::settings::keys;
 use sn_modules::catalog::antibot;
 use sn_modules::catalog::antibot::captcha::Widget;
 use sn_services::ServiceError;
-use sn_services::limits::rules;
 use sn_store::Db;
 
 pub fn routes() -> Router<AppState> {
@@ -58,10 +57,9 @@ async fn opened(
     meta: &sn_services::auth::RequestMeta,
     token: &str,
 ) -> ApiResult<antibot::checks::PageCheck> {
-    state
-        .services
-        .limits()
-        .hit_ip(rules::VERIFY_PAGE_IP, meta.ip.as_deref())
+    let limits = state.services.limits();
+    limits
+        .hit_ip(limits.verify_page(), meta.ip.as_deref())
         .await?;
     let ctx = state.services.module_context();
     antibot::checks::page_check(&ctx, token)

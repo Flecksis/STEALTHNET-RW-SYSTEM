@@ -12,6 +12,31 @@ export const SITE_NUMBERS: Array<[keyof SiteLimits, string, string]> = [
   ['site_minute', 'Новых аккаунтов в минуту на всю панель', 'Сверх предела — капча, если она настроена, иначе отказ до конца минуты. 0 — без предела.'],
 ];
 
+export type Paces = { email_ip: number; telegram_ip: number; verify_ip: number };
+
+export const PACE_DEFAULTS: Paces = { email_ip: 5, telegram_ip: 10, verify_ip: 60 };
+
+export const PACE_MAX = 1000;
+
+export const PACE_NUMBERS: Array<[keyof Paces, string, string]> = [
+  ['email_ip', 'Обращений по почте', 'Регистрация, код для входа, сброс и смена почты. Обычно 5. На сеть IPv6 /48 — втрое больше, но не меньше 15.'],
+  ['telegram_ip', 'Входов через Telegram', 'Кнопка «Войти через Telegram» на сайте. Обычно 10.'],
+  ['verify_ip', 'Открытий страницы проверки', 'Страница с капчей перед пробным периодом. Обычно 60.'],
+];
+
+export function paceError(label: string, raw: string): string | null {
+  const n = Number(raw);
+  return /^\d{1,4}$/.test(raw) && n >= 1 && n <= PACE_MAX ? null : `${label}: целое число от 1 до ${PACE_MAX}`;
+}
+
+export function pacesOf(s: Partial<Paces>): Paces {
+  return {
+    email_ip: s.email_ip ?? PACE_DEFAULTS.email_ip,
+    telegram_ip: s.telegram_ip ?? PACE_DEFAULTS.telegram_ip,
+    verify_ip: s.verify_ip ?? PACE_DEFAULTS.verify_ip,
+  };
+}
+
 function times(n: number): string {
   const tens = n % 100;
   const ones = n % 10;

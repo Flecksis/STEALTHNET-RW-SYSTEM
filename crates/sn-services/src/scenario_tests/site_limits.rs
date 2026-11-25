@@ -11,7 +11,7 @@ use std::time::Duration as Pause;
 
 const PASSWORD: &str = "длинный пароль 1";
 
-async fn site(login: &str, confirm: bool) -> Option<(Env, AdminId, Letters)> {
+pub(super) async fn site(login: &str, confirm: bool) -> Option<(Env, AdminId, Letters)> {
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(MailModule), Arc::new(AntibotModule)];
     let env = env_with(ModuleRegistry::new(modules).unwrap()).await?;
     let admin = owner(&env.services).await;
@@ -42,7 +42,7 @@ async fn site(login: &str, confirm: bool) -> Option<(Env, AdminId, Letters)> {
     Some((env, admin, letters))
 }
 
-async fn limits(services: &Services, config: serde_json::Value) {
+pub(super) async fn limits(services: &Services, config: serde_json::Value) {
     services
         .modules()
         .set_config(
@@ -118,7 +118,11 @@ async fn day(services: &Services) -> signups::Day {
     signups::day(&mut conn).await.unwrap()
 }
 
-async fn register(services: &Services, email: &str, ip: &str) -> ServiceResult<CabinetLogin> {
+pub(super) async fn register(
+    services: &Services,
+    email: &str,
+    ip: &str,
+) -> ServiceResult<CabinetLogin> {
     register_with(services, email, ip, None).await
 }
 

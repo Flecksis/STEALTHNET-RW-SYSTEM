@@ -690,6 +690,85 @@ async fn капча_перед_пробником_проверяется_на_с
 }
 
 #[tokio::test]
+async fn клиент_сдаёт_не_больше_тридцати_ответов_капчи_за_десять_минут() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let stub = siteverify(services).await;
+    captcha_on(services, "turnstile", "all").await;
+    let checkout = services.checkout();
+    let greedy = fresh(services, 1_020_000_000, Some("greedy_user")).await;
+    let calm = fresh(services, 1_045_000_000, Some("calm_user")).await;
+    assert_eq!(
+        (checks::ANSWERS.limit, checks::ANSWERS.window_seconds),
+        (30, 600)
+    );
+    let mut challenge = checkout
+        .trial_challenge(greedy, Surface::Web, None)
+        .await
+        .unwrap();
+    let mut given = 0;
+    while given < checks::ANSWERS.limit {
+        let outcome = trial_code(
+            services,
+            greedy,
+            &challenge.token,
+            captcha(&format!("bad-{given}")),
+        )
+        .await;
+        if outcome == antibot::EXPIRED {
+            challenge = checkout
+                .trial_challenge(greedy, Surface::Web, None)
+                .await
+                .unwrap();
+            continue;
+        }
+        assert_eq!(outcome, antibot::FAILED);
+        given += 1;
+    }
+    let last = checkout
+        .trial_challenge(greedy, Surface::Web, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        trial_code(services, greedy, &last.token, Answer::web(None, None, IP)).await,
+        antibot::FAILED
+    );
+    let asked = stub.calls();
+    assert_eq!(asked, 30);
+    let good = format!("ok:trial:{}", widget(&last).cdata.unwrap());
+    assert_eq!(
+        trial_code(services, greedy, &last.token, captcha(&good)).await,
+        crate::limits::RATE_LIMITED
+    );
+    assert_eq!(stub.calls(), asked);
+    let theirs = checkout
+        .trial_challenge(calm, Surface::Web, None)
+        .await
+        .unwrap();
+    let theirs_good = format!("ok:trial:{}", widget(&theirs).cdata.unwrap());
+    checkout
+        .confirm_trial(calm, &theirs.token, captcha(&theirs_good), None)
+        .await
+        .unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE auth_rate_limits SET window_start = window_start - interval '10 minutes'",
+        )
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    checkout
+        .confirm_trial(greedy, &last.token, captcha(&good), None)
+        .await
+        .unwrap();
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn ответ_turnstile_без_привязки_к_действию_и_клиенту_не_принимается() {
     let Some(kit) = antibot_kit().await else {
         return;

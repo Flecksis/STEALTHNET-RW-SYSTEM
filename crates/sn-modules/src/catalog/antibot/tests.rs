@@ -1210,6 +1210,48 @@ fn пределы_сайта_по_умолчанию_выключены_и_пр�
 }
 
 #[test]
+fn пороги_с_адреса_по_умолчанию_прежние_и_не_бывают_нулевыми() {
+    let parse =
+        |config: serde_json::Value| AntibotSettings::parse(&ModuleConfig::from_value(&config));
+    let defaults = parse(serde_json::json!({})).unwrap();
+    assert_eq!(
+        (defaults.email_ip, defaults.telegram_ip, defaults.verify_ip),
+        (5, 10, 60)
+    );
+    assert_eq!(Paces::of(&defaults), Paces::default());
+    let set = parse(serde_json::json!({
+        "email_ip": "1", "telegram_ip": 25, "verify_ip": 1000
+    }))
+    .unwrap();
+    assert_eq!(
+        (set.email_ip, set.telegram_ip, set.verify_ip),
+        (1, 25, 1000)
+    );
+    let blank = parse(serde_json::json!({
+        "email_ip": " ", "telegram_ip": null, "verify_ip": ""
+    }))
+    .unwrap();
+    assert_eq!(Paces::of(&blank), Paces::default());
+    for field in ["email_ip", "telegram_ip", "verify_ip"] {
+        for bad in [
+            serde_json::json!(0),
+            serde_json::json!(1001),
+            serde_json::json!(-5),
+            serde_json::json!("пять"),
+        ] {
+            let error = parse(serde_json::json!({ field: bad })).unwrap_err();
+            assert!(
+                error.starts_with(field) && error.ends_with("от 1 до 1000"),
+                "{error}"
+            );
+        }
+        let schema = AntibotModule.settings_schema();
+        let found = schema.iter().find(|f| f.key == field).unwrap();
+        assert!(found.label.ends_with("за 10 минут"), "{}", found.label);
+    }
+}
+
+#[test]
 fn адрес_регистрации_разбирается_на_адрес_и_сеть() {
     use signups::{Hidden, Origin, cloudflare};
     for (ip, edge) in [

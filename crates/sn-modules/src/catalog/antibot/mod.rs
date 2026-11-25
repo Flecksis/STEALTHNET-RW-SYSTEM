@@ -9,7 +9,7 @@ mod tests;
 
 use crate::catalog::config_flag;
 use crate::catalog::web::{address_network, is_internal};
-use crate::context::ModuleContext;
+use crate::context::{CoreApi, ModuleContext};
 use crate::error::ModuleError;
 use crate::module::{Module, ModuleConfig, ScheduledTask};
 use async_trait::async_trait;
@@ -42,6 +42,10 @@ pub const TRIAL: &str = "trial";
 pub const SIGNUP: &str = "signup";
 pub const LOGIN: &str = "login";
 pub const CLEARED_AUDIT: &str = "client.antibot_cleared";
+pub const EMAIL_IP: u32 = 5;
+pub const TELEGRAM_IP: u32 = 10;
+pub const VERIFY_IP: u32 = 60;
+pub const MAX_IP: u32 = 1000;
 const SWEEP_TASK: &str = "antibot.sweep";
 const MODE_OPTIONS: &[&str] = &["mark", "confirm", "block"];
 
@@ -92,6 +96,9 @@ pub struct AntibotSettings {
     pub site_address_day: u32,
     pub site_network_day: u32,
     pub site_minute: u32,
+    pub email_ip: u32,
+    pub telegram_ip: u32,
+    pub verify_ip: u32,
 }
 
 impl Default for AntibotSettings {
@@ -114,18 +121,68 @@ impl Default for AntibotSettings {
             site_address_day: 0,
             site_network_day: 0,
             site_minute: 0,
+            email_ip: EMAIL_IP,
+            telegram_ip: TELEGRAM_IP,
+            verify_ip: VERIFY_IP,
         }
     }
 }
 
-fn whole(config: &ModuleConfig, key: &str, default: u32, max: u32) -> Result<u32, String> {
+fn within(
+    config: &ModuleConfig,
+    key: &str,
+    default: u32,
+    min: u32,
+    max: u32,
+) -> Result<u32, String> {
     match config.get(key) {
         None | Some(serde_json::Value::Null) => Ok(default),
         Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(default),
         Some(_) => crate::catalog::config_number(config, key)
             .and_then(|n| u32::try_from(n).ok())
-            .filter(|n| *n <= max)
-            .ok_or_else(|| format!("{key}: целое число от 0 до {max}")),
+            .filter(|n| (min..=max).contains(n))
+            .ok_or_else(|| format!("{key}: целое число от {min} до {max}")),
+    }
+}
+
+fn whole(config: &ModuleConfig, key: &str, default: u32, max: u32) -> Result<u32, String> {
+    within(config, key, default, 0, max)
+}
+
+fn pace(config: &ModuleConfig, key: &str, default: u32) -> Result<u32, String> {
+    within(config, key, default, 1, MAX_IP)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Paces {
+    pub email: u32,
+    pub telegram: u32,
+    pub verify: u32,
+}
+
+impl Default for Paces {
+    fn default() -> Self {
+        Paces::of(&AntibotSettings::default())
+    }
+}
+
+impl Paces {
+    pub const fn of(settings: &AntibotSettings) -> Self {
+        Paces {
+            email: settings.email_ip,
+            telegram: settings.telegram_ip,
+            verify: settings.verify_ip,
+        }
+    }
+}
+
+pub fn paces(core: &dyn CoreApi) -> Paces {
+    if core.module_enabled(ModuleId::Antibot) {
+        Paces::of(&AntibotSettings::lenient(
+            &core.module_config(ModuleId::Antibot),
+        ))
+    } else {
+        Paces::default()
     }
 }
 
@@ -187,6 +244,9 @@ impl AntibotSettings {
                 defaults.site_minute,
                 signups::MAX_LIMIT,
             )?,
+            email_ip: pace(config, "email_ip", defaults.email_ip)?,
+            telegram_ip: pace(config, "telegram_ip", defaults.telegram_ip)?,
+            verify_ip: pace(config, "verify_ip", defaults.verify_ip)?,
         })
     }
 
@@ -1307,6 +1367,24 @@ impl Module for AntibotModule {
                 "Сверх предела — капча, если она настроена, иначе отказ до конца минуты; 0 — без предела",
             )
             .with_default("0"),
+            SettingField::number(
+                "email_ip",
+                "Обращений по почте с одного адреса за 10 минут",
+                "Регистрация, код для входа, сброс и смена почты; от 1 до 1000",
+            )
+            .with_default("5"),
+            SettingField::number(
+                "telegram_ip",
+                "Входов через Telegram с одного адреса за 10 минут",
+                "Кнопка входа через Telegram на сайте; от 1 до 1000",
+            )
+            .with_default("10"),
+            SettingField::number(
+                "verify_ip",
+                "Открытий страницы проверки с одного адреса за 10 минут",
+                "Страница с капчей перед пробным периодом; от 1 до 1000",
+            )
+            .with_default("60"),
             SettingField::text(
                 "extra_domains",
                 "Свои одноразовые почтовые домены",

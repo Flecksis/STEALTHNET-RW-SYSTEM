@@ -309,9 +309,9 @@ impl<'a> Auth<'a> {
         referral: Option<&str>,
     ) -> ServiceResult<TelegramLoginStart> {
         self.site_open()?;
-        self.services
-            .limits()
-            .hit_ip(rules::TELEGRAM_START_IP, meta.ip.as_deref())
+        let limits = self.services.limits();
+        limits
+            .hit_ip(limits.telegram_start(), meta.ip.as_deref())
             .await?;
         let bot = self.bot_username().await?;
         let code = random_hex(16);
@@ -534,11 +534,11 @@ impl<'a> Auth<'a> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
-            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .hit_ip(limits.email_start(), meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         limits
-            .hit_wide(rules::EMAIL_START_WIDE, meta.ip.as_deref())
+            .hit_wide(limits.email_start_wide(), meta.ip.as_deref())
             .await?;
         let mail = self.services.mail();
         if !mail.code_login() {
@@ -608,10 +608,8 @@ impl<'a> Auth<'a> {
         if antibot::signup_captcha(&ctx).is_none() {
             return Ok(());
         }
-        self.services
-            .limits()
-            .hit_ip(rules::CAPTCHA_IP, meta.ip.as_deref())
-            .await?;
+        let limits = self.services.limits();
+        limits.hit_ip(limits.captcha(), meta.ip.as_deref()).await?;
         match antibot::check_signup(&ctx, action, token, meta.ip.as_deref()).await? {
             antibot::SignupCheck::Off | antibot::SignupCheck::Passed => Ok(()),
             check => Err(crate::site_signup::captcha_error(check)),
@@ -629,9 +627,12 @@ impl<'a> Auth<'a> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
-            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .hit_ip(limits.email_start(), meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        limits
+            .hit_wide(limits.email_start_wide(), meta.ip.as_deref())
+            .await?;
         let mut human = site_signup::asked_before(self.services);
         let early = {
             let mut conn = self.services.store().conn().await?;
@@ -1009,11 +1010,11 @@ impl<'a> Auth<'a> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
-            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .hit_ip(limits.email_start(), meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         limits
-            .hit_wide(rules::EMAIL_START_WIDE, meta.ip.as_deref())
+            .hit_wide(limits.email_start_wide(), meta.ip.as_deref())
             .await?;
         limits
             .letters_sent(RESET_LETTERS, mail.codes_per_hour())

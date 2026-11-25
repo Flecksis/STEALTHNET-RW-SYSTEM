@@ -194,11 +194,11 @@ impl Auth<'_> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
-            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .hit_ip(limits.email_start(), meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         limits
-            .hit_wide(rules::EMAIL_START_WIDE, meta.ip.as_deref())
+            .hit_wide(limits.email_start_wide(), meta.ip.as_deref())
             .await?;
         limits
             .letters_sent(LOGIN_LETTERS, self.services.mail().codes_per_hour())
@@ -259,7 +259,7 @@ impl Auth<'_> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
         limits
-            .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
+            .hit_ip(limits.email_start(), meta.ip.as_deref())
             .await?;
         let digest = token_hash(token);
         let now = self.services.now();
@@ -279,7 +279,7 @@ impl Auth<'_> {
         }
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
         limits
-            .hit_wide(rules::EMAIL_START_WIDE, meta.ip.as_deref())
+            .hit_wide(limits.email_start_wide(), meta.ip.as_deref())
             .await?;
         limits
             .letters_sent(LOGIN_LETTERS, self.services.mail().codes_per_hour())

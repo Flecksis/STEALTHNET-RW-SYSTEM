@@ -45,6 +45,7 @@ mod ext_modules;
 mod limits;
 mod mail;
 mod nodes;
+mod paces;
 mod remna_guard;
 mod signup;
 mod site_limits;

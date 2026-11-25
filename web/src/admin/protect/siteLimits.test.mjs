@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dayLimited, hiddenShort, hiddenText, siteLine, SITE_NUMBERS } from './siteLimits.ts';
+import { dayLimited, hiddenShort, hiddenText, PACE_DEFAULTS, PACE_NUMBERS, paceError, pacesOf, siteLine, SITE_NUMBERS } from './siteLimits.ts';
 
 const OFF = { site_address_day: 0, site_network_day: 0, site_minute: 0 };
 const QUIET = { created: 0, address: 0, network: 0, minute: 0, asked: 0 };
@@ -43,4 +43,18 @@ test('подписи пределов говорят об отказе, а у а
     assert.match(hint, /0 — без предела/);
   }
   assert.match(SITE_NUMBERS[0][2], /10 и больше/);
+});
+
+test('пороги с адреса по умолчанию прежние и принимают числа от 1 до 1000', () => {
+  assert.deepEqual(pacesOf({}), { email_ip: 5, telegram_ip: 10, verify_ip: 60 });
+  assert.deepEqual(pacesOf({ email_ip: 7 }), { email_ip: 7, telegram_ip: 10, verify_ip: 60 });
+  for (const good of ['1', '5', '1000']) {
+    assert.equal(paceError('Входов', good), null);
+  }
+  for (const bad of ['', '0', '1001', '-1', '2.5', 'пять', '10000']) {
+    assert.equal(paceError('Входов', bad), 'Входов: целое число от 1 до 1000');
+  }
+  for (const [key, , hint] of PACE_NUMBERS) {
+    assert.match(hint, new RegExp(`Обычно ${PACE_DEFAULTS[key]}\\.`));
+  }
 });

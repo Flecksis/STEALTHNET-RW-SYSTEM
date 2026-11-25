@@ -2,6 +2,7 @@ use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use sha2::{Digest, Sha256};
+use sn_modules::catalog::antibot;
 use sn_store::Db;
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -17,8 +18,11 @@ pub struct RateRule {
     pub window_seconds: i64,
 }
 
+const ROOM: u32 = 3;
+
 pub mod rules {
     use super::RateRule;
+    use sn_modules::catalog::antibot;
 
     pub const ADMIN_LOGIN_IP: RateRule = RateRule {
         scope: "admin_login_ip",
@@ -57,7 +61,7 @@ pub mod rules {
     };
     pub const TELEGRAM_START_IP: RateRule = RateRule {
         scope: "telegram_login_ip",
-        limit: 10,
+        limit: antibot::TELEGRAM_IP,
         window_seconds: 600,
     };
     pub const TELEGRAM_POLL_IP: RateRule = RateRule {
@@ -67,7 +71,7 @@ pub mod rules {
     };
     pub const EMAIL_START_IP: RateRule = RateRule {
         scope: "email_login_ip",
-        limit: 5,
+        limit: antibot::EMAIL_IP,
         window_seconds: 600,
     };
     pub const EMAIL_START_ADDRESS: RateRule = RateRule {
@@ -137,7 +141,7 @@ pub mod rules {
     };
     pub const VERIFY_PAGE_IP: RateRule = RateRule {
         scope: "verify_page_ip",
-        limit: 60,
+        limit: antibot::VERIFY_IP,
         window_seconds: 600,
     };
     pub const APP_LINK_CLIENT: RateRule = RateRule {
@@ -271,6 +275,46 @@ pub struct RateLimits<'a> {
 impl<'a> RateLimits<'a> {
     pub fn new(services: &'a Services) -> Self {
         RateLimits { services }
+    }
+
+    fn paces(&self) -> antibot::Paces {
+        antibot::paces(self.services)
+    }
+
+    pub fn email_start(&self) -> RateRule {
+        RateRule {
+            limit: self.paces().email,
+            ..rules::EMAIL_START_IP
+        }
+    }
+
+    pub fn email_start_wide(&self) -> RateRule {
+        self.roomy(rules::EMAIL_START_WIDE)
+    }
+
+    pub fn captcha(&self) -> RateRule {
+        self.roomy(rules::CAPTCHA_IP)
+    }
+
+    fn roomy(&self, rule: RateRule) -> RateRule {
+        RateRule {
+            limit: rule.limit.max(self.paces().email.saturating_mul(ROOM)),
+            ..rule
+        }
+    }
+
+    pub fn telegram_start(&self) -> RateRule {
+        RateRule {
+            limit: self.paces().telegram,
+            ..rules::TELEGRAM_START_IP
+        }
+    }
+
+    pub fn verify_page(&self) -> RateRule {
+        RateRule {
+            limit: self.paces().verify,
+            ..rules::VERIFY_PAGE_IP
+        }
     }
 
     async fn sweep(&self, conn: &mut sn_store::Conn, now: DateTime<Utc>) -> ServiceResult<()> {

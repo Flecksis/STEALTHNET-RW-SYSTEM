@@ -9,12 +9,12 @@ use sn_domain::access::{ClientChannel, ClientPrincipal};
 use sn_domain::client::NewIdentity;
 use sn_modules::catalog::mail::MailModule;
 
-const NO_PROOF: EmailProofInput<'static> = EmailProofInput {
+pub(super) const NO_PROOF: EmailProofInput<'static> = EmailProofInput {
     password: None,
     code: None,
 };
 
-fn principal(client_id: ClientId) -> ClientPrincipal {
+pub(super) fn principal(client_id: ClientId) -> ClientPrincipal {
     ClientPrincipal {
         client_id,
         channel: ClientChannel::Miniapp,

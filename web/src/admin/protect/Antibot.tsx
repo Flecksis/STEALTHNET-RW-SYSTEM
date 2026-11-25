@@ -30,7 +30,7 @@ import {
   type Page,
 } from './model';
 import { clientFrom } from './sections';
-import { dayLimited, hiddenShort, hiddenText, siteLine, SITE_NUMBERS, type SiteLimits } from './siteLimits';
+import { dayLimited, hiddenShort, hiddenText, PACE_NUMBERS, paceError, pacesOf, siteLine, SITE_NUMBERS, type SiteLimits } from './siteLimits';
 import '../form.css';
 import '../promo/promo.css';
 import '../referral/referral.css';
@@ -182,6 +182,9 @@ type FormState = {
   site_address_day: string;
   site_network_day: string;
   site_minute: string;
+  email_ip: string;
+  telegram_ip: string;
+  verify_ip: string;
 };
 
 function limitsOf(summary: AntibotSummary): SiteLimits {
@@ -191,6 +194,7 @@ function limitsOf(summary: AntibotSummary): SiteLimits {
 
 function formOf(summary: AntibotSummary): FormState {
   const s = summary.settings;
+  const paces = pacesOf(s);
   return {
     mode: s.mode,
     young_days: String(s.young_days),
@@ -210,6 +214,9 @@ function formOf(summary: AntibotSummary): FormState {
     site_address_day: String(s.site_address_day ?? 0),
     site_network_day: String(s.site_network_day ?? 0),
     site_minute: String(s.site_minute ?? 0),
+    email_ip: String(paces.email_ip),
+    telegram_ip: String(paces.telegram_ip),
+    verify_ip: String(paces.verify_ip),
   };
 }
 
@@ -319,6 +326,26 @@ function SiteFields({ form, summary, set, busy }: { form: FormState; summary: An
   );
 }
 
+function PaceFields({ form, set, busy }: { form: FormState; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; busy: boolean }) {
+  return (
+    <fieldset className="pt-modes pt-group">
+      <legend>Сколько обращений с одного адреса пропускать за 10 минут</legend>
+      <p className="cap">
+        Сверх числа клиент видит «Слишком много попыток» и ждёт. За мобильным оператором и общим Wi-Fi под одним адресом бывает много людей: если они упираются, поднимите число. Предел проверок кодов и паролей от этого не меняется.
+      </p>
+      <div className="pt-grid">
+        {PACE_NUMBERS.map(([key, label, hint]) => (
+          <label key={key} className="pf-field">
+            <span className="pf-label">{label}</span>
+            <input className="field num" inputMode="numeric" value={form[key]} onChange={(e) => set(key, e.target.value)} maxLength={4} disabled={busy} />
+            <span className="cap">{hint}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 const GUARDS: Array<['roulette_guard' | 'contest_guard', string, string]> = [
   ['roulette_guard', 'Защищать рулетку', 'Бесплатные вращения подозрительным — по выбранному режиму. Вращения за покупки не трогаются.'],
   [
@@ -380,6 +407,15 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
       const raw = form[key].trim();
       if (!/^\d{1,6}$/.test(raw) || Number(raw) > 100000) {
         setError(`${label}: целое число от 0 до 100000`);
+        return;
+      }
+      config[key] = Number(raw);
+    }
+    for (const [key, label] of PACE_NUMBERS) {
+      const raw = form[key].trim();
+      const wrong = paceError(label, raw);
+      if (wrong) {
+        setError(wrong);
         return;
       }
       config[key] = Number(raw);
@@ -462,6 +498,7 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
         </div>
       ))}
       <SiteFields form={form} summary={summary} set={set} busy={busy} />
+      <PaceFields form={form} set={set} busy={busy} />
       <CaptchaFields form={form} summary={summary} set={set} busy={busy} />
       {error ? (
         <p className="err" role="alert">

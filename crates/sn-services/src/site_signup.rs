@@ -1,6 +1,5 @@
 use crate::auth::RequestMeta;
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::rules;
 use crate::services::Services;
 use sn_modules::catalog::antibot::signups::{self, Refusal};
 use sn_modules::catalog::antibot::{self, SignupCheck};
@@ -63,10 +62,8 @@ pub(crate) async fn over_limit(
         count(services, ASKED).await;
         return Err(captcha_error(SignupCheck::Missing));
     }
-    services
-        .limits()
-        .hit_ip(rules::CAPTCHA_IP, meta.ip.as_deref())
-        .await?;
+    let limits = services.limits();
+    limits.hit_ip(limits.captcha(), meta.ip.as_deref()).await?;
     match antibot::check_human(&ctx, captcha, meta.ip.as_deref()).await? {
         SignupCheck::Passed => Ok(()),
         check => Err(captcha_error(check)),
