@@ -25,7 +25,7 @@ test('стандартная настройка не считается изме
   assert.ok(model.sameConfig(config, normalizeConfig({})));
   assert.deepEqual(model.problemsOf(config, LIMITS), []);
   const out = model.canonical(config);
-  assert.deepEqual(out.header, { balance: true });
+  assert.deepEqual(out.header, { balance: true, avatar: false });
   assert.deepEqual(out.home[0], { kind: 'banners' });
   assert.deepEqual(out.home[1], { kind: 'greeting', on: false });
   assert.deepEqual(out.home[2], { kind: 'subscription' });

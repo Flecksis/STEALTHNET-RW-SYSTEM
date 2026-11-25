@@ -12,6 +12,7 @@ import {
   type Audience,
   type Banner,
   type HomeBlock,
+  type Header,
   type HomeKind,
   type Item,
   type MiniConfig,
@@ -296,9 +297,14 @@ function tabOut(tab: Tab): Tab {
   return compact({ std: tab.std, label: phraseOut(tab.label) });
 }
 
+export function headerSummary(header: Header): string {
+  const extra = [header.balance ? 'баланс' : null, header.avatar ? 'аватар' : null].filter((part) => part !== null);
+  return extra.length > 0 ? `Логотип, название, ${extra.join(', ')}` : 'Логотип и название';
+}
+
 export function canonical(config: MiniConfig): MiniConfig {
   return {
-    header: { balance: config.header.balance },
+    header: { balance: config.header.balance, avatar: config.header.avatar },
     home: config.home.map(homeOut),
     tabs: config.tabs.map(tabOut),
     profile: config.profile.map(profileOut),

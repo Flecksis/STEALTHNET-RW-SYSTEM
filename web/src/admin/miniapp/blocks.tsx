@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { Lang } from '../../lib/i18n';
 import { Icon } from '../../lib/icons';
-import { ACTION_KEYS, isSection, TAB_KEYS, type Banner, type HomeBlock, type Item, type ProfileBlock, type SectionKey, type Tab } from '../../mini/config';
+import { ACTION_KEYS, isSection, TAB_KEYS, type Banner, type Header, type HomeBlock, type Item, type ProfileBlock, type SectionKey, type Tab } from '../../mini/config';
 import { actionText, EMPTY_TEXTS, FRIENDS_TEXTS, rowText, tabText } from '../../mini/labels';
 import { Switch } from '../ui';
 import { AddSelect, AudienceField, GlyphField, Grip, MoveButtons, PhraseField, PictureField, sectionOff, TargetField, useDragOrder, weight } from './fields';
@@ -163,12 +163,16 @@ function ownLink(): Item {
   return { label: {}, to: '' };
 }
 
-export function HeaderBody({ balance, onChange }: { balance: boolean; onChange: (next: boolean) => void }) {
+export function HeaderBody({ header, onChange }: { header: Header; onChange: (next: Header) => void }) {
   return (
     <>
       <label className="mce-toggle">
-        <Switch on={balance} onToggle={() => onChange(!balance)} label="Показывать баланс в шапке" />
+        <Switch on={header.balance} onToggle={() => onChange({ ...header, balance: !header.balance })} label="Показывать баланс в шапке" />
         <span>Показывать баланс</span>
+      </label>
+      <label className="mce-toggle">
+        <Switch on={header.avatar} onToggle={() => onChange({ ...header, avatar: !header.avatar })} label="Показывать аватар клиента в шапке" />
+        <span>Показывать аватар клиента, нажатие открывает профиль</span>
       </label>
       <span className="cap">
         Название меняется в{' '}

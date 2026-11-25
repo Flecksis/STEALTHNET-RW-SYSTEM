@@ -39,12 +39,13 @@ test('без настроек мини-приложение выглядит к�
   assert.deepEqual(rowNames(homeBlock(config, 'sections').items), ['friends', 'roulette', 'addons', 'gifts', 'promo', 'payments', 'guide', 'support']);
   assert.deepEqual(homeBlock(config, 'actions').items, [{ std: 'renew' }, { std: 'devices' }]);
   assert.equal(config.header.balance, true);
+  assert.equal(config.header.avatar, false);
   assert.equal(friendsPath(config), '/app/profile');
 });
 
 test('порядок и показ блоков главной берутся из настроек', () => {
   const config = normalizeConfig({
-    header: { balance: false },
+    header: { balance: false, avatar: true },
     home: [
       { kind: 'sections', on: false },
       { kind: 'greeting', on: true, title: { ru: 'Привет' } },
@@ -55,6 +56,7 @@ test('порядок и показ блоков главной берутся и
     ],
   });
   assert.equal(config.header.balance, false);
+  assert.equal(config.header.avatar, true);
   assert.deepEqual(kinds(config.home), ['banners', 'sections', 'greeting', 'subscription', 'actions']);
   assert.deepEqual(kinds(config.home.filter(homeOn)), ['banners', 'greeting', 'subscription', 'actions']);
   assert.equal(homeBlock(config, 'greeting').title.ru, 'Привет');

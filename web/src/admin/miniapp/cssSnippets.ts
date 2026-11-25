@@ -20,7 +20,7 @@ export const MINI_SNIPPETS: Record<MiniPlace, Snippet[]> = {
     snippet('Тёмная тема', "[data-theme='dark'] .mn"),
     { name: 'Узкий телефон', css: '@media (max-width: 360px) {\n  .mn {\n    \n  }\n}' },
   ],
-  header: [snippet('Вся шапка', '&'), snippet('Логотип', '.mn-logo'), snippet('Название', '.mn-brand'), snippet('Баланс', '.mn-balance span'), snippet('Кнопка темы', '.mn-circ')],
+  header: [snippet('Вся шапка', '&'), snippet('Логотип', '.mn-logo'), snippet('Название', '.mn-brand'), snippet('Баланс', '.mn-balance span'), snippet('Кнопка темы', '.mn-circ'), snippet('Аватар', '.mn-profile-avatar')],
   banners: [
     snippet('Все баннеры', '&'),
     snippet('Баннер', '.mn-banner'),

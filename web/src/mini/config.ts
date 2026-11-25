@@ -62,7 +62,7 @@ export type ProfileKind = ProfileBlock['kind'];
 
 export type Tab = { std: SectionKey; label?: Phrase };
 
-export type Header = { balance: boolean };
+export type Header = { balance: boolean; avatar: boolean };
 
 export type MiniConfig = { header: Header; home: HomeBlock[]; tabs: Tab[]; profile: ProfileBlock[] };
 
@@ -156,7 +156,7 @@ export function standardTabs(): Tab[] {
 
 export function standardConfig(): MiniConfig {
   return {
-    header: { balance: true },
+    header: { balance: true, avatar: false },
     home: HOME_KINDS.map(standardHome),
     tabs: standardTabs(),
     profile: PROFILE_KINDS.map(standardProfile),
@@ -255,7 +255,7 @@ export function normalizeConfig(raw: unknown): MiniConfig {
     (block): ProfileBlock => (block.kind === 'links' ? { ...block, items: itemsOf(block.items, []) } : block),
   );
   return {
-    header: { balance: record(source.header)?.balance !== false },
+    header: { balance: record(source.header)?.balance !== false, avatar: record(source.header)?.avatar === true },
     home,
     tabs: tabsOf(source.tabs),
     profile,

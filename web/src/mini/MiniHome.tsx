@@ -1,10 +1,10 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { BrandMark } from '../lib/brand';
 import { dateLong, money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon, type IconName } from '../lib/icons';
-import { resetWhen, trafficMeter } from '../cabinet/model';
+import { photoUrl, resetWhen, trafficMeter } from '../cabinet/model';
 import {
   audienceOf,
   homeOn,
@@ -29,6 +29,7 @@ import { EMPTY_TEXTS } from './labels';
 import { MiniSubSwitch, ThemeCirc, useMini } from './MiniApp';
 import { actionLabel, Row, rowLabel, supportTarget, useExtras, useLinkTarget, useRows, useTargets, type Extras, type Target } from './sections';
 import { openExternal } from './telegram';
+import { useClientPhoto } from './useClientPhoto';
 
 const R = 90;
 const LEN = 2 * Math.PI * R;
@@ -69,10 +70,22 @@ function useConnect(): Btn {
   return mode === 'remnawave' && url ? { label: t('Открыть страницу подключения'), icon: 'external', target: { url } } : { label: t('Подключить'), icon: 'zap', target: { to: '/app/connect' } };
 }
 
+function ProfileAvatar() {
+  const { me } = useMini();
+  const photo = useClientPhoto(photoUrl(me));
+  const [broken, setBroken] = useState<string | null>(null);
+  return (
+    <Link to="/app/profile" className="mn-profile-avatar press" aria-label={t('Профиль')}>
+      <Icon name="user" size={20} />
+      {photo && photo !== broken ? <img src={photo} alt="" decoding="async" draggable={false} onError={() => setBroken(photo)} /> : null}
+    </Link>
+  );
+}
+
 function Header() {
   const { me, site, config } = useMini();
   return (
-    <header className="mn-head" data-part="header">
+    <header className={config.header.avatar ? 'mn-head with-avatar' : 'mn-head'} data-part="header">
       <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
       <h1 className="mn-brand">{site.brand_name.toUpperCase()}</h1>
       {config.header.balance && (me.balance_enabled !== false || me.balance.minor > 0) ? (
@@ -85,6 +98,7 @@ function Header() {
         </Link>
       ) : null}
       <ThemeCirc />
+      {config.header.avatar ? <ProfileAvatar /> : null}
     </header>
   );
 }

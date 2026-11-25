@@ -135,6 +135,52 @@ html[data-tg-swipes='css'] body {
   letter-spacing: 0.03em;
 }
 
+.mn-profile-avatar {
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  background-clip: content-box;
+  color: var(--ink-2);
+  box-sizing: border-box;
+}
+
+.mn-profile-avatar img {
+  position: absolute;
+  inset: 2px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.mn-head.with-avatar .mn-brand {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
+}
+
+@media (max-width: 400px) {
+  .mn-head.with-avatar {
+    gap: 6px;
+  }
+
+  .mn-head.with-avatar .mn-brand {
+    font-size: 14px;
+    letter-spacing: 0.01em;
+  }
+}
+
 .mn-h1 {
   flex: 1 1 auto;
   margin: 0;

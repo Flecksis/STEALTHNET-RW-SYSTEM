@@ -36,6 +36,7 @@ import {
   canonical,
   fromView,
   HOME_NAMES,
+  headerSummary,
   homeChanged,
   homeSummary,
   IMAGE_RULES,
@@ -382,14 +383,14 @@ export function SettingsMiniApp() {
       <Block
         id="header"
         name="Шапка"
-        summary={mark(draft.header.balance ? 'Логотип, название, баланс' : 'Логотип и название', 'header')}
+        summary={mark(headerSummary(draft.header), 'header')}
         bad={badParts.has('header')}
         open={open === 'header'}
         off={false}
         onOpen={() => expand('header')}
         end={<span className="mce-pin">Всегда сверху</span>}
       >
-        <HeaderBody balance={draft.header.balance} onChange={(balance) => patch((config) => ({ ...config, header: { balance } }))} />
+        <HeaderBody header={draft.header} onChange={(header) => patch((config) => ({ ...config, header }))} />
         {cssField('header', 'CSS блока')}
       </Block>
       {draft.home.map((block, index) => {

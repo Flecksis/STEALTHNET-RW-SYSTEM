@@ -344,15 +344,24 @@ const fn is_true(value: &bool) -> bool {
     *value
 }
 
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Header {
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub balance: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub avatar: bool,
 }
 
 impl Default for Header {
     fn default() -> Self {
-        Header { balance: true }
+        Header {
+            balance: true,
+            avatar: false,
+        }
     }
 }
 
@@ -2459,6 +2468,27 @@ mod tests {
 
     fn banners(config: &MiniAppConfig) -> Vec<Banner> {
         config.banners().to_vec()
+    }
+
+    #[test]
+    fn аватар_в_шапке_выключен_пока_его_не_включили() {
+        let standard = MiniAppConfig::standard();
+        assert!(!standard.header.avatar);
+        assert!(
+            !stored(json!({ "header": { "balance": false } }))
+                .header
+                .avatar
+        );
+        let on = parse(json!({ "header": { "avatar": true } })).unwrap();
+        assert!(on.header.avatar && on.header.balance);
+        assert_eq!(
+            serde_json::to_value(&on).unwrap()["header"],
+            json!({ "avatar": true })
+        );
+        assert_eq!(stored(serde_json::to_value(&on).unwrap()), on);
+        let off = parse(json!({ "header": { "avatar": false, "balance": true } })).unwrap();
+        assert_eq!(off, standard);
+        assert!(parse(json!({ "header": { "avatar": "да" } })).is_err());
     }
 
     #[test]
