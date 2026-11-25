@@ -159,6 +159,41 @@ html[data-tg-swipes='css'] body {
   object-fit: cover;
 }
 
+.mn-profile-identity {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.mn-profile-identity > strong {
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.mn-profile-photo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+  overflow: hidden;
+  border: 1px solid var(--ring);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.mn-profile-photo img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .mn-head.with-avatar .mn-brand {
   min-width: 0;
   display: -webkit-box;

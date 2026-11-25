@@ -37,10 +37,29 @@ export function unreadText(unread: number): string {
   return count(unread, 'новый ответ', 'новых ответа', 'новых ответов');
 }
 
+export function useGiftsAvailable(wanted: boolean): boolean {
+  const { demo } = useMini();
+  const [available, setAvailable] = useState(false);
+  const load = wanted && !demo;
+
+  useEffect(() => {
+    if (!load) return;
+    const controller = new AbortController();
+    api('/api/client/m/gifts/offers', { signal: controller.signal })
+      .then(() => setAvailable(true))
+      .catch(() => {
+        if (!controller.signal.aborted) setAvailable(false);
+      });
+    return () => controller.abort();
+  }, [load]);
+
+  return wanted && (demo?.gifts ?? available);
+}
+
 export function useExtras(wanted = true): Extras {
   const { demo, site, view } = useMini();
   const [referral, setReferral] = useState<Referral | null>(null);
-  const [gifts, setGifts] = useState(false);
+  const gifts = useGiftsAvailable(wanted);
   const [spins, setSpins] = useState<number | null>(null);
   const [trial, setTrial] = useState(false);
   const load = wanted && !demo;
@@ -54,9 +73,6 @@ export function useExtras(wanted = true): Extras {
     api<Referral>('/api/client/m/referral/me')
       .then(setReferral)
       .catch(() => setReferral(null));
-    api('/api/client/m/gifts/offers')
-      .then(() => setGifts(true))
-      .catch(() => setGifts(false));
     api<{ ready: boolean; spins: { total: number } }>('/api/client/m/roulette/state')
       .then((s) => setSpins(s.ready ? s.spins.total : null))
       .catch(() => setSpins(null));

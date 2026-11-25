@@ -1,17 +1,18 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { documentTitle, documentUrl } from '../lib/documents';
 import { money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
-import { heldBalance } from '../cabinet/model';
+import { heldBalance, photoUrl } from '../cabinet/model';
 import { audienceOf, profileOn, sectionPath, type FriendsBlock, type LinksBlock, type ProfileBlock } from './config';
 import { AccountCard } from './MiniAccount';
 import { BackHead, useMini } from './MiniApp';
 import { FriendsCard, useFriendsText, useReferral } from './MiniFriends';
-import { needsExtras, Row, unreadText, useExtras, useRows } from './sections';
-import { openExternal } from './telegram';
+import { needsExtras, Row, rowLabel, unreadText, useExtras, useGiftsAvailable, useRows } from './sections';
+import { openExternal, telegramUsername } from './telegram';
+import { useClientPhoto } from './useClientPhoto';
 
 function Balance({ shown }: { shown: boolean }) {
   const { me } = useMini();
@@ -65,11 +66,19 @@ function Friends({ block }: { block: FriendsBlock }) {
 }
 
 function Help() {
+  const gifts = useGiftsAvailable(true);
   const { me, site, unread } = useMini();
   const link = supportLink(site);
   const tickets = supportTickets(site);
   return (
     <div className="mn-list" data-part="help">
+      {gifts ? (
+        <Link to={sectionPath('gifts')} className="mn-row press">
+          <Icon name="gift" size={21} />
+          <span className="mn-row-name">{rowLabel('gifts')}</span>
+          <Icon name="chevron-right" size={16} />
+        </Link>
+      ) : null}
       <Link to="/app/payments" className="mn-row press">
         <Icon name="receipt" size={21} />
         <span className="mn-row-name">{t('История оплат')}</span>
@@ -131,6 +140,26 @@ function Documents() {
   );
 }
 
+function ProfileIdentity() {
+  const { me, name } = useMini();
+  const photo = useClientPhoto(photoUrl(me));
+  const [broken, setBroken] = useState<string | null>(null);
+  const username = telegramUsername();
+
+  return (
+    <div className="mn-profile-identity">
+      <span className="mn-profile-photo" aria-hidden="true">
+        <Icon name="user" size={36} />
+        {photo && photo !== broken ? (
+          <img src={photo} alt="" decoding="async" draggable={false} onError={() => setBroken(photo)} />
+        ) : null}
+      </span>
+      {name ? <strong>{name}</strong> : null}
+      {username ? <span className="mn-muted">@{username}</span> : null}
+    </div>
+  );
+}
+
 export function MiniProfile() {
   const { config } = useMini();
   const blocks = (block: ProfileBlock): ReactNode => {
@@ -152,6 +181,7 @@ export function MiniProfile() {
   return (
     <main className="mn-page profile" data-part="profile">
       <BackHead title={t('Профиль')} />
+      <ProfileIdentity />
       {config.profile.map((block) => (
         <Fragment key={block.kind}>{blocks(block)}</Fragment>
       ))}
