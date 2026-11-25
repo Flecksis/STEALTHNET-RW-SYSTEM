@@ -1,10 +1,11 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
+import { fetchBlob } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { dateLong, money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon, type IconName } from '../lib/icons';
-import { resetWhen, trafficMeter } from '../cabinet/model';
+import { photoUrl, resetWhen, trafficMeter } from '../cabinet/model';
 import {
   audienceOf,
   homeOn,
@@ -69,6 +70,41 @@ function useConnect(): Btn {
   return mode === 'remnawave' && url ? { label: t('Открыть страницу подключения'), icon: 'external', target: { url } } : { label: t('Подключить'), icon: 'zap', target: { to: '/app/connect' } };
 }
 
+function ProfileAvatar() {
+  const { me } = useMini();
+  const path = photoUrl(me);
+  const clientId = me.client.id;
+  const [preview, setPreview] = useState<{ clientId: number; path: string; url: string } | null>(null);
+
+  useEffect(() => {
+    if (!path) return;
+    let active = true;
+    let objectUrl: string | undefined;
+
+    void fetchBlob(path).then((photo) => {
+      if (!active) return;
+      objectUrl = URL.createObjectURL(photo);
+      setPreview({ clientId, path, url: objectUrl });
+    }).catch(() => {
+      if (active) setPreview(null);
+    });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [path, clientId]);
+
+  return (
+    <Link to="/app/profile" className="mn-profile-avatar press" aria-label={t('Профиль')}>
+      <Icon name="user" size={20} />
+      {preview?.clientId === clientId && preview.path === path ? (
+        <img src={preview.url} alt="" decoding="async" onError={() => setPreview(null)} />
+      ) : null}
+    </Link>
+  );
+}
+
 function Header() {
   const { me, site, config } = useMini();
   return (
@@ -85,6 +121,7 @@ function Header() {
         </Link>
       ) : null}
       <ThemeCirc />
+      <ProfileAvatar />
     </header>
   );
 }
