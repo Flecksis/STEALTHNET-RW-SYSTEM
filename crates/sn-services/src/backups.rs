@@ -1268,6 +1268,9 @@ impl<'a> BackupOps<'a> {
             }
             Err(err) => {
                 tracing::warn!(error = ?err, "тема для копий не создана, пишем в общий чат");
+                if let telegram::TgError::Api { description, .. } = &err {
+                    alerts.topics_refused(description).await?;
+                }
                 Ok(None)
             }
         }

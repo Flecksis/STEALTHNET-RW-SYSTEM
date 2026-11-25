@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 pub const SETTING_KEY: &str = "alerts.telegram";
 pub const START_PREFIX: &str = "alerts_";
+pub const TOPIC_RIGHT: &str = "manage_topics";
 pub const TOPIC_MAX: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

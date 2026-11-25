@@ -168,6 +168,7 @@ async fn группа_подключается_одноразовым_кодом
     let code_part = link
         .link
         .strip_prefix("https://t.me/stealth_vpn_bot?startgroup=alerts_")
+        .and_then(|rest| rest.strip_suffix("&admin=manage_topics"))
         .unwrap()
         .to_string();
     assert_eq!(code_part.len(), 24);

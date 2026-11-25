@@ -7,7 +7,8 @@ use chrono::{DateTime, Duration, FixedOffset, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sn_domain::alerts::{
-    AlertKind, AlertRoute, AlertsConfig, SETTING_KEY, START_PREFIX, TopicMap, clean_topic,
+    AlertKind, AlertRoute, AlertsConfig, SETTING_KEY, START_PREFIX, TOPIC_RIGHT, TopicMap,
+    clean_topic,
 };
 use sn_domain::client::IdentityKind;
 use sn_domain::format;
@@ -27,6 +28,7 @@ pub const PER_KIND: usize = 3;
 const LINK_KEY: &str = "alerts.link";
 const TEST_KEY: &str = "alerts.test";
 const TOPICS_KEY: &str = "alerts.topics";
+const TOPICS_PROBLEM_KEY: &str = "alerts.topics_problem";
 const OUTBOX_KEY: &str = "alerts.outbox";
 const SUPPORT_CURSOR: &str = "alerts.cursor.support";
 const AI_HANDOFF_CURSOR: &str = "alerts.cursor.ai_handoffs";
@@ -36,6 +38,7 @@ const PAYMENTS_CURSOR: &str = "alerts.cursor.payments";
 const TRAFFIC_CURSOR: &str = "alerts.cursor.traffic";
 const TRAFFIC_SETTLE_SECONDS: i64 = 60;
 const BODY_MAX: usize = 300;
+const REASON_MAX: usize = 200;
 const NOTICE_MAX: usize = 600;
 const SCAN_LIMIT: i64 = 500;
 const NODES_PATH: &str = "/admin/infra";
@@ -79,11 +82,44 @@ pub struct KindView {
     pub topic: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopicsProblem {
+    pub rights: bool,
+    pub reason: String,
+}
+
+impl TopicsProblem {
+    pub fn of(description: &str) -> Self {
+        let reason: String = description.chars().take(REASON_MAX).collect();
+        let lower = reason.to_ascii_lowercase();
+        TopicsProblem {
+            rights: [
+                "not enough rights",
+                "chat_admin_required",
+                "administrator rights",
+            ]
+            .iter()
+            .any(|sign| lower.contains(sign)),
+            reason,
+        }
+    }
+
+    pub fn advice(&self) -> String {
+        if self.rights {
+            "у бота нет права «Управление темами». Сделайте его администратором группы с этим правом"
+                .to_string()
+        } else {
+            self.reason.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AlertsView {
     pub chat_id: Option<i64>,
     pub title: Option<String>,
     pub forum: bool,
+    pub topics_problem: Option<TopicsProblem>,
     pub bot_username: Option<String>,
     pub kinds: Vec<KindView>,
     pub test_pending: bool,
@@ -759,6 +795,10 @@ impl<'a> AlertsOps<'a> {
             chat_id: config.chat_id,
             title: config.title.clone(),
             forum: config.forum,
+            topics_problem: match config.forum {
+                true => self.topics_problem().await?,
+                false => None,
+            },
             bot_username: self.bot_username().await?,
             kinds,
             test_pending: self.state(TEST_KEY).await?.is_some(),
@@ -806,7 +846,9 @@ impl<'a> AlertsOps<'a> {
         )
         .await?;
         Ok(AlertLink {
-            link: format!("https://t.me/{username}?startgroup={START_PREFIX}{code}"),
+            link: format!(
+                "https://t.me/{username}?startgroup={START_PREFIX}{code}&admin={TOPIC_RIGHT}"
+            ),
             expires_at,
         })
     }
@@ -817,7 +859,7 @@ impl<'a> AlertsOps<'a> {
         config.title = None;
         config.forum = false;
         self.save(&config, Some(admin)).await?;
-        self.put_state(TOPICS_KEY, &serde_json::json!({})).await?;
+        self.forget_topics().await?;
         self.put_state(LINK_KEY, &serde_json::Value::Null).await?;
         self.view().await
     }
@@ -840,8 +882,10 @@ impl<'a> AlertsOps<'a> {
             return Ok(false);
         }
         let mut config = self.config().await?;
-        if config.chat_id != Some(chat_id) {
-            self.put_state(TOPICS_KEY, &serde_json::json!({})).await?;
+        if config.chat_id == Some(chat_id) {
+            self.topics_fine().await?;
+        } else {
+            self.forget_topics().await?;
         }
         config.chat_id = Some(chat_id);
         config.title = title;
@@ -888,7 +932,12 @@ impl<'a> AlertsOps<'a> {
         config.title = None;
         config.forum = false;
         self.save(&config, None).await?;
-        self.put_state(TOPICS_KEY, &serde_json::json!({})).await
+        self.forget_topics().await
+    }
+
+    async fn forget_topics(&self) -> ServiceResult<()> {
+        self.put_state(TOPICS_KEY, &serde_json::json!({})).await?;
+        self.topics_fine().await
     }
 
     pub async fn topics(&self) -> ServiceResult<TopicMap> {
@@ -902,7 +951,33 @@ impl<'a> AlertsOps<'a> {
     pub async fn remember_topic(&self, name: &str, thread_id: i64) -> ServiceResult<()> {
         let mut topics = self.topics().await?;
         topics.insert(name.to_string(), thread_id);
-        self.put_state(TOPICS_KEY, &serde_json::json!(topics)).await
+        self.put_state(TOPICS_KEY, &serde_json::json!(topics))
+            .await?;
+        self.topics_fine().await
+    }
+
+    pub async fn topics_problem(&self) -> ServiceResult<Option<TopicsProblem>> {
+        Ok(self
+            .state(TOPICS_PROBLEM_KEY)
+            .await?
+            .and_then(|v| serde_json::from_value(v).ok()))
+    }
+
+    pub async fn topics_refused(&self, description: &str) -> ServiceResult<()> {
+        let problem = TopicsProblem::of(description);
+        if self.topics_problem().await?.as_ref() == Some(&problem) {
+            return Ok(());
+        }
+        self.put_state(TOPICS_PROBLEM_KEY, &serde_json::json!(problem))
+            .await
+    }
+
+    async fn topics_fine(&self) -> ServiceResult<()> {
+        if self.state(TOPICS_PROBLEM_KEY).await?.is_some() {
+            self.put_state(TOPICS_PROBLEM_KEY, &serde_json::Value::Null)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn forget_topic(&self, name: &str) -> ServiceResult<()> {

@@ -13,6 +13,7 @@ type View = {
   chat_id: number | null;
   title: string | null;
   forum: boolean;
+  topics_problem: { rights: boolean; reason: string } | null;
   bot_username: string | null;
   kinds: KindView[];
   test_pending: boolean;
@@ -38,6 +39,11 @@ const ABOUT: Record<Kind, string> = {
   captcha: 'Сервис капчи из «Антибота» не отвечает, не принял ключ или капчу прошли на домене не из списка. Не чаще одного сообщения в час',
 };
 
+const CHECKS = 10;
+const CHECK_EVERY = 2000;
+
+const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
@@ -55,6 +61,7 @@ export function SettingsAlerts() {
   const [link, setLink] = useState<{ link: string; expires_at: string } | null>(null);
   const [ask, setAsk] = useState(false);
   const waiting = useRef<number | null>(null);
+  const round = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -72,6 +79,7 @@ export function SettingsAlerts() {
   useEffect(() => {
     void load();
     return () => {
+      round.current += 1;
       if (waiting.current) {
         window.clearInterval(waiting.current);
       }
@@ -125,11 +133,35 @@ export function SettingsAlerts() {
     }
   };
 
+  const follow = async () => {
+    const mine = (round.current += 1);
+    for (let step = 0; step < CHECKS; step += 1) {
+      await pause(CHECK_EVERY);
+      const seen = await api<View>('/api/admin/alerts').catch(() => null);
+      if (mine !== round.current) {
+        return;
+      }
+      if (!seen || seen.test_pending) {
+        continue;
+      }
+      await pause(CHECK_EVERY * 2);
+      const next = (await api<View>('/api/admin/alerts').catch(() => null)) ?? seen;
+      if (mine !== round.current) {
+        return;
+      }
+      setView((old) => (old ? { ...old, chat_id: next.chat_id, title: next.title, forum: next.forum, topics_problem: next.topics_problem } : next));
+      setStatus(next.topics_problem ? { text: 'Проверка пришла в общий чат: темы не создались', bad: true } : { text: 'Проверка отправлена в группу', bad: false });
+      return;
+    }
+    setStatus({ text: 'Бот пока не отправил проверку. Посмотрите, работает ли он: «Настройки → Бот»', bad: true });
+  };
+
   const test = async () => {
     setBusy(true);
     try {
       await api('/api/admin/alerts/test', { method: 'POST', body: {} });
       setStatus({ text: 'Проверка отправится в группу в течение нескольких секунд', bad: false });
+      void follow();
     } catch (err) {
       setStatus({ text: failText(err, 'Проверку не удалось запросить'), bad: true });
     } finally {
@@ -173,6 +205,7 @@ export function SettingsAlerts() {
   }
 
   const linked = view.chat_id !== null;
+  const problem = view.topics_problem;
   const edit = (kind: string, patch: Partial<Route>) => {
     setRoutes({ ...routes, [kind]: { ...(routes[kind] ?? { on: true, topic: '' }), ...patch } });
     setStatus(null);
@@ -192,7 +225,22 @@ export function SettingsAlerts() {
             <div className="row adm-row">
               <span className="adm-who">
                 <span className="adm-email">{view.title ?? 'Группа без названия'}</span>
-                <span className="adm-status">{view.forum ? 'Темы включены: уведомления раскладываются по темам' : 'Темы выключены: все уведомления приходят в общий чат'}</span>
+                {problem ? (
+                  <span className="adm-status warn" role="status">
+                    {problem.rights
+                      ? 'Темы не создались: бот не администратор группы или у него нет права «Управление темами». Пока всё приходит в общий чат. Дайте право и нажмите «Отправить проверку».'
+                      : `Темы не создались, Telegram ответил: ${problem.reason}. Пока всё приходит в общий чат.`}
+                  </span>
+                ) : (
+                  <span className="adm-status">{view.forum ? 'Темы включены: уведомления раскладываются по темам' : 'Темы выключены: все уведомления приходят в общий чат'}</span>
+                )}
+                {problem?.rights && view.bot_username ? (
+                  <span className="adm-under">
+                    <a className="b34 hov" href={`https://t.me/${view.bot_username}?startgroup&admin=manage_topics`} target="_blank" rel="noreferrer">
+                      Дать право в Telegram
+                    </a>
+                  </span>
+                ) : null}
               </span>
               <span className="adm-acts">
                 <button type="button" className="b34 hov" onClick={() => void test()} disabled={busy}>
@@ -211,7 +259,7 @@ export function SettingsAlerts() {
                 <ol className="alerts-steps">
                   <li>Создайте группу в Telegram. Чтобы раскладывать уведомления по темам, включите в её настройках «Темы».</li>
                   <li>Нажмите «Подключить группу» и выберите эту группу — Telegram добавит в неё бота{view.bot_username ? ` @${view.bot_username}` : ''}.</li>
-                  <li>Сделайте бота администратором группы с правами «Отправка сообщений» и «Управление темами».</li>
+                  <li>Telegram предложит сделать бота администратором с правом «Управление темами» — оставьте его включённым, иначе бот не создаст темы.</li>
                 </ol>
                 <span>
                   <button type="button" className="btn-main btn" onClick={() => void connect()} disabled={busy || !view.bot_username}>

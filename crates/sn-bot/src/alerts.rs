@@ -227,9 +227,13 @@ impl Keeper {
     ) -> Result<(), BotError> {
         let topic = config.topic_for(alert.kind);
         let keyboard = self.open_button(&alert.path);
+        let known = self.services.alerts().topics_problem().await?.is_some();
         let sent = self
             .send(chat_id, topic.as_deref(), &alert.html, keyboard.as_ref())
             .await;
+        if topic.is_some() && !known && sent.is_ok() {
+            self.tell_topics_problem(chat_id).await?;
+        }
         match (sent, self.bypass()) {
             (Err(err), Some(direct)) if later(&err) && alert.kind == AlertKind::Proxy => {
                 tracing::info!("уведомление о сбое прокси отправляем в Telegram напрямую");
@@ -240,6 +244,20 @@ impl Keeper {
             }
             (sent, _) => sent,
         }
+    }
+
+    async fn tell_topics_problem(&self, chat_id: i64) -> Result<(), BotError> {
+        let Some(problem) = self.services.alerts().topics_problem().await? else {
+            return Ok(());
+        };
+        let text = format!(
+            "<b>Уведомления не раскладываются по темам</b>\nТемы не создались: {}. Пока всё приходит сюда.",
+            escape(&problem.advice())
+        );
+        if let Err(err) = self.api.send_to_thread(chat_id, None, &text, None).await {
+            report(&err);
+        }
+        Ok(())
     }
 
     async fn test(&self, config: &AlertsConfig, chat_id: i64) -> Result<(), BotError> {
@@ -262,14 +280,33 @@ impl Keeper {
                 )
                 .await;
         }
+        let mut general = places.remove(&None).unwrap_or_default();
+        let mut refused = false;
         for (topic, titles) in places {
-            let listed: Vec<String> = titles.into_iter().map(lowercase_first).collect();
-            let text = format!(
-                "<b>Проверка уведомлений</b>\nСюда будут приходить: {}.",
-                escape(&listed.join(", "))
-            );
-            self.send(chat_id, topic.as_deref(), &text, None).await?;
+            let Some(name) = topic else { continue };
+            if self.thread(chat_id, &name).await?.is_none() {
+                refused = true;
+                general.extend(titles);
+                continue;
+            }
+            self.send(chat_id, Some(&name), &check_text(titles), None)
+                .await?;
         }
+        if general.is_empty() {
+            return Ok(());
+        }
+        let mut text = check_text(general);
+        if refused {
+            let advice = self.services.alerts().topics_problem().await?.map_or_else(
+                || "Telegram не ответил".to_string(),
+                |problem| problem.advice(),
+            );
+            text.push_str(&format!(
+                "\n\n<b>Темы не создались</b>: {}. Потом отправьте проверку ещё раз.",
+                escape(&advice)
+            ));
+        }
+        self.send(chat_id, None, &text, None).await?;
         Ok(())
     }
 
@@ -285,6 +322,9 @@ impl Keeper {
             }
             Err(err) => {
                 tracing::warn!(error = %err, topic = name, "тема для уведомлений не создана, пишем в общий чат");
+                if let TelegramError::Api { description, .. } = &err {
+                    alerts.topics_refused(description).await?;
+                }
                 Ok(None)
             }
         }
@@ -335,6 +375,14 @@ impl Keeper {
     }
 }
 
+fn check_text(titles: Vec<&'static str>) -> String {
+    let listed: Vec<String> = titles.into_iter().map(lowercase_first).collect();
+    format!(
+        "<b>Проверка уведомлений</b>\nСюда будут приходить: {}.",
+        escape(&listed.join(", "))
+    )
+}
+
 pub async fn bind_from_group(
     services: &Services,
     api: &TelegramApi,
@@ -353,7 +401,7 @@ pub async fn bind_from_group(
     let brand = escape(&services.settings().brand_name);
     let text = match (bound, forum) {
         (true, true) => format!(
-            "Готово: сюда будут приходить уведомления для администраторов {brand}. Темы для них бот создаст сам при первом уведомлении."
+            "Готово: сюда будут приходить уведомления для администраторов {brand}. Темы для них бот создаст сам при первом уведомлении: для этого он должен быть администратором группы с правом «Управление темами»."
         ),
         (true, false) => format!(
             "Готово: сюда будут приходить уведомления для администраторов {brand}. Чтобы раскладывать их по темам, включите в группе темы и дайте боту право управлять ими."

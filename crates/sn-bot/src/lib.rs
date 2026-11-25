@@ -356,6 +356,17 @@ fn spawn_workers(ctx: &BotCtx, lanes: &Arc<Lanes>) -> Vec<JoinHandle<()>> {
         .collect()
 }
 
+fn group_chatter(update: &Update) -> bool {
+    update.message.as_ref().is_some_and(|message| {
+        message.chat.is_group()
+            && message
+                .text
+                .as_deref()
+                .and_then(handler::parse_command)
+                .is_none_or(|(command, _)| command != "start")
+    })
+}
+
 pub fn probe(update: &Update) -> Probe {
     let simple = |user: &BotUser, kind: Kind| Probe {
         user: Some(user.id),
@@ -710,6 +721,9 @@ impl Bot {
                 let _work = ctx.services.pause_gate().enter().await;
                 handle_update(&ctx, update).await
             });
+            return;
+        }
+        if group_chatter(&update) {
             return;
         }
         let probe = probe(&update);

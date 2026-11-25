@@ -18,6 +18,14 @@ fn group_update(update_id: i64, chat: i64, text: &str) -> Update {
     .unwrap()
 }
 
+fn start_of(link: &str) -> String {
+    link.split("startgroup=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .unwrap()
+        .to_string()
+}
+
 async fn forum_api(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path_regex(r"/createForumTopic$"))
@@ -84,7 +92,7 @@ async fn уведомления_уходят_в_группу_по_темам() {
             .unwrap();
     }
     let link = services.alerts().link().await.unwrap();
-    let start = link.link.split("startgroup=").nth(1).unwrap().to_string();
+    let start = start_of(&link.link);
     handle_update(
         &ctx,
         group_update(1, -100_500, &format!("/start@stealth_test_bot {start}")),
@@ -191,7 +199,7 @@ async fn нода_которая_лежит_уходит_в_группу_без_
             .unwrap();
     }
     let link = services.alerts().link().await.unwrap();
-    let start = link.link.split("startgroup=").nth(1).unwrap().to_string();
+    let start = start_of(&link.link);
     handle_update(
         &ctx,
         group_update(1, -100_500, &format!("/start@stealth_test_bot {start}")),
@@ -253,7 +261,7 @@ async fn ошибка_отправки_не_теряет_остаток_пачк
             .unwrap();
     }
     let link = services.alerts().link().await.unwrap();
-    let start = link.link.split("startgroup=").nth(1).unwrap().to_string();
+    let start = start_of(&link.link);
     handle_update(
         &ctx,
         group_update(1, -100_500, &format!("/start@stealth_test_bot {start}")),
@@ -362,4 +370,179 @@ async fn сбой_прокси_уходит_в_группу_напрямую_р�
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].kind, sn_domain::alerts::AlertKind::Support);
     db.cleanup().await;
+}
+
+async fn bound(services: &Services, ctx: &BotCtx) -> Keeper {
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set_as(keys::BOT_USERNAME, &"stealth_test_bot", None)
+            .await
+            .unwrap();
+    }
+    let link = services.alerts().link().await.unwrap().link;
+    let start = link.split("startgroup=").nth(1).unwrap();
+    let (start, rights) = start.split_once('&').unwrap();
+    assert_eq!(rights, "admin=manage_topics");
+    handle_update(
+        ctx,
+        group_update(1, -100_500, &format!("/start@stealth_test_bot {start}")),
+    )
+    .await;
+    Keeper::new(
+        services.clone(),
+        ctx.api.clone(),
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    )
+}
+
+async fn texts(server: &MockServer) -> Vec<(Option<i64>, String)> {
+    sent(server)
+        .await
+        .into_iter()
+        .filter_map(|b| {
+            Some((
+                b["message_thread_id"].as_i64(),
+                b["text"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn без_права_на_темы_причина_видна_в_группе_и_в_админке() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let keeper = bound(&services, &ctx).await;
+    assert!(
+        texts(&server)
+            .await
+            .last()
+            .unwrap()
+            .1
+            .contains("Управление темами")
+    );
+    Mock::given(method("POST"))
+        .and(path_regex(r"/getChat$"))
+        .respond_with(ok(serde_json::json!({
+            "id": -100_500, "type": "supergroup", "title": "Админы", "is_forum": true
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/createForumTopic$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "ok": false, "error_code": 400,
+            "description": "Bad Request: not enough rights to create a topic"
+        })))
+        .with_priority(5)
+        .mount(&server)
+        .await;
+    keeper.step(true).await.unwrap();
+    assert_eq!(services.alerts().view().await.unwrap().topics_problem, None);
+
+    open(&services, 7_421, "Не подключается iPhone").await;
+    keeper.step(true).await.unwrap();
+    let all = texts(&server).await;
+    let count = |needle: &str, all: &[(Option<i64>, String)]| {
+        all.iter().filter(|(_, t)| t.contains(needle)).count()
+    };
+    assert_eq!(count("Не подключается iPhone", &all), 1);
+    assert_eq!(count("не раскладываются по темам", &all), 1);
+    assert!(all.iter().all(|(thread, _)| thread.is_none()));
+    let problem = services
+        .alerts()
+        .view()
+        .await
+        .unwrap()
+        .topics_problem
+        .unwrap();
+    assert!(problem.rights);
+    assert!(problem.reason.contains("not enough rights"));
+
+    open(&services, 7_422, "Медленно работает ночью").await;
+    keeper.step(true).await.unwrap();
+    let all = texts(&server).await;
+    assert_eq!(count("Медленно работает ночью", &all), 1);
+    assert_eq!(count("не раскладываются по темам", &all), 1);
+
+    services.alerts().request_test().await.unwrap();
+    keeper.step(false).await.unwrap();
+    let checks: Vec<(Option<i64>, String)> = texts(&server)
+        .await
+        .into_iter()
+        .filter(|(_, t)| t.contains("Проверка уведомлений"))
+        .collect();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].0, None);
+    assert!(checks[0].1.contains("обращения в поддержку"));
+    assert!(checks[0].1.contains("новые оплаты"));
+    assert!(checks[0].1.contains("Темы не создались"));
+    assert!(checks[0].1.contains("Управление темами"));
+
+    Mock::given(method("POST"))
+        .and(path_regex(r"/createForumTopic$"))
+        .respond_with(ok(serde_json::json!({
+            "message_thread_id": 77, "name": "Поддержка", "icon_color": 7_322_096
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    services.alerts().request_test().await.unwrap();
+    keeper.step(false).await.unwrap();
+    let fixed: Vec<(Option<i64>, String)> = texts(&server)
+        .await
+        .into_iter()
+        .filter(|(_, t)| t.contains("Проверка уведомлений"))
+        .skip(1)
+        .collect();
+    assert_eq!(fixed.len(), 13);
+    assert!(fixed.iter().all(|(thread, _)| *thread == Some(77)));
+    assert_eq!(services.alerts().view().await.unwrap().topics_problem, None);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn другая_причина_отказа_показывается_как_есть_и_пропадает_с_группой() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    let keeper = bound(&services, &ctx).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/createForumTopic$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "ok": false, "error_code": 400, "description": "Bad Request: the chat is not a forum <b>"
+        })))
+        .mount(&server)
+        .await;
+    services.alerts().request_test().await.unwrap();
+    keeper.step(false).await.unwrap();
+    let problem = services
+        .alerts()
+        .view()
+        .await
+        .unwrap()
+        .topics_problem
+        .unwrap();
+    assert!(!problem.rights);
+    assert_eq!(problem.reason, "Bad Request: the chat is not a forum <b>");
+    let last = texts(&server).await.last().cloned().unwrap();
+    assert!(last.1.contains("the chat is not a forum &lt;b&gt;"));
+    services.alerts().drop_chat(-100_500).await.unwrap();
+    assert_eq!(services.alerts().topics_problem().await.unwrap(), None);
+    db.cleanup().await;
+}
+
+#[test]
+fn болтовня_в_группе_не_доходит_до_защиты_от_флуда() {
+    let chatter = |text: &str| crate::group_chatter(&group_update(1, -100_500, text));
+    for text in ["привет", "/help", "/language", "", "/starting"] {
+        assert!(chatter(text), "{text}");
+    }
+    assert!(!chatter("/start@stealth_test_bot alerts_0123"));
+    assert!(!chatter("/start alerts_0123"));
+    assert!(!crate::group_chatter(&text_update(2, 9_002, "привет")));
+    assert!(!crate::group_chatter(&callback_update(3, 9_002, "buy")));
 }
