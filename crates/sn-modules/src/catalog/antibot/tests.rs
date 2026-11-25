@@ -1170,3 +1170,108 @@ async fn почта_привязанная_без_кода_не_отмечает
     drop(conn);
     db.cleanup().await;
 }
+
+#[test]
+fn пределы_сайта_по_умолчанию_выключены_и_проверяются_по_границам() {
+    let parse =
+        |config: serde_json::Value| AntibotSettings::parse(&ModuleConfig::from_value(&config));
+    let defaults = parse(serde_json::json!({})).unwrap();
+    assert_eq!(
+        (
+            defaults.site_address_day,
+            defaults.site_network_day,
+            defaults.site_minute
+        ),
+        (0, 0, 0)
+    );
+    let set = parse(serde_json::json!({
+        "site_address_day": "10", "site_network_day": 30, "site_minute": 100_000
+    }))
+    .unwrap();
+    assert_eq!(
+        (set.site_address_day, set.site_network_day, set.site_minute),
+        (10, 30, 100_000)
+    );
+    for field in ["site_address_day", "site_network_day", "site_minute"] {
+        for bad in [
+            serde_json::json!(100_001),
+            serde_json::json!(-1),
+            serde_json::json!("много"),
+        ] {
+            let error = parse(serde_json::json!({ field: bad })).unwrap_err();
+            assert!(error.starts_with(field), "{error}");
+        }
+    }
+    let schema = AntibotModule.settings_schema();
+    for field in ["site_address_day", "site_network_day", "site_minute"] {
+        let found = schema.iter().find(|f| f.key == field).unwrap();
+        assert!(found.label.starts_with("Предел"), "{}", found.label);
+    }
+}
+
+#[test]
+fn адрес_регистрации_разбирается_на_адрес_и_сеть() {
+    use signups::{Hidden, Origin, cloudflare};
+    for (ip, edge) in [
+        ("172.64.0.0", true),
+        ("172.71.255.255", true),
+        ("172.72.0.0", false),
+        ("172.63.255.255", false),
+        ("104.16.0.1", true),
+        ("104.28.0.1", false),
+        ("131.0.72.5", true),
+        ("131.0.76.0", false),
+        ("2606:4700::1", true),
+        ("2606:4701::1", false),
+        ("2a06:98c7:ffff::1", true),
+        ("2a06:98c8::1", false),
+        ("::ffff:162.158.1.1", true),
+        ("8.8.8.8", false),
+    ] {
+        assert_eq!(cloudflare(ip.parse().unwrap()), edge, "{ip}");
+    }
+    assert_eq!(
+        Origin::parse(Some(" 203.0.113.9 ")),
+        Origin::Known {
+            address: "203.0.113.9".into(),
+            network: None
+        }
+    );
+    assert_eq!(
+        Origin::parse(Some("::ffff:203.0.113.9")),
+        Origin::Known {
+            address: "203.0.113.9".into(),
+            network: None
+        }
+    );
+    assert_eq!(
+        Origin::parse(Some("2a00:1234:5678:9abc:def0::1")),
+        Origin::Known {
+            address: "2a00:1234:5678:9abc::/64".into(),
+            network: Some("2a00:1234:5678::/48".into())
+        }
+    );
+    for (ip, kind) in [
+        ("172.68.1.1", Hidden::Cloudflare),
+        ("10.0.0.5", Hidden::Internal),
+        ("127.0.0.1", Hidden::Internal),
+        ("100.64.0.1", Hidden::Internal),
+        ("fd00::1", Hidden::Internal),
+    ] {
+        assert!(
+            matches!(Origin::parse(Some(ip)), Origin::Hidden { kind: found, .. } if found == kind),
+            "{ip}"
+        );
+    }
+    for unknown in [
+        None,
+        Some(""),
+        Some("unknown"),
+        Some("203.0.113.9, 1.1.1.1"),
+    ] {
+        assert_eq!(Origin::parse(unknown), Origin::Unknown);
+    }
+    let line = signups::trusted_line();
+    assert!(line.starts_with("SN_TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12,173.245.48.0/20,"));
+    assert_eq!(line.matches('/').count(), 23);
+}

@@ -367,7 +367,7 @@ struct RawClaims {
     family_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdClaims {
     pub provider: Provider,
     pub sub: String,
@@ -481,7 +481,7 @@ impl IdClaims {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppleName {
     pub first_name: Option<String>,
     pub last_name: Option<String>,

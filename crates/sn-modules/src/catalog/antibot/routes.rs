@@ -1,6 +1,6 @@
 use super::store::{self, JournalFilter, JournalItem, MarkItem, Summary};
-use super::{AntibotSettings, active};
-use crate::catalog::web::{Admin, WebError};
+use super::{AntibotSettings, active, signups};
+use crate::catalog::web::{Admin, ClientAddr, WebError};
 use crate::context::ModuleContext;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -31,8 +31,46 @@ struct CaptchaState {
 struct SummaryView {
     settings: AntibotSettings,
     captcha: CaptchaState,
+    site: SiteState,
     #[serde(flatten)]
     counts: Summary,
+}
+
+#[derive(Serialize)]
+struct SiteState {
+    day: signups::Day,
+    hidden: Option<signups::HiddenAddress>,
+    trusted: Option<String>,
+}
+
+async fn site_state(
+    db: &mut sn_store::Conn,
+    address: ClientAddr,
+) -> Result<SiteState, sn_store::StoreError> {
+    let day = signups::day(db).await?;
+    let hidden = match signups::hidden(db).await? {
+        Some(found) => Some(found),
+        None => match signups::Origin::of(address.0) {
+            signups::Origin::Hidden {
+                kind: signups::Hidden::Cloudflare,
+                address,
+            } => Some(signups::HiddenAddress {
+                kind: signups::Hidden::Cloudflare,
+                address: address.to_string(),
+                at: chrono::Utc::now(),
+            }),
+            _ => None,
+        },
+    };
+    let trusted = hidden
+        .as_ref()
+        .filter(|found| found.kind == signups::Hidden::Cloudflare)
+        .map(|_| signups::trusted_line());
+    Ok(SiteState {
+        day,
+        hidden,
+        trusted,
+    })
 }
 
 fn captcha_state(
@@ -52,6 +90,7 @@ fn captcha_state(
 async fn summary(
     State(ctx): State<ModuleContext>,
     admin: Admin,
+    address: ClientAddr,
 ) -> Result<Json<SummaryView>, WebError> {
     admin.require(Permission::ClientsRead)?;
     let mut conn = ctx.store.conn().await?;
@@ -59,9 +98,11 @@ async fn summary(
     let counts = store::summary(&mut conn).await?;
     let health = super::captcha::health(&mut conn).await?;
     let captcha = captcha_state(&ctx, &settings, health);
+    let site = site_state(&mut conn, address).await?;
     Ok(Json(SummaryView {
         settings,
         captcha,
+        site,
         counts,
     }))
 }

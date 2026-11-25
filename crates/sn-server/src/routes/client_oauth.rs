@@ -14,6 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::ClientChannel;
+use sn_modules::catalog::antibot;
 use sn_modules::catalog::oauth::Provider;
 use sn_services::limits::RATE_LIMITED;
 use sn_services::oauth::{
@@ -172,18 +173,33 @@ async fn callback_form(
     returned(&state, &headers, &raw, reply).await
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct FinishBody {
+    #[serde(default)]
+    captcha: Option<String>,
+}
+
+fn may_retry(code: &str) -> bool {
+    matches!(
+        code,
+        RATE_LIMITED | antibot::CAPTCHA_REQUIRED | antibot::FAILED | antibot::UNAVAILABLE
+    )
+}
+
 async fn finish(
     State(state): State<AppState>,
     Meta(meta): Meta,
     method: Method,
     headers: HeaderMap,
+    body: Option<ApiJson<FinishBody>>,
 ) -> ApiResult<Response> {
     same_origin(&state, &method, &headers)?;
     let browser = cookie(&headers, COOKIE);
+    let body = body.map(|b| b.0).unwrap_or_default();
     let result = state
         .services
         .oauth()
-        .finish(browser.as_deref(), &meta)
+        .finish_with(browser.as_deref(), &meta, body.captcha.as_deref())
         .await;
     let mut response = match result {
         Ok(finished) => {
@@ -199,7 +215,7 @@ async fn finish(
             };
             cookies::with_cookie(session, Json(&finished))
         }
-        Err(err) if err.code() == RATE_LIMITED => return Err(err.into()),
+        Err(err) if may_retry(err.code()) => return Err(err.into()),
         Err(err) => ApiError::from(err).into_response(),
     };
     if let Some(clear) = cleared(&state) {

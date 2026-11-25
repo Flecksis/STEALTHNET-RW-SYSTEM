@@ -2,6 +2,7 @@ use crate::Actor;
 use crate::autorenew::AUTORENEW_METHOD;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
+use crate::site_signup;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::client::{
@@ -24,6 +25,7 @@ use sn_domain::subscription::Subscription;
 use sn_domain::support::{TicketFilter, TicketStatus};
 use sn_domain::tariff::{DevicePolicy, months_for_days};
 use sn_domain::traffic::TrafficPolicy;
+use sn_modules::catalog::antibot::signups::{self, Via};
 use sn_store::{
     ClientFilter, ClientHistoryEntry, ClientListItem, ClientPerson, Db, LockSpace, NewClient,
     StoreError, Tx,
@@ -322,6 +324,18 @@ async fn cancel_open_invoices(tx: &mut Tx, client_id: ClientId) -> ServiceResult
     })
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SiteVisit {
+    pub ip: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entered {
+    Ready(Client, bool),
+    Busy,
+    Refused(signups::Refusal),
+}
+
 pub struct ClientOps<'a> {
     pub(crate) services: &'a Services,
 }
@@ -349,6 +363,25 @@ impl<'a> ClientOps<'a> {
         start_param: Option<&str>,
         admit: impl FnOnce() -> bool + Send,
     ) -> ServiceResult<Option<(Client, bool)>> {
+        Ok(
+            match self
+                .ensure_telegram_from(profile, source, start_param, None, admit)
+                .await?
+            {
+                Entered::Ready(client, created) => Some((client, created)),
+                Entered::Busy | Entered::Refused(_) => None,
+            },
+        )
+    }
+
+    pub async fn ensure_telegram_from(
+        &self,
+        profile: &TelegramProfile,
+        source: RegistrationSource,
+        start_param: Option<&str>,
+        site: Option<&SiteVisit>,
+        admit: impl FnOnce() -> bool + Send,
+    ) -> ServiceResult<Entered> {
         let identity = NewIdentity::telegram(profile);
         {
             let mut conn = self.services.store().conn().await?;
@@ -360,7 +393,7 @@ impl<'a> ClientOps<'a> {
                 conn.clients()
                     .update_identity_meta(IdentityKind::Telegram, &identity.value, &identity.meta)
                     .await?;
-                return Ok(Some((client, false)));
+                return Ok(Entered::Ready(client, false));
             }
         }
         let mut tx = self.services.store().begin().await?;
@@ -374,11 +407,22 @@ impl<'a> ClientOps<'a> {
                 .update_identity_meta(IdentityKind::Telegram, &identity.value, &identity.meta)
                 .await?;
             tx.commit().await?;
-            return Ok(Some((client, false)));
+            return Ok(Entered::Ready(client, false));
         }
+        let admission = match site {
+            None => None,
+            Some(visit) => match signups::admit(&mut tx, visit.ip.as_deref(), false).await? {
+                Ok(admission) => admission,
+                Err(refusal) => {
+                    tx.rollback().await?;
+                    site_signup::count(self.services, refusal.as_str()).await;
+                    return Ok(Entered::Refused(refusal));
+                }
+            },
+        };
         if !admit() {
             tx.rollback().await?;
-            return Ok(None);
+            return Ok(Entered::Busy);
         }
         let client = tx
             .clients()
@@ -393,6 +437,7 @@ impl<'a> ClientOps<'a> {
             })
             .await?;
         tx.clients().add_identity(client.id, &identity).await?;
+        signups::record(&mut tx, admission, client.id, Via::Telegram).await?;
         tx.events()
             .push(&DomainEvent::ClientRegistered {
                 client_id: client.id,
@@ -401,7 +446,7 @@ impl<'a> ClientOps<'a> {
             })
             .await?;
         tx.commit().await?;
-        Ok(Some((client, true)))
+        Ok(Entered::Ready(client, true))
     }
 
     pub async fn card(&self, id: ClientId) -> ServiceResult<ClientCard> {

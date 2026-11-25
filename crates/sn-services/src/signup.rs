@@ -1,11 +1,12 @@
 use crate::auth::{Auth, RequestMeta, hash_password_async, new_token, token_hash};
 use crate::error::{ServiceError, ServiceResult};
-use crate::limits::rules;
+use crate::limits::{Strike, rules};
 use crate::login::{
     EMAIL_CODE_DIGITS, EMAIL_CODE_MAX_ATTEMPTS, EMAIL_CODE_TTL_SECONDS, LOGIN_LETTERS,
     code_invalid, code_strike, code_values, email_code, referral_code, same,
 };
 use crate::mail::SignupRule;
+use crate::site_signup;
 use crate::two_factor::{CabinetLogin, cabinet_session};
 use crate::utm_tracking::site_start_param;
 use chrono::{DateTime, Duration, Utc};
@@ -16,6 +17,7 @@ use sn_domain::client::{
 use sn_domain::events::DomainEvent;
 use sn_domain::lang;
 use sn_domain::mail_letters::{LetterId, Values};
+use sn_modules::catalog::antibot::signups::{self, Refusal, Via};
 use sn_modules::catalog::start_param::Utm;
 use sn_store::{Db, NewClient};
 
@@ -139,7 +141,7 @@ impl Auth<'_> {
             .await?;
         match rule {
             SignupRule::Open => self
-                .register_now(email, password, meta, from.start_param())
+                .register_now(email, password, meta, from.start_param(), captcha)
                 .await
                 .map(Registration::Login),
             SignupRule::Confirm => self
@@ -328,6 +330,18 @@ impl Auth<'_> {
         code: &str,
         meta: &RequestMeta,
     ) -> ServiceResult<CabinetLogin> {
+        self.email_signup_confirm_with(email, token, code, meta, None)
+            .await
+    }
+
+    pub async fn email_signup_confirm_with(
+        &self,
+        email: &str,
+        token: &str,
+        code: &str,
+        meta: &RequestMeta,
+        captcha: Option<&str>,
+    ) -> ServiceResult<CabinetLogin> {
         self.site_open()?;
         self.email_by_password()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
@@ -339,14 +353,41 @@ impl Auth<'_> {
         let Some(code) = digits(code) else {
             return Err(code_invalid());
         };
-        let strike = code_strike(&limits, &email).await?;
+        let mut strike = Some(code_strike(&limits, &email).await?);
+        let mut human = site_signup::asked_before(self.services);
+        loop {
+            match self
+                .create_by_code(&email, token, &code, meta, strike.as_ref(), human)
+                .await?
+            {
+                Ok(login) => return Ok(login),
+                Err(refusal) => {
+                    if let Some(strike) = strike.take() {
+                        limits.forgive(&strike).await?;
+                    }
+                    site_signup::over_limit(self.services, refusal, captcha, meta).await?;
+                    human = true;
+                }
+            }
+        }
+    }
+
+    async fn create_by_code(
+        &self,
+        email: &str,
+        token: &str,
+        code: &str,
+        meta: &RequestMeta,
+        strike: Option<&Strike>,
+        human: bool,
+    ) -> ServiceResult<Result<CabinetLogin, Refusal>> {
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         let row: Option<Pending> = sqlx::query_as(&format!(
             "SELECT {PENDING_COLUMNS} FROM email_signups WHERE token_hash = $1 AND email = $2 FOR UPDATE"
         ))
         .bind(token_hash(token))
-        .bind(&email)
+        .bind(email)
         .fetch_optional(tx.conn())
         .await?;
         let Some(row) = row.filter(|r| r.expires_at > now) else {
@@ -357,7 +398,7 @@ impl Auth<'_> {
         }
         let proven = !row.taken
             && row.code_expires_at > now
-            && same(&row.code_hash, &code_digest(&email, &code));
+            && same(&row.code_hash, &code_digest(email, code));
         let password_hash = match row.password_hash {
             Some(hash) if proven => hash,
             _ => {
@@ -369,23 +410,29 @@ impl Auth<'_> {
                 return Err(code_invalid());
             }
         };
-        limits.forgive(&strike).await?;
+        if let Some(strike) = strike {
+            self.services.limits().release(&mut tx, strike).await?;
+        }
         sqlx::query("DELETE FROM email_signups WHERE email = $1")
-            .bind(&email)
+            .bind(email)
             .execute(tx.conn())
             .await?;
         if tx
             .clients()
-            .find_by_identity(IdentityKind::Email, &email)
+            .find_by_identity(IdentityKind::Email, email)
             .await?
             .is_some()
         {
             tx.commit().await?;
-            return Err(ServiceError::rejected(
-                "auth.email_taken",
-                "Эта почта уже зарегистрирована: войдите с паролем",
-            ));
+            return Err(site_signup::email_taken());
         }
+        let admission = match signups::admit(&mut tx, meta.ip.as_deref(), human).await? {
+            Ok(admission) => admission,
+            Err(refusal) => {
+                tx.rollback().await?;
+                return Ok(Err(refusal));
+            }
+        };
         let client = tx
             .clients()
             .create(&NewClient {
@@ -401,7 +448,7 @@ impl Auth<'_> {
         tx.clients()
             .add_identity(
                 client.id,
-                &NewIdentity::new(IdentityKind::Email, &email, true)?,
+                &NewIdentity::new(IdentityKind::Email, email, true)?,
             )
             .await?;
         sqlx::query("INSERT INTO client_passwords (client_id, password_hash) VALUES ($1, $2)")
@@ -409,6 +456,7 @@ impl Auth<'_> {
             .bind(&password_hash)
             .execute(tx.conn())
             .await?;
+        signups::record(&mut tx, admission, client.id, Via::Password).await?;
         tx.events()
             .push(&DomainEvent::ClientRegistered {
                 client_id: client.id,
@@ -418,6 +466,6 @@ impl Auth<'_> {
             .await?;
         let login = cabinet_session(&mut tx, client.id, now, meta, true).await?;
         tx.commit().await?;
-        Ok(login)
+        Ok(Ok(login))
     }
 }

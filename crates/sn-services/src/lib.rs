@@ -48,6 +48,7 @@ pub mod server_load;
 pub mod services;
 pub mod settings;
 pub mod signup;
+mod site_signup;
 pub mod squad_countries;
 pub mod stars_ledger;
 pub mod stars_review;

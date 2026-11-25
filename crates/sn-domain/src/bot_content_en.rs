@@ -461,6 +461,12 @@ pub fn default(key: &str) -> Option<&'static str> {
             "This sign-in request has expired. Start signing in on the website again."
         }
         "login.error" => "Account sign-in: {error}",
+        "login.limit" => {
+            "You need an account to sign in to the website, and a new one can't be created from your address right now. Send /start to use the bot, or try signing in to the website later."
+        }
+        "login.busy" => {
+            "Too many new accounts are being created on the website right now. Please try signing in again in a minute, or send /start to use the bot."
+        }
         "docs.intro" => "Before you start, please read these documents:",
         "docs.item" => "• <a href=\"{url}\">{title}</a>",
         "docs.agree" => "\nBy tapping “I accept”, you agree to them.",

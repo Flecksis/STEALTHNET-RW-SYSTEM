@@ -943,7 +943,9 @@ pub async fn require_admin(
     match principal {
         Ok(principal) => {
             let key = principal.api_key;
+            let address = module_address(&state, &request);
             request.extensions_mut().insert(principal);
+            request.extensions_mut().insert(address);
             sn_store::with_api_key(key, next.run(request)).await
         }
         Err(err) => axum::response::IntoResponse::into_response(err),

@@ -186,6 +186,8 @@ struct EmailVerify {
     email: String,
     code: String,
     #[serde(default)]
+    captcha: Option<String>,
+    #[serde(default)]
     utm: Option<serde_json::Value>,
     #[serde(default, rename = "ref")]
     referral: Option<String>,
@@ -201,7 +203,13 @@ async fn email_verify(
     let login = state
         .services
         .auth()
-        .email_login_verify_from(&body.email, &body.code, &meta, from)
+        .email_login_verify_from(
+            &body.email,
+            &body.code,
+            &meta,
+            from,
+            body.captcha.as_deref(),
+        )
         .await?;
     Ok(match &login {
         CabinetLogin::Session(session) => session_response(&state, session, &login),
@@ -277,6 +285,8 @@ struct SignupConfirm {
     email: String,
     signup_token: String,
     code: String,
+    #[serde(default)]
+    captcha: Option<String>,
 }
 
 async fn email_signup_confirm(
@@ -287,7 +297,13 @@ async fn email_signup_confirm(
     let login = state
         .services
         .auth()
-        .email_signup_confirm(&body.email, &body.signup_token, &body.code, &meta)
+        .email_signup_confirm_with(
+            &body.email,
+            &body.signup_token,
+            &body.code,
+            &meta,
+            body.captcha.as_deref(),
+        )
         .await?;
     Ok(cabinet_response(&state, &login))
 }

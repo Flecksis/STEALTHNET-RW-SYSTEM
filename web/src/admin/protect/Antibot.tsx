@@ -30,6 +30,7 @@ import {
   type Page,
 } from './model';
 import { clientFrom } from './sections';
+import { dayLimited, hiddenShort, hiddenText, siteLine, SITE_NUMBERS, type SiteLimits } from './siteLimits';
 import '../form.css';
 import '../promo/promo.css';
 import '../referral/referral.css';
@@ -178,7 +179,15 @@ type FormState = {
   captcha_secret: string;
   captcha_trial: 'all' | 'suspicious';
   captcha_signup: boolean;
+  site_address_day: string;
+  site_network_day: string;
+  site_minute: string;
 };
+
+function limitsOf(summary: AntibotSummary): SiteLimits {
+  const s = summary.settings;
+  return { site_address_day: s.site_address_day ?? 0, site_network_day: s.site_network_day ?? 0, site_minute: s.site_minute ?? 0 };
+}
 
 function formOf(summary: AntibotSummary): FormState {
   const s = summary.settings;
@@ -198,6 +207,9 @@ function formOf(summary: AntibotSummary): FormState {
     captcha_secret: '',
     captcha_trial: s.captcha_trial ?? 'all',
     captcha_signup: s.captcha_signup ?? true,
+    site_address_day: String(s.site_address_day ?? 0),
+    site_network_day: String(s.site_network_day ?? 0),
+    site_minute: String(s.site_minute ?? 0),
   };
 }
 
@@ -279,6 +291,34 @@ function CaptchaFields({ form, summary, set, busy }: { form: FormState; summary:
   );
 }
 
+function SiteFields({ form, summary, set, busy }: { form: FormState; summary: AntibotSummary; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; busy: boolean }) {
+  const hidden = summary.site?.hidden ?? null;
+  const daily = dayLimited(limitsOf(summary)) || Number(form.site_address_day) > 0 || Number(form.site_network_day) > 0;
+  return (
+    <fieldset className="pt-modes pt-group">
+      <legend>Когда не создавать новый аккаунт на сайте</legend>
+      <p className="cap">
+        Это отказ, а не отметка: сверх предела аккаунт не создаётся. Считаются регистрация по почте, вход через Google и Apple и вход через Telegram на сайте. Вход в существующий аккаунт, бот и мини-приложение пределы не задевают.
+      </p>
+      <div className="pt-grid">
+        {SITE_NUMBERS.map(([key, label, hint]) => (
+          <label key={key} className="pf-field">
+            <span className="pf-label">{label}</span>
+            <input className="field num" inputMode="numeric" value={form[key]} onChange={(e) => set(key, e.target.value)} maxLength={6} disabled={busy} />
+            <span className="cap">{hint}</span>
+          </label>
+        ))}
+      </div>
+      {hidden ? (
+        <div role={daily ? 'alert' : 'status'}>
+          <p className={daily ? 'err' : 'cap'}>{hiddenText(hidden, dateTime(hidden.at).toLowerCase())}</p>
+          {hidden.kind === 'cloudflare' && summary.site?.trusted ? <code className="pt-code">{summary.site.trusted}</code> : null}
+        </div>
+      ) : null}
+    </fieldset>
+  );
+}
+
 const GUARDS: Array<['roulette_guard' | 'contest_guard', string, string]> = [
   ['roulette_guard', 'Защищать рулетку', 'Бесплатные вращения подозрительным — по выбранному режиму. Вращения за покупки не трогаются.'],
   [
@@ -336,6 +376,14 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
       }
       config[key] = Number(raw);
     }
+    for (const [key, label] of SITE_NUMBERS) {
+      const raw = form[key].trim();
+      if (!/^\d{1,6}$/.test(raw) || Number(raw) > 100000) {
+        setError(`${label}: целое число от 0 до 100000`);
+        return;
+      }
+      config[key] = Number(raw);
+    }
     setBusy(true);
     setError(null);
     try {
@@ -373,15 +421,18 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
           </label>
         ))}
       </fieldset>
-      <div className="pt-grid">
-        {NUMBERS.map(([key, label, hint]) => (
-          <label key={key} className="pf-field">
-            <span className="pf-label">{label}</span>
-            <input className="field num" inputMode="numeric" value={String(form[key])} onChange={(e) => set(key, e.target.value)} maxLength={4} disabled={busy} />
-            <span className="cap">{hint}</span>
-          </label>
-        ))}
-      </div>
+      <fieldset className="pt-modes pt-group">
+        <legend>Когда отмечать</legend>
+        <div className="pt-grid">
+          {NUMBERS.map(([key, label, hint]) => (
+            <label key={key} className="pf-field">
+              <span className="pf-label">{label}</span>
+              <input className="field num" inputMode="numeric" value={String(form[key])} onChange={(e) => set(key, e.target.value)} maxLength={4} disabled={busy} />
+              <span className="cap">{hint}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
       <label className="pf-field">
         <span className="pf-label">Свои одноразовые почтовые домены</span>
         <input className="field" value={form.extra_domains} onChange={(e) => set('extra_domains', e.target.value)} placeholder="temp.example, junk.example" maxLength={2000} disabled={busy} />
@@ -410,6 +461,7 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
           <Switch on={form[key]} onToggle={() => set(key, !form[key])} label={label} disabled={busy} />
         </div>
       ))}
+      <SiteFields form={form} summary={summary} set={set} busy={busy} />
       <CaptchaFields form={form} summary={summary} set={set} busy={busy} />
       {error ? (
         <p className="err" role="alert">
@@ -443,6 +495,23 @@ function CaptchaAlert({ summary, className }: { summary: AntibotSummary; classNa
       <span className="err rf-err">{text}</span>
     </p>
   ) : null;
+}
+
+function SiteLead({ summary, open, className }: { summary: AntibotSummary; open: boolean; className: string }) {
+  const site = summary.site;
+  const limits = limitsOf(summary);
+  const line = site ? siteLine(limits, site.day) : null;
+  const hidden = site?.hidden && dayLimited(limits) && !open ? site.hidden : null;
+  return (
+    <>
+      {line ? <p className={className}>{line}</p> : null}
+      {hidden ? (
+        <p className={className} role="alert">
+          <span className="err rf-err">{hiddenShort(hidden)}</span>
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 function Off({ phone }: { phone?: boolean }) {
@@ -494,6 +563,7 @@ function AntibotDesk({ data }: { data: Data }) {
       <ClientsTabs />
       {data.off ? <Off /> : null}
       {data.summary ? <p className="rf-lead">{antibotLead(data.summary)}</p> : null}
+      {data.summary && !data.off ? <SiteLead summary={data.summary} open={settings} className="rf-lead" /> : null}
       {data.summary ? <CaptchaAlert summary={data.summary} className="rf-lead" /> : null}
       {data.error && !data.off ? (
         <p className="rf-lead" role="alert">
@@ -676,6 +746,7 @@ function AntibotPhone({ data }: { data: Data }) {
       <ClientsTabs />
       {data.off ? <Off phone /> : null}
       {data.summary ? <p className="pt-lead">{antibotLead(data.summary)}</p> : null}
+      {data.summary && !data.off ? <SiteLead summary={data.summary} open={settings} className="pt-lead" /> : null}
       {data.summary ? <CaptchaAlert summary={data.summary} className="pt-lead" /> : null}
       {data.error && !data.off ? (
         <p className="hp-quiet hp-card" role="alert">

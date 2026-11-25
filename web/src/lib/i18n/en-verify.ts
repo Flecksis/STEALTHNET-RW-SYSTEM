@@ -1,6 +1,7 @@
 export const VERIFY: Record<string, string> = {
   'Загружаем проверку…': 'Loading the check…',
   'Проверка не загрузилась. Проверьте интернет и попробуйте ещё раз.': 'The check didn\'t load. Check your connection and try again.',
+  'Сейчас создаётся много новых аккаунтов, поэтому нужна проверка.': 'Many new accounts are being created right now, so a check is needed.',
   'Проверка настроена с ошибкой. Напишите в поддержку.': 'The check is set up incorrectly. Please contact support.',
   'Ссылка на проверку устарела. Вернитесь в бот и запросите пробный период ещё раз.': 'The check link has expired. Go back to the bot and request the free trial again.',
   'Не получилось открыть проверку. Проверьте интернет и обновите страницу.': 'Couldn\'t open the check. Check your connection and refresh the page.',

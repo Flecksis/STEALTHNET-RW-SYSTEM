@@ -38,6 +38,7 @@ pub enum LockSpace {
     Worker = 6,
     Category = 7,
     Documents = 8,
+    SiteSignup = 9,
 }
 
 impl LockSpace {

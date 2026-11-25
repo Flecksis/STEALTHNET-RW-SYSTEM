@@ -10,12 +10,13 @@ use crate::error::{ServiceError, ServiceResult};
 use crate::limits::rules;
 use crate::login::referral_code;
 use crate::services::Services;
+use crate::site_signup;
 use crate::two_factor::{CabinetLogin, cabinet_session};
 use crate::utm_tracking::site_param;
 use chrono::{DateTime, Duration, Utc};
 use protocol::{AppleName, AuthorizeRequest, Credentials};
 use rand::RngCore;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sn_domain::access::ClientPrincipal;
 use sn_domain::client::{
     Identity, IdentityKind, NewIdentity, RegistrationSource, normalize_identity,
@@ -24,6 +25,8 @@ use sn_domain::events::DomainEvent;
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
+use sn_modules::catalog::antibot;
+use sn_modules::catalog::antibot::signups::{self, Via};
 use sn_modules::catalog::oauth::{OauthSettings, Provider, TEMPLATE_LINKED, TEMPLATE_UNLINKED};
 use sn_modules::catalog::start_param::{Utm, with_referral};
 use sn_store::{Db, NewClient, Tx};
@@ -37,7 +40,7 @@ const LOCK_SPACE: i32 = 0x6f61;
 pub const EMAIL_UNVERIFIED: &str = "oauth.email_unverified";
 pub const UNLINKED_ON_CONFIRM_AUDIT: &str = "client.oauth_unlinked_on_confirm";
 
-const CODES: [&str; 16] = [
+const CODES: [&str; 18] = [
     "oauth.canceled",
     "oauth.expired",
     "oauth.refused",
@@ -54,6 +57,8 @@ const CODES: [&str; 16] = [
     "oauth.no_request",
     "oauth.failed",
     EMAIL_UNVERIFIED,
+    signups::LIMIT_CODE,
+    signups::BUSY_CODE,
 ];
 
 fn unconfirmed_only(identities: &[Identity]) -> bool {
@@ -214,6 +219,7 @@ pub struct LoginMethods {
 struct Refusal {
     code: &'static str,
     message: String,
+    signup: Option<signups::Refusal>,
 }
 
 impl Refusal {
@@ -221,8 +227,29 @@ impl Refusal {
         Refusal {
             code,
             message: message.into(),
+            signup: None,
         }
     }
+
+    fn signup(refusal: signups::Refusal) -> Self {
+        Refusal {
+            code: refusal.code(),
+            message: format!("{}.", refusal.message()),
+            signup: Some(refusal),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Held {
+    claims: IdClaims,
+    name: AppleName,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Arrived<'a> {
+    ip: Option<&'a str>,
+    human: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,12 +273,14 @@ struct RequestRow {
     created_client: bool,
     error_code: Option<String>,
     error_text: Option<String>,
+    ip: Option<String>,
+    claims: Option<serde_json::Value>,
     expires_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
 }
 
 const REQUEST_COLUMNS: &str = "id, provider, purpose, browser_hash, client_id, session_id, referral, utm, status, \
-     result_client_id, created_client, error_code, error_text, expires_at, finished_at";
+     result_client_id, created_client, error_code, error_text, ip, claims, expires_at, finished_at";
 
 impl RequestRow {
     fn purpose(&self) -> Purpose {
@@ -532,6 +561,13 @@ impl<'a> OauthOps<'a> {
             .bind(now - Duration::days(RETENTION_DAYS))
             .execute(conn.conn())
             .await?;
+        sqlx::query(
+            "UPDATE oauth_requests SET status = 'consumed', claims = NULL \
+             WHERE status = 'human' AND finished_at < $1",
+        )
+        .bind(now - Duration::seconds(FINISH_SECONDS))
+        .execute(conn.conn())
+        .await?;
         Ok(OauthStart {
             url,
             browser,
@@ -657,6 +693,7 @@ impl<'a> OauthOps<'a> {
         if row.status != "pending" {
             return Ok(outcome);
         }
+        let mut held = None;
         let result = if row.expires_at <= now {
             Err(Refusal::new(
                 "oauth.expired",
@@ -680,6 +717,7 @@ impl<'a> OauthOps<'a> {
                 browser,
                 params.user.as_deref(),
                 now,
+                &mut held,
             )
             .await?
         } else {
@@ -691,8 +729,8 @@ impl<'a> OauthOps<'a> {
                 ),
             ))
         };
-        match &result {
-            Ok(done) => {
+        match (&result, held) {
+            (Ok(done), _) => {
                 sqlx::query(
                     "UPDATE oauth_requests SET status = 'done', result_client_id = $2, created_client = $3, finished_at = $4 WHERE id = $1",
                 )
@@ -703,7 +741,17 @@ impl<'a> OauthOps<'a> {
                 .execute(tx.conn())
                 .await?;
             }
-            Err(refusal) => {
+            (Err(_), Some(held)) => {
+                sqlx::query(
+                    "UPDATE oauth_requests SET status = 'human', claims = $2, finished_at = $3 WHERE id = $1",
+                )
+                .bind(row.id)
+                .bind(serde_json::to_value(&held).map_err(|e| ServiceError::Internal(e.to_string()))?)
+                .bind(now)
+                .execute(tx.conn())
+                .await?;
+            }
+            (Err(refusal), None) => {
                 sqlx::query(
                     "UPDATE oauth_requests SET status = 'failed', error_code = $2, error_text = $3, finished_at = $4 WHERE id = $1",
                 )
@@ -713,6 +761,9 @@ impl<'a> OauthOps<'a> {
                 .bind(now)
                 .execute(tx.conn())
                 .await?;
+                if let Some(kind) = refusal.signup {
+                    signups::refused(&mut tx, kind.as_str()).await?;
+                }
             }
         }
         tx.commit().await?;
@@ -729,6 +780,7 @@ impl<'a> OauthOps<'a> {
         browser: &str,
         user: Option<&str>,
         now: DateTime<Utc>,
+        held: &mut Option<Held>,
     ) -> ServiceResult<Result<Done, Refusal>> {
         let Some((settings, base, _)) = self.configured() else {
             return Ok(Err(Refusal::new(
@@ -790,14 +842,26 @@ impl<'a> OauthOps<'a> {
         };
         match row.purpose() {
             Purpose::Login => {
-                self.login_with(
-                    tx,
-                    &claims,
-                    &name,
-                    row.referral.as_deref(),
-                    row.utm.as_deref(),
-                )
-                .await
+                let arrived = Arrived {
+                    ip: row.ip.as_deref(),
+                    human: false,
+                };
+                let result = self
+                    .login_with(
+                        tx,
+                        &claims,
+                        &name,
+                        row.referral.as_deref(),
+                        row.utm.as_deref(),
+                        arrived,
+                    )
+                    .await?;
+                if matches!(&result, Err(refusal) if refusal.signup == Some(signups::Refusal::Minute))
+                    && antibot::spare_captcha(&self.services.module_context()).is_some()
+                {
+                    *held = Some(Held { claims, name });
+                }
+                Ok(result)
             }
             Purpose::Link => self.link_with(tx, row, &claims, &name, now).await,
         }
@@ -810,6 +874,7 @@ impl<'a> OauthOps<'a> {
         name: &AppleName,
         referral: Option<&str>,
         utm: Option<&str>,
+        arrived: Arrived<'_>,
     ) -> ServiceResult<Result<Done, Refusal>> {
         let provider = claims.provider;
         let kind = provider.identity();
@@ -901,6 +966,10 @@ impl<'a> OauthOps<'a> {
                 created: false,
             }));
         }
+        let admission = match signups::admit(tx, arrived.ip, arrived.human).await? {
+            Ok(admission) => admission,
+            Err(refusal) => return Ok(Err(Refusal::signup(refusal))),
+        };
         let client = tx
             .clients()
             .create(&NewClient {
@@ -914,6 +983,11 @@ impl<'a> OauthOps<'a> {
             })
             .await?;
         tx.clients().add_identity(client.id, &identity).await?;
+        let via = match provider {
+            Provider::Google => Via::Google,
+            Provider::Apple => Via::Apple,
+        };
+        signups::record(tx, admission, client.id, via).await?;
         if let Some(email) = &email {
             tx.clients()
                 .add_identity_if_free(
@@ -1047,6 +1121,15 @@ impl<'a> OauthOps<'a> {
         browser: Option<&str>,
         meta: &RequestMeta,
     ) -> ServiceResult<OauthFinish> {
+        self.finish_with(browser, meta, None).await
+    }
+
+    pub async fn finish_with(
+        &self,
+        browser: Option<&str>,
+        meta: &RequestMeta,
+        captcha: Option<&str>,
+    ) -> ServiceResult<OauthFinish> {
         let Some(browser) = browser.map(str::trim).filter(|b| !b.is_empty()) else {
             return Err(no_request());
         };
@@ -1054,6 +1137,24 @@ impl<'a> OauthOps<'a> {
             .limits()
             .hit_ip(rules::OAUTH_FINISH_IP, meta.ip.as_deref())
             .await?;
+        let mut human = false;
+        loop {
+            match self.finish_once(browser, meta, human).await? {
+                Ok(finish) => return Ok(finish),
+                Err(refusal) => {
+                    site_signup::over_limit(self.services, refusal, captcha, meta).await?;
+                    human = true;
+                }
+            }
+        }
+    }
+
+    async fn finish_once(
+        &self,
+        browser: &str,
+        meta: &RequestMeta,
+        human: bool,
+    ) -> ServiceResult<Result<OauthFinish, signups::Refusal>> {
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         let row: Option<RequestRow> = sqlx::query_as(&format!(
@@ -1062,7 +1163,7 @@ impl<'a> OauthOps<'a> {
         .bind(token_hash(browser))
         .fetch_optional(tx.conn())
         .await?;
-        let Some(row) = row else {
+        let Some(mut row) = row else {
             return Err(no_request());
         };
         let provider = row.provider().ok_or_else(no_request)?;
@@ -1072,19 +1173,44 @@ impl<'a> OauthOps<'a> {
         match row.status.as_str() {
             "pending" | "consumed" => return Err(no_request()),
             _ if late => {
-                sqlx::query("UPDATE oauth_requests SET status = 'consumed' WHERE id = $1")
-                    .bind(row.id)
-                    .execute(tx.conn())
-                    .await?;
+                sqlx::query(
+                    "UPDATE oauth_requests SET status = 'consumed', claims = NULL WHERE id = $1",
+                )
+                .bind(row.id)
+                .execute(tx.conn())
+                .await?;
                 tx.commit().await?;
                 return Err(ServiceError::rejected(
                     "oauth.expired",
                     "Время на вход вышло. Нажмите кнопку ещё раз.",
                 ));
             }
+            "human" => match self.create_held(&mut tx, &row, human).await? {
+                Ok(done) => {
+                    row.result_client_id = Some(done.client_id.0);
+                    row.created_client = done.created;
+                }
+                Err(refusal) if refusal.signup == Some(signups::Refusal::Minute) => {
+                    tx.rollback().await?;
+                    return Ok(Err(signups::Refusal::Minute));
+                }
+                Err(refusal) => {
+                    if let Some(kind) = refusal.signup {
+                        signups::refused(&mut tx, kind.as_str()).await?;
+                    }
+                    sqlx::query(
+                        "UPDATE oauth_requests SET status = 'consumed', claims = NULL WHERE id = $1",
+                    )
+                    .bind(row.id)
+                    .execute(tx.conn())
+                    .await?;
+                    tx.commit().await?;
+                    return Err(ServiceError::rejected(refusal.code, refusal.message));
+                }
+            },
             _ => {}
         }
-        sqlx::query("UPDATE oauth_requests SET status = 'consumed' WHERE id = $1")
+        sqlx::query("UPDATE oauth_requests SET status = 'consumed', claims = NULL WHERE id = $1")
             .bind(row.id)
             .execute(tx.conn())
             .await?;
@@ -1123,7 +1249,32 @@ impl<'a> OauthOps<'a> {
             }
         };
         tx.commit().await?;
-        Ok(result)
+        Ok(Ok(result))
+    }
+
+    async fn create_held(
+        &self,
+        tx: &mut Tx,
+        row: &RequestRow,
+        human: bool,
+    ) -> ServiceResult<Result<Done, Refusal>> {
+        let held: Held = row
+            .claims
+            .clone()
+            .and_then(|claims| serde_json::from_value(claims).ok())
+            .ok_or_else(no_request)?;
+        self.login_with(
+            tx,
+            &held.claims,
+            &held.name,
+            row.referral.as_deref(),
+            row.utm.as_deref(),
+            Arrived {
+                ip: row.ip.as_deref(),
+                human,
+            },
+        )
+        .await
     }
 
     fn describe(&self, identities: &[Identity], password: bool) -> LoginMethods {

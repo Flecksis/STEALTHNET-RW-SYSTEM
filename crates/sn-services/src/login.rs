@@ -3,10 +3,12 @@ use crate::auth::{
     Auth, CLIENT_SESSION_DAYS, ClientLogin, RequestMeta, check_password, hash_password_async,
     token_hash,
 };
+use crate::clients::{Entered, SiteVisit};
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::{RateLimits, Strike, rules};
 use crate::mail::SignupRule;
 use crate::signup::{Arrival, confirm_required, signup_closed};
+use crate::site_signup;
 use crate::two_factor::{CabinetLogin, cabinet_session, cabinet_session_for};
 use crate::utm_tracking::site_start_param;
 use chrono::{DateTime, Duration, Utc};
@@ -24,6 +26,7 @@ use sn_domain::lang;
 use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::settings::keys;
 use sn_modules::catalog::antibot;
+use sn_modules::catalog::antibot::signups::{self, Refusal, Via};
 use sn_modules::catalog::start_param::Utm;
 use sn_store::{Db, NewClient, NewSession, SessionChannel, SessionScope, Tx};
 
@@ -358,6 +361,14 @@ impl<'a> Auth<'a> {
         Ok(row)
     }
 
+    pub async fn telegram_login_visit(&self, code: &str) -> ServiceResult<Option<SiteVisit>> {
+        match self.pending_telegram_request(code).await {
+            Ok(row) => Ok(Some(SiteVisit { ip: row.ip })),
+            Err(ServiceError::NotFound(_) | ServiceError::Rejected { .. }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
     pub async fn telegram_login_prompt(
         &self,
         code: &str,
@@ -379,11 +390,23 @@ impl<'a> Auth<'a> {
         profile: &TelegramProfile,
     ) -> ServiceResult<TelegramLoginConfirmed> {
         let pending = self.pending_telegram_request(code).await?;
-        let (client, created) = self
+        let visit = SiteVisit {
+            ip: pending.ip.clone(),
+        };
+        let (client, created) = match self
             .services
             .clients()
-            .ensure_telegram(profile, RegistrationSource::Web, None)
-            .await?;
+            .ensure_telegram_from(profile, RegistrationSource::Web, None, Some(&visit), || {
+                true
+            })
+            .await?
+        {
+            Entered::Ready(client, created) => (client, created),
+            Entered::Busy => {
+                return Err(ServiceError::Internal("регистрация не допущена".into()));
+            }
+            Entered::Refused(refusal) => return Err(site_signup::refusal(refusal)),
+        };
         if client.is_blocked() {
             return Err(ServiceError::Forbidden);
         }
@@ -571,7 +594,7 @@ impl<'a> Auth<'a> {
             SignupRule::Closed => return Err(signup_closed()),
         }
         self.captcha_gate(antibot::SIGNUP, None, meta).await?;
-        self.register_now(email, password, meta, site_start_param(utm, None))
+        self.register_now(email, password, meta, site_start_param(utm, None), None)
             .await
     }
 
@@ -591,18 +614,7 @@ impl<'a> Auth<'a> {
             .await?;
         match antibot::check_signup(&ctx, action, token, meta.ip.as_deref()).await? {
             antibot::SignupCheck::Off | antibot::SignupCheck::Passed => Ok(()),
-            antibot::SignupCheck::Missing => Err(ServiceError::rejected(
-                antibot::CAPTCHA_REQUIRED,
-                "Пройдите проверку «Я не робот»",
-            )),
-            antibot::SignupCheck::Failed => Err(ServiceError::rejected(
-                antibot::FAILED,
-                "Проверка не пройдена. Попробуйте ещё раз",
-            )),
-            antibot::SignupCheck::Unavailable => Err(ServiceError::rejected(
-                antibot::UNAVAILABLE,
-                "Не удалось проверить, что вы не робот: сервис проверки не ответил. Попробуйте ещё раз через минуту",
-            )),
+            check => Err(crate::site_signup::captcha_error(check)),
         }
     }
 
@@ -612,6 +624,7 @@ impl<'a> Auth<'a> {
         password: &str,
         meta: &RequestMeta,
         start_param: Option<String>,
+        captcha: Option<&str>,
     ) -> ServiceResult<CabinetLogin> {
         let email = normalize_identity(IdentityKind::Email, email)?;
         let limits = self.services.limits();
@@ -619,20 +632,63 @@ impl<'a> Auth<'a> {
             .hit_ip(rules::EMAIL_START_IP, meta.ip.as_deref())
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        let mut human = site_signup::asked_before(self.services);
+        let early = {
+            let mut conn = self.services.store().conn().await?;
+            if conn
+                .clients()
+                .find_by_identity(IdentityKind::Email, &email)
+                .await?
+                .is_some()
+            {
+                return Err(site_signup::email_taken());
+            }
+            signups::refuse_early(&mut conn, meta.ip.as_deref(), human).await?
+        };
+        if let Some(refusal) = early {
+            site_signup::over_limit(self.services, refusal, captcha, meta).await?;
+            human = true;
+        }
         let hash = hash_password_async(password).await?;
+        loop {
+            match self
+                .create_by_password(&email, &hash, meta, start_param.clone(), human)
+                .await?
+            {
+                Ok(login) => return Ok(login),
+                Err(refusal) => {
+                    site_signup::over_limit(self.services, refusal, captcha, meta).await?;
+                    human = true;
+                }
+            }
+        }
+    }
+
+    async fn create_by_password(
+        &self,
+        email: &str,
+        hash: &str,
+        meta: &RequestMeta,
+        start_param: Option<String>,
+        human: bool,
+    ) -> ServiceResult<Result<CabinetLogin, Refusal>> {
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         if tx
             .clients()
-            .find_by_identity(IdentityKind::Email, &email)
+            .find_by_identity(IdentityKind::Email, email)
             .await?
             .is_some()
         {
-            return Err(ServiceError::rejected(
-                "auth.email_taken",
-                "Эта почта уже зарегистрирована: войдите с паролем",
-            ));
+            return Err(site_signup::email_taken());
         }
+        let admission = match signups::admit(&mut tx, meta.ip.as_deref(), human).await? {
+            Ok(admission) => admission,
+            Err(refusal) => {
+                tx.rollback().await?;
+                return Ok(Err(refusal));
+            }
+        };
         let client = tx
             .clients()
             .create(&NewClient {
@@ -644,14 +700,15 @@ impl<'a> Auth<'a> {
         tx.clients()
             .add_identity(
                 client.id,
-                &NewIdentity::new(IdentityKind::Email, &email, false)?,
+                &NewIdentity::new(IdentityKind::Email, email, false)?,
             )
             .await?;
         sqlx::query("INSERT INTO client_passwords (client_id, password_hash) VALUES ($1, $2)")
             .bind(client.id.0)
-            .bind(&hash)
+            .bind(hash)
             .execute(tx.conn())
             .await?;
+        signups::record(&mut tx, admission, client.id, Via::Password).await?;
         tx.events()
             .push(&DomainEvent::ClientRegistered {
                 client_id: client.id,
@@ -661,7 +718,7 @@ impl<'a> Auth<'a> {
             .await?;
         let login = cabinet_session(&mut tx, client.id, now, meta, true).await?;
         tx.commit().await?;
-        Ok(login)
+        Ok(Ok(login))
     }
 
     pub async fn email_password_login(
@@ -785,7 +842,7 @@ impl<'a> Auth<'a> {
         meta: &RequestMeta,
         utm: Option<&Utm>,
     ) -> ServiceResult<CabinetLogin> {
-        self.email_login_verify_from(email, code, meta, Arrival::site(utm, None))
+        self.email_login_verify_from(email, code, meta, Arrival::site(utm, None), None)
             .await
     }
 
@@ -795,6 +852,7 @@ impl<'a> Auth<'a> {
         code: &str,
         meta: &RequestMeta,
         from: Arrival<'_>,
+        captcha: Option<&str>,
     ) -> ServiceResult<CabinetLogin> {
         self.site_open()?;
         let email = normalize_identity(IdentityKind::Email, email)?;
@@ -807,14 +865,41 @@ impl<'a> Auth<'a> {
         if code.len() != EMAIL_CODE_DIGITS || !code.bytes().all(|b| b.is_ascii_digit()) {
             return Err(code_invalid());
         }
-        let strike = code_strike(&limits, &email).await?;
+        let mut strike = Some(code_strike(&limits, &email).await?);
+        let mut human = site_signup::asked_before(self.services);
+        loop {
+            match self
+                .enter_by_code(&email, &code, meta, &from, strike.as_ref(), human)
+                .await?
+            {
+                Ok(login) => return Ok(login),
+                Err(refusal) => {
+                    if let Some(strike) = strike.take() {
+                        limits.forgive(&strike).await?;
+                    }
+                    site_signup::over_limit(self.services, refusal, captcha, meta).await?;
+                    human = true;
+                }
+            }
+        }
+    }
+
+    async fn enter_by_code(
+        &self,
+        email: &str,
+        code: &str,
+        meta: &RequestMeta,
+        from: &Arrival<'_>,
+        strike: Option<&Strike>,
+        human: bool,
+    ) -> ServiceResult<Result<CabinetLogin, Refusal>> {
         let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         let row: Option<LoginRow> = sqlx::query_as(&format!(
             "SELECT {LOGIN_COLUMNS} FROM client_login_requests \
              WHERE method = 'email' AND email = $1 AND status = 'pending' ORDER BY id DESC LIMIT 1 FOR UPDATE"
         ))
-        .bind(&email)
+        .bind(email)
         .fetch_optional(tx.conn())
         .await?;
         let Some(row) = row.filter(|r| r.expires_at > now) else {
@@ -834,21 +919,33 @@ impl<'a> Auth<'a> {
             tx.commit().await?;
             return Err(code_invalid());
         }
-        limits.forgive(&strike).await?;
+        if let Some(strike) = strike {
+            self.services.limits().release(&mut tx, strike).await?;
+        }
         let found = tx
             .clients()
-            .find_by_identity(IdentityKind::Email, &email)
+            .find_by_identity(IdentityKind::Email, email)
             .await?;
         if let Some(client) = &found
             && !client.is_blocked()
-            && linked_without_code(&mut tx, client.id, &email).await?
+            && linked_without_code(&mut tx, client.id, email).await?
         {
-            return refuse_unconfirmed(tx, row.id).await;
+            return refuse_unconfirmed(tx, row.id).await.map(Ok);
         }
         let (client_id, created) = match found {
-            Some(client) if client.is_blocked() => return Err(ServiceError::Forbidden),
+            Some(client) if client.is_blocked() => {
+                tx.commit().await?;
+                return Err(ServiceError::Forbidden);
+            }
             Some(client) => (client.id, false),
             None => {
+                let admission = match signups::admit(&mut tx, meta.ip.as_deref(), human).await? {
+                    Ok(admission) => admission,
+                    Err(refusal) => {
+                        tx.rollback().await?;
+                        return Ok(Err(refusal));
+                    }
+                };
                 let client = tx
                     .clients()
                     .create(&NewClient {
@@ -860,9 +957,10 @@ impl<'a> Auth<'a> {
                 tx.clients()
                     .add_identity(
                         client.id,
-                        &NewIdentity::new(IdentityKind::Email, &email, true)?,
+                        &NewIdentity::new(IdentityKind::Email, email, true)?,
                     )
                     .await?;
+                signups::record(&mut tx, admission, client.id, Via::Code).await?;
                 tx.events()
                     .push(&DomainEvent::ClientRegistered {
                         client_id: client.id,
@@ -883,15 +981,15 @@ impl<'a> Auth<'a> {
         .execute(tx.conn())
         .await?;
         if !created {
-            let unproven = email_unproven(&mut tx, client_id, &email).await?;
-            crate::oauth::confirm_email(&mut tx, client_id, &email).await?;
+            let unproven = email_unproven(&mut tx, client_id, email).await?;
+            crate::oauth::confirm_email(&mut tx, client_id, email).await?;
             if unproven {
                 drop_unproven_access(&mut tx, client_id).await?;
             }
         }
         let login = cabinet_session(&mut tx, client_id, now, meta, created).await?;
         tx.commit().await?;
-        Ok(login)
+        Ok(Ok(login))
     }
 
     pub async fn email_reset_start(

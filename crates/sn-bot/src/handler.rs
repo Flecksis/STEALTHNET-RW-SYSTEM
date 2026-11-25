@@ -19,6 +19,7 @@ use sn_domain::ledger::Wallet;
 use sn_domain::money::Money;
 use sn_domain::settings::CoreSettings;
 use sn_domain::subscription::Subscription;
+use sn_modules::catalog::antibot::signups::Refusal;
 use sn_modules::catalog::utm::clicks::ClickChannel;
 use sn_modules::catalog::{
     antibot, broadcast, gifts as gift_module, options, promo, promolinks, referral,
@@ -28,6 +29,7 @@ use sn_services::Services;
 use sn_services::bot_content::{BotContent, Document};
 use sn_services::bot_flood::Signup;
 use sn_services::bot_layout::{Install, link_button};
+use sn_services::clients::Entered;
 use sn_services::subscriptions::SubscriptionView;
 use sn_store::Db;
 use std::sync::Arc;
@@ -439,12 +441,17 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
     turn.session.pending_start = None;
     let flood = services.settings().bot_flood;
     let mut signup = None;
+    let visit = match param.as_deref().and_then(crate::login::token_from_param) {
+        Some(code) => services.auth().telegram_login_visit(code).await?,
+        None => None,
+    };
     let entered = services
         .clients()
-        .ensure_telegram_admitted(
+        .ensure_telegram_from(
             &profile(turn.user),
             RegistrationSource::Bot,
             param.as_deref(),
+            visit.as_ref(),
             || {
                 let verdict = services
                     .bot_flood()
@@ -454,12 +461,22 @@ async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, B
             },
         )
         .await?;
-    let Some((client, created)) = entered else {
-        return Ok(Gate::Stop(Screen::spare(ui::text(
-            &content,
-            "common.busy",
-            &[],
-        ))));
+    let (client, created) = match entered {
+        Entered::Ready(client, created) => (client, created),
+        Entered::Busy => {
+            return Ok(Gate::Stop(Screen::spare(ui::text(
+                &content,
+                "common.busy",
+                &[],
+            ))));
+        }
+        Entered::Refused(refusal) => {
+            let key = match refusal {
+                Refusal::Minute => "login.busy",
+                Refusal::Address | Refusal::Network => "login.limit",
+            };
+            return Ok(Gate::Stop(Screen::spare(ui::text(&content, key, &[]))));
+        }
     };
     if created
         && let Some(Signup::Allowed {

@@ -74,6 +74,7 @@ mod robokassa;
 mod robots;
 mod rollypay;
 mod security_headers;
+mod site_limits;
 mod support_files;
 mod support_mode;
 mod support_role;

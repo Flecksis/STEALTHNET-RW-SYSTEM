@@ -140,16 +140,21 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let email_reset = email_auth == Some("password") && mail.available();
     let email_confirm =
         email_auth == Some("password") && mail.signup_rule() != sn_services::mail::SignupRule::Open;
-    let captcha = email_auth
-        .and_then(|_| {
-            sn_modules::catalog::antibot::signup_captcha(&state.services.module_context())
+    let ctx = state.services.module_context();
+    let widget = |captcha: sn_modules::catalog::antibot::captcha::Captcha| {
+        serde_json::json!({
+            "provider": captcha.provider,
+            "site_key": captcha.site_key,
         })
-        .map(|captcha| {
-            serde_json::json!({
-                "provider": captcha.provider,
-                "site_key": captcha.site_key,
-            })
-        });
+    };
+    let captcha = email_auth
+        .and_then(|_| sn_modules::catalog::antibot::signup_captcha(&ctx))
+        .map(widget);
+    let captcha_spare = access
+        .site_login
+        .then(|| sn_modules::catalog::antibot::spare_captcha(&ctx))
+        .flatten()
+        .map(widget);
     tagged(
         &headers,
         &serde_json::json!({
@@ -186,6 +191,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "email_reset": email_reset,
             "email_confirm": email_confirm,
             "captcha": captcha,
+            "captcha_spare": captcha_spare,
             "oauth": state.services.oauth().availability(),
             "client_access": {
                 "miniapp": access.miniapp,

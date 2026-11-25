@@ -76,14 +76,19 @@ async fn jwks(server: &MockServer) {
 }
 
 async fn harness() -> Option<Harness> {
+    harness_with(Vec::new()).await
+}
+
+async fn harness_with(extra: Vec<Arc<dyn sn_modules::Module>>) -> Option<Harness> {
+    let mut modules: Vec<Arc<dyn sn_modules::Module>> =
+        vec![Arc::new(OauthModule), Arc::new(UtmModule)];
+    modules.extend(extra);
     let db = test_store().await?;
     let clock = Arc::new(FixedClock::new(Utc::now()));
     let services = Services::new(ServiceDeps {
         store: db.store.clone(),
         payments: Arc::new(ProviderRegistry::builtin()),
-        modules: Arc::new(
-            ModuleRegistry::new(vec![Arc::new(OauthModule), Arc::new(UtmModule)]).unwrap(),
-        ),
+        modules: Arc::new(ModuleRegistry::new(modules).unwrap()),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock: clock.clone(),
         env: EnvFallbacks {
@@ -1439,4 +1444,189 @@ async fn вход_через_google_сохраняет_метку_сайта_в�
             .unwrap()
             .is_none()
     );
+}
+
+async fn limited(config: serde_json::Value) -> Option<Harness> {
+    let h = harness_with(vec![Arc::new(sn_modules::catalog::antibot::AntibotModule)]).await?;
+    let ops = h.services.settings_ops();
+    ops.update_module_config(
+        ModuleId::Antibot,
+        &ModuleConfigUpdate {
+            config: config.as_object().cloned().unwrap(),
+            clear: Vec::new(),
+        },
+        h.admin,
+    )
+    .await
+    .unwrap();
+    ops.toggle_module(ModuleId::Antibot, true, h.admin)
+        .await
+        .unwrap();
+    Some(h)
+}
+
+fn person(n: u32) -> serde_json::Value {
+    serde_json::json!({ "email": format!("person{n}@gmail.com"), "email_verified": true })
+}
+
+async fn held(h: &Harness) -> (i64, i64) {
+    let mut conn = h.services.store().conn().await.unwrap();
+    sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'human'), count(*) FILTER (WHERE claims IS NOT NULL) FROM oauth_requests",
+    )
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+async fn signups_made(h: &Harness) {
+    let mut conn = h.services.store().conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO site_signups (via, address, created_at) \
+         VALUES ('password', '198.51.100.1', now()), ('password', '198.51.100.1', now() + interval '1 minute')",
+    )
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn предел_аккаунтов_с_адреса_действует_на_google_и_apple_а_вход_в_свои_аккаунты_нет() {
+    let Some(h) = limited(serde_json::json!({ "site_address_day": 2 })).await else {
+        return;
+    };
+    confirmed(h.sign_in(Provider::Google, "3001", person(1), None).await);
+    confirmed(h.sign_in(Provider::Apple, "3002", person(2), None).await);
+    for provider in [Provider::Google, Provider::Apple] {
+        let refused = h
+            .sign_in(provider, "3003", person(3), None)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), signups::LIMIT_CODE);
+        assert!(refused.to_string().contains("Зайдите через бота"));
+    }
+    assert_eq!(h.clients_count().await, 2);
+    let again = confirmed(h.sign_in(Provider::Google, "3001", person(1), None).await);
+    assert!(!again.created);
+    let again = confirmed(h.sign_in(Provider::Apple, "3002", person(2), None).await);
+    assert!(!again.created);
+    let mut conn = h.services.store().conn().await.unwrap();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT via, address FROM site_signups ORDER BY id")
+            .fetch_all(conn.conn())
+            .await
+            .unwrap();
+    assert_eq!(
+        rows,
+        ["google", "apple"].map(|via| (via.to_string(), "203.0.113.7".to_string()))
+    );
+    let day = signups::day(&mut conn).await.unwrap();
+    assert_eq!((day.created, day.address), (2, 2));
+}
+
+#[tokio::test]
+async fn сверх_минутного_предела_google_просит_капчу_и_не_теряет_вход() {
+    let Some(h) = limited(serde_json::json!({
+        "site_minute": 1,
+        "captcha": "turnstile",
+        "captcha_site_key": "0x4AAAAAAAsite",
+        "captcha_secret": "0x4AAAAAAAsecret-key",
+        "captcha_signup": false,
+    }))
+    .await
+    else {
+        return;
+    };
+    let verify = crate::scenario_tests::siteverify::siteverify(&h.services).await;
+    signups_made(&h).await;
+    let flow = h.login_flow(Provider::Google).await;
+    h.reply(Provider::Google, &flow, "3101", person(11)).await;
+    h.back(Provider::Google, &flow, None).await;
+    assert_eq!(held(&h).await, (1, 1));
+    for _ in 0..2 {
+        let asked = h.finish(&flow).await.unwrap_err();
+        assert_eq!(asked.code(), antibot::CAPTCHA_REQUIRED);
+    }
+    assert_eq!(verify.calls(), 0);
+    let wrong = h
+        .ops()
+        .finish_with(Some(&flow.start.browser), &meta(), Some("nope"))
+        .await
+        .unwrap_err();
+    assert_eq!(wrong.code(), antibot::FAILED);
+    assert_eq!(h.clients_count().await, 0);
+    let finish = h
+        .ops()
+        .finish_with(Some(&flow.start.browser), &meta(), Some("ok:signup"))
+        .await;
+    let login = confirmed(finish);
+    assert!(login.created);
+    assert_eq!(held(&h).await, (0, 0));
+    assert_eq!(
+        h.finish(&flow).await.unwrap_err().code(),
+        "oauth.no_request"
+    );
+    let again = confirmed(h.sign_in(Provider::Google, "3101", person(11), None).await);
+    assert!(!again.created, "вход в созданный аккаунт без капчи");
+    let mut conn = h.services.store().conn().await.unwrap();
+    let day = signups::day(&mut conn).await.unwrap();
+    assert_eq!((day.asked, day.minute), (2, 0));
+}
+
+#[tokio::test]
+async fn отложенный_вход_через_google_гаснет_через_пять_минут_и_не_хранит_данные() {
+    let Some(h) = limited(serde_json::json!({
+        "site_minute": 1,
+        "captcha": "turnstile",
+        "captcha_site_key": "0x4AAAAAAAsite",
+        "captcha_secret": "0x4AAAAAAAsecret-key",
+    }))
+    .await
+    else {
+        return;
+    };
+    let _verify = crate::scenario_tests::siteverify::siteverify(&h.services).await;
+    signups_made(&h).await;
+    let flow = h.login_flow(Provider::Google).await;
+    h.reply(Provider::Google, &flow, "3201", person(21)).await;
+    h.back(Provider::Google, &flow, None).await;
+    assert_eq!(held(&h).await, (1, 1));
+    h.clock
+        .set(Utc::now() + Duration::seconds(FINISH_SECONDS + 1));
+    assert_eq!(
+        h.ops()
+            .finish_with(Some(&flow.start.browser), &meta(), Some("ok:signup"))
+            .await
+            .unwrap_err()
+            .code(),
+        "oauth.expired"
+    );
+    assert_eq!(held(&h).await, (0, 0));
+    h.clock.set(Utc::now());
+    let left = h.login_flow(Provider::Google).await;
+    h.reply(Provider::Google, &left, "3202", person(22)).await;
+    h.back(Provider::Google, &left, None).await;
+    assert_eq!(held(&h).await, (1, 1));
+    h.clock
+        .set(Utc::now() + Duration::seconds(FINISH_SECONDS + 1));
+    h.login_flow(Provider::Google).await;
+    assert_eq!(held(&h).await, (0, 0), "брошенный вход не хранит данные");
+    assert_eq!(h.clients_count().await, 0);
+}
+
+#[tokio::test]
+async fn без_капчи_сверх_минутного_предела_google_отвечает_отказом() {
+    let Some(h) = limited(serde_json::json!({ "site_minute": 1 })).await else {
+        return;
+    };
+    signups_made(&h).await;
+    let flow = h.login_flow(Provider::Apple).await;
+    h.reply(Provider::Apple, &flow, "3301", person(31)).await;
+    h.back(Provider::Apple, &flow, None).await;
+    let refused = h.finish(&flow).await.unwrap_err();
+    assert_eq!(refused.code(), signups::BUSY_CODE);
+    assert_eq!(held(&h).await, (0, 0));
+    assert_eq!(h.clients_count().await, 0);
+    let mut conn = h.services.store().conn().await.unwrap();
+    assert_eq!(signups::day(&mut conn).await.unwrap().minute, 1);
 }

@@ -41,6 +41,7 @@ mod referral_payouts;
 mod renewal_devices;
 mod runtime;
 mod single_subscription;
+mod site_limits;
 mod stars;
 mod stars_review;
 mod support_files;

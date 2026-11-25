@@ -19,8 +19,8 @@ export async function leaveFor(path: string, body: unknown = {}): Promise<void> 
   window.location.assign(res.url);
 }
 
-export function finishOauth(): Promise<OauthDone> {
-  return api<OauthDone>('/api/client/auth/oauth/finish', { method: 'POST', body: {} });
+export function finishOauth(captcha?: string): Promise<OauthDone> {
+  return api<OauthDone>('/api/client/auth/oauth/finish', { method: 'POST', body: captcha ? { captcha } : {} });
 }
 
 function GoogleMark() {

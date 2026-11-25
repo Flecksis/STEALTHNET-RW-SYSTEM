@@ -1,6 +1,7 @@
 import { ApiError } from '../../lib/api';
 import { ago, count, dateTime, plural, traffic } from '../../lib/format';
 import type { Person } from '../home/model';
+import type { SiteLimits, SiteState } from './siteLimits';
 
 export const ANTIBOT = '/api/admin/m/antibot';
 export const LIMITS = '/api/admin/m/limits';
@@ -56,7 +57,7 @@ export type MarkItem = {
   trial_denied: boolean;
 };
 
-export type AntibotSettings = {
+export type AntibotSettings = Partial<SiteLimits> & {
   mode: Mode;
   young_days: number;
   check_username: boolean;
@@ -84,6 +85,7 @@ export type CaptchaState = {
 export type AntibotSummary = {
   settings: AntibotSettings;
   captcha?: CaptchaState;
+  site?: SiteState;
   marked_open: number;
   marked_week: number;
   asked_week: number;

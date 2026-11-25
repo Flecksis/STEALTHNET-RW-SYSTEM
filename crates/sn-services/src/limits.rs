@@ -370,7 +370,7 @@ impl<'a> RateLimits<'a> {
         Ok(strike)
     }
 
-    async fn release(&self, conn: &mut sn_store::Conn, strike: &Strike) -> ServiceResult<()> {
+    pub(crate) async fn release(&self, conn: &mut impl Db, strike: &Strike) -> ServiceResult<()> {
         sqlx::query(
             "WITH gone AS ( \
                  DELETE FROM auth_rate_limits WHERE bucket = $1 AND window_start = $2 AND hits <= 1 RETURNING 1) \

@@ -6,7 +6,7 @@ use sn_modules::catalog::antibot::captcha::Endpoints;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const SECRET: &str = "0x4AAAAAAAsecret-key";
+pub(super) const SECRET: &str = "0x4AAAAAAAsecret-key";
 
 async fn trial_on(h: &Http) {
     {
@@ -31,7 +31,7 @@ async fn trial_on(h: &Http) {
     h.services().set_remna(Some(h.remna.clone()));
 }
 
-async fn antibot_on(h: &Http, config: Value) {
+pub(super) async fn antibot_on(h: &Http, config: Value) {
     let modules = h.services().modules();
     let store = h.services().store();
     modules
@@ -57,7 +57,7 @@ fn form_value(body: &[u8], key: &str) -> String {
         .replace("%3A", ":")
 }
 
-async fn siteverify(h: &Http) -> MockServer {
+pub(super) async fn siteverify(h: &Http) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/turnstile"))

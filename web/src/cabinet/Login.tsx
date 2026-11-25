@@ -19,6 +19,7 @@ type Registered = { status?: 'totp_required' | 'code_sent'; challenge?: string; 
 type Signup = { email: string; token: string; again: boolean };
 
 const RESEND_SECONDS = 60;
+const HUMAN_CODES = ['antibot.captcha', 'antibot.failed', 'antibot.unavailable'];
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -50,9 +51,22 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
   const [human, setHuman] = useState<string | null>(null);
   const [humanRound, setHumanRound] = useState(0);
   const humanCheck: CaptchaWidget | null = site.captcha ? { provider: site.captcha.provider, site_key: site.captcha.site_key, action: emailAuth === 'password' ? 'signup' : 'login' } : null;
+  const [asked, setAsked] = useState(false);
+  const spare: CaptchaWidget | null = asked && site.captcha_spare ? { provider: site.captcha_spare.provider, site_key: site.captcha_spare.site_key, action: 'signup' } : null;
   const freshHuman = () => {
     setHuman(null);
     setHumanRound((n) => n + 1);
+  };
+  const askHuman = (err: unknown): boolean => {
+    if (!(err instanceof ApiError) || !site.captcha_spare || !HUMAN_CODES.includes(err.code)) {
+      return false;
+    }
+    freshHuman();
+    if (err.code !== 'antibot.captcha' || spare) {
+      return false;
+    }
+    setAsked(true);
+    return true;
   };
   const siteOpen = site.client_access?.site_login !== false;
   const timer = useRef<number | null>(null);
@@ -67,29 +81,39 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     reportVisit();
   }, []);
 
+  const completeOauth = async (captcha?: string) => {
+    setError(null);
+    try {
+      const res = await finishOauth(captcha);
+      if (res.status === 'totp_required') {
+        setChallenge(res.challenge);
+        setTotp('');
+      } else {
+        navigate('/cabinet', { replace: true });
+        onDone();
+        return;
+      }
+    } catch (err) {
+      if (askHuman(err)) {
+        return;
+      }
+      setError(failText(err, t('Вход не завершён. Нажмите кнопку входа ещё раз.')));
+      if (captcha && err instanceof ApiError && HUMAN_CODES.includes(err.code)) {
+        return;
+      }
+    }
+    setAsked(false);
+    setFinishing(false);
+    navigate('/cabinet', { replace: true });
+  };
+
   useEffect(() => {
     if (!back || finished.current) {
       return;
     }
     finished.current = true;
-    void (async () => {
-      try {
-        const res = await finishOauth();
-        if (res.status === 'totp_required') {
-          setChallenge(res.challenge);
-          setTotp('');
-        } else {
-          navigate('/cabinet', { replace: true });
-          onDone();
-          return;
-        }
-      } catch (err) {
-        setError(failText(err, t('Вход не завершён. Нажмите кнопку входа ещё раз.')));
-      }
-      setFinishing(false);
-      navigate('/cabinet', { replace: true });
-    })();
-  }, [back, navigate, onDone]);
+    void completeOauth();
+  }, [back]);
 
   const startOauth = async (provider: OauthProvider) => {
     setLeaving(provider);
@@ -209,7 +233,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     try {
       const res = await api<Verified>('/api/client/auth/email/verify', {
         method: 'POST',
-        body: { email: email.trim(), code: code.trim(), utm: storedUtm() ?? undefined, ref: storedReferral() ?? undefined },
+        body: { email: email.trim(), code: code.trim(), utm: storedUtm() ?? undefined, ref: storedReferral() ?? undefined, ...(spare && human ? { captcha: human } : {}) },
       });
       if (res.status === 'totp_required' && res.challenge) {
         setChallenge(res.challenge);
@@ -218,7 +242,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
       }
       onDone();
     } catch (err) {
-      setError(failText(err, t('Код не подошёл')));
+      if (!askHuman(err)) {
+        setError(failText(err, t('Код не подошёл')));
+      }
     } finally {
       setBusy(false);
     }
@@ -254,8 +280,10 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
       if (err instanceof ApiError && err.code === 'auth.email_taken') {
         setJoining(false);
       }
-      setError(failText(err, joining ? t('Аккаунт не создался') : t('Войти не получилось')));
-      if (joining && humanCheck) {
+      if (!(joining && askHuman(err))) {
+        setError(failText(err, joining ? t('Аккаунт не создался') : t('Войти не получилось')));
+      }
+      if (joining && (humanCheck || spare)) {
         freshHuman();
       }
     } finally {
@@ -271,7 +299,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     setBusy(true);
     setError(null);
     try {
-      const res = await api<Verified>('/api/client/auth/email/register/confirm', { method: 'POST', body: { email: signup.email, signup_token: signup.token, code } });
+      const res = await api<Verified>('/api/client/auth/email/register/confirm', { method: 'POST', body: { email: signup.email, signup_token: signup.token, code, ...(spare && human ? { captcha: human } : {}) } });
       if (res.status === 'totp_required' && res.challenge) {
         setSignup(null);
         setChallenge(res.challenge);
@@ -287,7 +315,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
           setJoining(false);
         }
       }
-      setError(failText(err, t('Код не подошёл')));
+      if (!askHuman(err)) {
+        setError(failText(err, t('Код не подошёл')));
+      }
     } finally {
       setBusy(false);
     }
@@ -408,6 +438,16 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     </span>
   );
 
+  const humanAsk = (onToken: (token: string) => void) =>
+    spare ? (
+      <>
+        <p className="cb-login-note" role="status">
+          {t('Сейчас создаётся много новых аккаунтов, поэтому нужна проверка.')}
+        </p>
+        <Captcha widget={spare} round={humanRound} onToken={onToken} onExpire={() => setHuman(null)} />
+      </>
+    ) : null;
+
   return (
     <div className="cb-solo">
       <div className="cb-solo-box cb-login">
@@ -427,8 +467,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
           </div>
         ) : null}
         {siteOpen && finishing && back ? (
-          <div className="cb-login-wait" aria-busy="true">
-            <p>{t('Завершаем вход через {provider}…', { provider: PROVIDER_TITLE[back] })}</p>
+          <div className="cb-login-wait" aria-busy={spare ? undefined : true}>
+            {spare ? humanAsk((token) => void completeOauth(token)) : <p>{t('Завершаем вход через {provider}…', { provider: PROVIDER_TITLE[back] })}</p>}
           </div>
         ) : null}
         {siteOpen && challenge ? (
@@ -539,7 +579,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
                 autoFocus
               />
             </label>
-            <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
+            {humanAsk(setHuman)}
+            <button type="submit" className="cb-main" disabled={busy || code.length !== 6 || (!!spare && !human)}>
               {busy ? t('Проверяем…') : t('Подтвердить и войти')}
             </button>
             <span className="cb-login-help cb-muted">{t('Если с этой почтой уже есть аккаунт, кода в письме не будет: там подсказка, как войти.')}</span>
@@ -575,7 +616,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
               />
             </label>
             {joining && humanCheck ? <Captcha widget={humanCheck} round={humanRound} onToken={setHuman} onExpire={() => setHuman(null)} /> : null}
-            <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1) || (joining && !!humanCheck && !human)}>
+            {joining && !humanCheck ? humanAsk(setHuman) : null}
+            <button type="submit" className="cb-main" disabled={busy || !email.includes('@') || password.length < (joining ? 10 : 1) || (joining && !!(humanCheck ?? spare) && !human)}>
               {busy ? (joining ? (confirmJoin ? t('Отправляем…') : t('Создаём…')) : t('Входим…')) : joining ? t('Создать аккаунт') : t('Войти')}
             </button>
             {joining && confirmJoin ? <span className="cb-login-help cb-muted">{t('Пришлём на почту код: аккаунт появится, когда вы его введёте.')}</span> : null}
@@ -621,7 +663,8 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
                 autoFocus
               />
             </label>
-            <button type="submit" className="cb-main" disabled={busy || code.length !== 6}>
+            {humanAsk(setHuman)}
+            <button type="submit" className="cb-main" disabled={busy || code.length !== 6 || (!!spare && !human)}>
               {t('Войти')}
             </button>
             {humanCheck && wait === 0 ? <Captcha widget={humanCheck} round={humanRound} onToken={setHuman} onExpire={() => setHuman(null)} /> : null}

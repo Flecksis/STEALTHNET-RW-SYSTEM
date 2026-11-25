@@ -42,7 +42,13 @@ async fn oauth_http() -> Option<OauthHttp> {
     let services = Services::new(ServiceDeps {
         store: db.store.clone(),
         payments: Arc::new(ProviderRegistry::builtin()),
-        modules: Arc::new(ModuleRegistry::new(vec![Arc::new(OauthModule)]).unwrap()),
+        modules: Arc::new(
+            ModuleRegistry::new(vec![
+                Arc::new(OauthModule),
+                Arc::new(sn_modules::catalog::antibot::AntibotModule),
+            ])
+            .unwrap(),
+        ),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock: clock.clone(),
         env: EnvFallbacks {
@@ -541,4 +547,98 @@ async fn старт_входа_через_google_запоминает_метку
             (None, None)
         ]
     );
+}
+
+#[tokio::test]
+async fn отказ_с_капчей_не_снимает_куку_входа_а_с_ответом_аккаунт_создаётся() {
+    let Some(h) = oauth_http().await else { return };
+    let services = h.http.services();
+    super::captcha::antibot_on(
+        &h.http,
+        json!({
+            "site_minute": 1,
+            "captcha": "turnstile",
+            "captcha_site_key": "0x4AAAAAAAsite",
+            "captcha_secret": super::captcha::SECRET,
+            "captcha_signup": false,
+        }),
+    )
+    .await;
+    let _verify = super::captcha::siteverify(&h.http).await;
+    let (_, _, site) = h
+        .http
+        .send(Method::GET, "/api/public/site", None, None)
+        .await;
+    assert_eq!(site["captcha"], Value::Null);
+    assert_eq!(
+        site["captcha_spare"],
+        json!({ "provider": "turnstile", "site_key": "0x4AAAAAAAsite" })
+    );
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO site_signups (via, created_at) VALUES ('code', now()), ('code', now() + interval '1 minute')",
+        )
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let started = h
+        .raw(
+            Method::POST,
+            "/api/client/auth/oauth/google",
+            &[("origin", PANEL.into())],
+            Some(("application/json", "{}".into())),
+        )
+        .await;
+    let browser = value_of(&started.cookie("sn_oauth").unwrap());
+    let state = query(started.body["url"].as_str().unwrap(), "state").unwrap();
+    let google_code = code();
+    h.reply(
+        &h.google,
+        GOOGLE_ID,
+        &browser,
+        &google_code,
+        "9101",
+        json!({ "email": "wave@gmail.com", "email_verified": true }),
+    )
+    .await;
+    h.raw(
+        Method::GET,
+        &format!("/api/client/auth/oauth/google/callback?state={state}&code={google_code}"),
+        &[("cookie", format!("sn_oauth={browser}"))],
+        None,
+    )
+    .await;
+    let finish = |body: Value| {
+        let h = &h;
+        let browser = browser.clone();
+        async move {
+            h.raw(
+                Method::POST,
+                "/api/client/auth/oauth/finish",
+                &[
+                    ("cookie", format!("sn_oauth={browser}")),
+                    ("origin", PANEL.into()),
+                ],
+                Some(("application/json", body.to_string())),
+            )
+            .await
+        }
+    };
+    for (body, code) in [
+        (json!({}), "antibot.captcha"),
+        (json!({ "captcha": "bad" }), "antibot.failed"),
+    ] {
+        let asked = finish(body).await;
+        assert_eq!(asked.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(asked.body["error"]["code"], code);
+        assert!(asked.cookie("sn_oauth").is_none(), "кука входа остаётся");
+        assert!(asked.cookie("sn_client").is_none());
+    }
+    let done = finish(json!({ "captcha": "ok:signup" })).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_eq!(done.body["login"]["created"], true);
+    assert!(done.cookie("sn_client").is_some());
+    assert!(done.cookie("sn_oauth").unwrap().contains("Max-Age=0"));
 }

@@ -2,6 +2,7 @@ pub mod captcha;
 pub mod checks;
 mod routes;
 pub mod signals;
+pub mod signups;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -88,6 +89,9 @@ pub struct AntibotSettings {
     pub captcha_site_key: String,
     pub captcha_trial: Scope,
     pub captcha_signup: bool,
+    pub site_address_day: u32,
+    pub site_network_day: u32,
+    pub site_minute: u32,
 }
 
 impl Default for AntibotSettings {
@@ -107,6 +111,9 @@ impl Default for AntibotSettings {
             captcha_site_key: String::new(),
             captcha_trial: Scope::All,
             captcha_signup: true,
+            site_address_day: 0,
+            site_network_day: 0,
+            site_minute: 0,
         }
     }
 }
@@ -162,6 +169,24 @@ impl AntibotSettings {
             },
             captcha_signup: config_flag(config, "captcha_signup")
                 .unwrap_or(defaults.captcha_signup),
+            site_address_day: whole(
+                config,
+                "site_address_day",
+                defaults.site_address_day,
+                signups::MAX_LIMIT,
+            )?,
+            site_network_day: whole(
+                config,
+                "site_network_day",
+                defaults.site_network_day,
+                signups::MAX_LIMIT,
+            )?,
+            site_minute: whole(
+                config,
+                "site_minute",
+                defaults.site_minute,
+                signups::MAX_LIMIT,
+            )?,
         })
     }
 
@@ -869,22 +894,48 @@ pub fn signup_captcha(ctx: &ModuleContext) -> Option<Captcha> {
     captcha::active(ctx).filter(|c| c.signup)
 }
 
+pub fn spare_captcha(ctx: &ModuleContext) -> Option<Captcha> {
+    let config = ctx.core.module_config(ModuleId::Antibot);
+    captcha::active(ctx).filter(|_| AntibotSettings::lenient(&config).site_minute > 0)
+}
+
 pub async fn check_signup(
     ctx: &ModuleContext,
     action: &str,
     token: Option<&str>,
     ip: Option<&str>,
 ) -> Result<SignupCheck, ModuleError> {
-    let Some(captcha) = signup_captcha(ctx) else {
-        return Ok(SignupCheck::Off);
-    };
+    match signup_captcha(ctx) {
+        Some(captcha) => check_answer(ctx, &captcha, action, token, ip).await,
+        None => Ok(SignupCheck::Off),
+    }
+}
+
+pub async fn check_human(
+    ctx: &ModuleContext,
+    token: Option<&str>,
+    ip: Option<&str>,
+) -> Result<SignupCheck, ModuleError> {
+    match captcha::active(ctx) {
+        Some(captcha) => check_answer(ctx, &captcha, SIGNUP, token, ip).await,
+        None => Ok(SignupCheck::Off),
+    }
+}
+
+async fn check_answer(
+    ctx: &ModuleContext,
+    captcha: &Captcha,
+    action: &str,
+    token: Option<&str>,
+    ip: Option<&str>,
+) -> Result<SignupCheck, ModuleError> {
     let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) else {
         return Ok(SignupCheck::Missing);
     };
     let outcome = captcha::verify(
         &ctx.store,
         &ctx.core.captcha_endpoints(),
-        &captcha,
+        captcha,
         token,
         ip,
         captcha::Expect {
@@ -1238,6 +1289,24 @@ impl Module for AntibotModule {
                 "Считаются регистрации по почте и через Google и Apple. Следующие аккаунты создаются, но отмечаются: что они получат, решает режим; 0 — не отмечать",
             )
             .with_default("3"),
+            SettingField::number(
+                "site_address_day",
+                "Предел новых аккаунтов на сайте с одного адреса за сутки",
+                "Сверх предела аккаунт не создаётся. За общим Wi-Fi и мобильным адресом людей много, разумное значение — 10 и больше; 0 — без предела",
+            )
+            .with_default("0"),
+            SettingField::number(
+                "site_network_day",
+                "Предел новых аккаунтов на сайте с одной сети IPv6 за сутки",
+                "Сеть /48. Сверх предела аккаунт не создаётся; 0 — без предела",
+            )
+            .with_default("0"),
+            SettingField::number(
+                "site_minute",
+                "Предел новых аккаунтов на сайте в минуту на всю панель",
+                "Сверх предела — капча, если она настроена, иначе отказ до конца минуты; 0 — без предела",
+            )
+            .with_default("0"),
             SettingField::text(
                 "extra_domains",
                 "Свои одноразовые почтовые домены",
@@ -1362,6 +1431,7 @@ impl Module for AntibotModule {
         }
         let mut conn = ctx.store.conn().await?;
         captcha::sweep(&mut conn).await?;
+        signups::sweep(&mut conn).await?;
         Ok(())
     }
 

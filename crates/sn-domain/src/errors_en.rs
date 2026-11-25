@@ -97,6 +97,12 @@ pub fn by_code(code: &str) -> Option<&'static str> {
             "We couldn't check that you're not a robot: the check service didn't answer. Please try again in a minute."
         }
         "antibot.captcha" => "Pass the check that you're not a robot.",
+        "signup.limit" => {
+            "A new account can't be created from your address right now. Open the bot or try again later."
+        }
+        "signup.busy" => {
+            "Too many new accounts are being created right now. Please try again in a minute."
+        }
         "antibot.denied" => {
             "The free trial isn't available for this account. If this is a mistake, please contact support."
         }
@@ -213,6 +219,8 @@ mod tests {
             "antibot.unavailable",
             "antibot.captcha",
             "antibot.denied",
+            "signup.limit",
+            "signup.busy",
             "payment.error",
             "support.closed",
             "support.files_quota",
