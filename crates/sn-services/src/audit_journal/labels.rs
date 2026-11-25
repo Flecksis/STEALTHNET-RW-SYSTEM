@@ -1289,6 +1289,31 @@ const ACTION_FIELDS: &[(&str, &str, &str)] = &[
         "Дизайн кабинета и мини-приложения",
     ),
     ("settings.appearance", "client_theme", "Тема для клиентов"),
+    (
+        "settings.client_access",
+        "miniapp",
+        "Мини-приложение в Telegram",
+    ),
+    (
+        "settings.client_access",
+        "miniapp_fullscreen",
+        "Открывать на весь экран",
+    ),
+    (
+        "settings.client_access",
+        "site_login",
+        "Пускать в кабинет на сайте",
+    ),
+    (
+        "settings.client_access",
+        "self_devices",
+        "Отключать свои устройства",
+    ),
+    (
+        "settings.client_access",
+        "self_reissue",
+        "Выпускать новую ссылку подписки",
+    ),
     ("settings.miniapp", "screens", "Экраны"),
     ("settings.miniapp", "blocks", "Изменены блоки"),
     ("settings.miniapp", "order", "Изменён порядок блоков"),

@@ -13,7 +13,7 @@ import { initData, launchData, loadTelegram, openExternal, paintTelegram, telegr
 import { backTarget } from './back';
 import { currentTab, normalizeConfig, pick, SECTION_ICONS, sectionPath, type MiniConfig } from './config';
 import { watchInsets } from './insets';
-import { holdScreen } from './screen';
+import { fullscreenOn, holdFullscreen, holdScreen } from './screen';
 import { lockZoom } from './zoom';
 import { MiniConnect } from './MiniConnect';
 import { MiniFriends } from './MiniFriends';
@@ -215,6 +215,8 @@ export function MiniApp() {
 
   useEffect(() => (tg ? watchInsets(tg, document.documentElement) : undefined), [tg]);
   useEffect(() => (tg ? holdScreen(tg, document.documentElement) : undefined), [tg]);
+  const fullscreen = fullscreenOn(loadedSite);
+  useEffect(() => (tg && fullscreen ? holdFullscreen(tg) : undefined), [tg, fullscreen]);
   useEffect(() => (tg ? lockZoom(document, window.parent !== window) : undefined), [tg]);
 
   useEffect(() => {

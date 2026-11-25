@@ -201,3 +201,72 @@ async fn клиент_не_отключает_устройства_и_не_ме�
     );
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn полный_экран_мини_приложения_включает_только_оператор() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let ops = services.settings_ops();
+    assert!(!ops.client_access().miniapp_fullscreen);
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                keys::CLIENT_ACCESS,
+                &serde_json::json!({
+                    "miniapp": true,
+                    "site_login": true,
+                    "self_devices": false,
+                    "self_reissue": true,
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    services.reload().await.unwrap();
+    let old = ops.client_access();
+    assert!(!old.miniapp_fullscreen);
+    assert!(!old.self_devices);
+    let wanted = ClientAccess {
+        miniapp_fullscreen: true,
+        ..old
+    };
+    let on = ops.update_client_access(&wanted, admin).await.unwrap();
+    assert_eq!(on, wanted);
+    assert_eq!(
+        ops.update_client_access(&wanted, admin).await.unwrap(),
+        wanted
+    );
+    services.reload().await.unwrap();
+    assert_eq!(ops.client_access(), wanted);
+    ops.update_client_access(&old, admin).await.unwrap();
+    assert_eq!(ops.client_access(), old);
+    let mut conn = services.store().conn().await.unwrap();
+    let details: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT details FROM audit_log WHERE action = 'settings.client_access' ORDER BY id",
+    )
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    let switched: Vec<_> = details
+        .iter()
+        .map(|d| {
+            (
+                d["from"]["miniapp_fullscreen"].as_bool(),
+                d["to"]["miniapp_fullscreen"].as_bool(),
+                d["from"]["self_devices"] == d["to"]["self_devices"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        switched,
+        [
+            (Some(false), Some(true), true),
+            (Some(true), Some(false), true)
+        ]
+    );
+    drop(conn);
+    env.db.cleanup().await;
+}

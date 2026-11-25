@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bridgeApp, launchFrom, saveLaunch, savedLaunch, versionAtLeast } from './bridge.ts';
-import { holdScreen } from './screen.ts';
+import { holdFullscreen, holdScreen } from './screen.ts';
 import { insetVars, watchInsets } from './insets.ts';
 
 const DATA = 'query_id=AA&user=%7B%22id%22%3A7%2C%22first_name%22%3A%22%D0%90%D0%BD%D0%BD%D0%B0%22%7D&auth_date=1764000000&hash=ff';
@@ -203,17 +203,27 @@ test('полный экран и запрет свайпа работают че
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { app, receive, names } = start();
   const root = { dataset: {} };
-  const stop = holdScreen(app, root);
+  const stopScreen = holdScreen(app, root);
+  assert.deepEqual(names().slice(2), ['web_app_ready', 'web_app_expand', 'web_app_setup_swipe_behavior']);
+  const stopFull = holdFullscreen(app);
   assert.deepEqual(names().slice(2), ['web_app_ready', 'web_app_expand', 'web_app_setup_swipe_behavior', 'web_app_request_fullscreen']);
   receive('fullscreen_changed', { is_fullscreen: true, blur_enabled: true });
   t.mock.timers.tick(60_000);
   assert.equal(names().filter((name) => name === 'web_app_request_fullscreen').length, 1);
   assert.deepEqual(root.dataset, {});
-  stop();
+  stopFull();
+  stopScreen();
+
+  const off = start();
+  holdScreen(off.app, { dataset: {} });
+  t.mock.timers.tick(60_000);
+  off.receive('visibility_changed', { is_visible: true });
+  assert.equal(off.names().includes('web_app_request_fullscreen'), false);
 
   const old = start({ tgWebAppVersion: '7.2', tgWebAppPlatform: 'android' });
   const oldRoot = { dataset: {} };
   holdScreen(old.app, oldRoot);
+  holdFullscreen(old.app);
   assert.deepEqual(old.names(), ['web_app_ready', 'web_app_expand']);
   assert.equal(oldRoot.dataset.tgSwipes, 'css');
 });

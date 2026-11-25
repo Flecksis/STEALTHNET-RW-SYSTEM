@@ -1739,6 +1739,10 @@ impl<'a> SettingsOps<'a> {
         value: &ClientAccess,
         admin: AdminId,
     ) -> ServiceResult<ClientAccess> {
+        let current = self.client_access();
+        if *value == current {
+            return Ok(current);
+        }
         let mut tx = self.services.store().begin().await?;
         tx.settings()
             .set_as(keys::CLIENT_ACCESS, value, Some(admin))
@@ -1748,7 +1752,7 @@ impl<'a> SettingsOps<'a> {
                 "settings.client_access",
                 "settings",
                 None,
-                serde_json::json!(value),
+                serde_json::json!({ "from": current, "to": value }),
             ))
             .await?;
         tx.commit().await?;

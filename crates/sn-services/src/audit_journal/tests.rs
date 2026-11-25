@@ -718,6 +718,27 @@ fn было_и_стало_собираются_из_подробностей() {
         }]
     );
     assert!(rest.is_empty());
+    let access = |on: bool| json!({ "miniapp": true, "miniapp_fullscreen": on, "site_login": true, "self_devices": true, "self_reissue": true });
+    let (changes, rest) = changes_of(
+        &Names::default(),
+        "settings.client_access",
+        &json!({ "from": access(false), "to": access(true) }),
+    );
+    assert_eq!(
+        changes,
+        vec![ChangeView {
+            label: "Открывать на весь экран".into(),
+            before: "нет".into(),
+            after: "да".into()
+        }]
+    );
+    assert!(rest.is_empty());
+    for key in access(false).as_object().unwrap().keys() {
+        assert!(
+            labels::field_label_in("settings.client_access", key).is_some(),
+            "{key}"
+        );
+    }
     let names = Names {
         providers: [("yookassa".to_string(), "ЮKassa".to_string())].into(),
         methods: [("sbp".to_string(), "СБП".to_string())].into(),

@@ -755,6 +755,8 @@ pub struct MultiSubscriptions {
 pub struct ClientAccess {
     #[serde(default = "enabled")]
     pub miniapp: bool,
+    #[serde(default)]
+    pub miniapp_fullscreen: bool,
     #[serde(default = "enabled")]
     pub site_login: bool,
     #[serde(default = "enabled")]
@@ -771,6 +773,7 @@ impl Default for ClientAccess {
     fn default() -> Self {
         ClientAccess {
             miniapp: true,
+            miniapp_fullscreen: false,
             site_login: true,
             self_devices: true,
             self_reissue: true,
@@ -1058,6 +1061,39 @@ mod tests {
         assert!(!off.is_offered());
         assert_eq!(off.shortest_days(), None);
         assert!(off.offered_variant(2).is_none());
+    }
+
+    #[test]
+    fn полный_экран_мини_приложения_выключен_пока_его_не_включили() {
+        let fresh = ClientAccess::default();
+        assert!(fresh.miniapp);
+        assert!(!fresh.miniapp_fullscreen);
+        let old: ClientAccess = serde_json::from_value(serde_json::json!({
+            "miniapp": true,
+            "site_login": false,
+            "self_devices": true,
+            "self_reissue": false,
+        }))
+        .unwrap();
+        assert_eq!(
+            old,
+            ClientAccess {
+                miniapp: true,
+                miniapp_fullscreen: false,
+                site_login: false,
+                self_devices: true,
+                self_reissue: false,
+            }
+        );
+        let empty: ClientAccess = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(empty, fresh);
+        let on: ClientAccess =
+            serde_json::from_value(serde_json::json!({ "miniapp_fullscreen": true })).unwrap();
+        assert!(on.miniapp_fullscreen && on.miniapp && on.site_login);
+        assert_eq!(
+            serde_json::to_value(on).unwrap()["miniapp_fullscreen"],
+            true
+        );
     }
 
     #[test]

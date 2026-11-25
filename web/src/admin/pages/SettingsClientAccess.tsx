@@ -7,7 +7,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Access = { miniapp: boolean; site_login: boolean; self_devices: boolean; self_reissue: boolean };
+type Access = { miniapp: boolean; miniapp_fullscreen: boolean; site_login: boolean; self_devices: boolean; self_reissue: boolean };
 type Core = { settings?: { public_url?: string | null } };
 
 const LOGIN_TEXT: Record<string, string> = {
@@ -124,6 +124,19 @@ export function SettingsClientAccess() {
             <span className="muted">Открывается только внутри Telegram, из бота. Вход без пароля: Telegram сам подтверждает клиента.</span>
           </div>
           <Toggle title="Мини-приложение в Telegram" text={miniText} on={access.miniapp} busy={busy} onToggle={() => void flip('miniapp')} />
+          {access.miniapp ? (
+            <Toggle
+              title="Открывать на весь экран"
+              text={
+                access.miniapp_fullscreen
+                  ? 'На телефоне приложение само просит полный экран при каждом входе, нужен Telegram с ноября 2024 года или новее. На компьютере — как выбрано в @BotFather.'
+                  : 'Выключено: приложение открывается так, как выбрано в @BotFather.'
+              }
+              on={access.miniapp_fullscreen}
+              busy={busy}
+              onToggle={() => void flip('miniapp_fullscreen')}
+            />
+          ) : null}
           <div className="row">
             <span className="cap">
               Баннеры, порядок блоков, меню внизу и профиль настраиваются в{' '}

@@ -189,6 +189,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "oauth": state.services.oauth().availability(),
             "client_access": {
                 "miniapp": access.miniapp,
+                "miniapp_fullscreen": access.miniapp_fullscreen,
                 "site_login": access.site_login,
                 "devices": access.self_devices,
                 "reissue": access.self_reissue,

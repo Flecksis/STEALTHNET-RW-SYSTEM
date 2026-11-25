@@ -9,6 +9,8 @@ const PHONES = ['ios', 'android', 'android_x'];
 
 type Root = { dataset: Record<string, string | undefined> };
 
+type Events = Array<[string, (payload?: unknown) => void]>;
+
 function attempt(call: () => void): boolean {
   try {
     call();
@@ -26,6 +28,21 @@ function supports(app: WebApp, version: string): boolean {
   return yes;
 }
 
+function listen(app: WebApp, events: Events): () => void {
+  for (const [name, cb] of events) {
+    attempt(() => app.onEvent?.(name, cb));
+  }
+  return () => {
+    for (const [name, cb] of events) {
+      attempt(() => app.offEvent?.(name, cb));
+    }
+  };
+}
+
+export function fullscreenOn(site: { client_access?: { miniapp_fullscreen?: boolean } | null } | null | undefined): boolean {
+  return site?.client_access?.miniapp_fullscreen === true;
+}
+
 export function takesFullscreen(app: WebApp): boolean {
   return PHONES.includes(app.platform ?? '') && supports(app, FULLSCREEN_FROM) && typeof app.requestFullscreen === 'function';
 }
@@ -35,8 +52,29 @@ export function takesSwipes(app: WebApp): boolean {
 }
 
 export function holdScreen(app: WebApp, root: Root): () => void {
-  const full = takesFullscreen(app);
   const swipes = takesSwipes(app);
+  const holdSwipes = () => {
+    if (swipes) {
+      attempt(() => app.disableVerticalSwipes?.());
+    }
+  };
+  if (!swipes) {
+    root.dataset.tgSwipes = 'css';
+  }
+  const stop = listen(app, [['activated', holdSwipes]]);
+  attempt(() => app.ready());
+  attempt(() => app.expand?.());
+  holdSwipes();
+  return () => {
+    stop();
+    delete root.dataset.tgSwipes;
+  };
+}
+
+export function holdFullscreen(app: WebApp): () => void {
+  if (!takesFullscreen(app)) {
+    return () => undefined;
+  }
   let refused = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -54,45 +92,24 @@ export function holdScreen(app: WebApp, root: Root): () => void {
       stopWaiting();
     }
   };
-  const holdSwipes = () => {
-    if (swipes) {
-      attempt(() => app.disableVerticalSwipes?.());
-    }
-  };
   const onFailed = (payload?: unknown) => {
     stopWaiting();
     refused = (payload as { error?: unknown } | null | undefined)?.error !== 'ALREADY_FULLSCREEN';
   };
   const onActivated = () => {
-    holdSwipes();
-    if (full && !refused && !app.isFullscreen) {
+    if (!refused && !app.isFullscreen) {
       ask(TRIES);
     }
   };
-  const events: Array<[string, (payload?: unknown) => void]> = [
+
+  const stop = listen(app, [
     ['fullscreenChanged', stopWaiting],
     ['fullscreenFailed', onFailed],
     ['activated', onActivated],
-  ];
-
-  if (!swipes) {
-    root.dataset.tgSwipes = 'css';
-  }
-  for (const [name, cb] of events) {
-    attempt(() => app.onEvent?.(name, cb));
-  }
-  attempt(() => app.ready());
-  attempt(() => app.expand?.());
-  holdSwipes();
-  if (full) {
-    ask(TRIES);
-  }
-
+  ]);
+  ask(TRIES);
   return () => {
     stopWaiting();
-    for (const [name, cb] of events) {
-      attempt(() => app.offEvent?.(name, cb));
-    }
-    delete root.dataset.tgSwipes;
+    stop();
   };
 }
