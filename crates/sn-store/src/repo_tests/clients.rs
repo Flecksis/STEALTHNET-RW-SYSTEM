@@ -831,3 +831,62 @@ async fn второй_фактор_клиента_включается_отсе�
     drop(conn);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn клиенты_идут_от_новых_аккаунтов_к_старым_и_листаются_без_повторов() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let mut made = Vec::new();
+    for days in [400_i64, 5, 90, 5, 0, 30, 5] {
+        let id = client(&mut conn, &Person::NOBODY).await;
+        sqlx::query(
+            "UPDATE clients SET created_at = date_trunc('day', now()) - make_interval(days => $2) \
+             WHERE id = $1",
+        )
+        .bind(id.0)
+        .bind(i32::try_from(days).unwrap())
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        made.push((days, id));
+    }
+    let mut wanted = made.clone();
+    wanted.sort_by_key(|(days, id)| (*days, std::cmp::Reverse(id.0)));
+    let wanted: Vec<ClientId> = wanted.into_iter().map(|(_, id)| id).collect();
+    assert_eq!(found(&mut conn, None, None).await, wanted);
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    loop {
+        let page = conn
+            .clients()
+            .search(&ClientFilter::default(), PageRequest::new(Some(2), after))
+            .await
+            .unwrap();
+        seen.extend(page.items.iter().map(|item| item.client.id));
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen, wanted);
+
+    let middle = wanted[2];
+    sqlx::query("UPDATE clients SET deleted_at = now() WHERE id = $1")
+        .bind(middle.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    let rest = conn
+        .clients()
+        .search(
+            &ClientFilter::default(),
+            PageRequest::new(Some(50), Some(middle.0)),
+        )
+        .await
+        .unwrap();
+    let rest: Vec<ClientId> = rest.items.iter().map(|item| item.client.id).collect();
+    assert_eq!(rest, wanted[3..]);
+    drop(conn);
+    db.cleanup().await;
+}

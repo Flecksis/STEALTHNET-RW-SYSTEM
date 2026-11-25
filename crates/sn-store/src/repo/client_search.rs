@@ -243,8 +243,9 @@ impl<'c> ClientsRepo<'c> {
                  AND i.kind = 'telegram' ORDER BY i.id LIMIT 1) tg ON true \
              LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id \
                  AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
-             WHERE {conditions} AND ($4::bigint IS NULL OR c.id < $4) \
-             ORDER BY c.id DESC LIMIT $5",
+             WHERE {conditions} AND ($4::bigint IS NULL OR (c.created_at, c.id) < \
+                 (SELECT k.created_at, k.id FROM clients k WHERE k.id = $4)) \
+             ORDER BY c.created_at DESC, c.id DESC LIMIT $5",
             order = priority("x"),
             conditions = conditions.join(" AND "),
         );
