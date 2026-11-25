@@ -2096,6 +2096,90 @@ async fn служебный_скрипт_старой_панели_снимае�
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+async fn framed(state: &AppState, path: &str, dest: &str) -> (StatusCode, HeaderMap) {
+    let request = Request::builder()
+        .uri(path)
+        .header("sec-fetch-dest", dest)
+        .body(Body::empty())
+        .unwrap();
+    let response = router(state.clone()).oneshot(request).await.unwrap();
+    (response.status(), response.headers().clone())
+}
+
+#[tokio::test]
+async fn во_фрейме_telegram_web_главная_и_кабинет_переходят_в_приложение() {
+    let (state, dir) = web_state().await;
+    for (path, target) in [
+        ("/", "/app"),
+        ("/index.html", "/app"),
+        ("/cabinet", "/app"),
+        ("/cabinet/support/3", "/app"),
+        ("/?ref=ABCD1234", "/app?ref=ABCD1234"),
+    ] {
+        let (status, headers) = framed(&state, path, "iframe").await;
+        assert_eq!(status, StatusCode::TEMPORARY_REDIRECT, "{path}");
+        assert_eq!(headers[header::LOCATION], target, "{path}");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert!(!headers.contains_key(header::X_FRAME_OPTIONS), "{path}");
+        let (status, headers) = framed(&state, path, "document").await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{path}");
+    }
+    for path in ["/admin", "/admin/clients/42", "/pay/5", "/cabinets"] {
+        let (status, headers) = framed(&state, path, "iframe").await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{path}");
+    }
+    let (status, headers) = framed(&state, "/app/plans", "iframe").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::X_FRAME_OPTIONS));
+    let (status, headers) = framed(&state, "/assets/main-1a2b.js", "iframe").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key(header::LOCATION));
+    state
+        .services
+        .modules()
+        .apply_rows(&[sn_store::ModuleStateRow {
+            module: "landing".into(),
+            enabled: false,
+            config: json!({}),
+            updated_at: Utc::now(),
+        }]);
+    let (_, headers) = framed(&state, "/", "iframe").await;
+    assert_eq!(headers[header::LOCATION], "/app");
+    let (_, headers) = framed(&state, "/", "document").await;
+    assert_eq!(headers[header::LOCATION], "/cabinet");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn с_выключенным_приложением_сайт_во_фрейме_по_прежнему_закрыт() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let (mut state, dir) = web_state().await;
+    state.services = h.services().clone();
+    let (status, _) = framed(&state, "/cabinet", "iframe").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/client_access",
+            &owner,
+            json!({ "miniapp": false, "site_login": true, "self_devices": true, "self_reissue": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    for path in ["/", "/cabinet"] {
+        let (status, headers) = framed(&state, path, "iframe").await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{path}");
+        let (_, _, body) = fetch(&state, Method::GET, path).await;
+        assert!(!body.contains("telegram-app"), "{path}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    h.db.cleanup().await;
+}
+
 #[tokio::test]
 async fn выключенный_лендинг_ведёт_с_главной_в_кабинет() {
     let (state, dir) = web_state().await;

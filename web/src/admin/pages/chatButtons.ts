@@ -13,6 +13,17 @@ export type MenuNote = { warn: boolean; text: string; action: string | null };
 
 export type MainApp = { warn: boolean; text: string };
 
+const OWN_PAGE = /^\/(?:index\.html)?$|^\/(?:cabinet|app)(?:\/|$)/;
+
+export function opensApp(url: string, app: string): boolean {
+  try {
+    const target = new URL(url);
+    return target.origin === new URL(app).origin && OWN_PAGE.test(target.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function placeOf(button: MenuButton): string {
   if (button.type !== 'web_app') {
     return 'обычное «Меню» с командами';
@@ -35,12 +46,14 @@ export function menuNote(view: ButtonsView): MenuNote {
       action: puts ? 'Поставить сейчас' : 'Убрать сейчас',
     };
   }
-  const auto = view.wanted.type === 'web_app' ? ` Вход без пароля работает только на ${view.wanted.url}` : '';
-  return {
-    warn: true,
-    text: `${now} Её поставили не из панели: через @BotFather или прежним ботом.${auto}`,
-    action: puts ? 'Поставить заново' : 'Убрать',
-  };
+  const who = `${now} Её поставили не из панели: через @BotFather или прежним ботом.`;
+  if (view.wanted.type !== 'web_app') {
+    return { warn: true, text: who, action: 'Убрать' };
+  }
+  if (view.menu.type === 'web_app' && opensApp(view.menu.url, view.wanted.url)) {
+    return { warn: false, text: `${who} Приложение откроется и так.`, action: 'Поставить заново' };
+  }
+  return { warn: true, text: `${who} Вход без пароля работает только на ${view.wanted.url}`, action: 'Поставить заново' };
 }
 
 export function mainApp(view: ButtonsView, miniapp: boolean, address: string | null): MainApp | null {
@@ -52,6 +65,6 @@ export function mainApp(view: ButtonsView, miniapp: boolean, address: string | n
   const rule = `Боту Telegram менять её не даёт, только владельцу в @BotFather: ${path}.`;
   return {
     warn: false,
-    text: view.main_app ? `Включена. ${rule} Проверьте там адрес: вход без пароля работает только на ${address}` : `Выключена. ${rule} Адрес для включения: ${address}`,
+    text: view.main_app ? `Включена. ${rule} Адрес там должен быть ${address}` : `Выключена. ${rule} Адрес для включения: ${address}`,
   };
 }

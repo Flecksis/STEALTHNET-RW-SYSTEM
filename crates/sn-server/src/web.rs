@@ -3,7 +3,7 @@ use crate::security::Section;
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderValue, Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use sn_domain::client::Locale;
 use sn_domain::format;
@@ -54,6 +54,8 @@ pub fn robots_txt(indexing: bool) -> String {
 }
 const REVALIDATE: &str = "no-cache";
 const ICON: &str = "/api/public/icon.svg";
+const MINI_APP: &str = "/app";
+const CABINET: &str = "/cabinet";
 const ROOT: &str = "<div id=\"root\">";
 
 fn is_api(path: &str) -> bool {
@@ -146,6 +148,17 @@ impl Page {
             _ => Page::Other,
         }
     }
+}
+
+fn opens_app(settings: &CoreSettings, page: Page) -> bool {
+    settings.client_access.miniapp && matches!(page, Page::Landing | Page::Cabinet)
+}
+
+fn in_frame(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|dest| dest.eq_ignore_ascii_case("iframe"))
 }
 
 pub fn escape_html(text: &str) -> String {
@@ -308,6 +321,11 @@ fn head(settings: &CoreSettings, page: Page, locale: Locale) -> String {
     if page == Page::Admin {
         return tags.join("\n    ");
     }
+    if opens_app(settings, page) {
+        tags.push(format!(
+            "<meta name=\"telegram-app\" content=\"{MINI_APP}\">"
+        ));
+    }
     if let Some(description) = description {
         tags.push(format!(
             "<meta name=\"description\" content=\"{}\">",
@@ -413,10 +431,13 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
         if let Some(response) = document(&state, &dir, &path, request.uri().query(), wanted).await {
             return response;
         }
+        if in_frame(request.headers()) && opens_app(&state.services.settings(), Page::of(&path)) {
+            return instead(MINI_APP, request.uri().query());
+        }
         if Page::of(&path) == Page::Landing
             && !state.services.modules().is_enabled(ModuleId::Landing)
         {
-            return cabinet_instead(request.uri().query());
+            return instead(CABINET, request.uri().query());
         }
         if let Some(bot) = request
             .headers()
@@ -431,10 +452,10 @@ pub async fn fallback(State(state): State<AppState>, request: Request<Body>) -> 
     serve(&state, &dir, &path, request).await
 }
 
-fn cabinet_instead(query: Option<&str>) -> Response {
+fn instead(path: &str, query: Option<&str>) -> Response {
     let target = match query.filter(|q| !q.is_empty()) {
-        Some(query) => format!("/cabinet?{query}"),
-        None => "/cabinet".to_string(),
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
     };
     let mut response = Redirect::temporary(&target).into_response();
     response
@@ -735,6 +756,28 @@ mod tests {
         assert!(!landing.contains("apple-touch-icon"));
         assert!(!landing.contains("og:image"));
         assert!(!landing.contains("og:url"));
+    }
+
+    #[test]
+    fn главная_и_кабинет_знают_куда_вести_из_telegram_пока_приложение_включено() {
+        let tag = "<meta name=\"telegram-app\" content=\"/app\">";
+        let mut site = settings();
+        for page in [Page::Landing, Page::Cabinet] {
+            assert!(head(&site, page, Locale::Ru).contains(tag), "{page:?}");
+        }
+        for page in [Page::MiniApp, Page::Admin, Page::Other] {
+            assert!(
+                !head(&site, page, Locale::Ru).contains("telegram-app"),
+                "{page:?}"
+            );
+        }
+        site.client_access.miniapp = false;
+        for page in [Page::Landing, Page::Cabinet] {
+            assert!(
+                !head(&site, page, Locale::Ru).contains("telegram-app"),
+                "{page:?}"
+            );
+        }
     }
 
     #[test]

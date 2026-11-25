@@ -8,6 +8,7 @@ import { reloadOnStaleChunks } from './lib/chunks';
 import { guessLang, t, useApplied } from './lib/i18n';
 import { captureReferral } from './lib/referral';
 import { useSite } from './lib/site';
+import { servedApp, telegramEntry } from './lib/telegramEntry';
 import type { Site } from './lib/types';
 import { captureUtm } from './lib/utm';
 
@@ -70,7 +71,10 @@ captureReferral();
 captureUtm();
 
 const root = document.getElementById('root');
-if (root) {
+const app = telegramEntry(window.location, servedApp(document));
+if (app) {
+  window.location.replace(app);
+} else if (root) {
   createRoot(root).render(
     <StrictMode>
       <App />

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mainApp, menuNote, placeOf } from './chatButtons.ts';
+import { mainApp, menuNote, opensApp, placeOf } from './chatButtons.ts';
 
 const APP = 'https://vpn.example.com/app';
 const ours = { type: 'web_app', text: 'Приложение', url: APP };
-const foreign = { type: 'web_app', text: 'Кабинет', url: 'https://vpn.example.com/cabinet' };
+const foreign = { type: 'web_app', text: 'Кабинет', url: 'https://old.example.com/cabinet' };
+const cabinet = { type: 'web_app', text: 'Кабинет', url: 'https://vpn.example.com/cabinet' };
 const commands = { type: 'commands' };
 
 const view = (over = {}) => ({ username: 'vpn_example_bot', wanted: ours, menu: ours, same: true, applied: true, main_app: false, ...over });
@@ -25,9 +26,28 @@ test('чужую кнопку предлагают поставить занов
   const note = menuNote(view({ menu: foreign, same: false }));
   assert.equal(note.warn, true);
   assert.equal(note.action, 'Поставить заново');
-  assert.ok(note.text.includes('https://vpn.example.com/cabinet'));
+  assert.ok(note.text.includes('https://old.example.com/cabinet'));
   assert.ok(note.text.includes('через @BotFather или прежним ботом'));
   assert.ok(note.text.endsWith(APP));
+});
+
+test('кнопка на сайт или в кабинет этой же панели не пугает: приложение откроется', () => {
+  const note = menuNote(view({ menu: cabinet, same: false }));
+  assert.equal(note.warn, false);
+  assert.equal(note.action, 'Поставить заново');
+  assert.ok(note.text.endsWith('Приложение откроется и так.'));
+});
+
+test('приложение открывают только свои страницы', () => {
+  for (const path of ['', '/', '/index.html', '/cabinet', '/cabinet/support', '/app', '/app/plans', '/?utm_source=tg']) {
+    assert.equal(opensApp(`https://vpn.example.com${path}`, APP), true, path);
+  }
+  for (const path of ['/privacy', '/cabinets', '/application', '/pay/5']) {
+    assert.equal(opensApp(`https://vpn.example.com${path}`, APP), false, path);
+  }
+  for (const url of ['https://old.example.com/', 'http://vpn.example.com/', 'https://vpn.example.com:8443/', 'мусор', '']) {
+    assert.equal(opensApp(url, APP), false, url);
+  }
 });
 
 test('пока бот не применил настройку, об этом так и сказано', () => {
@@ -53,7 +73,7 @@ test('кнопка в списке чатов: состояние и где её
   const on = mainApp(view({ main_app: true }), true, APP);
   assert.ok(on.text.startsWith('Включена. '));
   assert.equal(on.warn, false);
-  assert.ok(on.text.endsWith(`работает только на ${APP}`));
+  assert.ok(on.text.endsWith(`Адрес там должен быть ${APP}`));
 });
 
 test('кнопка в списке чатов не показывается, когда ей нечего открывать, и предупреждает, если осталась', () => {
