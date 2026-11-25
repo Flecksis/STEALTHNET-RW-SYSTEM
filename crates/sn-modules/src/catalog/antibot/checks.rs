@@ -418,7 +418,7 @@ pub async fn confirm(
             let bound = cdata(token);
             let outcome = captcha::verify(
                 &ctx.store,
-                &ctx.core.captcha_endpoints(),
+                &captcha::Service::of(ctx),
                 &captcha,
                 given,
                 answer.ip,

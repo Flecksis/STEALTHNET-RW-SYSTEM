@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sn_domain::module::ModuleId;
 use sn_store::{Db, Store, StoreError};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const TURNSTILE_VERIFY: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -286,6 +285,16 @@ pub struct Endpoints {
     pub yandex: String,
 }
 
+impl Endpoints {
+    pub fn of(&self, provider: Provider) -> &str {
+        match provider {
+            Provider::Turnstile => &self.turnstile,
+            Provider::Yandex => &self.yandex,
+            Provider::None => "",
+        }
+    }
+}
+
 impl Default for Endpoints {
     fn default() -> Self {
         Endpoints {
@@ -359,18 +368,36 @@ pub async fn recovered(db: &mut impl Db) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn http() -> &'static reqwest::Client {
-    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    HTTP.get_or_init(|| {
-        sn_egress::build(
-            reqwest::Client::builder()
-                .timeout(TIMEOUT)
-                .connect_timeout(CONNECT_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION"))),
-            None,
-        )
-    })
+fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
+}
+
+static HTTP: sn_egress::Profile = sn_egress::Profile {
+    name: "captcha",
+    build: http_builder,
+};
+
+pub fn client() -> sn_egress::Http {
+    sn_egress::Http::new(&HTTP, sn_egress::Route::Captcha, None)
+}
+
+#[derive(Debug, Clone)]
+pub struct Service {
+    pub endpoints: Endpoints,
+    pub http: sn_egress::Http,
+}
+
+impl Service {
+    pub fn of(ctx: &ModuleContext) -> Self {
+        Service {
+            endpoints: ctx.core.captcha_endpoints(),
+            http: ctx.core.captcha_http(),
+        }
+    }
 }
 
 pub fn token_digest(token: &str) -> Vec<u8> {
@@ -403,7 +430,7 @@ pub async fn sweep(db: &mut impl Db) -> Result<u64, StoreError> {
 
 pub async fn verify(
     store: &Store,
-    endpoints: &Endpoints,
+    service: &Service,
     captcha: &Captcha,
     token: &str,
     ip: Option<&str>,
@@ -422,8 +449,8 @@ pub async fn verify(
     }
     let ip = ip.map(str::trim).filter(|ip| !ip.is_empty());
     let outcome = match captcha.provider {
-        Provider::Turnstile => turnstile(&endpoints.turnstile, captcha, token, ip, expect).await,
-        Provider::Yandex => yandex(&endpoints.yandex, captcha, token, ip).await,
+        Provider::Turnstile => turnstile(service, captcha, token, ip, expect).await,
+        Provider::Yandex => yandex(service, captcha, token, ip).await,
         Provider::None => Outcome::Unavailable("капча не настроена".into()),
     };
     match &outcome {
@@ -441,26 +468,33 @@ pub async fn verify(
     Ok(outcome)
 }
 
-fn transport(err: &reqwest::Error) -> String {
-    if err.is_timeout() {
-        "сервис проверки не ответил вовремя".into()
+fn transport(err: &reqwest::Error, via_proxy: bool) -> String {
+    let reason = if err.is_timeout() {
+        "сервис проверки не ответил вовремя"
     } else if err.is_connect() {
-        "не удалось соединиться с сервисом проверки".into()
+        "не удалось соединиться с сервисом проверки"
     } else {
-        "сервис проверки недоступен".into()
+        "сервис проверки недоступен"
+    };
+    if via_proxy {
+        format!("{reason} через исходящий прокси")
+    } else {
+        reason.into()
     }
 }
 
 async fn ask<T: serde::de::DeserializeOwned>(
-    url: &str,
+    service: &Service,
+    provider: Provider,
     form: &[(&str, String)],
 ) -> Result<(reqwest::StatusCode, T), String> {
-    let response = http()
-        .post(url)
+    let response = service
+        .http
+        .post(service.endpoints.of(provider))
         .form(form)
         .send()
         .await
-        .map_err(|err| transport(&err))?;
+        .map_err(|err| transport(&err, service.http.proxy().is_some()))?;
     let status = response.status();
     match response.json().await {
         Ok(reply) => Ok((status, reply)),
@@ -500,7 +534,7 @@ fn passed_on(captcha: &Captcha, host: Option<&str>) -> Outcome {
 }
 
 async fn turnstile(
-    url: &str,
+    service: &Service,
     captcha: &Captcha,
     token: &str,
     ip: Option<&str>,
@@ -514,7 +548,7 @@ async fn turnstile(
     if let Some(ip) = ip {
         form.push(("remoteip", ip.to_string()));
     }
-    let reply: TurnstileReply = match ask(url, &form).await {
+    let reply: TurnstileReply = match ask(service, Provider::Turnstile, &form).await {
         Ok((_, reply)) => reply,
         Err(problem) => return Outcome::Unavailable(problem),
     };
@@ -565,7 +599,7 @@ impl YandexReply {
     }
 }
 
-async fn yandex(url: &str, captcha: &Captcha, token: &str, ip: Option<&str>) -> Outcome {
+async fn yandex(service: &Service, captcha: &Captcha, token: &str, ip: Option<&str>) -> Outcome {
     let mut form = vec![
         ("secret", captcha.secret.clone()),
         ("token", token.to_string()),
@@ -573,7 +607,7 @@ async fn yandex(url: &str, captcha: &Captcha, token: &str, ip: Option<&str>) -> 
     if let Some(ip) = ip {
         form.push(("ip", ip.to_string()));
     }
-    let (status, reply): (_, YandexReply) = match ask(url, &form).await {
+    let (status, reply): (_, YandexReply) = match ask(service, Provider::Yandex, &form).await {
         Ok(answer) => answer,
         Err(problem) => return Outcome::Unavailable(problem),
     };
@@ -601,7 +635,7 @@ pub enum Probe {
     Unavailable(String),
 }
 
-pub async fn probe(endpoints: &Endpoints, provider: Provider, secret: &str) -> Probe {
+pub async fn probe(service: &Service, provider: Provider, secret: &str) -> Probe {
     match provider {
         Provider::Turnstile if TURNSTILE_TEST_SECRETS.contains(&secret) => Probe::Test,
         Provider::Turnstile => {
@@ -609,7 +643,7 @@ pub async fn probe(endpoints: &Endpoints, provider: Provider, secret: &str) -> P
                 ("secret", secret.to_string()),
                 ("response", PROBE_TOKEN.to_string()),
             ];
-            let reply: TurnstileReply = match ask(&endpoints.turnstile, &form).await {
+            let reply: TurnstileReply = match ask(service, provider, &form).await {
                 Ok((_, reply)) => reply,
                 Err(problem) => return Probe::Unavailable(problem),
             };
@@ -634,7 +668,7 @@ pub async fn probe(endpoints: &Endpoints, provider: Provider, secret: &str) -> P
                 ("secret", secret.to_string()),
                 ("token", PROBE_TOKEN.to_string()),
             ];
-            let (status, reply): (_, YandexReply) = match ask(&endpoints.yandex, &form).await {
+            let (status, reply): (_, YandexReply) = match ask(service, provider, &form).await {
                 Ok(answer) => answer,
                 Err(problem) => return Probe::Unavailable(problem),
             };

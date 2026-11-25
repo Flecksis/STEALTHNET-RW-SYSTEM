@@ -576,3 +576,137 @@ async fn проверять_ключи_может_только_тот_кто_м�
     assert!(server.received_requests().await.unwrap().is_empty());
     h.db.cleanup().await;
 }
+
+async fn behind_proxy(routes: Option<&str>, port: u16) -> Option<Http> {
+    let proxy = sn_egress::EnvProxy::from_env(
+        Some(&format!(
+            "socks5h://shop:Pr0xy%3Ap%40ss%2Fword@127.0.0.1:{port}"
+        )),
+        routes,
+        None,
+    )
+    .unwrap();
+    let h = super::site_limits::panel_with(EnvFallbacks {
+        proxy,
+        ..EnvFallbacks::default()
+    })
+    .await?;
+    antibot_on(
+        &h,
+        json!({
+            "captcha": "turnstile",
+            "captcha_site_key": "0x4AAAAAAAsite-key",
+            "captcha_secret": SECRET,
+        }),
+    )
+    .await;
+    h.services().set_captcha_endpoints(Endpoints {
+        turnstile: "https://captcha.example.test/siteverify".into(),
+        yandex: "https://smart.example.test/validate".into(),
+    });
+    Some(h)
+}
+
+#[tokio::test]
+async fn капча_идёт_через_прокси_только_когда_направление_отмечено() {
+    let fake = super::proxy::socks().await;
+    let Some(h) = behind_proxy(Some("captcha"), fake.port).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    for (provider, site, secret, host) in [
+        (
+            "turnstile",
+            "0x4AAAAAAAsite-key",
+            SECRET,
+            "captcha.example.test:443",
+        ),
+        (
+            "yandex",
+            "ysc1_site",
+            "ysc2_secret",
+            "smart.example.test:443",
+        ),
+    ] {
+        let (status, body) = h
+            .write(
+                Method::POST,
+                "/api/admin/m/antibot/captcha/check",
+                &owner,
+                json!({ "provider": provider, "site_key": site, "secret": secret }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], false, "{body}");
+        assert!(
+            body["text"]
+                .as_str()
+                .unwrap()
+                .contains("через исходящий прокси"),
+            "{body}"
+        );
+        assert_eq!(fake.seen().last().map(String::as_str), Some(host));
+    }
+    let client = h.client(5_200_000_009).await;
+    let challenge = h
+        .services()
+        .checkout()
+        .trial_challenge(client, antibot::Surface::Web, None)
+        .await
+        .unwrap();
+    let code = h
+        .services()
+        .checkout()
+        .confirm_trial(
+            client,
+            &challenge.token,
+            antibot::Answer::web(None, Some("ok:trial:any"), None),
+            None,
+        )
+        .await
+        .unwrap_err()
+        .code()
+        .to_string();
+    assert_eq!(code, antibot::UNAVAILABLE);
+    assert_eq!(fake.seen().len(), 3);
+    assert_eq!(fake.seen()[2], "captcha.example.test:443");
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/settings/proxy/check",
+            &owner,
+            json!({ "current": true }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"][0]["route"], "captcha", "{body}");
+    assert_eq!(body["items"][0]["host"], "captcha.example.test", "{body}");
+    assert_eq!(fake.seen().len(), 4);
+    antibot_on(&h, json!({ "captcha": "none" })).await;
+    let (_, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/settings/proxy/check",
+            &owner,
+            json!({ "current": true }),
+        )
+        .await;
+    assert_eq!(body["items"][0]["direct"], true, "{body}");
+    assert!(
+        body["items"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("не настроена"),
+        "{body}"
+    );
+    assert_eq!(fake.seen().len(), 4);
+    h.db.cleanup().await;
+    for routes in [None, Some("telegram,payments,ai,mail,updates")] {
+        let Some(h) = behind_proxy(routes, fake.port).await else {
+            return;
+        };
+        assert!(h.services().captcha_http().proxy().is_none(), "{routes:?}");
+        assert!(h.services().egress().plan().active());
+        h.db.cleanup().await;
+    }
+}

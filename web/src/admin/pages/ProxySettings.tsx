@@ -4,7 +4,7 @@ import { timeHM } from '../../lib/format';
 import { Switch } from '../ui';
 import './proxy.css';
 
-export type ProxyRoute = 'telegram' | 'payments' | 'ai' | 'mail' | 'updates';
+export type ProxyRoute = 'telegram' | 'payments' | 'ai' | 'mail' | 'updates' | 'captcha';
 
 type Health = {
   state: 'unknown' | 'up' | 'down';
@@ -63,6 +63,11 @@ const ROUTES: Array<{ key: ProxyRoute; title: string; about: (view: ProxyView) =
     key: 'updates',
     title: 'Проверка обновлений',
     about: () => 'Проверка новой версии на ghcr.io. Само обновление скачивает Docker на сервере, ему прокси задаётся в настройках Docker',
+  },
+  {
+    key: 'captcha',
+    title: 'Капча антибота',
+    about: () => 'Проверка ответов капчи у Cloudflare или Яндекса. Сама капча открывается в браузере клиента, прокси её не касается',
   },
 ];
 

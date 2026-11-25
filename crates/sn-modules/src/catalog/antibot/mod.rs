@@ -1001,7 +1001,7 @@ async fn check_answer(
     };
     let outcome = captcha::verify(
         &ctx.store,
-        &ctx.core.captcha_endpoints(),
+        &captcha::Service::of(ctx),
         captcha,
         token,
         ip,

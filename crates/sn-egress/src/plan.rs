@@ -11,15 +11,17 @@ pub enum Route {
     Ai,
     Mail,
     Updates,
+    Captcha,
 }
 
 impl Route {
-    pub const ALL: [Route; 5] = [
+    pub const ALL: [Route; 6] = [
         Route::Telegram,
         Route::Payments,
         Route::Ai,
         Route::Mail,
         Route::Updates,
+        Route::Captcha,
     ];
 
     pub const ENV_DEFAULT: [Route; 2] = [Route::Telegram, Route::Ai];
@@ -31,6 +33,7 @@ impl Route {
             Route::Ai => "ai",
             Route::Mail => "mail",
             Route::Updates => "updates",
+            Route::Captcha => "captcha",
         }
     }
 
@@ -48,6 +51,7 @@ impl Route {
             Route::Ai => "ИИ-чат поддержки",
             Route::Mail => "Почта через Resend",
             Route::Updates => "Проверка обновлений",
+            Route::Captcha => "Капча антибота",
         }
     }
 }
@@ -102,7 +106,7 @@ impl std::fmt::Display for EnvError {
             EnvError::Url(err) => write!(f, "SN_PROXY_URL: {err}"),
             EnvError::Route(name) => write!(
                 f,
-                "SN_PROXY_ROUTES: неизвестное направление «{name}», подойдут telegram, payments, ai, mail, updates"
+                "SN_PROXY_ROUTES: неизвестное направление «{name}», подойдут telegram, payments, ai, mail, updates, captcha"
             ),
             EnvError::Provider(name) => write!(
                 f,
@@ -272,6 +276,10 @@ mod tests {
         assert!(plan.proxy_for(Route::Payments, None).is_none());
         let all = Plan::from_panel(&settings(&[Route::Payments], &[]), None);
         assert!(all.proxy_for(Route::Payments, Some("yookassa")).is_some());
+        assert!(all.proxy_for(Route::Captcha, None).is_none());
+        let captcha = Plan::from_panel(&settings(&[Route::Captcha], &[]), None);
+        assert!(captcha.proxy_for(Route::Captcha, None).is_some());
+        assert!(captcha.proxy_for(Route::Telegram, None).is_none());
         let off = Plan::from_panel(
             &ProxySettings {
                 enabled: false,
@@ -300,6 +308,8 @@ mod tests {
         let from_env = Plan::resolve(None, Some(&env));
         assert_eq!(from_env.source, Source::Env);
         assert!(from_env.proxy_for(Route::Telegram, None).is_some());
+        assert!(from_env.proxy_for(Route::Captcha, None).is_none());
+        assert_eq!(Route::parse("Captcha"), Some(Route::Captcha));
         assert!(
             from_env
                 .proxy_for(Route::Payments, Some("cryptomus"))

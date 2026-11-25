@@ -341,6 +341,10 @@ pub trait CoreApi: Send + Sync {
     fn captcha_endpoints(&self) -> crate::catalog::antibot::captcha::Endpoints {
         crate::catalog::antibot::captcha::Endpoints::default()
     }
+
+    fn captcha_http(&self) -> sn_egress::Http {
+        crate::catalog::antibot::captcha::client()
+    }
 }
 
 #[derive(Clone)]

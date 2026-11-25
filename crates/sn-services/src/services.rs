@@ -97,6 +97,7 @@ struct Inner {
     backups: crate::backups::Runtime,
     squad_countries: crate::squad_countries::SquadCountries,
     egress: sn_egress::Egress,
+    captcha_http: sn_egress::Http,
 }
 
 #[derive(Clone)]
@@ -130,6 +131,8 @@ impl Services {
             oauth_endpoints: Arc::default(),
             captcha_endpoints: Arc::default(),
         };
+        let egress = sn_egress::Egress::new();
+        let captcha_http = sn_modules::catalog::antibot::captcha::client().bound(&egress);
         Services {
             inner: Arc::new(Inner {
                 store: deps.store,
@@ -147,7 +150,8 @@ impl Services {
                 pause: crate::pause::PauseGate::default(),
                 backups: crate::backups::Runtime::default(),
                 squad_countries: crate::squad_countries::SquadCountries::default(),
-                egress: sn_egress::Egress::new(),
+                egress,
+                captcha_http,
             }),
         }
     }
@@ -293,6 +297,10 @@ impl Services {
 
     pub fn captcha_endpoints(&self) -> Arc<sn_modules::catalog::antibot::captcha::Endpoints> {
         self.read(|r| r.captcha_endpoints.clone())
+    }
+
+    pub fn captcha_http(&self) -> sn_egress::Http {
+        self.inner.captcha_http.clone()
     }
 
     pub fn set_captcha_endpoints(

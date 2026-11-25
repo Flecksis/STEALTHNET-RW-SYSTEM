@@ -7,13 +7,13 @@ use tokio::net::{TcpListener, TcpStream};
 const USER: &str = "shop";
 const SECRET_PASS: &str = "Pr0xy:p@ss/word";
 
-struct Socks {
-    port: u16,
+pub(super) struct Socks {
+    pub(super) port: u16,
     seen: Arc<StdMutex<Vec<String>>>,
 }
 
 impl Socks {
-    fn seen(&self) -> Vec<String> {
+    pub(super) fn seen(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
     }
 
@@ -64,7 +64,7 @@ async fn session(tcp: &mut TcpStream, log: &StdMutex<Vec<String>>) -> std::io::R
     Ok(())
 }
 
-async fn socks() -> Socks {
+pub(super) async fn socks() -> Socks {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(StdMutex::new(Vec::new()));

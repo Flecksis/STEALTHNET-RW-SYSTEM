@@ -12,6 +12,7 @@ use sn_domain::settings::{keys, secret_keys};
 use sn_egress::{
     EnvProxy, Failure, Plan, Problem, Proxy, ProxyServer, ProxySettings, Route, Source,
 };
+use sn_modules::catalog::antibot::captcha;
 use sn_store::{Db, SecretBox};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -386,7 +387,7 @@ impl<'a> EgressOps<'a> {
         if update.enabled && update.routes.is_empty() {
             return Err(field(
                 "routes",
-                "выберите, что пойдёт через прокси: Telegram, платёжки, ИИ, почта или обновления",
+                "выберите, что пойдёт через прокси: Telegram, платёжки, ИИ, почта, обновления или капча",
             ));
         }
         let known: BTreeSet<String> = self
@@ -549,7 +550,7 @@ impl<'a> EgressOps<'a> {
         if settings.routes.is_empty() {
             return Err(field(
                 "routes",
-                "выберите, что пойдёт через прокси: Telegram, платёжки, ИИ, почта или обновления",
+                "выберите, что пойдёт через прокси: Telegram, платёжки, ИИ, почта, обновления или капча",
             ));
         }
         let given = request.form.password.as_deref().filter(|p| !p.is_empty());
@@ -676,6 +677,18 @@ impl<'a> EgressOps<'a> {
                         note: None,
                     });
                 }
+                Route::Captcha => {
+                    let endpoints = self.services.captcha_endpoints();
+                    let active = captcha::active(&self.services.module_context());
+                    out.push(Target {
+                        route: *route,
+                        title: "Капча антибота".into(),
+                        url: active.and_then(|c| parse(endpoints.of(c.provider))),
+                        note: Some(
+                            "Капча в «Антиботе» не настроена: проверять нечего, прокси подключится, когда вы её включите".into(),
+                        ),
+                    });
+                }
             }
         }
         out.truncate(CHECK_TARGETS_MAX);
@@ -781,6 +794,7 @@ impl<'a> EgressOps<'a> {
             Route::Ai,
             Route::Mail,
             Route::Updates,
+            Route::Captcha,
             Route::Payments,
         ]
         .into_iter()

@@ -351,6 +351,10 @@ impl CoreApi for Services {
         Services::captcha_endpoints(self).as_ref().clone()
     }
 
+    fn captcha_http(&self) -> sn_egress::Http {
+        Services::captcha_http(self)
+    }
+
     fn core_settings(&self) -> Arc<CoreSettings> {
         self.settings()
     }

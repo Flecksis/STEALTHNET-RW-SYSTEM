@@ -1,6 +1,10 @@
 use super::*;
 
 pub(super) async fn panel() -> Option<Http> {
+    panel_with(EnvFallbacks::default()).await
+}
+
+pub(super) async fn panel_with(env: EnvFallbacks) -> Option<Http> {
     let http = http().await?;
     let services = Services::new(ServiceDeps {
         store: http.db.store.clone(),
@@ -11,7 +15,7 @@ pub(super) async fn panel() -> Option<Http> {
         ),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
         clock: http.clock.clone(),
-        env: EnvFallbacks::default(),
+        env,
     });
     services.reload().await.unwrap();
     Some(Http {

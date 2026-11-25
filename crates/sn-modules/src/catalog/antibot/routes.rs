@@ -93,7 +93,7 @@ async fn check_captcha(
             "Проверок ключей — не больше 20 за 10 минут. Попробуйте позже",
         ));
     }
-    let outcome = captcha::probe(&ctx.core.captcha_endpoints(), body.provider, &secret).await;
+    let outcome = captcha::probe(&captcha::Service::of(&ctx), body.provider, &secret).await;
     if outcome == Probe::Accepted {
         let mut conn = ctx.store.conn().await?;
         captcha::recovered(&mut conn).await?;
