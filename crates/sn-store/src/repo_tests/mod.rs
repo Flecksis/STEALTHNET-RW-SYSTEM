@@ -4,5 +4,6 @@ mod dashboard;
 mod fixtures;
 mod photos;
 mod races;
+mod sessions;
 mod tariffs;
 mod tickets;

@@ -5,11 +5,13 @@ use sn_domain::jobs::{JobKind, JobPayload};
 use sn_domain::order::OrderStatus;
 use sn_domain::payment::PaymentStatus;
 use sn_services::fulfillment::abandoned_reason;
+use sn_services::session_sweep::SessionSweep;
 use sn_services::{Actor, ServiceError, Services};
 use sn_store::{Db, JobRecord, LockSpace, StoreError, audit_entity};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::time::{Instant, MissedTickBehavior, interval, interval_at};
 use tokio_util::sync::CancellationToken;
 
@@ -210,6 +212,7 @@ pub struct Worker {
     config: WorkerConfig,
     handler: Arc<dyn JobHandler>,
     by_kind: HashMap<JobKind, Arc<dyn JobHandler>>,
+    sessions: Mutex<SessionSweep>,
 }
 
 fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
@@ -230,6 +233,7 @@ impl Worker {
             config,
             handler: Arc::new(CoreHandlers),
             by_kind: HashMap::new(),
+            sessions: Mutex::default(),
         }
     }
 
@@ -543,6 +547,15 @@ impl Worker {
             "purge_webhooks",
             inbox.purge_webhooks().await.map(serde_json::Value::from),
         );
+        let sessions = step(
+            "sweep_sessions",
+            self.sessions
+                .lock()
+                .await
+                .run(&self.services)
+                .await
+                .map(serde_json::Value::from),
+        );
         let refunds = step(
             "poll_refunds",
             inbox
@@ -574,6 +587,7 @@ impl Worker {
             "expired_payments": expired.len(),
             "canceled_orders": canceled,
             "purged_webhooks": purged,
+            "removed_sessions": sessions,
             "refunds": refunds,
             "released_devices": devices,
             "settled_traffic": traffic,

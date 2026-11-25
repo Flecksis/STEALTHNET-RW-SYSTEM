@@ -35,6 +35,7 @@ use sn_store::{
 use std::sync::Mutex;
 
 mod clock;
+mod sessions;
 
 const CRYPTO_TOKEN: &str = "4321:TEST";
 const SQUAD: &str = "00000000-0000-0000-0000-000000000001";
@@ -400,6 +401,7 @@ async fn периодическая_работа_не_чаще_интервал�
         .unwrap();
     assert_eq!(report["expired_payments"], 0);
     assert_eq!(report["purged_webhooks"], 0);
+    assert_eq!(report["removed_sessions"], 0);
     assert_eq!(report["refunds"]["settled"], 0);
     assert_eq!(report["refunds"]["failed"], 0);
     assert_eq!(report["released_devices"], 0);

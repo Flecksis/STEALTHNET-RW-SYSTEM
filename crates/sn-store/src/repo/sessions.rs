@@ -102,6 +102,12 @@ pub struct ClientSessionRecord {
     pub last_seen_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionPortion {
+    pub last: Option<i64>,
+    pub removed: i64,
+}
+
 #[derive(sqlx::FromRow)]
 struct ClientSessionRow {
     id: i64,
@@ -337,5 +343,42 @@ impl<'c> SessionsRepo<'c> {
         .execute(&mut *self.conn)
         .await?;
         Ok(done.rows_affected())
+    }
+
+    pub async fn sweep_client(
+        &mut self,
+        after: i64,
+        portion: i64,
+        keep_days: i64,
+    ) -> StoreResult<SessionPortion> {
+        let (last, removed): (Option<i64>, i64) = sqlx::query_as(
+            "WITH portion AS MATERIALIZED ( \
+                 SELECT id FROM client_sessions WHERE id > $1 ORDER BY id LIMIT $2), \
+             stale AS MATERIALIZED ( \
+                 SELECT s.id FROM client_sessions s \
+                 WHERE s.id = ANY (ARRAY(SELECT id FROM portion)) \
+                   AND s.created_at < now() - make_interval(days => $3::int) \
+                   AND s.last_seen_at < now() - make_interval(days => $3::int) \
+                   AND (s.expires_at <= now() OR s.revoked_at IS NOT NULL) \
+                   AND ((EXISTS (SELECT 1 FROM client_sessions earlier \
+                             WHERE earlier.client_id = s.client_id \
+                               AND (earlier.created_at, earlier.id) < (s.created_at, s.id) \
+                               AND (earlier.ip IS NOT NULL OR s.ip IS NULL)) \
+                         AND EXISTS (SELECT 1 FROM client_sessions later \
+                             WHERE later.client_id = s.client_id AND later.channel = s.channel \
+                               AND later.created_at > s.last_seen_at \
+                               AND (later.last_seen_at, later.id) > (s.last_seen_at, s.id))) \
+                        OR (SELECT c.deleted_at FROM clients c WHERE c.id = s.client_id) IS NOT NULL) \
+                 FOR UPDATE OF s SKIP LOCKED), \
+             gone AS ( \
+                 DELETE FROM client_sessions s USING stale WHERE s.id = stale.id RETURNING 1) \
+             SELECT (SELECT max(id) FROM portion), (SELECT count(*) FROM gone)",
+        )
+        .bind(after)
+        .bind(portion)
+        .bind(keep_days)
+        .fetch_one(&mut *self.conn)
+        .await?;
+        Ok(SessionPortion { last, removed })
     }
 }

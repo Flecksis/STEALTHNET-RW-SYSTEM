@@ -1344,6 +1344,215 @@ async fn лимит_регистраций_с_адреса_видит_все_р�
     db.cleanup().await;
 }
 
+async fn web_client(conn: &mut impl Db, days: i64, minute: i64) -> ClientId {
+    ClientId(
+        sqlx::query_scalar(
+            "INSERT INTO clients (locale, registration_source, created_at) \
+             VALUES ('ru', 'web', now() - make_interval(days => $1::int) + make_interval(mins => $2::int)) RETURNING id",
+        )
+        .bind(days)
+        .bind(minute)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap(),
+    )
+}
+
+async fn old_session(conn: &mut impl Db, client_id: ClientId, days: i64, minute: i64, ip: &str) {
+    sqlx::query(
+        "INSERT INTO client_sessions (client_id, token_hash, channel, ip, created_at, last_seen_at, expires_at, revoked_at) \
+         SELECT $1, decode(md5($1 || ':' || $2 || ':' || $3 || ':' || $4), 'hex'), 'cabinet', $4, at, at, at + interval '30 days', \
+                CASE WHEN $2 % 3 = 0 THEN at END \
+         FROM (SELECT now() - make_interval(days => $2::int) + make_interval(mins => $3::int) AS at) moment",
+    )
+    .bind(client_id.0)
+    .bind(days)
+    .bind(minute)
+    .bind(ip)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn sweep_sessions(conn: &mut impl Db, keep_days: i64) -> i64 {
+    let mut after = 0;
+    let mut removed = 0;
+    loop {
+        let portion = conn
+            .sessions()
+            .sweep_client(after, 10, keep_days)
+            .await
+            .unwrap();
+        removed += portion.removed;
+        match portion.last {
+            Some(last) => after = last,
+            None => return removed,
+        }
+    }
+}
+
+#[tokio::test]
+async fn оценка_не_меняется_после_уборки_старых_сессий() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let mut conn = db.store.conn().await.unwrap();
+    let mut burst = Vec::new();
+    for (n, ip) in [
+        "203.0.113.7",
+        "203.0.113.7",
+        "203.0.113.7",
+        "203.0.113.7",
+        "203.0.113.7",
+        "198.51.100.1",
+        "2001:db8:1:2::1",
+        "2001:db8:1:2::2",
+        "2001:db8:1:2::3",
+        "2001:db8:1:2:ffff::4",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let minute = i64::try_from(n).unwrap();
+        let id = web_client(&mut conn, 365, minute).await;
+        old_session(&mut conn, id, 365, minute + 1, ip).await;
+        for days in [364, 200, 120, 95, 75, 70] {
+            old_session(&mut conn, id, days, minute, &format!("192.0.2.{n}")).await;
+        }
+        burst.push(id);
+    }
+    let late = web_client(&mut conn, 300, 0).await;
+    for (minute, ip) in [(30, "203.0.113.50"), (40, "203.0.113.51")] {
+        old_session(&mut conn, late, 300, minute, ip).await;
+    }
+    old_session(&mut conn, late, 250, 0, "203.0.113.52").await;
+    let mut pairs = Vec::new();
+    for (n, days) in [1, 30, 59, 61, 89, 91, 200].into_iter().enumerate() {
+        let shared = format!("198.51.{n}.7");
+        let referrer = web_client(&mut conn, 400, 0).await;
+        let payer = web_client(&mut conn, 350, 0).await;
+        for (id, own) in [(referrer, "192.0.2.201"), (payer, "192.0.2.202")] {
+            old_session(&mut conn, id, 340, 0, own).await;
+            old_session(&mut conn, id, 300, 0, own).await;
+            old_session(&mut conn, id, days, 0, &shared).await;
+            old_session(&mut conn, id, 210, 5, own).await;
+        }
+        pairs.push((payer, referrer));
+    }
+    let everyone: Vec<ClientId> = burst
+        .iter()
+        .copied()
+        .chain([late])
+        .chain(pairs.iter().flat_map(|(a, b)| [*a, *b]))
+        .collect();
+    let settings = AntibotSettings::default();
+    let picture = async |conn: &mut sn_store::Conn| {
+        let now = db_now(conn).await.unwrap();
+        let since = now - Duration::days(signals::SHARED_SESSIONS_DAYS);
+        let grace = Duration::minutes(signals::SESSION_GRACE_MINUTES);
+        let mut seen = Vec::new();
+        for id in &everyone {
+            let assessment = assess(conn, *id, &settings, now).await.unwrap();
+            let registered = store::registration(conn, *id)
+                .await
+                .unwrap()
+                .unwrap()
+                .created_at;
+            let mut ips = store::session_ips(conn, *id, since).await.unwrap();
+            ips.sort();
+            seen.push(format!(
+                "{:?} {} {:?} {:?} {}",
+                assessment.signals,
+                assessment.details_value(),
+                store::first_ip(conn, *id, registered + grace)
+                    .await
+                    .unwrap(),
+                ips,
+                store::signups_from(
+                    conn,
+                    *id,
+                    "203.0.113.7/32",
+                    registered - Duration::hours(24),
+                    registered,
+                    grace
+                )
+                .await
+                .unwrap(),
+            ));
+        }
+        for (payer, referrer) in &pairs {
+            let trace = shared_traces(conn, *payer, *referrer, now).await.unwrap();
+            seen.push(format!("{trace:?}"));
+        }
+        seen
+    };
+    let before = picture(&mut conn).await;
+    let limited = before[..10]
+        .iter()
+        .map(|line| line.contains("IpLimit"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        limited,
+        [
+            false, false, false, true, true, false, false, false, false, true
+        ]
+    );
+    let traces = before[before.len() - pairs.len()..]
+        .iter()
+        .map(|line| line != "None")
+        .collect::<Vec<_>>();
+    assert_eq!(traces, [true, true, true, false, false, false, false]);
+    for (keep, removed) in [(90, 69), (signals::SHARED_SESSIONS_DAYS, 10)] {
+        assert_eq!(
+            sweep_sessions(&mut conn, keep).await,
+            removed,
+            "{keep} дней"
+        );
+        assert_eq!(picture(&mut conn).await, before, "{keep} дней");
+    }
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn самоприглашение_видно_и_после_уборки_сессий() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    enable(&db.store, serde_json::json!({ "mode": "confirm" })).await;
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let mut conn = db.store.conn().await.unwrap();
+    let mut payers = Vec::new();
+    for days in [58, 62] {
+        let shared = format!("198.51.100.{days}");
+        let referrer = web_client(&mut conn, 400, 0).await;
+        let payer = web_client(&mut conn, 350, 0).await;
+        for (n, id) in [referrer, payer].into_iter().enumerate() {
+            let own = format!("192.0.2.{n}");
+            for old in [340, 280, 200, 100] {
+                old_session(&mut conn, id, old, 0, &own).await;
+            }
+            old_session(&mut conn, id, days, 0, &shared).await;
+        }
+        payers.push((payer, referrer));
+    }
+    assert_eq!(sweep_sessions(&mut conn, 90).await, 12);
+    drop(conn);
+    for (payer, referrer) in &payers {
+        invite(&db.store, *payer, *referrer).await;
+    }
+    assert_eq!(
+        referral_gate(&ctx, payers[0].0).await.unwrap(),
+        ReferralGate::NoDirect(Signal::SelfInvite)
+    );
+    assert_eq!(
+        referral_gate(&ctx, payers[1].0).await.unwrap(),
+        ReferralGate::Allow
+    );
+    db.cleanup().await;
+}
+
 #[tokio::test]
 async fn поспешное_нажатие_не_отодвигает_следующую_попытку() {
     let Some(db) = test_store().await else {
