@@ -718,7 +718,7 @@ fn было_и_стало_собираются_из_подробностей() {
         }]
     );
     assert!(rest.is_empty());
-    let access = |on: bool| json!({ "miniapp": true, "miniapp_fullscreen": on, "site_login": true, "self_devices": true, "self_reissue": true });
+    let access = |on: bool| json!({ "miniapp": true, "miniapp_fullscreen": on, "menu_button": true, "site_login": true, "self_devices": true, "self_reissue": true });
     let (changes, rest) = changes_of(
         &Names::default(),
         "settings.client_access",

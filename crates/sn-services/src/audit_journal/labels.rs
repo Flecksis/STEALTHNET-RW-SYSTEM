@@ -586,6 +586,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Settings,
     ),
     a(
+        "settings.bot_menu",
+        "Кнопка рядом с полем ввода поставлена заново",
+        Area::Settings,
+    ),
+    a(
         "settings.bot_updates",
         "Изменён способ получения обновлений бота",
         Area::Settings,
@@ -1308,6 +1313,11 @@ const ACTION_FIELDS: &[(&str, &str, &str)] = &[
         "settings.client_access",
         "miniapp_fullscreen",
         "Открывать на весь экран",
+    ),
+    (
+        "settings.client_access",
+        "menu_button",
+        "Кнопка рядом с полем ввода",
     ),
     (
         "settings.client_access",

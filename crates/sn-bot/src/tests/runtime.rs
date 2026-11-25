@@ -356,3 +356,169 @@ async fn со_своим_сервером_bot_api_часы_по_его_отве�
     assert_eq!(drift, None);
     db.cleanup().await;
 }
+
+async fn menu_set(server: &MockServer, count: usize) -> Vec<serde_json::Value> {
+    for _ in 0..80 {
+        let set = calls(server, "setChatMenuButton").await;
+        if set.len() >= count {
+            return set;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    calls(server, "setChatMenuButton").await
+}
+
+#[tokio::test]
+async fn кнопка_рядом_с_полем_ввода_следует_за_переключателем() {
+    use sn_domain::settings::{ClientAccess, keys};
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path_regex(r"/setChatMenuButton$"))
+        .respond_with(ok(serde_json::json!(true)))
+        .mount(&server)
+        .await;
+    idle_updates(&server).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                keys::PUBLIC_URL,
+                &serde_json::json!("https://vpn.example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    services.reload().await.unwrap();
+    let (owner, _) = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap();
+    let ops = services.settings_ops();
+    let cancel = CancellationToken::new();
+    let running_bot = tokio::spawn(Bot::new(services.clone(), config(&server)).run(cancel.clone()));
+    wait_state(&services, running).await;
+    let first = menu_set(&server, 1).await;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0]["menu_button"]["type"], "web_app");
+    assert_eq!(
+        first[0]["menu_button"]["web_app"]["url"],
+        "https://vpn.example.com/app"
+    );
+    let without = ClientAccess {
+        menu_button: false,
+        ..ClientAccess::default()
+    };
+    ops.update_client_access(&without, owner).await.unwrap();
+    let second = menu_set(&server, 2).await;
+    assert_eq!(
+        second[1],
+        serde_json::json!({ "menu_button": { "type": "commands" } })
+    );
+    ops.update_client_access(
+        &ClientAccess {
+            miniapp: false,
+            ..without
+        },
+        owner,
+    )
+    .await
+    .unwrap();
+    let third = menu_set(&server, 3).await;
+    assert_eq!(
+        third[2],
+        serde_json::json!({ "menu_button": { "type": "default" } })
+    );
+    ops.update_client_access(&ClientAccess::default(), owner)
+        .await
+        .unwrap();
+    let fourth = menu_set(&server, 4).await;
+    assert_eq!(fourth[3], first[0]);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    cancel.cancel();
+    running_bot.await.unwrap().unwrap();
+    assert_eq!(calls(&server, "setChatMenuButton").await.len(), 4);
+    assert_eq!(
+        services.bot_buttons().stored().await.unwrap(),
+        services.bot_buttons().wanted().key()
+    );
+
+    let cancel = CancellationToken::new();
+    let again = tokio::spawn(Bot::new(services.clone(), config(&server)).run(cancel.clone()));
+    wait_state(&services, running).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    cancel.cancel();
+    again.await.unwrap().unwrap();
+    assert_eq!(
+        calls(&server, "setChatMenuButton").await.len(),
+        4,
+        "после перезапуска та же кнопка не ставится второй раз"
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn отказ_telegram_в_кнопке_не_повторяется_на_каждом_опросе() {
+    use sn_domain::settings::{ClientAccess, keys};
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path_regex(r"/setChatMenuButton$"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "ok": false, "error_code": 400, "description": "Bad Request: BUTTON_URL_INVALID"
+        })))
+        .mount(&server)
+        .await;
+    idle_updates(&server).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                keys::PUBLIC_URL,
+                &serde_json::json!("https://vpn.example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    services.reload().await.unwrap();
+    let (owner, _) = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let running_bot = tokio::spawn(Bot::new(services.clone(), config(&server)).run(cancel.clone()));
+    wait_state(&services, running).await;
+    menu_set(&server, 1).await;
+    let polled = calls(&server, "getUpdates").await.len();
+    for _ in 0..80 {
+        if calls(&server, "getUpdates").await.len() >= polled + 5 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(calls(&server, "setChatMenuButton").await.len(), 1);
+    services
+        .settings_ops()
+        .update_client_access(
+            &ClientAccess {
+                menu_button: false,
+                ..ClientAccess::default()
+            },
+            owner,
+        )
+        .await
+        .unwrap();
+    let after = menu_set(&server, 2).await;
+    cancel.cancel();
+    running_bot.await.unwrap().unwrap();
+    assert_eq!(after.len(), 2, "новая настройка применяется сразу");
+    assert_eq!(after[1]["menu_button"]["type"], "commands");
+    assert_eq!(services.bot_buttons().stored().await.unwrap(), None);
+    db.cleanup().await;
+}

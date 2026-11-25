@@ -6,7 +6,6 @@ pub mod load;
 pub mod s3;
 pub mod schedule;
 pub mod sealed;
-pub mod telegram;
 
 #[cfg(test)]
 mod tests;
@@ -15,6 +14,7 @@ use crate::Actor;
 use crate::auth::RequestMeta;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
+use crate::telegram;
 use archive::{ArchiveError, Kind, Visitor};
 use chrono::{DateTime, Utc};
 use crypt::KdfParams;

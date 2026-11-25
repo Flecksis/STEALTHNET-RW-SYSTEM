@@ -3,6 +3,11 @@ use std::time::Duration;
 
 pub const PART_SIZE: u64 = 45 * 1024 * 1024;
 
+const FILE_TIMEOUT: Duration = Duration::from_secs(600);
+const FILE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const QUICK_TIMEOUT: Duration = Duration::from_secs(12);
+const QUICK_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TgError {
     Api {
@@ -66,10 +71,28 @@ impl Bot {
         token: &str,
         proxy: Option<&sn_egress::Proxy>,
     ) -> Result<Self, String> {
+        Self::with_timeouts(api_base, token, proxy, FILE_CONNECT_TIMEOUT, FILE_TIMEOUT)
+    }
+
+    pub fn quick(
+        api_base: &str,
+        token: &str,
+        proxy: Option<&sn_egress::Proxy>,
+    ) -> Result<Self, String> {
+        Self::with_timeouts(api_base, token, proxy, QUICK_CONNECT_TIMEOUT, QUICK_TIMEOUT)
+    }
+
+    fn with_timeouts(
+        api_base: &str,
+        token: &str,
+        proxy: Option<&sn_egress::Proxy>,
+        connect: Duration,
+        total: Duration,
+    ) -> Result<Self, String> {
         let http = sn_egress::routed(
             reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(600))
+                .connect_timeout(connect)
+                .timeout(total)
                 .redirect(reqwest::redirect::Policy::none()),
             proxy,
         )
@@ -121,6 +144,23 @@ impl Bot {
             .await
             .map_err(|e| TgError::Transport(e.without_url().to_string()))?;
         Self::parse(response).await
+    }
+
+    pub async fn me(&self) -> Result<Value, TgError> {
+        self.call("getMe", &serde_json::json!({})).await
+    }
+
+    pub async fn menu_button(&self) -> Result<Value, TgError> {
+        self.call("getChatMenuButton", &serde_json::json!({})).await
+    }
+
+    pub async fn set_menu_button(&self, button: &Value) -> Result<(), TgError> {
+        self.call(
+            "setChatMenuButton",
+            &serde_json::json!({ "menu_button": button }),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn send_message(

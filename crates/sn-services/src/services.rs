@@ -621,6 +621,10 @@ impl Services {
         crate::bot_content::BotContentOps::new(self)
     }
 
+    pub fn bot_buttons(&self) -> crate::bot_buttons::BotButtons<'_> {
+        crate::bot_buttons::BotButtons::new(self)
+    }
+
     pub fn bot_layout(&self) -> crate::bot_layout::BotLayoutOps<'_> {
         crate::bot_layout::BotLayoutOps::new(self)
     }

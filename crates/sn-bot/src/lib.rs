@@ -28,7 +28,6 @@ mod tests;
 
 use handler::BotCtx;
 use lanes::Lanes;
-use sn_domain::lang;
 use sn_domain::settings::keys;
 use sn_modules::ModuleError;
 use sn_services::bot_flood::{Kind, Probe, Refusal, Verdict};
@@ -48,6 +47,7 @@ pub const OFFSET_KEY: &str = "telegram.offset";
 pub const DEFAULT_CONCURRENCY: usize = 64;
 
 const SAVE_RETRY: Duration = Duration::from_secs(1);
+const SYNC_RETRY: Duration = Duration::from_secs(60);
 const IDLE_RECHECK: Duration = Duration::from_secs(30);
 const RETRY_PAUSE: Duration = Duration::from_secs(30);
 const WEBHOOK_PAUSE: Duration = Duration::from_secs(120);
@@ -231,48 +231,37 @@ async fn remember_username(services: &Services, username: &str) -> Result<(), St
     Ok(())
 }
 
-const MENU_BUTTON: &str = "bot.menu_button";
-
-async fn stored_menu(services: &Services) -> Option<String> {
-    let mut conn = services.store().conn().await.ok()?;
-    conn.settings()
-        .get(MENU_BUTTON)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(str::to_string))
-}
-
-fn desired_menu(services: &Services) -> Option<(String, String)> {
-    let settings = services.settings();
-    let url = settings.miniapp_url()?;
-    let locale = settings.languages.fallback();
-    let text = services
-        .bot_content_in(locale)
-        .content
-        .button("menu.btn.app", &[])
-        .map(|label| label.text)
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| {
-            lang::sync_scope(locale, || lang::pick("Приложение", "App").to_string())
-        });
-    Some((text, url))
-}
-
-fn menu_key(menu: &(String, String)) -> String {
-    let (text, url) = menu;
-    format!("{url}\n{text}")
-}
-
 const RUSSIAN_CODES: [&str; 4] = ["ru", "uk", "be", "kk"];
+
+struct Refused<T> {
+    what: T,
+    until: tokio::time::Instant,
+}
+
+impl<T: PartialEq> Refused<T> {
+    fn new(what: T, err: &TelegramError) -> Self {
+        let asked = Duration::from_secs(err.retry_after().unwrap_or_default());
+        Refused {
+            what,
+            until: tokio::time::Instant::now() + asked.max(SYNC_RETRY),
+        }
+    }
+
+    fn holds(refused: &Option<Self>, what: &T) -> bool {
+        refused
+            .as_ref()
+            .is_some_and(|r| r.what == *what && tokio::time::Instant::now() < r.until)
+    }
+}
 
 async fn sync_commands(
     api: &TelegramApi,
     services: &Services,
     applied: &mut Option<sn_domain::client::Languages>,
+    refused: &mut Option<Refused<sn_domain::client::Languages>>,
 ) {
     let languages = services.settings().languages;
-    if *applied == Some(languages) {
+    if *applied == Some(languages) || Refused::holds(refused, &languages) {
         return;
     }
     let russian = [
@@ -307,36 +296,41 @@ async fn sync_commands(
         }
     }
     match failed {
-        None => *applied = Some(languages),
-        Some(err) => tracing::debug!(error = %err, "команды бота не обновлены"),
+        None => {
+            *applied = Some(languages);
+            *refused = None;
+        }
+        Some(err) => {
+            tracing::debug!(error = %err, "команды бота не обновлены");
+            *refused = Some(Refused::new(languages, &err));
+        }
     }
 }
 
-async fn sync_menu(api: &TelegramApi, services: &Services, applied: &mut Option<String>) {
-    let desired = desired_menu(services);
-    let url = desired.as_ref().map(menu_key);
-    if url == *applied {
+async fn sync_menu(
+    api: &TelegramApi,
+    services: &Services,
+    applied: &mut Option<String>,
+    refused: &mut Option<Refused<Option<String>>>,
+) {
+    let buttons = services.bot_buttons();
+    let wanted = buttons.wanted();
+    let key = wanted.key();
+    if key == *applied || Refused::holds(refused, &key) {
         return;
     }
-    let app = desired
-        .as_ref()
-        .map(|(text, url)| (text.as_str(), url.as_str()));
-    match api.set_menu_button(app).await {
+    match api.set_menu_button(&wanted).await {
         Ok(_) => {
-            *applied = url;
-            let saved = match services.store().conn().await {
-                Ok(mut conn) => conn
-                    .settings()
-                    .set(MENU_BUTTON, &serde_json::json!(applied.as_deref()), None)
-                    .await
-                    .map_err(|err| err.to_string()),
-                Err(err) => Err(err.to_string()),
-            };
-            if let Err(err) = saved {
+            *applied = key;
+            *refused = None;
+            if let Err(err) = buttons.remember(&wanted).await {
                 tracing::warn!(error = %err, "кнопка меню бота обновлена, но не запомнена");
             }
         }
-        Err(err) => tracing::debug!(error = %err, "кнопка меню бота не обновлена"),
+        Err(err) => {
+            tracing::debug!(error = %err, "кнопка меню бота не обновлена");
+            *refused = Some(Refused::new(key, &err));
+        }
     }
 }
 
@@ -426,7 +420,9 @@ struct Live<'a> {
     proxy: telegram::Proxy,
     since: chrono::DateTime<chrono::Utc>,
     menu: Option<String>,
+    menu_refused: Option<Refused<Option<String>>>,
     commands: Option<sn_domain::client::Languages>,
+    commands_refused: Option<Refused<sn_domain::client::Languages>>,
     next_lease: tokio::time::Instant,
     next_purge: tokio::time::Instant,
     next_report: tokio::time::Instant,
@@ -578,7 +574,8 @@ impl Bot {
             None
         };
         let mut commands = None;
-        sync_commands(&api, &self.services, &mut commands).await;
+        let mut commands_refused = None;
+        sync_commands(&api, &self.services, &mut commands, &mut commands_refused).await;
         tracing::info!(
             username = %me.username.clone().unwrap_or_default(),
             mode = if target.is_some() { "webhook" } else { "polling" },
@@ -632,8 +629,15 @@ impl Bot {
             token,
             proxy,
             since: self.services.now(),
-            menu: stored_menu(&self.services).await,
+            menu: self
+                .services
+                .bot_buttons()
+                .stored()
+                .await
+                .unwrap_or_default(),
+            menu_refused: None,
             commands,
+            commands_refused,
             next_lease: now + LEASE_CHECK,
             next_purge: now,
             next_report: now + self.config.flood_report_every,
@@ -856,6 +860,17 @@ impl Bot {
         Ok(())
     }
 
+    async fn sync(&self, api: &TelegramApi, live: &mut Live<'_>) {
+        sync_menu(api, &self.services, &mut live.menu, &mut live.menu_refused).await;
+        sync_commands(
+            api,
+            &self.services,
+            &mut live.commands,
+            &mut live.commands_refused,
+        )
+        .await;
+    }
+
     async fn poll(
         &self,
         live: &mut Live<'_>,
@@ -887,8 +902,7 @@ impl Bot {
                 continue;
             }
             self.upkeep(live, lease).await?;
-            sync_menu(&api, &self.services, &mut live.menu).await;
-            sync_commands(&api, &self.services, &mut live.commands).await;
+            self.sync(&api, live).await;
             let polled = tokio::select! {
                 _ = cancel.cancelled() => break Ok(Stop::Cancelled),
                 _ = runtime.woken() => continue,
@@ -1016,8 +1030,7 @@ impl Bot {
                 continue;
             }
             self.upkeep(live, lease).await?;
-            sync_menu(&api, &self.services, &mut live.menu).await;
-            sync_commands(&api, &self.services, &mut live.commands).await;
+            self.sync(&api, live).await;
             if hooks.target().is_some_and(|(wanted, _)| wanted != url) {
                 match webhook::register(&self.services, &api, live.queue, None).await? {
                     webhook::Setup::Ready(fresh) => url = fresh,

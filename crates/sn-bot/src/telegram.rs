@@ -2,6 +2,7 @@ use crate::pacer::{Class, Pacer, SendLimits, sends};
 use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sn_services::bot_buttons::MenuButton;
 use sn_services::bot_webhook::ALLOWED_UPDATES;
 use sn_services::server_clock::ServerClock;
 use std::sync::Arc;
@@ -1022,18 +1023,10 @@ impl TelegramApi {
         .await
     }
 
-    pub async fn set_menu_button(&self, app: Option<(&str, &str)>) -> Result<bool, TelegramError> {
-        let button = match app {
-            Some((text, url)) => serde_json::json!({
-                "type": "web_app",
-                "text": text,
-                "web_app": { "url": url },
-            }),
-            None => serde_json::json!({ "type": "default" }),
-        };
+    pub async fn set_menu_button(&self, button: &MenuButton) -> Result<bool, TelegramError> {
         self.call(
             "setChatMenuButton",
-            &serde_json::json!({ "menu_button": button }),
+            &serde_json::json!({ "menu_button": button.json() }),
         )
         .await
     }

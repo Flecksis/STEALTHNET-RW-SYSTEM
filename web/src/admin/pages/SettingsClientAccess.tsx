@@ -6,8 +6,9 @@ import { Switch } from '../ui';
 import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
+import { TelegramButtons } from './TelegramButtons';
 
-type Access = { miniapp: boolean; miniapp_fullscreen: boolean; site_login: boolean; self_devices: boolean; self_reissue: boolean };
+type Access = { miniapp: boolean; miniapp_fullscreen: boolean; menu_button: boolean; site_login: boolean; self_devices: boolean; self_reissue: boolean };
 type Core = { settings?: { public_url?: string | null } };
 
 const LOGIN_TEXT: Record<string, string> = {
@@ -42,6 +43,7 @@ export function SettingsClientAccess() {
   const [oauthOn, setOauthOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [turn, setTurn] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +80,9 @@ export function SettingsClientAccess() {
     setError(null);
     try {
       setAccess(await api<Access>('/api/admin/settings/client_access', { method: 'PUT', body: { ...access, [key]: !access[key] } }));
+      if (key === 'miniapp' || key === 'menu_button') {
+        setTurn((value) => value + 1);
+      }
     } catch (err) {
       setError(failText(err, 'Не сохранилось'));
     } finally {
@@ -105,7 +110,7 @@ export function SettingsClientAccess() {
   const miniText = !access.miniapp
     ? 'Выключено: в боте нет кнопок приложения, а открыть его по ссылке нельзя.'
     : httpsReady
-      ? `Кнопка «Открыть приложение» в меню бота и кнопка рядом с полем ввода ведут на ${appUrl}`
+      ? `Кнопка «Открыть приложение» в меню бота ведёт на ${appUrl}`
       : 'Включено, но у сайта нет адреса с https: без него Telegram не откроет приложение.';
 
   return (
@@ -137,6 +142,20 @@ export function SettingsClientAccess() {
               onToggle={() => void flip('miniapp_fullscreen')}
             />
           ) : null}
+          {access.miniapp ? (
+            <Toggle
+              title="Кнопка рядом с полем ввода"
+              text={
+                access.menu_button
+                  ? 'Открывает приложение прямо из чата с ботом.'
+                  : 'Выключена: на её месте обычное «Меню» с командами. Приложение открывается кнопкой в меню бота.'
+              }
+              on={access.menu_button}
+              busy={busy}
+              onToggle={() => void flip('menu_button')}
+            />
+          ) : null}
+          <TelegramButtons turn={turn} miniapp={access.miniapp} appUrl={httpsReady ? appUrl : null} />
           <div className="row">
             <span className="cap">
               Баннеры, порядок блоков, меню внизу и профиль настраиваются в{' '}

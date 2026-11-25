@@ -15,6 +15,7 @@ use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, MultiSubscriptions, TrialSettings,
 };
 use sn_modules::ModuleView;
+use sn_services::bot_buttons::ButtonsView;
 use sn_services::branding::{ImageView, SiteUpdate};
 use sn_services::egress::{CheckView, ProxyCheckRequest, ProxyUpdate, ProxyView};
 use sn_services::settings::{
@@ -27,6 +28,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/{section}", get(read).put(write))
         .route("/settings/bot/restart", post(restart_bot))
+        .route("/settings/bot/buttons", get(bot_buttons))
+        .route("/settings/bot/buttons/menu", post(put_bot_menu))
         .route(
             "/settings/logo",
             post(upload_logo)
@@ -195,6 +198,28 @@ async fn restart_bot(
             .services
             .settings_ops()
             .restart_bot(body.take_over, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn bot_buttons(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<ButtonsView>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.bot_buttons().view().await?))
+}
+
+async fn put_bot_menu(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<ButtonsView>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(
+        state
+            .services
+            .bot_buttons()
+            .put_menu(admin.0.admin_id)
             .await?,
     ))
 }

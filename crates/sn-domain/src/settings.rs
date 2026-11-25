@@ -758,6 +758,8 @@ pub struct ClientAccess {
     #[serde(default)]
     pub miniapp_fullscreen: bool,
     #[serde(default = "enabled")]
+    pub menu_button: bool,
+    #[serde(default = "enabled")]
     pub site_login: bool,
     #[serde(default = "enabled")]
     pub self_devices: bool,
@@ -774,6 +776,7 @@ impl Default for ClientAccess {
         ClientAccess {
             miniapp: true,
             miniapp_fullscreen: false,
+            menu_button: true,
             site_login: true,
             self_devices: true,
             self_reissue: true,
@@ -1117,6 +1120,7 @@ mod tests {
             ClientAccess {
                 miniapp: true,
                 miniapp_fullscreen: false,
+                menu_button: true,
                 site_login: false,
                 self_devices: true,
                 self_reissue: false,
@@ -1124,6 +1128,9 @@ mod tests {
         );
         let empty: ClientAccess = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(empty, fresh);
+        let without: ClientAccess =
+            serde_json::from_value(serde_json::json!({ "menu_button": false })).unwrap();
+        assert!(!without.menu_button && without.miniapp);
         let on: ClientAccess =
             serde_json::from_value(serde_json::json!({ "miniapp_fullscreen": true })).unwrap();
         assert!(on.miniapp_fullscreen && on.miniapp && on.site_login);

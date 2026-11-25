@@ -633,7 +633,9 @@ fn settings_place(action: &str) -> Option<TargetView> {
             ("Оформление", "/admin/settings/look")
         }
         "settings.trial" | "settings.multi_subscriptions" => ("Тарифы", "/admin/tariffs"),
-        "settings.client_access" => ("Доступ клиентов", "/admin/settings/client"),
+        "settings.client_access" | "settings.bot_menu" => {
+            ("Доступ клиентов", "/admin/settings/client")
+        }
         "settings.languages" => ("Языки", "/admin/settings/languages"),
         "settings.autorenew"
         | "settings.payment_order"

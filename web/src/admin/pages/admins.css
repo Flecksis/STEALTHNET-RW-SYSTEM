@@ -21,6 +21,7 @@
 .adm-status {
   font-size: 13px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .adm-status.warn {
@@ -48,6 +49,14 @@
   gap: 8px;
 }
 
+.adm-under {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.adm-under a.b34,
 .adm-acts a.b34 {
   display: inline-flex;
   align-items: center;
