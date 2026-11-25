@@ -1061,3 +1061,123 @@ async fn пока_сервис_капчи_отвечает_соединение_
     store.close().await;
     kit.db.cleanup().await;
 }
+
+async fn site_bot(services: &Services) {
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                sn_domain::settings::keys::BOT_USERNAME,
+                &serde_json::json!("stealth_test_bot"),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    services
+        .modules()
+        .set_config(
+            services.store(),
+            ModuleId::Antibot,
+            ModuleConfig::from_value(&serde_json::json!({
+                "mode": "confirm", "burst_count": 0, "young_days": 0, "check_username": false, "ip_limit": 3
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+async fn site_login(services: &Services, telegram_id: i64, ip: &str) -> ClientId {
+    let auth = services.auth();
+    let meta = RequestMeta {
+        ip: Some(ip.into()),
+        user_agent: None,
+    };
+    let start = auth.telegram_login_start(&meta).await.unwrap();
+    let code = start.link.rsplit_once("?start=").unwrap().1.to_string();
+    let id = fresh(services, telegram_id, Some("somebody")).await;
+    let profile = TelegramProfile {
+        id: telegram_id,
+        username: Some("somebody".into()),
+        first_name: Some("Новый".into()),
+        last_name: None,
+        language_code: Some("ru".into()),
+        is_premium: false,
+    };
+    let confirmed = auth.confirm_telegram_login(&code, &profile).await.unwrap();
+    assert_eq!(confirmed.client_id, id);
+    id
+}
+
+async fn limited(services: &Services, client_id: ClientId) -> bool {
+    let mut conn = services.store().conn().await.unwrap();
+    antibot::store::mark_of(&mut conn, client_id)
+        .await
+        .unwrap()
+        .is_some_and(|m| m.reasons.contains(&antibot::signals::Signal::IpLimit))
+}
+
+#[tokio::test]
+async fn вход_через_telegram_с_сайта_считается_регистрацией_с_адреса() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    site_bot(services).await;
+    let mut seen = Vec::new();
+    for n in 0..5 {
+        let id = site_login(services, 700_000_000 + n * 50_000_000, "203.0.113.9").await;
+        seen.push(limited(services, id).await);
+    }
+    assert_eq!(seen, [false, false, false, true, true]);
+    let elsewhere = site_login(services, 1_700_000_000, "203.0.113.200").await;
+    assert!(!limited(services, elsewhere).await);
+    let old = site_login(services, 1_001, "203.0.113.9").await;
+    assert!(
+        !limited(services, old).await,
+        "давний клиент бота входит на сайт с того же адреса"
+    );
+    let bot = fresh(services, 1_800_000_000, Some("somebody")).await;
+    antibot::on_registered(&services.module_context(), bot)
+        .await
+        .unwrap();
+    assert!(!limited(services, bot).await, "клиент из бота без сайта");
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn одновременные_входы_через_telegram_с_сайта_не_обходят_счёт_с_адреса() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    site_bot(services).await;
+    let mut tasks = Vec::new();
+    for n in 0..9 {
+        let services = services.clone();
+        tasks.push(tokio::spawn(async move {
+            site_login(
+                &services,
+                700_000_000 + i64::from(n) * 50_000_000,
+                "2001:db8:5:6::1",
+            )
+            .await
+        }));
+    }
+    let mut made = Vec::new();
+    for task in tasks {
+        made.push(task.await.unwrap());
+    }
+    let ctx = services.module_context();
+    let mut asked = 0;
+    for id in &made {
+        match antibot::trial_gate(&ctx, *id).await.unwrap() {
+            antibot::Gate::Allow => {}
+            antibot::Gate::Confirm => asked += 1,
+            antibot::Gate::Deny => panic!("режим подтверждения не отказывает"),
+        }
+    }
+    assert_eq!(asked, made.len() - 3);
+    kit.db.cleanup().await;
+}

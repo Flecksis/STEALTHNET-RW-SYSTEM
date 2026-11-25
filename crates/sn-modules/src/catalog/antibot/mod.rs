@@ -336,22 +336,18 @@ pub async fn assess(
             );
         }
     }
-    if registration.web && settings.ip_limit > 0 {
+    if settings.ip_limit > 0 {
         let grace = Duration::minutes(signals::SESSION_GRACE_MINUTES);
-        if let Some(own) = store::first_ip(db, client_id, registration.created_at + grace)
-            .await?
-            .as_deref()
-            .and_then(network)
-        {
-            let earlier = store::signups_from(
-                db,
-                client_id,
-                &own,
-                registration.created_at - Duration::hours(signals::SIGNUP_WINDOW_HOURS),
-                registration.created_at,
-                grace,
-            )
-            .await?;
+        let address = if registration.web {
+            store::first_ip(db, client_id, registration.created_at + grace).await?
+        } else {
+            store::site_login_ip(db, client_id).await?
+        };
+        if let Some(own) = address.as_deref().and_then(network) {
+            let to = registration.created_at;
+            let from = to - Duration::hours(signals::SIGNUP_WINDOW_HOURS);
+            let earlier = store::signups_from(db, client_id, &own, from, to, grace).await?
+                + store::site_logins_from(db, client_id, &own, from, to).await?;
             if earlier >= i64::from(settings.ip_limit) {
                 found.add(Signal::IpLimit, Some(("network", serde_json::json!(own))));
             }
@@ -1234,8 +1230,8 @@ impl Module for AntibotModule {
             .with_default("5"),
             SettingField::number(
                 "ip_limit",
-                "Регистраций в кабинете с одного адреса за сутки",
-                "Следующие регистрации с этого адреса отмечаются; 0 — без лимита",
+                "Регистраций на сайте с одного адреса за сутки без отметки",
+                "Следующие аккаунты создаются, но отмечаются: что они получат, решает режим; 0 — не отмечать",
             )
             .with_default("3"),
             SettingField::text(
