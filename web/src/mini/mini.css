@@ -692,6 +692,12 @@ button.mn-tab {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.mn-seg.flow {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
 .mn-seg button {
   height: 44px;
   border: 2px solid transparent;
@@ -704,11 +710,35 @@ button.mn-tab {
   cursor: pointer;
 }
 
+.mn-seg.flow.many {
+  gap: 6px;
+  background: transparent;
+}
+
+.mn-seg.flow button {
+  flex: 1 1 0;
+  min-width: 30%;
+  min-width: fit-content;
+  height: auto;
+  min-height: 44px;
+  padding: 8px 10px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .mn-seg button[aria-pressed='true'] {
   background: var(--seg-on);
   background-clip: padding-box;
   color: var(--ink);
   font-weight: 700;
+}
+
+.mn-seg.flow.many button {
+  background: var(--surface);
+}
+
+.mn-seg.flow.many button[aria-pressed='true'] {
+  border-color: var(--accent);
 }
 
 .mn-notes {
@@ -987,6 +1017,12 @@ button.mn-tab {
   right: calc(16px + var(--mn-right));
   bottom: calc(98px + var(--mn-bottom));
   z-index: 4;
+}
+
+.mn-paybtn:disabled {
+  opacity: 1;
+  background: var(--surface-2);
+  color: var(--muted) !important;
 }
 
 .mn-btn2 {

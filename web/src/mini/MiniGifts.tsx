@@ -304,7 +304,7 @@ export function MiniGifts() {
       {offers && list.length === 0 ? <p className="mn-muted">{t('Сейчас подарить подписку нельзя: нет тарифов для подарка.')}</p> : null}
 
       {list.length > 1 ? (
-        <div role="group" aria-label={t('Тариф')} className={list.length === 3 ? 'mn-seg three' : 'mn-seg'} style={list.length === 2 ? { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' } : undefined}>
+        <div role="group" aria-label={t('Тариф')} className={list.length > 3 ? 'mn-seg flow many' : 'mn-seg flow'}>
           {list.map((o) => (
             <button
               key={o.tariff.id}

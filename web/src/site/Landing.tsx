@@ -460,7 +460,7 @@ function LandingPage({ mode }: { mode: Mode }) {
               {categories.length > 1 || siblings.length > 1 ? (
                 <div className="ld-plans-pick">
                   {categories.length > 1 ? (
-                    <div role="group" aria-label={t('Тип тарифа')} className="ld-seg">
+                    <div role="group" aria-label={t('Тип тарифа')} className={categories.length > 3 ? 'ld-seg many' : 'ld-seg'}>
                       {categories.map((c) => (
                         <button key={c.id} type="button" aria-pressed={offer.category.id === c.id} onClick={() => showPick(categoryPick(offers, c.id, null, shown))}>
                           {c.name}
@@ -469,7 +469,7 @@ function LandingPage({ mode }: { mode: Mode }) {
                     </div>
                   ) : null}
                   {siblings.length > 1 ? (
-                    <div role="group" aria-label={t('Тариф')} className="ld-seg">
+                    <div role="group" aria-label={t('Тариф')} className={siblings.length > 3 ? 'ld-seg many' : 'ld-seg'}>
                       {siblings.map((o) => (
                         <button key={o.tariff.id} type="button" aria-pressed={offer.tariff.id === o.tariff.id} onClick={() => showPick(tariffPick(offers, o.tariff.id, null, shown))}>
                           {o.tariff.name}

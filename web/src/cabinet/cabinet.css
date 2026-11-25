@@ -869,6 +869,11 @@
   background: var(--surface-2);
 }
 
+.cb-cats {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
 .cb-seg button,
 .cb-cats button {
   flex: 1 1 auto;
@@ -883,6 +888,15 @@
   cursor: pointer;
 }
 
+.cb-cats button {
+  height: auto;
+  min-height: 36px;
+  max-width: 100%;
+  padding: 6px 16px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .cb-seg button[aria-pressed='true'],
 .cb-cats button[aria-pressed='true'] {
   background: var(--seg-on);
@@ -892,6 +906,27 @@
 
 .cb-cats button:not([aria-pressed='true']):hover {
   background: var(--surface);
+}
+
+.cb-cats.many {
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+}
+
+.cb-cats.many button {
+  flex: 0 1 auto;
+  border-color: var(--line);
+}
+
+.cb-cats.many button[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cb-phone .cb-cats.many button {
+  flex: 1 1 auto;
+  min-height: 44px;
 }
 
 .cb-login-wait,

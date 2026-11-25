@@ -485,25 +485,32 @@
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
+  max-width: 100%;
 }
 
 .ld-seg {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
+  max-width: 100%;
   padding: 4px;
   border-radius: 12px;
   background: var(--surface);
 }
 
 .ld-seg button {
-  height: 40px;
-  padding: 0 18px;
+  flex: 1 1 auto;
+  min-height: 40px;
+  max-width: 100%;
+  padding: 6px 18px;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
   color: var(--muted);
   font: inherit;
   font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -511,6 +518,23 @@
   background: var(--seg-on);
   border-color: var(--seg-line);
   color: var(--ink);
+}
+
+.ld-seg.many {
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 0;
+  background: transparent;
+}
+
+.ld-seg.many button {
+  flex: 0 1 auto;
+  border-color: var(--card-line);
+  background: var(--surface);
+}
+
+.ld-seg.many button[aria-pressed='true'] {
+  border-color: var(--accent);
 }
 
 .ld-card {
@@ -829,13 +853,14 @@
 }
 
 .ld-phone .ld-seg {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
   border-radius: 14px;
 }
 
 .ld-phone .ld-seg button {
-  height: 44px;
+  flex: 1 1 0;
+  min-width: 40%;
+  min-width: fit-content;
+  min-height: 44px;
   border-radius: 10px;
 }
 

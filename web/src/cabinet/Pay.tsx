@@ -443,7 +443,7 @@ export function Pay() {
             <div className="cb-row wrap">
               <h2 className="cb-h2">{t('Тариф и срок')}</h2>
               {categories.length > 1 ? (
-                <div role="group" aria-label={t('Тип тарифа')} className="cb-cats">
+                <div role="group" aria-label={t('Тип тарифа')} className={categories.length > 3 ? 'cb-cats many' : 'cb-cats'}>
                   {categories.map((c) => (
                     <button key={c.id} type="button" aria-pressed={offer?.category.id === c.id} onClick={() => apply(categoryPick(offers, c.id, own, choice))}>
                       {c.name}
@@ -453,7 +453,7 @@ export function Pay() {
               ) : null}
             </div>
             {siblings.length > 1 ? (
-              <div role="group" aria-label={t('Тариф')} className="cb-cats cb-tariffs">
+              <div role="group" aria-label={t('Тариф')} className={siblings.length > 3 ? 'cb-cats cb-tariffs many' : 'cb-cats cb-tariffs'}>
                 {siblings.map((o) => (
                   <button key={o.tariff.id} type="button" aria-pressed={offer?.tariff.id === o.tariff.id} onClick={() => apply(tariffPick(offers, o.tariff.id, own, choice))}>
                     {o.tariff.name}

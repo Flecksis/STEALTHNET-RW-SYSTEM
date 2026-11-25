@@ -517,7 +517,7 @@ export function GiftsPage() {
                   <div className="cb-row wrap">
                     <h2 className="cb-h2">{t('Тариф и срок')}</h2>
                     {list.length > 1 ? (
-                      <div role="group" aria-label={t('Тариф')} className="cb-cats">
+                      <div role="group" aria-label={t('Тариф')} className={list.length > 3 ? 'cb-cats many' : 'cb-cats'}>
                         {list.map((o) => (
                           <button
                             key={o.tariff.id}

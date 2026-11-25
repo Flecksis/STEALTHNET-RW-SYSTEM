@@ -270,7 +270,7 @@ export function MiniPlans() {
       {!catalog ? <p className="mn-muted">{error ?? t('Загружаем тарифы…')}</p> : null}
       {catalog && offers.length === 0 ? <p className="mn-muted">{t('Тарифов пока нет.')}</p> : null}
       {categories.length > 1 ? (
-        <div role="group" aria-label={t('Тип тарифа')} className="mn-seg" style={{ gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))` }}>
+        <div role="group" aria-label={t('Тип тарифа')} className={categories.length > 3 ? 'mn-seg flow many' : 'mn-seg flow'}>
           {categories.map((c) => (
             <button key={c.id} type="button" aria-pressed={offer?.category.id === c.id} onClick={() => apply(categoryPick(offers, c.id, own, choice))}>
               {c.name}
@@ -279,7 +279,7 @@ export function MiniPlans() {
         </div>
       ) : null}
       {siblings.length > 1 ? (
-        <div role="group" aria-label={t('Тариф')} className="mn-seg" style={{ gridTemplateColumns: `repeat(${siblings.length}, minmax(0, 1fr))` }}>
+        <div role="group" aria-label={t('Тариф')} className={siblings.length > 3 ? 'mn-seg flow many' : 'mn-seg flow'}>
           {siblings.map((o) => (
             <button key={o.tariff.id} type="button" aria-pressed={offer?.tariff.id === o.tariff.id} onClick={() => apply(tariffPick(offers, o.tariff.id, own, choice))}>
               {o.tariff.name}
