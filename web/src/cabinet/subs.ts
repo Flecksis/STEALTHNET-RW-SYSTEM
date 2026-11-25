@@ -3,6 +3,7 @@ import { dateLong } from '../lib/format';
 import { t } from '../lib/i18n';
 import { readStored, writeStored } from '../lib/theme';
 import type { SubscriptionView, Tone } from './model';
+import { betterStart, byTimeLeft, numberOf } from './subOrder';
 
 export const NEWEST = 'newest';
 
@@ -11,7 +12,7 @@ export type Remembered = number | typeof NEWEST;
 export type PayTarget = number | 'new';
 
 export function liveSubs(list: SubscriptionView[]): SubscriptionView[] {
-  return list.filter((v) => !v.subscription.ended_at);
+  return byTimeLeft(list.filter((v) => !v.subscription.ended_at));
 }
 
 function baseName(view: SubscriptionView): string {
@@ -29,7 +30,7 @@ export function subName(view: SubscriptionView, list: SubscriptionView[]): strin
   if (nick && !LEGACY_NAME.test(nick)) {
     return `${base} · ${nick}`;
   }
-  return t('Подписка {n}', { n: list.findIndex((v) => v.subscription.id === view.subscription.id) + 1 });
+  return t('Подписка {n}', { n: numberOf(view.subscription.id, list) });
 }
 
 export function subState(view: SubscriptionView, blocked: boolean): { text: string; tone: Tone } {
@@ -61,6 +62,20 @@ export function readRemembered(key: string): Remembered | null {
 
 export function remember(key: string, value: Remembered): void {
   writeStored(key, String(value));
+}
+
+const started = new Set<string>();
+
+export function takeBetterStart(key: string, list: SubscriptionView[]): number | null {
+  if (started.has(key) || list.length === 0) {
+    return null;
+  }
+  started.add(key);
+  const better = betterStart(list, readRemembered(key));
+  if (better !== null) {
+    remember(key, better);
+  }
+  return better;
 }
 
 export function pickSub(list: SubscriptionView[], wanted: Remembered | null): SubscriptionView | null {

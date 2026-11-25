@@ -226,11 +226,14 @@ fn ceil_days(duration: Duration) -> i64 {
 
 pub fn period_progress(subscription: &Subscription, now: DateTime<Utc>) -> Option<PeriodProgress> {
     let expire_at = subscription.mirror.expire_at?;
-    let started = subscription.period_started_at?;
-    let total = ceil_days(expire_at - started).max(1);
-    let left = ceil_days(expire_at - now).min(total);
+    let left = ceil_days(expire_at - now);
+    let total = match subscription.period_started_at {
+        Some(started) => ceil_days(expire_at - started),
+        None => left.max(i64::from(subscription.period_days.unwrap_or_default())),
+    }
+    .max(1);
     Some(PeriodProgress {
-        days_left: left as u32,
+        days_left: left.min(total) as u32,
         days_total: total as u32,
     })
 }
@@ -386,6 +389,47 @@ mod tests {
                 days_total: 90
             })
         );
+    }
+
+    #[test]
+    fn у_перенесённой_подписки_без_начала_периода_видны_оставшиеся_дни() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 25, 18, 0, 0).unwrap();
+        let mut s = sub(
+            Some(SubscriptionStatus::Active),
+            150,
+            SubscriptionKind::Paid,
+        );
+        s.mirror.expire_at = Some(now + Duration::days(150));
+        s.period_started_at = None;
+        s.period_days = None;
+        let progress = |left, total| {
+            Some(PeriodProgress {
+                days_left: left,
+                days_total: total,
+            })
+        };
+        assert_eq!(period_progress(&s, now), progress(150, 150));
+        assert_eq!(
+            period_progress(&s, now + Duration::days(140)),
+            progress(10, 10)
+        );
+        s.period_days = Some(30);
+        assert_eq!(
+            period_progress(&s, now + Duration::days(140)),
+            progress(10, 30)
+        );
+        assert_eq!(period_progress(&s, now), progress(150, 150));
+        assert_eq!(
+            period_progress(&s, now + Duration::days(151)),
+            progress(0, 30)
+        );
+        s.period_days = None;
+        assert_eq!(
+            period_progress(&s, now + Duration::days(151)),
+            progress(0, 1)
+        );
+        s.mirror.expire_at = None;
+        assert_eq!(period_progress(&s, now), None);
     }
 
     #[test]

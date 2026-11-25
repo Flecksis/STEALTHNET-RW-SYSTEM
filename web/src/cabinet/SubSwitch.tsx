@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api';
 import { t } from '../lib/i18n';
 import { useCabinet } from './CabinetApp';
 import type { Device, SubscriptionView } from './model';
-import { liveSubs, pickSub, readRemembered, remember, subName, subState, useShowPressed, type Remembered } from './subs';
+import { liveSubs, pickSub, readRemembered, remember, subName, subState, takeBetterStart, useShowPressed, type Remembered } from './subs';
 
 export const CABINET_SUB_KEY = 'sn.cabinet.sub';
 
@@ -26,6 +26,10 @@ export function useSubs(): Subs {
   const reload = useCallback(async () => {
     try {
       const next = liveSubs(await api<SubscriptionView[]>('/api/client/subscriptions'));
+      const better = takeBetterStart(CABINET_SUB_KEY, next);
+      if (better !== null) {
+        setKept(better);
+      }
       setList(next);
       setError(null);
       return next;

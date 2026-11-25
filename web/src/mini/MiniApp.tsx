@@ -10,7 +10,7 @@ import { useSupportUnread } from '../lib/supportUnread';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
-import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
+import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, takeBetterStart, useShowPressed } from '../cabinet/subs';
 import { initData, launchData, loadTelegram, openExternal, paintTelegram, telegramLanguage, telegramName, webApp, type WebApp } from './telegram';
 import { backTarget } from './back';
 import { currentTab, normalizeConfig, pick, SECTION_ICONS, sectionPath, type MiniConfig } from './config';
@@ -136,7 +136,7 @@ export function MiniApp() {
   const loadData = useCallback(async () => {
     const me = await api<ClientMe>('/api/client/me');
     const list = liveSubs(await api<SubscriptionView[]>('/api/client/subscriptions'));
-    const chosen = pickSub(list, readRemembered(MINI_SUB_KEY));
+    const chosen = pickSub(list, takeBetterStart(MINI_SUB_KEY, list) ?? readRemembered(MINI_SUB_KEY));
     setState({ kind: 'in', me });
     setUnread(me.support_unread ?? 0);
     setSubs(list);
