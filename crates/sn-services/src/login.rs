@@ -1083,15 +1083,21 @@ impl<'a> Auth<'a> {
             tx.commit().await?;
             return Err(code_invalid());
         }
-        limits.forgive(&strike).await?;
-        let client = match tx
+        limits.release(&mut tx, &strike).await?;
+        let found = tx
             .clients()
             .find_by_identity(IdentityKind::Email, &email)
-            .await?
-        {
-            Some(client) if client.is_blocked() => return Err(ServiceError::Forbidden),
+            .await?;
+        let client = match found {
+            Some(client) if client.is_blocked() => {
+                tx.commit().await?;
+                return Err(ServiceError::Forbidden);
+            }
             Some(client) => client,
-            None => return Err(code_invalid()),
+            None => {
+                tx.commit().await?;
+                return Err(code_invalid());
+            }
         };
         if linked_without_code(&mut tx, client.id, &email).await? {
             return refuse_unconfirmed(tx, row.id).await;

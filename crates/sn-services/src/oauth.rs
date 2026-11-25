@@ -24,20 +24,32 @@ use sn_domain::client::{
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::JobPayload;
+use sn_domain::lang;
 use sn_domain::module::ModuleId;
 use sn_modules::catalog::antibot;
 use sn_modules::catalog::antibot::signups::{self, Via};
 use sn_modules::catalog::oauth::{OauthSettings, Provider, TEMPLATE_LINKED, TEMPLATE_UNLINKED};
 use sn_modules::catalog::start_param::{Utm, with_referral};
 use sn_store::{Db, NewClient, Tx};
+use std::future::Future;
+use std::time::{Duration as Pause, Instant};
+use tracing::Instrument;
 
 pub const COOKIE: &str = "sn_oauth";
 pub const COOKIE_PATH: &str = "/api/client/auth/oauth";
 pub const REQUEST_TTL_SECONDS: i64 = 600;
 pub const FINISH_SECONDS: i64 = 300;
+const EXCHANGE_SECONDS: i64 = 60;
+const EXCHANGE_WAIT: Pause = Pause::from_secs(30);
+const EXCHANGE_POLL: Pause = Pause::from_millis(250);
+const WRITE_ATTEMPTS: u32 = 3;
+const WRITE_PAUSE: Pause = Pause::from_millis(500);
+const _: () = assert!(EXCHANGE_WAIT.as_secs() > 2 * protocol::HTTP_TIMEOUT.as_secs());
+const _: () = assert!(EXCHANGE_SECONDS.unsigned_abs() >= 2 * EXCHANGE_WAIT.as_secs());
 const RETENTION_DAYS: i64 = 7;
 const LOCK_SPACE: i32 = 0x6f61;
 pub const EMAIL_UNVERIFIED: &str = "oauth.email_unverified";
+pub const UNFINISHED: &str = "oauth.unfinished";
 pub const UNLINKED_ON_CONFIRM_AUDIT: &str = "client.oauth_unlinked_on_confirm";
 
 const CODES: [&str; 18] = [
@@ -276,11 +288,14 @@ struct RequestRow {
     ip: Option<String>,
     claims: Option<serde_json::Value>,
     expires_at: DateTime<Utc>,
+    exchange_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
+    read_at: DateTime<Utc>,
 }
 
 const REQUEST_COLUMNS: &str = "id, provider, purpose, browser_hash, client_id, session_id, referral, utm, status, \
-     result_client_id, created_client, error_code, error_text, ip, claims, expires_at, finished_at";
+     result_client_id, created_client, error_code, error_text, ip, claims, expires_at, exchange_at, finished_at, \
+     clock_timestamp() AS read_at";
 
 impl RequestRow {
     fn purpose(&self) -> Purpose {
@@ -293,6 +308,21 @@ impl RequestRow {
 
     fn provider(&self) -> Option<Provider> {
         Provider::parse(&self.provider)
+    }
+
+    fn exchanging(&self) -> bool {
+        self.status == "exchanging"
+            && self
+                .exchange_at
+                .is_some_and(|at| at + Duration::seconds(EXCHANGE_SECONDS) > self.read_at)
+    }
+
+    fn open(&self) -> bool {
+        match self.status.as_str() {
+            "pending" => true,
+            "exchanging" => !self.exchanging(),
+            _ => false,
+        }
     }
 }
 
@@ -311,11 +341,14 @@ fn stored_code(code: Option<&str>) -> &'static str {
         .unwrap_or("oauth.failed")
 }
 
+const NOT_FINISHED: &str = "Вход не завершён. Нажмите кнопку входа ещё раз.";
+
 fn no_request() -> ServiceError {
-    ServiceError::rejected(
-        "oauth.no_request",
-        "Вход не завершён. Нажмите кнопку входа ещё раз.",
-    )
+    ServiceError::rejected("oauth.no_request", NOT_FINISHED)
+}
+
+fn unfinished() -> ServiceError {
+    ServiceError::rejected(UNFINISHED, NOT_FINISHED)
 }
 
 fn not_configured(provider: Provider) -> ServiceError {
@@ -445,6 +478,114 @@ fn account_title(identity: &Identity) -> String {
             }
         }
     }
+}
+
+async fn detached<T, F>(work: F) -> ServiceResult<T>
+where
+    F: Future<Output = ServiceResult<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    let locale = lang::hint();
+    let work = async move {
+        match locale {
+            Some(locale) => lang::scope(locale, work).await,
+            None => work.await,
+        }
+    };
+    match tokio::spawn(work.in_current_span()).await {
+        Ok(result) => result,
+        Err(err) => match err.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(err) => Err(ServiceError::Internal(format!(
+                "вход через провайдера прерван: {err}"
+            ))),
+        },
+    }
+}
+
+fn reply_code<'a>(
+    row: &RequestRow,
+    provider: Provider,
+    params: &'a CallbackParams,
+    now: DateTime<Utc>,
+) -> Result<&'a str, Refusal> {
+    if row.expires_at <= now {
+        return Err(Refusal::new(
+            "oauth.expired",
+            "Время на вход вышло. Нажмите кнопку ещё раз.",
+        ));
+    }
+    if let Some(error) = params.error.as_deref() {
+        tracing::info!(request = row.id, error, "провайдер входа вернул отказ");
+        return Err(match error {
+            "access_denied" | "user_cancelled_authorize" => Refusal::new(
+                "oauth.canceled",
+                format!("Вход через {} отменён.", provider.title()),
+            ),
+            _ => protocol_refusal(provider, &ProtocolError::Refused(error.to_string())),
+        });
+    }
+    params
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .ok_or_else(|| {
+            Refusal::new(
+                "oauth.bad_reply",
+                format!(
+                    "{} вернул неполный ответ. Начните вход заново.",
+                    provider.title()
+                ),
+            )
+        })
+}
+
+async fn settle(
+    tx: &mut Tx,
+    request: i64,
+    result: &Result<Done, Refusal>,
+    held: Option<&Held>,
+    now: DateTime<Utc>,
+) -> ServiceResult<()> {
+    match (result, held) {
+        (Ok(done), _) => {
+            sqlx::query(
+                "UPDATE oauth_requests SET status = 'done', result_client_id = $2, created_client = $3, finished_at = $4 WHERE id = $1",
+            )
+            .bind(request)
+            .bind(done.client_id.0)
+            .bind(done.created)
+            .bind(now)
+            .execute(tx.conn())
+            .await?;
+        }
+        (Err(_), Some(held)) => {
+            sqlx::query(
+                "UPDATE oauth_requests SET status = 'human', claims = $2, finished_at = $3 WHERE id = $1",
+            )
+            .bind(request)
+            .bind(serde_json::to_value(held).map_err(|e| ServiceError::Internal(e.to_string()))?)
+            .bind(now)
+            .execute(tx.conn())
+            .await?;
+        }
+        (Err(refusal), None) => {
+            sqlx::query(
+                "UPDATE oauth_requests SET status = 'failed', error_code = $2, error_text = $3, finished_at = $4 WHERE id = $1",
+            )
+            .bind(request)
+            .bind(refusal.code)
+            .bind(&refusal.message)
+            .bind(now)
+            .execute(tx.conn())
+            .await?;
+            if let Some(kind) = refusal.signup {
+                signups::refused(tx, kind.as_str()).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn lock_subject(tx: &mut Tx, provider: Provider, sub: &str) -> ServiceResult<()> {
@@ -652,6 +793,26 @@ impl<'a> OauthOps<'a> {
         params: &CallbackParams,
         browser: Option<&str>,
     ) -> ServiceResult<CallbackOutcome> {
+        let services = self.services.clone();
+        let params = params.clone();
+        let browser = browser.map(str::to_string);
+        let work = services.pause_gate().join();
+        detached(async move {
+            let _work = work;
+            services
+                .oauth()
+                .returned(provider, &params, browser.as_deref())
+                .await
+        })
+        .await
+    }
+
+    async fn returned(
+        &self,
+        provider: Provider,
+        params: &CallbackParams,
+        browser: Option<&str>,
+    ) -> ServiceResult<CallbackOutcome> {
         let fallback = CallbackOutcome {
             purpose: Purpose::Login,
             provider,
@@ -664,7 +825,6 @@ impl<'a> OauthOps<'a> {
         else {
             return Ok(fallback);
         };
-        let now = self.services.now();
         let mut tx = self.services.store().begin().await?;
         let row: Option<RequestRow> = sqlx::query_as(&format!(
             "SELECT {REQUEST_COLUMNS} FROM oauth_requests WHERE state_hash = $1 AND provider = $2 FOR UPDATE"
@@ -676,6 +836,7 @@ impl<'a> OauthOps<'a> {
         let Some(row) = row else {
             return Ok(fallback);
         };
+        let now = self.services.now();
         let outcome = CallbackOutcome {
             purpose: row.purpose(),
             provider,
@@ -690,124 +851,72 @@ impl<'a> OauthOps<'a> {
             );
             return Ok(outcome);
         };
-        if row.status != "pending" {
+        if !row.open() {
             return Ok(outcome);
         }
-        let mut held = None;
-        let result = if row.expires_at <= now {
-            Err(Refusal::new(
-                "oauth.expired",
-                "Время на вход вышло. Нажмите кнопку ещё раз.",
-            ))
-        } else if let Some(error) = params.error.as_deref() {
-            tracing::info!(request = row.id, error, "провайдер входа вернул отказ");
-            Err(match error {
-                "access_denied" | "user_cancelled_authorize" => Refusal::new(
-                    "oauth.canceled",
-                    format!("Вход через {} отменён.", provider.title()),
-                ),
-                _ => protocol_refusal(provider, &ProtocolError::Refused(error.to_string())),
-            })
-        } else if let Some(code) = params.code.as_deref().filter(|c| !c.trim().is_empty()) {
-            self.complete(
-                &mut tx,
-                &row,
-                provider,
-                code.trim(),
-                browser,
-                params.user.as_deref(),
-                now,
-                &mut held,
-            )
-            .await?
-        } else {
-            Err(Refusal::new(
-                "oauth.bad_reply",
-                format!(
-                    "{} вернул неполный ответ. Начните вход заново.",
-                    provider.title()
-                ),
-            ))
+        let code = match reply_code(&row, provider, params, now) {
+            Ok(code) => code,
+            Err(refusal) => {
+                settle(&mut tx, row.id, &Err(refusal), None, now).await?;
+                tx.commit().await?;
+                return Ok(outcome);
+            }
         };
-        match (&result, held) {
-            (Ok(done), _) => {
-                sqlx::query(
-                    "UPDATE oauth_requests SET status = 'done', result_client_id = $2, created_client = $3, finished_at = $4 WHERE id = $1",
-                )
-                .bind(row.id)
-                .bind(done.client_id.0)
-                .bind(done.created)
-                .bind(now)
-                .execute(tx.conn())
-                .await?;
-            }
-            (Err(_), Some(held)) => {
-                sqlx::query(
-                    "UPDATE oauth_requests SET status = 'human', claims = $2, finished_at = $3 WHERE id = $1",
-                )
-                .bind(row.id)
-                .bind(serde_json::to_value(&held).map_err(|e| ServiceError::Internal(e.to_string()))?)
-                .bind(now)
-                .execute(tx.conn())
-                .await?;
-            }
-            (Err(refusal), None) => {
-                sqlx::query(
-                    "UPDATE oauth_requests SET status = 'failed', error_code = $2, error_text = $3, finished_at = $4 WHERE id = $1",
-                )
-                .bind(row.id)
-                .bind(refusal.code)
-                .bind(&refusal.message)
-                .bind(now)
-                .execute(tx.conn())
-                .await?;
-                if let Some(kind) = refusal.signup {
-                    signups::refused(&mut tx, kind.as_str()).await?;
-                }
-            }
-        }
+        let begun: DateTime<Utc> = sqlx::query_scalar(
+            "UPDATE oauth_requests SET status = 'exchanging', exchange_at = clock_timestamp() \
+             WHERE id = $1 RETURNING exchange_at",
+        )
+        .bind(row.id)
+        .fetch_one(tx.conn())
+        .await?;
         tx.commit().await?;
-        Ok(outcome)
+        let claims = self.exchange(row.id, provider, code, browser, now).await;
+        let mut attempt = 1;
+        let written = loop {
+            match self
+                .complete(state, begun, provider, &claims, params.user.as_deref())
+                .await
+            {
+                Err(err) if attempt < WRITE_ATTEMPTS => {
+                    tracing::warn!(request = row.id, attempt, error = %err, "итог входа через провайдера не записан, повторяем");
+                    attempt += 1;
+                    tokio::time::sleep(WRITE_PAUSE).await;
+                }
+                written => break written,
+            }
+        };
+        if written.is_err() {
+            self.reopen(state, begun).await;
+        }
+        written.map(|()| outcome)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn complete(
+    async fn exchange(
         &self,
-        tx: &mut Tx,
-        row: &RequestRow,
+        request: i64,
         provider: Provider,
         code: &str,
         browser: &str,
-        user: Option<&str>,
         now: DateTime<Utc>,
-        held: &mut Option<Held>,
-    ) -> ServiceResult<Result<Done, Refusal>> {
-        let Some((settings, base, _)) = self.configured() else {
-            return Ok(Err(Refusal::new(
+    ) -> Result<IdClaims, Refusal> {
+        let not_configured = || {
+            Refusal::new(
                 "oauth.not_configured",
                 format!("Вход через {} сейчас недоступен", provider.title()),
-            )));
+            )
         };
+        let (settings, base, _) = self.configured().ok_or_else(not_configured)?;
         let (credentials, audience) = match provider {
-            Provider::Google => match settings.google.as_ref() {
-                Some(google) => (Credentials::Google(google), google.client_id.as_str()),
-                None => {
-                    return Ok(Err(Refusal::new(
-                        "oauth.not_configured",
-                        "Вход через Google сейчас недоступен",
-                    )));
-                }
-            },
-            Provider::Apple => match settings.apple.as_ref() {
-                Some(apple) => (Credentials::Apple(apple), apple.services_id.as_str()),
-                None => {
-                    return Ok(Err(Refusal::new(
-                        "oauth.not_configured",
-                        "Вход через Apple сейчас недоступен",
-                    )));
-                }
-            },
-        };
+            Provider::Google => settings
+                .google
+                .as_ref()
+                .map(|google| (Credentials::Google(google), google.client_id.as_str())),
+            Provider::Apple => settings
+                .apple
+                .as_ref()
+                .map(|apple| (Credentials::Apple(apple), apple.services_id.as_str())),
+        }
+        .ok_or_else(not_configured)?;
         let endpoints = self.services.oauth_endpoints();
         let endpoints = endpoints.of(provider);
         let redirect_uri = Self::redirect_uri(&base, provider);
@@ -826,44 +935,98 @@ impl<'a> OauthOps<'a> {
             }
             Err(err) => Err(err),
         };
-        let claims = match claims {
-            Ok(claims) => claims,
-            Err(err) => {
-                tracing::warn!(request = row.id, provider = provider.as_str(), error = %err, "вход через провайдера не прошёл");
-                return Ok(Err(protocol_refusal(provider, &err)));
-            }
+        claims.map_err(|err| {
+            tracing::warn!(request, provider = provider.as_str(), error = %err, "вход через провайдера не прошёл");
+            protocol_refusal(provider, &err)
+        })
+    }
+
+    async fn complete(
+        &self,
+        state: &str,
+        begun: DateTime<Utc>,
+        provider: Provider,
+        claims: &Result<IdClaims, Refusal>,
+        user: Option<&str>,
+    ) -> ServiceResult<()> {
+        let now = self.services.now();
+        let mut tx = self.services.store().begin().await?;
+        let row: Option<RequestRow> = sqlx::query_as(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM oauth_requests \
+             WHERE state_hash = $1 AND provider = $2 AND status = 'exchanging' \
+               AND (exchange_at = $3 OR $4) FOR UPDATE"
+        ))
+        .bind(token_hash(state))
+        .bind(provider.as_str())
+        .bind(begun)
+        .bind(claims.is_ok())
+        .fetch_optional(tx.conn())
+        .await?;
+        let Some(row) = row else {
+            return Ok(());
         };
-        let name = match provider {
-            Provider::Apple => protocol::apple_name(user),
-            Provider::Google => AppleName {
-                first_name: claims.first_name.clone(),
-                last_name: claims.last_name.clone(),
-            },
-        };
-        match row.purpose() {
-            Purpose::Login => {
-                let arrived = Arrived {
-                    ip: row.ip.as_deref(),
-                    human: false,
+        let mut held = None;
+        let result = match claims {
+            Ok(claims) => {
+                let name = match provider {
+                    Provider::Apple => protocol::apple_name(user),
+                    Provider::Google => AppleName {
+                        first_name: claims.first_name.clone(),
+                        last_name: claims.last_name.clone(),
+                    },
                 };
-                let result = self
-                    .login_with(
-                        tx,
-                        &claims,
-                        &name,
-                        row.referral.as_deref(),
-                        row.utm.as_deref(),
-                        arrived,
-                    )
-                    .await?;
-                if matches!(&result, Err(refusal) if refusal.signup == Some(signups::Refusal::Minute))
-                    && antibot::spare_captcha(&self.services.module_context()).is_some()
-                {
-                    *held = Some(Held { claims, name });
+                match row.purpose() {
+                    Purpose::Login => {
+                        let arrived = Arrived {
+                            ip: row.ip.as_deref(),
+                            human: false,
+                        };
+                        let result = self
+                            .login_with(
+                                &mut tx,
+                                claims,
+                                &name,
+                                row.referral.as_deref(),
+                                row.utm.as_deref(),
+                                arrived,
+                            )
+                            .await?;
+                        if matches!(&result, Err(refusal) if refusal.signup == Some(signups::Refusal::Minute))
+                            && antibot::spare_captcha(&self.services.module_context()).is_some()
+                        {
+                            held = Some(Held {
+                                claims: claims.clone(),
+                                name,
+                            });
+                        }
+                        result
+                    }
+                    Purpose::Link => self.link_with(&mut tx, &row, claims, &name, now).await?,
                 }
-                Ok(result)
             }
-            Purpose::Link => self.link_with(tx, row, &claims, &name, now).await,
+            Err(refusal) => Err(refusal.clone()),
+        };
+        settle(&mut tx, row.id, &result, held.as_ref(), now).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn reopen(&self, state: &str, begun: DateTime<Utc>) {
+        let reopened: ServiceResult<()> = async {
+            let mut conn = self.services.store().conn().await?;
+            sqlx::query(
+                "UPDATE oauth_requests SET status = 'pending', exchange_at = NULL \
+                 WHERE state_hash = $1 AND status = 'exchanging' AND exchange_at = $2",
+            )
+            .bind(token_hash(state))
+            .bind(begun)
+            .execute(conn.conn())
+            .await?;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = reopened {
+            tracing::warn!(error = %err, "запрос входа через провайдера не открыт для повтора");
         }
     }
 
@@ -1137,6 +1300,7 @@ impl<'a> OauthOps<'a> {
             .limits()
             .hit_ip(rules::OAUTH_FINISH_IP, meta.ip.as_deref())
             .await?;
+        self.await_exchange(browser, EXCHANGE_WAIT).await?;
         let mut human = false;
         loop {
             match self.finish_once(browser, meta, human).await? {
@@ -1145,6 +1309,29 @@ impl<'a> OauthOps<'a> {
                     site_signup::over_limit(self.services, refusal, captcha, meta).await?;
                     human = true;
                 }
+            }
+        }
+    }
+
+    async fn exchanging(&self, browser: &str) -> ServiceResult<bool> {
+        let mut conn = self.services.store().conn().await?;
+        let row: Option<RequestRow> = sqlx::query_as(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM oauth_requests WHERE browser_hash = $1 ORDER BY id DESC LIMIT 1"
+        ))
+        .bind(token_hash(browser))
+        .fetch_optional(conn.conn())
+        .await?;
+        Ok(row.is_some_and(|row| row.exchanging()))
+    }
+
+    async fn await_exchange(&self, browser: &str, patience: Pause) -> ServiceResult<()> {
+        let deadline = Instant::now() + patience;
+        loop {
+            match self.exchanging(browser).await {
+                Ok(false) => return Ok(()),
+                Ok(true) if Instant::now() >= deadline => return Err(unfinished()),
+                Err(err) if Instant::now() >= deadline => return Err(err),
+                Ok(true) | Err(_) => tokio::time::sleep(EXCHANGE_POLL).await,
             }
         }
     }
@@ -1167,11 +1354,14 @@ impl<'a> OauthOps<'a> {
             return Err(no_request());
         };
         let provider = row.provider().ok_or_else(no_request)?;
+        if row.exchanging() {
+            return Err(unfinished());
+        }
         let late = row
             .finished_at
             .is_some_and(|at| at + Duration::seconds(FINISH_SECONDS) <= now);
         match row.status.as_str() {
-            "pending" | "consumed" => return Err(no_request()),
+            "pending" | "exchanging" | "consumed" => return Err(no_request()),
             _ if late => {
                 sqlx::query(
                     "UPDATE oauth_requests SET status = 'consumed', claims = NULL WHERE id = $1",
@@ -1218,8 +1408,7 @@ impl<'a> OauthOps<'a> {
             tx.commit().await?;
             return Err(ServiceError::rejected(
                 stored_code(row.error_code.as_deref()),
-                row.error_text
-                    .unwrap_or_else(|| "Вход не завершён. Нажмите кнопку входа ещё раз.".into()),
+                row.error_text.unwrap_or_else(|| NOT_FINISHED.into()),
             ));
         }
         let client_id = ClientId(row.result_client_id.ok_or_else(no_request)?);

@@ -19,7 +19,7 @@ use sn_modules::catalog::oauth::Provider;
 use sn_services::limits::RATE_LIMITED;
 use sn_services::oauth::{
     COOKIE, COOKIE_PATH, CallbackParams, LoginMethods, OauthFinish, OauthStart, Purpose,
-    REQUEST_TTL_SECONDS,
+    REQUEST_TTL_SECONDS, UNFINISHED,
 };
 use sn_services::utm_tracking::site_utm;
 
@@ -182,7 +182,11 @@ struct FinishBody {
 fn may_retry(code: &str) -> bool {
     matches!(
         code,
-        RATE_LIMITED | antibot::CAPTCHA_REQUIRED | antibot::FAILED | antibot::UNAVAILABLE
+        RATE_LIMITED
+            | UNFINISHED
+            | antibot::CAPTCHA_REQUIRED
+            | antibot::FAILED
+            | antibot::UNAVAILABLE
     )
 }
 
@@ -269,4 +273,25 @@ async fn unlink(
     Ok(Json(
         state.services.oauth().unlink(&client.0, provider).await?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn кука_входа_остаётся_пока_вход_можно_продолжить() {
+        for code in [
+            RATE_LIMITED,
+            UNFINISHED,
+            antibot::CAPTCHA_REQUIRED,
+            antibot::FAILED,
+            antibot::UNAVAILABLE,
+        ] {
+            assert!(may_retry(code), "{code}");
+        }
+        for code in ["oauth.no_request", "oauth.refused", "oauth.expired"] {
+            assert!(!may_retry(code), "{code}");
+        }
+    }
 }

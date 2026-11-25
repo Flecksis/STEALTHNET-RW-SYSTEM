@@ -60,6 +60,13 @@ impl PauseGate {
         Some(guard)
     }
 
+    pub fn join(&self) -> WorkGuard {
+        self.state.active.fetch_add(1, Ordering::SeqCst);
+        WorkGuard {
+            state: self.state.clone(),
+        }
+    }
+
     pub async fn enter(&self) -> WorkGuard {
         loop {
             let changed = self.state.resumed.notified();
@@ -138,6 +145,25 @@ mod tests {
         drop(paused);
         waiting.await.unwrap();
         assert!(!gate.is_paused());
+        assert_eq!(gate.active(), 0);
+    }
+
+    #[tokio::test]
+    async fn пауза_ждёт_и_часть_начатого_дела_отделённую_уже_при_паузе() {
+        let gate = PauseGate::default();
+        let request = gate.try_enter().unwrap();
+        let pausing = {
+            let gate = gate.clone();
+            tokio::spawn(async move { gate.pause(Duration::from_secs(5)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(gate.is_paused());
+        let part = gate.join();
+        drop(request);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!pausing.is_finished());
+        drop(part);
+        drop(pausing.await.unwrap());
         assert_eq!(gate.active(), 0);
     }
 

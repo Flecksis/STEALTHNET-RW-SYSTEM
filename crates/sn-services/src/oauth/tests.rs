@@ -1,3 +1,5 @@
+mod exchange;
+
 use super::*;
 use crate::settings::ModuleConfigUpdate;
 use crate::{EnvFallbacks, FixedClock, ServiceDeps};
@@ -14,6 +16,7 @@ use sn_store::testing::{TestDb, test_store};
 use sn_store::{SecretBox, SessionChannel};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration as Delay;
 use wiremock::matchers::{body_string_contains, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -36,7 +39,7 @@ static CODES_ISSUED: AtomicU32 = AtomicU32::new(0);
 type Forge<'a> = Box<dyn Fn(&Flow) -> String + 'a>;
 
 struct Harness {
-    _db: TestDb,
+    db: TestDb,
     services: Services,
     clock: Arc<FixedClock>,
     google: MockServer,
@@ -130,7 +133,7 @@ async fn harness_with(extra: Vec<Arc<dyn sn_modules::Module>>) -> Option<Harness
         .await
         .unwrap();
     Some(Harness {
-        _db: db,
+        db,
         services,
         clock,
         google,
@@ -186,6 +189,17 @@ struct Flow {
     code: String,
 }
 
+impl Flow {
+    fn params(&self, user: Option<&str>) -> CallbackParams {
+        CallbackParams {
+            code: Some(self.code.clone()),
+            state: Some(self.state.clone()),
+            error: None,
+            user: user.map(str::to_string),
+        }
+    }
+}
+
 impl Harness {
     fn server(&self, provider: Provider) -> &MockServer {
         match provider {
@@ -217,6 +231,10 @@ impl Harness {
     }
 
     async fn reply_with(&self, provider: Provider, flow: &Flow, token: String) {
+        self.reply_after(provider, flow, token, Delay::ZERO).await;
+    }
+
+    async fn reply_after(&self, provider: Provider, flow: &Flow, token: String, delay: Delay) {
         let mut mock = Mock::given(method("POST"))
             .and(path("/token"))
             .and(body_string_contains(format!("code={}", flow.code)));
@@ -230,19 +248,27 @@ impl Harness {
                     "client_secret={GOOGLE_SECRET}"
                 )));
         }
-        mock.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "at", "token_type": "Bearer", "expires_in": 3599, "id_token": token
-        })))
+        mock.respond_with(ResponseTemplate::new(200).set_delay(delay).set_body_json(
+            serde_json::json!({
+                "access_token": "at", "token_type": "Bearer", "expires_in": 3599, "id_token": token
+            }),
+        ))
         .mount(self.server(provider))
         .await;
     }
 
-    async fn reply(&self, provider: Provider, flow: &Flow, sub: &str, extra: serde_json::Value) {
+    fn token(
+        &self,
+        provider: Provider,
+        flow: &Flow,
+        sub: &str,
+        extra: serde_json::Value,
+    ) -> String {
         let audience = match provider {
             Provider::Google => GOOGLE_ID,
             Provider::Apple => SERVICES_ID,
         };
-        let token = sign(
+        sign(
             IDP_KEY,
             KID,
             &claims(
@@ -252,22 +278,17 @@ impl Harness {
                 sub,
                 extra,
             ),
-        );
+        )
+    }
+
+    async fn reply(&self, provider: Provider, flow: &Flow, sub: &str, extra: serde_json::Value) {
+        let token = self.token(provider, flow, sub, extra);
         self.reply_with(provider, flow, token).await;
     }
 
     async fn back(&self, provider: Provider, flow: &Flow, user: Option<&str>) -> CallbackOutcome {
         self.ops()
-            .callback(
-                provider,
-                &CallbackParams {
-                    code: Some(flow.code.clone()),
-                    state: Some(flow.state.clone()),
-                    error: None,
-                    user: user.map(str::to_string),
-                },
-                Some(&flow.start.browser),
-            )
+            .callback(provider, &flow.params(user), Some(&flow.start.browser))
             .await
             .unwrap()
     }

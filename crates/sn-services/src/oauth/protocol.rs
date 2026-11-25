@@ -11,7 +11,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 pub const APPLE_AUDIENCE: &str = "https://appleid.apple.com";
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const KEYS_TTL: Duration = Duration::from_secs(3600);
 const CLOCK_LEEWAY_SECONDS: u64 = 120;
 const APPLE_SECRET_SECONDS: i64 = 300;
