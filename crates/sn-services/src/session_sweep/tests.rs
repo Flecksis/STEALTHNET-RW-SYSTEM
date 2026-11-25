@@ -166,8 +166,8 @@ async fn пока_часы_сервера_сильно_спешат_сессии
             services.server_clock().answered(now);
         }
     };
-    let start = Instant::now();
     let mut sweep = awake();
+    let start = Instant::now();
     for days in [400, 30] {
         telegram(days);
         assert_eq!(
