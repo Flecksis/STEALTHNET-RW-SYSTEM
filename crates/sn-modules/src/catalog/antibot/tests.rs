@@ -1374,15 +1374,17 @@ async fn old_session(conn: &mut impl Db, client_id: ClientId, days: i64, minute:
     .unwrap();
 }
 
-async fn sweep_sessions(conn: &mut impl Db, keep_days: i64) -> i64 {
+async fn sweep_sessions(store: &sn_store::Store, keep_days: i64) -> i64 {
     let mut after = 0;
     let mut removed = 0;
     loop {
-        let portion = conn
+        let mut tx = store.begin().await.unwrap();
+        let portion = tx
             .sessions()
             .sweep_client(after, 10, keep_days)
             .await
             .unwrap();
+        tx.commit().await.unwrap();
         removed += portion.removed;
         match portion.last {
             Some(last) => after = last,
@@ -1504,7 +1506,7 @@ async fn оценка_не_меняется_после_уборки_старых
     assert_eq!(traces, [true, true, true, false, false, false, false]);
     for (keep, removed) in [(90, 69), (signals::SHARED_SESSIONS_DAYS, 10)] {
         assert_eq!(
-            sweep_sessions(&mut conn, keep).await,
+            sweep_sessions(&db.store, keep).await,
             removed,
             "{keep} дней"
         );
@@ -1537,7 +1539,7 @@ async fn самоприглашение_видно_и_после_уборки_с
         }
         payers.push((payer, referrer));
     }
-    assert_eq!(sweep_sessions(&mut conn, 90).await, 12);
+    assert_eq!(sweep_sessions(&db.store, 90).await, 12);
     drop(conn);
     for (payer, referrer) in &payers {
         invite(&db.store, *payer, *referrer).await;

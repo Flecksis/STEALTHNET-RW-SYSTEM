@@ -5,7 +5,7 @@ use sn_domain::jobs::{JobKind, JobPayload};
 use sn_domain::order::OrderStatus;
 use sn_domain::payment::PaymentStatus;
 use sn_services::fulfillment::abandoned_reason;
-use sn_services::session_sweep::SessionSweep;
+use sn_services::session_sweep::{START_DELAY, SessionSweep};
 use sn_services::{Actor, ServiceError, Services};
 use sn_store::{Db, JobRecord, LockSpace, StoreError, audit_entity};
 use std::collections::HashMap;
@@ -38,6 +38,7 @@ pub struct WorkerConfig {
     pub end_expired_interval: Duration,
     pub chain_watch_interval: Duration,
     pub node_watch_interval: Duration,
+    pub session_sweep_delay: Duration,
     pub reconcile_batch: usize,
 }
 
@@ -56,6 +57,7 @@ impl Default for WorkerConfig {
             end_expired_interval: Duration::from_secs(3_600),
             chain_watch_interval: Duration::from_secs(20),
             node_watch_interval: Duration::from_secs(15),
+            session_sweep_delay: START_DELAY,
             reconcile_batch: 500,
         }
     }
@@ -228,12 +230,13 @@ fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
 
 impl Worker {
     pub fn new(services: Services, config: WorkerConfig) -> Self {
+        let sessions = Mutex::new(SessionSweep::starting_in(config.session_sweep_delay));
         Worker {
             services,
             config,
             handler: Arc::new(CoreHandlers),
             by_kind: HashMap::new(),
-            sessions: Mutex::default(),
+            sessions,
         }
     }
 

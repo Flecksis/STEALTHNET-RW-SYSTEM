@@ -70,15 +70,22 @@ async fn left(db: &mut impl Db, client: ClientId) -> Vec<String> {
     .unwrap()
 }
 
-async fn sweep_by(db: &mut impl Db, portion: i64) -> i64 {
+async fn portion_of(store: &Store, after: i64, portion: i64) -> SessionPortion {
+    let mut tx = store.begin().await.unwrap();
+    let done = tx
+        .sessions()
+        .sweep_client(after, portion, KEEP)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    done
+}
+
+async fn sweep_by(store: &Store, portion: i64) -> i64 {
     let mut after = 0;
     let mut removed = 0;
     loop {
-        let done = db
-            .sessions()
-            .sweep_client(after, portion, KEEP)
-            .await
-            .unwrap();
+        let done = portion_of(store, after, portion).await;
         removed += done.removed;
         match done.last {
             Some(last) => after = last,
@@ -87,8 +94,8 @@ async fn sweep_by(db: &mut impl Db, portion: i64) -> i64 {
     }
 }
 
-async fn sweep(db: &mut impl Db) -> i64 {
-    sweep_by(db, 500).await
+async fn sweep(store: &Store) -> i64 {
+    sweep_by(store, 500).await
 }
 
 #[tokio::test]
@@ -134,7 +141,7 @@ async fn старые_сессии_удаляются_а_живые_свежие
     ] {
         visit(&mut conn, owner, name, row).await;
     }
-    assert_eq!(sweep(&mut conn).await, 3);
+    assert_eq!(sweep(&db.store).await, 3);
     assert_eq!(
         left(&mut conn, owner).await,
         [
@@ -146,7 +153,7 @@ async fn старые_сессии_удаляются_а_живые_свежие
             "живая"
         ]
     );
-    assert_eq!(sweep(&mut conn).await, 0, "второй проход ничего не находит");
+    assert_eq!(sweep(&db.store).await, 0, "второй проход ничего не находит");
     drop(conn);
     db.cleanup().await;
 }
@@ -172,7 +179,7 @@ async fn действующий_вход_не_прерывается_уборк�
     ] {
         visit(&mut conn, owner, name, row).await;
     }
-    assert_eq!(sweep(&mut conn).await, 3);
+    assert_eq!(sweep(&db.store).await, 3);
     for name in ["длинная", "обычная", "мини"] {
         let found = conn
             .sessions()
@@ -223,7 +230,7 @@ async fn в_карточке_клиента_остаются_те_же_посл�
         before.push((stats.cabinet_seen_at, stats.miniapp_seen_at));
     }
     assert!(before[0].0.is_some() && before[0].1.is_some());
-    sweep(&mut conn).await;
+    sweep(&db.store).await;
     assert_eq!(
         left(&mut conn, gone).await,
         ["кабинет-300", "мини-220", "кабинет-200"]
@@ -279,7 +286,7 @@ async fn строка_с_несогласованными_датами_не_те
         .await
         .unwrap()
         .cabinet_seen_at;
-    sweep(&mut conn).await;
+    sweep(&db.store).await;
     assert_eq!(
         left(&mut conn, owner).await,
         ["первая", "видели позже всех", "свежая, но видели давно"]
@@ -322,7 +329,7 @@ async fn строка_с_несогласованными_датами_не_те
     ] {
         visit(&mut conn, fresh, name, row).await;
     }
-    sweep(&mut conn).await;
+    sweep(&db.store).await;
     assert_eq!(left(&mut conn, pair).await, ["первая", "пара-2"]);
     assert_eq!(
         left(&mut conn, fresh).await,
@@ -356,7 +363,7 @@ async fn первый_вход_с_адресом_остаётся_даже_ес�
         )
         .await;
     }
-    sweep(&mut conn).await;
+    sweep(&db.store).await;
     assert_eq!(
         left(&mut conn, owner).await,
         ["без адреса-1", "с адресом-1", "последняя"]
@@ -376,7 +383,7 @@ async fn из_одновременных_входов_первым_остаёт�
     visit(&mut tx, owner, "последняя", cabinet(200)).await;
     tx.commit().await.unwrap();
     let mut conn = db.store.conn().await.unwrap();
-    assert_eq!(sweep(&mut conn).await, 2);
+    assert_eq!(sweep(&db.store).await, 2);
     assert_eq!(left(&mut conn, owner).await, ["а", "последняя"]);
     drop(conn);
     db.cleanup().await;
@@ -403,7 +410,7 @@ async fn у_удалённого_клиента_из_старого_не_ост�
     )
     .await;
     conn.clients().soft_delete(removed).await.unwrap();
-    assert_eq!(sweep(&mut conn).await, 2);
+    assert_eq!(sweep(&db.store).await, 2);
     assert_eq!(left(&mut conn, removed).await, ["свежая"]);
     assert_eq!(left(&mut conn, neighbor).await, ["первая", "мини"]);
     drop(conn);
@@ -427,7 +434,7 @@ async fn порция_ограничивает_просмотр_и_отдаёт_
     let mut after = 0;
     let mut seen = Vec::new();
     for _ in 0..4 {
-        let done = conn.sessions().sweep_client(after, 3, KEEP).await.unwrap();
+        let done = portion_of(&db.store, after, 3).await;
         seen.push((done.last, done.removed));
         after = done.last.unwrap_or(after);
     }
@@ -459,13 +466,13 @@ async fn занятая_строка_пропускается_без_ожида�
         .execute(busy.conn())
         .await
         .unwrap();
-    let removed = tokio::time::timeout(Duration::from_secs(10), sweep(&mut conn))
+    let removed = tokio::time::timeout(Duration::from_secs(10), sweep(&db.store))
         .await
         .expect("уборка ждёт чужую блокировку");
     assert_eq!(removed, 1);
     assert_eq!(left(&mut conn, owner).await, ["400", "350", "250"]);
     busy.rollback().await.unwrap();
-    assert_eq!(sweep(&mut conn).await, 1);
+    assert_eq!(sweep(&db.store).await, 1);
     assert_eq!(left(&mut conn, owner).await, ["400", "250"]);
     drop(conn);
     db.cleanup().await;
@@ -496,7 +503,7 @@ async fn с_сессией_удаляется_её_привязка_а_вход_
         .await
         .unwrap();
     }
-    assert_eq!(sweep(&mut conn).await, 1);
+    assert_eq!(sweep(&db.store).await, 1);
     let kept: Vec<String> = sqlx::query_scalar(
         "SELECT convert_from(state_hash, 'UTF8') FROM oauth_requests ORDER BY id",
     )
@@ -521,6 +528,64 @@ async fn с_сессией_удаляется_её_привязка_а_вход_
         "удаление сессии ищет привязки по индексу: {plan:?}"
     );
     tx.rollback().await.unwrap();
+    db.cleanup().await;
+}
+
+async fn entries_read(tx: &mut Tx) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (pg_stat_get_xact_tuples_returned('client_sessions'::regclass) \
+             + COALESCE((SELECT sum(pg_stat_get_xact_tuples_returned(i.indexrelid)) FROM pg_index i \
+                 WHERE i.indrelid = 'client_sessions'::regclass), 0))::bigint",
+    )
+    .fetch_one(tx.conn())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn клиент_с_тысячами_сессий_не_замедляет_уборку() {
+    const HEAVY: i64 = 6_000;
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let heavy = client(&mut conn, &Person::NOBODY).await;
+    sqlx::query(
+        "WITH others AS (INSERT INTO clients (locale, registration_source) \
+             SELECT 'ru', 'web' FROM generate_series(1, 3000) RETURNING id), \
+         visits AS (SELECT id AS client_id, n * 65.0 + id % 65 AS days FROM others CROSS JOIN generate_series(1, 6) n \
+             UNION ALL SELECT $1, 455.0 * n / $2 FROM generate_series(1, $2) n) \
+         INSERT INTO client_sessions (client_id, token_hash, channel, ip, user_agent, created_at, last_seen_at, expires_at) \
+         SELECT client_id, decode(md5(client_id || ':' || days), 'hex'), 'miniapp', '203.0.113.7', repeat('x', 120), at, at, \
+                at + interval '30 days' \
+         FROM (SELECT client_id, days, now() - make_interval(secs => (days * 86400)::float8) AS at FROM visits ORDER BY days DESC) made",
+    )
+    .bind(heavy.0)
+    .bind(HEAVY)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    sqlx::query("ANALYZE client_sessions, clients")
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    let first: i64 = sqlx::query_scalar("SELECT min(id) FROM client_sessions")
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    for skipped in [5_000, 9_000] {
+        let mut tx = db.store.begin().await.unwrap();
+        let before = entries_read(&mut tx).await;
+        let done = tx
+            .sessions()
+            .sweep_client(first + skipped, 200, KEEP)
+            .await
+            .unwrap();
+        let read = entries_read(&mut tx).await - before;
+        assert!(done.removed > 100, "удалено {}", done.removed);
+        assert!(read < 200 * 20, "прочитано {read} записей на порцию");
+        tx.rollback().await.unwrap();
+    }
+    assert!(sweep_by(&db.store, 200).await > HEAVY / 2);
     db.cleanup().await;
 }
 
@@ -638,7 +703,7 @@ async fn на_случайных_сессиях_читатели_видят_то
         conn.clients().soft_delete(owners[0]).await.unwrap();
         let before = readers(&mut conn).await;
         let total = i64::try_from(visits.len()).unwrap();
-        let removed = sweep_by(&mut conn, portion).await;
+        let removed = sweep_by(&db.store, portion).await;
         assert!(
             removed > total / 3,
             "порция {portion}: {removed} из {total}"
@@ -659,7 +724,7 @@ async fn на_случайных_сессиях_читатели_видят_то
         .await
         .unwrap();
         assert_eq!(spare, 0, "порция {portion}");
-        assert_eq!(sweep_by(&mut conn, portion).await, 0);
+        assert_eq!(sweep_by(&db.store, portion).await, 0);
         drop(conn);
     }
     db.cleanup().await;
@@ -689,10 +754,7 @@ async fn уборки_и_входы_сразу_не_мешают_друг_дру
     drop(conn);
     let sweeper = || {
         let store = db.store.clone();
-        async move {
-            let mut conn = store.conn().await.unwrap();
-            sweep_by(&mut conn, 50).await
-        }
+        async move { sweep_by(&store, 50).await }
     };
     let visitor = {
         let store = db.store.clone();
@@ -712,7 +774,7 @@ async fn уборки_и_входы_сразу_не_мешают_друг_дру
     .await
     .expect("уборка и входы ждут друг друга");
     let mut conn = db.store.conn().await.unwrap();
-    let rest = sweep(&mut conn).await;
+    let rest = sweep(&db.store).await;
     assert_eq!(first + second + rest, 60 * 39);
     for id in clients {
         let kept: Vec<(i64, bool)> = sqlx::query_as(

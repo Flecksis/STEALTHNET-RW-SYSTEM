@@ -74,7 +74,19 @@ async fn обслуживание_убирает_старые_сессии_а_в
         )
         .await
         .unwrap();
-    let worker = Worker::new(services.clone(), WorkerConfig::default());
+    let early = Worker::new(services.clone(), WorkerConfig::default());
+    assert_eq!(
+        early.housekeeping().await.unwrap()["removed_sessions"],
+        0,
+        "сразу после запуска уборка ждёт"
+    );
+    let worker = Worker::new(
+        services.clone(),
+        WorkerConfig {
+            session_sweep_delay: Duration::ZERO,
+            ..WorkerConfig::default()
+        },
+    );
     let report = worker
         .run_periodic(Periodic::Housekeeping)
         .await

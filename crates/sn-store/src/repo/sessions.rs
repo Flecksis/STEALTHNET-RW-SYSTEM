@@ -351,6 +351,9 @@ impl<'c> SessionsRepo<'c> {
         portion: i64,
         keep_days: i64,
     ) -> StoreResult<SessionPortion> {
+        sqlx::query("SET LOCAL enable_bitmapscan = off")
+            .execute(&mut *self.conn)
+            .await?;
         let (last, removed): (Option<i64>, i64) = sqlx::query_as(
             "WITH portion AS MATERIALIZED ( \
                  SELECT id FROM client_sessions WHERE id > $1 ORDER BY id LIMIT $2), \
