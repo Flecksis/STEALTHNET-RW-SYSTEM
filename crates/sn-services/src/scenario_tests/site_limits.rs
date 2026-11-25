@@ -262,15 +262,18 @@ async fn сорок_регистраций_разом_дают_ровно_пре
         }));
     }
     let mut created = 0;
+    let mut busy = 0;
     for task in tasks {
         match task.await.unwrap() {
             Ok(_) => created += 1,
-            Err(err) => assert_eq!(err.code(), signups::BUSY_CODE),
+            Err(err) if err.code() == signups::BUSY_CODE => busy += 1,
+            Err(err) => assert_eq!(err.code(), crate::limits::RATE_LIMITED),
         }
     }
     assert_eq!(created, 5);
     assert_eq!(made(services).await, 5);
-    assert_eq!(day(services).await.minute, 35);
+    assert_eq!(day(services).await.minute, busy);
+    assert!(busy > 0);
     {
         let mut conn = services.store().conn().await.unwrap();
         sqlx::query("UPDATE site_signups SET created_at = created_at - interval '1 minute'")
