@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Lang } from '../../lib/i18n';
 import type { Theme } from '../../lib/theme';
 import { AUDIENCES, isPart, MINI_PREVIEW, type Audience, type MiniConfig, type MiniDraft, type Part, type PreviewScreen, type SectionKey } from '../../mini/config';
+import { PreviewFail, usePreviewFrame } from '../previewFrame';
 import { canonical, STATE_NAMES } from './model';
 
 const PATH = '/admin/mini-preview';
@@ -52,58 +53,37 @@ type FrameProps = {
 export function PreviewFrame({ config, theme, lang, state, screen, off, percent, focus, height, onPick }: FrameProps) {
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const { width } = useSize(box);
-  const frame = useRef<HTMLIFrameElement>(null);
-  const [ready, setReady] = useState(0);
+  const scale = width > 0 ? Math.min(1, width / WIDTH, Math.max(SMALLEST, height / TALL)) : 0;
+  const { frame, ready, attempt, problem, retry, send } = usePreviewFrame(PATH, MINI_PREVIEW.ready, scale > 0, (data) => {
+    if (data.type === MINI_PREVIEW.pick && isPart(data.part)) {
+      onPick(data.part);
+    }
+  });
   const sent = useRef(0);
-  const pick = useRef(onPick);
-
-  useEffect(() => {
-    pick.current = onPick;
-  }, [onPick]);
-
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || !frame.current || event.source !== frame.current.contentWindow) {
-        return;
-      }
-      const data = event.data as { type?: unknown; part?: unknown } | null;
-      if (data?.type === MINI_PREVIEW.ready) {
-        setReady((n) => n + 1);
-      } else if (data?.type === MINI_PREVIEW.pick && isPart(data.part)) {
-        pick.current(data.part);
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, []);
 
   useEffect(() => {
     if (!ready) {
       return;
     }
     const timer = window.setTimeout(() => {
-      const target = frame.current?.contentWindow;
-      if (!target) {
-        return;
-      }
       const jump = focus && focus.n !== sent.current ? focus.part : null;
       if (focus) {
         sent.current = focus.n;
       }
       const message: MiniDraft = { type: MINI_PREVIEW.draft, config: withImages(config), theme, lang, state, screen, off, percent, focus: jump };
-      target.postMessage(message, window.location.origin);
+      send(message);
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [ready, config, theme, lang, state, screen, off, percent, focus]);
+  }, [ready, send, config, theme, lang, state, screen, off, percent, focus]);
 
-  const scale = width > 0 ? Math.min(1, width / WIDTH, Math.max(SMALLEST, height / TALL)) : 0;
   return (
     <div ref={setBox} className="mce-frame" style={{ height }}>
       {scale > 0 ? (
         <div className="mce-frame-in" style={{ width: Math.floor(WIDTH * scale), height }}>
-          <iframe ref={frame} src={PATH} title="Превью мини-приложения" style={{ width: WIDTH, height: Math.ceil(height / scale), transform: `scale(${scale})` }} />
+          <iframe key={attempt} ref={frame} src={PATH} title="Превью мини-приложения" style={{ width: WIDTH, height: Math.ceil(height / scale), transform: `scale(${scale})` }} />
         </div>
       ) : null}
+      <PreviewFail problem={problem} onRetry={retry} />
     </div>
   );
 }

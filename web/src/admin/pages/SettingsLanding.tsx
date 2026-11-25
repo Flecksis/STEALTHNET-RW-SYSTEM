@@ -45,6 +45,7 @@ import {
 } from '../../site/landingModel';
 import type { ModulesData, ModuleView } from '../modules/model';
 import { Switch } from '../ui';
+import { PreviewFail, usePreviewFrame } from '../previewFrame';
 import { CssEditor, useCssCheck } from './CssEditor';
 import { CSS_PLACES, cssOut, joinStyles, lengthProblem, readTexts, sameCss, type CssPlace, type CssProblems, type CssTexts } from './landingCss';
 import {
@@ -337,57 +338,36 @@ type FrameProps = {
 function PreviewFrame({ blocks, css, device, theme, focus, height, onPick }: FrameProps) {
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const { width } = useSize(box);
-  const frame = useRef<HTMLIFrameElement>(null);
-  const [ready, setReady] = useState(0);
+  const virtual = device === 'desktop' ? 1280 : 390;
+  const scale = width > 0 ? Math.min(1, width / virtual) : 0;
+  const { frame, ready, attempt, problem, retry, send } = usePreviewFrame(PREVIEW_PATH, PREVIEW_MESSAGES.ready, scale > 0, (data) => {
+    if (data.type === PREVIEW_MESSAGES.pick && typeof data.kind === 'string' && KIND_SET.has(data.kind)) {
+      onPick(data.kind as BlockKind);
+    }
+  });
   const sent = useRef(0);
-  const pick = useRef(onPick);
-
-  useEffect(() => {
-    pick.current = onPick;
-  }, [onPick]);
-
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || !frame.current || event.source !== frame.current.contentWindow) {
-        return;
-      }
-      const data = event.data as { type?: unknown; kind?: unknown } | null;
-      if (data?.type === PREVIEW_MESSAGES.ready) {
-        setReady((n) => n + 1);
-      } else if (data?.type === PREVIEW_MESSAGES.pick && typeof data.kind === 'string' && KIND_SET.has(data.kind)) {
-        pick.current(data.kind as BlockKind);
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, []);
 
   useEffect(() => {
     if (!ready) {
       return;
     }
     const timer = window.setTimeout(() => {
-      const target = frame.current?.contentWindow;
-      if (!target) {
-        return;
-      }
       const jump = focus && focus.n !== sent.current ? focus.kind : null;
       if (focus) {
         sent.current = focus.n;
       }
       const message: PreviewDraft = { type: PREVIEW_MESSAGES.draft, blocks, theme, css, focus: jump };
-      target.postMessage(message, window.location.origin);
+      send(message);
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [ready, blocks, css, theme, focus]);
+  }, [ready, send, blocks, css, theme, focus]);
 
-  const virtual = device === 'desktop' ? 1280 : 390;
-  const scale = width > 0 ? Math.min(1, width / virtual) : 0;
   return (
     <div ref={setBox} className={`lde-frame ${device}`} style={{ height }}>
       {scale > 0 ? (
         <div className="lde-frame-in" style={{ width: Math.floor(virtual * scale), height }}>
           <iframe
+            key={attempt}
             ref={frame}
             src={PREVIEW_PATH}
             title="Превью лендинга"
@@ -395,6 +375,7 @@ function PreviewFrame({ blocks, css, device, theme, focus, height, onPick }: Fra
           />
         </div>
       ) : null}
+      <PreviewFail problem={problem} onRetry={retry} />
     </div>
   );
 }

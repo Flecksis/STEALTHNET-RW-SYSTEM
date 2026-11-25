@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Lang } from '../../lib/i18n';
 import type { Theme } from '../../lib/theme';
+import { PreviewFail, usePreviewFrame } from '../previewFrame';
 import { DOC_PREVIEW, type DocDraft } from '../../site/documentPreview';
 
 export type Device = 'phone' | 'desktop';
@@ -39,32 +40,15 @@ type FrameProps = { data: PreviewData; device: Device; theme: Theme; height: num
 export function DocumentPreviewFrame({ data, device, theme, height }: FrameProps) {
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const { width } = useSize(box);
-  const frame = useRef<HTMLIFrameElement>(null);
-  const [ready, setReady] = useState(0);
-
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin || !frame.current || event.source !== frame.current.contentWindow) {
-        return;
-      }
-      const message = event.data as { type?: unknown } | null;
-      if (message?.type === DOC_PREVIEW.ready) {
-        setReady((n) => n + 1);
-      }
-    };
-    window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, []);
+  const virtual = device === 'desktop' ? 1280 : 390;
+  const scale = width > 0 ? Math.min(1, width / virtual) : 0;
+  const { frame, ready, attempt, problem, retry, send } = usePreviewFrame(PREVIEW_PATH, DOC_PREVIEW.ready, scale > 0);
 
   useEffect(() => {
     if (!ready) {
       return;
     }
     const timer = window.setTimeout(() => {
-      const target = frame.current?.contentWindow;
-      if (!target) {
-        return;
-      }
       const message: DocDraft = {
         type: DOC_PREVIEW.draft,
         title: data.title,
@@ -74,18 +58,17 @@ export function DocumentPreviewFrame({ data, device, theme, height }: FrameProps
         path: data.path,
         updated_at: data.updatedAt,
       };
-      target.postMessage(message, window.location.origin);
+      send(message);
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [ready, data, theme]);
+  }, [ready, send, data, theme]);
 
-  const virtual = device === 'desktop' ? 1280 : 390;
-  const scale = width > 0 ? Math.min(1, width / virtual) : 0;
   return (
     <div ref={setBox} className={`dce-frame ${device}`} style={{ height }}>
       {scale > 0 ? (
         <div className="dce-frame-in" style={{ width: Math.floor(virtual * scale), height }}>
           <iframe
+            key={attempt}
             ref={frame}
             src={PREVIEW_PATH}
             title="Превью страницы"
@@ -93,6 +76,7 @@ export function DocumentPreviewFrame({ data, device, theme, height }: FrameProps
           />
         </div>
       ) : null}
+      <PreviewFail problem={problem} onRetry={retry} />
     </div>
   );
 }
