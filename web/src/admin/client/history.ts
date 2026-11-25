@@ -294,7 +294,14 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         case 'client.email_changed': {
           const email = str(details.email);
           const previous = str(details.previous);
-          const what = email ? (previous ? `Почта изменена на ${email}` : `Добавлена почта ${email}`) : 'Почта изменена';
+          const added = details.confirmed === true ? `Почта ${email} подтверждена` : `Добавлена почта ${email}`;
+          const what = email ? (previous ? `Почта изменена на ${email}` : added) : 'Почта изменена';
+          return { ...base, what, note: previous ? `${actor}, прежняя ${previous}` : actor, sum: '' };
+        }
+        case 'client.email_linked': {
+          const email = str(details.email);
+          const previous = str(details.previous);
+          const what = email ? `Указана почта ${email} без кода` : 'Почта указана без кода';
           return { ...base, what, note: previous ? `${actor}, прежняя ${previous}` : actor, sum: '' };
         }
         case 'subscription.change_limits': {

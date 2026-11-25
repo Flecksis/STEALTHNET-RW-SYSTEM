@@ -68,6 +68,7 @@ pub struct MailSettings {
     pub letters: ClientLetters,
     pub codes_per_hour: u32,
     pub confirm_signup: bool,
+    pub link_without_code: bool,
 }
 
 pub const CODES_PER_HOUR_DEFAULT: u32 = 300;
@@ -186,6 +187,10 @@ impl MailSettings {
                 "подтверждать почту при регистрации можно, только когда письма отправляются: выберите SMTP или Resend".into(),
             );
         }
+        let link_without_code = config
+            .get("link_without_code")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let from_name = optional_text(config, "from_name");
         if from_name
             .as_deref()
@@ -202,6 +207,7 @@ impl MailSettings {
             letters,
             codes_per_hour,
             confirm_signup,
+            link_without_code,
         })
     }
 
@@ -259,7 +265,7 @@ impl Module for MailModule {
             SettingField::select(
                 "transport",
                 "Отправка писем",
-                "«Не отправлять» — письма не уходят, и клиенты из бота не смогут привязать почту для входа на сайт: кнопки «Вход по почте» в боте не будет; «SMTP» — через ваш почтовый сервер; «Resend API» — через сервис Resend",
+                "«Не отправлять» — письма не уходят, и клиенты из бота смогут привязать почту для входа на сайт, только если включено «Привязывать почту без кода»; «SMTP» — через ваш почтовый сервер; «Resend API» — через сервис Resend",
                 TRANSPORT_OPTIONS,
             )
             .labels(&["Не отправлять", "SMTP", "Resend API"])
@@ -276,6 +282,12 @@ impl Module for MailModule {
                 "confirm_signup",
                 "Подтверждать почту при регистрации",
                 "Только для входа по паролю: аккаунт появляется после того, как клиент введёт код из письма. Нужна отправка писем",
+            )
+            .with_default("false"),
+            SettingField::flag(
+                "link_without_code",
+                "Привязывать почту без кода",
+                "Только пока письма не отправляются: клиент из Telegram указывает почту и пароль для входа на сайт, адрес не проверяется",
             )
             .with_default("false"),
             SettingField::flag(
@@ -445,6 +457,9 @@ mod tests {
         let off = MailSettings::parse(&config(json!({}))).unwrap();
         assert_eq!(off.transport, MailTransport::Off);
         assert!(!off.sends());
+        assert!(!off.link_without_code);
+        let allowed = MailSettings::parse(&config(json!({ "link_without_code": true }))).unwrap();
+        assert!(allowed.link_without_code && !allowed.sends());
         let partial = MailSettings::parse(&config(json!({
             "transport": "none",
             "smtp_host": "недописанный адрес"

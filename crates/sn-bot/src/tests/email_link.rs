@@ -307,6 +307,174 @@ async fn при_входе_по_коду_бот_не_просит_пароль()
     db.cleanup().await;
 }
 
+async fn allow_without_code(services: &Services) {
+    let (owner, _) = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap();
+    let config = serde_json::json!({ "transport": "none", "link_without_code": true });
+    services
+        .settings_ops()
+        .update_module_config(
+            sn_domain::module::ModuleId::Mail,
+            &sn_services::settings::ModuleConfigUpdate {
+                config: config.as_object().unwrap().clone(),
+                clear: Vec::new(),
+            },
+            owner,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn с_галочкой_бот_привязывает_почту_без_кода_а_потом_просит_её_подтвердить() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    site(&services).await;
+    handle_update(&ctx, text_update(1, USER, "/start")).await;
+    assert!(!last_buttons(&server).await.contains(&"em".to_string()));
+    allow_without_code(&services).await;
+    handle_update(&ctx, text_update(2, USER, "/start")).await;
+    assert!(last_buttons(&server).await.contains(&"em".to_string()));
+
+    handle_update(&ctx, callback_update(3, USER, "em:new")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Кода подтверждения не будет"), "{text}");
+    handle_update(&ctx, text_update(4, USER, "не почта")).await;
+    assert!(last_text(&server).await.contains("В адресе ошибка"));
+    handle_update(&ctx, text_update(5, USER, "Alex@Example.com")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("Почта alex@example.com привязана без проверки"),
+        "{text}"
+    );
+    assert!(text.contains("Теперь задайте пароль для сайта"), "{text}");
+    assert!(
+        text.contains("Забыли пароль — напишите в поддержку"),
+        "{text}"
+    );
+    assert!(!text.contains("придёт на почту"), "{text}");
+    assert_eq!(
+        web_apps(&server).await,
+        ["https://vpn.example.com/app/profile/password"]
+    );
+    assert_eq!(waiting(&services).await, None);
+    assert_eq!(
+        email_of(&services).await,
+        Some(("alex@example.com".into(), false))
+    );
+
+    handle_update(&ctx, callback_update(6, USER, "em")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Почта: alex@example.com"), "{text}");
+    assert!(!text.contains("не подтверждена"), "{text}");
+    assert_eq!(last_buttons(&server).await, ["em:new", "m"]);
+
+    let (port, letters) = fake_smtp().await;
+    mail_on(&services, port, serde_json::json!({})).await;
+    handle_update(&ctx, callback_update(7, USER, "em")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Почта не подтверждена"), "{text}");
+    assert_eq!(last_buttons(&server).await, ["em:confirm", "em:new", "m"]);
+    handle_update(&ctx, callback_update(8, USER, "em:confirm")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Код отправлен на alex@example.com"), "{text}");
+    assert_eq!(waiting(&services).await, Some(Awaiting::EmailCode));
+    let code = code_of(&letters, 0);
+    handle_update(&ctx, text_update(9, USER, &code)).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("Почта alex@example.com подтверждена."),
+        "{text}"
+    );
+    assert_eq!(
+        email_of(&services).await,
+        Some(("alex@example.com".into(), true))
+    );
+    handle_update(&ctx, callback_update(10, USER, "em:confirm")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Почта: alex@example.com"), "{text}");
+    assert_eq!(last_buttons(&server).await, ["em:new", "m"]);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn без_мини_приложения_и_писем_бот_привязывает_почту_и_принимает_пароль() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    site(&services).await;
+    no_miniapp(&services).await;
+    allow_without_code(&services).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/deleteMessage$"))
+        .respond_with(ok(serde_json::json!(true)))
+        .mount(&server)
+        .await;
+    handle_update(&ctx, text_update(1, USER, "/start")).await;
+    handle_update(&ctx, callback_update(2, USER, "em:new")).await;
+    handle_update(&ctx, text_update(3, USER, "alex@example.com")).await;
+    assert_eq!(waiting(&services).await, Some(Awaiting::SitePassword));
+    handle_update(&ctx, text_update(4, USER, "пароль-клиента-1")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Пароль для сайта задан."), "{text}");
+    assert!(
+        text.contains("Забыли пароль — напишите в поддержку"),
+        "{text}"
+    );
+    services
+        .auth()
+        .email_password_login(
+            "alex@example.com",
+            "пароль-клиента-1",
+            &RequestMeta::default(),
+        )
+        .await
+        .unwrap();
+
+    handle_update(&ctx, callback_update(5, USER, "em:new")).await;
+    handle_update(&ctx, text_update(6, USER, "alex.new@example.com")).await;
+    assert_eq!(waiting(&services).await, Some(Awaiting::EmailProof));
+    handle_update(&ctx, text_update(7, USER, "чужой-пароль-1")).await;
+    assert!(last_text(&server).await.contains("не подошёл"));
+    handle_update(&ctx, text_update(8, USER, "пароль-клиента-1")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("Почта alex.new@example.com привязана без проверки"),
+        "{text}"
+    );
+    assert_eq!(
+        email_of(&services).await,
+        Some(("alex.new@example.com".into(), false))
+    );
+
+    let admin = services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap()
+        .0;
+    services
+        .clients()
+        .set_email(
+            client(&services).await.id,
+            "boss@example.com",
+            sn_services::Actor::Admin(admin),
+        )
+        .await
+        .unwrap();
+    handle_update(&ctx, callback_update(9, USER, "em")).await;
+    let text = last_text(&server).await;
+    assert!(text.contains("Почта: boss@example.com"), "{text}");
+    assert_eq!(last_buttons(&server).await, ["m"]);
+    handle_update(&ctx, callback_update(10, USER, "em:new")).await;
+    assert_eq!(waiting(&services).await, None);
+    db.cleanup().await;
+}
+
 #[tokio::test]
 async fn без_входа_на_сайт_пункт_почты_скрыт() {
     let Some((db, services, server, ctx)) = setup().await else {

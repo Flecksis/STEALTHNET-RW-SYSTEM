@@ -65,7 +65,7 @@ pub fn miniapp_off(services: &Services) -> Option<&'static str> {
 
 pub fn email_offered(services: &Services) -> bool {
     services.settings().client_access.site_login
-        && services.mail().available()
+        && services.mail().links_email()
         && site_url(services).is_some()
 }
 
@@ -93,7 +93,7 @@ impl Install {
             roulette_ready,
             documents: !services.bot_content().documents.is_empty(),
             mail_on: modules.is_enabled(ModuleId::Mail),
-            mail: services.mail().available(),
+            mail: services.mail().links_email(),
             site_login: settings.client_access.site_login,
             site: site_url(services).is_some(),
             english: settings.languages.several(),
@@ -198,9 +198,11 @@ impl Install {
                 })
                 .or_else(|| (!self.roulette_ready).then(|| "Рулетка ещё не настроена".to_string())),
             "menu.btn.documents" => (!self.documents).then(|| "Документы не добавлены в «Документы»".to_string()),
-            "menu.btn.email" => module(self.mail_on, ModuleId::Mail)
-                .or_else(|| {
-                    (!self.mail).then(|| "Модуль «Почта» не настроен: письма не отправляются".to_string())
+            "menu.btn.email" => (!self.mail)
+                .then(|| {
+                    module(self.mail_on, ModuleId::Mail).unwrap_or_else(|| {
+                        "Письма не отправляются, а «Привязывать почту без кода» в «Почта и уведомления» выключено".to_string()
+                    })
                 })
                 .or_else(|| {
                     (!self.site_login).then(|| {

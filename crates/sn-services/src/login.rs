@@ -835,11 +835,17 @@ impl<'a> Auth<'a> {
             return Err(code_invalid());
         }
         limits.forgive(&strike).await?;
-        let (client_id, created) = match tx
+        let found = tx
             .clients()
             .find_by_identity(IdentityKind::Email, &email)
-            .await?
+            .await?;
+        if let Some(client) = &found
+            && !client.is_blocked()
+            && linked_without_code(&mut tx, client.id, &email).await?
         {
+            return refuse_unconfirmed(tx, row.id).await;
+        }
+        let (client_id, created) = match found {
             Some(client) if client.is_blocked() => return Err(ServiceError::Forbidden),
             Some(client) => (client.id, false),
             None => {
@@ -988,6 +994,9 @@ impl<'a> Auth<'a> {
             Some(client) => client,
             None => return Err(code_invalid()),
         };
+        if linked_without_code(&mut tx, client.id, &email).await? {
+            return refuse_unconfirmed(tx, row.id).await;
+        }
         store_password(&mut tx, client.id, &hash, false).await?;
         let revoked = tx
             .sessions()
@@ -1122,11 +1131,7 @@ impl<'a> Auth<'a> {
         let mut tx = self.services.store().begin().await?;
         let client = tx.clients().lock(client_id).await?;
         let identities = tx.clients().identities(client_id).await?;
-        let Some(email) = identities
-            .iter()
-            .find(|i| i.kind == IdentityKind::Email)
-            .map(|i| i.value.clone())
-        else {
+        let Some(email) = identities.iter().find(|i| i.kind == IdentityKind::Email) else {
             return Err(ServiceError::rejected(
                 "client.no_email",
                 "У клиента нет почты: на сайт он входит через Telegram",
@@ -1158,11 +1163,11 @@ impl<'a> Auth<'a> {
             ))
             .await?;
         tx.commit().await?;
-        if in_bot {
+        if in_bot && email.takes_letters() {
             let sent = self
                 .services
                 .letters()
-                .send(LetterId::PasswordIssued, &email, Values::new())
+                .send(LetterId::PasswordIssued, &email.value, Values::new())
                 .await;
             if let Err(err) = sent {
                 tracing::warn!(client = %client_id, error = %err, "письмо о выданном пароле не отправилось");
@@ -1173,6 +1178,7 @@ impl<'a> Auth<'a> {
 }
 
 pub const UNPROVEN_ACCESS_AUDIT: &str = "client.unproven_access_dropped";
+pub const EMAIL_UNCONFIRMED: &str = "auth.email_unconfirmed";
 
 pub(crate) async fn code_strike(limits: &RateLimits<'_>, email: &str) -> ServiceResult<Strike> {
     limits
@@ -1182,6 +1188,26 @@ pub(crate) async fn code_strike(limits: &RateLimits<'_>, email: &str) -> Service
             "Слишком много неверных кодов для этой почты.",
         )
         .await
+}
+
+async fn linked_without_code(tx: &mut Tx, client_id: ClientId, email: &str) -> ServiceResult<bool> {
+    let identities = tx.clients().identities(client_id).await?;
+    Ok(identities
+        .iter()
+        .any(|i| i.value == email && i.linked_without_code())
+        && identities.iter().any(|i| i.kind != IdentityKind::Email))
+}
+
+async fn refuse_unconfirmed<T>(mut tx: Tx, request_id: i64) -> ServiceResult<T> {
+    sqlx::query("UPDATE client_login_requests SET status = 'rejected' WHERE id = $1")
+        .bind(request_id)
+        .execute(tx.conn())
+        .await?;
+    tx.commit().await?;
+    Err(ServiceError::rejected(
+        EMAIL_UNCONFIRMED,
+        "Эта почта указана в аккаунте без подтверждения, поэтому код из письма его не откроет. Если аккаунт ваш, войдите через Telegram и подтвердите почту: в мини-приложении «Профиль» → «Почта», в кабинете «Безопасность» → «Почта». Если не ваш, напишите в поддержку.",
+    ))
 }
 
 async fn email_unproven(tx: &mut Tx, client_id: ClientId, email: &str) -> ServiceResult<bool> {

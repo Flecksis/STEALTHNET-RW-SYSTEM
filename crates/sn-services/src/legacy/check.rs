@@ -81,7 +81,8 @@ pub async fn identity_owners(
     let mut conn = services.store().conn().await?;
     let rows: Vec<(String, String, i64)> = sqlx::query_as(
         "SELECT i.kind, i.value, i.client_id FROM client_identities i JOIN clients c ON c.id = i.client_id \
-         WHERE c.deleted_at IS NULL AND ((i.kind = 'telegram' AND i.value = ANY($1)) OR (i.kind = 'email' AND i.value = ANY($2)))",
+         WHERE c.deleted_at IS NULL AND ((i.kind = 'telegram' AND i.value = ANY($1)) \
+         OR (i.kind = 'email' AND i.value = ANY($2) AND (i.verified OR NOT i.meta ? 'no_code')))",
     )
     .bind(&telegram)
     .bind(&emails)

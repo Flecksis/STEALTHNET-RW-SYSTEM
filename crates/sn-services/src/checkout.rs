@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::DomainError;
 use sn_domain::access::ClientChannel;
-use sn_domain::client::{Client, IdentityKind};
+use sn_domain::client::{Client, IdentityKind, proven_identities};
 use sn_domain::events::DomainEvent;
 use sn_domain::format;
 use sn_domain::ids::{
@@ -1428,13 +1428,7 @@ impl<'a> Checkout<'a> {
                 "Пробный период доступен только до первой подписки",
             ));
         }
-        let identities: Vec<(IdentityKind, String)> = tx
-            .clients()
-            .identities(client_id)
-            .await?
-            .into_iter()
-            .map(|i| (i.kind, i.value))
-            .collect();
+        let identities = proven_identities(tx.clients().identities(client_id).await?);
         if identities.is_empty() {
             return Err(ServiceError::rejected(
                 "trial.no_identity",
@@ -1485,13 +1479,7 @@ impl<'a> Checkout<'a> {
                 .await?
                 .iter()
                 .any(|s| s.ended_at.is_none());
-            let identities: Vec<(IdentityKind, String)> = conn
-                .clients()
-                .identities(client_id)
-                .await?
-                .into_iter()
-                .map(|i| (i.kind, i.value))
-                .collect();
+            let identities = proven_identities(conn.clients().identities(client_id).await?);
             if live
                 || identities.is_empty()
                 || conn.trials().was_claimed(client_id, &identities).await?
@@ -1529,13 +1517,7 @@ impl<'a> Checkout<'a> {
         if live {
             return Ok(false);
         }
-        let identities: Vec<(IdentityKind, String)> = conn
-            .clients()
-            .identities(client_id)
-            .await?
-            .into_iter()
-            .map(|i| (i.kind, i.value))
-            .collect();
+        let identities = proven_identities(conn.clients().identities(client_id).await?);
         Ok(!identities.is_empty() && !conn.trials().was_claimed(client_id, &identities).await?)
     }
 

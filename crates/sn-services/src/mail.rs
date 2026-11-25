@@ -191,6 +191,17 @@ impl<'a> MailOps<'a> {
         }
     }
 
+    pub fn links_email(&self) -> bool {
+        self.available() || self.link_without_code()
+    }
+
+    pub fn link_without_code(&self) -> bool {
+        !self.available()
+            && self.signup_rule() == SignupRule::Open
+            && MailSettings::parse(&self.services.modules().config(ModuleId::Mail))
+                .is_ok_and(|s| s.link_without_code)
+    }
+
     pub fn letters(&self) -> Option<ClientLetters> {
         self.settings().filter(|s| s.sends()).map(|s| s.letters)
     }

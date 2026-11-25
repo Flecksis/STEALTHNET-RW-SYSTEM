@@ -805,6 +805,70 @@ pub(super) async fn owner(services: &Services) -> AdminId {
 }
 
 #[tokio::test]
+async fn перенос_не_сливает_клиента_с_аккаунтом_где_его_почта_привязана_без_кода() {
+    let Some(env) = env().await else { return };
+    seed_stealthnet_remna(&env.remna);
+    let admin = owner(&env.services).await;
+    let s = &env.services;
+    use sn_store::Db;
+    let stranger = {
+        let mut conn = s.store().conn().await.unwrap();
+        let client = conn
+            .clients()
+            .create(&sn_store::NewClient {
+                locale: sn_domain::client::Locale::Ru,
+                registration_source: sn_domain::client::RegistrationSource::Bot,
+                note: None,
+            })
+            .await
+            .unwrap();
+        for identity in [
+            sn_domain::client::NewIdentity::new(
+                sn_domain::client::IdentityKind::Telegram,
+                "909090",
+                true,
+            )
+            .unwrap(),
+            sn_domain::client::NewIdentity::email_without_code("boris@example.com").unwrap(),
+        ] {
+            conn.clients()
+                .add_identity(client.id, &identity)
+                .await
+                .unwrap();
+        }
+        client.id.0
+    };
+    let (_, outcome) = import(&env, &stealthnet_dump(false), Some(admin)).await;
+    assert_eq!(outcome.created, 4);
+    assert_eq!(
+        scalar(
+            s,
+            &format!(
+                "SELECT count(*) FROM legacy_ids WHERE entity = 'client' AND new_id = {stranger}"
+            )
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(
+            s,
+            &format!("SELECT count(*) FROM subscriptions WHERE client_id = {stranger}")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        scalar(
+            s,
+            &format!("SELECT COALESCE(sum(amount_minor), 0)::bigint FROM client_balances WHERE client_id = {stranger}")
+        )
+        .await,
+        0
+    );
+}
+
+#[tokio::test]
 async fn stealthnet_переносится_целиком_без_изменений_в_remnawave() {
     let Some(env) = env().await else { return };
     seed_stealthnet_remna(&env.remna);

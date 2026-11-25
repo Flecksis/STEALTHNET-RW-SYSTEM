@@ -40,6 +40,7 @@ mod app_links;
 mod client_access;
 mod digest;
 mod email_change;
+mod email_link;
 mod ext_modules;
 mod limits;
 mod mail;

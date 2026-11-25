@@ -132,7 +132,8 @@ async fn lookups(db: &mut impl Db, users: &[RemnaUser]) -> ServiceResult<Lookups
     let emails: Vec<String> = users.iter().filter_map(email_of).collect();
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT i.value, i.client_id FROM client_identities i JOIN clients c ON c.id = i.client_id \
-         WHERE i.kind = 'email' AND i.value = ANY($1) AND c.deleted_at IS NULL",
+         WHERE i.kind = 'email' AND i.value = ANY($1) AND c.deleted_at IS NULL \
+         AND (i.verified OR NOT i.meta ? 'no_code')",
     )
     .bind(&emails)
     .fetch_all(db.conn())

@@ -10,7 +10,9 @@ use crate::{
 };
 use sn_domain::bot_content::Section;
 use sn_domain::bot_layout::{Screen as LayoutScreen, arrange, pack};
-use sn_domain::client::{Client, IdentityKind, Locale, RegistrationSource, TelegramProfile};
+use sn_domain::client::{
+    Client, IdentityKind, Locale, RegistrationSource, TelegramProfile, proven_identities,
+};
 use sn_domain::ids::{SubscriptionId, TariffId};
 use sn_domain::lang;
 use sn_domain::ledger::Wallet;
@@ -806,13 +808,7 @@ async fn trial_available(services: &Services, client: &Client) -> Result<bool, B
         return Ok(false);
     }
     let mut conn = services.store().conn().await?;
-    let identities: Vec<(IdentityKind, String)> = conn
-        .clients()
-        .identities(client.id)
-        .await?
-        .into_iter()
-        .map(|i| (i.kind, i.value))
-        .collect();
+    let identities = proven_identities(conn.clients().identities(client.id).await?);
     Ok(!conn.trials().was_claimed(client.id, &identities).await?)
 }
 

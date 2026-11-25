@@ -1828,6 +1828,38 @@ fn письмо_собирается_из_того_же_текста() {
 }
 
 #[tokio::test]
+async fn на_почту_привязанную_без_кода_рассылка_не_уходит() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail.clone()));
+    let client = mail_client(store, Some(11101), None).await;
+    {
+        let mut conn = store.conn().await.unwrap();
+        conn.clients()
+            .add_identity(
+                client,
+                &NewIdentity::email_without_code("raw@example.com").unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let r = reach(&ctx, Audience::All).await.unwrap();
+    assert_eq!((r.recipients, r.emails), (1, 0));
+    exec(
+        store,
+        "UPDATE client_identities SET verified = true WHERE kind = 'email' AND client_id = $1",
+        client.0,
+    )
+    .await;
+    let r = reach(&ctx, Audience::All).await.unwrap();
+    assert_eq!((r.recipients, r.emails), (1, 1));
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn почта_считает_адреса_и_отписки_а_оба_канала_дают_обе_строки() {
     let Some(db) = test_store().await else {
         return;

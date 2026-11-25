@@ -1120,3 +1120,53 @@ async fn удалённые_клиенты_не_висят_в_списке_от�
     drop(conn);
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn почта_привязанная_без_кода_не_отмечает_других_клиентов() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let first = newcomer(store, 9_100_001).await;
+    let second = newcomer(store, 9_100_002).await;
+    let mut conn = store.conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            first,
+            &sn_domain::client::NewIdentity::email_without_code("ivan.petrov+vpn@gmail.com")
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    conn.clients()
+        .add_identity(
+            second,
+            &sn_domain::client::NewIdentity::new(
+                sn_domain::client::IdentityKind::Email,
+                "ivanpetrov@gmail.com",
+                true,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        super::store::email_twin(&mut conn, second, "ivanpetrov@gmail.com")
+            .await
+            .unwrap(),
+        None
+    );
+    sqlx::query("UPDATE client_identities SET verified = true WHERE client_id = $1")
+        .bind(first.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    assert_eq!(
+        super::store::email_twin(&mut conn, second, "ivanpetrov@gmail.com")
+            .await
+            .unwrap(),
+        Some(first)
+    );
+    drop(conn);
+    db.cleanup().await;
+}

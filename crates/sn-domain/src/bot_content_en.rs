@@ -386,16 +386,25 @@ pub fn default(key: &str) -> Option<&'static str> {
             "No email is linked. Link one to sign in to your account on the website when Telegram doesn't work."
         }
         "email.current" => "Email: {email}",
+        "email.unconfirmed" => {
+            "The email isn't confirmed. Confirm it with a code from an email to be able to restore the password."
+        }
         "email.password_yes" => "Website password is set.",
         "email.password_no" => "Website password is not set.",
         "email.how_password" => {
             "If Telegram doesn't work, open {url}, choose “Email” and sign in with {email} and your password. Forgot it? Tap “Forgot your password?” and a code for a new password will come by email."
+        }
+        "email.how_no_letters" => {
+            "If Telegram doesn't work, open {url}, choose “Email” and sign in with {email} and your password. Forgot it? Contact support."
         }
         "email.how_code" => {
             "If Telegram doesn't work, open {url}, choose “Email”, enter {email} and tap “Send code”: a sign-in code will come by email."
         }
         "email.ask" => {
             "Send your email address in one message. A confirmation code will be sent to it."
+        }
+        "email.ask_no_code" => {
+            "Send your email address in one message. There will be no confirmation code, so check the address."
         }
         "email.invalid" => {
             "The address looks wrong. Send it in full, for example name@example.com."
@@ -414,6 +423,10 @@ pub fn default(key: &str) -> Option<&'static str> {
         }
         "email.code_again" => "Send the code from the email to {email} or ask for a new one.",
         "email.linked" => "The email {email} is linked.",
+        "email.linked_no_code" => {
+            "The email {email} is linked without a check because emails aren't being sent. You can sign in to the website with it only using a password."
+        }
+        "email.confirmed" => "The email {email} is confirmed.",
         "email.set_password_app" => {
             "Now set a website password: the button below opens it in the app."
         }
@@ -429,6 +442,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         }
         "email.error" => "{error}",
         "email.btn.link" => "Link email",
+        "email.btn.confirm" => "Confirm email",
         "email.btn.change" => "Change email",
         "email.btn.change_app" => "Change email in the app",
         "email.btn.password" => "Set password",

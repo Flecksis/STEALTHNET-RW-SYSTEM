@@ -13,7 +13,7 @@ use sn_services::ServiceError;
 use sn_services::Services;
 use sn_services::auth::RequestMeta;
 use sn_services::bot_content::BotContent;
-use sn_services::email_change::{EmailProof, EmailProofInput};
+use sn_services::email_change::{EmailProof, EmailProofInput, EmailState};
 use sn_services::login::EMAIL_CODE_TTL_SECONDS;
 
 pub const CALLBACK: &str = "em";
@@ -63,10 +63,12 @@ fn error_line(c: &BotContent, err: &ServiceError) -> String {
 
 fn how_to(c: &BotContent, services: &Services, email: &str) -> String {
     let url = cabinet_url(services).unwrap_or_default();
-    let key = if by_password(services) {
+    let key = if !by_password(services) {
+        "email.how_code"
+    } else if services.mail().available() {
         "email.how_password"
     } else {
-        "email.how_code"
+        "email.how_no_letters"
     };
     ui::text(c, key, &[("url", Text(&url)), ("email", Text(email))])
 }
@@ -118,6 +120,7 @@ pub async fn action(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<
     match rest {
         "new" => ask_address(turn, client).await,
         "again" => resend(turn, client).await,
+        "confirm" => confirm(turn, client).await,
         "pw" => ask_password(turn, client).await,
         _ => open(turn, client).await,
     }
@@ -138,6 +141,15 @@ pub async fn open(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotErr
     match &state.email {
         Some(email) => {
             lines.add(ui::text(c, "email.current", &[("email", Text(email))]));
+            if confirmable(&state) {
+                lines.add(ui::text(c, "email.unconfirmed", &[]));
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "email.btn.confirm",
+                    &[],
+                    format!("{CALLBACK}:confirm"),
+                ));
+            }
             let password = by_password(&services);
             let has_password = password && services.auth().has_password(client.id).await?;
             if password {
@@ -156,12 +168,14 @@ pub async fn open(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotErr
             if password && !has_password {
                 keyboard = keyboard.push(password_button(c, &services));
             }
-            keyboard = keyboard.push(ui::button(
-                c,
-                "email.btn.change",
-                &[],
-                format!("{CALLBACK}:new"),
-            ));
+            if editable(&state) {
+                keyboard = keyboard.push(ui::button(
+                    c,
+                    "email.btn.change",
+                    &[],
+                    format!("{CALLBACK}:new"),
+                ));
+            }
         }
         None => {
             lines.add(ui::text(c, "email.none", &[]));
@@ -176,6 +190,39 @@ pub async fn open(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotErr
     Ok(screen(lines, keyboard.push(ui::menu(c))))
 }
 
+const fn editable(state: &EmailState) -> bool {
+    state.available || state.without_code
+}
+
+const fn confirmable(state: &EmailState) -> bool {
+    state.available && state.unconfirmed
+}
+
+fn confirming(state: &EmailState, address: &str) -> bool {
+    confirmable(state) && state.email.as_deref() == Some(address)
+}
+
+fn ask_line(c: &BotContent, state: &EmailState) -> String {
+    let key = if state.without_code {
+        "email.ask_no_code"
+    } else {
+        "email.ask"
+    };
+    ui::text(c, key, &[])
+}
+
+async fn confirm(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+    let services = turn.services().clone();
+    if !offered(&services) {
+        return open(turn, client).await;
+    }
+    let state = services.auth().email_state(client.id).await?;
+    match state.email.clone() {
+        Some(address) if confirmable(&state) => submit(turn, client, &state, &address, None).await,
+        _ => open(turn, client).await,
+    }
+}
+
 async fn ask_address(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
     let services = turn.services().clone();
     let content = turn.content();
@@ -185,6 +232,9 @@ async fn ask_address(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         return Ok(off_screen(c));
     }
     let state = services.auth().email_state(client.id).await?;
+    if !editable(&state) {
+        return open(turn, client).await;
+    }
     if state.proof == Some(EmailProof::Password)
         && let Some(app) = services.settings().miniapp_url()
     {
@@ -203,7 +253,7 @@ async fn ask_address(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     }
     turn.session.wait_for(Awaiting::EmailAddress);
     let mut lines = Lines::new();
-    lines.add(ui::text(c, "email.ask", &[]));
+    lines.add(ask_line(c, &state));
     Ok(screen(lines, Keyboard::new().push(ui::cancel(c, CALLBACK))))
 }
 
@@ -233,7 +283,7 @@ pub async fn address_entered(
             lines.add(proof_line(c, proof, &address));
             Ok(screen(lines, Keyboard::new().push(ui::cancel(c, CALLBACK))))
         }
-        None => send_code(turn, client, &address, None).await,
+        None => submit(turn, client, &state, &address, None).await,
     }
 }
 
@@ -247,15 +297,14 @@ pub async fn proof_entered(
     };
     let services = turn.services().clone();
     let state = services.auth().email_state(client.id).await?;
-    match state.proof {
-        Some(proof) => send_code(turn, client, &address, Some((proof, raw))).await,
-        None => send_code(turn, client, &address, None).await,
-    }
+    let proof = state.proof.map(|proof| (proof, raw));
+    submit(turn, client, &state, &address, proof).await
 }
 
-async fn send_code(
+async fn submit(
     turn: &mut Turn<'_>,
     client: &Client,
+    state: &EmailState,
     address: &str,
     proof: Option<(EmailProof, &str)>,
 ) -> Result<Screen, BotError> {
@@ -273,10 +322,27 @@ async fn send_code(
         },
         None => EmailProofInput::default(),
     };
-    let sent = services
-        .auth()
-        .email_change_start(&principal(client), address, input, &RequestMeta::default())
-        .await;
+    let who = principal(client);
+    let meta = RequestMeta::default();
+    let sent = if state.without_code {
+        match services
+            .auth()
+            .email_link(&who, address, input, &meta)
+            .await
+        {
+            Ok(saved) => {
+                turn.session.email = None;
+                let email = saved.email.unwrap_or_else(|| address.to_string());
+                return linked(turn, client, "email.linked_no_code", &email).await;
+            }
+            Err(err) => Err(err),
+        }
+    } else {
+        services
+            .auth()
+            .email_change_start(&who, address, input, &meta)
+            .await
+    };
     let mut lines = Lines::new();
     if turn.secret_left {
         lines.add(ui::text(c, "email.secret_left", &[]));
@@ -314,10 +380,14 @@ async fn send_code(
                             .push(ui::cancel(c, CALLBACK)),
                     ))
                 }
+                None if confirming(state, address) => {
+                    turn.session.email = None;
+                    Ok(screen(lines, Keyboard::new().push(ui::back(c, CALLBACK))))
+                }
                 None => {
                     turn.session.email = None;
                     turn.session.wait_for(Awaiting::EmailAddress);
-                    lines.add(ui::text(c, "email.ask", &[]));
+                    lines.add(ask_line(c, state));
                     Ok(screen(lines, Keyboard::new().push(ui::cancel(c, CALLBACK))))
                 }
             }
@@ -337,13 +407,13 @@ async fn resend(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError
     }
     let state = services.auth().email_state(client.id).await?;
     match state.proof {
-        Some(proof) => {
+        Some(proof) if !confirming(&state, &address) => {
             turn.session.wait_for(Awaiting::EmailProof);
             let mut lines = Lines::new();
             lines.add(proof_line(c, proof, &address));
             Ok(screen(lines, Keyboard::new().push(ui::cancel(c, CALLBACK))))
         }
-        None => send_code(turn, client, &address, None).await,
+        _ => submit(turn, client, &state, &address, None).await,
     }
 }
 
@@ -358,6 +428,12 @@ pub async fn code_entered(
     let services = turn.services().clone();
     let content = turn.content();
     let c = &*content;
+    let before = services.auth().email_state(client.id).await?;
+    let key = if confirming(&before, &address) {
+        "email.confirmed"
+    } else {
+        "email.linked"
+    };
     let confirmed = services
         .auth()
         .email_change_confirm(&principal(client), &address, raw, &RequestMeta::default())
@@ -365,7 +441,7 @@ pub async fn code_entered(
     match confirmed {
         Ok(state) => {
             turn.session.email = None;
-            linked(turn, client, &state.email.unwrap_or(address)).await
+            linked(turn, client, key, &state.email.unwrap_or(address)).await
         }
         Err(err) => {
             turn.session.wait_for(Awaiting::EmailCode);
@@ -381,12 +457,20 @@ pub async fn code_entered(
     }
 }
 
-async fn linked(turn: &mut Turn<'_>, client: &Client, email: &str) -> Result<Screen, BotError> {
+async fn linked(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    key: &'static str,
+    email: &str,
+) -> Result<Screen, BotError> {
     let services = turn.services().clone();
     let content = turn.content();
     let c = &*content;
     let mut lines = Lines::new();
-    lines.add(ui::text(c, "email.linked", &[("email", Text(email))]));
+    if turn.secret_left {
+        lines.add(ui::text(c, "email.secret_left", &[]));
+    }
+    lines.add(ui::text(c, key, &[("email", Text(email))]));
     let password = by_password(&services);
     let has_password = password && services.auth().has_password(client.id).await?;
     let mut keyboard = Keyboard::new();

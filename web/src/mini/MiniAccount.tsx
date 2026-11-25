@@ -5,7 +5,7 @@ import { dateLong, timeHM } from '../lib/format';
 import { NATIVE, siteLangs, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
-import { doneText, sixDigits, useEmailChange } from '../cabinet/email';
+import { aboutEmail, closedText, doneText, sixDigits, unconfirmedText, useEmailChange, withoutCodeText } from '../cabinet/email';
 import type { TwoFactor } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 
@@ -33,7 +33,7 @@ export function AccountCard({ part }: { part?: string }) {
           <Link to="/app/profile/email" className="mn-row press">
             <Icon name="mail" size={21} />
             <span className="mn-row-name">{t('Почта')}</span>
-            <span className="mn-row-val cut">{me.email ?? t('не указана')}</span>
+            <span className="mn-row-val cut">{me.email_unconfirmed ? t('подтвердите') : (me.email ?? t('не указана'))}</span>
             <Icon name="chevron-right" size={16} />
           </Link>
         ) : (
@@ -42,7 +42,7 @@ export function AccountCard({ part }: { part?: string }) {
             <span className="mn-ticket-text">
               <span className="mn-row-name">{t('Почта')}</span>
               <span className="mn-tone muted">{me.email ?? t('не указана')}</span>
-              <span className="mn-tone muted">{t('Сменить нельзя: письма сейчас не отправляются')}</span>
+              <span className="mn-tone muted">{me.email ? t('Сменить нельзя: письма сейчас не отправляются') : t('Добавить нельзя: письма сейчас не отправляются')}</span>
             </span>
           </div>
         )}
@@ -92,8 +92,10 @@ export function MiniEmail() {
     );
   }
 
-  const note =
-    info.proof === 'totp'
+  const about = aboutEmail(info, site);
+  const note = info.without_code
+    ? withoutCodeText()
+    : info.proof === 'totp'
       ? t('Для смены почты нужен код из приложения-аутентификатора, затем код из письма на новый адрес.')
       : info.proof === 'password'
         ? t('Для смены почты нужен пароль для сайта, затем код из письма на новый адрес.')
@@ -107,8 +109,22 @@ export function MiniEmail() {
       <div className="mn-card mn-pad">
         <span className="mn-muted">{t('Текущая почта')}</span>
         <strong className="mn-big mn-wrap">{info.email ?? t('Почта не указана')}</strong>
-        <span className="mn-muted small">{siteLogin ? t('На эту почту приходят письма, по ней же можно входить на сайт.') : t('На эту почту приходят письма.')}</span>
+        {about ? <span className="mn-muted small">{about}</span> : null}
       </div>
+      {info.available && info.unconfirmed && !sent ? (
+        <div className="mn-card mn-pad">
+          <strong>{t('Почта не подтверждена')}</strong>
+          <span className="mn-muted small">{unconfirmedText(site)}</span>
+          {flow.confirmError ? (
+            <p className="mn-error" role="alert">
+              {flow.confirmError}
+            </p>
+          ) : null}
+          <button type="button" className="mn-main sm press" onClick={() => void flow.confirmCurrent()} disabled={flow.busy}>
+            {flow.busy ? t('Отправляем…') : t('Прислать код')}
+          </button>
+        </div>
+      ) : null}
       {flow.done ? (
         <p className="mn-note" role="status">
           {doneText(flow.done)}
@@ -124,8 +140,8 @@ export function MiniEmail() {
         </div>
       ) : null}
       {codeNext ? <p className="mn-notes">{t('Теперь на сайт можно входить по этой почте: код для входа придёт в письме.')}</p> : null}
-      {!info.available ? (
-        <p className="mn-note">{t('Письма сейчас не отправляются, поэтому сменить почту нельзя.')}</p>
+      {!info.available && !info.without_code ? (
+        <p className="mn-note">{closedText(info)}</p>
       ) : sent ? (
         <>
           <p className="mn-notes">{t('Код отправлен на {email}. Он действует до {time}.', { email: sent.email, time: timeHM(sent.expires_at) })}</p>
@@ -218,7 +234,7 @@ export function MiniEmail() {
             </p>
           ) : null}
           <button type="button" className="mn-main sm press" onClick={() => void flow.start()} disabled={flow.busy || !flow.ready}>
-            {flow.busy ? t('Отправляем…') : t('Получить код')}
+            {info.without_code ? (flow.busy ? t('Сохраняем…') : t('Сохранить почту')) : flow.busy ? t('Отправляем…') : t('Получить код')}
           </button>
         </>
       )}

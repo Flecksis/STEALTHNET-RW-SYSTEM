@@ -121,6 +121,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Clients,
     ),
     a(
+        "client.email_linked",
+        "Клиент указал почту без кода",
+        Area::Clients,
+    ),
+    a(
         "client.email_set",
         "Почта клиента указана администратором",
         Area::Clients,

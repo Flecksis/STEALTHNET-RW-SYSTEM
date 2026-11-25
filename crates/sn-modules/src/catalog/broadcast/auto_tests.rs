@@ -8,6 +8,7 @@ use crate::registry::ModuleRegistry;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use sn_domain::access::AdminRole;
+use sn_domain::client::NewIdentity;
 use sn_store::Store;
 use sn_store::testing::test_store;
 use std::time::Instant;
@@ -552,6 +553,48 @@ async fn нет_подключений_после_покупки() {
         1
     );
     assert_eq!(fired(store, rule.id).await, ids(&[silent, recent]));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn автоматическая_рассылка_не_пишет_на_почту_привязанную_без_кода() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, None, Some(mail));
+    let now = now_of(store).await;
+    let client = mail_client(store, None, None).await;
+    {
+        let mut conn = store.conn().await.unwrap();
+        conn.clients()
+            .add_identity(
+                client,
+                &NewIdentity::email_without_code("raw@example.com").unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    sub(store, client, "paid", now + Span::days(3) - Span::hours(2)).await;
+    let query = ReachQuery {
+        trigger: Trigger::Expiring,
+        amount: 3,
+        unit: Unit::Days,
+        percent: None,
+        with_autorenew: false,
+        id: None,
+    };
+    let probe = rule_reach(&ctx, &query).await.unwrap();
+    assert_eq!((probe.cases, probe.recipients, probe.emails), (1, 0, 0));
+    run(
+        store,
+        "UPDATE client_identities SET verified = true WHERE kind = 'email' AND client_id = $1",
+        client.0,
+    )
+    .await;
+    let probe = rule_reach(&ctx, &query).await.unwrap();
+    assert_eq!((probe.cases, probe.emails), (1, 1));
     db.cleanup().await;
 }
 

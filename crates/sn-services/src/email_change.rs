@@ -9,12 +9,15 @@ use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
 use serde::Serialize;
 use sn_domain::access::{ClientChannel, ClientPrincipal};
-use sn_domain::client::{IdentityKind, NewIdentity, normalize_identity};
+use sn_domain::client::{
+    Identity, IdentityKind, LINKED_WITHOUT_CODE, NewIdentity, normalize_identity,
+};
 use sn_domain::ids::ClientId;
 use sn_domain::mail_letters::{LetterId, Values};
-use sn_store::Db;
+use sn_store::{Db, Tx};
 
 pub const EMAIL_CHANGE_OFF: &str = "auth.email_change_off";
+pub const EMAIL_CODE_NEEDED: &str = "auth.email_code_needed";
 pub const EMAIL_IN_USE: &str = "auth.email_in_use";
 pub const EMAIL_SAME: &str = "auth.email_same";
 pub const PASSWORD_REQUIRED: &str = "auth.password_required";
@@ -23,6 +26,7 @@ pub const PASSWORD_INVALID: &str = "auth.password_invalid";
 pub const CURRENT_CODE_REQUIRED: &str = "auth.current_email_code_required";
 pub const CURRENT_CODE_NOT_NEEDED: &str = "auth.current_email_code_not_needed";
 pub const EMAIL_CHANGED_AUDIT: &str = "client.email_changed";
+pub const EMAIL_LINKED_AUDIT: &str = "client.email_linked";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +45,8 @@ pub struct EmailPending {
 pub struct EmailState {
     pub email: Option<String>,
     pub available: bool,
+    pub without_code: bool,
+    pub unconfirmed: bool,
     pub proof: Option<EmailProof>,
     pub confirm_current: bool,
     pub pending: Option<EmailPending>,
@@ -53,11 +59,35 @@ pub struct EmailProofInput<'r> {
 }
 
 #[derive(sqlx::FromRow)]
+struct OldEmail {
+    value: String,
+    verified: bool,
+    no_code: bool,
+}
+
+async fn drop_email(tx: &mut Tx, client_id: ClientId) -> ServiceResult<Vec<OldEmail>> {
+    Ok(sqlx::query_as(&format!(
+        "DELETE FROM client_identities WHERE client_id = $1 AND kind = 'email' \
+         RETURNING value, verified, meta ? '{LINKED_WITHOUT_CODE}' AS no_code"
+    ))
+    .bind(client_id.0)
+    .fetch_all(tx.conn())
+    .await?)
+}
+
+#[derive(sqlx::FromRow)]
 struct ChangeRow {
     id: i64,
     code_hash: Vec<u8>,
     attempts: i32,
     expires_at: DateTime<Utc>,
+}
+
+fn code_needed() -> ServiceError {
+    ServiceError::rejected(
+        EMAIL_CODE_NEEDED,
+        "Почта привязывается по коду из письма. Откройте этот раздел заново и попробуйте ещё раз",
+    )
 }
 
 fn change_off() -> ServiceError {
@@ -71,6 +101,10 @@ fn in_use() -> ServiceError {
     ServiceError::rejected(EMAIL_IN_USE, "Эта почта уже привязана к другому аккаунту")
 }
 
+fn same_email() -> ServiceError {
+    ServiceError::rejected(EMAIL_SAME, "Эта почта уже указана в вашем аккаунте")
+}
+
 fn change_hash(client_id: ClientId, email: &str, code: &str) -> Vec<u8> {
     token_hash(&format!("email_change:{}:{email}:{code}", client_id.0))
 }
@@ -79,13 +113,13 @@ fn proof_hash(client_id: ClientId, email: &str, code: &str) -> Vec<u8> {
     token_hash(&format!("email_proof:{}:{email}:{code}", client_id.0))
 }
 
-async fn current_email(db: &mut impl Db, client_id: ClientId) -> ServiceResult<Option<String>> {
+async fn confirmed_email(db: &mut impl Db, client_id: ClientId) -> ServiceResult<Option<String>> {
     Ok(db
         .clients()
         .identities(client_id)
         .await?
         .into_iter()
-        .find(|i| i.kind == IdentityKind::Email)
+        .find(Identity::takes_letters)
         .map(|i| i.value))
 }
 
@@ -135,6 +169,17 @@ async fn password_hash(db: &mut impl Db, client_id: ClientId) -> ServiceResult<O
 }
 
 impl<'a> Auth<'a> {
+    fn links_without_code(&self, identities: &[Identity]) -> bool {
+        self.services.settings().client_access.site_login
+            && self.services.mail().link_without_code()
+            && identities.iter().any(|i| i.kind != IdentityKind::Email)
+            && !identities.iter().any(Identity::takes_letters)
+    }
+
+    pub fn email_editable(&self, identities: &[Identity]) -> bool {
+        self.services.mail().available() || self.links_without_code(identities)
+    }
+
     pub async fn email_proof(&self, client_id: ClientId) -> ServiceResult<Option<EmailProof>> {
         let mut conn = self.services.store().conn().await?;
         if conn.clients().totp(client_id).await?.is_some() {
@@ -153,10 +198,10 @@ impl<'a> Auth<'a> {
         let proof = self.email_proof(client_id).await?;
         let now = self.services.now();
         let mut conn = self.services.store().conn().await?;
-        let email = conn
-            .clients()
-            .identities(client_id)
-            .await?
+        let identities = conn.clients().identities(client_id).await?;
+        let without_code = self.links_without_code(&identities);
+        let unconfirmed = identities.iter().any(Identity::linked_without_code);
+        let email = identities
             .into_iter()
             .find(|i| i.kind == IdentityKind::Email)
             .map(|i| i.value);
@@ -174,10 +219,12 @@ impl<'a> Auth<'a> {
         } else {
             None
         };
-        let confirm_current = proof.is_none() && email.is_some();
+        let confirm_current = proof.is_none() && email.is_some() && !unconfirmed;
         Ok(EmailState {
             email,
             available,
+            without_code,
+            unconfirmed,
             proof,
             confirm_current,
             pending: pending.map(|(email, expires_at)| EmailPending { email, expires_at }),
@@ -195,7 +242,7 @@ impl<'a> Auth<'a> {
         }
         let current = {
             let mut conn = self.services.store().conn().await?;
-            current_email(&mut conn, client_id).await?
+            confirmed_email(&mut conn, client_id).await?
         };
         let Some(current) = current.filter(|_| principal.channel != ClientChannel::Bot) else {
             return Err(ServiceError::rejected(
@@ -333,7 +380,7 @@ impl<'a> Auth<'a> {
             None => {
                 let current = {
                     let mut conn = self.services.store().conn().await?;
-                    current_email(&mut conn, client_id).await?
+                    confirmed_email(&mut conn, client_id).await?
                 };
                 match current {
                     Some(current) => {
@@ -397,17 +444,14 @@ impl<'a> Auth<'a> {
             .hit(rules::EMAIL_START_IP, &source(principal, meta))
             .await?;
         limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
-        {
+        let confirms = {
             let mut conn = self.services.store().conn().await?;
             let current = conn.clients().identities(client_id).await?;
-            if current
+            let same = current
                 .iter()
-                .any(|i| i.kind == IdentityKind::Email && i.value == email)
-            {
-                return Err(ServiceError::rejected(
-                    EMAIL_SAME,
-                    "Эта почта уже указана в вашем аккаунте",
-                ));
+                .find(|i| i.kind == IdentityKind::Email && i.value == email);
+            if same.is_some_and(Identity::takes_letters) {
+                return Err(same_email());
             }
             if email_owner(&mut conn, &email)
                 .await?
@@ -415,8 +459,11 @@ impl<'a> Auth<'a> {
             {
                 return Err(in_use());
             }
+            same.is_some()
+        };
+        if !confirms {
+            self.check_email_proof(principal, proof).await?;
         }
-        self.check_email_proof(principal, proof).await?;
         limits
             .letters_sent(crate::login::CHANGE_LETTERS, mail.codes_per_hour())
             .await?;
@@ -524,14 +571,8 @@ impl<'a> Auth<'a> {
             tx.commit().await?;
             return Err(in_use());
         }
-        let removed: Vec<(String, bool)> = sqlx::query_as(
-            "DELETE FROM client_identities WHERE client_id = $1 AND kind = 'email' RETURNING value, verified",
-        )
-        .bind(client_id.0)
-        .fetch_all(tx.conn())
-        .await?;
-        let unconfirmed = removed.iter().any(|(_, verified)| !verified);
-        let removed: Vec<String> = removed.into_iter().map(|(value, _)| value).collect();
+        let removed = drop_email(&mut tx, client_id).await?;
+        let unconfirmed = removed.iter().any(|old| !old.verified && !old.no_code);
         if !tx
             .clients()
             .add_identity_if_free(
@@ -553,24 +594,113 @@ impl<'a> Auth<'a> {
         .bind(now)
         .execute(tx.conn())
         .await?;
-        let previous: Vec<String> = removed.into_iter().filter(|old| *old != email).collect();
+        let (same, previous): (Vec<OldEmail>, Vec<OldEmail>) =
+            removed.into_iter().partition(|old| old.value == email);
         let mut entry = Actor::Client(client_id).audit(
             EMAIL_CHANGED_AUDIT,
             "client",
             Some(client_id.0),
             serde_json::json!({
                 "email": email,
-                "previous": previous.first(),
+                "previous": previous.first().map(|old| &old.value),
+                "confirmed": !same.is_empty(),
                 "channel": principal.channel,
             }),
         );
         entry.ip = meta.ip.clone();
         tx.audit().record(&entry).await?;
         tx.commit().await?;
-        for old in &previous {
-            self.notify_email_changed(old, &email).await;
+        for old in previous.iter().filter(|old| old.verified || !old.no_code) {
+            self.notify_email_changed(&old.value, &email).await;
         }
         self.email_state(client_id).await
+    }
+
+    pub async fn email_link(
+        &self,
+        principal: &ClientPrincipal,
+        email: &str,
+        proof: EmailProofInput<'_>,
+        meta: &RequestMeta,
+    ) -> ServiceResult<EmailState> {
+        let client_id = principal.client_id;
+        if self.services.mail().available() {
+            return Err(code_needed());
+        }
+        if !self.services.mail().link_without_code() {
+            return Err(change_off());
+        }
+        let email = normalize_identity(IdentityKind::Email, email)?;
+        let limits = self.services.limits();
+        limits
+            .hit(rules::EMAIL_CHANGE_CLIENT, &client_id.to_string())
+            .await?;
+        limits
+            .hit(rules::EMAIL_START_IP, &source(principal, meta))
+            .await?;
+        limits.hit(rules::EMAIL_START_ADDRESS, &email).await?;
+        {
+            let mut conn = self.services.store().conn().await?;
+            let identities = conn.clients().identities(client_id).await?;
+            self.check_link(&mut conn, client_id, &identities, &email)
+                .await?;
+        }
+        self.check_email_proof(principal, proof).await?;
+        let mut tx = self.services.store().begin().await?;
+        let client = tx.clients().lock(client_id).await?;
+        if client.is_blocked() {
+            return Err(ServiceError::Forbidden);
+        }
+        let identities = tx.clients().identities(client_id).await?;
+        self.check_link(&mut tx, client_id, &identities, &email)
+            .await?;
+        let removed = drop_email(&mut tx, client_id).await?;
+        if !tx
+            .clients()
+            .add_identity_if_free(client_id, &NewIdentity::email_without_code(&email)?)
+            .await?
+        {
+            return Err(in_use());
+        }
+        let mut entry = Actor::Client(client_id).audit(
+            EMAIL_LINKED_AUDIT,
+            "client",
+            Some(client_id.0),
+            serde_json::json!({
+                "email": email,
+                "previous": removed.first().map(|old| &old.value),
+                "channel": principal.channel,
+            }),
+        );
+        entry.ip = meta.ip.clone();
+        tx.audit().record(&entry).await?;
+        tx.commit().await?;
+        self.email_state(client_id).await
+    }
+
+    async fn check_link(
+        &self,
+        db: &mut impl Db,
+        client_id: ClientId,
+        identities: &[Identity],
+        email: &str,
+    ) -> ServiceResult<()> {
+        if !self.links_without_code(identities) {
+            return Err(change_off());
+        }
+        if identities
+            .iter()
+            .any(|i| i.kind == IdentityKind::Email && i.value == email)
+        {
+            return Err(same_email());
+        }
+        if email_owner(db, email)
+            .await?
+            .is_some_and(|owner| owner != client_id)
+        {
+            return Err(in_use());
+        }
+        Ok(())
     }
 
     async fn notify_email_changed(&self, old: &str, new: &str) {

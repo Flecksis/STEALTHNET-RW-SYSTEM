@@ -378,6 +378,60 @@ async fn о_пополнении_баланса_бот_пишет_и_прихо�
 }
 
 #[tokio::test]
+async fn на_почту_привязанную_без_кода_уведомления_не_уходят() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    site_on(&services).await;
+    handle_update(&ctx, text_update(1, 612, "/start")).await;
+    let client = client_of(&services, 612).await.unwrap().id;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.clients()
+            .add_identity(
+                client,
+                &sn_domain::client::NewIdentity::email_without_code("raw@example.com").unwrap(),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE clients SET bot_unreachable = true WHERE id = $1")
+            .bind(client.0)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let (port, letters) = fake_smtp().await;
+    mail_on(&services, port, serde_json::json!({})).await;
+    let handler = handler_for(&server);
+    let amount = serde_json::json!({
+        "amount": {"minor": 1000, "currency": "USD"},
+        "also_mail": true,
+    });
+    let send = async || {
+        notify(
+            &services,
+            &handler,
+            client,
+            notify::templates::TOPUP_DONE,
+            amount.clone(),
+        )
+        .await
+    };
+    assert_eq!(send().await, JobResult::Done);
+    assert!(letters.lock().unwrap().is_empty());
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query("UPDATE client_identities SET verified = true WHERE kind = 'email'")
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    assert_eq!(send().await, JobResult::Done);
+    assert_eq!(letters.lock().unwrap().len(), 1);
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn повторная_оплата_по_оплаченному_счёту_приходит_письмом() {
     let Some((db, services, server, _ctx)) = setup().await else {
         return;

@@ -37,7 +37,7 @@ const LOGINS: Array<[Login, string]> = [
   ['code', 'По коду из письма'],
 ];
 
-const CUSTOM = new Set(['transport', 'login', 'confirm_signup', 'letter_expiring', 'letter_payments', 'letter_support', 'from_name']);
+const CUSTOM = new Set(['transport', 'login', 'confirm_signup', 'link_without_code', 'letter_expiring', 'letter_payments', 'letter_support', 'from_name']);
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -187,6 +187,17 @@ export function SettingsMail() {
       ? 'Аккаунт появится, только когда клиент введёт код из письма. До этого клиента нет: ни пробного периода, ни учёта в метках и рефералах.'
       : 'Аккаунт создаётся сразу, почту клиент не подтверждает.';
 
+  const noCode = values.link_without_code === true;
+  const noCodeText = mailReady
+    ? noCode
+      ? 'Сейчас не действует: письма отправляются, и почта привязывается по коду из письма.'
+      : 'Нужно, только пока письма не отправляются. Сейчас почта привязывается по коду из письма.'
+    : savedConfirm
+      ? 'Не действует, пока включено подтверждение почты при регистрации.'
+      : noCode
+        ? 'Клиент из Telegram указывает почту и пароль сам и входит по ним на сайт. Адрес не проверяется: писем на него не будет и пароль по нему не восстановить, пока клиент не подтвердит его кодом.'
+        : 'Выключено: пока письма не отправляются, клиент из Telegram не может привязать почту. Указать её можете вы в карточке клиента.';
+
   const loginText =
     login === 'code'
       ? 'Пароль не нужен: при каждом входе на почту приходит код.'
@@ -275,6 +286,25 @@ export function SettingsMail() {
                   label="Подтверждать почту при регистрации"
                   describedBy="mail-confirm-text"
                   disabled={busy || (!confirm && !mailReady)}
+                />
+              </span>
+            </div>
+          ) : null}
+          {login === 'password' ? (
+            <div className="row adm-row">
+              <span className="adm-who">
+                <span className="adm-email">Привязывать почту без кода</span>
+                <span className="adm-status" id="mail-no-code-text">
+                  {noCodeText}
+                </span>
+              </span>
+              <span className="adm-acts">
+                <Switch
+                  on={noCode}
+                  onToggle={() => edit({ link_without_code: !noCode })}
+                  label="Привязывать почту без кода"
+                  describedBy="mail-no-code-text"
+                  disabled={busy || (!noCode && mailReady)}
                 />
               </span>
             </div>

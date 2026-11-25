@@ -7,7 +7,7 @@ import { Icon } from '../lib/icons';
 import { QrCode } from '../lib/qr';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
-import { doneText, sixDigits, useEmailChange } from './email';
+import { aboutEmail, closedText, doneText, sixDigits, unconfirmedText, useEmailChange, withoutCodeText } from './email';
 import type { TwoFactor } from './model';
 import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, type OauthProvider } from './oauth';
 
@@ -278,8 +278,10 @@ function EmailCard() {
   const editing = (open && !flow.done) || sent !== null;
   const siteLogin = site.client_access?.site_login !== false;
   const askPassword = !!flow.done && siteLogin && site.email_auth === 'password' && me.has_password !== true;
-  const note =
-    info.proof === 'totp'
+  const about = aboutEmail(info, site);
+  const note = info.without_code
+    ? withoutCodeText()
+    : info.proof === 'totp'
       ? t('Для смены почты нужен код из приложения-аутентификатора, затем код из письма на новый адрес.')
       : info.proof === 'password'
         ? t('Для смены почты нужен пароль для сайта, затем код из письма на новый адрес.')
@@ -298,7 +300,24 @@ function EmailCard() {
         <h2 className="cb-h2">{t('Почта')}</h2>
         <span className="cb-status muted">{info.email ?? t('не указана')}</span>
       </div>
-      <p className="cb-note">{siteLogin ? t('На эту почту приходят письма, по ней же можно входить на сайт.') : t('На эту почту приходят письма.')}</p>
+      {about ? <p className="cb-note">{about}</p> : null}
+      {info.available && info.unconfirmed && !sent ? (
+        <>
+          <p className="cb-note">
+            <strong>{t('Почта не подтверждена')}.</strong> {unconfirmedText(site)}
+          </p>
+          {flow.confirmError ? (
+            <p className="cb-error" role="alert">
+              {flow.confirmError}
+            </p>
+          ) : null}
+          <span className="cb-btns">
+            <button type="button" className="cb-main" onClick={() => void flow.confirmCurrent()} disabled={flow.busy}>
+              {flow.busy ? t('Отправляем…') : t('Прислать код')}
+            </button>
+          </span>
+        </>
+      ) : null}
       {flow.done ? (
         <p className="cb-result" role="status">
           {doneText(flow.done)}
@@ -308,8 +327,8 @@ function EmailCard() {
       {flow.done && siteLogin && site.email_auth === 'code' ? (
         <p className="cb-note">{t('Теперь на сайт можно входить по этой почте: код для входа придёт в письме.')}</p>
       ) : null}
-      {!info.available ? (
-        <p className="cb-note">{t('Письма сейчас не отправляются, поэтому сменить почту нельзя.')}</p>
+      {!info.available && !info.without_code ? (
+        <p className="cb-note">{closedText(info)}</p>
       ) : !editing ? (
         <span className="cb-btns">
           {askPassword ? (
@@ -392,7 +411,7 @@ function EmailCard() {
           {errorLine}
           <span className="cb-btns">
             <button type="submit" className="cb-main" disabled={flow.busy || !flow.ready}>
-              {flow.busy ? t('Отправляем…') : t('Получить код')}
+              {info.without_code ? (flow.busy ? t('Сохраняем…') : t('Сохранить почту')) : flow.busy ? t('Отправляем…') : t('Получить код')}
             </button>
             <button
               type="button"

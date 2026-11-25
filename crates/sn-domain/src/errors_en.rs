@@ -23,6 +23,12 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "auth.email_change_off" => {
             "Emails aren't being sent right now, so the email can't be changed."
         }
+        "auth.email_code_needed" => {
+            "The email is linked with a code from an email. Open this section again and try once more."
+        }
+        "auth.email_unconfirmed" => {
+            "This email is on an account without confirmation, so a code from an email doesn't open it. If the account is yours, sign in with Telegram and confirm the email: Profile → Email in the mini app, or Security → Email in the account. If it isn't, please contact support."
+        }
         "auth.email_in_use" => "This email already belongs to another account.",
         "auth.email_same" => "This email is already on your account.",
         "auth.login_expired" => "The sign-in has expired. Please start again.",

@@ -13,6 +13,7 @@ pub fn routes() -> Router<AppState> {
         .route("/security/email/start", post(start))
         .route("/security/email/proof", post(proof))
         .route("/security/email/confirm", post(confirm))
+        .route("/security/email/link", post(link))
 }
 
 async fn email_state(
@@ -69,6 +70,26 @@ async fn start(
             .services
             .auth()
             .email_change_start(&client.0, &body.email, proof, &meta)
+            .await?,
+    ))
+}
+
+async fn link(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<StartBody>,
+) -> ApiResult<Json<EmailState>> {
+    client.require_full()?;
+    let proof = EmailProofInput {
+        password: body.password.as_deref(),
+        code: body.code.as_deref(),
+    };
+    Ok(Json(
+        state
+            .services
+            .auth()
+            .email_link(&client.0, &body.email, proof, &meta)
             .await?,
     ))
 }

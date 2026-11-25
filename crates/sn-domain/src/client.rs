@@ -232,6 +232,8 @@ impl IdentityKind {
     }
 }
 
+pub const LINKED_WITHOUT_CODE: &str = "no_code";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub kind: IdentityKind,
@@ -239,6 +241,18 @@ pub struct Identity {
     pub verified: bool,
     pub meta: serde_json::Value,
     pub created_at: DateTime<Utc>,
+}
+
+impl Identity {
+    pub fn linked_without_code(&self) -> bool {
+        self.kind == IdentityKind::Email
+            && !self.verified
+            && self.meta.get(LINKED_WITHOUT_CODE).is_some()
+    }
+
+    pub fn takes_letters(&self) -> bool {
+        self.kind == IdentityKind::Email && !self.linked_without_code()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,6 +263,14 @@ pub struct NewIdentity {
     pub meta: serde_json::Value,
 }
 
+pub fn proven_identities(identities: Vec<Identity>) -> Vec<(IdentityKind, String)> {
+    identities
+        .into_iter()
+        .filter(|i| !i.linked_without_code())
+        .map(|i| (i.kind, i.value))
+        .collect()
+}
+
 impl NewIdentity {
     pub fn new(kind: IdentityKind, raw: &str, verified: bool) -> Result<Self, DomainError> {
         Ok(NewIdentity {
@@ -256,6 +278,13 @@ impl NewIdentity {
             value: normalize_identity(kind, raw)?,
             verified,
             meta: serde_json::Value::Object(Default::default()),
+        })
+    }
+
+    pub fn email_without_code(raw: &str) -> Result<Self, DomainError> {
+        Ok(NewIdentity {
+            meta: serde_json::json!({ LINKED_WITHOUT_CODE: true }),
+            ..NewIdentity::new(IdentityKind::Email, raw, false)?
         })
     }
 
@@ -355,6 +384,37 @@ impl TelegramProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn почта_без_кода_только_логин_пока_не_подтверждена() {
+        let identity = |new: NewIdentity| Identity {
+            kind: new.kind,
+            value: new.value,
+            verified: new.verified,
+            meta: new.meta,
+            created_at: Utc::now(),
+        };
+        let linked = NewIdentity::email_without_code(" Alex@Example.com ").unwrap();
+        assert_eq!(linked.value, "alex@example.com");
+        assert!(NewIdentity::email_without_code("не почта").is_err());
+        let mut linked = identity(linked);
+        assert!(linked.linked_without_code() && !linked.takes_letters());
+        let typed =
+            identity(NewIdentity::new(IdentityKind::Email, "b@example.com", false).unwrap());
+        assert!(!typed.linked_without_code() && typed.takes_letters());
+        let telegram = identity(NewIdentity::new(IdentityKind::Telegram, "77", true).unwrap());
+        assert!(!telegram.linked_without_code() && !telegram.takes_letters());
+        assert_eq!(
+            proven_identities(vec![telegram.clone(), linked.clone(), typed]),
+            [
+                (IdentityKind::Telegram, "77".to_string()),
+                (IdentityKind::Email, "b@example.com".to_string()),
+            ]
+        );
+        linked.verified = true;
+        assert!(!linked.linked_without_code() && linked.takes_letters());
+        assert_eq!(proven_identities(vec![linked]).len(), 1);
+    }
 
     #[test]
     fn почта_приводится_к_нижнему_регистру() {

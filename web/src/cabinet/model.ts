@@ -45,6 +45,7 @@ export type ClientMe = {
   payments_count?: number;
   email?: string | null;
   email_change?: boolean;
+  email_unconfirmed?: boolean;
   has_password?: boolean;
   must_change_password?: boolean;
   photo?: string | null;

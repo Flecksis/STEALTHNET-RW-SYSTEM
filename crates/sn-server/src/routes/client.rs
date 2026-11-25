@@ -485,8 +485,10 @@ async fn me(
     let email = card
         .identities
         .iter()
-        .find(|i| i.kind == sn_domain::client::IdentityKind::Email)
-        .map(|i| i.value.clone());
+        .find(|i| i.kind == sn_domain::client::IdentityKind::Email);
+    let email_change = state.services.auth().email_editable(&card.identities);
+    let email_unconfirmed = email.is_some_and(|i| i.linked_without_code());
+    let email = email.map(|i| i.value.clone());
     let has_password = state
         .services
         .auth()
@@ -532,7 +534,8 @@ async fn me(
         "two_factor": card.two_factor,
         "payments_count": card.stats.payments_count,
         "email": email,
-        "email_change": state.services.mail().available(),
+        "email_change": email_change,
+        "email_unconfirmed": email_unconfirmed && state.services.mail().available(),
         "has_password": has_password,
         "must_change_password": must_change_password,
         "photo": photo,

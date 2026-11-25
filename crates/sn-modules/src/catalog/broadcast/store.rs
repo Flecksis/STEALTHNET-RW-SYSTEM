@@ -502,7 +502,9 @@ fn condition(audience: Audience) -> String {
 fn identity_match(lane: Lane) -> &'static str {
     match lane {
         Lane::Bot => "i.kind = 'telegram' AND i.value ~ '^[0-9]{1,15}$'",
-        Lane::Email => "i.kind = 'email' AND i.value LIKE '%_@_%'",
+        Lane::Email => {
+            "i.kind = 'email' AND i.value LIKE '%_@_%' AND (i.verified OR NOT i.meta ? 'no_code')"
+        }
     }
 }
 

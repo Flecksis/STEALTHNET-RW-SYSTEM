@@ -196,7 +196,15 @@ async fn мини_приложение_меняет_почту_пароль_и_�
     assert_eq!(status, StatusCode::OK, "{email}");
     assert_eq!(
         email,
-        json!({ "email": null, "available": true, "proof": null, "confirm_current": false, "pending": null })
+        json!({
+            "email": null,
+            "available": true,
+            "without_code": false,
+            "unconfirmed": false,
+            "proof": null,
+            "confirm_current": false,
+            "pending": null,
+        })
     );
 
     let (status, started) = h
@@ -400,5 +408,94 @@ async fn без_отправки_писем_смена_почты_закрыта
         body["error"]["message"],
         "Emails aren't being sent right now, so the email can't be changed."
     );
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn с_галочкой_почта_привязывается_без_кода_только_полной_сессией() {
+    let Some(h) = mini_http().await else { return };
+    let owner = h.owner().await;
+    let client = h.client(5_093_118_422).await;
+    let token = h.client_token(client).await;
+    let link = "/api/client/security/email/link";
+    let body = json!({ "email": "alex@example.com" });
+    let (status, refused) = h.write(Method::POST, link, &token, body.clone()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "auth.email_change_off");
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            "/api/admin/modules/mail/config",
+            &owner,
+            json!({ "config": { "transport": "none", "link_without_code": true } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["config"]["link_without_code"], true);
+    let (_, me) = h.get("/api/client/me", &token).await;
+    assert_eq!(me["email_change"], true, "{me}");
+    assert_eq!(me["email_unconfirmed"], false);
+    let (_, state) = h.get("/api/client/security/email", &token).await;
+    assert_eq!(state["available"], false, "{state}");
+    assert_eq!(state["without_code"], true);
+
+    let view = {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.sessions()
+            .create_client(
+                client,
+                sn_store::SessionChannel::Cabinet,
+                sn_store::SessionScope::SubscriptionView,
+                &sn_store::NewSession {
+                    token_hash: sn_services::auth::token_hash("view-token"),
+                    expires_at: Utc::now() + chrono::Duration::days(1),
+                    ip: None,
+                    user_agent: None,
+                },
+            )
+            .await
+            .unwrap();
+        "view-token"
+    };
+    let (status, _) = h.write(Method::POST, link, view, body.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = h.send(Method::POST, link, None, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, state) = h.write(Method::POST, link, &token, body).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    assert_eq!(state["email"], "alex@example.com");
+    assert_eq!(state["unconfirmed"], true);
+    let (_, me) = h.get("/api/client/me", &token).await;
+    assert_eq!(me["email"], "alex@example.com", "{me}");
+    assert_eq!(me["email_change"], true);
+    assert_eq!(me["email_unconfirmed"], false);
+    let (status, card) = h
+        .get(&format!("/api/admin/clients/{}", client.0), &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{card}");
+    let email = card["identities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "email")
+        .cloned()
+        .unwrap();
+    assert_eq!(email["verified"], false);
+
+    let (port, _letters) = local_smtp().await;
+    mail_on(&h, port).await;
+    let (_, me) = h.get("/api/client/me", &token).await;
+    assert_eq!(me["email_unconfirmed"], true, "{me}");
+    let (status, refused) = h
+        .write(
+            Method::POST,
+            link,
+            &token,
+            json!({ "email": "other@example.com" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "auth.email_code_needed");
     h.db.cleanup().await;
 }

@@ -721,6 +721,53 @@ async fn забор_находит_клиентов_по_telegram_почте_и�
 }
 
 #[tokio::test]
+async fn забор_не_отдаёт_подписку_по_почте_привязанной_без_кода() {
+    let Some(env) = env().await else { return };
+    let stranger = env.client(Some((777, "stranger")), None).await;
+    {
+        let mut conn = env.db.store.conn().await.unwrap();
+        conn.clients()
+            .add_identity(
+                stranger.id,
+                &NewIdentity::email_without_code("olga@example.com").unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let mut mail_user = sample_user(2, "random_two");
+    mail_user.email = Some("Olga@Example.com".into());
+    env.fake.insert_user(mail_user.clone());
+
+    let checked = env.ops().check_now(Direction::Pull, None).await.unwrap();
+    let plan = checked.plan.clone().unwrap();
+    assert_eq!((plan.attach.count, plan.create.count), (0, 1));
+    let progress = done(
+        env.ops()
+            .start_now(checked.id, StartOptions::default(), None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(progress.clients, 1);
+    let mut conn = env.db.store.conn().await.unwrap();
+    let sub = conn
+        .subscriptions()
+        .by_remna_user(mail_user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(sub.client_id, stranger.id);
+    assert!(
+        conn.subscriptions()
+            .by_client(stranger.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(conn);
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn забор_советует_вписать_контакт_в_remnawave_тем_у_кого_его_нет() {
     let Some(env) = env().await else { return };
     env.fake.insert_user(sample_user(7, "no_contact"));

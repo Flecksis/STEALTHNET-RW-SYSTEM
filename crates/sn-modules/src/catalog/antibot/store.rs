@@ -654,6 +654,7 @@ pub async fn email_twin(
     let found: Option<i64> = sqlx::query_scalar(
         "SELECT client_id FROM client_identities \
          WHERE kind = 'email' AND client_id <> $1 AND antibot_email_key(value) = antibot_email_key($2) \
+           AND (verified OR NOT meta ? 'no_code') \
            AND id < (SELECT o.id FROM client_identities o WHERE o.kind = 'email' AND o.value = $2) \
          ORDER BY id LIMIT 1",
     )

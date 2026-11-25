@@ -682,7 +682,7 @@ impl NotifyHandler {
             .and_then(|i| i.value.parse::<i64>().ok())
             .filter(|_| !client.bot_unreachable);
         let Some(chat_id) = chat else {
-            return match identities.iter().find(|i| i.kind == IdentityKind::Email) {
+            return match identities.iter().find(|i| i.takes_letters()) {
                 Some(email) => mail_notice(services, &email.value, template, params, attempt).await,
                 None => {
                     tracing::debug!(client = %client_id, template, "клиенту не написать ни в Telegram, ни на почту");
@@ -1014,7 +1014,7 @@ async fn also_mail(
         Ok(mut conn) => match conn.clients().identities(client_id).await {
             Ok(identities) => identities
                 .into_iter()
-                .find(|i| i.kind == IdentityKind::Email)
+                .find(|i| i.takes_letters())
                 .map(|i| i.value),
             Err(err) => {
                 tracing::warn!(client = %client_id, error = %err, "почта клиента для копии уведомления не прочитана");
