@@ -27,7 +27,7 @@ import {
 } from './config';
 import { EMPTY_TEXTS } from './labels';
 import { MiniSubSwitch, ThemeCirc, useMini } from './MiniApp';
-import { actionLabel, Row, rowLabel, supportUrl, useExtras, useLinkTarget, useRows, useTargets, type Extras, type Target } from './sections';
+import { actionLabel, Row, rowLabel, supportTarget, useExtras, useLinkTarget, useRows, useTargets, type Extras, type Target } from './sections';
 import { openExternal } from './telegram';
 
 const R = 90;
@@ -230,11 +230,10 @@ function Subscription({ block, extras }: { block: SubscriptionBlock; extras: Ext
           ? { text: t('Истекла'), tone: 'muted' }
           : { text: view.subscription.autorenew.enabled ? t('Активна, автопродление включено') : t('Активна'), tone: 'ink2' };
 
-  const support = supportUrl(site);
   const main: Btn = !view
     ? { label: pick(block.empty?.button, lang, t(EMPTY_TEXTS.button)), icon: 'tag', target: { to: '/app/plans' } }
     : blocked
-      ? { label: t('Написать в поддержку'), icon: 'chat', target: support ? { url: support } : null }
+      ? { label: t('Написать в поддержку'), icon: 'chat', target: supportTarget(site) }
       : expired
         ? { label: t('Продлить'), icon: 'refresh', target: { to: '/app/plans' } }
         : connect;

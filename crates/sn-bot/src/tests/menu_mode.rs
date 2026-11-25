@@ -3,11 +3,12 @@ use chrono::{Duration, Utc};
 use sn_domain::bot_layout::{MenuMode, Screen as LayoutScreen};
 use sn_domain::ids::{AdminId, RemnaUserId, SquadId};
 use sn_domain::module::ModuleId;
-use sn_domain::settings::{ClientAccess, keys};
+use sn_domain::settings::{ClientAccess, SupportMode, keys};
 use sn_domain::subscription::{
     AutoRenewState, RemnaLink, RemnaMirror, SubscriptionKind, SubscriptionStatus,
 };
 use sn_services::bot_layout::{ClientState, LayoutUpdate};
+use sn_services::settings::CoreUpdate;
 use sn_store::NewSubscription;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -234,7 +235,7 @@ async fn веб_режим_открывает_разделы_мини_прило
             ("Докупить", format!("app {APP}/addons")),
             ("Подарить подписку", format!("app {APP}/gifts")),
             ("Пригласить друга", format!("app {APP}/profile")),
-            ("Поддержка", "cb sup".into()),
+            ("Поддержка", format!("app {APP}/support")),
         ])
     );
 
@@ -254,7 +255,7 @@ async fn веб_режим_открывает_разделы_мини_прило
         find("Продлить или сменить тариф"),
         format!("app {APP}/plans")
     );
-    assert_eq!(find("Поддержка"), "cb sup");
+    assert_eq!(find("Поддержка"), format!("app {APP}/support"));
     assert!(!targets(&subscribed).contains(&"cb buy"), "{subscribed:?}");
 
     set_mode(&services, admin, MenuMode::Classic).await;
@@ -303,13 +304,52 @@ async fn без_мини_приложения_веб_режим_оставляе
 }
 
 #[tokio::test]
-async fn поддержка_в_веб_режиме_ведёт_в_чат_мини_приложения_только_с_ии() {
+async fn поддержка_в_веб_режиме_открывает_обращения_мини_приложения_и_без_ии() {
     let Some((db, services, server, ctx)) = setup().await else {
         return;
     };
     public_url(&services, "https://vpn.example.com").await;
     let admin = owner(&services).await;
+    let support = |buttons: Vec<(String, String)>| {
+        buttons
+            .into_iter()
+            .find(|(label, _)| label == "Поддержка")
+            .map(|(_, target)| target)
+            .unwrap()
+    };
+    let slot = |view: &sn_services::bot_layout::LayoutView| {
+        view.screens[0]
+            .slots
+            .iter()
+            .find(|s| s.key == "menu.btn.support")
+            .cloned()
+            .unwrap()
+    };
+    let set = async |mode: SupportMode, url: Option<&str>| {
+        services
+            .settings_ops()
+            .update_core(
+                &CoreUpdate {
+                    support_mode: Some(mode),
+                    support_url: url.map(str::to_string),
+                    ..CoreUpdate::default()
+                },
+                admin,
+            )
+            .await
+            .unwrap();
+    };
+
+    handle_update(&ctx, text_update(1, 733, "/start")).await;
+    assert_eq!(support(menu(&server).await), "cb sup");
     set_mode(&services, admin, MenuMode::Web).await;
+    assert!(!sn_modules::catalog::ai::channels(services.modules()).miniapp);
+    handle_update(&ctx, text_update(2, 733, "/start")).await;
+    assert_eq!(support(menu(&server).await), format!("app {APP}/support"));
+    let view = services.bot_layout().view().await.unwrap();
+    assert_eq!(slot(&view).web, Some("Поддержка"));
+    assert_eq!(slot(&view).web_note, None);
+
     services
         .modules()
         .set_config(
@@ -326,30 +366,33 @@ async fn поддержка_в_веб_режиме_ведёт_в_чат_мини
         .unwrap();
     enable(&services, &[ModuleId::Ai]).await;
     assert!(sn_modules::catalog::ai::channels(services.modules()).miniapp);
-    let support = |buttons: Vec<(String, String)>| {
-        buttons
-            .into_iter()
-            .find(|(label, _)| label == "Поддержка")
-            .map(|(_, target)| target)
-            .unwrap()
-    };
-    handle_update(&ctx, text_update(1, 733, "/start")).await;
+    handle_update(&ctx, callback_update(3, 733, "m")).await;
     assert_eq!(support(menu(&server).await), format!("app {APP}/support"));
+
+    set(SupportMode::Both, Some("https://t.me/help_chat")).await;
+    handle_update(&ctx, callback_update(4, 733, "m")).await;
+    assert_eq!(support(menu(&server).await), format!("app {APP}/support"));
+
+    set(SupportMode::Link, None).await;
+    handle_update(&ctx, callback_update(5, 733, "m")).await;
+    assert_eq!(support(menu(&server).await), "url https://t.me/help_chat");
     let view = services.bot_layout().view().await.unwrap();
-    let slot = view.screens[0]
-        .slots
-        .iter()
-        .find(|s| s.key == "menu.btn.support")
-        .unwrap();
-    assert_eq!(slot.web, Some("Поддержка"));
-    assert_eq!(slot.web_note, None);
+    assert_eq!(slot(&view).web, None);
+    assert_eq!(slot(&view).web_note, None);
+
+    set(SupportMode::Tickets, None).await;
     services
-        .modules()
-        .set_enabled(services.store(), ModuleId::Ai, false, None)
+        .settings_ops()
+        .update_client_access(
+            &ClientAccess {
+                miniapp: false,
+                ..ClientAccess::default()
+            },
+            admin,
+        )
         .await
         .unwrap();
-    services.reload().await.unwrap();
-    handle_update(&ctx, text_update(2, 733, "/start")).await;
+    handle_update(&ctx, callback_update(6, 733, "m")).await;
     assert_eq!(support(menu(&server).await), "cb sup");
     db.cleanup().await;
 }

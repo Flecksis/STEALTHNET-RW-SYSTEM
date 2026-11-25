@@ -564,6 +564,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.btn.subscription" => "Subscription",
         "notify.btn.balance" => "Balance",
         "notify.btn.extend" => "Renew",
+        "notify.btn.ticket" => "Open conversation",
         "notify.btn.reply" => "Reply",
         "notify.btn.support" => "Support",
         "notify.btn.referral" => "Invite a friend",

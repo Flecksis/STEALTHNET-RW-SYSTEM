@@ -12,6 +12,7 @@ use sn_domain::jobs::{JobPayload, retry_delay};
 use sn_domain::lang;
 use sn_domain::mail_letters::{LetterId, Values};
 use sn_domain::money::{Money, Stars};
+use sn_domain::settings::CoreSettings;
 use sn_modules::catalog::{contests, gifts, limits, oauth, referral};
 use sn_services::Services;
 use sn_services::mail::Undelivered;
@@ -232,6 +233,23 @@ fn keyboard(content: &Content, button: Option<(&str, &str)>) -> Keyboard {
         ]),
         None => Keyboard::new(),
     }
+}
+
+fn ticket_button(
+    content: &Content,
+    settings: &CoreSettings,
+    params: &serde_json::Value,
+) -> Option<Button> {
+    let id = params
+        .get("ticket_id")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|id| *id > 0)?;
+    let app = settings.support_app_url()?;
+    let label = content.button("notify.btn.ticket", &[])?;
+    Some(
+        Button::web_app(label.text, format!("{app}/{id}"))
+            .look(label.emoji_id, label.style.map(|s| s.as_str())),
+    )
 }
 
 pub fn render(
@@ -697,14 +715,20 @@ impl NotifyHandler {
                 .map(|_| ())
         } else {
             let content = services.bot_content_in(lang::current());
-            let Some(rendered) = render(
-                &content.content,
-                template,
-                params,
-                services.settings().remna_offset(),
-            ) else {
+            let settings = services.settings();
+            let Some(mut rendered) =
+                render(&content.content, template, params, settings.remna_offset())
+            else {
                 return JobResult::Fail(format!("уведомление «{template}» без нужных параметров"));
             };
+            if template == templates::SUPPORT_REPLY
+                && !client.is_blocked()
+                && let Some(button) = ticket_button(&content.content, &settings, params)
+            {
+                rendered.keyboard = Keyboard::new()
+                    .row(vec![button])
+                    .rows(rendered.keyboard.inline_keyboard);
+            }
             let files = if template == templates::SUPPORT_REPLY {
                 crate::support_files::reply_files(params)
             } else {

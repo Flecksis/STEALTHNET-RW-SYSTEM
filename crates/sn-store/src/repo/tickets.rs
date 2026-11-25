@@ -43,6 +43,23 @@ pub struct TicketListItem {
     pub ai: Option<TicketAi>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TicketPreview {
+    pub author: MessageAuthor,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ClientTicket {
+    #[serde(flatten)]
+    pub ticket: Ticket,
+    pub preview: Option<TicketPreview>,
+    pub unread: i64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct TicketCounts {
     pub waiting: i64,
@@ -127,6 +144,15 @@ const COLUMNS: &str = "t.id, t.client_id, t.status, t.channel, t.subject, t.last
 
 const PREVIEW_CHARS: i32 = 200;
 
+pub const UNREAD_FROM_KEY: &str = "support.unread_from";
+
+const UNREAD: &str = "FROM ticket_messages u WHERE u.ticket_id = t.id AND u.author IN ('support', 'ai') \
+                      AND u.read_at IS NULL \
+                      AND u.created_at >= COALESCE((SELECT (s.value #>> '{}')::timestamptz FROM bot_state s \
+                          WHERE s.key = 'support.unread_from'), 'infinity') \
+                      AND u.id > COALESCE((SELECT max(c.id) FROM ticket_messages c \
+                          WHERE c.ticket_id = t.id AND c.author = 'client'), 0)";
+
 const fn filter_order(
     filter: TicketFilter,
 ) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -194,6 +220,38 @@ struct ViewRow {
     ai_state: Option<String>,
     ai_reason: Option<String>,
     ai_handoff_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ClientRow {
+    #[sqlx(flatten)]
+    ticket: TicketRow,
+    preview_author: Option<String>,
+    preview_text: Option<String>,
+    preview_file: Option<String>,
+    preview_at: Option<DateTime<Utc>>,
+    unread: i64,
+}
+
+impl TryFrom<ClientRow> for ClientTicket {
+    type Error = StoreError;
+
+    fn try_from(row: ClientRow) -> Result<Self, Self::Error> {
+        let preview = match (row.preview_author, row.preview_at) {
+            (Some(author), Some(at)) => Some(TicketPreview {
+                author: parse_author(&author)?,
+                text: row.preview_text.unwrap_or_default(),
+                file: row.preview_file,
+                at,
+            }),
+            _ => None,
+        };
+        Ok(ClientTicket {
+            ticket: row.ticket.try_into()?,
+            preview,
+            unread: row.unread,
+        })
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -478,6 +536,66 @@ impl<'c> TicketsRepo<'c> {
         .fetch_all(&mut *self.conn)
         .await?;
         keyed_page(rows, page)
+    }
+
+    pub async fn client_view(
+        &mut self,
+        client_id: ClientId,
+        limit: i64,
+    ) -> StoreResult<Vec<ClientTicket>> {
+        let rows: Vec<ClientRow> = sqlx::query_as(&format!(
+            "SELECT {COLUMNS}, lm.author AS preview_author, left(lm.body, {PREVIEW_CHARS}) AS preview_text, \
+             (SELECT f.name FROM ticket_files f WHERE f.message_id = lm.id ORDER BY f.id LIMIT 1) AS preview_file, \
+             lm.created_at AS preview_at, (SELECT count(*) {UNREAD}) AS unread \
+             FROM tickets t \
+             LEFT JOIN LATERAL (SELECT m.id, m.author, m.body, m.created_at FROM ticket_messages m \
+                 WHERE m.ticket_id = t.id AND m.author <> 'system' ORDER BY m.id DESC LIMIT 1) lm ON true \
+             WHERE t.client_id = $1 ORDER BY t.status = 'closed', t.updated_at DESC, t.id DESC LIMIT $2"
+        ))
+        .bind(client_id.0)
+        .bind(limit)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        rows.into_iter().map(ClientTicket::try_from).collect()
+    }
+
+    pub async fn client_unread(&mut self, client_id: ClientId) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM tickets t WHERE t.client_id = $1 AND EXISTS (SELECT 1 {UNREAD})"
+        ))
+        .bind(client_id.0)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn mark_seen(
+        &mut self,
+        id: TicketId,
+        client_id: ClientId,
+        until: DateTime<Utc>,
+    ) -> StoreResult<u64> {
+        Ok(sqlx::query(
+            "UPDATE ticket_messages m SET read_at = now() FROM tickets t \
+             WHERE t.id = $1 AND t.client_id = $2 AND m.ticket_id = t.id \
+             AND m.author IN ('support', 'ai') AND m.read_at IS NULL AND m.created_at <= $3",
+        )
+        .bind(id.0)
+        .bind(client_id.0)
+        .bind(until)
+        .execute(&mut *self.conn)
+        .await?
+        .rows_affected())
+    }
+
+    pub async fn start_unread(&mut self) -> StoreResult<bool> {
+        Ok(sqlx::query(
+            "INSERT INTO bot_state (key, value) VALUES ($1, to_jsonb(now())) ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(UNREAD_FROM_KEY)
+        .execute(&mut *self.conn)
+        .await?
+        .rows_affected()
+            > 0)
     }
 
     pub async fn counts(&mut self) -> StoreResult<TicketCounts> {

@@ -75,6 +75,9 @@ fn support_text(settings: &CoreSettings, bot: Option<&str>) -> String {
     let mut ways = Vec::new();
     if settings.support_tickets() {
         ways.push("обращения на сайте в разделе «Помощь»".to_string());
+        if settings.support_app_url().is_some() {
+            ways.push("обращения в мини-приложении в разделе «Поддержка»".to_string());
+        }
         if let Some(bot) = bot.map(str::trim).filter(|b| !b.is_empty()) {
             ways.push(format!("сообщения в боте @{}", bot.trim_start_matches('@')));
         }
@@ -707,6 +710,29 @@ mod tests {
         ] {
             assert!(!asks_for_human(text), "{text}");
         }
+    }
+
+    #[test]
+    fn ии_знает_где_писать_в_поддержку() {
+        let mut settings = CoreSettings::default();
+        assert_eq!(
+            support_text(&settings, Some("vpn_bot")),
+            "Связь с поддержкой: обращения на сайте в разделе «Помощь», сообщения в боте @vpn_bot."
+        );
+        settings.public_url = Some("https://vpn.example.com".into());
+        assert_eq!(
+            support_text(&settings, Some("@vpn_bot")),
+            "Связь с поддержкой: обращения на сайте в разделе «Помощь», обращения в мини-приложении в разделе «Поддержка», сообщения в боте @vpn_bot."
+        );
+        settings.client_access.miniapp = false;
+        assert!(!support_text(&settings, None).contains("мини-приложении"));
+        settings.client_access.miniapp = true;
+        settings.support_mode = sn_domain::settings::SupportMode::Link;
+        settings.support_url = Some("https://t.me/help_chat".into());
+        assert_eq!(
+            support_text(&settings, Some("vpn_bot")),
+            "Связь с поддержкой: чат поддержки https://t.me/help_chat."
+        );
     }
 
     #[test]

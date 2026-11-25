@@ -5,7 +5,6 @@ pub use files::{FileDownload, FileLink};
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketFileId, TicketId};
@@ -17,7 +16,7 @@ use sn_domain::support::{
     TicketFile, TicketFilter, TicketMessage, TicketStatus,
 };
 use sn_modules::catalog::ai;
-use sn_store::{Db, NewReply, NewTicket};
+use sn_store::{ClientTicket, Db, NewReply, NewTicket};
 
 pub const MAX_MESSAGE_CHARS: usize = 4_000;
 pub const MAX_SUBJECT_CHARS: usize = 200;
@@ -59,48 +58,12 @@ pub struct TicketThread {
     pub ai: Option<TicketAi>,
 }
 
-#[derive(sqlx::FromRow)]
-struct TicketRow {
-    id: i64,
-    client_id: i64,
-    status: String,
-    channel: String,
-    subject: Option<String>,
-    last_author: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    closed_at: Option<DateTime<Utc>>,
-}
-
-fn variant<T: serde::de::DeserializeOwned>(value: &str) -> ServiceResult<T> {
-    serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| ServiceError::Internal(format!("значение «{value}» не разобрано: {e}")))
-}
-
-impl TryFrom<TicketRow> for Ticket {
-    type Error = ServiceError;
-
-    fn try_from(row: TicketRow) -> Result<Self, Self::Error> {
-        Ok(Ticket {
-            id: TicketId(row.id),
-            client_id: ClientId(row.client_id),
-            status: variant::<TicketStatus>(&row.status)?,
-            channel: TicketChannel::parse(&row.channel)?,
-            subject: row.subject,
-            last_author: variant::<MessageAuthor>(&row.last_author)?,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-            closed_at: row.closed_at,
-        })
-    }
-}
-
 fn message_body(body: &str, with_files: bool) -> ServiceResult<String> {
     let body = body.trim();
     if (body.is_empty() && !with_files) || body.chars().count() > MAX_MESSAGE_CHARS {
         return Err(ServiceError::rejected(
             "support.body",
-            format!("сообщение пустое или длиннее {MAX_MESSAGE_CHARS} символов"),
+            format!("Сообщение пустое или длиннее {MAX_MESSAGE_CHARS} символов"),
         ));
     }
     Ok(body.to_string())
@@ -160,7 +123,7 @@ impl<'a> SupportOps<'a> {
         if tx.tickets().count_open(client_id).await? >= MAX_OPEN_TICKETS as i64 {
             return Err(ServiceError::rejected(
                 "support.too_many",
-                "открыто слишком много обращений, дождитесь ответа",
+                "Открыто слишком много обращений: дождитесь ответа или закройте решённые",
             ));
         }
         let answered_by_ai = ai::takes_ticket(self.services.modules(), request.channel);
@@ -281,17 +244,32 @@ impl<'a> SupportOps<'a> {
         Ok((items, counts))
     }
 
-    pub async fn for_client(&self, client_id: ClientId) -> ServiceResult<Vec<Ticket>> {
+    pub async fn for_client(&self, client_id: ClientId) -> ServiceResult<Vec<ClientTicket>> {
         let mut conn = self.services.store().conn().await?;
-        let rows: Vec<TicketRow> = sqlx::query_as(
-            "SELECT id, client_id, status, channel, subject, last_author, created_at, updated_at, closed_at \
-             FROM tickets WHERE client_id = $1 ORDER BY status = 'closed', updated_at DESC, id DESC LIMIT $2",
-        )
-        .bind(client_id.0)
-        .bind(CLIENT_TICKETS_LIMIT)
-        .fetch_all(conn.conn())
-        .await?;
-        rows.into_iter().map(Ticket::try_from).collect()
+        Ok(conn
+            .tickets()
+            .client_view(client_id, CLIENT_TICKETS_LIMIT)
+            .await?)
+    }
+
+    pub async fn start_unread(&self) -> ServiceResult<bool> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn.tickets().start_unread().await?)
+    }
+
+    pub async fn unread(&self, client_id: ClientId) -> ServiceResult<i64> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn.tickets().client_unread(client_id).await?)
+    }
+
+    pub async fn seen(&self, thread: &TicketThread, client_id: ClientId) -> ServiceResult<()> {
+        if let Some(last) = thread.messages.last() {
+            let mut conn = self.services.store().conn().await?;
+            conn.tickets()
+                .mark_seen(thread.ticket.id, client_id, last.created_at)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn waiting_count(&self) -> ServiceResult<i64> {
@@ -357,7 +335,7 @@ impl<'a> SupportOps<'a> {
         if ticket.status == TicketStatus::Closed {
             return Err(ServiceError::rejected(
                 "support.closed",
-                "обращение закрыто, создайте новое",
+                "Обращение закрыто, создайте новое",
             ));
         }
         if tx.tickets().ai(id).await?.is_some_and(|ai| ai.answering()) {
@@ -409,7 +387,7 @@ impl<'a> SupportOps<'a> {
                 if ticket.status == TicketStatus::Closed {
                     return Err(ServiceError::rejected(
                         "support.closed",
-                        "обращение закрыто, создайте новое",
+                        "Обращение закрыто, создайте новое",
                     ));
                 }
                 (MessageAuthor::Client, None, false)

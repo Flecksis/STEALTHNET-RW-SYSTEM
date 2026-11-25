@@ -12,7 +12,7 @@ use sn_domain::bot_layout::{
 use sn_domain::client::Locale;
 use sn_domain::ids::AdminId;
 use sn_domain::module::ModuleId;
-use sn_modules::catalog::{ai, contests, roulette};
+use sn_modules::catalog::{contests, roulette};
 use sn_store::Db;
 use std::collections::BTreeMap;
 
@@ -46,6 +46,10 @@ pub fn site_url(services: &Services) -> Option<String> {
     let settings = services.settings();
     let base = settings.public_url.as_deref()?.trim().trim_end_matches('/');
     (base.starts_with("https://") || base.starts_with("http://")).then(|| base.to_string())
+}
+
+pub fn link_button(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("tg://")
 }
 
 pub fn miniapp_off(services: &Services) -> Option<&'static str> {
@@ -96,9 +100,9 @@ impl Install {
             reissue: settings.client_access.self_reissue,
             support: settings
                 .support_link()
-                .filter(|u| u.starts_with("https://") && !settings.support_tickets())
+                .filter(|u| link_button(u) && !settings.support_tickets())
                 .map(str::to_string),
-            support_app: settings.support_tickets() && ai::channels(modules).miniapp,
+            support_app: settings.support_tickets(),
             friends_screen: !settings.miniapp.friends_in_profile(),
             web: services.bot_content().content.menu_mode() == MenuMode::Web,
             miniapp,
@@ -119,11 +123,6 @@ impl Install {
             return None;
         }
         match key {
-            "menu.btn.support" if self.support.is_some() => None,
-            "menu.btn.support" => Some(format!(
-                "Обращения принимает бот. Чат поддержки в мини-приложении появляется с модулем «{}» и флажком «Отвечать в мини-приложении»",
-                ModuleId::Ai.info().title
-            )),
             "menu.btn.contests" => {
                 Some("Конкурсы проходят в боте: в мини-приложении их нет".to_string())
             }

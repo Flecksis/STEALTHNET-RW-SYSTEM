@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { count, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon, type IconName } from '../lib/icons';
-import { supportLink, supportTickets } from '../lib/support';
+import { supportWay } from '../lib/support';
 import type { Site } from '../lib/types';
 import type { Referral } from '../cabinet/model';
 import { loadTrial } from '../cabinet/trial';
@@ -30,15 +30,11 @@ export function actionLabel(key: SectionKey): string {
 }
 
 export function supportTarget(site: Site): Target | null {
-  if (supportTickets(site) && site.support_ai?.miniapp) {
-    return { to: sectionPath('support') };
-  }
-  const url = supportUrl(site);
-  return url ? { url } : null;
+  return supportWay(site, sectionPath('support'));
 }
 
-export function supportUrl(site: Site): string | null {
-  return supportTickets(site) && site.bot_username ? `https://t.me/${site.bot_username}?start=support` : supportLink(site);
+export function unreadText(unread: number): string {
+  return count(unread, 'новый ответ', 'новых ответа', 'новых ответов');
 }
 
 export function useExtras(wanted = true): Extras {
@@ -128,10 +124,10 @@ export function needsExtras(items: Array<{ to?: string | null }>): boolean {
   return items.some((item) => isSection(item.to));
 }
 
-export type RowView = { key: string; label: string; icon: IconName; value?: string; target: Target; away: boolean };
+export type RowView = { key: string; label: string; icon: IconName; value?: string; fresh?: boolean; target: Target; away: boolean };
 
 export function useRows(extras: Extras, state: Audience): (items: Item[]) => RowView[] {
-  const { me, lang } = useMini();
+  const { me, lang, unread } = useMini();
   const target = useTargets(extras);
   const link = useLinkTarget(extras);
   return (items) =>
@@ -141,7 +137,12 @@ export function useRows(extras: Extras, state: Audience): (items: Item[]) => Row
       }
       if (item.std) {
         const at = target(item.std);
-        return at ? [{ key: item.std, label: pick(item.label, lang, rowLabel(item.std)), icon: SECTION_ICONS[item.std], value: rowValue(item.std, extras, me.payments_count ?? 0), target: at, away: false }] : [];
+        if (!at) {
+          return [];
+        }
+        const fresh = item.std === 'support' && !!at.to && unread > 0;
+        const value = fresh ? unreadText(unread) : rowValue(item.std, extras, me.payments_count ?? 0);
+        return [{ key: item.std, label: pick(item.label, lang, rowLabel(item.std)), icon: SECTION_ICONS[item.std], value, fresh, target: at, away: false }];
       }
       const at = shownTo(item.for, state) ? link(item.to) : null;
       const label = say(item.label, lang);
@@ -165,7 +166,7 @@ export function Row({ row }: { row: RowView }) {
     <>
       <Icon name={row.icon} size={21} />
       <span className="mn-row-name">{row.label}</span>
-      {row.value ? <span className="mn-row-val num">{row.value}</span> : null}
+      {row.value ? <span className={row.fresh ? 'mn-row-val num fresh' : 'mn-row-val num'}>{row.value}</span> : null}
       <Icon name={row.away ? 'external' : 'chevron-right'} size={16} />
     </>
   );

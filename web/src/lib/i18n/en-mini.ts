@@ -118,8 +118,6 @@ export const MINI: Record<string, string> = {
   'Обращение не найдено': 'Request not found',
   'Вопрос передан оператору. Ответ придёт сюда и в Telegram.': 'Passed to an operator. The reply will show up here and in Telegram.',
   'Обращение': 'Request',
-  'Обращение закрыто. Если вопрос остался, задайте новый.': 'This request is closed. Still have a question? Ask a new one.',
-  'Писать в него будет нельзя, но можно задать новый вопрос.': 'You won\'t be able to reply here, but you can ask a new question.',
   'Документы': 'Documents',
   'Увеличить': 'Zoom in',
   'Уменьшить': 'Zoom out',

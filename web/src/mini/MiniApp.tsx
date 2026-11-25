@@ -5,6 +5,7 @@ import { BrandMark } from '../lib/brand';
 import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { DEFAULT_SITE, useSite } from '../lib/site';
+import { supportTickets } from '../lib/support';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
@@ -29,9 +30,11 @@ import { MiniTopUp } from './MiniTopUp';
 import { MiniTrial } from './MiniTrial';
 import { MiniRoulette } from './MiniRoulette';
 import { MiniWithdraw } from './MiniWithdraw';
-import { MiniSupport, MiniTicket } from './MiniSupport';
-import { supportTarget, tabLabel, type Extras } from './sections';
+import { MiniNewTicket, MiniSupport, MiniTicket } from './MiniSupport';
+import { supportTarget, tabLabel, unreadText, type Extras } from './sections';
+import { useSupportUnread } from './unread';
 import './mini.css';
+import './support.css';
 
 const TOKEN_KEY = 'sn.mini.token';
 const THEME_KEY = 'sn.mini.theme';
@@ -59,6 +62,8 @@ export type MiniCtx = {
   switchLang: (next: Lang) => void;
   config: MiniConfig;
   name: string | null;
+  unread: number;
+  setUnread: (tickets: number) => void;
   demo: Extras | null;
 };
 
@@ -103,6 +108,7 @@ export function MiniApp() {
   const [chosenId, setChosenId] = useState<number | null>(null);
   const cache = useRef(new Map<number, Detail>());
   const [, setTick] = useState(0);
+  const [unread, setUnread] = useState(0);
   const [tg, setTg] = useState<WebApp | null>(null);
   const [tgScheme, setTgScheme] = useState<Theme | null>(null);
   const [personal, setPersonal] = useState<Theme | null>(() => {
@@ -132,6 +138,7 @@ export function MiniApp() {
     const list = liveSubs(await api<SubscriptionView[]>('/api/client/subscriptions'));
     const chosen = pickSub(list, readRemembered(MINI_SUB_KEY));
     setState({ kind: 'in', me });
+    setUnread(me.support_unread ?? 0);
     setSubs(list);
     setChosenId(chosen?.subscription.id ?? null);
     if (chosen) {
@@ -251,6 +258,8 @@ export function MiniApp() {
     [reload],
   );
 
+  useSupportUnread(state.kind === 'in' && supportTickets(site), setUnread);
+
   const view = hit?.view ?? base;
   const devices = hit?.devices ?? null;
   const ready = hit !== undefined;
@@ -260,9 +269,9 @@ export function MiniApp() {
   const ctx = useMemo<MiniCtx | null>(
     () =>
       state.kind === 'in'
-        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang, config, name, demo: null }
+        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang, config, name, unread, setUnread, demo: null }
         : null,
-    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name],
+    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name, unread],
   );
 
   if (state.kind === 'loading' || !applied) {
@@ -318,6 +327,7 @@ export function MiniApp() {
           <Route path="roulette" element={<MiniRoulette />} />
           <Route path="withdraw" element={<MiniWithdraw />} />
           <Route path="support" element={<MiniSupport />} />
+          <Route path="support/new" element={<MiniNewTicket />} />
           <Route path="support/:id" element={<MiniTicket />} />
           <Route path="*" element={<MiniHome />} />
         </Routes>
@@ -359,13 +369,14 @@ function TelegramBack({ app }: { app: WebApp | null }) {
 
 export function MiniNav({ path }: { path?: string }) {
   const { pathname } = useLocation();
-  const { config, lang, site } = useMini();
+  const { config, lang, site, unread } = useMini();
   const current = currentTab(config.tabs, path ?? pathname);
   const tabs = config.tabs.flatMap((tab) => {
     const target = tab.std === 'support' ? supportTarget(site) : { to: sectionPath(tab.std) };
     return target ? [{ tab, target }] : [];
   });
   const own = tabs.length !== 4 || tabs.some(({ tab }) => tab.label);
+  const marked = unread > 0 && supportTickets(site) ? (tabs.some(({ tab }) => tab.std === 'support') ? 'support' : 'profile') : null;
   return (
     <nav aria-label={t('Меню')} className={own ? 'mn-nav own' : 'mn-nav'} data-part="tabs" style={tabs.length === 4 ? undefined : { gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}>
       {tabs.map(({ tab, target }) => {
@@ -373,6 +384,11 @@ export function MiniNav({ path }: { path?: string }) {
           <>
             <Icon name={SECTION_ICONS[tab.std]} size={23} />
             <span>{pick(tab.label, lang, tabLabel(tab.std))}</span>
+            {marked === tab.std ? (
+              <span className="mn-tab-dot">
+                <span className="sr-only">{unreadText(unread)}</span>
+              </span>
+            ) : null}
           </>
         );
         return target.to ? (

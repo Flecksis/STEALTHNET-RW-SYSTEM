@@ -13,7 +13,7 @@ use sn_domain::miniapp::{self, LIMITS, Limits, MiniAppConfig, STORED_IMAGES_MAX,
 use sn_domain::module::ModuleId;
 use sn_domain::settings::keys;
 use sn_modules::catalog::referral::ReferralSettings;
-use sn_modules::catalog::{ai, roulette};
+use sn_modules::catalog::roulette;
 use sn_store::{Db, SiteAsset};
 
 pub const ASSET_PREFIX: &str = "miniapp.";
@@ -134,36 +134,17 @@ impl<'a> MiniAppOps<'a> {
         (!ready).then(|| "Рулетка ещё не настроена".to_string())
     }
 
-    async fn support_off(&self) -> ServiceResult<Option<String>> {
-        let settings = self.services.settings();
-        if settings.support_link().is_some()
-            || (settings.support_tickets() && ai::channels(self.services.modules()).miniapp)
-        {
-            return Ok(None);
-        }
-        let mut conn = self.services.store().conn().await?;
-        let bot = conn
-            .settings()
-            .get_as::<String>(keys::BOT_USERNAME)
-            .await?
-            .is_some_and(|name| !name.trim().is_empty());
-        Ok((!bot).then(|| {
-            "Писать некуда: подключите бота или укажите ссылку на поддержку в «Общих»".to_string()
-        }))
-    }
-
-    async fn off(&self, section: Section) -> ServiceResult<Option<String>> {
+    async fn off(&self, section: Section) -> Option<String> {
         if let Some(reason) = self.tab_off(section) {
-            return Ok(Some(reason));
+            return Some(reason);
         }
-        Ok(match section {
+        match section {
             Section::Roulette => self.roulette_off().await,
             Section::Addons => self.module_off(ModuleId::Options),
             Section::Trial => (!self.services.settings().trial.is_offered())
                 .then(|| "Пробный период выключен в «Тарифы»".to_string()),
-            Section::Support => self.support_off().await?,
             _ => None,
-        })
+        }
     }
 
     fn friends_percent(&self) -> u8 {
@@ -178,7 +159,7 @@ impl<'a> MiniAppOps<'a> {
             sections.push(SectionView {
                 key,
                 title: key.title(),
-                off: self.off(key).await?,
+                off: self.off(key).await,
             });
         }
         Ok(MiniAppView {
@@ -685,6 +666,7 @@ mod tests {
             Section::Profile,
             Section::Payments,
             Section::Guide,
+            Section::Support,
             Section::Renew,
             Section::Devices,
         ] {
@@ -699,10 +681,6 @@ mod tests {
         assert_eq!(off(Section::Promo), module(ModuleId::Promo));
         assert_eq!(off(Section::Addons), module(ModuleId::Options));
         assert!(off(Section::Roulette).is_some());
-        assert_eq!(
-            off(Section::Support).as_deref(),
-            Some("Писать некуда: подключите бота или укажите ссылку на поддержку в «Общих»")
-        );
         ops.update(
             &json!({ "tabs": [
                 { "std": "home" }, { "std": "plans" }, { "std": "roulette" }, { "std": "profile" }

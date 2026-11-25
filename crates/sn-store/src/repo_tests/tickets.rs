@@ -1,6 +1,7 @@
 use super::fixtures::*;
 use crate::testing::test_store;
 use crate::*;
+use chrono::{Duration, Utc};
 use sn_domain::access::AdminRole;
 use sn_domain::ids::{AdminId, ClientId, TicketId};
 use sn_domain::paging::PageRequest;
@@ -236,6 +237,225 @@ async fn обращения_делятся_на_ждущие_отвеченны�
             .await
             .unwrap_err()
             .is_not_found()
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+async fn cutoff(conn: &mut Conn, shift: &str) {
+    sqlx::query(
+        "INSERT INTO bot_state (key, value) VALUES ($1, to_jsonb(now() + $2::interval)) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+    )
+    .bind(UNREAD_FROM_KEY)
+    .bind(shift)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn unread(conn: &mut Conn, client: ClientId) -> (i64, Vec<(TicketId, i64)>) {
+    let list = conn
+        .tickets()
+        .client_view(client, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.ticket.id, t.unread))
+        .collect();
+    (conn.tickets().client_unread(client).await.unwrap(), list)
+}
+
+#[tokio::test]
+async fn непрочитанные_ответы_считаются_до_просмотра_или_ответа_клиента() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let ksenia = client(
+        &mut conn,
+        &Person {
+            telegram: Some(1_101),
+            ..Person::NOBODY
+        },
+    )
+    .await;
+    let igor = client(
+        &mut conn,
+        &Person {
+            telegram: Some(1_102),
+            ..Person::NOBODY
+        },
+    )
+    .await;
+    let first = open(&mut conn, ksenia, "Не подключается").await;
+    let other = open(&mut conn, igor, "Медленно").await;
+    let reply = |ticket, author| message(ticket, author, None, false);
+
+    conn.tickets()
+        .reply(&reply(first, MessageAuthor::Support))
+        .await
+        .unwrap();
+    assert_eq!(unread(&mut conn, ksenia).await, (0, vec![(first, 0)]));
+
+    assert!(conn.tickets().start_unread().await.unwrap());
+    assert!(!conn.tickets().start_unread().await.unwrap());
+    assert_eq!(unread(&mut conn, ksenia).await, (0, vec![(first, 0)]));
+    conn.tickets()
+        .reply(&reply(first, MessageAuthor::Support))
+        .await
+        .unwrap();
+    assert_eq!(unread(&mut conn, ksenia).await, (1, vec![(first, 1)]));
+
+    cutoff(&mut conn, "-1 hour").await;
+    assert_eq!(unread(&mut conn, ksenia).await, (1, vec![(first, 2)]));
+    assert_eq!(unread(&mut conn, igor).await, (0, vec![(other, 0)]));
+    cutoff(&mut conn, "1 hour").await;
+    assert_eq!(unread(&mut conn, ksenia).await, (0, vec![(first, 0)]));
+    cutoff(&mut conn, "-1 hour").await;
+
+    let now = Utc::now() + Duration::minutes(1);
+    let said: Vec<_> = conn
+        .tickets()
+        .messages(first)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|m| m.created_at)
+        .collect();
+    assert_eq!(conn.tickets().mark_seen(first, igor, now).await.unwrap(), 0);
+    assert_eq!(unread(&mut conn, ksenia).await, (1, vec![(first, 2)]));
+    assert_eq!(
+        conn.tickets()
+            .mark_seen(first, ksenia, said[0])
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.tickets()
+            .mark_seen(first, ksenia, said[1])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(unread(&mut conn, ksenia).await, (1, vec![(first, 1)]));
+    assert_eq!(
+        conn.tickets().mark_seen(first, ksenia, now).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.tickets().mark_seen(first, ksenia, now).await.unwrap(),
+        0
+    );
+    assert_eq!(unread(&mut conn, ksenia).await, (0, vec![(first, 0)]));
+
+    conn.tickets()
+        .reply(&reply(first, MessageAuthor::Ai))
+        .await
+        .unwrap();
+    conn.tickets()
+        .reply(&reply(first, MessageAuthor::System))
+        .await
+        .unwrap();
+    assert_eq!(unread(&mut conn, ksenia).await, (1, vec![(first, 1)]));
+    conn.tickets()
+        .reply(&reply(first, MessageAuthor::Client))
+        .await
+        .unwrap();
+    assert_eq!(unread(&mut conn, ksenia).await, (0, vec![(first, 0)]));
+
+    let second = open(&mut conn, ksenia, "Нужен чек").await;
+    conn.tickets()
+        .reply(&message(second, MessageAuthor::Support, None, true))
+        .await
+        .unwrap();
+    assert_eq!(
+        unread(&mut conn, ksenia).await,
+        (1, vec![(first, 0), (second, 1)])
+    );
+    assert_eq!(conn.tickets().mark_read(second).await.unwrap(), 1);
+    assert_eq!(
+        unread(&mut conn, ksenia).await,
+        (1, vec![(first, 0), (second, 1)])
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn в_списке_клиента_последнее_сообщение_без_служебных() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let ksenia = client(
+        &mut conn,
+        &Person {
+            telegram: Some(1_103),
+            ..Person::NOBODY
+        },
+    )
+    .await;
+    let first = open(&mut conn, ksenia, &"я".repeat(500)).await;
+    let item = |list: Vec<ClientTicket>| list.into_iter().next().unwrap();
+    let view = item(conn.tickets().client_view(ksenia, 10).await.unwrap());
+    let preview = view.preview.unwrap();
+    assert_eq!(view.ticket.id, first);
+    assert_eq!(preview.author, MessageAuthor::Client);
+    assert_eq!(preview.text.chars().count(), 200);
+    assert_eq!(preview.file, None);
+
+    conn.tickets()
+        .reply(&message(first, MessageAuthor::System, None, false))
+        .await
+        .unwrap();
+    let file = conn
+        .ticket_files()
+        .insert(&NewTicketFile {
+            owner: FileOwner::Client(ksenia),
+            name: "экран.png",
+            mime: "image/png",
+            bytes: b"x",
+            width: None,
+            height: None,
+        })
+        .await
+        .unwrap();
+    let view = item(conn.tickets().client_view(ksenia, 10).await.unwrap());
+    assert_eq!(view.preview.unwrap().author, MessageAuthor::Client);
+    let mut reply = message(first, MessageAuthor::Client, None, false);
+    reply.body = String::new();
+    reply.attachments = vec![file.id];
+    conn.tickets().reply(&reply).await.unwrap();
+    let view = item(conn.tickets().client_view(ksenia, 10).await.unwrap());
+    let preview = view.preview.unwrap();
+    assert_eq!(preview.text, "");
+    assert_eq!(preview.file.as_deref(), Some("экран.png"));
+    let json = serde_json::to_value(
+        conn.tickets()
+            .client_view(ksenia, 10)
+            .await
+            .unwrap()
+            .first()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["id"], first.0);
+    assert_eq!(json["status"], "open");
+    assert_eq!(json["preview"]["author"], "client");
+    assert_eq!(json["unread"], 0);
+
+    let second = open(&mut conn, ksenia, "Ещё вопрос").await;
+    conn.tickets().close(second).await.unwrap();
+    let order: Vec<TicketId> = conn
+        .tickets()
+        .client_view(ksenia, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.ticket.id)
+        .collect();
+    assert_eq!(order, [first, second]);
+    assert_eq!(
+        conn.tickets().client_view(ksenia, 1).await.unwrap().len(),
+        1
     );
     drop(conn);
     db.cleanup().await;

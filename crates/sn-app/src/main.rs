@@ -153,6 +153,9 @@ async fn serve(config: Config, store: Store) -> Result<()> {
         Ok(_) => {}
         Err(err) => tracing::warn!(error = %err, "стандартные авторассылки не добавлены"),
     }
+    if let Err(err) = services.support().start_unread().await {
+        tracing::warn!(error = %err, "отсчёт непрочитанных ответов поддержки не начат");
+    }
     let cancel = CancellationToken::new();
     let signals = cancel.clone();
     tokio::spawn(async move {

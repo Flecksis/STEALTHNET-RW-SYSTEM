@@ -377,14 +377,8 @@ async fn веб_режим_нужен_работающему_мини_прило
     assert_eq!(web("menu.btn.buy").kind, Kind::Callback);
     assert_eq!(web("menu.btn.documents").web, None);
     assert!(web("menu.btn.documents").web_note.is_some());
-    assert_eq!(web("menu.btn.support").web, None);
-    assert!(
-        web("menu.btn.support")
-            .web_note
-            .as_deref()
-            .unwrap()
-            .contains("ИИ-чат")
-    );
+    assert_eq!(web("menu.btn.support").web, Some("Поддержка"));
+    assert_eq!(web("menu.btn.support").web_note, None);
     assert!(
         screen(&saved, Screen::Subscription)
             .slots
@@ -469,16 +463,18 @@ fn в_веб_режиме_кнопки_ведут_в_свои_разделы_м�
         friends_screen.app_url("menu.btn.referral"),
         Some(format!("{app}/friends"))
     );
-    let bot_tickets = Install {
+    let not_taken = Install {
         support_app: false,
         ..install.clone()
     };
-    assert_eq!(bot_tickets.app_url("menu.btn.support"), None);
+    assert_eq!(not_taken.app_url("menu.btn.support"), None);
+    assert_eq!(not_taken.web_note("menu.btn.support"), None);
     let own_link = Install {
         support: Some("https://t.me/help".into()),
         ..install.clone()
     };
     assert_eq!(own_link.app_url("menu.btn.support"), None);
+    assert_eq!(own_link.web_note("menu.btn.support"), None);
     assert_eq!(own_link.kind("menu.btn.support"), Kind::Link);
     let classic = Install {
         web: false,

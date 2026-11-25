@@ -845,6 +845,12 @@ impl CoreSettings {
         let base = self.public_url.as_deref()?.trim().trim_end_matches('/');
         base.starts_with("https://").then(|| format!("{base}/app"))
     }
+
+    pub fn support_app_url(&self) -> Option<String> {
+        self.miniapp_url()
+            .filter(|_| self.support_tickets())
+            .map(|app| format!("{app}/support"))
+    }
 }
 
 impl CoreSettings {
@@ -950,6 +956,37 @@ mod tests {
             (empty.support_link(), empty.support_tickets()),
             (None, true)
         );
+    }
+
+    #[test]
+    fn обращения_в_мини_приложении_открываются_когда_их_принимают_и_приложение_доступно() {
+        let with = |mode, url: Option<&str>, public: Option<&str>| CoreSettings {
+            support_mode: mode,
+            support_url: url.map(str::to_string),
+            public_url: public.map(str::to_string),
+            ..CoreSettings::default()
+        };
+        let chat = Some("https://t.me/help_chat");
+        let site = Some("https://vpn.example.com/");
+        let app = Some("https://vpn.example.com/app/support".to_string());
+        assert_eq!(
+            with(SupportMode::Tickets, None, site).support_app_url(),
+            app
+        );
+        assert_eq!(with(SupportMode::Both, chat, site).support_app_url(), app);
+        assert_eq!(with(SupportMode::Link, None, site).support_app_url(), app);
+        assert_eq!(with(SupportMode::Link, chat, site).support_app_url(), None);
+        assert_eq!(
+            with(SupportMode::Tickets, None, Some("http://vpn.example.com")).support_app_url(),
+            None
+        );
+        assert_eq!(
+            with(SupportMode::Tickets, None, None).support_app_url(),
+            None
+        );
+        let mut closed = with(SupportMode::Tickets, None, site);
+        closed.client_access.miniapp = false;
+        assert_eq!(closed.support_app_url(), None);
     }
 
     #[test]

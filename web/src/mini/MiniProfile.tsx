@@ -10,7 +10,7 @@ import { audienceOf, profileOn, sectionPath, type FriendsBlock, type LinksBlock,
 import { AccountCard } from './MiniAccount';
 import { BackHead, useMini } from './MiniApp';
 import { FriendsCard, useFriendsText, useReferral } from './MiniFriends';
-import { needsExtras, Row, useExtras, useRows } from './sections';
+import { needsExtras, Row, unreadText, useExtras, useRows } from './sections';
 import { openExternal } from './telegram';
 
 function Balance({ shown }: { shown: boolean }) {
@@ -65,10 +65,9 @@ function Friends({ block }: { block: FriendsBlock }) {
 }
 
 function Help() {
-  const { me, site } = useMini();
+  const { me, site, unread } = useMini();
   const link = supportLink(site);
-  const chat = supportTickets(site) && site.support_ai?.miniapp === true;
-  const ticketsBot = supportTickets(site) && !chat ? site.bot_username : null;
+  const tickets = supportTickets(site);
   return (
     <div className="mn-list" data-part="help">
       <Link to="/app/payments" className="mn-row press">
@@ -77,24 +76,18 @@ function Help() {
         {me.payments_count ? <span className="mn-row-val num">{me.payments_count}</span> : null}
         <Icon name="chevron-right" size={16} />
       </Link>
-      {chat ? (
-        <Link to="/app/support" className="mn-row press">
+      {tickets ? (
+        <Link to={sectionPath('support')} className="mn-row press">
           <Icon name="chat" size={21} />
           <span className="mn-row-name">{link ? t('Написать в поддержку') : t('Поддержка')}</span>
+          {unread > 0 ? <span className="mn-row-val num fresh">{unreadText(unread)}</span> : null}
           <Icon name="chevron-right" size={16} />
         </Link>
-      ) : null}
-      {ticketsBot ? (
-        <button type="button" className="mn-row press" onClick={() => openExternal(`https://t.me/${ticketsBot}?start=support`)}>
-          <Icon name="chat" size={21} />
-          <span className="mn-row-name">{link ? t('Написать в поддержку') : t('Поддержка')}</span>
-          <Icon name="chevron-right" size={16} />
-        </button>
       ) : null}
       {link ? (
         <button type="button" className="mn-row press" onClick={() => openExternal(link)}>
           <Icon name="chat" size={21} />
-          <span className="mn-row-name">{ticketsBot || chat ? t('Чат поддержки') : t('Поддержка')}</span>
+          <span className="mn-row-name">{tickets ? t('Чат поддержки') : t('Поддержка')}</span>
           <Icon name="chevron-right" size={16} />
         </button>
       ) : null}

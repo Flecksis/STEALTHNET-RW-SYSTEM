@@ -7,11 +7,11 @@ use axum::http::{HeaderMap, Method};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sn_domain::access::ClientChannel;
 use sn_domain::ids::{ClientId, PeriodId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::money::{Money, parse_units};
-use sn_domain::support::{Ticket, TicketChannel};
+use sn_domain::support::TicketChannel;
 use sn_modules::catalog::antibot;
 use sn_services::ServiceError;
 use sn_services::checkout::{
@@ -23,7 +23,7 @@ use sn_services::signup::{Arrival, Registration, SignupStart};
 use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
 use sn_services::two_factor::{CabinetLogin, TwoFactor};
 use sn_services::utm_tracking::site_utm;
-use sn_store::Db;
+use sn_store::{ClientTicket, Db};
 use uuid::Uuid;
 
 pub fn routes() -> Router<AppState> {
@@ -67,6 +67,7 @@ pub fn routes() -> Router<AppState> {
             delete(disconnect_device),
         )
         .route("/subscriptions/{id}/reissue", post(reissue))
+        .route("/support/unread", get(support_unread))
         .route("/support/tickets", get(tickets).post(open_ticket))
         .route("/support/tickets/{id}", get(ticket).post(reply))
         .route("/support/tickets/{id}/close", post(close_ticket))
@@ -495,6 +496,7 @@ async fn me(
         .has_saved_card(client.0.client_id)
         .await?;
     let photo = photo_version(&state, client.0.client_id).await?;
+    let support_unread = state.services.support().unread(client.0.client_id).await?;
     let must_change_password = match client.0.session_id {
         Some(session) if client.0.channel == sn_domain::access::ClientChannel::Cabinet => {
             state
@@ -532,6 +534,7 @@ async fn me(
         "has_password": has_password,
         "must_change_password": must_change_password,
         "photo": photo,
+        "support_unread": support_unread,
     })))
 }
 
@@ -999,10 +1002,18 @@ async fn reissue(
     Ok(Json(serde_json::json!({ "subscription_url": url })))
 }
 
+async fn support_unread(
+    client: CurrentClient,
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let tickets = state.services.support().unread(client.0.client_id).await?;
+    Ok(Json(serde_json::json!({ "tickets": tickets })))
+}
+
 async fn tickets(
     client: CurrentClient,
     State(state): State<AppState>,
-) -> ApiResult<Json<Vec<Ticket>>> {
+) -> ApiResult<Json<Vec<ClientTicket>>> {
     Ok(Json(
         state
             .services
@@ -1059,18 +1070,33 @@ async fn open_ticket(
     Ok(Json(serde_json::json!({ "ticket_id": id })))
 }
 
+#[derive(Serialize)]
+struct ClientThread {
+    #[serde(flatten)]
+    thread: TicketThread,
+    unread: i64,
+}
+
+async fn client_thread(
+    state: &AppState,
+    client: &CurrentClient,
+    id: TicketId,
+) -> ApiResult<Json<ClientThread>> {
+    let support = state.services.support();
+    let thread = support.thread(id, client.actor()).await?;
+    if client.0.full_access {
+        support.seen(&thread, client.0.client_id).await?;
+    }
+    let unread = support.unread(client.0.client_id).await?;
+    Ok(Json(ClientThread { thread, unread }))
+}
+
 async fn ticket(
     client: CurrentClient,
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> ApiResult<Json<TicketThread>> {
-    Ok(Json(
-        state
-            .services
-            .support()
-            .thread(TicketId(id), client.actor())
-            .await?,
-    ))
+) -> ApiResult<Json<ClientThread>> {
+    client_thread(&state, &client, TicketId(id)).await
 }
 
 #[derive(Deserialize)]
@@ -1086,10 +1112,11 @@ async fn reply(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     ApiJson(body): ApiJson<ReplyBody>,
-) -> ApiResult<Json<TicketThread>> {
+) -> ApiResult<Json<ClientThread>> {
     client.require_full()?;
-    let support = state.services.support();
-    support
+    state
+        .services
+        .support()
         .reply_with_files(
             TicketId(id),
             &ReplyRequest {
@@ -1100,18 +1127,21 @@ async fn reply(
             client.actor(),
         )
         .await?;
-    Ok(Json(support.thread(TicketId(id), client.actor()).await?))
+    client_thread(&state, &client, TicketId(id)).await
 }
 
 async fn ask_operator(
     client: CurrentClient,
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> ApiResult<Json<TicketThread>> {
+) -> ApiResult<Json<ClientThread>> {
     client.require_full()?;
-    let support = state.services.support();
-    support.ask_operator(TicketId(id), client.actor()).await?;
-    Ok(Json(support.thread(TicketId(id), client.actor()).await?))
+    state
+        .services
+        .support()
+        .ask_operator(TicketId(id), client.actor())
+        .await?;
+    client_thread(&state, &client, TicketId(id)).await
 }
 
 async fn close_ticket(

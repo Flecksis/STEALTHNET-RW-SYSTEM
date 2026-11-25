@@ -7,6 +7,8 @@ export type HandoffReason = 'human' | 'money' | 'unsure' | 'no_answer' | 'groq' 
 
 export type TicketAi = { state: 'active' | 'handed_off'; reason?: HandoffReason; handoff_at: string | null };
 
+export type TicketPreview = { author: Author; text: string; file?: string; at: string };
+
 export type TicketBrief = {
   id: number;
   status: 'open' | 'closed';
@@ -15,11 +17,13 @@ export type TicketBrief = {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  preview?: TicketPreview | null;
+  unread?: number;
 };
 
 export type ChatMessage = { author: Author; body: string; created_at: string; attachments?: Attachment[] };
 
-export type ChatThread = { ticket: TicketBrief; messages: ChatMessage[]; ai?: TicketAi | null };
+export type ChatThread = { ticket: TicketBrief; messages: ChatMessage[]; ai?: TicketAi | null; unread?: number };
 
 export const AI_NAME = msg('ИИ-помощник');
 

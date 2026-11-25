@@ -573,7 +573,7 @@ impl Module for AiModule {
             SettingField::flag(
                 "miniapp",
                 "Отвечать в мини-приложении",
-                "В мини-приложении появится чат поддержки вместо перехода в бота.",
+                "Обращения из раздела «Поддержка» в мини-приложении.",
             )
             .with_default("true"),
             SettingField::number(

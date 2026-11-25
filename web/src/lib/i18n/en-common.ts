@@ -104,7 +104,6 @@ export const COMMON: Record<string, string> = {
   '{ai} пишет ответ…': '{ai} is typing…',
   'Позвать оператора': 'Talk to an operator',
   'Не получилось позвать оператора': 'Couldn\'t reach an operator',
-  'Новый вопрос': 'New question',
   'Выберите, куда вывести': 'Choose where to withdraw',
   'Личный кабинет — {brand}': 'Your account — {brand}',
   '{price} в месяц': '{price} a month',

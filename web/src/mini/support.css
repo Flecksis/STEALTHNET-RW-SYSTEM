@@ -1,0 +1,103 @@
+.mn-page.support > :not(.mn-paybtn) {
+  width: 100%;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.mn-page.support.list {
+  padding-bottom: calc(180px + var(--mn-bottom));
+}
+
+.mn-page.support .mn-h1 {
+  min-width: 0;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.mn-row-val.fresh,
+.mn-tone.fresh {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.mn-tab {
+  position: relative;
+}
+
+.mn-tab-dot {
+  position: absolute;
+  top: 7px;
+  left: calc(50% + 8px);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.mn-tk {
+  min-height: 68px;
+  align-items: center;
+}
+
+li + li > .mn-tk {
+  border-top: 1px solid var(--line);
+}
+
+.mn-tk .mn-payrow-main strong,
+.mn-tk .mn-tk-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mn-tk .mn-tk-text {
+  font-size: 14px;
+}
+
+.mn-tk.fresh .mn-payrow-main strong {
+  font-weight: 800;
+}
+
+.mn-tk.fresh .mn-tk-text {
+  color: var(--ink-2);
+}
+
+.mn-tk-when {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.mn-page.support > .mn-tk-h {
+  margin-top: 4px;
+  margin-bottom: -6px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.mn-page.support > .mn-tk-sub {
+  margin-top: -6px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.mn .mn-tk-link {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.mn-tk-end {
+  scroll-margin-bottom: calc(104px + var(--mn-bottom));
+}
+
+@media (min-width: 800px) {
+  .mn-page.support > .mn-paybtn {
+    left: calc(50% - 380px);
+    right: calc(50% - 380px);
+  }
+}

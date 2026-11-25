@@ -25,7 +25,7 @@ use sn_payments::providers::{StarsPayment, StarsPaymentEvent, StarsPreCheckout};
 use sn_services::Services;
 use sn_services::bot_content::{BotContent, Document};
 use sn_services::bot_flood::Signup;
-use sn_services::bot_layout::Install;
+use sn_services::bot_layout::{Install, link_button};
 use sn_services::subscriptions::SubscriptionView;
 use sn_store::Db;
 use std::sync::Arc;
@@ -1036,9 +1036,7 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
 pub const SUPPORT_START: &str = "support";
 
 pub fn support_link(settings: &CoreSettings) -> Option<&str> {
-    settings
-        .support_link()
-        .filter(|u| u.starts_with("https://"))
+    settings.support_link().filter(|u| link_button(u))
 }
 
 fn paysupport(ctx: &BotCtx) -> Screen {

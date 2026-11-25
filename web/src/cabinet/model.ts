@@ -48,6 +48,7 @@ export type ClientMe = {
   has_password?: boolean;
   must_change_password?: boolean;
   photo?: string | null;
+  support_unread?: number;
 };
 
 export function photoUrl(me: ClientMe): string | null {

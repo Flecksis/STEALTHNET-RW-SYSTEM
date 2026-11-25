@@ -1,15 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link, Navigate, useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
-import { dateTime } from '../lib/format';
-import { t } from '../lib/i18n';
+import { dateLong, dateTime, dayLabel, timeHM } from '../lib/format';
+import { msg, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
+import { supportLink, supportTickets } from '../lib/support';
 import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
-import { AttachButton, DraftList, MessageFiles, useAttachments, type Attachment } from '../lib/ticketFiles';
+import { AttachButton, DraftList, MessageFiles, useAttachments, type Attachment, type Attachments } from '../lib/ticketFiles';
 import { BackHead, useMini } from './MiniApp';
-import { downloadExternal } from './telegram';
+import { downloadExternal, openExternal } from './telegram';
+import { previewText, ticketGroups, ticketId, ticketMark, ticketWhen, unreadCount, waitingTicket, type TicketMark } from './tickets';
 
 const FILES = '/api/client/support/files';
+const TICKETS = '/api/client/support/tickets';
+const LIST = '/app/support';
+const REFRESH = 20_000;
+
+const MARKS: Record<TicketMark, { text: string; tone: string }> = {
+  fresh: { text: msg('Новый ответ'), tone: 'fresh' },
+  answered: { text: msg('Есть ответ'), tone: 'ink2' },
+  waiting: { text: msg('Ждёт ответа'), tone: 'muted' },
+  closed: { text: msg('Закрыто'), tone: 'muted' },
+};
 
 async function openFile(file: Attachment, fail: (text: string) => void) {
   try {
@@ -24,137 +36,333 @@ function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-function stateOf(ticket: TicketBrief): { text: string; tone: string } {
-  if (ticket.status === 'closed') {
-    return { text: t('Закрыто'), tone: 'muted' };
-  }
-  if (ticket.last_author === 'client') {
-    return { text: t('Ждёт ответа'), tone: 'muted' };
-  }
-  return { text: t('Есть ответ'), tone: 'ink2' };
+function shortWhen(iso: string): string {
+  const day = dayLabel(iso);
+  return day === t('Сегодня') ? timeHM(iso) : day;
 }
 
-export function MiniSupport() {
+function stateLine(ticket: TicketBrief): string {
+  if (ticket.status === 'closed' && ticket.closed_at) {
+    return t('Закрыто {date}', { date: dateLong(ticket.closed_at) });
+  }
+  return t('{state} · открыто {date}', { state: t(MARKS[ticketMark(ticket)].text), date: dateLong(ticket.created_at) });
+}
+
+type ComposerProps = {
+  label: string;
+  placeholder: string;
+  rows: number;
+  files: Attachments;
+  body: string;
+  onBody: (body: string) => void;
+  busy: boolean;
+  onSend: () => void;
+  before?: ReactNode;
+  children?: ReactNode;
+};
+
+function Composer({ label, placeholder, rows, files, body, onBody, busy, onSend, before, children }: ComposerProps) {
+  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
+  return (
+    <div className="mn-card mn-pad">
+      {before}
+      <label className="mn-field">
+        <span className="sr-only">{label}</span>
+        <textarea
+          rows={rows}
+          maxLength={MAX_BODY}
+          value={body}
+          placeholder={placeholder}
+          onChange={(e) => onBody(e.target.value)}
+          onPaste={(e) => {
+            if (files.enabled && e.clipboardData.files.length) {
+              e.preventDefault();
+              files.add(e.clipboardData.files);
+            }
+          }}
+          disabled={busy}
+        />
+      </label>
+      <DraftList files={files} prefix="mn" disabled={busy} />
+      <div className="mn-send">
+        <AttachButton files={files} className="mn-btn2 mn-clip press" disabled={busy} />
+        <button type="button" className="mn-main sm press" onClick={onSend} disabled={busy || !canSend}>
+          {busy ? t('Отправляем…') : t('Отправить')}
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function TicketForm({ replace, waiting }: { replace: boolean; waiting: TicketBrief | null }) {
   const navigate = useNavigate();
   const { site } = useMini();
-  const [list, setList] = useState<TicketBrief[] | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const files = useAttachments(FILES, site.support_files ?? null);
-  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
-
-  useEffect(() => {
-    api<TicketBrief[]>('/api/client/support/tickets')
-      .then(setList)
-      .catch((err) => setError(failText(err, t('Обращения не загрузились'))));
-  }, []);
+  const [waitingBefore, waitingAfter] = waiting ? t('Обращение №{id} ещё ждёт ответа. Дополнить его можно {link}.', { id: waiting.id }).split('{link}') : [];
 
   const send = async () => {
-    const text = body.trim();
-    if (!canSend || busy) {
+    if (busy) {
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ ticket_id: number }>('/api/client/support/tickets', { method: 'POST', body: { body: text, files: files.ids } });
-      setBody('');
-      files.reset();
-      navigate(`/app/support/${res.ticket_id}`);
+      const res = await api<{ ticket_id: number }>(TICKETS, { method: 'POST', body: { body: body.trim(), files: files.ids } });
+      navigate(`${LIST}/${res.ticket_id}`, { replace });
     } catch (err) {
       setError(failText(err, t('Сообщение не отправилось')));
-    } finally {
       setBusy(false);
     }
   };
 
-  const open = (list ?? []).filter((item) => item.status === 'open');
-  const closed = (list ?? []).filter((item) => item.status === 'closed');
-  const waiting = open.find((item) => item.last_author === 'client');
+  return (
+    <Composer
+      label={t('Сообщение')}
+      placeholder={t('Например: не подключается iPhone')}
+      rows={4}
+      files={files}
+      body={body}
+      onBody={setBody}
+      busy={busy}
+      onSend={() => void send()}
+      before={
+        <>
+          <span className="mn-ink2">
+            {site.support_ai?.miniapp
+              ? t('Сначала ответит {ai}. Если он не справится или вы попросите, подключится оператор.', { ai: aiName() })
+              : t('Опишите вопрос. Ответ появится здесь и придёт в Telegram.')}
+          </span>
+          {waiting ? (
+            <span className="mn-ink2">
+              {waitingBefore}
+              <Link to={`${LIST}/${waiting.id}`} className="mn-tk-link">
+                {t('в переписке')}
+              </Link>
+              {waitingAfter}
+            </span>
+          ) : null}
+        </>
+      }
+    >
+      {error ? (
+        <span className="mn-error" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </Composer>
+  );
+}
+
+function TicketRow({ ticket }: { ticket: TicketBrief }) {
+  const mark = ticketMark(ticket);
+  const { preview } = ticket;
+  const text = previewText(preview) || (preview?.file ? t('Файл: {name}', { name: preview.file }) : '');
+  return (
+    <li>
+      <Link to={`${LIST}/${ticket.id}`} className={mark === 'fresh' ? 'mn-payrow mn-tk fresh press' : 'mn-payrow mn-tk press'}>
+        <span className="mn-payrow-main">
+          <strong>{ticketTitle(ticket)}</strong>
+          {preview && text ? (
+            <span className="mn-tk-text">
+              {authorName(preview.author)}: {text}
+            </span>
+          ) : null}
+        </span>
+        <span className="mn-payrow-side">
+          <span className="mn-tk-when">{shortWhen(ticketWhen(ticket))}</span>
+          <span className={`mn-tone ${MARKS[mark].tone}`}>{t(MARKS[mark].text)}</span>
+        </span>
+      </Link>
+    </li>
+  );
+}
+
+function LinkRow({ link }: { link: string }) {
+  return (
+    <div className="mn-list">
+      <button type="button" className="mn-row press" onClick={() => openExternal(link)}>
+        <Icon name="chat" size={21} />
+        <span className="mn-row-name">{t('Чат поддержки')}</span>
+        <Icon name="external" size={16} />
+      </button>
+    </div>
+  );
+}
+
+function LinkCard({ link, text }: { link: string; text: string }) {
+  return (
+    <div className="mn-card mn-pad">
+      <span className="mn-ink2">{text}</span>
+      <button type="button" className="mn-main sm press" onClick={() => openExternal(link)}>
+        {t('Написать в поддержку')}
+      </button>
+    </div>
+  );
+}
+
+export function MiniSupport() {
+  const { site, setUnread } = useMini();
+  const [list, setList] = useState<TicketBrief[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const tickets = supportTickets(site);
+  const link = supportLink(site);
+
+  const load = useCallback(async () => {
+    try {
+      const found = await api<TicketBrief[]>(TICKETS);
+      setList(found);
+      setUnread(unreadCount(found));
+      setError(null);
+    } catch (err) {
+      setError(failText(err, t('Обращения не загрузились')));
+    }
+  }, [setUnread]);
+
+  useEffect(() => {
+    void load();
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    };
+    const timer = window.setInterval(refresh, REFRESH);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [load]);
+
+  const { open, closed } = ticketGroups(list ?? []);
+  const some = open.length + closed.length > 0;
 
   return (
-    <main className="mn-page">
+    <main className={tickets && some ? 'mn-page support list' : 'mn-page support'}>
       <BackHead title={t('Поддержка')} />
-      <div className="mn-card mn-pad">
-        <strong>{waiting ? t('Ещё вопрос') : t('Новый вопрос')}</strong>
-        <span className="mn-ink2">{t('Сначала ответит {ai}. Если он не справится или вы попросите, подключится оператор.', { ai: aiName() })}</span>
-        <label className="mn-field">
-          <span className="sr-only">{t('Сообщение')}</span>
-          <textarea rows={4} maxLength={MAX_BODY} value={body} placeholder={t('Например: не подключается iPhone')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
-        </label>
-        <DraftList files={files} prefix="mn" disabled={busy} />
-        {error ? <span className="mn-error">{error}</span> : null}
-        <div className="mn-send">
-          <AttachButton files={files} className="mn-btn2 mn-clip press" disabled={busy} />
-          <button type="button" className="mn-main sm press" onClick={() => void send()} disabled={busy || !canSend}>
-            {busy ? t('Отправляем…') : t('Отправить')}
+      {!list && !error ? <p className="mn-muted">{t('Загружаем…')}</p> : null}
+      {!list && error ? (
+        <div className="mn-card mn-pad">
+          <span className="mn-error" role="alert">
+            {error}
+          </span>
+          <button type="button" className="mn-btn2 press" onClick={() => void load()}>
+            {t('Повторить')}
           </button>
         </div>
-      </div>
-      {list && list.length > 0 ? (
-        <div className="mn-list" aria-label={t('Обращения')}>
-          {[...open, ...closed].map((item) => {
-            const state = stateOf(item);
-            return (
-              <Link key={item.id} to={`/app/support/${item.id}`} className="mn-row press mn-ticket">
-                <span className="mn-ticket-text">
-                  <span className="mn-row-name">{ticketTitle(item)}</span>
-                  <span className={`mn-tone ${state.tone}`}>{state.text}</span>
-                </span>
-                <Icon name="chevron-right" size={16} />
-              </Link>
-            );
-          })}
-        </div>
       ) : null}
-      {list === null && !error ? <p className="mn-muted">{t('Загружаем…')}</p> : null}
+      {!tickets && link ? <LinkCard link={link} text={t('Поддержка отвечает в чате. Новые обращения здесь не принимаются.')} /> : null}
+      {list && !some && tickets ? <TicketForm replace={false} waiting={null} /> : null}
+      {open.length > 0 ? (
+        <ul className="mn-list mn-payrows" aria-label={t('Открытые обращения')}>
+          {open.map((ticket) => (
+            <TicketRow key={ticket.id} ticket={ticket} />
+          ))}
+        </ul>
+      ) : null}
+      {closed.length > 0 ? (
+        <>
+          <h2 className="mn-tk-h">{t('Закрытые')}</h2>
+          <ul className="mn-list mn-payrows" aria-label={t('Закрытые обращения')}>
+            {closed.map((ticket) => (
+              <TicketRow key={ticket.id} ticket={ticket} />
+            ))}
+          </ul>
+        </>
+      ) : null}
+      {tickets && link ? <LinkRow link={link} /> : null}
+      {tickets && some ? (
+        <Link to={`${LIST}/new`} className="mn-main mn-paybtn press">
+          <Icon name="plus" size={20} />
+          {t('Новое обращение')}
+        </Link>
+      ) : null}
+    </main>
+  );
+}
+
+export function MiniNewTicket() {
+  const { site } = useMini();
+  const [waiting, setWaiting] = useState<TicketBrief | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api<TicketBrief[]>(TICKETS)
+      .then((list) => alive && setWaiting(waitingTicket(list)))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!supportTickets(site)) {
+    return <Navigate to={LIST} replace />;
+  }
+  return (
+    <main className="mn-page support">
+      <BackHead title={t('Новое обращение')} to={LIST} />
+      <TicketForm replace waiting={waiting} />
     </main>
   );
 }
 
 export function MiniTicket() {
-  const { id = '' } = useParams();
-  const { site } = useMini();
-  const ticketId = Number.parseInt(id, 10);
+  const { id } = useParams();
+  const { site, setUnread } = useMini();
+  const ticket = ticketId(id);
   const [thread, setThread] = useState<ChatThread | null>(null);
+  const [lost, setLost] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [ask, setAsk] = useState(false);
   const files = useAttachments(FILES, site.support_files ?? null);
-  const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
   const bottom = useRef<HTMLDivElement>(null);
   const seen = useRef(0);
   const typing = aiTyping(thread);
+  const tickets = supportTickets(site);
+  const link = supportLink(site);
+
+  const show = useCallback(
+    (next: ChatThread) => {
+      setThread(next);
+      setUnread(next.unread ?? 0);
+    },
+    [setUnread],
+  );
 
   const load = useCallback(async () => {
-    if (!Number.isFinite(ticketId)) {
-      setError(t('Обращение не найдено'));
+    if (ticket === null) {
+      setLost(t('Обращение не найдено'));
       return;
     }
     try {
-      setThread(await api<ChatThread>(`/api/client/support/tickets/${ticketId}`));
-      setError(null);
+      show(await api<ChatThread>(`${TICKETS}/${ticket}`));
+      setLost(null);
     } catch (err) {
-      setError(failText(err, t('Обращение не загрузилось')));
+      setLost(err instanceof ApiError && err.status === 404 ? t('Обращение не найдено') : failText(err, t('Обращение не загрузилось')));
     }
-  }, [ticketId]);
+  }, [ticket, show]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    const timer = window.setInterval(
-      () => {
-        if (document.visibilityState === 'visible') {
-          void load();
-        }
-      },
-      typing ? 2_500 : 15_000,
-    );
-    return () => window.clearInterval(timer);
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    };
+    const timer = window.setInterval(refresh, typing ? 2_500 : 15_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
   }, [load, typing]);
 
   useEffect(() => {
@@ -165,11 +373,17 @@ export function MiniTicket() {
     }
   }, [thread, typing]);
 
+  useEffect(() => {
+    if (ask) {
+      bottom.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [ask]);
+
   const post = async (path: string, payload: unknown, fallback: string) => {
     setBusy(true);
     setError(null);
     try {
-      setThread(await api<ChatThread>(path, { method: 'POST', body: payload }));
+      show(await api<ChatThread>(path, { method: 'POST', body: payload }));
       return true;
     } catch (err) {
       setError(failText(err, fallback));
@@ -180,11 +394,7 @@ export function MiniTicket() {
   };
 
   const reply = async () => {
-    const text = body.trim();
-    if (!canSend || busy) {
-      return;
-    }
-    if (await post(`/api/client/support/tickets/${ticketId}`, { body: text, files: files.ids }, t('Сообщение не отправилось'))) {
+    if (!busy && (await post(`${TICKETS}/${ticket}`, { body: body.trim(), files: files.ids }, t('Сообщение не отправилось')))) {
       setBody('');
       files.reset();
     }
@@ -192,8 +402,9 @@ export function MiniTicket() {
 
   const close = async () => {
     setBusy(true);
+    setError(null);
     try {
-      await api(`/api/client/support/tickets/${ticketId}/close`, { method: 'POST', body: {} });
+      await api(`${TICKETS}/${ticket}/close`, { method: 'POST', body: {} });
       setAsk(false);
       await load();
     } catch (err) {
@@ -203,9 +414,9 @@ export function MiniTicket() {
     }
   };
 
+  const problem = error ?? (thread ? null : lost);
   const messages = visibleMessages(thread);
   const handoff = handoffAfter(thread);
-  const answering = aiAnswering(thread);
   const closed = thread?.ticket.status === 'closed';
   const handoffNote = (
     <li key="handoff" className="mn-chat-note">
@@ -214,9 +425,10 @@ export function MiniTicket() {
   );
 
   return (
-    <main className="mn-page">
-      <BackHead title={Number.isFinite(ticketId) ? t('Обращение №{id}', { id: ticketId }) : t('Обращение')} to="/app/support" />
-      {!thread && !error ? <p className="mn-muted">{t('Загружаем переписку…')}</p> : null}
+    <main className="mn-page support">
+      <BackHead title={ticket === null ? t('Обращение') : t('Обращение №{id}', { id: ticket })} to={LIST} />
+      {thread ? <p className="mn-tk-sub">{stateLine(thread.ticket)}</p> : null}
+      {!thread && !lost ? <p className="mn-muted">{t('Загружаем переписку…')}</p> : null}
       {thread ? (
         <ol className="mn-chat" aria-label={t('Переписка')}>
           {messages.map((m, i) => {
@@ -239,38 +451,31 @@ export function MiniTicket() {
           ) : null}
         </ol>
       ) : null}
-      <div ref={bottom} />
-      {error ? <span className="mn-error">{error}</span> : null}
-      {thread && closed ? (
+      {problem ? (
+        <span className="mn-error" role="alert">
+          {problem}
+        </span>
+      ) : null}
+      {thread && closed && tickets ? (
         <div className="mn-card mn-pad">
-          <span className="mn-ink2">{t('Обращение закрыто. Если вопрос остался, задайте новый.')}</span>
-          <Link to="/app/support" className="mn-main sm press">
-            {t('Новый вопрос')}
+          <span className="mn-ink2">{t('Обращение закрыто. Если вопрос остался, начните новое.')}</span>
+          <Link to={`${LIST}/new`} className="mn-main sm press">
+            {t('Новое обращение')}
           </Link>
         </div>
       ) : null}
+      {thread && closed && !tickets && link ? <LinkCard link={link} text={t('Обращение закрыто. Если вопрос остался, напишите в чат поддержки.')} /> : null}
       {thread && !closed ? (
-        <div className="mn-card mn-pad">
-          <label className="mn-field">
-            <span className="sr-only">{t('Ответ')}</span>
-            <textarea rows={3} maxLength={MAX_BODY} value={body} placeholder={t('Напишите сообщение')} onChange={(e) => setBody(e.target.value)} disabled={busy} />
-          </label>
-          <DraftList files={files} prefix="mn" disabled={busy} />
-          <div className="mn-send">
-            <AttachButton files={files} className="mn-btn2 mn-clip press" disabled={busy} />
-            <button type="button" className="mn-main sm press" onClick={() => void reply()} disabled={busy || !canSend}>
-              {busy ? t('Отправляем…') : t('Отправить')}
-            </button>
-          </div>
-          {answering ? (
-            <button type="button" className="mn-btn2 press" onClick={() => void post(`/api/client/support/tickets/${ticketId}/operator`, {}, t('Не получилось позвать оператора'))} disabled={busy}>
+        <Composer label={t('Ответ')} placeholder={t('Напишите сообщение')} rows={3} files={files} body={body} onBody={setBody} busy={busy} onSend={() => void reply()}>
+          {aiAnswering(thread) ? (
+            <button type="button" className="mn-btn2 press" onClick={() => void post(`${TICKETS}/${ticket}/operator`, {}, t('Не получилось позвать оператора'))} disabled={busy}>
               {t('Позвать оператора')}
             </button>
           ) : null}
           {ask ? (
             <div className="mn-ask">
               <span>
-                <strong>{t('Закрыть обращение?')}</strong> {t('Писать в него будет нельзя, но можно задать новый вопрос.')}
+                <strong>{t('Закрыть обращение?')}</strong> {tickets ? t('Писать в него больше будет нельзя, но можно начать новое.') : t('Писать в него больше будет нельзя.')}
               </span>
               <div className="mn-ask-grid">
                 <button type="button" className="mn-ask-ok press" onClick={() => void close()} disabled={busy}>
@@ -286,8 +491,9 @@ export function MiniTicket() {
               {t('Вопрос решён, закрыть')}
             </button>
           )}
-        </div>
+        </Composer>
       ) : null}
+      <div ref={bottom} className="mn-tk-end" />
     </main>
   );
 }

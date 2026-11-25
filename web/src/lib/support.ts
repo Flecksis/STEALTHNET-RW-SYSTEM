@@ -6,7 +6,27 @@ export function supportTickets(site: Site): boolean {
 
 export function supportLink(site: Site): string | null {
   const url = site.support_url?.trim();
-  return url ? url : null;
+  return url ? webLink(url) : null;
+}
+
+function webLink(url: string): string {
+  const found = /^tg:\/\/resolve\/?\?(.+)$/i.exec(url);
+  const params = new URLSearchParams(found?.[1] ?? '');
+  const name = params.get('domain') ?? '';
+  if (!/^[A-Za-z0-9_]{4,64}$/.test(name)) {
+    return url;
+  }
+  params.delete('domain');
+  const rest = params.toString();
+  return `https://t.me/${name}${rest ? `?${rest}` : ''}`;
+}
+
+export function supportWay(site: Site, screen: string): { to?: string; url?: string } | null {
+  if (supportTickets(site)) {
+    return { to: screen };
+  }
+  const url = supportLink(site);
+  return url ? { url } : null;
 }
 
 export function telegramLink(raw: string): string | null {

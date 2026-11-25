@@ -70,5 +70,14 @@ async fn кнопка_поддержки_следует_режиму_подде�
             .unwrap(),
         None
     );
+
+    let chat = "tg://resolve?domain=help_chat";
+    support(&services, SupportMode::Link, Some(chat)).await;
+    handle_update(&ctx, callback_update(8, 931, "m")).await;
+    assert!(!last_buttons(&server).await.contains(&"sup".to_string()));
+    assert_eq!(url_buttons(&server).await, [chat]);
+    handle_update(&ctx, callback_update(9, 931, "sup")).await;
+    assert!(last_text(&server).await.contains("откроет чат поддержки"));
+    assert_eq!(url_buttons(&server).await, [chat]);
     db.cleanup().await;
 }

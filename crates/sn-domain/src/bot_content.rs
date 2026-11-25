@@ -3142,6 +3142,12 @@ pub static CATALOG: &[Entry] = &[
     ),
     hideable("notify.btn.balance", Notify, "Кнопка «Баланс»", "Баланс"),
     hideable("notify.btn.extend", Notify, "Кнопка «Продлить»", "Продлить"),
+    hideable(
+        "notify.btn.ticket",
+        Notify,
+        "Кнопка «Открыть переписку»",
+        "Открыть переписку",
+    ),
     hideable("notify.btn.reply", Notify, "Кнопка «Ответить»", "Ответить"),
     hideable(
         "notify.btn.support",
