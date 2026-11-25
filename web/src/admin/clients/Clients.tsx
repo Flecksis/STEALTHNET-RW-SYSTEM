@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { dateNumeric, dayMonthNumeric, days, daysLeft, groupDigits, money, NBSP, periodLabel } from '../../lib/format';
@@ -146,6 +146,7 @@ function rowView(row: ClientRow) {
 }
 
 export function Clients() {
+  const navigate = useNavigate();
   const { can, me } = useSession();
   const [params, setParams] = useSearchParams();
   const segment = (params.get('segment') as Segment | null) ?? 'all';
@@ -386,6 +387,23 @@ export function Clients() {
     setAct({ kind, row });
   };
 
+  const openCard = (event: ReactMouseEvent<HTMLElement>, id: number) => {
+    const target = event.target as HTMLElement;
+    const middle = event.button === 1;
+    if (event.defaultPrevented || (event.button !== 0 && !middle) || !event.currentTarget.contains(target) || target.closest('a, button, input, label')) {
+      return;
+    }
+    if (!middle && window.getSelection()?.toString()) {
+      return;
+    }
+    const path = `/admin/clients/${id}`;
+    if (middle || event.metaKey || event.ctrlKey || event.shiftKey) {
+      window.open(path, '_blank', 'noopener');
+    } else {
+      navigate(path);
+    }
+  };
+
   const closeAct = () => setAct(null);
   const actName = act ? displayName(act.row) : '';
   const actSub = act?.row.subscription && !act.row.subscription.ended_at ? act.row.subscription : null;
@@ -495,7 +513,13 @@ export function Clients() {
               const balanceZero = !row.balance || row.balance.minor === 0;
               const paidZero = !row.paid_total || row.paid_total.minor === 0;
               return (
-                <div role="row" key={row.client.id} className={on ? 'cl-row hov sel' : 'cl-row hov'}>
+                <div
+                  role="row"
+                  key={row.client.id}
+                  className={on ? 'cl-row hov opens sel' : 'cl-row hov opens'}
+                  onClick={(event) => openCard(event, row.client.id)}
+                  onAuxClick={(event) => openCard(event, row.client.id)}
+                >
                   <span role="cell" style={{ display: 'flex' }}>
                     {writable ? <input type="checkbox" aria-label={`Выбрать: ${view.name}`} checked={on} onChange={() => toggle(row.client.id)} /> : null}
                   </span>

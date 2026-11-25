@@ -119,6 +119,10 @@
   background: var(--sel);
 }
 
+.cl-row.opens {
+  cursor: pointer;
+}
+
 .cl-row input[type='checkbox'] {
   width: 17px;
   height: 17px;
