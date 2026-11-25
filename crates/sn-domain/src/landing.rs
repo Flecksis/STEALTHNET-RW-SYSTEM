@@ -1,5 +1,6 @@
+use crate::css::{BLOCK_CSS_MAX, PAGE_CSS_MAX};
 use crate::image::ImageKind;
-use crate::landing_css::{BLOCK_CSS_MAX, LandingCss, PAGE_CSS_MAX};
+use crate::landing_css::LandingCss;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;

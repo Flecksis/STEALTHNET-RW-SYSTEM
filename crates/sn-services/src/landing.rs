@@ -1,5 +1,6 @@
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
+use crate::own_css::{CssCheck, CssPlaces, CssReport, OwnCss, StyleFile, short_hash};
 use crate::services::Services;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -9,16 +10,15 @@ use sn_domain::image::{self, ImageKind, ImageProblem, LANDING_RULES};
 use sn_domain::landing::{
     self, Block, BlockKind, IMAGE_TAG_LEN, LIMITS, LandingConfig, Limits, STORED_IMAGES_MAX,
 };
-use sn_domain::landing_css::{self, CssError, CssPlace, LandingCss};
+use sn_domain::landing_css::{CssPlace, LandingCss};
 use sn_domain::settings::keys;
 use sn_store::{Db, SiteAsset};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const ASSET_PREFIX: &str = "landing.";
 pub const STALE_AFTER_SECONDS: i64 = 3600;
 pub const INVALID: &str = "landing.invalid";
-const VERSION_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ImageRulesView {
@@ -60,48 +60,6 @@ pub struct PublicLanding {
     pub css: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LandingStyle {
-    pub version: String,
-    pub text: String,
-}
-
-impl LandingStyle {
-    pub fn of(config: &LandingConfig) -> Option<LandingStyle> {
-        let text = config.css.style();
-        (!text.is_empty()).then(|| LandingStyle {
-            version: short_hash(text.as_bytes()),
-            text,
-        })
-    }
-
-    pub fn path(&self) -> String {
-        format!("/api/public/landing/{}.css", self.version)
-    }
-}
-
-pub type CssPlaces = BTreeMap<String, Option<String>>;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct CssReport {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub problem: Option<String>,
-}
-
-impl From<CssError> for CssReport {
-    fn from(err: CssError) -> CssReport {
-        CssReport {
-            style: None,
-            line: err.line,
-            problem: Some(err.reason),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UploadedImage {
     pub tag: String,
@@ -120,28 +78,14 @@ pub struct LandingUpdate {
     pub css: Option<CssPlaces>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CssCheck {
-    #[serde(default)]
-    pub css: CssPlaces,
-}
-
 pub fn asset_name(tag: &str) -> String {
     format!("{ASSET_PREFIX}{tag}")
-}
-
-fn short_hash(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))[..VERSION_LEN].to_string()
 }
 
 pub fn version_of(blocks: &[Block], css: Option<&str>) -> String {
     let mut bytes = serde_json::to_vec(blocks).unwrap_or_default();
     bytes.extend_from_slice(css.unwrap_or_default().as_bytes());
     short_hash(&bytes)
-}
-
-fn lost_image() -> String {
-    "картинка не найдена, загрузите её заново".to_string()
 }
 
 fn image_problem(problem: ImageProblem) -> ServiceError {
@@ -220,8 +164,12 @@ impl<'a> LandingOps<'a> {
         }
     }
 
-    pub fn style(&self) -> Option<Arc<LandingStyle>> {
+    pub fn style(&self) -> Option<Arc<StyleFile>> {
         self.services.landing_style()
+    }
+
+    fn own_css(&self) -> OwnCss<'a> {
+        OwnCss::new(self.services, ASSET_PREFIX, INVALID)
     }
 
     fn referenced(config: &LandingConfig) -> Vec<String> {
@@ -233,77 +181,11 @@ impl<'a> LandingOps<'a> {
             .collect()
     }
 
-    async fn missing(&self, tags: BTreeSet<String>) -> ServiceResult<BTreeSet<String>> {
-        if tags.is_empty() {
-            return Ok(tags);
-        }
-        let names: Vec<String> = tags.iter().map(|tag| asset_name(tag)).collect();
-        let mut conn = self.services.store().conn().await?;
-        let found: BTreeSet<String> = conn
-            .site_assets()
-            .existing(&names)
-            .await?
-            .into_iter()
-            .collect();
-        Ok(tags
-            .into_iter()
-            .filter(|tag| !found.contains(&asset_name(tag)))
-            .collect())
-    }
-
     pub async fn check_css(
         &self,
         check: &CssCheck,
     ) -> ServiceResult<BTreeMap<CssPlace, CssReport>> {
-        let mut checked = BTreeMap::new();
-        for (name, text) in &check.css {
-            if let Some(place) = CssPlace::parse(name) {
-                let verdict = landing_css::check(place, text.as_deref().unwrap_or_default());
-                checked.insert(place, verdict);
-            }
-        }
-        let tags = checked
-            .values()
-            .flatten()
-            .flat_map(|css| css.images.keys().cloned())
-            .collect();
-        let missing = self.missing(tags).await?;
-        Ok(checked
-            .into_iter()
-            .map(|(place, verdict)| {
-                let report = match verdict {
-                    Err(err) => CssReport::from(err),
-                    Ok(css) => match css.images.iter().find(|(tag, _)| missing.contains(*tag)) {
-                        Some((_, line)) => CssReport {
-                            style: None,
-                            line: Some(*line),
-                            problem: Some(lost_image()),
-                        },
-                        None => CssReport {
-                            style: Some(css.style),
-                            ..CssReport::default()
-                        },
-                    },
-                };
-                (place, report)
-            })
-            .collect())
-    }
-
-    async fn next_css(&self, places: &CssPlaces) -> ServiceResult<LandingCss> {
-        let css = LandingCss::parse(places)
-            .map_err(|err| ServiceError::rejected(INVALID, err.to_string()))?;
-        let images = css.images();
-        let missing = self
-            .missing(images.iter().map(|(_, _, tag)| tag.clone()).collect())
-            .await?;
-        if let Some((place, line, _)) = images.iter().find(|(_, _, tag)| missing.contains(tag)) {
-            return Err(ServiceError::rejected(
-                INVALID,
-                format!("{}, строка {line}: {}", place.title(), lost_image()),
-            ));
-        }
-        Ok(css)
+        self.own_css().check(check).await
     }
 
     pub async fn update(
@@ -315,7 +197,7 @@ impl<'a> LandingOps<'a> {
         let mut next = LandingConfig::parse(raw)
             .map_err(|err| ServiceError::rejected(INVALID, err.to_string()))?;
         next.css = match &update.css {
-            Some(places) => self.next_css(places).await?,
+            Some(places) => self.own_css().parse(places).await?,
             None => self.config().css,
         };
         {
@@ -357,16 +239,8 @@ impl<'a> LandingOps<'a> {
             .iter()
             .map(Block::kind)
             .eq(next.blocks.iter().map(Block::kind));
-        let css: Vec<&'static str> = CssPlace::ALL
-            .into_iter()
-            .filter(|place| current.css.get(*place) != next.css.get(*place))
-            .map(CssPlace::as_str)
-            .collect();
-        let css_size: usize = next
-            .css
-            .places()
-            .map(|(_, text)| text.chars().count())
-            .sum();
+        let css = current.css.changed(&next.css);
+        let css_size = next.css.size();
         let standard = next.is_standard();
         let keep = Self::referenced(&next);
         let mut details = json!({

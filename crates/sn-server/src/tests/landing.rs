@@ -344,25 +344,6 @@ async fn превью_лендинга_встраивается_только_в_
     std::fs::remove_dir_all(dir).ok();
 }
 
-async fn style_file(
-    h: &Http,
-    path: &str,
-    if_none_match: Option<&str>,
-) -> (StatusCode, HeaderMap, String) {
-    let mut builder = Request::builder().method(Method::GET).uri(path);
-    if let Some(etag) = if_none_match {
-        builder = builder.header(header::IF_NONE_MATCH, etag);
-    }
-    let response = router(h.state.clone())
-        .oneshot(builder.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let status = response.status();
-    let headers = response.headers().clone();
-    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
-}
-
 #[tokio::test]
 async fn свой_css_лендинга_отдаётся_отдельным_файлом_с_версией() {
     let Some(mut h) = http().await else { return };
@@ -380,7 +361,7 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
         ..ServerConfig::default()
     });
 
-    let (_, _, plain) = style_file(&h, "/", None).await;
+    let (_, _, plain) = fetch_file(&h, "/", None).await;
     assert!(!plain.contains("preload"));
     let (status, saved) = h
         .write(
@@ -412,7 +393,7 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
     assert!(shown.get("styles").is_none());
     let json_etag = headers[header::ETAG].to_str().unwrap().to_string();
 
-    let (status, headers, text) = style_file(&h, &path, None).await;
+    let (status, headers, text) = fetch_file(&h, &path, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         text,
@@ -431,12 +412,12 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
     );
     let etag = headers[header::ETAG].to_str().unwrap().to_string();
     assert!(path.contains(etag.trim_matches('"')));
-    let (status, headers, text) = style_file(&h, &path, Some(&etag)).await;
+    let (status, headers, text) = fetch_file(&h, &path, Some(&etag)).await;
     assert_eq!(status, StatusCode::NOT_MODIFIED);
     assert!(text.is_empty());
     assert_eq!(headers[header::ETAG], etag.as_str());
 
-    let (_, headers, html) = style_file(&h, "/", None).await;
+    let (_, headers, html) = fetch_file(&h, "/", None).await;
     assert!(
         html.contains(&format!(
             "<link rel=\"preload\" as=\"style\" href=\"{path}\">"
@@ -455,7 +436,7 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
         "/admin/settings/landing",
         "/pay/1",
     ] {
-        let (_, _, html) = style_file(&h, other, None).await;
+        let (_, _, html) = fetch_file(&h, other, None).await;
         assert!(!html.contains(&path), "{other}");
     }
 
@@ -473,7 +454,7 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
     let shown: Value = serde_json::from_slice(&body).unwrap();
     let newer = shown["css"].as_str().unwrap().to_string();
     assert_ne!(newer, path);
-    let (status, headers, text) = style_file(&h, &path, Some(&etag)).await;
+    let (status, headers, text) = fetch_file(&h, &path, Some(&etag)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(text, ".ld { --accent: navy }\n");
     assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
@@ -483,7 +464,7 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
         "/api/public/landing/..%2F..%2Fetc%2Fpasswd.css",
         "/api/public/landing/.css",
     ] {
-        let (status, _, _) = style_file(&h, missing, None).await;
+        let (status, _, _) = fetch_file(&h, missing, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
     }
 
@@ -494,7 +475,7 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
         updated_at: Utc::now(),
     };
     h.services().modules().apply_rows(&[landing_off]);
-    let (status, _, text) = style_file(&h, &newer, None).await;
+    let (status, _, text) = fetch_file(&h, &newer, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(text.contains("module.disabled"));
     h.services().modules().apply_rows(&[]);
@@ -509,9 +490,9 @@ async fn свой_css_лендинга_отдаётся_отдельным_фа�
         .await;
     assert_eq!(status, StatusCode::OK, "{reset}");
     assert_eq!(reset["css"], json!({}));
-    let (status, _, _) = style_file(&h, &newer, None).await;
+    let (status, _, _) = fetch_file(&h, &newer, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (_, _, html) = style_file(&h, "/", None).await;
+    let (_, _, html) = fetch_file(&h, "/", None).await;
     assert!(!html.contains("preload"));
     let (_, _, body) = public(&h, None).await;
     let shown: Value = serde_json::from_slice(&body).unwrap();

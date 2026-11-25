@@ -1,104 +1,20 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { api, ApiError } from '../../lib/api';
-import { closeBrace, CSS_PLACES, insertImage, insertRule, lengthProblem, lineRange, newLine, problemText, shiftLines, type CssPlace, type CssProblem, type CssProblems, type CssReport, type CssTexts, type Edit } from './landingCss';
-import { chars, sendImage, type ImageRules } from './landingFields';
-import type { Snippet } from './landingSnippets';
+import { useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { ApiError } from '../../lib/api';
+import { closeBrace, insertImage, insertRule, lengthProblem, lineRange, newLine, problemText, shiftLines, type CssProblem, type Edit, type Snippet } from './cssText';
 import './css-editor.css';
-
-const CHECK_PATH = '/api/admin/settings/landing/css';
-const CHECK_DELAY_MS = 350;
-
-type CssCheck = { styles: CssTexts; problems: CssProblems; reset: (texts: CssTexts, styles: CssTexts) => void };
-
-function without<T>(current: Partial<Record<CssPlace, T>>, places: CssPlace[]): Partial<Record<CssPlace, T>> {
-  const next = { ...current };
-  for (const place of places) {
-    delete next[place];
-  }
-  return next;
-}
-
-export function useCssCheck(texts: CssTexts): CssCheck {
-  const [styles, setStyles] = useState<CssTexts>({});
-  const [problems, setProblems] = useState<CssProblems>({});
-  const [checked, setChecked] = useState<CssTexts>({});
-
-  useEffect(() => {
-    const places = CSS_PLACES.filter((place) => (texts[place] ?? '') !== (checked[place] ?? ''));
-    if (!places.length) {
-      return;
-    }
-    let alive = true;
-    const filled = places.filter((place) => texts[place]?.trim());
-    const settle = (report: CssReport) => {
-      if (!alive) {
-        return;
-      }
-      setStyles((current) => {
-        const next = without(current, places);
-        for (const place of filled) {
-          next[place] = report[place]?.style ?? current[place] ?? '';
-        }
-        return next;
-      });
-      setProblems((current) => {
-        const next = without(current, places);
-        for (const place of filled) {
-          const entry = report[place];
-          if (entry?.problem) {
-            next[place] = { line: entry.line ?? null, text: entry.problem };
-          }
-        }
-        return next;
-      });
-      setChecked((current) => {
-        const next = without(current, places);
-        for (const place of places) {
-          next[place] = texts[place] ?? '';
-        }
-        return next;
-      });
-    };
-    const timer = window.setTimeout(
-      () => {
-        if (!filled.length) {
-          settle({});
-          return;
-        }
-        const css = Object.fromEntries(filled.map((place) => [place, texts[place]]));
-        api<CssReport>(CHECK_PATH, { method: 'POST', body: { css } })
-          .then(settle)
-          .catch(() => undefined);
-      },
-      filled.length ? CHECK_DELAY_MS : 0,
-    );
-    return () => {
-      alive = false;
-      window.clearTimeout(timer);
-    };
-  }, [texts, checked]);
-
-  const reset = useCallback((nextTexts: CssTexts, nextStyles: CssTexts) => {
-    const refused = CSS_PLACES.filter((place) => nextTexts[place] && !nextStyles[place]);
-    setChecked(without(nextTexts, refused));
-    setStyles(nextStyles);
-    setProblems({});
-  }, []);
-
-  return { styles, problems, reset };
-}
 
 type Props = {
   label: string;
   value: string;
   max: number;
   problem: CssProblem | null;
-  page: boolean;
+  imageRule: string | null;
   rows: [number, number];
   hint?: ReactNode;
   placeholder: string;
   snippets: Snippet[];
-  rules: ImageRules;
+  types: string[];
+  sendImage: (file: File) => Promise<{ url: string }>;
   onChange: (next: string) => void;
 };
 
@@ -112,7 +28,7 @@ function applyEdit(area: HTMLTextAreaElement, edit: Edit): void {
   area.setSelectionRange(edit.anchor ?? edit.caret, edit.caret);
 }
 
-export function CssEditor({ label, value, max, problem, page, rows, hint, placeholder, snippets, rules, onChange }: Props) {
+export function CssEditor({ label, value, max, problem, imageRule, rows, hint, placeholder, snippets, types, sendImage, onChange }: Props) {
   const id = useId();
   const area = useRef<HTMLTextAreaElement>(null);
   const numbers = useRef<HTMLDivElement>(null);
@@ -122,7 +38,7 @@ export function CssEditor({ label, value, max, problem, page, rows, hint, placeh
   const [busy, setBusy] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
 
-  const length = chars(value);
+  const length = [...value].length;
   const shown = lengthProblem(value, max) ?? problem;
   const lines = value.split('\n').length;
   const bad = shown?.line ?? 0;
@@ -190,9 +106,9 @@ export function CssEditor({ label, value, max, problem, page, rows, hint, placeh
     setBusy(true);
     setImageError(null);
     try {
-      const saved = await sendImage(picked, rules);
+      const saved = await sendImage(picked);
       if (area.current) {
-        run(insertImage(area.current.value, entered.current ? area.current.selectionStart : area.current.value.length, saved.url, page));
+        run(insertImage(area.current.value, entered.current ? area.current.selectionStart : area.current.value.length, saved.url, imageRule));
       }
     } catch (err) {
       setImageError(err instanceof ApiError ? err.message : 'Картинка не загрузилась');
@@ -207,7 +123,7 @@ export function CssEditor({ label, value, max, problem, page, rows, hint, placeh
   return (
     <div className="lcs">
       <div className="lcs-head">
-        <label htmlFor={id} className="lde-label">
+        <label htmlFor={id} className="lcs-label">
           {label}
         </label>
         <span className="lcs-side">
@@ -276,7 +192,7 @@ export function CssEditor({ label, value, max, problem, page, rows, hint, placeh
         <select
           className="lcs-pick"
           value=""
-          aria-label="Вставить правило для части страницы"
+          aria-label="Вставить правило для части"
           onChange={(e) => {
             const snippet = snippets[Number(e.target.value)];
             if (snippet) {
@@ -296,7 +212,7 @@ export function CssEditor({ label, value, max, problem, page, rows, hint, placeh
         <button type="button" className="b36" onClick={() => file.current?.click()} disabled={busy}>
           {busy ? 'Загружаем…' : 'Загрузить картинку'}
         </button>
-        <input ref={file} type="file" accept={rules.types.join(',')} hidden onChange={(e) => void send(e.target.files?.[0])} />
+        <input ref={file} type="file" accept={types.join(',')} hidden onChange={(e) => void send(e.target.files?.[0])} />
       </div>
       {imageError ? (
         <span className="err" role="alert">

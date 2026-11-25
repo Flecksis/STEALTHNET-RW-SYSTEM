@@ -9,11 +9,15 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::Value;
 use sn_domain::access::Permission;
+use sn_domain::miniapp_css::CssPlace;
 use sn_services::miniapp::{MiniAppView, UploadedImage};
+use sn_services::own_css::{CssCheck, CssReport};
+use std::collections::BTreeMap;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/settings/miniapp", get(view).put(update))
+        .route("/settings/miniapp/css", post(check_css))
         .route(
             "/settings/miniapp/images",
             post(upload).layer(DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT)),
@@ -38,6 +42,15 @@ async fn update(
             .update(&body, admin.0.admin_id)
             .await?,
     ))
+}
+
+async fn check_css(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<CssCheck>,
+) -> ApiResult<Json<BTreeMap<CssPlace, CssReport>>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.miniapp().check_css(&body).await?))
 }
 
 async fn upload(

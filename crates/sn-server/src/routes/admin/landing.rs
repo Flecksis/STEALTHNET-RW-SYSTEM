@@ -9,7 +9,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use sn_domain::access::Permission;
 use sn_domain::landing_css::CssPlace;
-use sn_services::landing::{CssCheck, CssReport, LandingUpdate, LandingView, UploadedImage};
+use sn_services::landing::{LandingUpdate, LandingView, UploadedImage};
+use sn_services::own_css::{CssCheck, CssReport};
 use std::collections::BTreeMap;
 
 pub fn routes() -> Router<AppState> {

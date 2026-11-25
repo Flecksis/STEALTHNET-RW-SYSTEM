@@ -1,13 +1,12 @@
 import { useLayoutEffect, useState } from 'react';
 
 const WAIT_MS = 2500;
-const FILE = /^\/api\/public\/landing\/[0-9a-f]{16}\.css$/;
 
-export function styleFile(value: unknown): string | null {
-  return typeof value === 'string' && FILE.test(value) ? value : null;
+export function styleFile(value: unknown, folder: 'landing' | 'miniapp'): string | null {
+  return typeof value === 'string' && new RegExp(`^/api/public/${folder}/[0-9a-f]{16}\\.css$`).test(value) ? value : null;
 }
 
-export function useSiteStyles(href: string | null): boolean {
+export function useOwnStyles(href: string | null): boolean {
   const [settled, setSettled] = useState<string | null>(null);
   useLayoutEffect(() => {
     if (!href) {

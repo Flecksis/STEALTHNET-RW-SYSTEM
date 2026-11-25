@@ -45,6 +45,8 @@ export type Limits = {
   tabs_min: number;
   tabs_max: number;
   links: number;
+  page_css: number;
+  block_css: number;
 };
 
 export const LIMITS: Limits = {
@@ -65,6 +67,8 @@ export const LIMITS: Limits = {
   tabs_min: 3,
   tabs_max: 5,
   links: 8,
+  page_css: 50_000,
+  block_css: 10_000,
 };
 
 export type ImageRules = { max_bytes: number; min_side: number; max_side: number; types: string[] };
@@ -83,6 +87,8 @@ export type AdminView = {
   home?: unknown;
   tabs?: unknown;
   profile?: unknown;
+  css?: unknown;
+  styles?: unknown;
   limits?: Partial<Limits>;
   image?: ImageRules;
   sections?: SectionInfo[];

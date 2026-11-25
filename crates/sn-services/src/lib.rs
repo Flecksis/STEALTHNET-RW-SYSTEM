@@ -40,6 +40,7 @@ pub mod mail_letters;
 pub mod miniapp;
 pub mod node_watch;
 pub mod oauth;
+pub mod own_css;
 pub mod pause;
 pub mod private_files;
 pub mod remna_link;

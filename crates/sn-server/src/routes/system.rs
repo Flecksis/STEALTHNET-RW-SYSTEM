@@ -6,10 +6,14 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use sn_domain::image::ImageKind;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::SiteImage;
+use sn_services::ServiceResult;
 use sn_services::branding::brand_initial;
+use sn_services::own_css::StyleFile;
 use sn_store::Db;
+use std::sync::Arc;
 
 const IMAGE_CACHE: &str = "public, max-age=31536000, immutable";
 const ICON_CACHE: &str = "public, max-age=300";
@@ -29,7 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/favicon/{file}", get(favicon))
         .route("/api/public/landing", get(landing))
         .route("/api/public/landing/{file}", get(landing_file))
-        .route("/api/public/miniapp/{file}", get(miniapp_image))
+        .route("/api/public/miniapp/{file}", get(miniapp_file))
         .route("/api/public/pages/{*path}", get(document_page))
         .route("/api/public/connect-apps", get(connect_apps))
         .route("/api/public/app-icon/{file}", get(app_icon))
@@ -271,15 +275,8 @@ async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .into_response()
 }
 
-fn landing_style(state: &AppState, version: &str, headers: &HeaderMap) -> Response {
-    if !state.services.modules().is_enabled(ModuleId::Landing) {
-        return sn_modules::gate::disabled_response(ModuleId::Landing);
-    }
-    let style = state
-        .services
-        .landing()
-        .style()
-        .filter(|_| sn_domain::landing::valid_tag(version));
+fn style_file(style: Option<Arc<StyleFile>>, version: &str, headers: &HeaderMap) -> Response {
+    let style = style.filter(|_| sn_domain::landing::valid_tag(version));
     let Some(style) = style else {
         return ApiError::not_found().into_response();
     };
@@ -317,18 +314,8 @@ fn landing_style(state: &AppState, version: &str, headers: &HeaderMap) -> Respon
         .into_response()
 }
 
-async fn landing_file(
-    State(state): State<AppState>,
-    Path(file): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    let Some((tag, extension)) = file.split_once('.') else {
-        return ApiError::not_found().into_response();
-    };
-    if extension == "css" {
-        return landing_style(&state, tag, &headers);
-    }
-    match state.services.landing().image_file(tag).await {
+fn image_response(found: ServiceResult<Option<(ImageKind, Vec<u8>)>>, extension: &str) -> Response {
+    match found {
         Ok(Some((kind, bytes))) if kind.extension() == extension => (
             [
                 (header::CONTENT_TYPE, kind.content_type()),
@@ -343,23 +330,35 @@ async fn landing_file(
     }
 }
 
-async fn miniapp_image(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+async fn landing_file(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     let Some((tag, extension)) = file.split_once('.') else {
         return ApiError::not_found().into_response();
     };
-    match state.services.miniapp().image_file(tag).await {
-        Ok(Some((kind, bytes))) if kind.extension() == extension => (
-            [
-                (header::CONTENT_TYPE, kind.content_type()),
-                (header::CACHE_CONTROL, IMAGE_CACHE),
-                (header::CONTENT_SECURITY_POLICY, IMAGE_POLICY),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Ok(_) => ApiError::not_found().into_response(),
-        Err(err) => ApiError::from(err).into_response(),
+    if extension == "css" {
+        if !state.services.modules().is_enabled(ModuleId::Landing) {
+            return sn_modules::gate::disabled_response(ModuleId::Landing);
+        }
+        return style_file(state.services.landing().style(), tag, &headers);
     }
+    image_response(state.services.landing().image_file(tag).await, extension)
+}
+
+async fn miniapp_file(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((tag, extension)) = file.split_once('.') else {
+        return ApiError::not_found().into_response();
+    };
+    if extension == "css" {
+        return style_file(state.services.miniapp().style(), tag, &headers);
+    }
+    image_response(state.services.miniapp().image_file(tag).await, extension)
 }
 
 async fn connect_apps(State(state): State<AppState>, headers: HeaderMap) -> Response {

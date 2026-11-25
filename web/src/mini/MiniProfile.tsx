@@ -150,7 +150,7 @@ export function MiniProfile() {
     }
   };
   return (
-    <main className="mn-page profile">
+    <main className="mn-page profile" data-part="profile">
       <BackHead title={t('Профиль')} />
       {config.profile.map((block) => (
         <Fragment key={block.kind}>{blocks(block)}</Fragment>

@@ -2,19 +2,23 @@ use crate::Actor;
 use crate::bot_layout::miniapp_off;
 use crate::error::{ServiceError, ServiceResult};
 use crate::landing::ImageRulesView;
+use crate::own_css::{CssCheck, CssPlaces, CssReport, OwnCss, StyleFile};
 use crate::services::Services;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sn_domain::ids::AdminId;
 use sn_domain::image::{self, ImageKind, ImageProblem, LANDING_RULES};
 use sn_domain::landing::{IMAGE_TAG_LEN, valid_tag};
 use sn_domain::miniapp::{self, LIMITS, Limits, MiniAppConfig, STORED_IMAGES_MAX, Section};
+use sn_domain::miniapp_css::{CssPlace, MiniCss};
 use sn_domain::module::ModuleId;
 use sn_domain::settings::keys;
 use sn_modules::catalog::referral::ReferralSettings;
 use sn_modules::catalog::roulette;
 use sn_store::{Db, SiteAsset};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub const ASSET_PREFIX: &str = "miniapp.";
 pub const STALE_AFTER_SECONDS: i64 = 3600;
@@ -31,12 +35,21 @@ pub struct SectionView {
 pub struct MiniAppView {
     #[serde(flatten)]
     pub config: MiniAppConfig,
+    pub styles: BTreeMap<CssPlace, String>,
     pub limits: Limits,
     pub image: ImageRulesView,
     pub sections: Vec<SectionView>,
     pub english: bool,
     pub off: Option<&'static str>,
     pub friends_percent: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PublicMiniApp {
+    #[serde(flatten)]
+    pub config: MiniAppConfig,
+    #[serde(rename = "css", skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -164,6 +177,7 @@ impl<'a> MiniAppOps<'a> {
         }
         Ok(MiniAppView {
             config: settings.miniapp.with_urls(),
+            styles: settings.miniapp.css.styles(),
             limits: LIMITS,
             image: ImageRulesView::landing(),
             sections,
@@ -173,7 +187,33 @@ impl<'a> MiniAppOps<'a> {
         })
     }
 
-    pub async fn public(&self) -> Option<MiniAppConfig> {
+    pub fn style(&self) -> Option<Arc<StyleFile>> {
+        self.services.miniapp_style()
+    }
+
+    fn own_css(&self) -> OwnCss<'a> {
+        OwnCss::new(self.services, ASSET_PREFIX, INVALID)
+    }
+
+    pub async fn check_css(
+        &self,
+        check: &CssCheck,
+    ) -> ServiceResult<BTreeMap<CssPlace, CssReport>> {
+        self.own_css().check(check).await
+    }
+
+    async fn next_css(&self, raw: &Value) -> ServiceResult<MiniCss> {
+        match raw.get("css") {
+            None | Some(Value::Null) => Ok(self.config().css),
+            Some(value) => {
+                let places = CssPlaces::deserialize(value)
+                    .map_err(|_| ServiceError::rejected(INVALID, "CSS заполнен неверно"))?;
+                self.own_css().parse(&places).await
+            }
+        }
+    }
+
+    pub async fn public(&self) -> Option<PublicMiniApp> {
         let settings = self.services.settings();
         if settings.miniapp.is_standard() {
             return None;
@@ -190,14 +230,18 @@ impl<'a> MiniAppOps<'a> {
             }
         }
         config.tabs = tabs;
-        Some(config)
+        Some(PublicMiniApp {
+            config,
+            style: self.style().map(|style| style.path()),
+        })
     }
 
     fn referenced(config: &MiniAppConfig) -> Vec<String> {
         config
             .image_tags()
-            .iter()
-            .map(|tag| asset_name(tag))
+            .into_iter()
+            .chain(config.css.images().into_iter().map(|(_, _, tag)| tag))
+            .map(|tag| asset_name(&tag))
             .collect()
     }
 
@@ -225,12 +269,24 @@ impl<'a> MiniAppOps<'a> {
     pub async fn update(&self, raw: &Value, admin: AdminId) -> ServiceResult<MiniAppView> {
         let mut next = MiniAppConfig::parse(raw)
             .map_err(|err| ServiceError::rejected(INVALID, err.to_string()))?;
+        next.css = self.next_css(raw).await?;
         self.measure(&mut next).await?;
         let current = self.config();
         if next == current {
             return self.view().await;
         }
         let diff = current.difference(&next);
+        let css = current.css.changed(&next.css);
+        let mut details = json!({
+            "screens": diff.screens,
+            "blocks": diff.blocks,
+            "order": diff.order,
+            "hidden": next.hidden(),
+        });
+        if !css.is_empty() {
+            details["css"] = json!(css);
+            details["css_size"] = json!(next.css.size());
+        }
         let standard = next.is_standard();
         let keep = Self::referenced(&next);
         let mut tx = self.services.store().begin().await?;
@@ -245,20 +301,10 @@ impl<'a> MiniAppOps<'a> {
             .site_assets()
             .prune(ASSET_PREFIX, &keep, STALE_AFTER_SECONDS)
             .await?;
+        details["standard"] = json!(standard);
+        details["removed_images"] = json!(removed);
         tx.audit()
-            .record(&Actor::Admin(admin).audit(
-                "settings.miniapp",
-                "settings",
-                None,
-                json!({
-                    "screens": diff.screens,
-                    "blocks": diff.blocks,
-                    "order": diff.order,
-                    "hidden": next.hidden(),
-                    "standard": standard,
-                    "removed_images": removed,
-                }),
-            ))
+            .record(&Actor::Admin(admin).audit("settings.miniapp", "settings", None, details))
             .await?;
         tx.commit().await?;
         self.saved().await?;
@@ -285,7 +331,7 @@ impl<'a> MiniAppOps<'a> {
                     "miniapp_image.limit",
                     format!(
                         "Для мини-приложения уже загружено {STORED_IMAGES_MAX} картинок — это предел. \
-                         Картинки, которых нет в баннерах, удаляются через час, после этого загрузка снова заработает"
+                         Картинки, которых нет в баннерах и стилях, удаляются через час, после этого загрузка снова заработает"
                     ),
                 ));
             }
@@ -488,10 +534,10 @@ mod tests {
             ]
         );
         let shown = ops.public().await.unwrap();
-        assert_eq!(shown.tabs, saved.config.tabs);
-        assert_eq!(shown.profile, saved.config.profile);
-        assert_eq!(shown.header, saved.config.header);
-        let HomeBlock::Actions(actions) = &shown.home[4] else {
+        assert_eq!(shown.config.tabs, saved.config.tabs);
+        assert_eq!(shown.config.profile, saved.config.profile);
+        assert_eq!(shown.config.header, saved.config.header);
+        let HomeBlock::Actions(actions) = &shown.config.home[4] else {
             unreachable!()
         };
         assert!(actions.items.is_empty());
@@ -620,7 +666,7 @@ mod tests {
         let ops = env.services.miniapp();
         assert!(!ops.config().is_standard());
         let public = ops.public().await.unwrap();
-        let tabs: Vec<Section> = public.tabs.iter().map(|tab| tab.std).collect();
+        let tabs: Vec<Section> = public.config.tabs.iter().map(|tab| tab.std).collect();
         assert_eq!(tabs, [Section::Home, Section::Plans, Section::Profile]);
         let text = serde_json::to_string(&public).unwrap();
         assert!(text.contains("Привет"), "{text}");
@@ -693,6 +739,7 @@ mod tests {
             .public()
             .await
             .unwrap()
+            .config
             .tabs
             .iter()
             .map(|tab| tab.std.as_str())
@@ -839,6 +886,166 @@ mod tests {
         assert_eq!(code, "miniapp_image.limit");
         assert!(message.contains("40"), "{message}");
         assert!(ops.upload_image(&png(800, 600, 3), env.admin).await.is_ok());
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn свой_css_сохраняется_собирается_в_файл_и_уходит_со_сбросом() {
+        let Some(env) = env().await else { return };
+        let ops = env.services.miniapp();
+        assert!(ops.style().is_none());
+        let saved = ops
+            .update(
+                &json!({ "css": { "page": ".mn { --accent: teal }\n\n", "tabs": "gap: 0", "header": " " } }),
+                env.admin,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved.config.css).unwrap(),
+            json!({ "page": ".mn { --accent: teal }", "tabs": "gap: 0" })
+        );
+        assert_eq!(
+            saved.styles[&CssPlace::Tabs],
+            "[data-part=\"tabs\"] {\n  gap: 0;\n}\n"
+        );
+        let style = ops.style().unwrap();
+        assert_eq!(
+            style.text,
+            ".mn { --accent: teal }\n[data-part=\"tabs\"] {\n  gap: 0;\n}\n"
+        );
+        let public = ops.public().await.unwrap();
+        assert_eq!(
+            public.style.as_deref(),
+            Some(format!("/api/public/miniapp/{}.css", style.version).as_str())
+        );
+        let text = serde_json::to_string(&public).unwrap();
+        assert!(!text.contains("teal"), "{text}");
+        let records = audits(&env, "settings.miniapp").await;
+        assert_eq!(records[0].details["css"], json!(["page", "tabs"]));
+        assert_eq!(records[0].details["css_size"], 28);
+        assert_eq!(records[0].details["screens"], json!([]));
+        assert_eq!(records[0].details["standard"], false);
+        assert!(!records[0].details.to_string().contains("teal"));
+
+        let restarted = services_for(&env.db);
+        restarted.reload().await.unwrap();
+        assert_eq!(restarted.miniapp().style().unwrap().text, style.text);
+
+        let kept = ops
+            .update(&json!({ "header": { "balance": false } }), env.admin)
+            .await
+            .unwrap();
+        assert_eq!(
+            kept.config.css, saved.config.css,
+            "старая вкладка CSS не стирает"
+        );
+        assert!(
+            audits(&env, "settings.miniapp").await[0]
+                .details
+                .get("css")
+                .is_none()
+        );
+
+        let (code, message) = rejected(
+            ops.update(&json!({ "css": { "profile": ".mn-row {\n" } }), env.admin)
+                .await,
+        );
+        assert_eq!(code, INVALID);
+        assert_eq!(message, "CSS профиля, строка 1: не закрыта скобка {");
+        let (_, message) = rejected(ops.update(&json!({ "css": "x" }), env.admin).await);
+        assert_eq!(message, "CSS заполнен неверно");
+        assert_eq!(ops.config().css, saved.config.css);
+
+        let reset = ops.update(&json!({ "css": {} }), env.admin).await.unwrap();
+        assert!(reset.config.css.is_empty());
+        assert_eq!(saved_setting(&env).await, None);
+        assert_eq!(ops.public().await, None);
+        assert!(ops.style().is_none());
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn испорченный_в_базе_css_до_клиента_не_доходит() {
+        let Some(env) = env().await else { return };
+        {
+            let mut conn = env.db.store.conn().await.unwrap();
+            conn.settings()
+                .set_as(
+                    keys::MINIAPP,
+                    &json!({ "css": {
+                        "page": "@import 'https://evil.example/x.css';",
+                        "header": "gap: 0",
+                        "stories": "gap: 0"
+                    } }),
+                    Some(env.admin),
+                )
+                .await
+                .unwrap();
+        }
+        env.services.reload().await.unwrap();
+        let ops = env.services.miniapp();
+        assert_eq!(
+            ops.style().unwrap().text,
+            "[data-part=\"header\"] {\n  gap: 0;\n}\n"
+        );
+        let view = ops.view().await.unwrap();
+        assert_eq!(
+            view.config.css.get(CssPlace::Page),
+            "@import 'https://evil.example/x.css';"
+        );
+        assert!(!view.styles.contains_key(&CssPlace::Page));
+        let check: CssCheck = serde_json::from_value(
+            json!({ "css": { "page": "\n@import 'x';", "tabs": "gap: 0" } }),
+        )
+        .unwrap();
+        let report = serde_json::to_value(ops.check_css(&check).await.unwrap()).unwrap();
+        assert_eq!(report["page"]["line"], 2);
+        assert!(report["page"].get("style").is_none());
+        assert!(report["tabs"]["style"].as_str().unwrap().contains("gap: 0"));
+        env.db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn картинка_из_css_мини_приложения_должна_существовать_и_не_удаляется_чисткой() {
+        let Some(env) = env().await else { return };
+        let ops = env.services.miniapp();
+        let kept = ops
+            .upload_image(&png(800, 600, 1), env.admin)
+            .await
+            .unwrap();
+        let css = format!("\nbackground: url(\"{}\");", kept.url);
+        ops.update(&json!({ "css": { "subscription": css } }), env.admin)
+            .await
+            .unwrap();
+        age(&env, &[&kept.tag]).await;
+        ops.update(&json!({ "header": { "balance": false } }), env.admin)
+            .await
+            .unwrap();
+        assert!(stored(&env, &kept.tag).await);
+
+        let lost = format!(
+            "background: url(/api/public/miniapp/{}.png)",
+            "0".repeat(16)
+        );
+        let (_, message) = rejected(
+            ops.update(&json!({ "css": { "banners": lost } }), env.admin)
+                .await,
+        );
+        assert_eq!(
+            message,
+            "Баннеры, CSS блока, строка 1: картинка не найдена, загрузите её заново"
+        );
+        let check: CssCheck =
+            serde_json::from_value(json!({ "css": { "banners": lost } })).unwrap();
+        let report = serde_json::to_value(ops.check_css(&check).await.unwrap()).unwrap();
+        assert_eq!(
+            report["banners"]["problem"],
+            "картинка не найдена, загрузите её заново"
+        );
+
+        ops.update(&json!({ "css": {} }), env.admin).await.unwrap();
+        assert!(!stored(&env, &kept.tag).await);
         env.db.cleanup().await;
     }
 }

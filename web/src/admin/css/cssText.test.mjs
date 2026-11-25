@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { closeBrace, cssOut, insertImage, insertRule, joinStyles, lengthProblem, lineRange, newLine, problemText, readTexts, sameCss, shiftLines } from './landingCss.ts';
+import { closeBrace, cssOut, insertImage, insertRule, joinStyles, lengthProblem, lineRange, linesOf, newLine, placeProblems, problemText, readTexts, sameCss, shiftLines } from './cssText.ts';
+
+const PLACES = ['page', 'hero', 'features', 'steps', 'plans', 'servers', 'faq', 'cta', 'footer'];
 
 const apply = (text, edit) => (edit ? text.slice(0, edit.from) + edit.text + text.slice(edit.to) : text);
 const at = (marked) => {
@@ -13,12 +15,12 @@ const withCaret = (text, edit) => {
 };
 
 test('тексты CSS читаются по известным местам и сравниваются без хвостовых пробелов', () => {
-  assert.deepEqual(readTexts({ page: '.a {}', hero: '', video: 'x', faq: 5, cta: null }), { page: '.a {}' });
-  assert.deepEqual(readTexts(null), {});
-  assert.deepEqual(cssOut({ page: '.a {}\n\n', hero: '  \n' }), { page: '.a {}' });
-  assert.equal(sameCss({ page: '.a {}\n' }, { page: '.a {}', hero: '' }), true);
-  assert.equal(sameCss({ page: '.a {}' }, { page: '.b {}' }), false);
-  assert.equal(joinStyles({ hero: 'h\n', page: 'p\n', footer: 'f\n' }), 'p\nh\nf\n');
+  assert.deepEqual(readTexts(PLACES, { page: '.a {}', hero: '', video: 'x', faq: 5, cta: null }), { page: '.a {}' });
+  assert.deepEqual(readTexts(PLACES, null), {});
+  assert.deepEqual(cssOut(PLACES, { page: '.a {}\n\n', hero: '  \n' }), { page: '.a {}' });
+  assert.equal(sameCss(PLACES, { page: '.a {}\n' }, { page: '.a {}', hero: '' }), true);
+  assert.equal(sameCss(PLACES, { page: '.a {}' }, { page: '.b {}' }), false);
+  assert.equal(joinStyles(PLACES, { hero: 'h\n', page: 'p\n', footer: 'f\n' }), 'p\nh\nf\n');
 });
 
 test('новая строка держит отступ и раскрывает скобки', () => {
@@ -65,19 +67,20 @@ test('правило вставляется между правилами, а н
 });
 
 test('картинка вставляется туда, где стоит курсор', () => {
-  const run = (marked, page = true) => {
+  const run = (marked, selector = '.ld-hero') => {
     const { text, caret } = at(marked);
-    return apply(text, insertImage(text, caret, '/i.png', page));
+    return apply(text, insertImage(text, caret, '/i.png', selector));
   };
   const full = 'background: url("/i.png") center / cover no-repeat;';
   assert.equal(run('.a { background: | }'), '.a { background: url("/i.png") }');
   assert.equal(run('.a {\n  |\n}'), `.a {\n  ${full}\n}`);
   assert.equal(run('.a {\n  color: red;|\n}'), `.a {\n  color: red;\n  ${full}\n}`);
+  assert.equal(run('|', '.mn'), `.mn {\n  ${full}\n}`);
   assert.equal(run('|'), `.ld-hero {\n  ${full}\n}`);
   assert.equal(run('.a {}|'), `.a {}\n\n.ld-hero {\n  ${full}\n}`);
-  assert.equal(run('|', false), full);
-  assert.equal(run('background: |', false), 'background: url("/i.png")');
-  assert.equal(run('gap: 0;\n|', false), `gap: 0;\n${full}`);
+  assert.equal(run('|', null), full);
+  assert.equal(run('background: |', null), 'background: url("/i.png")');
+  assert.equal(run('gap: 0;\n|', null), `gap: 0;\n${full}`);
 });
 
 test('строка с ошибкой находится, а текст ошибки читается как фраза', () => {
@@ -88,4 +91,16 @@ test('строка с ошибкой находится, а текст ошиб�
   assert.equal(lengthProblem('я'.repeat(10), 10), null);
   assert.equal(lengthProblem('😀'.repeat(10), 10), null);
   assert.deepEqual(lengthProblem('я'.repeat(11), 10), { line: null, text: 'не длиннее 10 символов' });
+});
+
+test('ошибки называются вместе с местом, длина проверяется раньше ответа сервера', () => {
+  const places = ['page', 'tabs'];
+  const name = (place) => (place === 'page' ? 'Общий CSS' : 'CSS меню внизу');
+  const max = (place) => (place === 'page' ? 10 : 5);
+  assert.deepEqual(placeProblems(places, { page: '.a {}', tabs: 'a{}' }, {}, max, name), []);
+  assert.deepEqual(placeProblems(places, { page: '.a {', tabs: 'a{color:red}' }, { page: { line: 1, text: 'не закрыта скобка {' }, tabs: { line: 3, text: 'x' } }, max, name), [
+    { place: 'page', text: 'Общий CSS, строка 1: не закрыта скобка {' },
+    { place: 'tabs', text: 'CSS меню внизу: не длиннее 5 символов' },
+  ]);
+  assert.equal(linesOf('\n.a {\n}\n\n'), 2);
 });

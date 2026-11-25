@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { applyLang, type Lang } from '../lib/i18n';
 import type { Money } from '../lib/format';
 import { DEFAULT_SITE, useSite } from '../lib/site';
+import { usePreviewStyles } from '../lib/ownStyles';
 import { useSurface } from '../lib/theme';
 import type { Currency, Site } from '../lib/types';
 import type { ClientMe, SubscriptionView, TrafficReset } from '../cabinet/model';
@@ -112,6 +113,7 @@ export function MiniPreview() {
   const [catalog, setCatalog] = useState<DemoCatalog | null>(null);
   const [applied, setApplied] = useState<Lang | null>(null);
   const wanted = draft?.lang ?? null;
+  usePreviewStyles(typeof draft?.css === 'string' ? draft.css : '');
   useSurface('mini', draft?.theme ?? 'light', site.appearance.client === 'mono' ? 'b' : 'a');
 
   useEffect(() => {

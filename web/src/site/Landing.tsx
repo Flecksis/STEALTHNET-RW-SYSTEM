@@ -8,10 +8,10 @@ import { countriesIn, countryName, joinAnd } from '../lib/geo';
 import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
+import { styleFile, useOwnStyles, usePreviewStyles } from '../lib/ownStyles';
 import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
-import { styleFile, usePreviewStyles, useSiteStyles } from './landingStyles';
 import { SiteHeader } from './SiteHeader';
 import { botLink, storedReferral } from '../lib/referral';
 import { reportVisit, storedUtm } from '../lib/utm';
@@ -194,7 +194,7 @@ function LandingPage({ mode }: { mode: Mode }) {
   const fixed = choice === 'dark' || choice === 'light' ? choice : null;
   const theme: Theme = forced ?? fixed ?? personal ?? system;
   useSurface('landing', theme, site.appearance.client === 'mono' ? 'b' : 'a');
-  const styled = useSiteStyles(cssHref);
+  const styled = useOwnStyles(cssHref);
   usePreviewStyles(draftCss);
   const [opened, setOpened] = useState(false);
   const visible = blocks !== null && ready && (styled || opened);
@@ -247,7 +247,7 @@ function LandingPage({ mode }: { mode: Mode }) {
     api<PublicLanding>('/api/public/landing')
       .then((landing) => {
         if (alive) {
-          setCssHref(mode === 'live' ? styleFile(landing.css) : null);
+          setCssHref(mode === 'live' ? styleFile(landing.css, 'landing') : null);
           setBlocks(normalizeBlocks(landing.blocks));
         }
       })

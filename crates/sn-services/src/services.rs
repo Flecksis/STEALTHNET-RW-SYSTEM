@@ -67,7 +67,8 @@ pub struct ServiceDeps {
 
 struct Runtime {
     settings: Arc<CoreSettings>,
-    landing_style: Option<Arc<crate::landing::LandingStyle>>,
+    landing_style: Option<Arc<crate::own_css::StyleFile>>,
+    miniapp_style: Option<Arc<crate::own_css::StyleFile>>,
     remna: Option<Arc<dyn RemnawaveApi>>,
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
@@ -115,6 +116,7 @@ impl Services {
                 ..CoreSettings::default()
             }),
             landing_style: None,
+            miniapp_style: None,
             remna: None,
             remna_webhook_secret: deps
                 .env
@@ -234,15 +236,21 @@ impl Services {
 
     pub fn replace_settings(&self, settings: CoreSettings) {
         self.inner.modules.set_currency(settings.currency);
-        let style = crate::landing::LandingStyle::of(&settings.landing).map(Arc::new);
+        let landing_style = crate::own_css::StyleFile::of(&settings.landing.css);
+        let miniapp_style = crate::own_css::StyleFile::of(&settings.miniapp.css);
         self.write(|r| {
             r.settings = Arc::new(settings);
-            r.landing_style = style;
+            r.landing_style = landing_style;
+            r.miniapp_style = miniapp_style;
         });
     }
 
-    pub fn landing_style(&self) -> Option<Arc<crate::landing::LandingStyle>> {
+    pub fn landing_style(&self) -> Option<Arc<crate::own_css::StyleFile>> {
         self.read(|r| r.landing_style.clone())
+    }
+
+    pub fn miniapp_style(&self) -> Option<Arc<crate::own_css::StyleFile>> {
+        self.read(|r| r.miniapp_style.clone())
     }
 
     pub fn remna(&self) -> ServiceResult<Arc<dyn RemnawaveApi>> {
@@ -420,10 +428,12 @@ impl Services {
             || previous.public_url != core.public_url
             || self.bot_webhook_keys() != bot_webhook;
         let token_changed = self.bot_token() != bot_token;
-        let landing_style = crate::landing::LandingStyle::of(&core.landing).map(Arc::new);
+        let landing_style = crate::own_css::StyleFile::of(&core.landing.css);
+        let miniapp_style = crate::own_css::StyleFile::of(&core.miniapp.css);
         self.write(|r| {
             r.settings = Arc::new(core);
             r.landing_style = landing_style;
+            r.miniapp_style = miniapp_style;
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;

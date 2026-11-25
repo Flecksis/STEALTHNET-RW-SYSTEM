@@ -46,8 +46,10 @@ import {
 import type { ModulesData, ModuleView } from '../modules/model';
 import { Switch } from '../ui';
 import { PreviewFail, usePreviewFrame } from '../previewFrame';
-import { CssEditor, useCssCheck } from './CssEditor';
-import { CSS_PLACES, cssOut, joinStyles, lengthProblem, readTexts, sameCss, type CssPlace, type CssProblems, type CssTexts } from './landingCss';
+import { CssEditor } from '../css/CssEditor';
+import { cssOut, joinStyles, linesOf, placeProblems, readTexts, sameCss, type CssTexts } from '../css/cssText';
+import { useCssCheck } from '../css/useCssCheck';
+import { CSS_PLACES, type CssPlace } from './landingCss';
 import {
   chars,
   IMAGE_RULES,
@@ -58,6 +60,7 @@ import {
   linkProblem,
   LinksEditor,
   sameItems,
+  sendImage,
   TextField,
   textProblem,
   weight,
@@ -75,6 +78,7 @@ type PreviewTheme = 'light' | 'dark';
 type Focus = { kind: BlockKind; n: number };
 type Row = BlockKind | 'css';
 
+const CSS_PATH = '/api/admin/settings/landing/css';
 const PREVIEW_PATH = '/admin/landing-preview';
 const KIND_SET = new Set<string>(DEFAULT_ORDER);
 
@@ -256,18 +260,6 @@ function problemsOf(blocks: Block[], limits: Limits): string[] {
 
 function placeName(place: CssPlace): string {
   return place === 'page' ? 'Общий CSS' : `${BLOCK_NAMES[place]}, CSS блока`;
-}
-
-function cssProblemsOf(texts: CssTexts, problems: CssProblems, limits: Limits): string[] {
-  const out: string[] = [];
-  for (const place of CSS_PLACES) {
-    const max = place === 'page' ? limits.page_css : limits.block_css;
-    const problem = lengthProblem(texts[place] ?? '', max) ?? problems[place];
-    if (problem) {
-      out.push(problem.line ? `${placeName(place)}, строка ${problem.line}: ${problem.text}` : `${placeName(place)}: ${problem.text}`);
-    }
-  }
-  return out;
 }
 
 function summary(block: Block, ctx: LandingContext): string {
@@ -670,9 +662,9 @@ export function SettingsLanding() {
   const viewport = useViewportHeight();
   const [saved, setSaved] = useState<Block[] | null>(null);
   const [draft, setDraft] = useState<Block[] | null>(null);
-  const [cssSaved, setCssSaved] = useState<CssTexts>({});
-  const [cssDraft, setCssDraft] = useState<CssTexts>({});
-  const css = useCssCheck(cssDraft);
+  const [cssSaved, setCssSaved] = useState<CssTexts<CssPlace>>({});
+  const [cssDraft, setCssDraft] = useState<CssTexts<CssPlace>>({});
+  const css = useCssCheck(CSS_PATH, CSS_PLACES, cssDraft);
   const resetCss = css.reset;
   const [limits, setLimits] = useState<Limits>(LIMITS);
   const [rules, setRules] = useState<ImageRules>(IMAGE_RULES);
@@ -700,12 +692,12 @@ export function SettingsLanding() {
 
   const apply = useCallback((view: AdminLanding) => {
     const blocks = normalizeBlocks(view.blocks);
-    const texts = readTexts(view.css);
+    const texts = readTexts(CSS_PLACES, view.css);
     setSaved(blocks);
     setDraft(blocks);
     setCssSaved(texts);
     setCssDraft(texts);
-    resetCss(texts, readTexts(view.styles));
+    resetCss(texts, readTexts(CSS_PLACES, view.styles));
     setLimits({ ...LIMITS, ...(view.limits ?? {}) });
     setRules(view.image ?? IMAGE_RULES);
   }, [resetCss]);
@@ -757,14 +749,14 @@ export function SettingsLanding() {
   );
   const sections = useMemo(() => visibleSections(draft ?? []), [draft]);
   const dirty = useMemo(
-    () => (saved && draft ? JSON.stringify(canonical(draft)) !== JSON.stringify(canonical(saved)) || !sameCss(cssDraft, cssSaved) : false),
+    () => (saved && draft ? JSON.stringify(canonical(draft)) !== JSON.stringify(canonical(saved)) || !sameCss(CSS_PLACES, cssDraft, cssSaved) : false),
     [saved, draft, cssDraft, cssSaved],
   );
   const problems = useMemo(
-    () => (draft ? [...problemsOf(draft, limits), ...cssProblemsOf(cssDraft, css.problems, limits)] : []),
+    () => (draft ? [...problemsOf(draft, limits), ...placeProblems(CSS_PLACES, cssDraft, css.problems, (place) => (place === 'page' ? limits.page_css : limits.block_css), placeName).map((entry) => entry.text)] : []),
     [draft, limits, cssDraft, css.problems],
   );
-  const previewCss = useMemo(() => joinStyles(css.styles), [css.styles]);
+  const previewCss = useMemo(() => joinStyles(CSS_PLACES, css.styles), [css.styles]);
 
   useEffect(() => {
     if (!dirty) {
@@ -804,6 +796,8 @@ export function SettingsLanding() {
     setDraft((current) => current?.map((block) => (block.kind === next.kind ? next : block)) ?? current);
     touched();
   };
+
+  const sendCssImage = (file: File) => sendImage(file, rules);
 
   const changeCss = (place: CssPlace, text: string) => {
     setCssDraft((current) => ({ ...current, [place]: text }));
@@ -869,7 +863,7 @@ export function SettingsLanding() {
     setError(null);
     setNote('');
     try {
-      const view = await api<AdminLanding>('/api/admin/settings/landing', { method: 'PUT', body: { blocks: canonical(draft), css: cssOut(cssDraft) } });
+      const view = await api<AdminLanding>('/api/admin/settings/landing', { method: 'PUT', body: { blocks: canonical(draft), css: cssOut(CSS_PLACES, cssDraft) } });
       apply(view);
       setNote('Сохранено, на сайте уже новая версия');
     } catch (err) {
@@ -1046,12 +1040,13 @@ export function SettingsLanding() {
                   value={cssDraft[kind] ?? ''}
                   max={limits.block_css}
                   problem={css.problems[kind] ?? null}
-                  page={false}
+                  imageRule={null}
                   rows={[4, 18]}
                   hint={`Действует только на блок «${name}»`}
                   placeholder={`${kind === 'hero' ? 'h1' : kind === 'footer' ? 'a' : 'h2'} {\n  color: #0f766e;\n}`}
                   snippets={SNIPPETS[kind]}
-                  rules={rules}
+                  types={rules.types}
+                  sendImage={sendCssImage}
                   onChange={(next) => changeCss(kind, next)}
                 />
                 <div className="lde-body-foot">
@@ -1091,7 +1086,7 @@ export function SettingsLanding() {
           <button type="button" className="lde-row-main" aria-expanded={open === 'css'} aria-controls="lde-css-body" onClick={expandCss}>
             <span className="lde-row-text">
               <span className="lde-row-name">Общий CSS</span>
-              <span className="lde-row-sum">{cssDraft.page?.trim() ? count(cssDraft.page.trim().split('\n').length, 'строка', 'строки', 'строк') : 'Вся страница: цвета, шрифт, кнопки'}</span>
+              <span className="lde-row-sum">{cssDraft.page?.trim() ? count(linesOf(cssDraft.page), 'строка', 'строки', 'строк') : 'Вся страница: цвета, шрифт, кнопки'}</span>
             </span>
             <Icon name="chevron-down" size={18} />
           </button>
@@ -1103,12 +1098,13 @@ export function SettingsLanding() {
               value={cssDraft.page ?? ''}
               max={limits.page_css}
               problem={css.problems.page ?? null}
-              page
+              imageRule=".ld-hero"
               rows={[14, 28]}
               hint="Действует только на лендинг: кабинет, мини-приложение и админка не изменятся"
               placeholder={'.ld-btn {\n  border-radius: 22px;\n}'}
               snippets={SNIPPETS.page}
-              rules={rules}
+              types={rules.types}
+              sendImage={sendCssImage}
               onChange={(next) => changeCss('page', next)}
             />
           </div>

@@ -126,6 +126,25 @@ fn start() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 11, 16, 14, 52, 0).unwrap()
 }
 
+async fn fetch_file(
+    h: &Http,
+    path: &str,
+    if_none_match: Option<&str>,
+) -> (StatusCode, HeaderMap, String) {
+    let mut builder = Request::builder().method(Method::GET).uri(path);
+    if let Some(etag) = if_none_match {
+        builder = builder.header(header::IF_NONE_MATCH, etag);
+    }
+    let response = router(h.state.clone())
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
 async fn http() -> Option<Http> {
     let db = test_store().await?;
     let clock = Arc::new(FixedClock::new(start()));

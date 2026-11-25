@@ -4,6 +4,7 @@ import { api, ApiError, setBearer } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { applyLang, guessLang, likelyLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
+import { styleFile, useOwnStyles } from '../lib/ownStyles';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportTickets } from '../lib/support';
 import { useSupportUnread } from '../lib/supportUnread';
@@ -215,6 +216,9 @@ export function MiniApp() {
     void start();
   }, [start]);
 
+  const styled = useOwnStyles(styleFile((site.miniapp as { css?: unknown } | null | undefined)?.css, 'miniapp'));
+  const shown = state.kind !== 'loading' && applied && styled;
+
   const choice = site.appearance.client_theme;
   const fixed = choice === 'dark' || choice === 'light' ? choice : null;
   const theme: Theme = fixed ?? personal ?? tgScheme ?? system;
@@ -228,9 +232,10 @@ export function MiniApp() {
 
   useEffect(() => {
     if (tg) {
-      paintTelegram(tg, getComputedStyle(document.documentElement).getPropertyValue('--bg').trim());
+      const root = document.querySelector('.mn') ?? document.documentElement;
+      paintTelegram(tg, getComputedStyle(root).getPropertyValue('--bg').trim());
     }
-  }, [tg, theme]);
+  }, [tg, theme, shown]);
 
   const flipTheme = useCallback(() => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
@@ -272,7 +277,7 @@ export function MiniApp() {
     [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name, unread, setUnread],
   );
 
-  if (state.kind === 'loading' || !applied) {
+  if (!shown) {
     return <div className="mn-blank" aria-busy="true" />;
   }
   if (!ctx) {

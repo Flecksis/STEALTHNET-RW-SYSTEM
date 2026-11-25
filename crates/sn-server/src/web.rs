@@ -517,9 +517,12 @@ async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) 
         _ => settings.languages.pick(wanted),
     };
     let mut tags = head(&settings, page, locale);
-    if page == Page::Landing
-        && let Some(style) = state.services.landing().style()
-    {
+    let style = match page {
+        Page::Landing => state.services.landing().style(),
+        Page::MiniApp => state.services.miniapp().style(),
+        Page::Cabinet | Page::Admin | Page::Other => None,
+    };
+    if let Some(style) = style {
         tags.push_str(&format!(
             "\n    <link rel=\"preload\" as=\"style\" href=\"{}\">",
             escape_html(&style.path())

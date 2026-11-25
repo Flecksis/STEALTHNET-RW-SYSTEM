@@ -23,10 +23,15 @@ import {
   type ProfileKind,
 } from '../../mini/config';
 import { actionText } from '../../mini/labels';
+import { CssEditor } from '../css/CssEditor';
+import { cssOut, joinStyles, linesOf, placeProblems, readTexts, sameCss, type CssTexts } from '../css/cssText';
+import { useCssCheck } from '../css/useCssCheck';
 import { SettingsLayout } from '../pages/SettingsLayout';
 import { Switch } from '../ui';
 import { HeaderBody, HomeBody, ProfileBody, TabsEditor, type Kit } from './blocks';
-import { Grip, MoveButtons, useDragOrder } from './fields';
+import { CSS_PATH, MINI_PLACES, placeHint, placeMax, placeName, placeSample, type MiniPlace } from './css';
+import { MINI_SNIPPETS } from './cssSnippets';
+import { Grip, MoveButtons, sendImage, useDragOrder } from './fields';
 import {
   canonical,
   fromView,
@@ -60,6 +65,8 @@ type Meta = { limits: Limits; rules: ImageRules; sections: SectionInfo[]; englis
 
 const API = '/api/admin/settings/miniapp';
 const CHROME = 182;
+
+type Opened = Part | 'css' | 'css-tabs' | 'css-profile';
 
 type BlockProps = {
   id: string;
@@ -107,8 +114,12 @@ export function SettingsMiniApp() {
   const [draft, setDraft] = useState<MiniConfig | null>(null);
   const [meta, setMeta] = useState<Meta>({ limits: LIMITS, rules: IMAGE_RULES, sections: [], english: false, off: null, percent: 0 });
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [cssSaved, setCssSaved] = useState<CssTexts<MiniPlace>>({});
+  const [cssDraft, setCssDraft] = useState<CssTexts<MiniPlace>>({});
+  const css = useCssCheck(CSS_PATH, MINI_PLACES, cssDraft);
+  const resetCss = css.reset;
   const [screen, setScreen] = useState<Screen>('home');
-  const [open, setOpen] = useState<Part | null>(null);
+  const [open, setOpen] = useState<Opened | null>(null);
   const [focus, setFocus] = useState<Focus | null>(null);
   const [lang, setLang] = useState<Lang>('ru');
   const [english, setEnglish] = useState<Record<string, string> | null>(null);
@@ -131,6 +142,10 @@ export function SettingsMiniApp() {
     const config = fromView(view);
     setSaved(config);
     setDraft(config);
+    const texts = readTexts(MINI_PLACES, view.css);
+    setCssSaved(texts);
+    setCssDraft(texts);
+    resetCss(texts, readTexts(MINI_PLACES, view.styles));
     setMeta({
       limits: { ...LIMITS, ...(view.limits ?? {}) },
       rules: view.image ?? IMAGE_RULES,
@@ -139,7 +154,7 @@ export function SettingsMiniApp() {
       off: view.off ?? null,
       percent: view.friends_percent ?? 0,
     });
-  }, []);
+  }, [resetCss]);
 
   useEffect(() => {
     api<AdminView>(API)
@@ -171,8 +186,11 @@ export function SettingsMiniApp() {
   const text = useCallback((ru: string) => (shownLang === 'en' ? (english?.[ru] ?? ru) : ru), [shownLang, english]);
   const kit: Kit = useMemo(() => ({ lang: shownLang, phone, limits: meta.limits, rules: meta.rules, sections: meta.sections, text }), [shownLang, phone, meta, text]);
   const off = useMemo(() => meta.sections.filter((section) => section.off).map((section) => section.key), [meta.sections]);
-  const dirty = useMemo(() => (saved && draft ? !sameConfig(saved, draft) : false), [saved, draft]);
-  const problems = useMemo(() => (draft ? problemsOf(draft, meta.limits) : []), [draft, meta.limits]);
+  const dirty = useMemo(() => (saved && draft ? !sameConfig(saved, draft) || !sameCss(MINI_PLACES, cssDraft, cssSaved) : false), [saved, draft, cssDraft, cssSaved]);
+  const blockProblems = useMemo(() => (draft ? problemsOf(draft, meta.limits) : []), [draft, meta.limits]);
+  const cssProblems = useMemo(() => placeProblems(MINI_PLACES, cssDraft, css.problems, (place) => placeMax(place, meta.limits), placeName), [cssDraft, css.problems, meta.limits]);
+  const problems = useMemo(() => [...blockProblems, ...cssProblems], [blockProblems, cssProblems]);
+  const previewCss = useMemo(() => joinStyles(MINI_PLACES, css.styles), [css.styles]);
 
   useEffect(() => {
     if (!dirty) {
@@ -227,11 +245,23 @@ export function SettingsMiniApp() {
   const homeOrder = useDragOrder('home', moveHome);
   const profileOrder = useDragOrder('profile', moveProfile);
 
+  const changeCss = (place: MiniPlace, next: string) => {
+    setCssDraft((current) => ({ ...current, [place]: next }));
+    touched();
+  };
+
   const jump = useCallback((part: Part) => setFocus((current) => ({ part, n: (current?.n ?? 0) + 1 })), []);
 
   const expand = (part: Part) => {
     setOpen((current) => (current === part ? null : part));
     if (open !== part) {
+      jump(part);
+    }
+  };
+
+  const expandCss = (row: Opened, part: Part | null) => {
+    setOpen((current) => (current === row ? null : row));
+    if (part && open !== row) {
       jump(part);
     }
   };
@@ -250,7 +280,7 @@ export function SettingsMiniApp() {
     setError(null);
     setNote('');
     try {
-      apply(await api<AdminView>(API, { method: 'PUT', body: canonical(draft) }));
+      apply(await api<AdminView>(API, { method: 'PUT', body: { ...canonical(draft), css: cssOut(MINI_PLACES, cssDraft) } }));
       setNote('Сохранено, клиенты уже видят новый вид');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не получилось сохранить');
@@ -261,11 +291,13 @@ export function SettingsMiniApp() {
 
   const cancel = () => {
     setDraft(saved);
+    setCssDraft(cssSaved);
     touched();
   };
 
   const resetAll = () => {
     setDraft(standardConfig());
+    setCssDraft({});
     setAsking(false);
     setOpen(null);
     touched();
@@ -308,33 +340,70 @@ export function SettingsMiniApp() {
     );
   }
 
-  const badParts = new Set(problems.map((problem) => problem.part));
+  const badParts = new Set<string>([...blockProblems.map((problem) => problem.part), ...cssProblems.map((problem) => problem.place)]);
+  const own = (place: MiniPlace) => Boolean(cssDraft[place]?.trim());
+  const mark = (summary: string, place: MiniPlace) => (own(place) ? `Свой CSS · ${summary}` : summary);
+  const sendCssImage = (file: File) => sendImage(file, meta.rules);
+  const cssField = (place: MiniPlace, label: string) => (
+    <CssEditor
+      key={place}
+      label={label}
+      value={cssDraft[place] ?? ''}
+      max={placeMax(place, meta.limits)}
+      problem={css.problems[place] ?? null}
+      imageRule={place === 'page' ? '.mn' : null}
+      rows={place === 'page' ? [14, 28] : [4, 18]}
+      hint={placeHint(place)}
+      placeholder={placeSample(place)}
+      snippets={MINI_SNIPPETS[place]}
+      types={meta.rules.types}
+      sendImage={sendCssImage}
+      onChange={(next) => changeCss(place, next)}
+    />
+  );
+  const cssRow = (row: Opened, place: MiniPlace, part: Part | null, label: string, empty: string) => (
+    <Block
+      id={row}
+      name={row === 'css' ? 'Общий CSS' : label}
+      summary={own(place) ? count(linesOf(cssDraft[place] ?? ''), 'строка', 'строки', 'строк') : empty}
+      bad={badParts.has(place)}
+      open={open === row}
+      off={false}
+      onOpen={() => expandCss(row, part)}
+      end={null}
+    >
+      {cssField(place, label)}
+    </Block>
+  );
+  const pageCss = cssRow('css', 'page', null, 'CSS мини-приложения', 'Все экраны: цвета, шрифт, кнопки');
 
   const homeList = (
     <div className="card mce-list">
       <Block
         id="header"
         name="Шапка"
-        summary={draft.header.balance ? 'Логотип, название, баланс' : 'Логотип и название'}
+        summary={mark(draft.header.balance ? 'Логотип, название, баланс' : 'Логотип и название', 'header')}
+        bad={badParts.has('header')}
         open={open === 'header'}
         off={false}
         onOpen={() => expand('header')}
         end={<span className="mce-pin">Всегда сверху</span>}
       >
         <HeaderBody balance={draft.header.balance} onChange={(balance) => patch((config) => ({ ...config, header: { balance } }))} />
+        {cssField('header', 'CSS блока')}
       </Block>
       {draft.home.map((block, index) => {
         const kind: HomeKind = block.kind;
         const on = homeOn(block);
         const name = HOME_NAMES[kind];
         const always = kind === 'subscription';
-        const bad = problems.find((problem) => problem.part === kind);
+        const bad = blockProblems.find((problem) => problem.part === kind);
         return (
           <Block
             key={kind}
             id={kind}
             name={name}
-            summary={on || kind === 'greeting' ? homeSummary(block, actionText) : 'Скрыт'}
+            summary={mark(on || kind === 'greeting' ? homeSummary(block, actionText) : 'Скрыт', kind)}
             bad={badParts.has(kind)}
             open={open === kind}
             off={!on}
@@ -352,10 +421,18 @@ export function SettingsMiniApp() {
           >
             <HomeBody block={block} change={changeHome} kit={kit} />
             {bad ? <span className="err">{bad.text}</span> : null}
+            {cssField(kind, 'CSS блока')}
             <div className="mce-foot">
               <MoveButtons name={name} first={index === 0} last={index === draft.home.length - 1} onUp={() => moveHome(index, index - 1)} onDown={() => moveHome(index, index + 1)} />
-              {homeChanged(block) ? (
-                <button type="button" className="mce-reset" onClick={() => changeHome(resetHome(block))}>
+              {homeChanged(block) || own(kind) ? (
+                <button
+                  type="button"
+                  className="mce-reset"
+                  onClick={() => {
+                    changeHome(resetHome(block));
+                    changeCss(kind, '');
+                  }}
+                >
                   Вернуть стандартный блок
                 </button>
               ) : null}
@@ -363,6 +440,7 @@ export function SettingsMiniApp() {
           </Block>
         );
       })}
+      {pageCss}
     </div>
   );
 
@@ -406,15 +484,27 @@ export function SettingsMiniApp() {
           </Block>
         );
       })}
+      {cssRow('css-profile', 'profile', null, 'CSS профиля', 'Экран «Профиль»: карточки, строки, кнопки')}
+      {pageCss}
     </div>
   );
 
-  const left = screen === 'home' ? homeList : screen === 'profile' ? profileList : <TabsEditor tabs={draft.tabs} kit={kit} onChange={(tabs) => patch((config) => ({ ...config, tabs }))} />;
+  const tabsList = (
+    <>
+      <TabsEditor tabs={draft.tabs} kit={kit} onChange={(tabs) => patch((config) => ({ ...config, tabs }))} />
+      <div className="card mce-list">
+        {cssRow('css-tabs', 'tabs', 'tabs', 'CSS меню внизу', 'Полоса, вкладки, открытая вкладка')}
+        {pageCss}
+      </div>
+    </>
+  );
+
+  const left = screen === 'home' ? homeList : screen === 'profile' ? profileList : tabsList;
   const friendsScreen = screen === 'profile' && open === 'friends' && profileBlock(draft, 'friends').place === 'screen';
   const previewScreen: PreviewScreen = friendsScreen ? 'friends' : screen === 'profile' ? 'profile' : 'home';
   const previewHeight = Math.max(400, Math.min(844, viewport - gridTop - CHROME));
   const frame = (height: number, pick: (part: Part) => void) => (
-    <PreviewFrame config={draft} theme={theme} lang={shownLang} state={state} screen={previewScreen} off={off} percent={meta.percent} focus={focus} height={height} onPick={pick} />
+    <PreviewFrame config={draft} css={previewCss} theme={theme} lang={shownLang} state={state} screen={previewScreen} off={off} percent={meta.percent} focus={focus} height={height} onPick={pick} />
   );
 
   let status: ReactNode;
@@ -437,7 +527,7 @@ export function SettingsMiniApp() {
   const quiet = !error && !problems.length && !dirty && !note;
 
   const resetLink = (
-    <button type="button" className="mce-reset-all" onClick={() => setAsking(true)} disabled={busy || isStandard(draft)}>
+    <button type="button" className="mce-reset-all" onClick={() => setAsking(true)} disabled={busy || (isStandard(draft) && !MINI_PLACES.some(own))}>
       Вернуть стандартное
     </button>
   );
@@ -567,7 +657,7 @@ export function SettingsMiniApp() {
         <div className="dialog-back" role="presentation" onClick={() => setAsking(false)}>
           <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="mce-reset-h" onClick={(event) => event.stopPropagation()}>
             <h2 id="mce-reset-h">Вернуть стандартный вид?</h2>
-            <p className="muted">Порядок, показ и тексты станут как при установке, свои баннеры и ссылки уберутся. Клиенты увидят это после сохранения.</p>
+            <p className="muted">Порядок, показ и тексты станут как при установке, свои баннеры, ссылки и CSS уберутся. Клиенты увидят это после сохранения.</p>
             <div className="dialog-actions">
               <button type="button" className="btn-main" onClick={resetAll} autoFocus>
                 Вернуть

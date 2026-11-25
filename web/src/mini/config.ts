@@ -395,6 +395,7 @@ export function isPart(value: unknown): value is Part {
 export type MiniDraft = {
   type: typeof MINI_PREVIEW.draft;
   config: unknown;
+  css: string;
   theme: 'dark' | 'light';
   lang: Lang;
   state: Audience;

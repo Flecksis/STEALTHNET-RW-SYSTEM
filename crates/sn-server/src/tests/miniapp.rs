@@ -430,3 +430,178 @@ async fn превью_мини_приложения_встраивается_т�
     assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[tokio::test]
+async fn свой_css_мини_приложения_отдаётся_файлом_и_только_в_приложение() {
+    let Some(mut h) = http().await else { return };
+    let owner = h.owner().await;
+    let check = format!("{ADMIN_PATH}/css");
+    for (email, role) in [
+        ("support@example.com", AdminRole::Support),
+        ("viewer@example.com", AdminRole::ReadOnly),
+    ] {
+        let token = h.admin(email, role).await;
+        let (status, _) = h
+            .write(Method::POST, &check, &token, json!({ "css": {} }))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{email}");
+    }
+    let dir = std::env::temp_dir().join(format!("sn-mini-css-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><html lang=\"ru\"><head><title>S</title></head><body></body></html>",
+    )
+    .unwrap();
+    h.state.config = Arc::new(ServerConfig {
+        web_dir: Some(dir.clone()),
+        csp: crate::security::CspMode::All,
+        ..ServerConfig::default()
+    });
+    let (_, _, plain) = fetch_file(&h, "/app", None).await;
+    assert!(!plain.contains("preload"));
+
+    let (status, report) = h
+        .write(
+            Method::POST,
+            &check,
+            &owner,
+            json!({ "css": {
+                "tabs": ".mn-tab { color: red }",
+                "page": ".mn {}\n.mn { background: url(https://evil.example/x.png) }",
+                "hero": "x"
+            } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(keys_of(&report), ["page", "tabs"]);
+    assert_eq!(report["page"]["line"], 2);
+    assert!(
+        report["tabs"]["style"]
+            .as_str()
+            .unwrap()
+            .starts_with("[data-part=\"tabs\"] .mn-tab")
+    );
+    assert_eq!(site(&h).await["miniapp"], Value::Null);
+
+    let (status, saved) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "css": { "page": ".mn { --accent: teal }", "tabs": "gap: 0" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["css"]["page"], ".mn { --accent: teal }");
+    assert_eq!(saved["limits"]["page_css"], 50_000);
+    assert_eq!(saved["limits"]["block_css"], 10_000);
+
+    let shown = site(&h).await;
+    let path = shown["miniapp"]["css"].as_str().unwrap().to_string();
+    assert!(path.starts_with("/api/public/miniapp/"), "{path}");
+    assert!(shown["miniapp"].get("styles").is_none());
+    assert_eq!(
+        tabs(&shown["miniapp"]["tabs"]),
+        ["home", "plans", "connect", "profile"]
+    );
+
+    let (status, headers, text) = fetch_file(&h, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        text,
+        ".mn { --accent: teal }\n[data-part=\"tabs\"] {\n  gap: 0;\n}\n"
+    );
+    assert_eq!(headers[header::CONTENT_TYPE], "text/css; charset=utf-8");
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        headers[header::CONTENT_SECURITY_POLICY],
+        "default-src 'none'; frame-ancestors 'none'; sandbox"
+    );
+    let etag = headers[header::ETAG].to_str().unwrap().to_string();
+    let (status, _, text) = fetch_file(&h, &path, Some(&etag)).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(text.is_empty());
+
+    for page in ["/app", "/app/plans"] {
+        let (_, headers, html) = fetch_file(&h, page, None).await;
+        assert!(
+            html.contains(&format!(
+                "<link rel=\"preload\" as=\"style\" href=\"{path}\">"
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("<style"));
+        let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(policy.contains("style-src 'self';"), "{policy}");
+        assert!(!policy.contains("unsafe-inline"), "{policy}");
+    }
+    for other in [
+        "/",
+        "/cabinet",
+        "/admin",
+        "/admin/mini-preview",
+        "/pay/1",
+        "/verify/0123456789abcdef",
+    ] {
+        let (_, _, html) = fetch_file(&h, other, None).await;
+        assert!(!html.contains(&path), "{other}");
+    }
+
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            ADMIN_PATH,
+            &owner,
+            json!({ "css": { "page": ".mn { --accent: navy }" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, headers, text) = fetch_file(&h, &path, Some(&etag)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text, ".mn { --accent: navy }\n");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+    for missing in [
+        "/api/public/miniapp/style.css",
+        "/api/public/miniapp/0123456789ABCDEF.css",
+        "/api/public/miniapp/..%2F..%2Fetc%2Fpasswd.css",
+        "/api/public/miniapp/.css",
+    ] {
+        let (status, _, _) = fetch_file(&h, missing, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    }
+
+    let (_, journal) = h.get("/api/admin/audit?limit=5", &owner).await;
+    let mut texts = Vec::new();
+    for item in journal["items"].as_array().unwrap() {
+        if item["action"] == "settings.miniapp" {
+            let (_, entry) = h
+                .get(&format!("/api/admin/audit/{}", item["id"]), &owner)
+                .await;
+            texts.push(entry.to_string());
+        }
+    }
+    let text = texts.join("\n");
+    for part in ["Свой CSS", "общий, меню внизу", "Размер CSS, символов"]
+    {
+        assert!(text.contains(part), "{part}: {text}");
+    }
+    assert!(!text.contains("teal"), "{text}");
+
+    let (status, reset) = h
+        .write(Method::PUT, ADMIN_PATH, &owner, json!({ "css": {} }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reset}");
+    assert!(reset.get("css").is_none());
+    assert_eq!(site(&h).await["miniapp"], Value::Null);
+    let (status, _, _) = fetch_file(&h, &path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, _, html) = fetch_file(&h, "/app", None).await;
+    assert!(!html.contains("preload"));
+    std::fs::remove_dir_all(dir).ok();
+    h.db.cleanup().await;
+}

@@ -1,6 +1,8 @@
+use crate::css::{BLOCK_CSS_MAX, PAGE_CSS_MAX};
 use crate::image::ImageKind;
 pub use crate::landing::LandingImage as Picture;
 use crate::landing::{clean_line, clean_paragraph, valid_tag};
+use crate::miniapp_css::MiniCss;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -47,6 +49,8 @@ pub struct Limits {
     pub tabs_min: usize,
     pub tabs_max: usize,
     pub links: usize,
+    pub page_css: usize,
+    pub block_css: usize,
 }
 
 pub const LIMITS: Limits = Limits {
@@ -67,6 +71,8 @@ pub const LIMITS: Limits = Limits {
     tabs_min: TABS_MIN,
     tabs_max: TABS_MAX,
     links: LINKS_MAX,
+    page_css: PAGE_CSS_MAX,
+    block_css: BLOCK_CSS_MAX,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -847,6 +853,8 @@ pub struct MiniAppConfig {
     pub tabs: Vec<Tab>,
     #[serde(default)]
     pub profile: Vec<ProfileBlock>,
+    #[serde(default, skip_serializing_if = "MiniCss::is_empty")]
+    pub css: MiniCss,
 }
 
 impl Default for MiniAppConfig {
@@ -889,6 +897,7 @@ impl MiniAppConfig {
                 .into_iter()
                 .map(ProfileBlock::standard)
                 .collect(),
+            css: MiniCss::default(),
         }
     }
 
@@ -924,6 +933,7 @@ impl MiniAppConfig {
             home,
             tabs,
             profile,
+            css: MiniCss::default(),
         }
         .arranged())
     }
@@ -942,6 +952,10 @@ impl MiniAppConfig {
                 home: known_list(map.remove("home")),
                 tabs: known_list(map.remove("tabs")),
                 profile: known_list(map.remove("profile")),
+                css: map
+                    .remove("css")
+                    .and_then(|css| serde_json::from_value(css).ok())
+                    .unwrap_or_default(),
             }
             .arranged(),
         )
@@ -977,6 +991,7 @@ impl MiniAppConfig {
             home,
             tabs: arranged_tabs(self.tabs),
             profile,
+            css: self.css,
         }
     }
 
@@ -1025,15 +1040,26 @@ impl MiniAppConfig {
 
     pub fn with_urls(&self) -> MiniAppConfig {
         let mut copy = self.clone();
-        for (_, image) in copy.images_mut() {
+        copy.fill_urls();
+        copy
+    }
+
+    fn fill_urls(&mut self) {
+        for (_, image) in self.images_mut() {
             image.url = image.kind.map(|kind| image_path(&image.tag, kind));
         }
-        copy
     }
 
     pub fn published(&self) -> MiniAppConfig {
         let own_on = |item: &Item| item.std.is_some() || item.on;
-        let mut copy = self.with_urls();
+        let mut copy = MiniAppConfig {
+            header: self.header.clone(),
+            home: self.home.clone(),
+            tabs: self.tabs.clone(),
+            profile: self.profile.clone(),
+            css: MiniCss::default(),
+        };
+        copy.fill_urls();
         for block in &mut copy.home {
             match block {
                 HomeBlock::Banners(banners) => {
@@ -2621,6 +2647,58 @@ mod tests {
             assert_eq!(row_names(&config).len(), Section::ROWS.len(), "{to}");
             let text = serde_json::to_string(&config).unwrap();
             assert!(!text.contains("Ссылка"), "{to}");
+        }
+    }
+
+    #[test]
+    fn css_хранится_рядом_с_видом_и_старую_настройку_не_меняет() {
+        use crate::miniapp_css::CssPlace;
+        let plain = parse(json!({ "header": { "balance": false } })).unwrap();
+        assert!(
+            serde_json::to_value(&plain).unwrap().get("css").is_none(),
+            "пустой CSS не пишется"
+        );
+        let old = stored(json!({ "header": { "balance": false } }));
+        assert_eq!(old, plain);
+        assert!(old.css.is_empty());
+
+        let mut config = MiniAppConfig::standard();
+        config.css = MiniCss::parse(
+            &[("page".to_string(), Some(".mn { gap: 0 }".to_string()))]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        assert!(!config.is_standard());
+        assert_eq!(
+            config.difference(&MiniAppConfig::standard()),
+            Difference::default()
+        );
+        let raw = serde_json::to_value(&config).unwrap();
+        assert_eq!(raw["css"], json!({ "page": ".mn { gap: 0 }" }));
+        assert_eq!(stored(raw), config);
+        assert!(config.published().css.is_empty());
+        assert!(
+            serde_json::to_value(config.published())
+                .unwrap()
+                .get("css")
+                .is_none()
+        );
+
+        let loose = stored(json!({
+            "css": { "page": ".mn {}", "stories": "x", "tabs": null, "profile": "" }
+        }));
+        assert_eq!(
+            loose
+                .css
+                .places()
+                .map(|(place, _)| place)
+                .collect::<Vec<_>>(),
+            [CssPlace::Page]
+        );
+        for broken in [json!("x"), json!(["x"]), json!({ "page": 5 }), json!(null)] {
+            let config = stored(json!({ "css": broken, "header": { "balance": false } }));
+            assert_eq!(config, plain);
         }
     }
 

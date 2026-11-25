@@ -192,6 +192,17 @@ export function GlyphField({ value, shown, onChange }: { value: Glyph | undefine
   );
 }
 
+export async function sendImage(file: File, rules: ImageRules): Promise<MiniImage & { url: string }> {
+  if (!rules.types.includes(file.type)) {
+    throw new ApiError(0, 'miniapp_image.format', 'Подходят только PNG, JPEG и WebP');
+  }
+  if (file.size > rules.max_bytes) {
+    throw new ApiError(0, 'miniapp_image.too_heavy', `Файл больше ${weight(rules.max_bytes)}: уменьшите картинку`);
+  }
+  const saved = await upload<Uploaded>('/api/admin/settings/miniapp/images', new Blob([file], { type: file.type }));
+  return { tag: saved.tag, kind: saved.kind, width: saved.width, height: saved.height, url: saved.url };
+}
+
 type PictureProps = { image: MiniImage | null | undefined; onChange: (next: MiniImage | null) => void; rules: ImageRules; label: string; hint: string; what: string };
 
 export function PictureField({ image, onChange, rules, label, hint, what }: PictureProps) {
@@ -204,19 +215,10 @@ export function PictureField({ image, onChange, rules, label, hint, what }: Pict
     if (!file) {
       return;
     }
-    if (!rules.types.includes(file.type)) {
-      setError('Подходят только PNG, JPEG и WebP');
-      return;
-    }
-    if (file.size > rules.max_bytes) {
-      setError(`Файл больше ${weight(rules.max_bytes)}: уменьшите картинку`);
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
-      const saved = await upload<Uploaded>('/api/admin/settings/miniapp/images', new Blob([file], { type: file.type }));
-      onChange({ tag: saved.tag, kind: saved.kind, width: saved.width, height: saved.height, url: saved.url });
+      onChange(await sendImage(file, rules));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Картинка не загрузилась');
     } finally {

@@ -13,6 +13,10 @@
   gap: 2px 12px;
 }
 
+.lcs-label {
+  font-weight: 600;
+}
+
 .lcs-side {
   display: flex;
   align-items: baseline;
