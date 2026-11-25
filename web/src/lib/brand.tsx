@@ -5,6 +5,9 @@ type Props = {
 };
 
 export function brandInitial(name: string): string {
+  if (!name) {
+    return '';
+  }
   const match = name.match(/[\p{L}\p{N}]/u);
   return match ? match[0].toUpperCase() : 'S';
 }

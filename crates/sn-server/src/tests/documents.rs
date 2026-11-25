@@ -117,6 +117,7 @@ async fn страница_документа_чистится_и_отдаётс�
         "<meta name=\"description\" content=\"Здесь описано, какие данные получает сервис."
     ));
     assert!(html.contains("<meta property=\"og:type\" content=\"article\">"));
+    assert!(html.contains("<meta name=\"application-name\" content=\"STEALTHNET\">"));
     assert!(
         html.contains(
             "<noscript><article class=\"dp-noscript\"><h1>Политика конфиденциальности</h1>"

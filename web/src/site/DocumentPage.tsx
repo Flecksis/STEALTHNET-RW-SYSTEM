@@ -9,7 +9,7 @@ import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied
 import { usePhone } from '../lib/media';
 import { botLink, storedReferral } from '../lib/referral';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
-import { DEFAULT_SITE, useSite } from '../lib/site';
+import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import type { Site, SiteDocument } from '../lib/types';
 import { storedUtm } from '../lib/utm';
 import { startParam } from '../lib/utmTags';
@@ -241,9 +241,9 @@ export function DocumentPage({ site, path }: Props) {
 
   useEffect(() => {
     if (page) {
-      document.title = `${page.title} — ${site.brand_name}`;
+      showTitle(site, (known) => `${page.title} — ${known.brand_name}`);
     }
-  }, [page, site.brand_name]);
+  }, [page, site]);
 
   useEffect(() => {
     window.scrollTo({ top: 0 });

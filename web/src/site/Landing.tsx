@@ -8,7 +8,7 @@ import { countriesIn, countryName, joinAnd } from '../lib/geo';
 import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
-import { DEFAULT_SITE, useSite } from '../lib/site';
+import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
 import { styleFile, usePreviewStyles, useSiteStyles } from './landingStyles';
@@ -201,9 +201,9 @@ function LandingPage({ mode }: { mode: Mode }) {
 
   useEffect(() => {
     if (!framed) {
-      document.title = site.title ?? site.brand_name;
+      showTitle(loadedSite, (known) => known.title ?? known.brand_name);
     }
-  }, [framed, site.title, site.brand_name]);
+  }, [framed, loadedSite]);
 
   useEffect(() => {
     if (mode !== 'preview') {

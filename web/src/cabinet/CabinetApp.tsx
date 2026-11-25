@@ -7,7 +7,7 @@ import { avatarColor, money } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { applyLang, guessLang, msg, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { usePhone } from '../lib/media';
-import { DEFAULT_SITE, useSite } from '../lib/site';
+import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { supportLink, supportTickets } from '../lib/support';
 import { useSupportUnread } from '../lib/supportUnread';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
@@ -76,11 +76,12 @@ export function CabinetApp() {
   const wanted: Lang | null = loadedSite ? (picked && langs.includes(picked) ? picked : (account ?? guessLang(loadedSite))) : null;
   const ready = useApplied(wanted);
   const lang = useLang();
+  const opened = ready && state.kind !== 'loading';
   useEffect(() => {
-    if (ready) {
-      document.title = t('Личный кабинет — {brand}', { brand: site.brand_name });
+    if (opened) {
+      showTitle(loadedSite, (known) => t('Личный кабинет — {brand}', { brand: known.brand_name }));
     }
-  }, [ready, lang, site.brand_name]);
+  }, [opened, lang, loadedSite]);
 
   const load = useCallback(async () => {
     try {

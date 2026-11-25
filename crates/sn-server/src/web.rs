@@ -163,6 +163,13 @@ pub fn escape_html(text: &str) -> String {
     out
 }
 
+fn brand_tag(brand: &str) -> String {
+    format!(
+        "<meta name=\"application-name\" content=\"{}\">",
+        escape_html(brand)
+    )
+}
+
 fn icon_tags(settings: &CoreSettings) -> Vec<String> {
     let (icon, icon_type) = match tab_icon(settings) {
         TabIcon::Image(image, meta) => (meta.path(image), meta.kind.content_type()),
@@ -193,6 +200,7 @@ fn document_head(settings: &CoreSettings, page: &PublicPage) -> String {
             "<title>{}</title>",
             escape_html(&format!("{} — {brand}", page.title))
         ),
+        brand_tag(brand),
         format!("<meta name=\"robots\" content=\"{robots}\">"),
     ];
     tags.extend(icon_tags(settings));
@@ -293,6 +301,7 @@ fn head(settings: &CoreSettings, page: Page, locale: Locale) -> String {
     let description = settings.site.description.as_deref();
     let mut tags = vec![
         format!("<title>{}</title>", escape_html(&title)),
+        brand_tag(brand),
         format!("<meta name=\"robots\" content=\"{robots}\">"),
     ];
     tags.extend(icon_tags(settings));
@@ -726,6 +735,29 @@ mod tests {
         assert!(!landing.contains("apple-touch-icon"));
         assert!(!landing.contains("og:image"));
         assert!(!landing.contains("og:url"));
+    }
+
+    #[test]
+    fn название_сервиса_есть_в_разметке_каждой_страницы() {
+        let mut named = settings();
+        named.brand_name = "Тихий & \"VPN\"".into();
+        for page in [
+            Page::Landing,
+            Page::Cabinet,
+            Page::MiniApp,
+            Page::Admin,
+            Page::Other,
+        ] {
+            for locale in [Locale::Ru, Locale::En] {
+                let tags = head(&named, page, locale);
+                assert!(
+                    tags.contains(
+                        "<meta name=\"application-name\" content=\"Тихий &amp; &quot;VPN&quot;\">"
+                    ),
+                    "{page:?}: {tags}"
+                );
+            }
+        }
     }
 
     #[test]
