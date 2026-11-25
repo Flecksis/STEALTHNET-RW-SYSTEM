@@ -36,6 +36,9 @@ pub struct TestCore {
     pub slow_days_ms: AtomicU64,
     pub refuse_grant: Mutex<Option<GrantRefusal>>,
     pub devices: Mutex<Vec<(ClientId, String)>>,
+    pub devices_down: AtomicBool,
+    pub slow_devices_ms: AtomicU64,
+    pub device_lookups: AtomicU64,
 }
 
 impl TestCore {
@@ -47,6 +50,9 @@ impl TestCore {
             slow_days_ms: AtomicU64::new(0),
             refuse_grant: Mutex::new(None),
             devices: Mutex::new(Vec::new()),
+            devices_down: AtomicBool::new(false),
+            slow_devices_ms: AtomicU64::new(0),
+            device_lookups: AtomicU64::new(0),
         })
     }
 
@@ -89,6 +95,14 @@ impl TestCore {
 impl CoreApi for TestCore {
     async fn client_devices(&self, client_id: ClientId) -> Result<Vec<String>, ModuleError> {
         self.store.ping().await?;
+        self.device_lookups.fetch_add(1, Ordering::SeqCst);
+        let slow = self.slow_devices_ms.load(Ordering::SeqCst);
+        if slow > 0 {
+            tokio::time::sleep(Duration::from_millis(slow)).await;
+        }
+        if self.devices_down.load(Ordering::Relaxed) {
+            return Err(ModuleError::Core("Remnawave не ответила".into()));
+        }
         Ok(self
             .devices
             .lock()

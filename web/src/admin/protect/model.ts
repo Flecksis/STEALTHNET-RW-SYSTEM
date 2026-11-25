@@ -42,7 +42,8 @@ export type JournalItem = {
     | 'contest_noted'
     | 'contest_excluded'
     | 'promo_link_asked'
-    | 'promo_link_denied';
+    | 'promo_link_denied'
+    | 'shared_address';
   title: string;
   reasons: Reason[];
   details: Record<string, unknown>;

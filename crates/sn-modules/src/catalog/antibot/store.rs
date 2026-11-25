@@ -153,10 +153,11 @@ pub enum Action {
     ContestExcluded,
     PromoLinkAsked,
     PromoLinkDenied,
+    SharedAddress,
 }
 
 impl Action {
-    pub const ALL: [Action; 16] = [
+    pub const ALL: [Action; 17] = [
         Action::Marked,
         Action::Asked,
         Action::Confirmed,
@@ -173,6 +174,7 @@ impl Action {
         Action::ContestExcluded,
         Action::PromoLinkAsked,
         Action::PromoLinkDenied,
+        Action::SharedAddress,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -193,6 +195,7 @@ impl Action {
             Action::ContestExcluded => "contest_excluded",
             Action::PromoLinkAsked => "promo_link_asked",
             Action::PromoLinkDenied => "promo_link_denied",
+            Action::SharedAddress => "shared_address",
         }
     }
 
@@ -218,6 +221,7 @@ impl Action {
             Action::ContestExcluded => "Не прошли проверку на жеребьёвке конкурса",
             Action::PromoLinkAsked => "Попросили подтвердить перед промо-ссылкой",
             Action::PromoLinkDenied => "Подписка по промо-ссылке не выдана",
+            Action::SharedAddress => "Общий адрес с пригласившим: бонус не удержан",
         }
     }
 }
@@ -284,7 +288,7 @@ impl JournalFilter {
                 Action::PromoLinkAsked,
                 Action::PromoLinkDenied,
             ],
-            JournalFilter::Referral => &[Action::NoBonus],
+            JournalFilter::Referral => &[Action::NoBonus, Action::SharedAddress],
             JournalFilter::Roulette => &[
                 Action::RouletteAsked,
                 Action::RouletteDenied,

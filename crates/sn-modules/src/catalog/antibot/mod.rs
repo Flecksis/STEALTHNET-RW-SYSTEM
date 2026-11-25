@@ -741,9 +741,8 @@ pub async fn screen_invites(
             }
         };
         let mine = Traces::of(db, invite.invitee, since).await?;
-        if let Some(details) = mine.shared_with(&theirs) {
-            let details =
-                serde_json::json!({ "self_invite": details, "referrer_id": invite.referrer.0 });
+        if let Some(trace) = mine.shared_with(&theirs) {
+            let details = serde_json::json!({ "self_invite": trace.details(), "referrer_id": invite.referrer.0 });
             remember(db, invite.invitee, &[Signal::SelfInvite], &details).await?;
             out.insert(invite.invitee);
             continue;
@@ -1094,15 +1093,27 @@ impl Traces {
         })
     }
 
-    fn shared_with(&self, other: &Traces) -> Option<serde_json::Value> {
-        if let Some(network) = shared(&self.ips, &other.ips) {
-            return Some(serde_json::json!({ "network": network }));
+    fn shared_with(&self, other: &Traces) -> Option<Trace> {
+        if let (Some(a), Some(b)) = (&self.email, &other.email)
+            && signals::email_key(a) == signals::email_key(b)
+        {
+            return Some(Trace::Email);
         }
-        match (&self.email, &other.email) {
-            (Some(a), Some(b)) if signals::email_key(a) == signals::email_key(b) => {
-                Some(serde_json::json!({ "email": true }))
-            }
-            _ => None,
+        shared(&self.ips, &other.ips).map(Trace::Network)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Trace {
+    Email,
+    Network(String),
+}
+
+impl Trace {
+    fn details(&self) -> serde_json::Value {
+        match self {
+            Trace::Email => serde_json::json!({ "email": true }),
+            Trace::Network(network) => serde_json::json!({ "network": network }),
         }
     }
 }
@@ -1112,29 +1123,81 @@ async fn shared_traces(
     payer: ClientId,
     referrer: ClientId,
     now: DateTime<Utc>,
-) -> Result<Option<serde_json::Value>, StoreError> {
+) -> Result<Option<Trace>, StoreError> {
     let since = now - Duration::days(signals::SHARED_SESSIONS_DAYS);
     let mine = Traces::of(db, payer, since).await?;
     let theirs = Traces::of(db, referrer, since).await?;
     Ok(mine.shared_with(&theirs))
 }
 
-async fn shared_device(
-    ctx: &ModuleContext,
-    payer: ClientId,
-    referrer: ClientId,
-) -> Option<serde_json::Value> {
-    let found = match (
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Devices {
+    Shared,
+    Different,
+    Unknown,
+}
+
+fn known_hwids(hwids: Vec<String>) -> HashSet<String> {
+    hwids
+        .into_iter()
+        .map(|hwid| hwid.trim().to_string())
+        .filter(|hwid| !hwid.is_empty())
+        .collect()
+}
+
+async fn devices_of_both(ctx: &ModuleContext, payer: ClientId, referrer: ClientId) -> Devices {
+    let (mine, theirs) = match (
         ctx.core.client_devices(payer).await,
         ctx.core.client_devices(referrer).await,
     ) {
-        (Ok(a), Ok(b)) => a.into_iter().any(|hwid| b.contains(&hwid)),
+        (Ok(mine), Ok(theirs)) => (known_hwids(mine), known_hwids(theirs)),
         (Err(err), _) | (_, Err(err)) => {
             tracing::warn!(error = %err, "антибот: устройства клиентов не получены");
-            false
+            return Devices::Unknown;
         }
     };
-    found.then(|| serde_json::json!({ "device": true }))
+    if !mine.is_disjoint(&theirs) {
+        Devices::Shared
+    } else if mine.is_empty() || theirs.is_empty() {
+        Devices::Unknown
+    } else {
+        Devices::Different
+    }
+}
+
+fn self_invite(trace: Option<&Trace>, devices: Devices) -> Option<serde_json::Value> {
+    match (trace, devices) {
+        (Some(Trace::Email), _) => Some(serde_json::json!({ "email": true })),
+        (Some(Trace::Network(network)), Devices::Shared) => {
+            Some(serde_json::json!({ "network": network, "device": true }))
+        }
+        (Some(Trace::Network(network)), Devices::Unknown) => {
+            Some(serde_json::json!({ "network": network }))
+        }
+        (None, Devices::Shared) => Some(serde_json::json!({ "device": true })),
+        (Some(Trace::Network(_)) | None, Devices::Different) | (None, Devices::Unknown) => None,
+    }
+}
+
+async fn note_shared_address(
+    db: &mut impl Db,
+    payer: ClientId,
+    referrer: ClientId,
+    network: &str,
+) -> Result<(), StoreError> {
+    store::event(
+        db,
+        &NewEvent {
+            client_id: payer,
+            action: Action::SharedAddress,
+            reasons: &[],
+            details: serde_json::json!({ "network": network, "referrer_id": referrer.0 }),
+            dedupe: Some(format!("shared_address:{}:{}", payer.0, referrer.0)),
+            admin: None,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 async fn mass_invites(
@@ -1192,17 +1255,18 @@ pub async fn referral_gate(
         return Ok(ReferralGate::Allow);
     }
     let now = db_now(&mut conn).await?;
+    let mut shared_network = None;
     if settings.referral_guard {
-        let found = match shared_traces(&mut conn, payer, referrer, now).await? {
-            Some(found) => Some(found),
-            None => {
-                drop(conn);
-                let found = shared_device(ctx, payer, referrer).await;
-                conn = ctx.store.conn().await?;
-                found
-            }
+        let trace = shared_traces(&mut conn, payer, referrer, now).await?;
+        let devices = if trace == Some(Trace::Email) {
+            Devices::Unknown
+        } else {
+            drop(conn);
+            let found = devices_of_both(ctx, payer, referrer).await;
+            conn = ctx.store.conn().await?;
+            found
         };
-        if let Some(details) = found {
+        if let Some(details) = self_invite(trace.as_ref(), devices) {
             let details = serde_json::json!({ "self_invite": details, "referrer_id": referrer.0 });
             remember(&mut conn, payer, &[Signal::SelfInvite], &details).await?;
             return Ok(ReferralGate::NoDirect(Signal::SelfInvite));
@@ -1217,6 +1281,9 @@ pub async fn referral_gate(
             remember(&mut conn, payer, &[Signal::MassInvites], &details).await?;
             return Ok(ReferralGate::NoDirect(Signal::MassInvites));
         }
+        if let Some(Trace::Network(network)) = trace {
+            shared_network = Some(network);
+        }
     }
     if settings.mode == Mode::Block {
         let flagged = match &mark {
@@ -1226,6 +1293,9 @@ pub async fn referral_gate(
         if flagged {
             return Ok(ReferralGate::NoBonus);
         }
+    }
+    if let Some(network) = shared_network {
+        note_shared_address(&mut conn, payer, referrer, &network).await?;
     }
     Ok(ReferralGate::Allow)
 }
@@ -1401,7 +1471,7 @@ impl Module for AntibotModule {
             SettingField::flag(
                 "referral_guard",
                 "Не начислять за самоприглашение и массовые приглашения",
-                "Общий адрес, устройство или почта с пригласившим, либо много новых аккаунтов от одного клиента за сутки",
+                "То же устройство или почта, что у пригласившего, общий адрес, если устройства не отличить, либо много новых аккаунтов от одного клиента за сутки",
             )
             .with_default("true"),
             SettingField::number(

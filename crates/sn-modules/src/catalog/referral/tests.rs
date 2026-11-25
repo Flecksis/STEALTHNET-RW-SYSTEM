@@ -283,6 +283,197 @@ async fn приглашение_по_ссылке_и_три_уровня_нач�
     db.cleanup().await;
 }
 
+async fn antibot_on(store: &Store, mode: &str) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO module_states (module, enabled, config) VALUES ('antibot', true, $1) \
+         ON CONFLICT (module) DO UPDATE SET enabled = true, config = EXCLUDED.config",
+    )
+    .bind(serde_json::json!({ "mode": mode }))
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn seen_at(store: &Store, client_id: ClientId, ip: &str) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO client_sessions (client_id, token_hash, channel, ip, expires_at) \
+         VALUES ($1, $2, 'cabinet', $3, now() + interval '1 day')",
+    )
+    .bind(client_id.0)
+    .bind(format!("s-{}-{ip}", client_id.0).into_bytes())
+    .bind(ip)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn written_to(store: &Store, client_id: ClientId, email: &str) {
+    let mut conn = store.conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            client_id,
+            &sn_domain::client::NewIdentity::new(
+                sn_domain::client::IdentityKind::Email,
+                email,
+                true,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn credits_of(store: &Store, payment: PaymentId) -> i64 {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar("SELECT count(*) FROM referral_credits WHERE payment_id = $1")
+        .bind(payment.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn процент_за_самоприглашение_и_за_семью_с_общим_адресом() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    const HOME: &str = "203.0.113.40";
+    const AWAY: &str = "198.51.100.5";
+    let mut number = 0;
+    for mode in ["mark", "confirm", "block"] {
+        antibot_on(&db.store, mode).await;
+        for (name, ip, hwid, same_mailbox, earned) in [
+            ("ничего общего", AWAY, Some("phone-2"), false, 300),
+            ("адрес", HOME, Some("phone-2"), false, 300),
+            ("адрес, устройство неизвестно", HOME, None, false, 0),
+            ("устройство", AWAY, Some("phone-1"), false, 0),
+            ("ящик", AWAY, Some("phone-2"), true, 0),
+            ("адрес и устройство", HOME, Some("phone-1"), false, 0),
+            ("адрес и ящик", HOME, Some("phone-2"), true, 0),
+            ("устройство и ящик", AWAY, Some("phone-1"), true, 0),
+            ("адрес, устройство и ящик", HOME, Some("phone-1"), true, 0),
+        ] {
+            number += 1;
+            let name = format!("{mode}: {name}");
+            let core = TestCore::new(&db.store);
+            let ctx = context(&db.store, &core, Currency::Usd);
+            let grand = client(&db.store).await;
+            let parent = client(&db.store).await;
+            let buyer = client(&db.store).await;
+            invite(&ctx, grand, parent).await;
+            invite(&ctx, parent, buyer).await;
+            seen_at(&db.store, parent, HOME).await;
+            seen_at(&db.store, buyer, ip).await;
+            written_to(&db.store, parent, &format!("some.one{number}@gmail.com")).await;
+            let email = if same_mailbox {
+                format!("someone{number}+vpn@gmail.com")
+            } else {
+                format!("another{number}@gmail.com")
+            };
+            written_to(&db.store, buyer, &email).await;
+            {
+                let mut devices = core.devices.lock().unwrap();
+                devices.push((parent, "phone-1".into()));
+                if let Some(hwid) = hwid {
+                    devices.push((buyer, hwid.into()));
+                }
+            }
+            let mut paid = 0;
+            for minor in [1000, 2000] {
+                let (payment, event) = pay(
+                    &db.store,
+                    buyer,
+                    "cryptopay",
+                    Amount::new(minor, PayCurrency::Usd),
+                )
+                .await;
+                let mut tasks = Vec::new();
+                for _ in 0..6 {
+                    let ctx = ctx.clone();
+                    let event = event.clone();
+                    tasks.push(tokio::spawn(async move {
+                        ReferralModule.on_event(&ctx, &event).await
+                    }));
+                }
+                for task in tasks {
+                    task.await.unwrap().unwrap();
+                }
+                ReferralModule.on_event(&ctx, &event).await.unwrap();
+                paid += minor;
+                assert_eq!(
+                    referral_balance(&db.store, parent).await,
+                    usd(earned * paid / 1000),
+                    "{name}, оплачено {paid}"
+                );
+                assert_eq!(
+                    referral_balance(&db.store, grand).await,
+                    usd(paid / 10),
+                    "{name}, оплачено {paid}"
+                );
+                assert_eq!(
+                    credits_of(&db.store, payment).await,
+                    if earned == 0 { 1 } else { 2 },
+                    "{name}, оплачено {paid}"
+                );
+            }
+        }
+    }
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn без_ответа_remnawave_общий_адрес_бонуса_не_даёт_и_второй_раз_не_начисляется() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    antibot_on(&db.store, "confirm").await;
+    let parent = client(&db.store).await;
+    let buyer = client(&db.store).await;
+    invite(&ctx, parent, buyer).await;
+    seen_at(&db.store, parent, "203.0.113.40").await;
+    seen_at(&db.store, buyer, "203.0.113.40").await;
+    {
+        let mut devices = core.devices.lock().unwrap();
+        devices.push((parent, "phone-1".into()));
+        devices.push((buyer, "phone-2".into()));
+    }
+    core.devices_down
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (first, event) = pay(
+        &db.store,
+        buyer,
+        "cryptopay",
+        Amount::new(1000, PayCurrency::Usd),
+    )
+    .await;
+    ReferralModule.on_event(&ctx, &event).await.unwrap();
+    assert_eq!(referral_balance(&db.store, parent).await, usd(0));
+    core.devices_down
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    ReferralModule.on_event(&ctx, &event).await.unwrap();
+    assert_eq!(
+        referral_balance(&db.store, parent).await,
+        usd(0),
+        "решение по оплате не пересматривается"
+    );
+    assert_eq!(credits_of(&db.store, first).await, 0);
+    let (_, event) = pay(
+        &db.store,
+        buyer,
+        "cryptopay",
+        Amount::new(1000, PayCurrency::Usd),
+    )
+    .await;
+    ReferralModule.on_event(&ctx, &event).await.unwrap();
+    ReferralModule.on_event(&ctx, &event).await.unwrap();
+    assert_eq!(referral_balance(&db.store, parent).await, usd(300));
+    db.cleanup().await;
+}
+
 #[tokio::test]
 async fn возврат_оплаты_сторнирует_начисление_в_пределах_остатка() {
     let Some(db) = test_store().await else {

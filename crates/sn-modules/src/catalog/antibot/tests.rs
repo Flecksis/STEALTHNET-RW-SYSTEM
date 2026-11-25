@@ -208,6 +208,240 @@ async fn самоприглашение_с_общего_адреса_не_даё
     db.cleanup().await;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hwid {
+    Same,
+    Other,
+    PayerUnknown,
+    ReferrerUnknown,
+    BothUnknown,
+    Blank,
+    Down,
+}
+
+impl Hwid {
+    const ALL: [Hwid; 7] = [
+        Hwid::Same,
+        Hwid::Other,
+        Hwid::PayerUnknown,
+        Hwid::ReferrerUnknown,
+        Hwid::BothUnknown,
+        Hwid::Blank,
+        Hwid::Down,
+    ];
+
+    fn set(self, core: &TestCore, referrer: ClientId, payer: ClientId) {
+        let (first, second) = match self {
+            Hwid::Same => (Some("phone-1"), Some("phone-1")),
+            Hwid::Other | Hwid::Down => (Some("phone-1"), Some("phone-2")),
+            Hwid::PayerUnknown => (Some("phone-1"), None),
+            Hwid::ReferrerUnknown => (None, Some("phone-2")),
+            Hwid::BothUnknown => (None, None),
+            Hwid::Blank => (Some(" "), Some(" ")),
+        };
+        for (who, hwid) in [(referrer, first), (payer, second)] {
+            if let Some(hwid) = hwid {
+                core.devices.lock().unwrap().push((who, hwid.into()));
+            }
+        }
+        core.devices_down
+            .store(self == Hwid::Down, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+async fn mailbox(store: &sn_store::Store, client_id: ClientId, email: &str) {
+    let mut conn = store.conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            client_id,
+            &sn_domain::client::NewIdentity::new(
+                sn_domain::client::IdentityKind::Email,
+                email,
+                true,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn shared_notes(store: &sn_store::Store, client_id: ClientId) -> Vec<serde_json::Value> {
+    let mut conn = store.conn().await.unwrap();
+    store::journal(
+        &mut conn,
+        JournalFilter::Referral,
+        Some(client_id),
+        sn_domain::paging::PageRequest::default(),
+    )
+    .await
+    .unwrap()
+    .items
+    .into_iter()
+    .filter(|item| item.action == Action::SharedAddress)
+    .map(|item| item.details)
+    .collect()
+}
+
+async fn marked(store: &sn_store::Store, client_id: ClientId) -> Option<serde_json::Value> {
+    let mut conn = store.conn().await.unwrap();
+    store::mark_of(&mut conn, client_id)
+        .await
+        .unwrap()
+        .map(|mark| mark.details)
+}
+
+#[tokio::test]
+async fn самоприглашение_решается_по_адресу_устройству_и_ящику_во_всех_режимах() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let mut pairs = 0;
+    for mode in ["mark", "confirm", "block"] {
+        enable(&db.store, serde_json::json!({ "mode": mode })).await;
+        for address in [true, false] {
+            for same_mailbox in [true, false] {
+                for hwid in Hwid::ALL {
+                    pairs += 1;
+                    let name = format!("{mode}: адрес {address}, ящик {same_mailbox}, {hwid:?}");
+                    let core = TestCore::new(&db.store);
+                    let ctx = context(&db.store, &core, Currency::Usd);
+                    let referrer = client(&db.store).await;
+                    let payer = client(&db.store).await;
+                    invite(&db.store, payer, referrer).await;
+                    session(&db.store, referrer, "203.0.113.40").await;
+                    let away = if address {
+                        "203.0.113.40"
+                    } else {
+                        "198.51.100.5"
+                    };
+                    session(&db.store, payer, away).await;
+                    mailbox(&db.store, referrer, &format!("some.one{pairs}@gmail.com")).await;
+                    let email = if same_mailbox {
+                        format!("someone{pairs}+vpn@gmail.com")
+                    } else {
+                        format!("another{pairs}@gmail.com")
+                    };
+                    mailbox(&db.store, payer, &email).await;
+                    hwid.set(&core, referrer, payer);
+                    let sign = match (same_mailbox, address, hwid) {
+                        (true, _, _) => Some(serde_json::json!({ "email": true })),
+                        (_, true, Hwid::Same) => {
+                            Some(serde_json::json!({ "network": "203.0.113.40", "device": true }))
+                        }
+                        (_, false, Hwid::Same) => Some(serde_json::json!({ "device": true })),
+                        (_, _, Hwid::Other) | (_, false, _) => None,
+                        (_, true, _) => Some(serde_json::json!({ "network": "203.0.113.40" })),
+                    };
+                    let gate = match &sign {
+                        Some(_) => ReferralGate::NoDirect(Signal::SelfInvite),
+                        None => ReferralGate::Allow,
+                    };
+                    for _ in 0..3 {
+                        assert_eq!(referral_gate(&ctx, payer).await.unwrap(), gate, "{name}");
+                    }
+                    assert_eq!(
+                        marked(&db.store, payer)
+                            .await
+                            .map(|details| details["self_invite"].clone()),
+                        sign,
+                        "{name}"
+                    );
+                    let noted = if sign.is_none() && address {
+                        vec![serde_json::json!({
+                            "network": "203.0.113.40", "referrer_id": referrer.0
+                        })]
+                    } else {
+                        Vec::new()
+                    };
+                    assert_eq!(shared_notes(&db.store, payer).await, noted, "{name}");
+                    assert_eq!(
+                        bonus_allowed(&ctx, payer).await.unwrap(),
+                        sign.is_none() || mode != "block",
+                        "{name}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(pairs, 84);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn выключенная_защита_рефералов_не_смотрит_на_адрес_и_устройство() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    enable(
+        &db.store,
+        serde_json::json!({ "mode": "confirm", "referral_guard": false }),
+    )
+    .await;
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let referrer = client(&db.store).await;
+    let payer = client(&db.store).await;
+    invite(&db.store, payer, referrer).await;
+    session(&db.store, referrer, "203.0.113.40").await;
+    session(&db.store, payer, "203.0.113.40").await;
+    Hwid::Same.set(&core, referrer, payer);
+    assert_eq!(
+        referral_gate(&ctx, payer).await.unwrap(),
+        ReferralGate::Allow
+    );
+    assert!(shared_notes(&db.store, payer).await.is_empty());
+    assert_eq!(marked(&db.store, payer).await, None);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn медленный_ответ_remnawave_не_держит_соединение_с_базой() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let single = pooled(&db, 1, std::time::Duration::from_secs(3)).await;
+    enable(&single, serde_json::json!({ "mode": "confirm" })).await;
+    for (hwid, gate) in [
+        (Hwid::Other, ReferralGate::Allow),
+        (Hwid::Same, ReferralGate::NoDirect(Signal::SelfInvite)),
+        (Hwid::Down, ReferralGate::NoDirect(Signal::SelfInvite)),
+    ] {
+        let core = TestCore::new(&single);
+        let ctx = context(&single, &core, Currency::Usd);
+        let referrer = client(&single).await;
+        let payer = client(&single).await;
+        invite(&single, payer, referrer).await;
+        session(&single, referrer, "203.0.113.40").await;
+        session(&single, payer, "203.0.113.40").await;
+        hwid.set(&core, referrer, payer);
+        core.slow_devices_ms
+            .store(1_500, std::sync::atomic::Ordering::SeqCst);
+        let asked = ctx.clone();
+        let answer = tokio::spawn(async move { referral_gate(&asked, payer).await.unwrap() });
+        for step in 0.. {
+            if core
+                .device_lookups
+                .load(std::sync::atomic::Ordering::SeqCst)
+                > 0
+            {
+                break;
+            }
+            assert!(step < 200, "{hwid:?}: до Remnawave не дошло");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        for _ in 0..3 {
+            single.ping().await.unwrap();
+            assert!(
+                !answer.is_finished(),
+                "{hwid:?}: соединение освободилось только вместе с ответом Remnawave"
+            );
+        }
+        assert_eq!(answer.await.unwrap(), gate, "{hwid:?}");
+    }
+    single.close().await;
+    db.cleanup().await;
+}
+
 #[tokio::test]
 async fn общее_устройство_ищется_без_удержания_соединения_с_базой() {
     let Some(db) = test_store().await else {

@@ -536,7 +536,7 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
       <div className="sf-flag">
         <span className="sf-text">
           <span className="sf-label">Не начислять за самоприглашение и массовые приглашения</span>
-          <span className="cap">Общий адрес, устройство или почта с пригласившим, либо много новых аккаунтов от одного клиента за сутки.</span>
+          <span className="cap">То же устройство или почта, что у пригласившего, общий адрес, если устройства не отличить, либо много новых аккаунтов от одного клиента за сутки.</span>
         </span>
         <Switch on={form.referral_guard} onToggle={() => set('referral_guard', !form.referral_guard)} label="Не начислять за самоприглашение" disabled={busy} />
       </div>

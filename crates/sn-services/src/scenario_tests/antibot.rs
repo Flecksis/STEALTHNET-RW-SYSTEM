@@ -5,7 +5,7 @@ use crate::services::{EnvFallbacks, ServiceDeps};
 use crate::signup::Arrival;
 use crate::{Services, SystemClock};
 use sn_domain::client::{RegistrationSource, TelegramProfile};
-use sn_domain::ids::ClientId;
+use sn_domain::ids::{ClientId, RemnaUserId};
 use sn_domain::module::ModuleId;
 use sn_domain::paging::PageRequest;
 use sn_modules::catalog::antibot::captcha::{Provider, Widget};
@@ -15,6 +15,7 @@ use sn_modules::catalog::antibot::{
 use sn_modules::catalog::mail::MailModule;
 use sn_modules::{Module, ModuleConfig, ModuleRegistry};
 use sn_payments::ProviderRegistry;
+use sn_remnawave::fake::{Fault, sample_device, sample_user};
 use sn_store::testing::{DAY, wait_for_window_room};
 use sn_store::{Db, Store, StoreOptions};
 use std::sync::Arc;
@@ -1195,6 +1196,121 @@ async fn страница_проверки_из_бота_выдаёт_выбра
             .unwrap()
             .is_none()
     );
+    kit.db.cleanup().await;
+}
+
+async fn with_devices(kit: &Kit, client: ClientId, user: i64, hwids: &[&str]) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO client_sessions (client_id, token_hash, channel, ip, expires_at) \
+         VALUES ($1, $2, 'cabinet', '203.0.113.40', now() + interval '1 day')",
+    )
+    .bind(client.0)
+    .bind(format!("d-{}", client.0).into_bytes())
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO subscriptions (client_id, kind, extra_devices, remna_user_id, remna_username) \
+         VALUES ($1, 'manual', 0, $2, $3)",
+    )
+    .bind(client.0)
+    .bind(user)
+    .bind(format!("sn_{user}"))
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    kit.remna
+        .insert_user(sample_user(user, &format!("sn_{user}")));
+    for hwid in hwids {
+        kit.remna
+            .add_device(sample_device(RemnaUserId(user), hwid, chrono::Utc::now()));
+    }
+}
+
+#[tokio::test]
+async fn устройства_из_remnawave_решают_самоприглашение_а_сбой_его_не_открывает() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let ctx = services.module_context();
+    let held = antibot::ReferralGate::NoDirect(antibot::signals::Signal::SelfInvite);
+    let mut user = 7_000;
+    for (name, theirs, mine, fault, gate) in [
+        (
+            "разные",
+            &["phone-1"][..],
+            &["phone-2"][..],
+            None,
+            &antibot::ReferralGate::Allow,
+        ),
+        ("общее", &["tv", "phone-1"], &["phone-1"], None, &held),
+        ("нет у приглашённого", &["phone-1"], &[], None, &held),
+        ("нет у пригласившего", &[], &["phone-2"], None, &held),
+        (
+            "тайм-аут",
+            &["phone-1"],
+            &["phone-2"],
+            Some(Fault::Timeout),
+            &held,
+        ),
+        (
+            "ошибка сервера",
+            &["phone-1"],
+            &["phone-2"],
+            Some(Fault::ServerError),
+            &held,
+        ),
+        (
+            "слишком часто",
+            &["phone-1"],
+            &["phone-2"],
+            Some(Fault::RateLimited),
+            &held,
+        ),
+    ] {
+        user += 2;
+        let referrer = fresh(services, 1_020_000_000 + user, Some("referrer")).await;
+        let payer = fresh(services, 1_045_000_000 + user, Some("payer")).await;
+        with_devices(&kit, referrer, user, theirs).await;
+        with_devices(&kit, payer, user + 1, mine).await;
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query("INSERT INTO referral_links (client_id, referrer_id) VALUES ($1, $2)")
+            .bind(payer.0)
+            .bind(referrer.0)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        drop(conn);
+        if let Some(fault) = fault {
+            kit.remna.fail_on("user_devices", fault);
+        }
+        assert_eq!(
+            &antibot::referral_gate(&ctx, payer).await.unwrap(),
+            gate,
+            "{name}"
+        );
+        assert_eq!(
+            actions(services, payer).await.contains(&"shared_address"),
+            *gate == antibot::ReferralGate::Allow,
+            "{name}"
+        );
+    }
+    services.set_remna(None);
+    let referrer = fresh(services, 1_060_000_000, Some("referrer")).await;
+    let payer = fresh(services, 1_075_000_000, Some("payer")).await;
+    with_devices(&kit, referrer, 9_001, &["phone-1"]).await;
+    with_devices(&kit, payer, 9_002, &["phone-2"]).await;
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query("INSERT INTO referral_links (client_id, referrer_id) VALUES ($1, $2)")
+        .bind(payer.0)
+        .bind(referrer.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    assert_eq!(antibot::referral_gate(&ctx, payer).await.unwrap(), held);
     kit.db.cleanup().await;
 }
 
