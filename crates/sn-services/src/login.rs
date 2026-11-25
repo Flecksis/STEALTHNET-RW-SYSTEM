@@ -415,12 +415,6 @@ impl<'a> Auth<'a> {
             ))
             .await?;
         tx.commit().await?;
-        if client.created_at + Duration::minutes(1) >= pending.created_at
-            && let Err(err) =
-                antibot::on_registered(&self.services.module_context(), client.id).await
-        {
-            tracing::warn!(error = %err, "антибот: регистрация через Telegram с сайта не проверена");
-        }
         Ok(TelegramLoginConfirmed {
             client_id: client.id,
             created,

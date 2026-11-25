@@ -708,45 +708,6 @@ pub async fn signups_from(
     .await?)
 }
 
-pub async fn site_login_ip(db: &mut impl Db, client_id: ClientId) -> StoreResult<Option<String>> {
-    Ok(sqlx::query_scalar(
-        "SELECT r.ip FROM client_login_requests r JOIN clients c ON c.id = r.client_id \
-         WHERE r.client_id = $1 AND r.method = 'telegram' AND r.ip IS NOT NULL \
-           AND c.registration_source <> 'web' \
-           AND c.created_at BETWEEN r.created_at - interval '1 minute' AND r.expires_at + interval '1 minute' \
-         ORDER BY r.id LIMIT 1",
-    )
-    .bind(client_id.0)
-    .fetch_optional(db.conn())
-    .await?
-    .flatten())
-}
-
-pub async fn site_logins_from(
-    db: &mut impl Db,
-    client_id: ClientId,
-    network: &str,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-) -> StoreResult<i64> {
-    Ok(sqlx::query_scalar(
-        "SELECT count(DISTINCT r.client_id) FROM client_login_requests r \
-         JOIN clients c ON c.id = r.client_id \
-         WHERE r.method = 'telegram' AND r.client_id IS NOT NULL AND r.client_id <> $1 \
-           AND r.created_at >= $2 - interval '1 hour' AND r.created_at < $3 + interval '1 minute' \
-           AND c.registration_source <> 'web' AND c.deleted_at IS NULL \
-           AND c.created_at BETWEEN r.created_at - interval '1 minute' AND r.expires_at + interval '1 minute' \
-           AND c.created_at >= $2 AND c.created_at < $3 \
-           AND CASE WHEN r.ip ~ '^[0-9A-Fa-f.:]+$' THEN r.ip::inet <<= $4::inet ELSE false END",
-    )
-    .bind(client_id.0)
-    .bind(from)
-    .bind(to)
-    .bind(network)
-    .fetch_one(db.conn())
-    .await?)
-}
-
 pub async fn session_ips(
     db: &mut impl Db,
     client_id: ClientId,
