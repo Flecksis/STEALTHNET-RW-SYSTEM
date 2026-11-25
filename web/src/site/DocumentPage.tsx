@@ -15,6 +15,7 @@ import { storedUtm } from '../lib/utm';
 import { startParam } from '../lib/utmTags';
 import { findBlock, FOOTER_LINKS, footerText, landingContext, normalizeBlocks, resolveLinks, visibleSections, type Block, type PublicLanding } from './landingModel';
 import { DOC_PREVIEW, type DocDraft } from './documentPreview';
+import { wrapLongWords } from './longWords';
 import { SiteHeader } from './SiteHeader';
 import { Soon } from './Soon';
 import './landing.css';
@@ -156,7 +157,7 @@ export function DocumentPreview() {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  const html = useMemo(() => (draft ? cleanHtml(draft.html) : ''), [draft]);
+  const html = useMemo(() => (draft ? wrapLongWords(cleanHtml(draft.html)) : ''), [draft]);
 
   if (!loaded || !draft || !ready) {
     return <div className={phone ? 'ld ld-phone' : 'ld'} aria-busy="true" />;
@@ -248,7 +249,7 @@ export function DocumentPage({ site, path }: Props) {
     window.scrollTo({ top: 0 });
   }, [path]);
 
-  const html = useMemo(() => (page ? cleanHtml(page.html) : ''), [page]);
+  const html = useMemo(() => (page ? wrapLongWords(cleanHtml(page.html)) : ''), [page]);
 
   if (missing) {
     return <Soon title={t('Страница не найдена')} text={t('Такой страницы нет. Перейдите на главную или откройте Telegram-бота.')} />;
