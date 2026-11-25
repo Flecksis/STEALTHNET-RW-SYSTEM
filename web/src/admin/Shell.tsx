@@ -25,6 +25,8 @@ type MenuProps = { items: NavItem[]; path: string; theme: Theme; onFlipTheme: ()
 
 const UPDATE_LABEL = 'вышла новая сборка';
 
+const LONG_NAME = 24;
+
 function initial(text: string | null | undefined): string {
   const first = (text ?? '').trim().charAt(0);
   return first ? first.toUpperCase() : 'А';
@@ -86,7 +88,13 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
           return (
             <span key={item.key} style={{ display: 'contents' }}>
               {sep ? <span className="rail-sep" aria-hidden="true" /> : null}
-              <Link to={item.to} className="rail-item hov" aria-current={current ? 'page' : undefined} aria-label={item.dot ? `${item.label}, ${UPDATE_LABEL}` : undefined}>
+              <Link
+                to={item.to}
+                className="rail-item hov"
+                title={item.label.length > LONG_NAME ? item.label : undefined}
+                aria-current={current ? 'page' : undefined}
+                aria-label={item.dot ? `${item.label}, ${UPDATE_LABEL}` : undefined}
+              >
                 <span className="rail-icon">
                   <Icon name={item.icon} />
                   {item.badge ? <span className="rail-dot" aria-hidden="true" /> : item.dot ? <span className="rail-dot upd" aria-hidden="true" /> : null}
