@@ -2628,6 +2628,7 @@ dependencies = [
  "sn-remnawave",
  "sn-services",
  "sn-store",
+ "sqlx",
  "thiserror",
  "tokio",
  "tokio-util",

@@ -25,6 +25,7 @@ sn-remnawave = { workspace = true, features = ["fake"] }
 sn-payments.workspace = true
 sn-modules.workspace = true
 sn-store = { workspace = true, features = ["test-util"] }
+sqlx.workspace = true
 
 [lints]
 workspace = true

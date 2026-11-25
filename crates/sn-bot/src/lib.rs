@@ -520,12 +520,16 @@ impl Bot {
         let runtime = self.services.bot_runtime();
         let takeover = runtime.take_takeover();
         let proxy = self.telegram_proxy();
-        let api = Arc::new(TelegramApi::paced(
+        let mut api = TelegramApi::paced(
             &self.config.api_base,
             token,
             self.config.send,
             proxy.clone(),
-        ));
+        );
+        if self.services.env().telegram_api.is_none() {
+            api = api.timed(self.services.server_clock().clone());
+        }
+        let api = Arc::new(api);
         let me = api.get_me().await?;
         let previous = remembered_username(&self.services).await?;
         let same_bot = previous.is_some() && previous == me.username;

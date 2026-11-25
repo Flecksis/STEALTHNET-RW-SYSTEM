@@ -1,19 +1,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { useSession } from '../session';
+import { warningText, type ConfigWarning } from './warnings';
 
-type ConfigWarning = { kind: string; networks?: string[] };
-
-function describe(warning: ConfigWarning): { title: string; text: string } | null {
-  if (warning.kind === 'trusted_proxies_everyone') {
-    const listed = (warning.networks ?? []).join(' и ') || '0.0.0.0/0';
-    return {
-      title: 'Любой посетитель может подменить свой адрес',
-      text: `В файле .env в SN_TRUSTED_PROXIES стоит ${listed}: панель верит адресу из заголовка X-Forwarded-For от кого угодно. Так обходят ограничения попыток входа и промокодов по адресу, а в журнале остаются чужие адреса. Оставьте в SN_TRUSTED_PROXIES только адреса своих прокси и перезапустите систему.`,
-    };
-  }
-  return null;
-}
+const REFRESH_MS = 60_000;
 
 export function ConfigWarnings({ compact = false }: { compact?: boolean }) {
   const { can } = useSession();
@@ -24,18 +14,23 @@ export function ConfigWarnings({ compact = false }: { compact?: boolean }) {
       return;
     }
     let alive = true;
-    api<{ warnings: ConfigWarning[] }>('/api/admin/system/warnings')
-      .then((view) => {
-        if (alive) {
-          setWarnings(view.warnings);
-        }
-      })
-      .catch(() => undefined);
+    const load = () => {
+      api<{ warnings: ConfigWarning[] }>('/api/admin/system/warnings')
+        .then((view) => {
+          if (alive) {
+            setWarnings(view.warnings);
+          }
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, REFRESH_MS);
     return () => {
       alive = false;
+      window.clearInterval(timer);
     };
   }, [allowed]);
-  const shown = warnings.map((warning) => ({ kind: warning.kind, view: describe(warning) }));
+  const shown = warnings.map((warning) => ({ kind: warning.kind, view: warningText(warning) }));
   return (
     <>
       {shown.map(({ kind, view }) =>

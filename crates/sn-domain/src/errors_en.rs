@@ -31,6 +31,12 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         }
         "auth.email_in_use" => "This email already belongs to another account.",
         "auth.email_same" => "This email is already on your account.",
+        "auth.init_data" => {
+            "Couldn't sign you in: the data from Telegram didn't match. Close the mini app and open it again from the bot. If that doesn't help, please contact support."
+        }
+        "auth.init_data_old" => {
+            "Couldn't sign you in: the data from Telegram is out of date. Close the mini app and open it again from the bot. If that doesn't help, please contact support."
+        }
         "auth.login_expired" => "The sign-in has expired. Please start again.",
         "auth.miniapp_off" => "The mini app is turned off. Please use the bot.",
         "auth.no_email" => {
@@ -40,6 +46,9 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "auth.password_invalid" => "The website password is wrong.",
         "auth.password_required" => "Enter your website password.",
         "auth.same_password" => "The new password is the same as the old one.",
+        "auth.server_clock" => {
+            "We can't sign you in right now: the time on our server is wrong. The problem is on our side. Please try again later or contact support."
+        }
         "auth.site_off" => "Website sign-in is turned off. Please use the bot.",
         "auth.totp_code" => "The code didn't work. Check the time on your phone.",
         "auth.totp_disabled" => "Two-step sign-in isn't turned on.",
@@ -205,6 +214,9 @@ mod tests {
     fn английские_ошибки_без_кириллицы_и_с_точкой() {
         for code in [
             "auth.rate_limited",
+            "auth.init_data",
+            "auth.init_data_old",
+            "auth.server_clock",
             "app_link.expired",
             "app_link.taken",
             "app_link.no_app",

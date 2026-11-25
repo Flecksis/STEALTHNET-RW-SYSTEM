@@ -34,6 +34,8 @@ use sn_store::{
 };
 use std::sync::Mutex;
 
+mod clock;
+
 const CRYPTO_TOKEN: &str = "4321:TEST";
 const SQUAD: &str = "00000000-0000-0000-0000-000000000001";
 

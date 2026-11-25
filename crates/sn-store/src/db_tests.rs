@@ -647,6 +647,41 @@ async fn служебные_таблицы_выдачи_и_бота() {
 }
 
 #[tokio::test]
+async fn возраст_записи_состояния_считается_по_часам_базы_в_миг_чтения() {
+    let Some(db) = test_store().await else { return };
+    let key = "worker.возраст";
+    let mut early = db.store.begin().await.unwrap();
+    assert_eq!(early.bot_state().get_aged(key).await.unwrap(), None);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let mut conn = db.store.conn().await.unwrap();
+    conn.bot_state()
+        .set(key, &serde_json::json!({ "last": 7 }))
+        .await
+        .unwrap();
+    let (value, age) = early.bot_state().get_aged(key).await.unwrap().unwrap();
+    assert_eq!(value, serde_json::json!({ "last": 7 }));
+    assert!(
+        age >= Duration::zero() && age < Duration::seconds(30),
+        "запись из другой транзакции кажется записью из будущего: {age}"
+    );
+    early.rollback().await.unwrap();
+    for (shift, expected) in [("-90 seconds", 90), ("2 hours", -7_200)] {
+        sqlx::query(
+            "UPDATE bot_state SET updated_at = clock_timestamp() + $2::interval WHERE key = $1",
+        )
+        .bind(key)
+        .bind(shift)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        let (_, age) = conn.bot_state().get_aged(key).await.unwrap().unwrap();
+        assert!((age.num_seconds() - expected).abs() <= 30, "{shift}: {age}");
+    }
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn ложные_отметки_антибота_снимаются_миграцией() {
     let Some(db) = test_store().await else { return };
     let mut conn = db.store.conn().await.unwrap();

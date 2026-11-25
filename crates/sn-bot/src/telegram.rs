@@ -1,7 +1,9 @@
 use crate::pacer::{Class, Pacer, SendLimits, sends};
+use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sn_services::bot_webhook::ALLOWED_UPDATES;
+use sn_services::server_clock::ServerClock;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -587,6 +589,7 @@ pub struct TelegramApi {
     files: String,
     pacer: Option<Arc<Pacer>>,
     class: Class,
+    clock: Option<Arc<ServerClock>>,
 }
 
 const PACED_RETRIES: u32 = 2;
@@ -611,6 +614,7 @@ impl TelegramApi {
             files: format!("{}/file/bot{}", api_base.trim_end_matches('/'), token),
             pacer: None,
             class: Class::Interactive,
+            clock: None,
         }
     }
 
@@ -624,6 +628,23 @@ impl TelegramApi {
     pub fn bulk(mut self) -> Self {
         self.class = Class::Bulk;
         self
+    }
+
+    pub fn timed(mut self, clock: Arc<ServerClock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    fn compare_clock(&self, response: &reqwest::Response) {
+        let Some(clock) = &self.clock else { return };
+        if let Some(date) = response
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| DateTime::parse_from_rfc2822(value.trim()).ok())
+        {
+            clock.answered(date.to_utc());
+        }
     }
 
     pub fn pacer(&self) -> Option<&Arc<Pacer>> {
@@ -771,6 +792,7 @@ impl TelegramApi {
             .send()
             .await
             .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+        self.compare_clock(&response);
         Self::parse(response).await
     }
 
@@ -792,6 +814,7 @@ impl TelegramApi {
             .send()
             .await
             .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+        self.compare_clock(&response);
         let result = Self::parse(response).await;
         if let (Some(pacer), Err(err)) = (pacer, &result)
             && let Some(wait) = err.retry_after()
@@ -1308,6 +1331,7 @@ pub fn strip_tags(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sn_services::server_clock::Evidence;
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1320,6 +1344,87 @@ mod tests {
         assert!(matches!(err, TelegramError::Transport(_)));
         assert!(!err.to_string().contains("SECRET"));
         assert!(err.is_retryable());
+    }
+
+    fn hours_ahead(hours: i64) -> Arc<ServerClock> {
+        let now = chrono::Utc::now() + chrono::Duration::hours(hours);
+        Arc::new(ServerClock::new(Arc::new(sn_services::FixedClock::new(
+            now,
+        ))))
+    }
+
+    #[tokio::test]
+    async fn часы_сервера_сверяются_с_ответами_телеграма() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/getMe")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true, "result": {"id": 1, "is_bot": true, "first_name": "Бот"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/sendMessage")))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "ok": false, "error_code": 403, "description": "Forbidden: bot was blocked by the user"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/sendDocument")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true, "result": {"message_id": 1, "chat": {"id": 1, "type": "private"}}
+            })))
+            .mount(&server)
+            .await;
+        let exact = hours_ahead(0);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None).timed(exact.clone());
+        api.get_me().await.unwrap();
+        api.get_me().await.unwrap();
+        assert_eq!(exact.drift(), None);
+
+        let fast = hours_ahead(2);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None).timed(fast.clone());
+        api.get_me().await.unwrap();
+        assert_eq!(fast.drift(), None, "одного ответа мало");
+        assert!(api.send_message(1, "текст", None).await.is_err());
+        let drift = fast.drift().expect("отказ Telegram тоже несёт время");
+        assert!((drift.seconds - 7_200).abs() <= 5, "{drift:?}");
+        assert_eq!(drift.evidence, Evidence::Telegram);
+
+        let slow = hours_ahead(-2);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None).timed(slow.clone());
+        let upload = FileUpload {
+            bytes: b"report",
+            name: "report.txt",
+            mime: "text/plain",
+            photo: false,
+        };
+        api.send_document(1, upload, "", None).await.unwrap();
+        api.send_document(1, upload, "", None).await.unwrap();
+        let drift = slow.drift().expect("отправка файла тоже сверяет время");
+        assert!((drift.seconds + 7_200).abs() <= 5, "{drift:?}");
+    }
+
+    #[tokio::test]
+    async fn ответ_без_даты_или_с_мусором_о_часах_ничего_не_говорит() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{TOKEN}/getMe")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("date", "вчера")
+                    .set_body_json(serde_json::json!({
+                        "ok": true, "result": {"id": 1, "is_bot": true, "first_name": "Бот"}
+                    })),
+            )
+            .mount(&server)
+            .await;
+        let fast = hours_ahead(2);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None).timed(fast.clone());
+        api.get_me().await.unwrap();
+        api.get_me().await.unwrap();
+        assert_eq!(fast.drift(), None);
     }
 
     #[tokio::test]

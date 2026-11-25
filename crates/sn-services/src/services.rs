@@ -12,6 +12,7 @@ use crate::inbox::PaymentInbox;
 use crate::infra::InfraOps;
 use crate::limits::RateLimits;
 use crate::remna_sync::RemnaSync;
+use crate::server_clock::{ServerClock, ServerClockOps};
 use crate::settings::{self, SettingsOps};
 use crate::stars_review::StarsReview;
 use crate::subscriptions::SubscriptionOps;
@@ -98,6 +99,7 @@ struct Inner {
     squad_countries: crate::squad_countries::SquadCountries,
     egress: sn_egress::Egress,
     captcha_http: sn_egress::Http,
+    server_clock: Arc<ServerClock>,
 }
 
 #[derive(Clone)]
@@ -133,6 +135,7 @@ impl Services {
         };
         let egress = sn_egress::Egress::new();
         let captcha_http = sn_modules::catalog::antibot::captcha::client().bound(&egress);
+        let server_clock = Arc::new(ServerClock::new(deps.clock.clone()));
         Services {
             inner: Arc::new(Inner {
                 store: deps.store,
@@ -152,6 +155,7 @@ impl Services {
                 squad_countries: crate::squad_countries::SquadCountries::default(),
                 egress,
                 captcha_http,
+                server_clock,
             }),
         }
     }
@@ -200,6 +204,14 @@ impl Services {
 
     pub fn now(&self) -> DateTime<Utc> {
         self.inner.clock.now()
+    }
+
+    pub fn server_clock(&self) -> &Arc<ServerClock> {
+        &self.inner.server_clock
+    }
+
+    pub fn server_clock_ops(&self) -> ServerClockOps<'_> {
+        ServerClockOps::new(self)
     }
 
     pub fn instance_id(&self) -> Uuid {

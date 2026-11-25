@@ -1,6 +1,6 @@
 use crate::crypto::SealedSecret;
 use crate::error::{StoreError, StoreResult};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, RefundId, SubscriptionId};
 use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::payment::{Refund, RefundMethod, RefundSubscriptionAction};
@@ -357,6 +357,20 @@ impl<'c> BotStateRepo<'c> {
                 .fetch_optional(&mut *self.conn)
                 .await?,
         )
+    }
+
+    pub async fn get_aged(
+        &mut self,
+        key: &str,
+    ) -> StoreResult<Option<(serde_json::Value, Duration)>> {
+        let row: Option<(serde_json::Value, i64)> = sqlx::query_as(
+            "SELECT value, (EXTRACT(EPOCH FROM clock_timestamp() - updated_at) * 1000)::bigint \
+             FROM bot_state WHERE key = $1",
+        )
+        .bind(key)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(row.map(|(value, age)| (value, Duration::milliseconds(age))))
     }
 
     pub async fn set(&mut self, key: &str, value: &serde_json::Value) -> StoreResult<()> {

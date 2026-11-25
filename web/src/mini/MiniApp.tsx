@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Link, Route, Routes, useLocation, useNavigate } from 'react-router';
 import { api, ApiError, setBearer } from '../lib/api';
 import { BrandMark } from '../lib/brand';
-import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
+import { applyLang, guessLang, likelyLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportTickets } from '../lib/support';
@@ -191,7 +191,7 @@ export function MiniApp() {
       if (token) {
         setBearer(token);
       } else if (data) {
-        const login = await api<Login>('/api/client/auth/miniapp', { method: 'POST', body: { init_data: data } });
+        const login = await api<Login>('/api/client/auth/miniapp', { method: 'POST', body: { init_data: data }, lang: likelyLang(telegramLanguage()) });
         setBearer(login.token);
         remember(login.token);
       } else {

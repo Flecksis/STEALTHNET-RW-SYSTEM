@@ -1,14 +1,15 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { readStored, writeStored } from './theme';
 import type { Site } from './types';
+import { wishedLang, type Lang } from './wish';
 
-export type Lang = 'ru' | 'en';
+export type { Lang } from './wish';
+
 type Dict = Record<string, string>;
 type Vars = Record<string, string | number>;
 
 const STORE_KEY = 'sn.lang';
 const COOKIE = 'sn_lang';
-const RUSSIAN_LIKE = ['ru', 'uk', 'be', 'kk'];
 
 let current: Lang = 'ru';
 let english: Dict | null = null;
@@ -85,14 +86,6 @@ export function siteLangs(site: Site | null): Lang[] {
   return list.filter((l): l is Lang => l === 'ru' || l === 'en');
 }
 
-function fromTag(tag: string | undefined | null): Lang | null {
-  const base = (tag ?? '').trim().split(/[-_]/)[0]?.toLowerCase() ?? '';
-  if (!/^[a-z]{2,3}$/.test(base)) {
-    return null;
-  }
-  return RUSSIAN_LIKE.includes(base) ? 'ru' : 'en';
-}
-
 export function storedLang(): Lang | null {
   const value = readStored(STORE_KEY);
   return value === 'ru' || value === 'en' ? value : null;
@@ -102,31 +95,20 @@ export function rememberLang(value: Lang): void {
   writeStored(STORE_KEY, value);
 }
 
+export function likelyLang(hint?: string | null): Lang | null {
+  return wishedLang({
+    query: new URLSearchParams(window.location.search).get('lang'),
+    stored: storedLang(),
+    hint,
+    browser: typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language],
+  });
+}
+
 export function guessLang(site: Site | null, hint?: string | null): Lang {
-  const allowed = siteLangs(site);
-  if (!allowed.includes('en')) {
+  if (!siteLangs(site).includes('en')) {
     return 'ru';
   }
-  const fallback: Lang = site?.languages?.default === 'en' ? 'en' : 'ru';
-  const query = new URLSearchParams(window.location.search).get('lang');
-  if (query === 'ru' || query === 'en') {
-    return query;
-  }
-  const stored = storedLang();
-  if (stored) {
-    return stored;
-  }
-  if (hint) {
-    return fromTag(hint) ?? fallback;
-  }
-  const browser = typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language];
-  for (const tag of browser) {
-    const found = fromTag(tag);
-    if (found) {
-      return found;
-    }
-  }
-  return fallback;
+  return likelyLang(hint) ?? (site?.languages?.default === 'en' ? 'en' : 'ru');
 }
 
 export function otherLang(current: Lang, list: Lang[]): Lang | null {

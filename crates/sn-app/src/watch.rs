@@ -1,5 +1,6 @@
 use sn_services::Services;
 use sn_services::bot_webhook::UPDATES_CHANNEL;
+use sn_services::server_clock::REPORT_EVERY;
 use sn_services::settings::SETTINGS_CHANNEL;
 use sqlx::postgres::PgListener;
 use std::time::Duration;
@@ -7,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const PROXY_FIRST: Duration = Duration::from_secs(15);
+const CLOCK_FIRST: Duration = Duration::from_secs(15);
 
 pub async fn proxy(services: Services, cancel: CancellationToken) {
     let mut wait = PROXY_FIRST;
@@ -21,6 +23,32 @@ pub async fn proxy(services: Services, cancel: CancellationToken) {
         }
         if let Err(err) = services.egress_ops().watch().await {
             tracing::warn!(error = %err, "проверка прокси не прошла");
+        }
+    }
+}
+
+pub async fn clock(services: Services, cancel: CancellationToken) {
+    report_clock(services, CLOCK_FIRST, REPORT_EVERY, cancel).await;
+}
+
+async fn report_clock(
+    services: Services,
+    first: Duration,
+    every: Duration,
+    cancel: CancellationToken,
+) {
+    let mut wait = first;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(wait) => {}
+        }
+        wait = every;
+        if services.pause_gate().is_paused() {
+            continue;
+        }
+        if let Err(err) = services.server_clock_ops().report().await {
+            tracing::debug!(error = %err, "расхождение часов не записано");
         }
     }
 }
@@ -177,6 +205,55 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("не дождались: {what}");
+    }
+
+    #[tokio::test]
+    async fn расхождение_часов_записывается_для_админки_и_снимается_само() {
+        let Some(db) = sn_store::testing::test_store().await else {
+            return;
+        };
+        let services = process(&db.store, &SecretBox::generate_key_base64());
+        services.reload().await.unwrap();
+        let cancel = CancellationToken::new();
+        let watcher = tokio::spawn(report_clock(
+            services.clone(),
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+            cancel.clone(),
+        ));
+        let telegram = services.now() - Duration::from_secs(7_200);
+        services.server_clock().answered(telegram);
+        services.server_clock().answered(telegram);
+        wait(
+            "расхождение записано",
+            Duration::from_secs(6),
+            async || {
+                services
+                    .server_clock_ops()
+                    .notice()
+                    .await
+                    .unwrap()
+                    .is_some_and(|drift| drift.seconds >= 7_200)
+            },
+        )
+        .await;
+        services.server_clock().answered(services.now());
+        wait(
+            "запись снята",
+            Duration::from_secs(6),
+            async || {
+                services
+                    .server_clock_ops()
+                    .notice()
+                    .await
+                    .unwrap()
+                    .is_none()
+            },
+        )
+        .await;
+        cancel.cancel();
+        watcher.await.unwrap();
+        db.cleanup().await;
     }
 
     #[tokio::test]

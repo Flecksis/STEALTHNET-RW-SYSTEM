@@ -1,5 +1,6 @@
 use crate::error::{ServiceError, ServiceResult};
 use crate::limits::{RateRule, Strike, address_key, ip_key, network_key, rules};
+use crate::server_clock::Blame;
 use crate::services::Services;
 use crate::totp;
 use argon2::Argon2;
@@ -25,6 +26,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub const ADMIN_SESSION_DAYS: i64 = 14;
 pub const CLIENT_SESSION_DAYS: i64 = 30;
 pub const INIT_DATA_MAX_AGE_SECONDS: i64 = 3_600;
+pub const INIT_DATA_AHEAD_SECONDS: i64 = 60;
+pub const INIT_DATA_BAD: &str = "auth.init_data";
+pub const INIT_DATA_OLD: &str = "auth.init_data_old";
+pub const SERVER_CLOCK: &str = "auth.server_clock";
 pub const MIN_PASSWORD_LEN: usize = 10;
 pub const MAX_PASSWORD_LEN: usize = 256;
 pub const KNOWN_ADDRESS_DAYS: i64 = 30;
@@ -93,7 +98,10 @@ pub enum InitDataError {
     #[error("подпись initData не совпала")]
     BadHash,
     #[error("initData устарели")]
-    Expired,
+    Expired {
+        auth_date: DateTime<Utc>,
+        user: Option<i64>,
+    },
     #[error("initData не разобраны: {0}")]
     Malformed(String),
 }
@@ -321,10 +329,14 @@ pub fn verify_init_data(
         .and_then(|v| v.parse::<i64>().ok())
         .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
         .ok_or_else(|| InitDataError::Malformed("нет auth_date".into()))?;
-    if now - auth_date > max_age || auth_date - now > Duration::seconds(60) {
-        return Err(InitDataError::Expired);
+    let user = value("user");
+    if now - auth_date > max_age || auth_date - now > Duration::seconds(INIT_DATA_AHEAD_SECONDS) {
+        let user = user
+            .and_then(|raw| serde_json::from_str::<InitUser>(&raw).ok())
+            .map(|user| user.id);
+        return Err(InitDataError::Expired { auth_date, user });
     }
-    let user: InitUser = value("user")
+    let user: InitUser = user
         .ok_or_else(|| InitDataError::Malformed("нет user".into()))
         .and_then(|raw| {
             serde_json::from_str(&raw).map_err(|e| InitDataError::Malformed(e.to_string()))
@@ -1015,13 +1027,15 @@ impl<'a> Auth<'a> {
             .services
             .bot_token()
             .ok_or_else(|| ServiceError::rejected("bot.not_configured", "бот не настроен"))?;
+        let now = self.services.now();
         let data = verify_init_data(
             init_data,
             &bot_token,
-            self.services.now(),
+            now,
             Duration::seconds(INIT_DATA_MAX_AGE_SECONDS),
         )
-        .map_err(|e| ServiceError::rejected("auth.init_data", e.to_string()))?;
+        .map_err(|err| self.miniapp_refused(err, now))?;
+        self.services.server_clock().admitted();
         let (client, created) = self
             .services
             .clients()
@@ -1041,6 +1055,26 @@ impl<'a> Auth<'a> {
             .count_utm_click(ClickChannel::Miniapp, data.start_param.as_deref())
             .await;
         Ok(login)
+    }
+
+    fn miniapp_refused(&self, err: InitDataError, now: DateTime<Utc>) -> ServiceError {
+        let InitDataError::Expired { auth_date, user } = err else {
+            tracing::debug!(reason = ?err, "вход в мини-приложение отклонён");
+            return ServiceError::rejected(
+                INIT_DATA_BAD,
+                "Войти не получилось: данные от Telegram не подошли. Закройте мини-приложение и откройте его снова из бота. Если не помогло, напишите в поддержку.",
+            );
+        };
+        match self.services.server_clock().refused(user, now - auth_date) {
+            Blame::Data => ServiceError::rejected(
+                INIT_DATA_OLD,
+                "Войти не получилось: данные от Telegram устарели. Закройте мини-приложение и откройте его снова из бота. Если не помогло, напишите в поддержку.",
+            ),
+            Blame::Server => ServiceError::rejected(
+                SERVER_CLOCK,
+                "Войти сейчас не получается: на сервере неверное время. Это сбой на нашей стороне. Попробуйте позже или напишите в поддержку.",
+            ),
+        }
     }
 
     pub async fn client_session_for(
@@ -1229,7 +1263,10 @@ mod tests {
                 now,
                 Duration::hours(1)
             ),
-            Err(InitDataError::Expired)
+            Err(InitDataError::Expired {
+                auth_date: now - Duration::hours(2),
+                user: Some(5_093_118_422),
+            })
         );
         assert_eq!(
             verify_init_data("user=%7B%7D&auth_date=1", BOT, now, Duration::hours(1)),

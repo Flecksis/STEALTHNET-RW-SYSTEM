@@ -301,3 +301,58 @@ async fn старое_смещение_без_бота_берётся_тольк
         "неизвестно, чей это счётчик: начинаем заново"
     );
 }
+
+async fn bot_on_fast_clock(telegram_api: Option<String>) -> Option<(TestDb, Services)> {
+    let db = test_store().await?;
+    let ahead = chrono::Utc::now() + chrono::Duration::hours(2);
+    let services = Services::new(ServiceDeps {
+        store: db.store.clone(),
+        payments: Arc::new(ProviderRegistry::builtin()),
+        modules: Arc::new(ModuleRegistry::new(catalog::all()).unwrap()),
+        secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
+        clock: Arc::new(sn_services::FixedClock::new(ahead)),
+        env: EnvFallbacks {
+            bot_token: Some(TOKEN.into()),
+            telegram_api,
+            ..EnvFallbacks::default()
+        },
+    });
+    services.reload().await.unwrap();
+    Some((db, services))
+}
+
+#[tokio::test]
+async fn работающий_бот_замечает_что_часы_сервера_спешат() {
+    let Some((db, services)) = bot_on_fast_clock(None).await else {
+        return;
+    };
+    let server = telegram().await;
+    idle_updates(&server).await;
+    let cancel = CancellationToken::new();
+    let running_bot = tokio::spawn(Bot::new(services.clone(), config(&server)).run(cancel.clone()));
+    wait_state(&services, running).await;
+    let drift = services.server_clock().drift();
+    cancel.cancel();
+    running_bot.await.unwrap().unwrap();
+    let drift = drift.expect("часы спешат на два часа");
+    assert!((drift.seconds - 7_200).abs() <= 10, "{drift:?}");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn со_своим_сервером_bot_api_часы_по_его_ответам_не_сверяются() {
+    let server = telegram().await;
+    idle_updates(&server).await;
+    let Some((db, services)) = bot_on_fast_clock(Some(server.uri())).await else {
+        return;
+    };
+    let cancel = CancellationToken::new();
+    let running_bot = tokio::spawn(Bot::new(services.clone(), config(&server)).run(cancel.clone()));
+    let state = wait_state(&services, running).await;
+    let drift = services.server_clock().drift();
+    cancel.cancel();
+    running_bot.await.unwrap().unwrap();
+    assert!(running(&state), "{state:?}");
+    assert_eq!(drift, None);
+    db.cleanup().await;
+}

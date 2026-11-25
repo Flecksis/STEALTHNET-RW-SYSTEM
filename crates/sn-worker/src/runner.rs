@@ -170,6 +170,24 @@ fn step(name: &str, result: Result<serde_json::Value, ServiceError>) -> serde_js
     }
 }
 
+fn within(passed: chrono::Duration, limit: chrono::Duration) -> bool {
+    passed >= chrono::Duration::zero() && passed < limit
+}
+
+fn rests(
+    now: DateTime<Utc>,
+    started: DateTime<Utc>,
+    age: chrono::Duration,
+    pause: chrono::Duration,
+) -> bool {
+    within(if started > now { age } else { now - started }, pause)
+}
+
+fn slot_taken(slot: i64, last: i64, age: chrono::Duration, every: i64) -> bool {
+    let every = chrono::Duration::try_seconds(every).unwrap_or(chrono::Duration::MAX);
+    last == slot || (last > slot && within(age, every))
+}
+
 async fn read_state(db: &mut impl Db, key: &str) -> Result<PeriodicState, ServiceError> {
     Ok(db
         .bot_state()
@@ -383,12 +401,22 @@ impl Worker {
             return Ok(false);
         }
         let key = periodic.state_key();
-        let mut state = read_state(&mut tx, &key).await?;
-        if let Some(last) = state.last_started_at
-            && now - last < every * 9 / 10
-        {
-            tx.rollback().await?;
-            return Ok(false);
+        let (mut state, age) = match tx.bot_state().get_aged(&key).await? {
+            Some((value, age)) => (PeriodicState::from_json(&value), age),
+            None => (PeriodicState::default(), chrono::Duration::zero()),
+        };
+        if let Some(started) = state.last_started_at {
+            if rests(now, started, age, every * 9 / 10) {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            if started > now {
+                tracing::warn!(
+                    task = periodic.name(),
+                    ahead_seconds = (started - now).num_seconds(),
+                    "прошлый запуск записан впереди часов панели: часы переводили или у копий панели они разные, запускаем по часам базы"
+                );
+            }
         }
         state.last_started_at = Some(now);
         tx.bot_state().set(&key, &state.to_json()).await?;
@@ -603,6 +631,7 @@ impl Worker {
     async fn schedule_module_tasks(&self) -> Result<serde_json::Value, ServiceError> {
         let now = self.services.now();
         let mut scheduled = 0usize;
+        let mut ahead = 0usize;
         let mut tx = self.services.store().begin().await?;
         let registry = self.services.modules();
         for id in sn_domain::module::ModuleId::ALL {
@@ -617,9 +646,12 @@ impl Worker {
                     .max(1);
                 let slot = now.timestamp().div_euclid(every);
                 let key = format!("worker.module_task.{}.{}", module.id().as_str(), task.name);
-                let last = tx.bot_state().get(&key).await?.and_then(|v| v.as_i64());
-                if last.is_some_and(|last| last >= slot) {
-                    continue;
+                let saved = tx.bot_state().get_aged(&key).await?;
+                if let Some((last, age)) = saved.and_then(|(v, age)| Some((v.as_i64()?, age))) {
+                    if slot_taken(slot, last, age, every) {
+                        continue;
+                    }
+                    ahead += usize::from(last > slot);
                 }
                 tx.jobs()
                     .enqueue(
@@ -639,6 +671,12 @@ impl Worker {
             }
         }
         tx.commit().await?;
+        if ahead > 0 {
+            tracing::warn!(
+                tasks = ahead,
+                "прошлые запуски задач модулей записаны впереди часов панели: часы переводили или у копий панели они разные, ставим задачи по часам базы"
+            );
+        }
         Ok(serde_json::json!({ "scheduled": scheduled }))
     }
 

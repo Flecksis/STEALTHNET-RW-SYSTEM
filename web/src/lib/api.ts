@@ -1,5 +1,5 @@
 import { leavesPath } from './apiPath';
-import { lang, t } from './i18n';
+import { lang, t, type Lang } from './i18n';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -21,6 +21,7 @@ type Options = {
   body?: unknown;
   signal?: AbortSignal;
   keepalive?: boolean;
+  lang?: Lang | null;
 };
 
 function errorFrom(status: number, data: unknown): ApiError {
@@ -55,7 +56,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
     headers.authorization = `Bearer ${bearer}`;
   }
   if (path.startsWith('/api/client') || path.startsWith('/api/public')) {
-    headers['x-sn-lang'] = lang();
+    headers['x-sn-lang'] = options.lang ?? lang();
   }
   let body: string | undefined;
   if (options.body !== undefined) {

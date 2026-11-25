@@ -165,6 +165,7 @@ async fn serve(config: Config, store: Store) -> Result<()> {
     });
     let mut background = vec![
         tokio::spawn(watch::settings_changes(services.clone(), cancel.clone())),
+        tokio::spawn(watch::clock(services.clone(), cancel.clone())),
         tokio::spawn(updates::checks(services.clone(), cancel.clone())),
         tokio::spawn(backups::schedule(services.clone(), cancel.clone())),
     ];

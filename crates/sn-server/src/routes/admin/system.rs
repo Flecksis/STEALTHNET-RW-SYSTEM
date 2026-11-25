@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sn_domain::access::Permission;
 use sn_services::ServiceError;
+use sn_services::server_clock::Evidence;
 use sn_services::updates::{
     CHECK_DISABLED, CHECK_RATE_LIMITED, HELPER_MISSING, SummaryView, SystemView,
     UPDATE_IN_PROGRESS, UPDATE_RATE_LIMITED, UPDATE_STALE, UPDATE_STARTED,
@@ -43,9 +44,25 @@ fn mapped(err: ServiceError) -> ApiError {
 }
 
 #[derive(Serialize)]
-struct ConfigWarning {
-    kind: &'static str,
-    networks: Vec<String>,
+#[serde(rename_all = "snake_case")]
+enum MiniApp {
+    Off,
+    Open,
+    Closed,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Warning {
+    TrustedProxiesEveryone {
+        networks: Vec<String>,
+    },
+    ServerClock {
+        seconds: i64,
+        span: String,
+        evidence: Evidence,
+        miniapp: MiniApp,
+    },
 }
 
 async fn warnings(
@@ -56,9 +73,23 @@ async fn warnings(
     let mut warnings = Vec::new();
     let everyone = trusts_everyone(&state.config.trusted_proxies);
     if !everyone.is_empty() {
-        warnings.push(ConfigWarning {
-            kind: "trusted_proxies_everyone",
+        warnings.push(Warning::TrustedProxiesEveryone {
             networks: everyone.iter().map(ToString::to_string).collect(),
+        });
+    }
+    if let Some(drift) = state.services.server_clock_ops().notice().await? {
+        let miniapp = if !state.services.settings().client_access.miniapp {
+            MiniApp::Off
+        } else if drift.closes_miniapp() {
+            MiniApp::Closed
+        } else {
+            MiniApp::Open
+        };
+        warnings.push(Warning::ServerClock {
+            seconds: drift.seconds,
+            span: drift.span(),
+            evidence: drift.evidence,
+            miniapp,
         });
     }
     Ok(Json(serde_json::json!({ "warnings": warnings })))
