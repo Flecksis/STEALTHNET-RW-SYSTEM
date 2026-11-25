@@ -149,6 +149,7 @@ export function MiniConnect() {
         </div>
       ) : (
         <MiniSteps
+          subscription={view.subscription.id}
           url={url}
           brand={site.brand_name}
           copied={copied}

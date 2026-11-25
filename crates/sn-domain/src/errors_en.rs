@@ -73,6 +73,16 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "oauth.last_method" => {
             "This is your only sign-in method. Link another one first: Telegram, email or another account."
         }
+        "app_link.expired" => "The link has expired. Go back to Telegram and tap the button again.",
+        "app_link.taken" => {
+            "This link is already open in another window. Go back to Telegram and tap the button again."
+        }
+        "app_link.no_app" => {
+            "This button is gone. Go back to Telegram and open the connection page again."
+        }
+        "app_link.not_ready" => {
+            "Your subscription isn't ready yet. The link will appear once it starts working."
+        }
         "antibot.expired" => "The check has expired. Request the free trial again.",
         "antibot.too_fast" => "Tap the button once more.",
         "antibot.confirm" => "First confirm you're not a robot.",
@@ -180,6 +190,10 @@ mod tests {
     fn английские_ошибки_без_кириллицы_и_с_точкой() {
         for code in [
             "auth.rate_limited",
+            "app_link.expired",
+            "app_link.taken",
+            "app_link.no_app",
+            "app_link.not_ready",
             "trial.used",
             "trial.variant_required",
             "trial.variant_unavailable",

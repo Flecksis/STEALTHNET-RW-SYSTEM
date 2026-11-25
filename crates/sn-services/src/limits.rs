@@ -140,6 +140,16 @@ pub mod rules {
         limit: 60,
         window_seconds: 600,
     };
+    pub const APP_LINK_CLIENT: RateRule = RateRule {
+        scope: "app_link_client",
+        limit: 30,
+        window_seconds: 600,
+    };
+    pub const APP_LINK_IP: RateRule = RateRule {
+        scope: "app_link_ip",
+        limit: 120,
+        window_seconds: 60,
+    };
     pub const PAYMENT_CHECK: RateRule = RateRule {
         scope: "payment_check",
         limit: 10,

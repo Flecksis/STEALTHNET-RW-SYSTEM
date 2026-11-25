@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const src = join(root, 'src');
-const areas = ['cabinet', 'mini', 'site', 'pay', 'verify', 'lib'].map((dir) => join(src, dir));
+const areas = ['cabinet', 'mini', 'site', 'pay', 'verify', 'open', 'lib'].map((dir) => join(src, dir));
 const dictDir = join(src, 'lib', 'i18n');
 const strict = !process.argv.includes('--report');
 const showLoose = process.argv.includes('--loose');

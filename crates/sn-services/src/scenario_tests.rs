@@ -36,6 +36,7 @@ mod ai_support;
 mod alerts;
 mod antibot;
 mod api_keys;
+mod app_links;
 mod client_access;
 mod digest;
 mod email_change;

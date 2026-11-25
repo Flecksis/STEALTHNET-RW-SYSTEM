@@ -4,6 +4,7 @@ mod client_email;
 mod client_oauth;
 mod client_photo;
 mod module_pages;
+pub mod public_app;
 mod public_pay;
 mod public_verify;
 pub mod support_files;
@@ -147,6 +148,7 @@ pub fn router(state: AppState) -> Router {
         .with_state(state.clone());
     let main = Router::new()
         .merge(system::routes())
+        .merge(public_app::routes())
         .merge(public_pay::routes())
         .merge(public_verify::routes())
         .merge(webhooks::routes())

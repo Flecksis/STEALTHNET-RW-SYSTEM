@@ -4,12 +4,13 @@ import { CABINET2 } from './en-cabinet2';
 import { COMMON } from './en-common';
 import { CONNECT } from './en-connect';
 import { MINI } from './en-mini';
+import { OPEN } from './en-open';
 import { PROMO } from './en-promo';
 import { SITE } from './en-site';
 import { SUPPORT } from './en-support';
 import { VERIFY } from './en-verify';
 
-export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT, ...PROMO, ...VERIFY, ...SUPPORT };
+export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT, ...PROMO, ...VERIFY, ...SUPPORT, ...OPEN };
 
 export const PLURALS: Record<string, [string, string]> = {
   день: ['day', 'days'],

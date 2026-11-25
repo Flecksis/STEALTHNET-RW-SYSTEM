@@ -69,7 +69,7 @@ async fn у_страниц_своя_политика_csp_админка_стро
     )
     .await;
     assert!(csp(&preview).contains("frame-ancestors 'self'"));
-    for path in ["/", "/cabinet", "/cabinet/pay", "/pay/42"] {
+    for path in ["/", "/cabinet", "/cabinet/pay", "/pay/42", "/open-app"] {
         let (status, site) = fetch_with(&state, Method::GET, path, &[], Body::empty()).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert_eq!(
@@ -107,6 +107,9 @@ async fn политику_можно_включить_везде_или_оста
     let (_, site) = fetch_with(&state, Method::GET, "/cabinet", &[], Body::empty()).await;
     assert!(csp(&site).starts_with("default-src 'self'; script-src 'self';"));
     assert_eq!(report_only(&site), None);
+    let (_, jump) = fetch_with(&state, Method::GET, "/open-app", &[], Body::empty()).await;
+    assert_eq!(csp(&jump), csp(&site));
+    assert_eq!(report_only(&jump), None);
     let (_, mini) = fetch_with(&state, Method::GET, "/app", &[], Body::empty()).await;
     assert!(csp(&mini).contains("https://telegram.org"));
     with_config(&mut state, &dir, CspMode::Report, 31_536_000);

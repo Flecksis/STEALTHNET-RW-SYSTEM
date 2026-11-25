@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { api, ApiError, upload } from '../../lib/api';
+import { forbiddenScheme } from '../../lib/appScheme';
 import { count } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { Switch } from '../ui';
@@ -45,8 +46,6 @@ export const PLATFORMS: Array<[Platform, string]> = [
 ];
 
 const TITLE = Object.fromEntries(PLATFORMS) as Record<Platform, string>;
-
-const FORBIDDEN = new Set(['javascript', 'vbscript', 'data', 'file', 'about', 'blob', 'filesystem', 'http', 'ftp', 'ws', 'wss', 'chrome', 'chrome-extension', 'view-source', 'jar', 'mailto', 'tel', 'sms']);
 
 const BASE_NAME: Record<'install' | 'add' | 'connect', string> = {
   install: 'Установка',
@@ -103,7 +102,7 @@ export function appLinkProblem(raw: string, needUrl: boolean): string | null {
   if (!/^[a-z][a-z0-9+.-]{1,31}$/.test(scheme) || colon === probe.length - 1) {
     return 'Нужна схема приложения вроде happ:// или ссылка https://';
   }
-  if (FORBIDDEN.has(scheme)) {
+  if (forbiddenScheme(scheme)) {
     return 'Такие ссылки запрещены: нужна схема приложения или https://';
   }
   if (scheme === 'https') {

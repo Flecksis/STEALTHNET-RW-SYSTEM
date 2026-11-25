@@ -29,6 +29,7 @@ mod alerts;
 mod analytics;
 mod antilopay;
 mod api_keys;
+mod app_links;
 mod audit_journal;
 mod backups;
 mod balance_off;

@@ -270,6 +270,15 @@ impl ConnectApp {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkSpot {
+    pub platform: Platform,
+    pub app: String,
+    pub step: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button: Option<usize>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ConnectApps(pub BTreeMap<Platform, Vec<ConnectApp>>);
@@ -385,6 +394,20 @@ impl ConnectApps {
                 .filter(|(_, apps)| !apps.is_empty())
                 .collect(),
         )
+    }
+
+    pub fn launch_link(&self, spot: &LinkSpot) -> Option<(&ConnectApp, &str)> {
+        let app = self
+            .on(spot.platform)
+            .iter()
+            .find(|app| app.enabled && app.id == spot.app)?;
+        let link = match (app.steps.get(spot.step)?, spot.button) {
+            (Step::Add { link, .. }, None) => link.as_deref()?,
+            (Step::Note { buttons, .. }, Some(button)) => buttons.get(button)?.url.as_str(),
+            _ => return None,
+        };
+        app_scheme(link)?;
+        Some((app, link))
     }
 
     pub fn icon_tags(&self) -> Vec<String> {
@@ -711,6 +734,13 @@ pub fn check_add_link(raw: &str) -> Result<String, LinkProblem> {
 
 pub fn check_note_link(raw: &str) -> Result<String, LinkProblem> {
     app_link(raw, false)
+}
+
+pub fn app_scheme(link: &str) -> Option<String> {
+    let link = check_note_link(link).ok()?;
+    let (scheme, _) = link.split_once(':')?;
+    let scheme = scheme.to_ascii_lowercase();
+    (scheme != "https" && !scheme.contains(['{', '}'])).then_some(scheme)
 }
 
 pub fn fill_link(link: &str, url: &str, name: &str) -> String {
@@ -1588,6 +1618,132 @@ mod tests {
         let shown = apps.shown();
         assert_eq!(shown.0.len(), 1);
         assert_eq!(shown.on(Platform::Ios)[0].name, "Happ");
+    }
+
+    #[test]
+    fn запускать_можно_только_схемы_приложений() {
+        for (link, scheme) in [
+            ("happ://add/{url}", "happ"),
+            ("Hiddify://import/{url}", "hiddify"),
+            ("v2rayng://install-config?url={url}&name={name}", "v2rayng"),
+            ("happ://routing/onadd/eyJ", "happ"),
+            ("sing-box://import-remote-profile?url={url}", "sing-box"),
+            ("intent://add/{url}#Intent;scheme=happ;end", "intent"),
+            (" happ://add/{url} ", "happ"),
+        ] {
+            assert_eq!(app_scheme(link).as_deref(), Some(scheme), "{link}");
+        }
+        for link in [
+            "https://sub.example/{url}",
+            "HTTPS://sub.example/{url}",
+            "http://sub.example/{url}",
+            "javascript:alert(1)",
+            "JavaScript:alert({url})",
+            "data:text/html,{url}",
+            "file:///etc/passwd",
+            "blob:https://panel.example/{url}",
+            "about:blank",
+            "view-source:https://panel.example",
+            "//evil.example/{url}",
+            "/cabinet",
+            "{url}",
+            "{url}://add",
+            "a{name}://add/{url}",
+            "happ",
+            "happ:",
+            "happ://add/{token}",
+            "happ://add/ {url}",
+            "",
+        ] {
+            assert_eq!(app_scheme(link), None, "{link}");
+        }
+    }
+
+    #[test]
+    fn ссылка_запуска_берётся_только_из_списка_приложений() {
+        let note = |url: &str| Step::Note {
+            title: Text::new("Правила", "Rules"),
+            text: Text::default(),
+            buttons: vec![button("https://panel.example/help"), button(url)],
+        };
+        let mut happ = app(
+            "Happ",
+            Some("happ://add/{url}"),
+            vec![button("https://apps.apple.com/app/x")],
+        );
+        happ.steps.push(note("happ://routing/onadd/eyJ"));
+        let mut web = app("Web", Some("https://open.example/add?sub={url}"), vec![]);
+        web.steps.push(note("streisand://rules"));
+        let mut off = app("Stash", Some("stash://install-config?url={url}"), vec![]);
+        off.enabled = false;
+        let apps = one(
+            Platform::Ios,
+            vec![happ, web, off, app("Copy", None, vec![])],
+        )
+        .checked()
+        .unwrap();
+        let find = |app: &str, step: usize, button: Option<usize>| {
+            apps.launch_link(&LinkSpot {
+                platform: Platform::Ios,
+                app: app.to_string(),
+                step,
+                button,
+            })
+            .map(|(app, link)| (app.name.as_str(), link))
+        };
+        assert_eq!(find("happ", 1, None), Some(("Happ", "happ://add/{url}")));
+        assert_eq!(
+            find("happ", 3, Some(1)),
+            Some(("Happ", "happ://routing/onadd/eyJ"))
+        );
+        assert_eq!(find("web", 3, Some(1)), Some(("Web", "streisand://rules")));
+        for (id, step, button) in [
+            ("happ", 0, None),
+            ("happ", 0, Some(0)),
+            ("happ", 1, Some(0)),
+            ("happ", 2, None),
+            ("happ", 3, None),
+            ("happ", 3, Some(0)),
+            ("happ", 3, Some(2)),
+            ("happ", 9, None),
+            ("Happ", 1, None),
+            ("web", 1, None),
+            ("stash", 1, None),
+            ("copy", 1, None),
+            ("nothing", 1, None),
+        ] {
+            assert_eq!(find(id, step, button), None, "{id} {step} {button:?}");
+        }
+        let elsewhere = LinkSpot {
+            platform: Platform::Android,
+            app: "happ".into(),
+            step: 1,
+            button: None,
+        };
+        assert_eq!(apps.launch_link(&elsewhere), None);
+        assert!(ConnectApps::standard().launch_link(&elsewhere).is_some());
+        assert_eq!(
+            serde_json::to_value(&elsewhere).unwrap(),
+            json!({ "platform": "android", "app": "happ", "step": 1 })
+        );
+        let parsed: LinkSpot = serde_json::from_value(
+            json!({ "platform": "android_tv", "app": "x", "step": 3, "button": 1 }),
+        )
+        .unwrap();
+        assert_eq!(
+            (parsed.platform, parsed.button),
+            (Platform::AndroidTv, Some(1))
+        );
+        for raw in [
+            json!({ "platform": "web", "app": "x", "step": 1 }),
+            json!({ "platform": "ios", "app": "x", "step": -1 }),
+            json!({ "platform": "ios", "step": 1 }),
+        ] {
+            assert!(
+                serde_json::from_value::<LinkSpot>(raw.clone()).is_err(),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

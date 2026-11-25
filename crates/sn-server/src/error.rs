@@ -19,7 +19,8 @@ pub async fn client_facing(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if request.uri().path().starts_with("/api/client") {
+    let path = request.uri().path();
+    if path.starts_with("/api/client") || path == crate::routes::public_app::PATH {
         CLIENT_FACING.scope(true, next.run(request)).await
     } else {
         next.run(request).await

@@ -20,6 +20,7 @@ const Landing = lazy(() => import('./site/Landing').then((m) => ({ default: m.La
 const LandingPreview = lazy(() => import('./site/Landing').then((m) => ({ default: m.LandingPreview })));
 const PayPage = lazy(() => import('./pay/PayPage').then((m) => ({ default: m.PayPage })));
 const VerifyPage = lazy(() => import('./verify/VerifyPage').then((m) => ({ default: m.VerifyPage })));
+const OpenPage = lazy(() => import('./open/OpenPage').then((m) => ({ default: m.OpenPage })));
 const DocumentPage = lazy(() => import('./site/DocumentPage').then((m) => ({ default: m.DocumentPage })));
 const DocumentPreview = lazy(() => import('./site/DocumentPage').then((m) => ({ default: m.DocumentPreview })));
 
@@ -55,6 +56,7 @@ function App() {
           <Route path="/app/*" element={<MiniApp />} />
           <Route path="/pay/:id" element={<PayPage />} />
           <Route path="/verify/:token" element={<VerifyPage />} />
+          <Route path="/open-app" element={<OpenPage />} />
           <Route path="/" element={<Landing />} />
           <Route path="*" element={<SitePage />} />
         </Routes>

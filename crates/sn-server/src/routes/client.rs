@@ -9,6 +9,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sn_domain::access::ClientChannel;
+use sn_domain::connect::LinkSpot;
 use sn_domain::ids::{ClientId, PeriodId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::money::{Money, parse_units};
 use sn_domain::support::TicketChannel;
@@ -67,6 +68,7 @@ pub fn routes() -> Router<AppState> {
             delete(disconnect_device),
         )
         .route("/subscriptions/{id}/reissue", post(reissue))
+        .route("/subscriptions/{id}/app-link", post(app_link))
         .route("/support/unread", get(support_unread))
         .route("/support/tickets", get(tickets).post(open_ticket))
         .route("/support/tickets/{id}", get(ticket).post(reply))
@@ -1008,6 +1010,21 @@ async fn support_unread(
 ) -> ApiResult<Json<serde_json::Value>> {
     let tickets = state.services.support().unread(client.0.client_id).await?;
     Ok(Json(serde_json::json!({ "tickets": tickets })))
+}
+
+async fn app_link(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(spot): ApiJson<LinkSpot>,
+) -> ApiResult<Json<sn_services::app_links::AppLink>> {
+    Ok(Json(
+        state
+            .services
+            .app_links()
+            .issue(SubscriptionId(id), client.0.client_id, &spot)
+            .await?,
+    ))
 }
 
 async fn tickets(

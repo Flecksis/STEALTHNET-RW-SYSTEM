@@ -1,12 +1,15 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import { AppMark } from '../cabinet/ConnectSteps';
 import { GROUP_OF, PLATFORM_NAME, fillLink, local, useConnectApps, usePicked, type Group, type LinkButton, type Step } from '../cabinet/connect';
+import { ApiError } from '../lib/api';
 import { t } from '../lib/i18n';
 import { QrCode } from '../lib/qr';
+import { jump, needsJump, type Spot } from './jump';
 import { openExternal } from './telegram';
 import './connect.css';
 
 type Props = {
+  subscription: number;
   url: string | null;
   brand: string;
   copied: boolean;
@@ -17,14 +20,16 @@ type Props = {
   waiting: string;
 };
 
-function Buttons({ buttons }: { buttons: LinkButton[] }) {
+type Jump = { at: string; state: 'busy' | 'sent' | 'failed'; text: string };
+
+function Buttons({ buttons, busy, onOpen }: { buttons: LinkButton[]; busy?: boolean; onOpen: (url: string, index: number) => void }) {
   if (!buttons.length) {
     return null;
   }
   return (
     <span className="mn-step-btns">
-      {buttons.map((button) => (
-        <button key={`${button.url}-${local(button.label)}`} type="button" className="mn-btn2 press" onClick={() => openExternal(button.url)}>
+      {buttons.map((button, index) => (
+        <button key={`${button.url}-${local(button.label)}`} type="button" className="mn-btn2 press" onClick={() => onOpen(button.url, index)} disabled={busy}>
           {local(button.label)}
         </button>
       ))}
@@ -32,9 +37,27 @@ function Buttons({ buttons }: { buttons: LinkButton[] }) {
   );
 }
 
-export function MiniSteps({ url, brand, copied, onCopy, qr, onQr, reissue, waiting }: Props) {
+export function MiniSteps({ subscription, url, brand, copied, onCopy, qr, onQr, reissue, waiting }: Props) {
   const apps = useConnectApps(true);
   const picked = usePicked(apps, true);
+  const [last, setLast] = useState<Jump | null>(null);
+  const busy = last?.state === 'busy';
+
+  const openApp = async (link: string, spot: Spot) => {
+    if (!needsJump(link)) {
+      openExternal(link);
+      return;
+    }
+    const at = `${subscription}-${spot.platform}-${spot.app}-${spot.step}`;
+    setLast({ at, state: 'busy', text: '' });
+    try {
+      await jump(subscription, spot);
+      setLast({ at, state: 'sent', text: '' });
+    } catch (err) {
+      setLast({ at, state: 'failed', text: err instanceof ApiError ? err.message : t('Telegram не открыл браузер. Попробуйте ещё раз') });
+    }
+  };
+
   const twoButtons = (
     <span className="mn-two">
       <button type="button" className="mn-btn2 press" onClick={onCopy} disabled={!url}>
@@ -77,8 +100,26 @@ export function MiniSteps({ url, brand, copied, onCopy, qr, onQr, reissue, waiti
   const many = picked.apps.length > 1;
   const main = picked.apps[0] ?? app;
 
+  const platform = picked.platform;
+  const jumped = (index: number, text: string, hint: string | null) => {
+    if (last?.at !== `${subscription}-${platform}-${app.id}-${index}` || last.state === 'busy') {
+      return null;
+    }
+    return last.state === 'sent' ? (
+      <span role="status" className="mn-hint">
+        {text}
+      </span>
+    ) : (
+      <span role="alert" className="mn-jump-failed">
+        <span className="mn-error">{last.text}</span>
+        {hint ? <span className="mn-hint">{hint}</span> : null}
+      </span>
+    );
+  };
+
   const card = (step: Step, number: number) => {
     const key = `${picked.platform}-${app.id}-${number}`;
+    const spot: Spot = { platform, app: app.id, step: number - 1 };
     const head = (title: string, text: string) => (
       <>
         <span className="mn-num">{number}</span>
@@ -117,7 +158,7 @@ export function MiniSteps({ url, brand, copied, onCopy, qr, onQr, reissue, waiti
               </span>
             ) : null}
             {many && text ? <span className="mn-hint mn-pre">{text}</span> : null}
-            <Buttons buttons={step.buttons} />
+            <Buttons buttons={step.buttons} onOpen={(link) => openExternal(link)} />
           </div>
         );
       }
@@ -127,10 +168,15 @@ export function MiniSteps({ url, brand, copied, onCopy, qr, onQr, reissue, waiti
           <div key={key} className="mn-card mn-step col">
             <span className="mn-step-row">{head(t('Добавьте подписку'), local(step.text))}</span>
             {link ? (
-              <button type="button" className="mn-main sm press" onClick={() => url && openExternal(fillLink(link, url, brand))} disabled={!url}>
+              <button type="button" className="mn-main sm press" onClick={() => url && void openApp(fillLink(link, url, brand), spot)} disabled={!url || busy} aria-busy={busy}>
                 {t('Добавить в {app}', { app: app.name })}
               </button>
             ) : null}
+            {jumped(
+              number - 1,
+              t('Открываем {app} через браузер. Если не получилось, нажмите ещё раз или скопируйте ссылку.', { app: app.name }),
+              t('Или скопируйте ссылку и добавьте её в {app} вручную.', { app: app.name }),
+            )}
             {twoButtons}
             {qrCode}
             {reissue}
@@ -147,7 +193,8 @@ export function MiniSteps({ url, brand, copied, onCopy, qr, onQr, reissue, waiti
         return step.buttons.length ? (
           <div key={key} className="mn-card mn-step col">
             <span className="mn-step-row">{head(local(step.title), local(step.text))}</span>
-            <Buttons buttons={step.buttons} />
+            <Buttons buttons={step.buttons} busy={busy} onOpen={(link, button) => void openApp(link, { ...spot, button })} />
+            {jumped(number - 1, t('Открываем {app} через браузер. Если не получилось, нажмите ещё раз.', { app: app.name }), null)}
           </div>
         ) : (
           <div key={key} className="mn-card mn-step">
