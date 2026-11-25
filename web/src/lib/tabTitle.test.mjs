@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { servedBrand, tabTitle } from './tabTitle.ts';
+import { servedBrand, servedLanguages, tabTitle } from './tabTitle.ts';
 
 const src = new URL('..', import.meta.url).pathname;
 
@@ -47,6 +47,15 @@ test('название до ответа сервера берётся из са
   assert.equal(servedBrand(page(' Тихий VPN ')), 'Тихий VPN');
   assert.equal(servedBrand(page(null)), '');
   assert.equal(servedBrand(null), '');
+});
+
+test('язык до ответа сервера берётся из самой страницы', () => {
+  const served = (lang) => ({ ...page(null), documentElement: { getAttribute: (name) => (name === 'lang' ? lang : null) } });
+  assert.deepEqual(servedLanguages(served('en')), { list: ['ru', 'en'], default: 'en' });
+  assert.equal(servedLanguages(served('ru')), undefined);
+  assert.equal(servedLanguages(served(null)), undefined);
+  assert.equal(servedLanguages(page(null)), undefined);
+  assert.equal(servedLanguages(null), undefined);
 });
 
 test('на страницах для клиентов нет чужого названия', () => {

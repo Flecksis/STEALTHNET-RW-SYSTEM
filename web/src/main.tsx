@@ -5,15 +5,16 @@ import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router';
 import { reloadOnStaleChunks } from './lib/chunks';
-import { guessLang, t, useApplied } from './lib/i18n';
+import { guessLang, useApplied } from './lib/i18n';
 import { captureReferral } from './lib/referral';
-import { useSite } from './lib/site';
+import { useSiteData } from './lib/site';
 import { servedApp, telegramEntry } from './lib/telegramEntry';
 import type { Site } from './lib/types';
 import { captureUtm } from './lib/utm';
 
 const AdminApp = lazy(() => import('./admin/AdminApp').then((m) => ({ default: m.AdminApp })));
-const Soon = lazy(() => import('./site/Soon').then((m) => ({ default: m.Soon })));
+const PageMissing = lazy(() => import('./site/Soon').then((m) => ({ default: m.PageMissing })));
+const PageFailed = lazy(() => import('./site/Soon').then((m) => ({ default: m.PageFailed })));
 const CabinetApp = lazy(() => import('./cabinet/CabinetApp').then((m) => ({ default: m.CabinetApp })));
 const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.MiniApp })));
 const MiniPreview = lazy(() => import('./mini/MiniPreview').then((m) => ({ default: m.MiniPreview })));
@@ -25,29 +26,33 @@ const OpenPage = lazy(() => import('./open/OpenPage').then((m) => ({ default: m.
 const DocumentPage = lazy(() => import('./site/DocumentPage').then((m) => ({ default: m.DocumentPage })));
 const DocumentPreview = lazy(() => import('./site/DocumentPage').then((m) => ({ default: m.DocumentPreview })));
 
+function Blank() {
+  return <div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />;
+}
+
 function SitePage() {
-  const site = useSite();
+  const { site, failed, loading, retry } = useSiteData();
   const { pathname } = useLocation();
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
   const doc = site?.documents?.find((d) => d.page && d.url === path);
   if (site && doc) {
-    return <DocumentPage site={site} path={doc.url} />;
+    return <DocumentPage key={doc.url} site={site} path={doc.url} />;
   }
-  return <NotFound site={site} />;
+  return <SiteNote site={site} failed={failed} loading={loading} onRetry={retry} />;
 }
 
-function NotFound({ site }: { site: Site | null }) {
+function SiteNote({ site, failed, loading, onRetry }: { site: Site | null; failed: boolean; loading: boolean; onRetry: () => void }) {
   const ready = useApplied(site ? guessLang(site) : null);
-  if (!ready) {
-    return <div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />;
+  if (!site || !ready) {
+    return <Blank />;
   }
-  return <Soon title={t('Страница не найдена')} text={t('Такой страницы нет. Перейдите на главную или откройте Telegram-бота.')} />;
+  return failed ? <PageFailed site={site} busy={loading} onRetry={onRetry} /> : <PageMissing site={site} />;
 }
 
 function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={<div style={{ minHeight: '100vh', background: 'var(--bg)' }} aria-busy="true" />}>
+      <Suspense fallback={<Blank />}>
         <Routes>
           <Route path="/admin/landing-preview" element={<LandingPreview />} />
           <Route path="/admin/document-preview" element={<DocumentPreview />} />

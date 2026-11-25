@@ -61,4 +61,12 @@
   font-weight: 700;
   display: inline-flex;
   align-items: center;
+  border: 0;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.soon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

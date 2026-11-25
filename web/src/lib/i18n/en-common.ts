@@ -99,6 +99,8 @@ export const COMMON: Record<string, string> = {
   'Чат поддержки': 'Support chat',
   'Язык': 'Language',
   'Страница не найдена': 'Page not found',
+  'Страница не загрузилась': 'The page didn\'t load',
+  'Проверьте интернет и попробуйте ещё раз. Если не помогло, зайдите чуть позже.': 'Check your connection and try again. If that doesn\'t help, come back a little later.',
   'Такой страницы нет. Перейдите на главную или откройте Telegram-бота.': 'This page doesn\'t exist. Go to the home page or open the Telegram bot.',
   'ИИ-помощник': 'AI assistant',
   '{ai} пишет ответ…': '{ai} is typing…',

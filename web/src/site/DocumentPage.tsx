@@ -17,7 +17,7 @@ import { findBlock, FOOTER_LINKS, footerText, landingContext, normalizeBlocks, r
 import { DOC_PREVIEW, type DocDraft } from './documentPreview';
 import { wrapLongWords } from './longWords';
 import { SiteHeader } from './SiteHeader';
-import { Soon } from './Soon';
+import { PageFailed, PageMissing } from './Soon';
 import './landing.css';
 import './document.css';
 
@@ -215,6 +215,9 @@ export function DocumentPage({ site, path }: Props) {
   useSurface('landing', theme, site.appearance.client === 'mono' ? 'b' : 'a');
   const [page, setPage] = useState<PublicPage | null>(null);
   const [missing, setMissing] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [turn, setTurn] = useState(0);
   const blocks = useBlocks();
 
   useEffect(() => {
@@ -222,22 +225,34 @@ export function DocumentPage({ site, path }: Props) {
       return;
     }
     let alive = true;
+    setLoading(true);
     api<PublicPage>(`/api/public/pages${path}`)
       .then((loaded) => {
         if (alive) {
           setPage(loaded);
           setMissing(false);
+          setFailed(false);
         }
       })
       .catch((err: unknown) => {
-        if (alive && err instanceof ApiError && err.status === 404) {
+        if (!alive) {
+          return;
+        }
+        if (err instanceof ApiError && err.status === 404) {
           setMissing(true);
+        } else {
+          setFailed(true);
+        }
+      })
+      .finally(() => {
+        if (alive) {
+          setLoading(false);
         }
       });
     return () => {
       alive = false;
     };
-  }, [path, ready, lang]);
+  }, [path, ready, lang, turn]);
 
   useEffect(() => {
     if (page) {
@@ -252,7 +267,10 @@ export function DocumentPage({ site, path }: Props) {
   const html = useMemo(() => (page ? wrapLongWords(cleanHtml(page.html)) : ''), [page]);
 
   if (missing) {
-    return <Soon title={t('Страница не найдена')} text={t('Такой страницы нет. Перейдите на главную или откройте Telegram-бота.')} />;
+    return <PageMissing site={site} />;
+  }
+  if (ready && !page && failed) {
+    return <PageFailed site={site} busy={loading} onRetry={() => setTurn((value) => value + 1)} />;
   }
   if (!ready || !page) {
     return <div className={phone ? 'ld ld-phone' : 'ld'} aria-busy="true" />;
