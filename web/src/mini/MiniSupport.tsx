@@ -7,9 +7,9 @@ import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
 import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
 import { AttachButton, DraftList, MessageFiles, useAttachments, type Attachment, type Attachments } from '../lib/ticketFiles';
+import { previewText, ticketGroups, ticketId, ticketMark, ticketWhen, unreadCount, waitingTicket, type TicketMark } from '../lib/tickets';
 import { BackHead, useMini } from './MiniApp';
 import { downloadExternal, openExternal } from './telegram';
-import { previewText, ticketGroups, ticketId, ticketMark, ticketWhen, unreadCount, waitingTicket, type TicketMark } from './tickets';
 
 const FILES = '/api/client/support/files';
 const TICKETS = '/api/client/support/tickets';

@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, Method};
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sn_domain::access::ClientChannel;
 use sn_domain::connect::LinkSpot;
 use sn_domain::ids::{ClientId, PeriodId, SubscriptionId, TicketFileId, TicketId};
@@ -21,7 +21,7 @@ use sn_services::checkout::{
 };
 use sn_services::login::TelegramLoginStatus;
 use sn_services::signup::{Arrival, Registration, SignupStart};
-use sn_services::support::{OpenTicket, ReplyRequest, TicketThread};
+use sn_services::support::{ClientThread, OpenTicket, ReplyRequest};
 use sn_services::two_factor::{CabinetLogin, TwoFactor};
 use sn_services::utm_tracking::site_utm;
 use sn_store::{ClientTicket, Db};
@@ -1087,25 +1087,18 @@ async fn open_ticket(
     Ok(Json(serde_json::json!({ "ticket_id": id })))
 }
 
-#[derive(Serialize)]
-struct ClientThread {
-    #[serde(flatten)]
-    thread: TicketThread,
-    unread: i64,
-}
-
 async fn client_thread(
     state: &AppState,
     client: &CurrentClient,
     id: TicketId,
 ) -> ApiResult<Json<ClientThread>> {
-    let support = state.services.support();
-    let thread = support.thread(id, client.actor()).await?;
-    if client.0.full_access {
-        support.seen(&thread, client.0.client_id).await?;
-    }
-    let unread = support.unread(client.0.client_id).await?;
-    Ok(Json(ClientThread { thread, unread }))
+    Ok(Json(
+        state
+            .services
+            .support()
+            .client_thread(id, client.0.client_id, client.0.full_access)
+            .await?,
+    ))
 }
 
 async fn ticket(

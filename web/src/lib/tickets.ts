@@ -1,4 +1,4 @@
-import type { TicketBrief, TicketPreview } from '../lib/supportChat';
+import type { TicketBrief, TicketPreview } from './supportChat';
 
 export type TicketMark = 'fresh' | 'answered' | 'waiting' | 'closed';
 
@@ -28,6 +28,10 @@ export function ticketGroups(list: TicketBrief[]): TicketGroups {
       .filter((ticket) => ticket.status === status)
       .sort((a, b) => Number(isUnread(b)) - Number(isUnread(a)) || Date.parse(ticketWhen(b)) - Date.parse(ticketWhen(a)));
   return { open: group('open'), closed: group('closed') };
+}
+
+export function freshFirst(list: TicketBrief[]): TicketBrief[] {
+  return [...list].sort((a, b) => Number(isUnread(b)) - Number(isUnread(a)));
 }
 
 export function waitingTicket(list: TicketBrief[]): TicketBrief | null {

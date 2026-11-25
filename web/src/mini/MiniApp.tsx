@@ -6,6 +6,7 @@ import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied
 import { Icon } from '../lib/icons';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportTickets } from '../lib/support';
+import { useSupportUnread } from '../lib/supportUnread';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
@@ -32,7 +33,6 @@ import { MiniRoulette } from './MiniRoulette';
 import { MiniWithdraw } from './MiniWithdraw';
 import { MiniNewTicket, MiniSupport, MiniTicket } from './MiniSupport';
 import { supportTarget, tabLabel, unreadText, type Extras } from './sections';
-import { useSupportUnread } from './unread';
 import './mini.css';
 import './support.css';
 
@@ -108,7 +108,7 @@ export function MiniApp() {
   const [chosenId, setChosenId] = useState<number | null>(null);
   const cache = useRef(new Map<number, Detail>());
   const [, setTick] = useState(0);
-  const [unread, setUnread] = useState(0);
+  const [unread, setUnread] = useSupportUnread(state.kind === 'in' && supportTickets(site));
   const [tg, setTg] = useState<WebApp | null>(null);
   const [tgScheme, setTgScheme] = useState<Theme | null>(null);
   const [personal, setPersonal] = useState<Theme | null>(() => {
@@ -144,7 +144,7 @@ export function MiniApp() {
     if (chosen) {
       await fetchDetail(chosen);
     }
-  }, [fetchDetail]);
+  }, [fetchDetail, setUnread]);
 
   const choose = useCallback(
     (id: number) => {
@@ -258,8 +258,6 @@ export function MiniApp() {
     [reload],
   );
 
-  useSupportUnread(state.kind === 'in' && supportTickets(site), setUnread);
-
   const view = hit?.view ?? base;
   const devices = hit?.devices ?? null;
   const ready = hit !== undefined;
@@ -271,7 +269,7 @@ export function MiniApp() {
       state.kind === 'in'
         ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang, config, name, unread, setUnread, demo: null }
         : null,
-    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name, unread],
+    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name, unread, setUnread],
   );
 
   if (state.kind === 'loading' || !applied) {

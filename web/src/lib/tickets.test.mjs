@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isUnread, previewText, ticketGroups, ticketId, ticketMark, ticketWhen, unreadCount, waitingTicket } from './tickets.ts';
+import { freshFirst, isUnread, previewText, ticketGroups, ticketId, ticketMark, ticketWhen, unreadCount, waitingTicket } from './tickets.ts';
 
 const ticket = (id, over = {}) => ({
   id,
@@ -40,6 +40,19 @@ test('в списке сначала обращения с новым ответ
   assert.equal(unreadCount([]), 0);
   assert.deepEqual(list.map(isUnread), [false, true, false, false, true, false]);
   assert.deepEqual(ticketGroups([ticket(9), ticket(8)]).open.map((t) => t.id), [9, 8]);
+});
+
+test('в общем списке обращения с новым ответом поднимаются наверх, остальные остаются на местах', () => {
+  const list = [
+    ticket(7),
+    ticket(6, { last_author: 'support' }),
+    ticket(5, { last_author: 'support', unread: 1 }),
+    ticket(4, { status: 'closed', last_author: 'support' }),
+    ticket(3, { status: 'closed', last_author: 'support', unread: 2 }),
+  ];
+  assert.deepEqual(freshFirst(list).map((t) => t.id), [5, 3, 7, 6, 4]);
+  assert.deepEqual(list.map((t) => t.id), [7, 6, 5, 4, 3]);
+  assert.deepEqual(freshFirst([]), []);
 });
 
 test('в строке списка последнее сообщение одной строкой и его время', () => {

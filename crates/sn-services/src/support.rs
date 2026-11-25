@@ -5,6 +5,7 @@ pub use files::{FileDownload, FileLink};
 use crate::Actor;
 use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketFileId, TicketId};
@@ -56,6 +57,22 @@ pub struct TicketThread {
     pub messages: Vec<TicketMessage>,
     pub admins: Vec<AdminName>,
     pub ai: Option<TicketAi>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientMessage {
+    pub author: MessageAuthor,
+    pub body: String,
+    pub attachments: Vec<TicketFile>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientThread {
+    pub ticket: Ticket,
+    pub messages: Vec<ClientMessage>,
+    pub ai: Option<TicketAi>,
+    pub unread: i64,
 }
 
 fn message_body(body: &str, with_files: bool) -> ServiceResult<String> {
@@ -262,16 +279,6 @@ impl<'a> SupportOps<'a> {
         Ok(conn.tickets().client_unread(client_id).await?)
     }
 
-    pub async fn seen(&self, thread: &TicketThread, client_id: ClientId) -> ServiceResult<()> {
-        if let Some(last) = thread.messages.last() {
-            let mut conn = self.services.store().conn().await?;
-            conn.tickets()
-                .mark_seen(thread.ticket.id, client_id, last.created_at)
-                .await?;
-        }
-        Ok(())
-    }
-
     pub async fn waiting_count(&self) -> ServiceResult<i64> {
         let mut conn = self.services.store().conn().await?;
         Ok(sqlx::query_scalar(
@@ -326,6 +333,39 @@ impl<'a> SupportOps<'a> {
             messages,
             admins,
             ai,
+        })
+    }
+
+    pub async fn client_thread(
+        &self,
+        id: TicketId,
+        client_id: ClientId,
+        seen: bool,
+    ) -> ServiceResult<ClientThread> {
+        let thread = self.thread(id, Actor::Client(client_id)).await?;
+        let messages: Vec<ClientMessage> = thread
+            .messages
+            .into_iter()
+            .filter(|m| m.author != MessageAuthor::System)
+            .map(|m| ClientMessage {
+                author: m.author,
+                body: m.body,
+                attachments: m.attachments,
+                created_at: m.created_at,
+            })
+            .collect();
+        let mut conn = self.services.store().conn().await?;
+        if seen && let Some(last) = messages.last() {
+            conn.tickets()
+                .mark_seen(id, client_id, last.created_at)
+                .await?;
+        }
+        let unread = conn.tickets().client_unread(client_id).await?;
+        Ok(ClientThread {
+            ticket: thread.ticket,
+            messages,
+            ai: thread.ai,
+            unread,
         })
     }
 

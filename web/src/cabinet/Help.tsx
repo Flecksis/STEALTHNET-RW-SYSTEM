@@ -2,29 +2,32 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { dateLong, dateTime } from '../lib/format';
-import { t } from '../lib/i18n';
+import { msg, t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
 import { aiAnswering, aiName, aiTyping, authorName, handoffAfter, MAX_BODY, ticketTitle, visibleMessages, type ChatThread, type TicketBrief } from '../lib/supportChat';
 import { AttachButton, DraftList, MessageFiles, useAttachments, type FileLimits } from '../lib/ticketFiles';
+import { freshFirst, ticketMark, unreadCount, waitingTicket, type TicketMark } from '../lib/tickets';
 import { Card, useCabinet } from './CabinetApp';
 
 const FILES = '/api/client/support/files';
+const TICKETS = '/api/client/support/tickets';
+const LIST_REFRESH = 20_000;
 
-export type { TicketBrief };
+const MARKS: Record<TicketMark, { text: string; tone: string }> = {
+  fresh: { text: msg('Новый ответ'), tone: 'accent' },
+  answered: { text: msg('Есть ответ'), tone: 'ink2' },
+  waiting: { text: msg('Ждёт ответа'), tone: 'muted' },
+  closed: { text: msg('Закрыто'), tone: 'muted' },
+};
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-export function ticketState(ticket: TicketBrief): { text: string; tone: string } {
-  if (ticket.status === 'closed') {
-    return { text: t('Закрыто'), tone: 'muted' };
-  }
-  if (ticket.last_author === 'client') {
-    return { text: t('Ждёт ответа'), tone: 'muted' };
-  }
-  return { text: t('Есть ответ'), tone: 'accent' };
+function ticketState(ticket: TicketBrief): { text: string; tone: string } {
+  const mark = MARKS[ticketMark(ticket)];
+  return { text: t(mark.text), tone: mark.tone };
 }
 
 function LinkCard({ url, alone }: { url: string; alone: boolean }) {
@@ -54,25 +57,45 @@ export function HelpPage() {
 
 function TicketsPage({ link, tickets, ai, limits }: { link: string | null; tickets: boolean; ai: boolean; limits: FileLimits | null }) {
   const navigate = useNavigate();
+  const { setUnread } = useCabinet();
   const [list, setList] = useState<TicketBrief[] | null>(null);
+  const [lost, setLost] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const files = useAttachments(FILES, limits);
   const canSend = (body.trim() !== '' || files.ids.length > 0) && files.ready;
 
-  const load = useCallback(async () => {
-    try {
-      setList(await api<TicketBrief[]>('/api/client/support/tickets'));
-      setError(null);
-    } catch (err) {
-      setError(failText(err, t('Обращения не загрузились')));
-    }
-  }, []);
-
   useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const found = await api<TicketBrief[]>(TICKETS);
+        if (alive) {
+          setList(found);
+          setUnread(unreadCount(found));
+          setLost(null);
+        }
+      } catch (err) {
+        if (alive) {
+          setLost(failText(err, t('Обращения не загрузились')));
+        }
+      }
+    };
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    };
     void load();
-  }, [load]);
+    const timer = window.setInterval(refresh, LIST_REFRESH);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [setUnread]);
 
   const send = async () => {
     const text = body.trim();
@@ -82,7 +105,7 @@ function TicketsPage({ link, tickets, ai, limits }: { link: string | null; ticke
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ ticket_id: number }>('/api/client/support/tickets', { method: 'POST', body: { body: text, files: files.ids } });
+      const res = await api<{ ticket_id: number }>(TICKETS, { method: 'POST', body: { body: text, files: files.ids } });
       setBody('');
       files.reset();
       navigate(`/cabinet/help/${res.ticket_id}`);
@@ -93,9 +116,9 @@ function TicketsPage({ link, tickets, ai, limits }: { link: string | null; ticke
     }
   };
 
-  const open = (list ?? []).filter((ticket) => ticket.status === 'open');
-  const closed = (list ?? []).filter((ticket) => ticket.status === 'closed');
-  const waiting = open.find((ticket) => ticket.last_author === 'client');
+  const rows = freshFirst(list ?? []);
+  const waiting = waitingTicket(rows);
+  const problem = error ?? (list ? null : lost);
   const [waitingBefore, waitingAfter] = waiting ? t('Обращение №{id} ещё ждёт ответа. Дополнить его можно {link}.', { id: waiting.id }).split('{link}') : [];
 
   return (
@@ -151,15 +174,15 @@ function TicketsPage({ link, tickets, ai, limits }: { link: string | null; ticke
           </div>
         </Card>
       ) : null}
-      {error ? (
+      {problem ? (
         <p className="cb-error" role="alert">
-          {error}
+          {problem}
         </p>
       ) : null}
-      {list && list.length > 0 ? (
+      {rows.length > 0 ? (
         <Card className="cb-paylist" label={t('Обращения')}>
           <ul className="cb-payrows">
-            {[...open, ...closed].map((ticket) => {
+            {rows.map((ticket) => {
               const st = ticketState(ticket);
               return (
                 <li key={ticket.id} className="cb-payrow cb-ticketrow">
@@ -183,7 +206,7 @@ function TicketsPage({ link, tickets, ai, limits }: { link: string | null; ticke
 }
 
 function TicketPage({ id }: { id: number }) {
-  const { site } = useCabinet();
+  const { site, setUnread } = useCabinet();
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState('');
@@ -195,29 +218,39 @@ function TicketPage({ id }: { id: number }) {
   const seen = useRef(0);
   const typing = aiTyping(thread);
 
+  const show = useCallback(
+    (next: ChatThread) => {
+      setThread(next);
+      setUnread(next.unread ?? 0);
+    },
+    [setUnread],
+  );
+
   const load = useCallback(async () => {
     try {
-      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`));
+      show(await api<ChatThread>(`${TICKETS}/${id}`));
       setError(null);
     } catch (err) {
       setError(failText(err, t('Обращение не загрузилось')));
     }
-  }, [id]);
+  }, [id, show]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    const timer = window.setInterval(
-      () => {
-        if (document.visibilityState === 'visible') {
-          void load();
-        }
-      },
-      typing ? 2_500 : 15_000,
-    );
-    return () => window.clearInterval(timer);
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    };
+    const timer = window.setInterval(refresh, typing ? 2_500 : 15_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
   }, [load, typing]);
 
   useEffect(() => {
@@ -236,7 +269,7 @@ function TicketPage({ id }: { id: number }) {
     setBusy(true);
     setError(null);
     try {
-      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}`, { method: 'POST', body: { body: text, files: files.ids } }));
+      show(await api<ChatThread>(`${TICKETS}/${id}`, { method: 'POST', body: { body: text, files: files.ids } }));
       setBody('');
       files.reset();
     } catch (err) {
@@ -250,7 +283,7 @@ function TicketPage({ id }: { id: number }) {
     setBusy(true);
     setError(null);
     try {
-      setThread(await api<ChatThread>(`/api/client/support/tickets/${id}/operator`, { method: 'POST', body: {} }));
+      show(await api<ChatThread>(`${TICKETS}/${id}/operator`, { method: 'POST', body: {} }));
     } catch (err) {
       setError(failText(err, t('Не получилось позвать оператора')));
     } finally {
@@ -261,7 +294,7 @@ function TicketPage({ id }: { id: number }) {
   const close = async () => {
     setBusy(true);
     try {
-      await api(`/api/client/support/tickets/${id}/close`, { method: 'POST', body: {} });
+      await api(`${TICKETS}/${id}/close`, { method: 'POST', body: {} });
       setAsk(false);
       await load();
     } catch (err) {

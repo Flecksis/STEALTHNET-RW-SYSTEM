@@ -356,6 +356,98 @@ async fn непрочитанный_ответ_пропадает_когда_к�
     h.db.cleanup().await;
 }
 
+fn keys(value: &Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+#[tokio::test]
+async fn клиенту_не_уходит_номер_администратора_и_служебные_сообщения() {
+    let Some(h) = support_http().await else {
+        return;
+    };
+    let helper = h.admin("helper@example.com", AdminRole::Support).await;
+    let alice = h.client(5_300_061).await;
+    let cabinet = h.client_token(alice).await;
+    let mini = mini_token(&h, alice).await;
+    let ticket = open(&h, &cabinet, json!({ "body": "Не подключается iPhone" })).await;
+    answer(&h, ticket, "Обновите подписку", &[], false).await;
+    h.services()
+        .support()
+        .reply(
+            TicketId(ticket),
+            &ReplyRequest {
+                body: "служебная запись".into(),
+                close: false,
+            },
+            Actor::System,
+        )
+        .await
+        .unwrap();
+    assert_eq!(unread(&h, &cabinet).await, 1);
+
+    let path = format!("{TICKETS}/{ticket}");
+    let checked = |thread: &Value, authors: &[&str]| {
+        assert_eq!(keys(thread), ["ai", "messages", "ticket", "unread"]);
+        let messages = thread["messages"].as_array().unwrap();
+        for message in messages {
+            assert_eq!(
+                keys(message),
+                ["attachments", "author", "body", "created_at"]
+            );
+        }
+        let found: Vec<&str> = messages
+            .iter()
+            .map(|m| m["author"].as_str().unwrap())
+            .collect();
+        assert_eq!(found, authors);
+        let text = thread.to_string();
+        assert!(!text.contains("admin"), "{text}");
+        assert!(!text.contains("служебная"), "{text}");
+    };
+    let (status, thread) = h.get(&path, &cabinet).await;
+    assert_eq!(status, StatusCode::OK, "{thread}");
+    checked(&thread, &["client", "support"]);
+    assert_eq!(thread["unread"], 0);
+    assert_eq!(unread(&h, &cabinet).await, 0);
+    assert_eq!(unread(&h, &mini).await, 0);
+    let (status, thread) = h.get(&path, &mini).await;
+    assert_eq!(status, StatusCode::OK, "{thread}");
+    checked(&thread, &["client", "support"]);
+    let (status, thread) = h
+        .write(
+            Method::POST,
+            &format!("{path}/operator"),
+            &cabinet,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{thread}");
+    checked(&thread, &["client", "support"]);
+    let (status, thread) = h
+        .write(Method::POST, &path, &cabinet, json!({ "body": "Помогло" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{thread}");
+    checked(&thread, &["client", "support", "client"]);
+
+    let (status, thread) = h
+        .get(&format!("/api/admin/support/tickets/{ticket}"), &helper)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{thread}");
+    let messages = thread["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4, "{thread}");
+    assert!(messages[1]["admin_id"].is_i64(), "{thread}");
+    assert_eq!(messages[2]["author"], "system");
+    assert!(!thread["admins"].as_array().unwrap().is_empty(), "{thread}");
+    h.db.cleanup().await;
+}
+
 #[tokio::test]
 async fn ответы_до_обновления_не_считаются_непрочитанными() {
     let Some(h) = support_http().await else {

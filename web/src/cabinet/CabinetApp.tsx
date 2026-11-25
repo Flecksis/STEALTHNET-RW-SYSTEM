@@ -9,13 +9,14 @@ import { applyLang, guessLang, msg, NATIVE, otherLang, rememberLang, siteLangs, 
 import { usePhone } from '../lib/media';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportLink, supportTickets } from '../lib/support';
+import { useSupportUnread } from '../lib/supportUnread';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import type { Site } from '../lib/types';
 import { AddonsPage } from './Addons';
 import { DevicesPage } from './Devices';
 import { FriendsPage } from './Friends';
 import { GiftsPage } from './Gifts';
-import { HelpPage, type TicketBrief } from './Help';
+import { HelpPage } from './Help';
 import { Login } from './Login';
 import { photoUrl, type ClientMe } from './model';
 import { Pay } from './Pay';
@@ -41,6 +42,8 @@ export type CabinetCtx = {
   lang: Lang;
   nextLang: Lang | null;
   switchLang: (next: Lang) => void;
+  unread: number;
+  setUnread: (tickets: number) => void;
 };
 
 const Ctx = createContext<CabinetCtx | null>(null);
@@ -63,7 +66,9 @@ export function CabinetApp() {
   const site = loadedSite ?? DEFAULT_SITE;
   const system = useSystemTheme();
   const phone = usePhone();
+  const { pathname } = useLocation();
   const [state, setState] = useState<State>({ kind: 'loading' });
+  const [unread, setUnread] = useSupportUnread(state.kind === 'in' && supportTickets(site), pathname);
   const [personal, setPersonal] = useState<Theme | null>(storedTheme);
   const [picked, setPicked] = useState<Lang | null>(null);
   const langs = siteLangs(loadedSite);
@@ -80,6 +85,7 @@ export function CabinetApp() {
   const load = useCallback(async () => {
     try {
       const me = await api<ClientMe>('/api/client/me');
+      setUnread(me.support_unread ?? 0);
       setState(me.client.status === 'blocked' ? { kind: 'blocked' } : { kind: 'in', me });
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -90,7 +96,7 @@ export function CabinetApp() {
         setState({ kind: 'error', message: err instanceof ApiError ? err.message : t('Сервер не ответил') });
       }
     }
-  }, []);
+  }, [setUnread]);
 
   useEffect(() => {
     void load();
@@ -136,9 +142,9 @@ export function CabinetApp() {
   const ctx = useMemo<CabinetCtx | null>(
     () =>
       state.kind === 'in'
-        ? { me: state.me, site, reload: load, logout, theme, flipTheme: fixed ? () => undefined : flipTheme, phone, lang, nextLang, switchLang }
+        ? { me: state.me, site, reload: load, logout, theme, flipTheme: fixed ? () => undefined : flipTheme, phone, lang, nextLang, switchLang, unread, setUnread }
         : null,
-    [state, site, load, logout, theme, flipTheme, fixed, phone, lang, nextLang, switchLang],
+    [state, site, load, logout, theme, flipTheme, fixed, phone, lang, nextLang, switchLang, unread, setUnread],
   );
 
   if (state.kind === 'loading' || !ready) {
@@ -262,38 +268,8 @@ function useTabs() {
 }
 
 function useAnswered(): number {
-  const { site } = useCabinet();
-  const location = useLocation();
-  const [answered, setAnswered] = useState(0);
-  const on = supportTickets(site);
-  useEffect(() => {
-    if (!on) {
-      setAnswered(0);
-      return;
-    }
-    let alive = true;
-    const check = () => {
-      if (document.visibilityState !== 'visible') {
-        return;
-      }
-      api<TicketBrief[]>('/api/client/support/tickets')
-        .then((list) => {
-          if (alive) {
-            setAnswered(list.filter((t) => t.status === 'open' && t.last_author !== 'client').length);
-          }
-        })
-        .catch(() => undefined);
-    };
-    check();
-    const timer = window.setInterval(check, 60_000);
-    document.addEventListener('visibilitychange', check);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', check);
-    };
-  }, [on, location.pathname]);
-  return answered;
+  const { site, unread } = useCabinet();
+  return supportTickets(site) ? unread : 0;
 }
 
 function TabLabel({ tab, answered }: { tab: { key: string; label: string }; answered: number }) {
