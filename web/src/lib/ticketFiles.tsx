@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { api, ApiError, fetchBlob, upload } from './api';
 import { lang, t } from './i18n';
 import { Icon } from './icons';
@@ -237,15 +237,24 @@ function useSource(path: string, viaFetch: boolean): string | null {
   return src;
 }
 
-function Viewer({ src, name, prefix, onClose }: { src: string; name: string; prefix: string; onClose: () => void }) {
+function Viewer({ src, name, prefix, zoom, onClose }: { src: string; name: string; prefix: string; zoom: boolean; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [spot, setSpot] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
+  useLayoutEffect(() => {
+    const box = dialog.current;
+    const image = box?.querySelector('img');
+    if (box && image && spot) {
+      box.scrollTo(image.offsetLeft + image.offsetWidth * spot.x - box.clientWidth / 2, image.offsetTop + image.offsetHeight * spot.y - box.clientHeight / 2);
+    }
+  }, [spot]);
+  const toggle = (x = 0.5, y = 0.5) => setSpot((now) => (now ? null : { x, y }));
   return (
     <dialog
       ref={dialog}
-      className={`${prefix}-viewer`}
+      className={spot ? `${prefix}-viewer big` : `${prefix}-viewer`}
       aria-label={name}
       onClose={onClose}
       onClick={(e) => {
@@ -254,9 +263,25 @@ function Viewer({ src, name, prefix, onClose }: { src: string; name: string; pre
         }
       }}
     >
-      <img src={src} alt={name} />
+      <img
+        src={src}
+        alt={name}
+        onClick={
+          zoom
+            ? (e) => {
+                const box = e.currentTarget.getBoundingClientRect();
+                toggle((e.clientX - box.left) / box.width, (e.clientY - box.top) / box.height);
+              }
+            : undefined
+        }
+      />
       <div className={`${prefix}-viewer-bar`}>
         <span>{name}</span>
+        {zoom ? (
+          <button type="button" onClick={() => toggle()}>
+            {spot ? t('Уменьшить') : t('Увеличить')}
+          </button>
+        ) : null}
         <button type="button" onClick={() => dialog.current?.close()}>
           {t('Закрыть')}
         </button>
@@ -282,7 +307,7 @@ function Thumb({ file, path, prefix, viaFetch, box }: { file: Attachment; path: 
       <button type="button" className={`${prefix}-thumb`} onClick={() => setOpen(true)} disabled={!src} aria-label={t('Открыть {name}', { name: file.name })}>
         {src ? <img src={src} alt={file.name} className={size ? undefined : 'free'} style={size} /> : <span className={`${prefix}-thumb-wait`} style={size} />}
       </button>
-      {open && src ? <Viewer src={src} name={file.name} prefix={prefix} onClose={() => setOpen(false)} /> : null}
+      {open && src ? <Viewer src={src} name={file.name} prefix={prefix} zoom={prefix === 'mn'} onClose={() => setOpen(false)} /> : null}
     </>
   );
 }

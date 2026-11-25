@@ -9,6 +9,23 @@
   font-size: 15px;
 }
 
+[data-surface='mini'] input,
+[data-surface='mini'] select,
+[data-surface='mini'] textarea {
+  font-size: max(16px, 1em);
+}
+
+html[data-tg-zoom='fixed'] {
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html[data-tg-swipes='css'],
+html[data-tg-swipes='css'] body {
+  overscroll-behavior-y: none;
+}
+
 .mn-blank {
   min-height: 100vh;
   background: var(--bg);
@@ -1896,7 +1913,42 @@ button.mn-tab {
   font-size: 14px;
 }
 
+.mn-viewer.big {
+  display: block;
+  padding-top: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.mn-viewer.big::before {
+  content: '';
+  display: block;
+  position: sticky;
+  top: 0;
+  left: 0;
+  width: calc(100vw - var(--mn-left) - var(--mn-right));
+  height: var(--mn-top);
+  background: #000;
+}
+
+.mn-viewer.big img {
+  min-width: 250%;
+  max-width: 2400px;
+  max-height: none;
+  margin: 0;
+}
+
+.mn-viewer.big .mn-viewer-bar {
+  position: sticky;
+  left: 0;
+  bottom: 0;
+  width: calc(100vw - var(--mn-left) - var(--mn-right));
+  background: #000;
+  box-sizing: border-box;
+}
+
 .mn-viewer-bar span {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

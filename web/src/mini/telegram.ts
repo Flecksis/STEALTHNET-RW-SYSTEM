@@ -1,8 +1,13 @@
+import { bridgeApp, launchFrom, saveLaunch, savedLaunch, type BridgeHost, type Launch, type NativeProxy } from './bridge';
 import type { InsetBox } from './insets';
+
+export type WebAppListener = (payload?: unknown) => void;
 
 export type WebApp = {
   initData: string;
+  platform?: string;
   colorScheme?: 'dark' | 'light';
+  isFullscreen?: boolean;
   safeAreaInset?: InsetBox;
   contentSafeAreaInset?: InsetBox;
   isVersionAtLeast?: (version: string) => boolean;
@@ -10,12 +15,14 @@ export type WebApp = {
   setBackgroundColor?: (color: string) => void;
   ready: () => void;
   expand?: () => void;
+  requestFullscreen?: () => void;
+  disableVerticalSwipes?: () => void;
   close?: () => void;
   openLink?: (url: string) => void;
   openTelegramLink?: (url: string) => void;
   downloadFile?: (params: { url: string; file_name: string }) => void;
-  onEvent?: (name: string, cb: () => void) => void;
-  offEvent?: (name: string, cb: () => void) => void;
+  onEvent?: (name: string, cb: WebAppListener) => void;
+  offEvent?: (name: string, cb: WebAppListener) => void;
   BackButton?: {
     show: () => void;
     hide: () => void;
@@ -26,37 +33,82 @@ export type WebApp = {
 
 declare global {
   interface Window {
-    Telegram?: { WebApp?: WebApp };
+    Telegram?: BridgeHost['Telegram'];
+    TelegramGameProxy?: BridgeHost['TelegramGameProxy'];
+    TelegramWebviewProxy?: NativeProxy;
   }
 }
 
 const SDK = 'https://telegram.org/js/telegram-web-app.js';
+export const SDK_WAIT_MS = 2500;
+export const LATE_MS = 300;
+
+let spare: WebApp | null = null;
 
 export function webApp(): WebApp | null {
-  return window.Telegram?.WebApp ?? null;
+  return window.Telegram?.WebApp ?? spare;
 }
 
-function fromHash(): string {
-  const hash = window.location.hash.replace(/^#/, '');
-  const params = new URLSearchParams(hash);
-  return params.get('tgWebAppData') ?? '';
+export function launchData(): string {
+  return launchFrom(window.location.hash).tgWebAppData ?? '';
 }
 
-export function loadTelegram(): Promise<WebApp | null> {
-  if (webApp()) {
-    return Promise.resolve(webApp());
+function launch(): Launch {
+  const fresh = launchFrom(window.location.hash);
+  try {
+    if (fresh.tgWebAppData) {
+      saveLaunch(window.sessionStorage, fresh);
+      return fresh;
+    }
+    return savedLaunch(window.sessionStorage);
+  } catch {
+    return fresh;
   }
-  if (!fromHash()) {
+}
+
+function startSpare(params: Launch): WebApp | null {
+  const proxy = window.TelegramWebviewProxy;
+  if (!proxy) {
+    return null;
+  }
+  try {
+    spare = bridgeApp(params, proxy, window);
+  } catch {
+    spare = null;
+  }
+  return spare;
+}
+
+export function loadTelegram(late?: (app: WebApp) => void): Promise<WebApp | null> {
+  const known = webApp();
+  if (known) {
+    return Promise.resolve(known);
+  }
+  const params = launch();
+  if (!params.tgWebAppData) {
     return Promise.resolve(null);
   }
   return new Promise((resolve) => {
+    let waiting = true;
+    const done = () => {
+      const app = window.Telegram?.WebApp ?? null;
+      if (waiting) {
+        waiting = false;
+        resolve(app ?? startSpare(params));
+      } else if (app) {
+        window.setTimeout(() => late?.(app), LATE_MS);
+      }
+    };
     const script = document.createElement('script');
     script.src = SDK;
     script.async = true;
-    const done = () => resolve(webApp());
     script.onload = done;
     script.onerror = done;
-    window.setTimeout(done, 4000);
+    window.setTimeout(() => {
+      if (waiting) {
+        done();
+      }
+    }, SDK_WAIT_MS);
     document.head.appendChild(script);
   });
 }
@@ -74,7 +126,7 @@ export function paintTelegram(app: WebApp, color: string): void {
 }
 
 export function initData(): string {
-  return webApp()?.initData || fromHash();
+  return webApp()?.initData || launchData();
 }
 
 export function openExternal(url: string): void {

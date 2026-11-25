@@ -9,10 +9,12 @@ import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from 
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, useShowPressed } from '../cabinet/subs';
-import { initData, loadTelegram, openExternal, paintTelegram, telegramLanguage, telegramName, webApp, type WebApp } from './telegram';
+import { initData, launchData, loadTelegram, openExternal, paintTelegram, telegramLanguage, telegramName, webApp, type WebApp } from './telegram';
 import { backTarget } from './back';
 import { currentTab, normalizeConfig, pick, SECTION_ICONS, sectionPath, type MiniConfig } from './config';
 import { watchInsets } from './insets';
+import { holdScreen } from './screen';
+import { lockZoom } from './zoom';
 import { MiniConnect } from './MiniConnect';
 import { MiniFriends } from './MiniFriends';
 import { MiniHome } from './MiniHome';
@@ -167,27 +169,27 @@ export function MiniApp() {
   const setView = useCallback((next: SubscriptionView) => putDetail({ view: next }), [putDetail]);
   const setDevices = useCallback((next: Device[]) => putDetail({ devices: next }), [putDetail]);
 
-  const start = useCallback(async () => {
-    const app = await loadTelegram();
-    app?.ready();
-    app?.expand?.();
+  const attach = useCallback((app: WebApp | null) => {
     setTg(app);
     if (app?.colorScheme) {
       setTgScheme(app.colorScheme);
     }
+  }, []);
+
+  const start = useCallback(async () => {
+    attach(await loadTelegram(attach));
     try {
-      const data = initData();
-      if (data) {
+      const token = launchData() ? null : stored();
+      const data = token ? '' : initData();
+      if (token) {
+        setBearer(token);
+      } else if (data) {
         const login = await api<Login>('/api/client/auth/miniapp', { method: 'POST', body: { init_data: data } });
         setBearer(login.token);
         remember(login.token);
       } else {
-        const token = stored();
-        if (!token) {
-          setState({ kind: 'outside' });
-          return;
-        }
-        setBearer(token);
+        setState({ kind: 'outside' });
+        return;
       }
       await loadData();
     } catch (err) {
@@ -200,7 +202,7 @@ export function MiniApp() {
         setState({ kind: 'error', message: err instanceof ApiError ? err.message : t('Сервер не ответил') });
       }
     }
-  }, [loadData]);
+  }, [attach, loadData]);
 
   useEffect(() => {
     void start();
@@ -212,6 +214,8 @@ export function MiniApp() {
   useSurface('mini', theme, site.appearance.client === 'mono' ? 'b' : 'a');
 
   useEffect(() => (tg ? watchInsets(tg, document.documentElement) : undefined), [tg]);
+  useEffect(() => (tg ? holdScreen(tg, document.documentElement) : undefined), [tg]);
+  useEffect(() => (tg ? lockZoom(document, window.parent !== window) : undefined), [tg]);
 
   useEffect(() => {
     if (tg) {
@@ -316,17 +320,17 @@ export function MiniApp() {
           <Route path="*" element={<MiniHome />} />
         </Routes>
         <MiniNav />
-        <TelegramBack />
+        <TelegramBack app={tg} />
       </div>
     </MiniContext.Provider>
   );
 }
 
-function TelegramBack() {
+function TelegramBack({ app }: { app: WebApp | null }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   useEffect(() => {
-    const back = webApp()?.BackButton;
+    const back = app?.BackButton;
     if (!back) {
       return;
     }
@@ -346,7 +350,7 @@ function TelegramBack() {
     back.onClick(go);
     back.show();
     return () => back.offClick(go);
-  }, [pathname, navigate]);
+  }, [app, pathname, navigate]);
   useEffect(() => () => webApp()?.BackButton?.hide(), []);
   return null;
 }

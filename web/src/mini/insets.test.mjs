@@ -1,7 +1,15 @@
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { insetVars, watchInsets } from './insets.ts';
-import { paintTelegram } from './telegram.ts';
+
+registerHooks({
+  resolve(specifier, context, next) {
+    return next(specifier.startsWith('.') && !/\.[a-z]+$/.test(specifier) ? `${specifier}.ts` : specifier, context);
+  },
+});
+
+const { paintTelegram } = await import('./telegram.ts');
 
 const ZERO = { top: 0, right: 0, bottom: 0, left: 0 };
 
