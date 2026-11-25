@@ -46,6 +46,7 @@ pub(crate) fn code_values(code: String) -> Values {
 pub const EMAIL_CODE_MAX_ATTEMPTS: i32 = 5;
 pub const EMAIL_CODE_DIGITS: usize = 6;
 pub const LOGIN_RETENTION_DAYS: i64 = 7;
+const LOGIN_SWEEP: i64 = 500;
 const METHOD_EMAIL: &str = "email";
 pub const LOGIN_LETTERS: &str = "code_letters_login";
 pub const RESET_LETTERS: &str = "code_letters_reset";
@@ -252,6 +253,19 @@ pub(crate) async fn issue_session_scoped(
     })
 }
 
+async fn forget_old_requests(db: &mut impl Db, now: DateTime<Utc>) -> ServiceResult<()> {
+    sqlx::query(
+        "DELETE FROM client_login_requests WHERE id IN ( \
+             SELECT id FROM client_login_requests WHERE expires_at < $1 \
+             ORDER BY expires_at LIMIT $2 FOR UPDATE SKIP LOCKED)",
+    )
+    .bind(now - Duration::days(LOGIN_RETENTION_DAYS))
+    .bind(LOGIN_SWEEP)
+    .execute(db.conn())
+    .await?;
+    Ok(())
+}
+
 impl<'a> Auth<'a> {
     async fn bot_username(&self) -> ServiceResult<String> {
         let mut conn = self.services.store().conn().await?;
@@ -314,10 +328,7 @@ impl<'a> Auth<'a> {
         .bind(expires_at)
         .execute(conn.conn())
         .await?;
-        sqlx::query("DELETE FROM client_login_requests WHERE expires_at < $1")
-            .bind(now - Duration::days(LOGIN_RETENTION_DAYS))
-            .execute(conn.conn())
-            .await?;
+        forget_old_requests(&mut conn, now).await?;
         Ok(TelegramLoginStart {
             poll_token,
             link: format!(
@@ -753,6 +764,7 @@ impl<'a> Auth<'a> {
         .bind(method)
         .execute(tx.conn())
         .await?;
+        forget_old_requests(&mut tx, now).await?;
         tx.commit().await?;
         Ok((code, EmailLoginStart { email, expires_at }))
     }

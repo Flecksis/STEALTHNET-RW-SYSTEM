@@ -1317,3 +1317,46 @@ async fn письма_с_кодами_ограничены_на_всю_пане�
         .unwrap();
     env.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn старые_запросы_входа_удаляются_и_без_входа_через_telegram() {
+    let Some(env) = env_with(ModuleRegistry::new(vec![Arc::new(MailModule)]).unwrap()).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let (port, _letters) = fake_smtp().await;
+    configure(services, admin, port).await;
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query(
+        "INSERT INTO client_login_requests (method, code_hash, email, created_at, expires_at) \
+         SELECT 'email', '\\x00', 'old@example.org', $1 - interval '10 days', \
+                $1 - make_interval(days => 5 + n) - interval '1 minute' FROM generate_series(0, 4) n",
+    )
+    .bind(services.now())
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    services
+        .auth()
+        .email_login_start("anna@example.org", &RequestMeta::default())
+        .await
+        .unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    let left: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT email, count(*) FROM client_login_requests GROUP BY email ORDER BY email",
+    )
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    assert_eq!(
+        left,
+        [
+            ("anna@example.org".to_string(), 1),
+            ("old@example.org".to_string(), 2)
+        ]
+    );
+    env.db.cleanup().await;
+}

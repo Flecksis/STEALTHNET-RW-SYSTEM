@@ -135,16 +135,16 @@ async fn issue(
     details: serde_json::Value,
 ) -> Result<Challenge, StoreError> {
     let token = uuid::Uuid::new_v4().simple().to_string();
-    sqlx::query(
-        "DELETE FROM antibot_checks WHERE client_id = $1 AND target = $2 AND passed_at IS NULL",
-    )
-    .bind(client_id.0)
-    .bind(target)
-    .execute(db.conn())
-    .await?;
     let expires_at: DateTime<Utc> = sqlx::query_scalar(
-        "INSERT INTO antibot_checks (client_id, target, kind, token_hash, bits, expires_at, details) \
-         VALUES ($1, $2, $3, $4, $5, now() + make_interval(mins => $6), $7) RETURNING expires_at",
+        "WITH replaced AS ( \
+             DELETE FROM antibot_checks \
+             WHERE client_id = $1 AND target = $2 AND passed_at IS NULL \
+             RETURNING kind, created_at, expires_at) \
+         INSERT INTO antibot_checks (client_id, target, kind, token_hash, bits, created_at, expires_at, details) \
+         VALUES ($1, $2, $3, $4, $5, \
+             COALESCE((SELECT min(r.created_at) FROM replaced r \
+                       WHERE r.kind = $3 AND r.expires_at > now()), now()), \
+             now() + make_interval(mins => $6), $7) RETURNING expires_at",
     )
     .bind(client_id.0)
     .bind(target)
@@ -351,6 +351,12 @@ async fn pass(
     Ok(true)
 }
 
+async fn refuse(ctx: &ModuleContext, row: &Row, burn: bool) -> Result<Confirmation, ModuleError> {
+    let mut conn = ctx.store.conn().await?;
+    fail(&mut conn, row, burn).await?;
+    Ok(Confirmation::Failed)
+}
+
 pub async fn confirm(
     ctx: &ModuleContext,
     client_id: ClientId,
@@ -361,8 +367,11 @@ pub async fn confirm(
     let Some(token) = usable(token) else {
         return Ok(Confirmation::Expired);
     };
-    let mut conn = ctx.store.conn().await?;
-    let Some(row) = open(&mut conn, token).await? else {
+    let found = {
+        let mut conn = ctx.store.conn().await?;
+        open(&mut conn, token).await?
+    };
+    let Some(row) = found else {
         return Ok(Confirmation::Expired);
     };
     if row.client_id != client_id.0 || row.target != target {
@@ -383,8 +392,7 @@ pub async fn confirm(
                 .proof
                 .is_some_and(|proof| work_done(token, proof, bits))
             {
-                fail(&mut conn, &row, true).await?;
-                return Ok(Confirmation::Failed);
+                return refuse(ctx, &row, true).await;
             }
         }
         "captcha" => {
@@ -396,7 +404,7 @@ pub async fn confirm(
             };
             let bound = cdata(token);
             let outcome = captcha::verify(
-                &mut conn,
+                &ctx.store,
                 &ctx.core.captcha_endpoints(),
                 &captcha,
                 given,
@@ -409,10 +417,7 @@ pub async fn confirm(
             .await?;
             match outcome {
                 Outcome::Passed => {}
-                Outcome::Rejected(_) => {
-                    fail(&mut conn, &row, false).await?;
-                    return Ok(Confirmation::Failed);
-                }
+                Outcome::Rejected(_) => return refuse(ctx, &row, false).await,
                 Outcome::Unavailable(_) => return Ok(Confirmation::Unavailable),
             }
         }

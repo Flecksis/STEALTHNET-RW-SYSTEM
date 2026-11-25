@@ -40,6 +40,7 @@ pub const PROMO_LINK: &str = "promo_link";
 pub const TRIAL: &str = "trial";
 pub const SIGNUP: &str = "signup";
 pub const LOGIN: &str = "login";
+pub const CLEARED_AUDIT: &str = "client.antibot_cleared";
 const SWEEP_TASK: &str = "antibot.sweep";
 const MODE_OPTIONS: &[&str] = &["mark", "confirm", "block"];
 
@@ -180,10 +181,12 @@ impl AntibotSettings {
                 "Для капчи {} укажите секретный ключ",
                 settings.captcha.title()
             )),
-            Some(raw) if captcha::clean_key(raw).is_none() => {
-                Err("captcha_secret: латинские буквы, цифры, точка, дефис и подчёркивание".into())
+            Some(raw) => {
+                let secret = captcha::clean_key(raw).ok_or(
+                    "captcha_secret: латинские буквы, цифры, точка, дефис и подчёркивание",
+                )?;
+                captcha::check_keys(settings.captcha, &settings.captcha_site_key, &secret)
             }
-            Some(_) => Ok(()),
         }
     }
 
@@ -242,9 +245,35 @@ pub async fn young_boundary(
     if settings.young_days == 0 {
         return Ok(None);
     }
+    match store::saved_boundary(db, settings.young_days).await? {
+        Some(saved) => Ok(Some(saved)),
+        None => count_boundary(db, settings, now).await,
+    }
+}
+
+async fn count_boundary(
+    db: &mut impl Db,
+    settings: &AntibotSettings,
+    now: DateTime<Utc>,
+) -> Result<Option<i64>, StoreError> {
     let cutoff = now - Duration::days(i64::from(settings.young_days));
     let (count, max) = store::telegram_history(db, cutoff).await?;
     Ok(max.filter(|_| count >= signals::MIN_HISTORY))
+}
+
+async fn keep_boundary(
+    db: &mut impl Db,
+    settings: &AntibotSettings,
+    now: DateTime<Utc>,
+) -> Result<(), StoreError> {
+    let days = settings.young_days;
+    if days == 0 || store::saved_boundary(db, days).await?.is_some() {
+        return Ok(());
+    }
+    if let Some(boundary) = count_boundary(db, settings, now).await? {
+        store::save_boundary(db, days, boundary).await?;
+    }
+    Ok(())
 }
 
 pub async fn assess(
@@ -259,7 +288,8 @@ pub async fn assess(
     };
     if let Some(telegram) = store::telegram(db, client_id).await? {
         found.premium = telegram.premium;
-        if let Some(boundary) = young_boundary(db, settings, now).await?
+        if !registration.brought
+            && let Some(boundary) = young_boundary(db, settings, now).await?
             && telegram.id > boundary
         {
             found.add(
@@ -267,10 +297,10 @@ pub async fn assess(
                 Some(("newer_than", serde_json::json!(boundary))),
             );
         }
-        if settings.check_username && telegram.username.is_none() {
+        if !registration.brought && settings.check_username && telegram.username.is_none() {
             found.add(Signal::NoUsername, None);
         }
-        if settings.burst_count > 1 {
+        if !registration.brought && settings.burst_count > 1 {
             let window = Duration::minutes(signals::BURST_MINUTES);
             let neighbors = store::telegram_neighbors(
                 db,
@@ -313,18 +343,16 @@ pub async fn assess(
             .as_deref()
             .and_then(network)
         {
-            let earlier = store::web_signups(
+            let earlier = store::signups_from(
                 db,
                 client_id,
+                &own,
                 registration.created_at - Duration::hours(signals::SIGNUP_WINDOW_HOURS),
                 registration.created_at,
                 grace,
             )
-            .await?
-            .iter()
-            .filter(|ip| network(ip).as_deref() == Some(own.as_str()))
-            .count();
-            if earlier >= settings.ip_limit as usize {
+            .await?;
+            if earlier >= i64::from(settings.ip_limit) {
                 found.add(Signal::IpLimit, Some(("network", serde_json::json!(own))));
             }
         }
@@ -404,6 +432,7 @@ async fn judge(
         });
     }
     let now = db_now(db).await?;
+    keep_boundary(db, &settings, now).await?;
     let assessment = assess(db, client_id, &settings, now).await?;
     if assessment.suspicious() {
         remember(
@@ -627,16 +656,7 @@ pub async fn screen_invites(
             out.insert(invite.invitee);
             continue;
         }
-        if let Some(count) = mass_invites(
-            db,
-            settings,
-            invite.referrer,
-            invite.linked_at,
-            now,
-            &mut boundary,
-        )
-        .await?
-        {
+        if let Some(count) = mass_invites(db, settings, *invite, now, &mut boundary).await? {
             let details = serde_json::json!({ "invites": count, "referrer_id": invite.referrer.0 });
             remember(db, invite.invitee, &[Signal::MassInvites], &details).await?;
             out.insert(invite.invitee);
@@ -861,9 +881,8 @@ pub async fn check_signup(
     let Some(token) = token.map(str::trim).filter(|t| !t.is_empty()) else {
         return Ok(SignupCheck::Missing);
     };
-    let mut conn = ctx.store.conn().await?;
     let outcome = captcha::verify(
-        &mut conn,
+        &ctx.store,
         &ctx.core.captcha_endpoints(),
         &captcha,
         token,
@@ -906,6 +925,21 @@ pub async fn clear(
         },
     )
     .await?;
+    tx.audit()
+        .record(&sn_store::AuditEntry {
+            actor_kind: if admin.is_some() {
+                sn_store::ActorKind::Admin
+            } else {
+                sn_store::ActorKind::System
+            },
+            actor_id: admin.map(|a| a.0),
+            action: CLEARED_AUDIT.into(),
+            entity_kind: Some(sn_store::audit_entity::CLIENT.into()),
+            entity_id: Some(client_id.0),
+            details: serde_json::json!({ "reason": signals::titles(&mark.reasons) }),
+            ip: None,
+        })
+        .await?;
     tx.commit().await?;
     Ok(true)
 }
@@ -955,37 +989,40 @@ impl Traces {
     }
 }
 
-async fn self_invite(
-    ctx: &ModuleContext,
+async fn shared_traces(
     db: &mut impl Db,
     payer: ClientId,
     referrer: ClientId,
     now: DateTime<Utc>,
-) -> Result<Option<serde_json::Value>, ModuleError> {
+) -> Result<Option<serde_json::Value>, StoreError> {
     let since = now - Duration::days(signals::SHARED_SESSIONS_DAYS);
     let mine = Traces::of(db, payer, since).await?;
     let theirs = Traces::of(db, referrer, since).await?;
-    if let Some(found) = mine.shared_with(&theirs) {
-        return Ok(Some(found));
-    }
-    let devices = match (
+    Ok(mine.shared_with(&theirs))
+}
+
+async fn shared_device(
+    ctx: &ModuleContext,
+    payer: ClientId,
+    referrer: ClientId,
+) -> Option<serde_json::Value> {
+    let found = match (
         ctx.core.client_devices(payer).await,
         ctx.core.client_devices(referrer).await,
     ) {
-        (Ok(a), Ok(b)) => a.into_iter().find(|hwid| b.contains(hwid)),
+        (Ok(a), Ok(b)) => a.into_iter().any(|hwid| b.contains(&hwid)),
         (Err(err), _) | (_, Err(err)) => {
             tracing::warn!(error = %err, "антибот: устройства клиентов не получены");
-            None
+            false
         }
     };
-    Ok(devices.map(|_| serde_json::json!({ "device": true })))
+    found.then(|| serde_json::json!({ "device": true }))
 }
 
 async fn mass_invites(
     db: &mut impl Db,
     settings: &AntibotSettings,
-    referrer: ClientId,
-    linked_at: DateTime<Utc>,
+    invite: Invite,
     now: DateTime<Utc>,
     known: &mut Option<Option<i64>>,
 ) -> Result<Option<usize>, StoreError> {
@@ -993,8 +1030,14 @@ async fn mass_invites(
         return Ok(None);
     }
     let window = Duration::hours(signals::SIGNUP_WINDOW_HOURS);
-    let around =
-        store::invitees_around(db, referrer, linked_at - window, linked_at + window).await?;
+    let around = store::invitees_around(
+        db,
+        invite.referrer,
+        invite.invitee,
+        invite.linked_at - window,
+        invite.linked_at + window,
+    )
+    .await?;
     if around.len() < settings.mass_invites as usize {
         return Ok(None);
     }
@@ -1006,11 +1049,13 @@ async fn mass_invites(
             boundary
         }
     };
-    let fresh = around
+    let fresh: Vec<ClientId> = around
         .iter()
         .filter(|i| i.marked || boundary.zip(i.telegram_id).is_some_and(|(b, id)| id > b))
-        .count();
-    Ok((fresh >= settings.mass_invites as usize).then_some(fresh))
+        .map(|i| i.client_id)
+        .collect();
+    let many = fresh.len() >= settings.mass_invites as usize;
+    Ok((many && fresh.contains(&invite.invitee)).then_some(fresh.len()))
 }
 
 pub async fn referral_gate(
@@ -1030,14 +1075,26 @@ pub async fn referral_gate(
     }
     let now = db_now(&mut conn).await?;
     if settings.referral_guard {
-        if let Some(details) = self_invite(ctx, &mut conn, payer, referrer, now).await? {
+        let found = match shared_traces(&mut conn, payer, referrer, now).await? {
+            Some(found) => Some(found),
+            None => {
+                drop(conn);
+                let found = shared_device(ctx, payer, referrer).await;
+                conn = ctx.store.conn().await?;
+                found
+            }
+        };
+        if let Some(details) = found {
             let details = serde_json::json!({ "self_invite": details, "referrer_id": referrer.0 });
             remember(&mut conn, payer, &[Signal::SelfInvite], &details).await?;
             return Ok(ReferralGate::NoDirect(Signal::SelfInvite));
         }
-        if let Some(count) =
-            mass_invites(&mut conn, &settings, referrer, linked_at, now, &mut None).await?
-        {
+        let invite = Invite {
+            referrer,
+            invitee: payer,
+            linked_at,
+        };
+        if let Some(count) = mass_invites(&mut conn, &settings, invite, now, &mut None).await? {
             let details = serde_json::json!({ "invites": count, "referrer_id": referrer.0 });
             remember(&mut conn, payer, &[Signal::MassInvites], &details).await?;
             return Ok(ReferralGate::NoDirect(Signal::MassInvites));
@@ -1125,6 +1182,7 @@ pub async fn on_registered(ctx: &ModuleContext, client_id: ClientId) -> Result<(
         return Ok(());
     };
     let now = db_now(&mut conn).await?;
+    keep_boundary(&mut conn, &settings, now).await?;
     let assessment = assess(&mut conn, client_id, &settings, now).await?;
     if assessment.suspicious() {
         remember(
@@ -1268,6 +1326,18 @@ impl Module for AntibotModule {
                 "При смене капчи на {} вставьте заново секретный ключ: ключ одного сервиса другому не подходит",
                 now.title()
             )));
+        }
+        let secret = after
+            .text("captcha_secret")
+            .map(str::trim)
+            .unwrap_or_default();
+        if let Some(made) = captcha::foreign(now, secret) {
+            let text = captcha::foreign_text(now, made);
+            return Err(if new_secrets.contains(&"captcha_secret") {
+                ModuleError::Invalid(text)
+            } else {
+                ModuleError::SecretsAgain(format!("{text}: вставьте секретный ключ заново"))
+            });
         }
         Ok(())
     }

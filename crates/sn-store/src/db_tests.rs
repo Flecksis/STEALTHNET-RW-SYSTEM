@@ -178,6 +178,14 @@ async fn идентичность_принадлежит_одному_клиен
             .await
             .unwrap()
     );
+    let other = [(IdentityKind::Email, "new@example.org".to_string())];
+    assert!(conn.trials().was_claimed(first, &other).await.unwrap());
+    assert!(!conn.trials().was_claimed(second, &other).await.unwrap());
+    assert!(
+        !conn.trials().claim(first, &other).await.unwrap(),
+        "пробный период один на клиента, даже если сменилась почта"
+    );
+    assert!(conn.trials().claim(second, &other).await.unwrap());
     drop(conn);
     db.cleanup().await;
 }
@@ -634,6 +642,130 @@ async fn служебные_таблицы_выдачи_и_бота() {
     assert!(conn.bot_state().dialog(5).await.unwrap().is_some());
     conn.bot_state().clear_dialog(5).await.unwrap();
     assert!(conn.bot_state().dialog(5).await.unwrap().is_none());
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn ложные_отметки_антибота_снимаются_миграцией() {
+    let Some(db) = test_store().await else { return };
+    let mut conn = db.store.conn().await.unwrap();
+    let cases = [
+        ("migration", Some(1_000), vec!["burst"], None),
+        (
+            "import",
+            Some(8_000_000_000_i64),
+            vec!["young_account", "no_username", "burst"],
+            None,
+        ),
+        (
+            "migration",
+            Some(2_000),
+            vec!["burst", "disposable_email"],
+            Some(vec!["disposable_email"]),
+        ),
+        (
+            "import",
+            Some(3_000),
+            vec!["self_invite"],
+            Some(vec!["self_invite"]),
+        ),
+        ("import", Some(8_100_000_000), vec!["mass_invites"], None),
+        ("bot", Some(4_000), vec!["burst"], Some(vec!["burst"])),
+        ("bot", Some(5_000), vec!["mass_invites"], None),
+        ("web", None, vec!["mass_invites"], None),
+        (
+            "miniapp",
+            Some(6_000),
+            vec!["mass_invites", "self_invite"],
+            Some(vec!["self_invite"]),
+        ),
+        (
+            "bot",
+            Some(8_200_000_000),
+            vec!["mass_invites"],
+            Some(vec!["mass_invites"]),
+        ),
+        (
+            "bot",
+            Some(7_000),
+            vec!["mass_invites", "young_account"],
+            Some(vec!["mass_invites", "young_account"]),
+        ),
+    ];
+    sqlx::query(
+        "WITH made AS (INSERT INTO clients (locale, registration_source, created_at) \
+           VALUES ('ru', 'bot', now() - interval '400 days') RETURNING id) \
+         INSERT INTO client_identities (client_id, kind, value, verified, created_at) \
+         SELECT id, 'telegram', '7000000000', true, now() - interval '400 days' FROM made",
+    )
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    let mut made = Vec::new();
+    for (source, telegram, reasons, _) in &cases {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO clients (locale, registration_source) VALUES ('ru', $1) RETURNING id",
+        )
+        .bind(source)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        if let Some(telegram) = telegram {
+            sqlx::query(
+                "INSERT INTO client_identities (client_id, kind, value, verified) \
+                 VALUES ($1, 'telegram', $2, true)",
+            )
+            .bind(id)
+            .bind(telegram.to_string())
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        }
+        sqlx::query("INSERT INTO antibot_marks (client_id, reasons) VALUES ($1, $2)")
+            .bind(id)
+            .bind(serde_json::json!(reasons))
+            .execute(conn.conn())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO antibot_events (client_id, action, reasons, dedupe) \
+             VALUES ($1, 'marked', $2, 'marked:' || $1)",
+        )
+        .bind(id)
+        .bind(serde_json::json!(reasons))
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        made.push(id);
+    }
+    let script = include_str!("../migrations/0570_antibot_checkup.sql");
+    let cleanup = &script[script.find("WITH setup").unwrap()..];
+    for _ in 0..2 {
+        sqlx::raw_sql(cleanup).execute(conn.conn()).await.unwrap();
+    }
+    for (id, (source, telegram, reasons, kept)) in made.iter().zip(&cases) {
+        let mark: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT reasons FROM antibot_marks WHERE client_id = $1")
+                .bind(id)
+                .fetch_optional(conn.conn())
+                .await
+                .unwrap();
+        let again: bool = sqlx::query_scalar(
+            "SELECT dedupe IS NULL FROM antibot_events WHERE client_id = $1 AND action = 'marked'",
+        )
+        .bind(id)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        let case = format!("{source} {telegram:?} {reasons:?}");
+        assert_eq!(
+            mark,
+            kept.as_ref().map(|kept| serde_json::json!(kept)),
+            "{case}"
+        );
+        assert_eq!(again, kept.is_none(), "{case}");
+    }
     drop(conn);
     db.cleanup().await;
 }

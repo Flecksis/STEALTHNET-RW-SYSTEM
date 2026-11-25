@@ -1,18 +1,24 @@
-use super::siteverify::siteverify;
-use crate::Services;
+use super::siteverify::{SLOW, siteverify};
+use crate::auth::RequestMeta;
 use crate::checkout::testkit::{Kit, client, kit_with, set_trial_variants, trial_variant};
+use crate::services::{EnvFallbacks, ServiceDeps};
+use crate::signup::Arrival;
+use crate::{Services, SystemClock};
 use sn_domain::client::{RegistrationSource, TelegramProfile};
 use sn_domain::ids::ClientId;
 use sn_domain::module::ModuleId;
 use sn_domain::paging::PageRequest;
-use sn_modules::ModuleConfig;
 use sn_modules::catalog::antibot::captcha::{Provider, Widget};
 use sn_modules::catalog::antibot::{
     self, Answer, AntibotModule, Check, JournalFilter, Surface, checks,
 };
-use sn_store::Db;
+use sn_modules::catalog::mail::MailModule;
+use sn_modules::{Module, ModuleConfig, ModuleRegistry};
+use sn_payments::ProviderRegistry;
 use sn_store::testing::{DAY, wait_for_window_room};
+use sn_store::{Db, Store, StoreOptions};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 async fn antibot_kit() -> Option<Kit> {
     let kit = kit_with(vec![Arc::new(AntibotModule)]).await?;
@@ -316,6 +322,24 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let admin = crate::scenario_tests::owner(services).await;
     assert!(antibot::clear(&ctx, suspect, Some(admin)).await.unwrap());
     assert!(!antibot::clear(&ctx, suspect, Some(admin)).await.unwrap());
+    let mut conn = services.store().conn().await.unwrap();
+    let logged: Vec<(String, i64, i64, serde_json::Value)> = sqlx::query_as(
+        "SELECT actor_kind, actor_id, entity_id, details FROM audit_log \
+         WHERE action = 'client.antibot_cleared' AND entity_kind = 'client'",
+    )
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    assert_eq!(
+        logged,
+        [(
+            "admin".to_string(),
+            admin.0,
+            suspect.0,
+            serde_json::json!({ "reason": "новый аккаунт Telegram, нет @username" })
+        )]
+    );
     checkout.start_trial(suspect, None).await.unwrap();
     assert_eq!(
         actions(services, suspect).await,
@@ -333,6 +357,54 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let off = fresh(services, 8_400_000_000, None).await;
     checkout.start_trial(off, None).await.unwrap();
     assert!(actions(services, off).await.is_empty());
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn смена_почты_не_даёт_второй_пробный_период_тому_же_клиенту() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let checkout = services.checkout();
+    let mut conn = services.store().conn().await.unwrap();
+    let id = conn
+        .clients()
+        .create(&sn_store::NewClient {
+            locale: sn_domain::client::Locale::Ru,
+            registration_source: RegistrationSource::Web,
+            note: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let email = |value: &str| {
+        sn_domain::client::NewIdentity::new(sn_domain::client::IdentityKind::Email, value, true)
+            .unwrap()
+    };
+    conn.clients()
+        .add_identity(id, &email("first@example.org"))
+        .await
+        .unwrap();
+    drop(conn);
+    assert!(checkout.trial_open(id).await.unwrap());
+    checkout.start_trial(id, None).await.unwrap();
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query("DELETE FROM client_identities WHERE client_id = $1")
+        .bind(id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    conn.clients()
+        .add_identity(id, &email("second@example.org"))
+        .await
+        .unwrap();
+    drop(conn);
+    assert!(!checkout.trial_open(id).await.unwrap());
+    assert_eq!(
+        checkout.start_trial(id, None).await.unwrap_err().code(),
+        "trial.used"
+    );
     kit.db.cleanup().await;
 }
 
@@ -380,15 +452,13 @@ async fn почта_из_одноразового_домена_и_вариант
     let first = antibot::assess(&mut conn, clients[0], &settings, now)
         .await
         .unwrap();
-    assert!(
-        first
-            .signals
-            .contains(&antibot::signals::Signal::EmailAlias)
-    );
+    assert!(first.signals.is_empty(), "{:?}", first.signals);
     let alias = antibot::assess(&mut conn, clients[1], &settings, now)
         .await
         .unwrap();
     assert!(alias.suspicious());
+    assert_eq!(alias.signals, [antibot::signals::Signal::EmailAlias]);
+    assert_eq!(alias.details["alias_of"], serde_json::json!(clients[0].0));
     let disposable = antibot::assess(&mut conn, clients[2], &settings, now)
         .await
         .unwrap();
@@ -458,6 +528,15 @@ async fn регистрации_в_кабинете_с_одного_адреса
 }
 
 async fn captcha_on(services: &Services, provider: &str, trial: &str) {
+    let secret = if provider == "yandex" {
+        "ysc2_secret-key"
+    } else {
+        "0x4AAAAAAAsecret-key"
+    };
+    captcha_with(services, provider, trial, secret).await;
+}
+
+async fn captcha_with(services: &Services, provider: &str, trial: &str, secret: &str) {
     services
         .modules()
         .set_config(
@@ -466,8 +545,8 @@ async fn captcha_on(services: &Services, provider: &str, trial: &str) {
             ModuleConfig::from_value(&serde_json::json!({
                 "mode": "confirm",
                 "captcha": provider,
-                "captcha_site_key": "0x4AAAAAAAsite-key",
-                "captcha_secret": "0x4AAAAAAAsecret-key",
+                "captcha_site_key": if provider == "yandex" { "ysc1_site-key" } else { "0x4AAAAAAAsite-key" },
+                "captcha_secret": secret,
                 "captcha_trial": trial,
             })),
             None,
@@ -611,6 +690,98 @@ async fn капча_перед_пробником_проверяется_на_с
 }
 
 #[tokio::test]
+async fn ответ_turnstile_без_привязки_к_действию_и_клиенту_не_принимается() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let _stub = siteverify(services).await;
+    captcha_on(services, "turnstile", "all").await;
+    let checkout = services.checkout();
+    let client = fresh(services, 1_020_000_000, Some("calm_user")).await;
+    let challenge = checkout
+        .trial_challenge(client, Surface::Web, None)
+        .await
+        .unwrap();
+    let cdata = widget(&challenge).cdata.unwrap();
+    for unbound in ["bare-1", "ok:trial:", &format!("ok::{cdata}")] {
+        assert_eq!(
+            trial_code(services, client, &challenge.token, captcha(unbound)).await,
+            antibot::FAILED,
+            "{unbound}"
+        );
+    }
+    let tester = fresh(services, 1_045_000_000, Some("tester")).await;
+    captcha_with(
+        services,
+        "turnstile",
+        "all",
+        "1x0000000000000000000000000000000AA",
+    )
+    .await;
+    let challenge = checkout
+        .trial_challenge(tester, Surface::Web, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        trial_code(services, tester, &challenge.token, captcha("ok:signup:")).await,
+        antibot::FAILED
+    );
+    checkout
+        .confirm_trial(tester, &challenge.token, captcha("bare-2"), None)
+        .await
+        .unwrap();
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn сбой_сервиса_капчи_виден_другой_копии_панели_и_гаснет_после_удачной_проверки() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let _stub = siteverify(services).await;
+    captcha_on(services, "turnstile", "all").await;
+    let client = fresh(services, 1_020_000_000, Some("calm_user")).await;
+    let challenge = services
+        .checkout()
+        .trial_challenge(client, Surface::Web, None)
+        .await
+        .unwrap();
+    let cdata = widget(&challenge).cdata.unwrap();
+    let (store, _copy) = tight(&kit, vec![Arc::new(AntibotModule)]).await;
+    let seen = async || {
+        let mut conn = store.conn().await.unwrap();
+        antibot::captcha::health(&mut conn)
+            .await
+            .unwrap()
+            .map(|health| (health.provider, health.problem))
+    };
+    assert_eq!(seen().await, None);
+    assert_eq!(
+        trial_code(services, client, &challenge.token, captcha("secret-1")).await,
+        antibot::UNAVAILABLE
+    );
+    assert_eq!(
+        seen().await,
+        Some((Provider::Turnstile, "секретный ключ не подошёл".to_string()))
+    );
+    services
+        .checkout()
+        .confirm_trial(
+            client,
+            &challenge.token,
+            captcha(&format!("ok:trial:{cdata}")),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(seen().await, None);
+    store.close().await;
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn капча_только_подозрительным_заменяет_кнопку_и_не_засчитывает_прежнее_подтверждение() {
     let Some(kit) = antibot_kit().await else {
         return;
@@ -675,7 +846,7 @@ async fn капча_только_подозрительным_заменяет_�
         .await
         .unwrap();
     let sent = stub.last();
-    assert_eq!(sent["secret"], "0x4AAAAAAAsecret-key");
+    assert_eq!(sent["secret"], "ysc2_secret-key");
     assert_eq!(sent["token"], "ok-1");
     assert_eq!(sent["ip"], "203.0.113.7");
     assert_eq!(
@@ -788,5 +959,105 @@ async fn страница_проверки_из_бота_выдаёт_выбра
             .unwrap()
             .is_none()
     );
+    kit.db.cleanup().await;
+}
+
+async fn tight(kit: &Kit, modules: Vec<Arc<dyn Module>>) -> (Store, Services) {
+    let schema: String = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query_scalar("SELECT current_schema()")
+            .fetch_one(conn.conn())
+            .await
+            .unwrap()
+    };
+    let store = Store::connect(
+        &sn_store::testing::test_database_url().unwrap(),
+        StoreOptions {
+            max_connections: 1,
+            acquire_timeout: Duration::from_secs(2),
+            search_path: Some(schema),
+            ..StoreOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let services = Services::new(ServiceDeps {
+        store: store.clone(),
+        payments: Arc::new(ProviderRegistry::builtin()),
+        modules: Arc::new(ModuleRegistry::new(modules).unwrap()),
+        secrets: kit.services.secrets().cloned(),
+        clock: Arc::new(SystemClock),
+        env: EnvFallbacks::default(),
+    });
+    services.reload().await.unwrap();
+    services.set_remna(Some(kit.remna.clone()));
+    (store, services)
+}
+
+async fn free_while<T: Send + 'static>(
+    store: &Store,
+    work: impl Future<Output = T> + Send + 'static,
+) -> T {
+    let running = tokio::spawn(work);
+    tokio::time::sleep(SLOW / 4).await;
+    assert!(
+        !running.is_finished(),
+        "сервис проверки ответил слишком рано"
+    );
+    let started = Instant::now();
+    store.ping().await.unwrap_or_else(|err| {
+        panic!("пока сервис проверки отвечает, база недоступна другим запросам: {err}")
+    });
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "запрос ждал соединения {:?}",
+        started.elapsed()
+    );
+    running.await.unwrap()
+}
+
+#[tokio::test]
+async fn пока_сервис_капчи_отвечает_соединение_с_базой_свободно() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    captcha_on(&kit.services, "turnstile", "all").await;
+    let calm = fresh(&kit.services, 1_020_000_000, Some("calm_user")).await;
+    let (store, services) = tight(&kit, vec![Arc::new(AntibotModule), Arc::new(MailModule)]).await;
+    let _stub = siteverify(&services).await;
+    let challenge = services
+        .checkout()
+        .trial_challenge(calm, Surface::Web, None)
+        .await
+        .unwrap();
+    let cdata = widget(&challenge).cdata.unwrap();
+    let shop = services.clone();
+    let issued = free_while(&store, async move {
+        let answer = format!("slow:ok:trial:{cdata}");
+        shop.checkout()
+            .confirm_trial(calm, &challenge.token, captcha(&answer), None)
+            .await
+    })
+    .await;
+    assert!(issued.is_ok(), "{issued:?}");
+    let site = services.clone();
+    let joined = free_while(&store, async move {
+        let meta = RequestMeta {
+            ip: Some("203.0.113.7".into()),
+            user_agent: None,
+        };
+        site.auth()
+            .email_signup_with(
+                "calm@example.org",
+                "longpassword1",
+                &meta,
+                Arrival::default(),
+                Some("slow:ok:signup:"),
+            )
+            .await
+    })
+    .await;
+    assert!(joined.is_ok(), "{joined:?}");
+    store.close().await;
     kit.db.cleanup().await;
 }

@@ -167,3 +167,55 @@ async fn с_капчей_без_https_кнопка_ведёт_ссылкой_а_
     assert!(text.contains("страница проверки не открывается"), "{text}");
     db.cleanup().await;
 }
+
+fn pressed(buttons: &[String], prefix: &str) -> String {
+    buttons
+        .iter()
+        .find(|data| data.starts_with(prefix))
+        .cloned()
+        .unwrap_or_else(|| panic!("нет кнопки {prefix}: {buttons:?}"))
+}
+
+#[tokio::test]
+async fn поспешные_нажатия_не_закрывают_пробник_в_боте() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    trial_ready(&services, None).await;
+    antibot_mode(&services, "confirm").await;
+    handle_update(&ctx, text_update(1, 935, "/start")).await;
+    let client = client_of(&services, 935).await.unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sn_modules::catalog::antibot::store::save_mark(
+            &mut conn,
+            client.id,
+            &[sn_modules::catalog::antibot::signals::Signal::DisposableEmail],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    }
+    handle_update(&ctx, callback_update(2, 935, "trial")).await;
+    let mut button = pressed(&last_buttons(&server).await, "ab:");
+    let started = std::time::Instant::now();
+    let mut presses = 0;
+    loop {
+        presses += 1;
+        handle_update(&ctx, callback_update(2 + presses, 935, &button)).await;
+        let text = last_text(&server).await;
+        if text.contains("Пробный период оформляется") {
+            break;
+        }
+        assert!(text.contains("подтвердите, что вы не робот"), "{text}");
+        assert!(presses < 8, "кнопка не срабатывает: нажатий {presses}");
+        button = pressed(&last_buttons(&server).await, "ab:");
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    }
+    assert!(
+        presses >= 2,
+        "слишком быстрое нажатие должно переспрашиваться"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(6));
+    db.cleanup().await;
+}

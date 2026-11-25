@@ -91,6 +91,9 @@ pub fn by_code(code: &str) -> Option<&'static str> {
             "We couldn't check that you're not a robot: the check service didn't answer. Please try again in a minute."
         }
         "antibot.captcha" => "Pass the check that you're not a robot.",
+        "antibot.denied" => {
+            "The free trial isn't available for this account. If this is a mistake, please contact support."
+        }
         "balance.insufficient" => "Not enough money on your balance.",
         "balance.topup_out_of_range" => "This top-up amount isn't allowed.",
         "balance.currency" => "The balance is kept in a different currency.",
@@ -197,6 +200,13 @@ mod tests {
             "trial.used",
             "trial.variant_required",
             "trial.variant_unavailable",
+            "antibot.expired",
+            "antibot.too_fast",
+            "antibot.confirm",
+            "antibot.failed",
+            "antibot.unavailable",
+            "antibot.captcha",
+            "antibot.denied",
             "payment.error",
             "support.closed",
             "support.files_quota",

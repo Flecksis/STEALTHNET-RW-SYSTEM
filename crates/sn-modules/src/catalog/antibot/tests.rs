@@ -1,6 +1,6 @@
 use super::signals::{self, Signal};
 use super::*;
-use crate::catalog::testing::{TestCore, client, context};
+use crate::catalog::testing::{TestCore, client, context, pooled};
 use sn_domain::money::Currency;
 use sn_store::testing::test_store;
 
@@ -209,6 +209,37 @@ async fn самоприглашение_с_общего_адреса_не_даё
 }
 
 #[tokio::test]
+async fn общее_устройство_ищется_без_удержания_соединения_с_базой() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let single = pooled(&db, 1, std::time::Duration::from_secs(2)).await;
+    let core = TestCore::new(&single);
+    let ctx = context(&single, &core, Currency::Usd);
+    enable(&single, serde_json::json!({ "mode": "confirm" })).await;
+    let referrer = client(&single).await;
+    let friend = client(&single).await;
+    let twin = client(&single).await;
+    invite(&single, friend, referrer).await;
+    invite(&single, twin, referrer).await;
+    if let Ok(mut devices) = core.devices.lock() {
+        devices.push((referrer, "phone-1".into()));
+        devices.push((friend, "phone-2".into()));
+        devices.push((twin, "phone-1".into()));
+    }
+    assert_eq!(
+        referral_gate(&ctx, friend).await.unwrap(),
+        ReferralGate::Allow
+    );
+    assert_eq!(
+        referral_gate(&ctx, twin).await.unwrap(),
+        ReferralGate::NoDirect(Signal::SelfInvite)
+    );
+    single.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn массовые_приглашения_новых_аккаунтов_без_бонуса() {
     let Some(db) = test_store().await else {
         return;
@@ -267,6 +298,91 @@ async fn массовые_приглашения_новых_аккаунтов_�
     enable(&db.store, serde_json::json!({ "mass_invites": 4 })).await;
     assert_eq!(
         referral_gate(&ctx, invited[1]).await.unwrap(),
+        ReferralGate::Allow
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn массовые_приглашения_не_лишают_бонуса_за_обычных_друзей() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    enable(&db.store, serde_json::json!({ "mass_invites": 3 })).await;
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    brought(&db.store, 7_000_000_000, 1_000, 25, 400).await;
+    let referrer = client(&db.store).await;
+    let mut usual = Vec::new();
+    for n in 0..4_i64 {
+        let id = newcomer(&db.store, 1_000_000_000 + n * 50_000_000).await;
+        invite(&db.store, id, referrer).await;
+        usual.push(id);
+    }
+    let mut fresh = Vec::new();
+    for n in 0..3_i64 {
+        let id = newcomer(&db.store, 8_000_000_000 + n * 50_000_000).await;
+        invite(&db.store, id, referrer).await;
+        fresh.push(id);
+    }
+    for id in &usual {
+        assert_eq!(referral_gate(&ctx, *id).await.unwrap(), ReferralGate::Allow);
+    }
+    assert_eq!(
+        referral_gate(&ctx, fresh[0]).await.unwrap(),
+        ReferralGate::NoDirect(Signal::MassInvites)
+    );
+    let mut conn = db.store.conn().await.unwrap();
+    let now = db_now(&mut conn).await.unwrap();
+    let invites: Vec<Invite> = usual
+        .iter()
+        .chain(&fresh)
+        .map(|id| Invite {
+            referrer,
+            invitee: *id,
+            linked_at: now,
+        })
+        .collect();
+    let settings = AntibotSettings {
+        mode: Mode::Mark,
+        mass_invites: 3,
+        ..AntibotSettings::default()
+    };
+    let skipped = screen_invites(&mut conn, &settings, &invites)
+        .await
+        .unwrap();
+    assert_eq!(skipped, fresh.iter().copied().collect::<HashSet<_>>());
+    for id in &usual {
+        assert!(store::mark_of(&mut conn, *id).await.unwrap().is_none());
+    }
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn перенесённые_друзья_не_считаются_массовыми_приглашениями() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    enable(&db.store, serde_json::json!({ "mass_invites": 3 })).await;
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    brought(&db.store, 7_000_000_000, 1_000, 25, 400).await;
+    brought(&db.store, 8_000_000_000, 50_000_000, 4, 1).await;
+    let referrer = client(&db.store).await;
+    let mut friends = Vec::new();
+    for n in 0..4_i64 {
+        let id = of_telegram(&db.store, 8_000_000_000 + n * 50_000_000).await;
+        invite(&db.store, id, referrer).await;
+        friends.push(id);
+    }
+    for id in &friends {
+        assert_eq!(referral_gate(&ctx, *id).await.unwrap(), ReferralGate::Allow);
+    }
+    let live = newcomer(&db.store, 8_900_000_000).await;
+    invite(&db.store, live, referrer).await;
+    assert_eq!(
+        referral_gate(&ctx, live).await.unwrap(),
         ReferralGate::Allow
     );
     db.cleanup().await;
@@ -572,6 +688,50 @@ fn капча_в_настройках_требует_оба_ключа_и_не_�
 }
 
 #[test]
+fn перепутанные_ключи_капчи_не_сохраняются() {
+    let check = |provider: &str, site: &str, secret: &str| {
+        AntibotModule.validate_config(&ModuleConfig::from_value(&serde_json::json!({
+            "captcha": provider,
+            "captcha_site_key": site,
+            "captcha_secret": secret,
+        })))
+    };
+    let turnstile = (
+        "0x4AAF00AAAABn0R22HWm-YUc",
+        "0x4AAF00AAAABn0R22HWm098HVBjhdsYUc",
+    );
+    let yandex = ("ysc1_yzF85abcdef", "ysc2_yzF85abcdef");
+    for (provider, site, secret) in [
+        ("turnstile", turnstile.0, turnstile.1),
+        (
+            "turnstile",
+            "1x00000000000000000000AA",
+            "1x0000000000000000000000000000000AA",
+        ),
+        ("yandex", yandex.0, yandex.1),
+        ("none", yandex.1, yandex.0),
+    ] {
+        assert!(check(provider, site, secret).is_ok(), "{provider} {site}");
+    }
+    for (provider, site, secret, needle) in [
+        ("turnstile", turnstile.1, turnstile.0, "местами"),
+        ("yandex", yandex.1, yandex.0, "ysc2_"),
+        ("yandex", "0123456789", yandex.0, "ysc1_"),
+        ("turnstile", yandex.0, yandex.1, "Яндекс"),
+        ("yandex", turnstile.0, turnstile.1, "Cloudflare"),
+        ("turnstile", turnstile.0, turnstile.0, "один и тот же"),
+        ("yandex", yandex.0, yandex.0, "ysc1_"),
+    ] {
+        let err = check(provider, site, secret).unwrap_err().to_string();
+        assert!(err.contains(needle), "{provider} {site}: {err}");
+        assert!(
+            !err.contains("yzF85abcdef") && !err.contains("BVjhdsYUc"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn при_смене_сервиса_капчи_секрет_вставляется_заново() {
     let turnstile = ModuleConfig::from_value(&serde_json::json!({
         "captcha": "turnstile",
@@ -587,9 +747,14 @@ fn при_смене_сервиса_капчи_секрет_вставляетс
         AntibotModule.validate_change(&turnstile, &yandex, &[]),
         Err(ModuleError::SecretsAgain(_))
     ));
+    let moved = ModuleConfig::from_value(&serde_json::json!({
+        "captcha": "yandex",
+        "captcha_site_key": "ysc1_site",
+        "captcha_secret": "ysc2_secret",
+    }));
     assert!(
         AntibotModule
-            .validate_change(&turnstile, &yandex, &["captcha_secret"])
+            .validate_change(&turnstile, &moved, &["captcha_secret"])
             .is_ok()
     );
     assert!(
@@ -600,6 +765,19 @@ fn при_смене_сервиса_капчи_секрет_вставляетс
     let off = ModuleConfig::from_value(&serde_json::json!({ "captcha": "none" }));
     assert!(AntibotModule.validate_change(&turnstile, &off, &[]).is_ok());
     assert!(AntibotModule.validate_change(&off, &turnstile, &[]).is_ok());
+    assert!(matches!(
+        AntibotModule.validate_change(&off, &yandex, &[]),
+        Err(ModuleError::SecretsAgain(_))
+    ));
+    let pasted = ModuleConfig::from_value(&serde_json::json!({
+        "captcha": "turnstile",
+        "captcha_site_key": "0x4AAAAAAAsite",
+        "captcha_secret": "ysc2_secret",
+    }));
+    assert!(matches!(
+        AntibotModule.validate_change(&turnstile, &pasted, &["captcha_secret"]),
+        Err(ModuleError::Invalid(_))
+    ));
 }
 
 #[test]
@@ -636,4 +814,309 @@ fn проверка_в_ответе_сервера_несёт_вид_и_не_н�
         captcha,
         serde_json::json!({ "kind": "captcha", "provider": "yandex", "site_key": "ysc1_site", "action": "trial" })
     );
+}
+
+async fn brought(store: &sn_store::Store, first: i64, step: i64, count: i64, age_days: i32) {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query(
+        "WITH made AS (INSERT INTO clients (locale, registration_source, created_at) \
+           SELECT 'ru', CASE WHEN n % 2 = 0 THEN 'migration' ELSE 'import' END, \
+                  now() - make_interval(days => $4) FROM generate_series(1, $3) n RETURNING id) \
+         INSERT INTO client_identities (client_id, kind, value, verified, meta) \
+         SELECT id, 'telegram', ($1 + (row_number() OVER (ORDER BY id) - 1) * $2)::text, true, \
+                '{\"username\": null}'::jsonb FROM made",
+    )
+    .bind(first)
+    .bind(step)
+    .bind(count)
+    .bind(age_days)
+    .execute(conn.conn())
+    .await
+    .unwrap();
+}
+
+async fn of_telegram(store: &sn_store::Store, telegram_id: i64) -> ClientId {
+    let mut conn = store.conn().await.unwrap();
+    ClientId(
+        sqlx::query_scalar(
+            "SELECT client_id FROM client_identities WHERE kind = 'telegram' AND value = $1",
+        )
+        .bind(telegram_id.to_string())
+        .fetch_one(conn.conn())
+        .await
+        .unwrap(),
+    )
+}
+
+async fn newcomer(store: &sn_store::Store, telegram_id: i64) -> ClientId {
+    let id = client(store).await;
+    let mut conn = store.conn().await.unwrap();
+    conn.clients()
+        .add_identity(
+            id,
+            &sn_domain::client::NewIdentity::telegram(&sn_domain::client::TelegramProfile {
+                id: telegram_id,
+                username: None,
+                first_name: Some("Новый".into()),
+                last_name: None,
+                language_code: Some("ru".into()),
+                is_premium: false,
+            }),
+        )
+        .await
+        .unwrap();
+    id
+}
+
+async fn found(store: &sn_store::Store, id: ClientId) -> Vec<Signal> {
+    let mut conn = store.conn().await.unwrap();
+    let now = db_now(&mut conn).await.unwrap();
+    assess(&mut conn, id, &AntibotSettings::default(), now)
+        .await
+        .unwrap()
+        .signals
+}
+
+#[tokio::test]
+async fn перенесённые_клиенты_не_считаются_серией_регистраций() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    enable(&db.store, serde_json::json!({ "mode": "block" })).await;
+    brought(&db.store, 7_000_000_000, 1_000, 30, 400).await;
+    let moved = of_telegram(&db.store, 7_000_005_000).await;
+    assert_eq!(found(&db.store, moved).await, []);
+    assert_eq!(trial_gate(&ctx, moved).await.unwrap(), Gate::Allow);
+    assert!(promo_allowed(&ctx, moved).await.unwrap());
+    assert_eq!(
+        referral_gate(&ctx, moved).await.unwrap(),
+        ReferralGate::Allow
+    );
+    let live = newcomer(&db.store, 7_000_005_500).await;
+    assert_eq!(found(&db.store, live).await, [Signal::NoUsername]);
+    let mut farm = Vec::new();
+    for n in 0..5 {
+        farm.push(newcomer(&db.store, 7_000_006_100 + n).await);
+    }
+    assert!(
+        found(&db.store, farm[4]).await.contains(&Signal::Burst),
+        "серия настоящих регистраций по-прежнему видна"
+    );
+    assert!(!found(&db.store, moved).await.contains(&Signal::Burst));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn граница_новых_аккаунтов_учитывает_дату_регистрации_в_старом_боте() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    brought(&db.store, 7_000_000_000, 10_000_000, 25, 400).await;
+    let known = newcomer(&db.store, 7_100_000_500).await;
+    assert_eq!(found(&db.store, known).await, [Signal::NoUsername]);
+    let young = newcomer(&db.store, 8_900_000_000).await;
+    assert_eq!(
+        found(&db.store, young).await,
+        [Signal::YoungAccount, Signal::NoUsername]
+    );
+    brought(&db.store, 8_950_000_000, 10_000_000, 1, 3).await;
+    let moved = of_telegram(&db.store, 8_950_000_000).await;
+    assert_eq!(found(&db.store, moved).await, []);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn граница_новых_аккаунтов_не_пересчитывается_на_каждую_проверку() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    enable(&db.store, serde_json::json!({ "mode": "confirm" })).await;
+    let settings = AntibotSettings::default();
+    let boundary = async |settings: &AntibotSettings| {
+        let mut conn = db.store.conn().await.unwrap();
+        let now = db_now(&mut conn).await.unwrap();
+        young_boundary(&mut conn, settings, now).await.unwrap()
+    };
+    let someone = client(&db.store).await;
+    assert_eq!(trial_gate(&ctx, someone).await.unwrap(), Gate::Allow);
+    assert_eq!(boundary(&settings).await, None, "истории ещё мало");
+    brought(&db.store, 6_000_000_000, 1_000_000, 25, 200).await;
+    assert_eq!(boundary(&settings).await, Some(6_024_000_000));
+    assert_eq!(trial_gate(&ctx, someone).await.unwrap(), Gate::Allow);
+    brought(&db.store, 6_500_000_000, 1, 1, 200).await;
+    assert_eq!(
+        boundary(&settings).await,
+        Some(6_024_000_000),
+        "граница взята из сохранённого"
+    );
+    let shorter = AntibotSettings {
+        young_days: 14,
+        ..AntibotSettings::default()
+    };
+    assert_eq!(boundary(&shorter).await, Some(6_500_000_000));
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query(
+        "UPDATE bot_state SET updated_at = now() - interval '61 minutes' WHERE key = 'antibot.young'",
+    )
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    drop(conn);
+    assert_eq!(boundary(&settings).await, Some(6_500_000_000));
+    assert_eq!(trial_gate(&ctx, someone).await.unwrap(), Gate::Allow);
+    let mut conn = db.store.conn().await.unwrap();
+    assert_eq!(
+        store::saved_boundary(&mut conn, 30).await.unwrap(),
+        Some(6_500_000_000)
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn лимит_регистраций_с_адреса_видит_все_регистрации_за_сутки() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query(
+        "WITH made AS (INSERT INTO clients (locale, registration_source, created_at) \
+           SELECT 'ru', 'web', now() - make_interval(secs => 80000 - n) \
+           FROM generate_series(1, 2100) n RETURNING id) \
+         INSERT INTO client_sessions (client_id, token_hash, channel, ip, expires_at, created_at) \
+         SELECT id, decode(md5(id::text), 'hex'), 'cabinet', '198.51.100.' || (id % 250), \
+                now() + interval '1 day', now() - interval '22 hours' FROM made",
+    )
+    .execute(conn.conn())
+    .await
+    .unwrap();
+    let mut made = Vec::new();
+    for ip in [
+        "203.0.113.7",
+        "203.0.113.7",
+        "203.0.113.7",
+        "203.0.113.7",
+        "2001:db8:1:2::1",
+        "2001:db8:1:2::2",
+        "2001:db8:1:2:ffff::3",
+        "2001:db8:1:2::4",
+        "2001:db8:1:3::5",
+    ] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO clients (locale, registration_source) VALUES ('ru', 'web') RETURNING id",
+        )
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO client_sessions (client_id, token_hash, channel, ip, expires_at) \
+             VALUES ($1, decode(md5('s' || $1::text), 'hex'), 'cabinet', $2, now() + interval '1 day')",
+        )
+        .bind(id)
+        .bind(ip)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        made.push(ClientId(id));
+    }
+    drop(conn);
+    let mut limited = Vec::new();
+    for id in &made {
+        limited.push(found(&db.store, *id).await.contains(&Signal::IpLimit));
+    }
+    assert_eq!(
+        limited,
+        [false, false, false, true, false, false, false, true, false]
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn поспешное_нажатие_не_отодвигает_следующую_попытку() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let id = client(&db.store).await;
+    let press = async |token: &str| {
+        checks::confirm(&ctx, id, token, PROMO_LINK, Answer::button())
+            .await
+            .unwrap()
+    };
+    let ask = async || {
+        checks::challenge(&ctx, id, PROMO_LINK, Surface::Bot)
+            .await
+            .unwrap()
+            .token
+    };
+    let first = ask().await;
+    assert_eq!(press(&first).await, Confirmation::TooFast);
+    let mut conn = db.store.conn().await.unwrap();
+    sqlx::query("UPDATE antibot_checks SET created_at = now() - interval '3 seconds'")
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    drop(conn);
+    let second = ask().await;
+    assert_ne!(first, second);
+    assert_eq!(
+        press(&first).await,
+        Confirmation::Expired,
+        "старая кнопка погашена"
+    );
+    assert_eq!(press(&second).await, Confirmation::Confirmed);
+    let third = ask().await;
+    assert_eq!(
+        press(&third).await,
+        Confirmation::TooFast,
+        "после пройденной проверки отсчёт новый"
+    );
+    let other = checks::challenge(&ctx, id, Target::Contest.as_str(), Surface::Bot)
+        .await
+        .unwrap()
+        .token;
+    assert_eq!(
+        checks::confirm(&ctx, id, &other, Target::Contest.as_str(), Answer::button())
+            .await
+            .unwrap(),
+        Confirmation::TooFast,
+        "у другого действия отсчёт свой"
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn удалённые_клиенты_не_висят_в_списке_отмеченных() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let kept = client(&db.store).await;
+    let gone = client(&db.store).await;
+    let mut conn = db.store.conn().await.unwrap();
+    for id in [kept, gone] {
+        store::save_mark(
+            &mut conn,
+            id,
+            &[Signal::DisposableEmail],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    }
+    conn.clients().soft_delete(gone).await.unwrap();
+    let page = store::open_marks(&mut conn, sn_domain::paging::PageRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        page.items.iter().map(|m| m.client_id).collect::<Vec<_>>(),
+        [kept]
+    );
+    assert_eq!(store::summary(&mut conn).await.unwrap().marked_open, 1);
+    drop(conn);
+    db.cleanup().await;
 }

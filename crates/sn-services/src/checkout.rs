@@ -1492,7 +1492,10 @@ impl<'a> Checkout<'a> {
                 .into_iter()
                 .map(|i| (i.kind, i.value))
                 .collect();
-            if live || identities.is_empty() || conn.trials().was_claimed(&identities).await? {
+            if live
+                || identities.is_empty()
+                || conn.trials().was_claimed(client_id, &identities).await?
+            {
                 return Ok(());
             }
         }
@@ -1533,7 +1536,7 @@ impl<'a> Checkout<'a> {
             .into_iter()
             .map(|i| (i.kind, i.value))
             .collect();
-        Ok(!identities.is_empty() && !conn.trials().was_claimed(&identities).await?)
+        Ok(!identities.is_empty() && !conn.trials().was_claimed(client_id, &identities).await?)
     }
 
     pub async fn trial_offer(&self, client_id: ClientId) -> ServiceResult<TrialOffer> {

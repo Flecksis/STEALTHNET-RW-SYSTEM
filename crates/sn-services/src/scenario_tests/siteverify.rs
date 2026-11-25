@@ -2,6 +2,7 @@ use crate::Services;
 use sn_modules::catalog::antibot::captcha::Endpoints;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -55,8 +56,15 @@ pub(crate) fn form(body: &[u8]) -> Form {
         .collect()
 }
 
+pub(crate) const SLOW: Duration = Duration::from_secs(4);
+
 fn turnstile(form: &Form) -> ResponseTemplate {
     let token = form.get("response").cloned().unwrap_or_default();
+    if let Some(rest) = token.strip_prefix("slow:") {
+        let mut form = form.clone();
+        form.insert("response".into(), rest.into());
+        return turnstile(&form).set_delay(SLOW);
+    }
     if token.starts_with("down") {
         return ResponseTemplate::new(500).set_body_string("upstream failed");
     }
@@ -64,6 +72,14 @@ fn turnstile(form: &Form) -> ResponseTemplate {
         return ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "success": false,
             "error-codes": ["invalid-input-secret"],
+        }));
+    }
+    if token.starts_with("bare") {
+        return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "success": true,
+            "challenge_ts": "2026-11-24T10:00:00.000Z",
+            "hostname": "example.com",
+            "error-codes": [],
         }));
     }
     if let Some(rest) = token.strip_prefix("ok:") {

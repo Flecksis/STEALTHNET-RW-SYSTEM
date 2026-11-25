@@ -151,6 +151,20 @@ export function captchaLine(settings: AntibotSettings): string | null {
   return `Капча ${captchaTitle(settings.captcha)}: ${where.join(' и ')}.`;
 }
 
+export function captchaAlert(summary: AntibotSummary): string | null {
+  const state = summary.captcha;
+  if (summary.settings.captcha === 'none' || !state) {
+    return null;
+  }
+  if (!state.ready) {
+    return 'Капча выбрана, но секретный ключ не читается: пробный период и регистрация идут без неё. Откройте «Настроить» и вставьте ключ заново.';
+  }
+  if (state.problem) {
+    return `Последняя проверка капчи ${dateTime(state.problem.at).toLowerCase()} не удалась: ${state.problem.problem}. Пока капча не отвечает, пробный период и регистрация по почте не выдаются.`;
+  }
+  return null;
+}
+
 export const JOURNAL_FILTERS: Array<[string, string]> = [
   ['all', 'Все'],
   ['signup', 'Отметки'],

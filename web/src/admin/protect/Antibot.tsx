@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { api } from '../../lib/api';
 import { dateTime } from '../../lib/format';
 import { usePhone } from '../../lib/media';
@@ -14,6 +14,7 @@ import {
   ANTIBOT,
   antibotLead,
   CAPTCHA_PROVIDERS,
+  captchaAlert,
   failText,
   isOff,
   JOURNAL_FILTERS,
@@ -28,6 +29,7 @@ import {
   type Mode,
   type Page,
 } from './model';
+import { clientFrom } from './sections';
 import '../form.css';
 import '../promo/promo.css';
 import '../referral/referral.css';
@@ -36,7 +38,11 @@ import './protect.css';
 
 const PAGE = 30;
 
-function useAntibot() {
+function journalPath(kind: string, client: number | null): string {
+  return `${ANTIBOT}/journal?kind=${kind}&limit=${PAGE}${client ? `&client=${client}` : ''}`;
+}
+
+function useAntibot(client: number | null) {
   const [summary, setSummary] = useState<AntibotSummary | null>(null);
   const [off, setOff] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,20 +77,25 @@ function useAntibot() {
 
   const loadJournal = useCallback(async (kind: string) => {
     try {
-      const page = await api<Page<JournalItem>>(`${ANTIBOT}/journal?kind=${kind}&limit=${PAGE}`);
+      const page = await api<Page<JournalItem>>(journalPath(kind, client));
       setJournal(page.items);
       setJournalNext(page.next);
     } catch (err) {
       setJournal([]);
       setError(failText(err, 'Журнал не загрузился'));
     }
-  }, []);
+  }, [client]);
 
   useEffect(() => {
     void loadSummary();
     void loadMarks();
+  }, [loadSummary, loadMarks]);
+
+  useEffect(() => {
+    setFilterState('all');
+    setJournal(null);
     void loadJournal('all');
-  }, [loadSummary, loadMarks, loadJournal]);
+  }, [loadJournal]);
 
   const setFilter = (kind: string) => {
     setFilterState(kind);
@@ -101,7 +112,7 @@ function useAntibot() {
         setMarksNext(page.next);
       }
       if (what === 'journal' && journalNext !== null) {
-        const page = await api<Page<JournalItem>>(`${ANTIBOT}/journal?kind=${filter}&limit=${PAGE}&after=${journalNext}`);
+        const page = await api<Page<JournalItem>>(`${journalPath(filter, client)}&after=${journalNext}`);
         setJournal((list) => [...(list ?? []), ...page.items]);
         setJournalNext(page.next);
       }
@@ -124,14 +135,15 @@ function useAntibot() {
     }
   };
 
-  return { summary, off, error, marks, marksNext, journal, journalNext, filter, setFilter, loading, more, clear, busy, reload: loadSummary };
+  return { summary, off, error, marks, marksNext, journal, journalNext, filter, setFilter, loading, more, clear, busy, client, reload: loadSummary };
 }
 
 type Data = ReturnType<typeof useAntibot>;
 
 export function Antibot() {
   const phone = usePhone();
-  const data = useAntibot();
+  const [params] = useSearchParams();
+  const data = useAntibot(clientFrom(params.get('client')));
   return phone ? <AntibotPhone data={data} /> : <AntibotDesk data={data} />;
 }
 
@@ -416,6 +428,23 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
   );
 }
 
+function AllJournal() {
+  return (
+    <Link to="/admin/clients/antibot" className="pr-inline-link">
+      Показать всех
+    </Link>
+  );
+}
+
+function CaptchaAlert({ summary, className }: { summary: AntibotSummary; className: string }) {
+  const text = captchaAlert(summary);
+  return text ? (
+    <p className={className} role="alert">
+      <span className="err rf-err">{text}</span>
+    </p>
+  ) : null;
+}
+
 function Off({ phone }: { phone?: boolean }) {
   const text = (
     <>
@@ -465,6 +494,7 @@ function AntibotDesk({ data }: { data: Data }) {
       <ClientsTabs />
       {data.off ? <Off /> : null}
       {data.summary ? <p className="rf-lead">{antibotLead(data.summary)}</p> : null}
+      {data.summary ? <CaptchaAlert summary={data.summary} className="rf-lead" /> : null}
       {data.error && !data.off ? (
         <p className="rf-lead" role="alert">
           <span className="err rf-err">{data.error}</span>
@@ -472,7 +502,7 @@ function AntibotDesk({ data }: { data: Data }) {
       ) : null}
       {settings && data.summary ? <SettingsCard summary={data.summary} onSaved={() => void data.reload()} onClose={() => setSettings(false)} /> : null}
 
-      {data.off ? null : (
+      {data.off || data.client ? null : (
         <section className="card pr-list" aria-labelledby="ab-m-h">
           <div className="pr-top">
             <h2 id="ab-m-h" className="section-title">
@@ -564,8 +594,9 @@ function AntibotDesk({ data }: { data: Data }) {
         <section className="card pr-list" aria-labelledby="ab-j-h">
           <div className="pr-top">
             <h2 id="ab-j-h" className="section-title">
-              Журнал срабатываний
+              {data.client ? 'Журнал срабатываний клиента' : 'Журнал срабатываний'}
             </h2>
+            {data.client ? <AllJournal /> : null}
             <div role="group" aria-label="Какие срабатывания показать" className="segs">
               {JOURNAL_FILTERS.map(([key, label]) => (
                 <button key={key} type="button" aria-pressed={data.filter === key} onClick={() => data.setFilter(key)}>
@@ -645,6 +676,7 @@ function AntibotPhone({ data }: { data: Data }) {
       <ClientsTabs />
       {data.off ? <Off phone /> : null}
       {data.summary ? <p className="pt-lead">{antibotLead(data.summary)}</p> : null}
+      {data.summary ? <CaptchaAlert summary={data.summary} className="pt-lead" /> : null}
       {data.error && !data.off ? (
         <p className="hp-quiet hp-card" role="alert">
           <span className="err">{data.error}</span>
@@ -660,7 +692,7 @@ function AntibotPhone({ data }: { data: Data }) {
         )
       ) : null}
 
-      {data.off ? null : (
+      {data.off || data.client ? null : (
         <section className="hp-group" aria-labelledby="ab-pm-h">
           <h2 id="ab-pm-h" className="hp-h2">
             Отмеченные клиенты
@@ -714,8 +746,9 @@ function AntibotPhone({ data }: { data: Data }) {
       {data.off ? null : (
         <section className="hp-group" aria-labelledby="ab-pj-h">
           <h2 id="ab-pj-h" className="hp-h2">
-            Журнал срабатываний
+            {data.client ? 'Журнал срабатываний клиента' : 'Журнал срабатываний'}
           </h2>
+          {data.client ? <AllJournal /> : null}
           <label className="pt-pselect">
             <span className="sr-only">Какие срабатывания показать</span>
             <select className="field" value={data.filter} onChange={(e) => data.setFilter(e.target.value)}>

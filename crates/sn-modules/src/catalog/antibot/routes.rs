@@ -35,14 +35,17 @@ struct SummaryView {
     counts: Summary,
 }
 
-fn captcha_state(ctx: &ModuleContext, settings: &AntibotSettings) -> CaptchaState {
+fn captcha_state(
+    ctx: &ModuleContext,
+    settings: &AntibotSettings,
+    health: Option<super::captcha::Health>,
+) -> CaptchaState {
     let config = ctx.core.module_config(sn_domain::module::ModuleId::Antibot);
     let ready = super::captcha::Captcha::of(&config).is_some();
     CaptchaState {
         secret_set: config.text("captcha_secret").is_some(),
         ready,
-        problem: super::captcha::health()
-            .filter(|health| ready && health.provider == settings.captcha),
+        problem: health.filter(|health| ready && health.provider == settings.captcha),
     }
 }
 
@@ -54,7 +57,8 @@ async fn summary(
     let mut conn = ctx.store.conn().await?;
     let settings = active(&mut conn).await?.unwrap_or_default();
     let counts = store::summary(&mut conn).await?;
-    let captcha = captcha_state(&ctx, &settings);
+    let health = super::captcha::health(&mut conn).await?;
+    let captcha = captcha_state(&ctx, &settings, health);
     Ok(Json(SummaryView {
         settings,
         captcha,

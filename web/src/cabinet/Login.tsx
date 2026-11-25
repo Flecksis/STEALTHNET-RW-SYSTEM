@@ -239,6 +239,9 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
         setSignup({ email: res.email ?? email.trim(), token: res.signup_token, again: false });
         setCode('');
         setWait(RESEND_SECONDS);
+        if (humanCheck) {
+          freshHuman();
+        }
         return;
       }
       if (res.status === 'totp_required' && res.challenge) {

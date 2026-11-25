@@ -417,7 +417,8 @@ pub async fn open_marks(db: &mut impl Db, page: PageRequest) -> StoreResult<Page
     let rows: Vec<(MarkRow, bool)> = sqlx::query_as::<_, (i64, serde_json::Value, serde_json::Value, DateTime<Utc>, Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<i64>, bool)>(
         "SELECT m.client_id, m.reasons, m.details, m.marked_at, m.confirmed_at, m.cleared_at, m.cleared_by, \
                 EXISTS (SELECT 1 FROM antibot_events e WHERE e.client_id = m.client_id AND e.action = 'trial_denied') \
-         FROM antibot_marks m WHERE m.cleared_at IS NULL AND ($1::bigint IS NULL OR m.client_id < $1) \
+         FROM antibot_marks m JOIN clients c ON c.id = m.client_id AND c.deleted_at IS NULL \
+         WHERE m.cleared_at IS NULL AND ($1::bigint IS NULL OR m.client_id < $1) \
          ORDER BY m.client_id DESC LIMIT $2",
     )
     .bind(page.after)
@@ -479,7 +480,9 @@ pub async fn summary(db: &mut impl Db) -> StoreResult<Summary> {
         i64,
         i64,
     ) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM antibot_marks WHERE cleared_at IS NULL), \
+        "SELECT (SELECT count(*) FROM antibot_marks m \
+                   JOIN clients c ON c.id = m.client_id AND c.deleted_at IS NULL \
+                  WHERE m.cleared_at IS NULL), \
                 count(*) FILTER (WHERE action = 'marked'), \
                 count(*) FILTER (WHERE action IN ('asked', 'roulette_asked', 'contest_asked', \
                                                   'promo_link_asked')), \
@@ -502,25 +505,30 @@ pub async fn summary(db: &mut impl Db) -> StoreResult<Summary> {
     })
 }
 
+const BROUGHT: &str = "('admin', 'import', 'migration')";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registration {
     pub created_at: DateTime<Utc>,
     pub web: bool,
+    pub brought: bool,
 }
 
 pub async fn registration(
     db: &mut impl Db,
     client_id: ClientId,
 ) -> StoreResult<Option<Registration>> {
-    let row: Option<(DateTime<Utc>, String)> = sqlx::query_as(
-        "SELECT created_at, registration_source FROM clients WHERE id = $1 AND deleted_at IS NULL",
-    )
+    let row: Option<(DateTime<Utc>, bool, bool)> = sqlx::query_as(&format!(
+        "SELECT created_at, registration_source = 'web', registration_source IN {BROUGHT} \
+         FROM clients WHERE id = $1 AND deleted_at IS NULL"
+    ))
     .bind(client_id.0)
     .fetch_optional(db.conn())
     .await?;
-    Ok(row.map(|(created_at, source)| Registration {
+    Ok(row.map(|(created_at, web, brought)| Registration {
         created_at,
-        web: source == "web",
+        web,
+        brought,
     }))
 }
 
@@ -565,13 +573,42 @@ pub async fn telegram_history(
     db: &mut impl Db,
     before: DateTime<Utc>,
 ) -> StoreResult<(i64, Option<i64>)> {
-    Ok(sqlx::query_as(
-        "SELECT count(*), max(value::bigint) FROM client_identities \
-         WHERE kind = 'telegram' AND created_at <= $1 AND value ~ '^[0-9]{1,18}$'",
-    )
+    Ok(sqlx::query_as(&format!(
+        "SELECT count(*), max(i.value::bigint) FROM client_identities i \
+         JOIN clients c ON c.id = i.client_id \
+         WHERE i.kind = 'telegram' AND i.value ~ '^[0-9]{{1,18}}$' \
+           AND CASE WHEN c.registration_source IN {BROUGHT} THEN c.created_at \
+                    ELSE i.created_at END <= $1"
+    ))
     .bind(before)
     .fetch_one(db.conn())
     .await?)
+}
+
+const YOUNG_KEY: &str = "antibot.young";
+const YOUNG_MINUTES: i32 = 60;
+
+pub async fn saved_boundary(db: &mut impl Db, days: u32) -> StoreResult<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT (value->>'boundary')::bigint FROM bot_state \
+         WHERE key = $1 AND (value->>'days')::bigint = $2 \
+           AND updated_at > now() - make_interval(mins => $3)",
+    )
+    .bind(YOUNG_KEY)
+    .bind(i64::from(days))
+    .bind(YOUNG_MINUTES)
+    .fetch_optional(db.conn())
+    .await?
+    .flatten())
+}
+
+pub async fn save_boundary(db: &mut impl Db, days: u32, boundary: i64) -> StoreResult<()> {
+    db.bot_state()
+        .set(
+            YOUNG_KEY,
+            &serde_json::json!({ "days": days, "boundary": boundary }),
+        )
+        .await
 }
 
 pub async fn telegram_neighbors(
@@ -582,11 +619,15 @@ pub async fn telegram_neighbors(
     to: DateTime<Utc>,
     spread: i64,
 ) -> StoreResult<i64> {
-    Ok(sqlx::query_scalar(
-        "SELECT count(DISTINCT client_id) FROM client_identities \
-         WHERE kind = 'telegram' AND client_id <> $1 AND created_at BETWEEN $2 AND $3 \
-           AND value ~ '^[0-9]{1,18}$' AND abs(value::bigint - $4) <= $5",
-    )
+    Ok(sqlx::query_scalar(&format!(
+        "WITH near AS MATERIALIZED ( \
+             SELECT i.client_id, i.created_at FROM client_identities i \
+             WHERE i.kind = 'telegram' AND i.value ~ '^[0-9]{{1,18}}$' \
+               AND i.value::bigint BETWEEN $4 - $5 AND $4 + $5) \
+         SELECT count(DISTINCT n.client_id) FROM near n JOIN clients c ON c.id = n.client_id \
+         WHERE n.client_id <> $1 AND n.created_at BETWEEN $2 AND $3 \
+           AND c.registration_source NOT IN {BROUGHT}"
+    ))
     .bind(client_id.0)
     .bind(from)
     .bind(to)
@@ -613,7 +654,8 @@ pub async fn email_twin(
     let found: Option<i64> = sqlx::query_scalar(
         "SELECT client_id FROM client_identities \
          WHERE kind = 'email' AND client_id <> $1 AND antibot_email_key(value) = antibot_email_key($2) \
-         ORDER BY client_id LIMIT 1",
+           AND id < (SELECT o.id FROM client_identities o WHERE o.kind = 'email' AND o.value = $2) \
+         ORDER BY id LIMIT 1",
     )
     .bind(client_id.0)
     .bind(email)
@@ -638,27 +680,31 @@ pub async fn first_ip(
     .flatten())
 }
 
-pub async fn web_signups(
+pub async fn signups_from(
     db: &mut impl Db,
     client_id: ClientId,
+    network: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
     grace: Duration,
-) -> StoreResult<Vec<String>> {
-    let rows: Vec<Option<String>> = sqlx::query_scalar(
-        "SELECT (SELECT s.ip FROM client_sessions s WHERE s.client_id = c.id \
-                 AND s.created_at <= c.created_at + $4 AND s.ip IS NOT NULL ORDER BY s.created_at, s.id LIMIT 1) \
-         FROM clients c WHERE c.registration_source = 'web' AND c.id <> $1 \
+) -> StoreResult<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM clients c \
+         CROSS JOIN LATERAL (SELECT s.ip FROM client_sessions s WHERE s.client_id = c.id \
+             AND s.created_at <= c.created_at + $4 AND s.ip IS NOT NULL \
+             ORDER BY s.created_at, s.id LIMIT 1) first \
+         WHERE c.registration_source = 'web' AND c.id <> $1 \
            AND c.created_at >= $2 AND c.created_at < $3 AND c.deleted_at IS NULL \
-         ORDER BY c.id LIMIT 2000",
+           AND CASE WHEN first.ip ~ '^[0-9A-Fa-f.:]+$' THEN first.ip::inet <<= $5::inet \
+                    ELSE false END",
     )
     .bind(client_id.0)
     .bind(from)
     .bind(to)
     .bind(grace)
-    .fetch_all(db.conn())
-    .await?;
-    Ok(rows.into_iter().flatten().collect())
+    .bind(network)
+    .fetch_one(db.conn())
+    .await?)
 }
 
 pub async fn session_ips(
@@ -698,21 +744,25 @@ pub struct Invitee {
 pub async fn invitees_around(
     db: &mut impl Db,
     referrer: ClientId,
+    invitee: ClientId,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> StoreResult<Vec<Invitee>> {
-    let rows: Vec<(i64, Option<String>, bool)> = sqlx::query_as(
+    let rows: Vec<(i64, Option<String>, bool)> = sqlx::query_as(&format!(
         "SELECT l.client_id, \
                 (SELECT i.value FROM client_identities i WHERE i.client_id = l.client_id AND i.kind = 'telegram' \
                   ORDER BY i.id LIMIT 1), \
                 EXISTS (SELECT 1 FROM antibot_marks m WHERE m.client_id = l.client_id AND m.cleared_at IS NULL \
                   AND m.reasons @> '[\"young_account\"]'::jsonb) \
-         FROM referral_links l WHERE l.referrer_id = $1 AND l.created_at BETWEEN $2 AND $3 \
-         ORDER BY l.client_id LIMIT 500",
-    )
+         FROM referral_links l JOIN clients c ON c.id = l.client_id \
+         WHERE l.referrer_id = $1 AND l.created_at BETWEEN $2 AND $3 \
+           AND c.registration_source NOT IN {BROUGHT} \
+         ORDER BY (l.client_id = $4) DESC, l.client_id LIMIT 500"
+    ))
     .bind(referrer.0)
     .bind(from)
     .bind(to)
+    .bind(invitee.0)
     .fetch_all(db.conn())
     .await?;
     Ok(rows

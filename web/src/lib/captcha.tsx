@@ -39,6 +39,7 @@ const SCRIPTS: Record<CaptchaProvider, string> = {
 };
 
 const LOAD_TIMEOUT_MS = 15_000;
+const WRONG_SETUP = ['110100', '110110', '110200', '400020', '400021', '400070'];
 const WIDGET_WIDTH = 300;
 const loading = new Map<CaptchaProvider, Promise<void>>();
 
@@ -68,7 +69,14 @@ export function loadCaptcha(provider: CaptchaProvider): Promise<void> {
   }
   originReferrer();
   const promise = new Promise<void>((resolve, reject) => {
-    const done = () => (ready(provider) ? resolve() : reject(new Error('captcha')));
+    const done = () => {
+      if (ready(provider)) {
+        resolve();
+        return;
+      }
+      loading.delete(provider);
+      reject(new Error('captcha'));
+    };
     if (provider === 'turnstile') {
       window.snTurnstileReady = done;
     } else {
@@ -112,7 +120,7 @@ export function Captcha({ widget, onToken, onExpire, theme, round = 0, className
   const expireRef = useRef(onExpire);
   tokenRef.current = onToken;
   expireRef.current = onExpire;
-  const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [state, setState] = useState<'loading' | 'ready' | 'failed' | 'wrong'>('loading');
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
@@ -137,7 +145,7 @@ export function Captcha({ widget, onToken, onExpire, theme, round = 0, className
             language: hl,
             callback: (token: string) => tokenRef.current(token),
             'expired-callback': () => expireRef.current?.(),
-            'error-callback': () => setState('failed'),
+            'error-callback': (code?: unknown) => setState(WRONG_SETUP.includes(String(code ?? '')) ? 'wrong' : 'failed'),
           });
           remove = () => api.remove(id);
         } else if (window.smartCaptcha) {
@@ -200,6 +208,11 @@ export function Captcha({ widget, onToken, onExpire, theme, round = 0, className
       {state === 'loading' ? (
         <p className="snc-note" aria-live="polite">
           {t('Загружаем проверку…')}
+        </p>
+      ) : null}
+      {state === 'wrong' ? (
+        <p className="snc-note" role="alert">
+          {t('Проверка настроена с ошибкой. Напишите в поддержку.')}
         </p>
       ) : null}
       {state === 'failed' ? (

@@ -4,14 +4,24 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sn_domain::module::ModuleId;
-use sn_store::{Db, StoreError};
-use std::sync::{Mutex, OnceLock};
+use sn_store::{Db, Store, StoreError};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const TURNSTILE_VERIFY: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 pub const YANDEX_VERIFY: &str = "https://smartcaptcha.cloud.yandex.ru/validate";
 pub const MAX_TOKEN: usize = 2048;
 pub const MAX_KEY: usize = 200;
+pub const HEALTH_KEY: &str = "antibot.captcha";
+pub const MAX_TURNSTILE_SITE_KEY: usize = 32;
+const TURNSTILE_TEST_SECRETS: [&str; 3] = [
+    "1x0000000000000000000000000000000AA",
+    "2x0000000000000000000000000000000AA",
+    "3x0000000000000000000000000000000AA",
+];
+const TURNSTILE_PREFIX: &str = "0x4";
+const YANDEX_SITE_PREFIX: &str = "ysc1_";
+const YANDEX_SECRET_PREFIX: &str = "ysc2_";
 const TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const PROVIDER_OPTIONS: &[&str] = &["none", "turnstile", "yandex"];
@@ -95,6 +105,60 @@ pub fn clean_key(raw: &str) -> Option<String> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')))
     .then(|| key.to_string())
+}
+
+fn maker(key: &str) -> Provider {
+    if key.starts_with(YANDEX_SITE_PREFIX) || key.starts_with(YANDEX_SECRET_PREFIX) {
+        Provider::Yandex
+    } else if key.starts_with(TURNSTILE_PREFIX) {
+        Provider::Turnstile
+    } else {
+        Provider::None
+    }
+}
+
+pub fn foreign(provider: Provider, key: &str) -> Option<Provider> {
+    let made = maker(key);
+    (provider != Provider::None && made != Provider::None && made != provider).then_some(made)
+}
+
+pub fn foreign_text(provider: Provider, made: Provider) -> String {
+    format!(
+        "Это ключ {}, а выбрана капча {}",
+        made.title(),
+        provider.title()
+    )
+}
+
+pub fn check_keys(provider: Provider, site_key: &str, secret: &str) -> Result<(), String> {
+    if let Some(made) = foreign(provider, site_key) {
+        return Err(foreign_text(provider, made));
+    }
+    if provider == Provider::Yandex && site_key.starts_with(YANDEX_SECRET_PREFIX) {
+        return Err(
+            "В поле «Ключ сайта» вставлен серверный ключ SmartCaptcha (ysc2_…). Ключ сайта начинается с ysc1_"
+                .into(),
+        );
+    }
+    if provider == Provider::Yandex && secret.starts_with(YANDEX_SITE_PREFIX) {
+        return Err(
+            "В поле «Секретный ключ» вставлен ключ сайта SmartCaptcha (ysc1_…). Секретный начинается с ysc2_"
+                .into(),
+        );
+    }
+    if provider == Provider::Turnstile && site_key.len() > MAX_TURNSTILE_SITE_KEY {
+        return Err(
+            "В поле «Ключ сайта» вставлен секретный ключ Turnstile: ключ сайта короче. Поменяйте ключи местами"
+                .into(),
+        );
+    }
+    if site_key == secret {
+        return Err(
+            "В поля «Ключ сайта» и «Секретный ключ» вставлен один и тот же ключ: нужны оба ключа капчи"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -188,37 +252,38 @@ pub enum Outcome {
     Unavailable(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Health {
     pub at: DateTime<Utc>,
     pub provider: Provider,
     pub problem: String,
 }
 
-fn last() -> &'static Mutex<Option<Health>> {
-    static LAST: OnceLock<Mutex<Option<Health>>> = OnceLock::new();
-    LAST.get_or_init(|| Mutex::new(None))
+pub async fn health(db: &mut impl Db) -> Result<Option<Health>, StoreError> {
+    let saved = db.bot_state().get(HEALTH_KEY).await?;
+    Ok(saved.and_then(|value| serde_json::from_value(value).ok()))
 }
 
-pub fn health() -> Option<Health> {
-    match last().lock() {
-        Ok(guard) => guard.clone(),
-        Err(poisoned) => poisoned.into_inner().clone(),
-    }
-}
-
-fn remember(provider: Provider, outcome: &Outcome) {
-    let next = match outcome {
-        Outcome::Unavailable(problem) => Some(Health {
-            at: Utc::now(),
-            provider,
-            problem: problem.clone(),
-        }),
-        Outcome::Passed | Outcome::Rejected(_) => None,
-    };
-    match last().lock() {
-        Ok(mut guard) => *guard = next,
-        Err(poisoned) => *poisoned.into_inner() = next,
+async fn remember(store: &Store, provider: Provider, outcome: &Outcome) -> Result<(), StoreError> {
+    let mut conn = store.conn().await?;
+    match outcome {
+        Outcome::Unavailable(problem) => {
+            let health = Health {
+                at: Utc::now(),
+                provider,
+                problem: problem.clone(),
+            };
+            conn.bot_state()
+                .set(HEALTH_KEY, &serde_json::json!(health))
+                .await
+        }
+        Outcome::Passed | Outcome::Rejected(_) => {
+            sqlx::query("DELETE FROM bot_state WHERE key = $1")
+                .bind(HEALTH_KEY)
+                .execute(conn.conn())
+                .await?;
+            Ok(())
+        }
     }
 }
 
@@ -265,7 +330,7 @@ pub async fn sweep(db: &mut impl Db) -> Result<u64, StoreError> {
 }
 
 pub async fn verify(
-    db: &mut impl Db,
+    store: &Store,
     endpoints: &Endpoints,
     captcha: &Captcha,
     token: &str,
@@ -276,7 +341,11 @@ pub async fn verify(
     if token.is_empty() || token.len() > MAX_TOKEN {
         return Ok(Outcome::Rejected("empty".into()));
     }
-    if !spend(db, token).await? {
+    let fresh = {
+        let mut conn = store.conn().await?;
+        spend(&mut conn, token).await?
+    };
+    if !fresh {
         return Ok(Outcome::Rejected("duplicate".into()));
     }
     let ip = ip.map(str::trim).filter(|ip| !ip.is_empty());
@@ -288,7 +357,9 @@ pub async fn verify(
     if let Outcome::Unavailable(problem) = &outcome {
         tracing::warn!(provider = captcha.provider.as_str(), %problem, "капча: проверка не выполнена");
     }
-    remember(captcha.provider, &outcome);
+    if let Err(err) = remember(store, captcha.provider, &outcome).await {
+        tracing::warn!(error = %err, "капча: состояние сервиса проверки не сохранено");
+    }
     Ok(outcome)
 }
 
@@ -355,15 +426,17 @@ async fn turnstile(
         }
         return Outcome::Rejected(errors.join(","));
     }
-    if reply
-        .action
-        .as_deref()
-        .is_some_and(|action| action != expect.action)
-    {
+    let test_keys = TURNSTILE_TEST_SECRETS.contains(&captcha.secret.as_str());
+    let bound = |got: Option<&str>, want: &str| match got {
+        Some(got) => got == want,
+        None => test_keys,
+    };
+    if !bound(reply.action.as_deref(), expect.action) {
         return Outcome::Rejected("action".into());
     }
-    if let (Some(got), Some(want)) = (reply.cdata.as_deref(), expect.cdata)
-        && got != want
+    if expect
+        .cdata
+        .is_some_and(|want| !bound(reply.cdata.as_deref(), want))
     {
         return Outcome::Rejected("cdata".into());
     }

@@ -35,6 +35,7 @@ pub struct TestCore {
     pub fail_days: AtomicBool,
     pub slow_days_ms: AtomicU64,
     pub refuse_grant: Mutex<Option<GrantRefusal>>,
+    pub devices: Mutex<Vec<(ClientId, String)>>,
 }
 
 impl TestCore {
@@ -45,6 +46,7 @@ impl TestCore {
             fail_days: AtomicBool::new(false),
             slow_days_ms: AtomicU64::new(0),
             refuse_grant: Mutex::new(None),
+            devices: Mutex::new(Vec::new()),
         })
     }
 
@@ -85,6 +87,20 @@ impl TestCore {
 
 #[async_trait]
 impl CoreApi for TestCore {
+    async fn client_devices(&self, client_id: ClientId) -> Result<Vec<String>, ModuleError> {
+        self.store.ping().await?;
+        Ok(self
+            .devices
+            .lock()
+            .map(|all| {
+                all.iter()
+                    .filter(|(owner, _)| *owner == client_id)
+                    .map(|(_, hwid)| hwid.clone())
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn change_balance(&self, change: BalanceChange) -> Result<Money, ModuleError> {
         let mut tx = self.store.begin().await?;
         let appended = tx

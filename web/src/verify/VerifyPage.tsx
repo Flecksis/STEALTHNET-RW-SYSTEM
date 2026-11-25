@@ -21,6 +21,24 @@ type VerifyView = {
 type Phase = 'ready' | 'checking' | 'done';
 
 const RETRY_CODES = ['antibot.failed', 'antibot.unavailable', 'auth.rate_limited'];
+const EXPIRED = msg('Ссылка на проверку устарела. Вернитесь в бот и запросите пробный период ещё раз.');
+const NO_CHECK = msg('Не получилось проверить. Проверьте интернет и попробуйте ещё раз.');
+const NO_PAGE = msg('Не получилось открыть проверку. Проверьте интернет и обновите страницу.');
+
+function lost(err: unknown): boolean {
+  return !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
+}
+
+function reason(err: unknown, fallback: string): string {
+  if (lost(err) || !(err instanceof ApiError)) {
+    return fallback;
+  }
+  return err.code === 'antibot.expired' ? EXPIRED : err.message;
+}
+
+function again(err: unknown): boolean {
+  return lost(err) || (err instanceof ApiError && RETRY_CODES.includes(err.code));
+}
 
 function clock(iso: string): string {
   const at = new Date(iso);
@@ -33,6 +51,8 @@ function useVerify(token: string) {
   const [notice, setNotice] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('ready');
   const [round, setRound] = useState(0);
+  const [offline, setOffline] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let gone = false;
@@ -40,17 +60,21 @@ function useVerify(token: string) {
       .then((data) => {
         if (!gone) {
           setView(data);
+          setFatal(null);
         }
       })
       .catch((err) => {
         if (!gone) {
-          setFatal(err instanceof ApiError ? err.message : msg('Не получилось открыть проверку. Проверьте интернет и обновите страницу.'));
+          setOffline(again(err));
+          setFatal(reason(err, NO_PAGE));
         }
       });
     return () => {
       gone = true;
     };
-  }, [token]);
+  }, [token, attempt]);
+
+  const reopen = useCallback(() => setAttempt((n) => n + 1), []);
 
   const pass = useCallback(
     async (captcha: string) => {
@@ -61,18 +85,19 @@ function useVerify(token: string) {
         setPhase('done');
       } catch (err) {
         setPhase('ready');
-        if (err instanceof ApiError && RETRY_CODES.includes(err.code)) {
-          setNotice(err.message);
+        if (again(err)) {
+          setNotice(reason(err, NO_CHECK));
           setRound((n) => n + 1);
         } else {
-          setFatal(err instanceof ApiError ? err.message : msg('Не получилось проверить. Проверьте интернет и попробуйте ещё раз.'));
+          setOffline(false);
+          setFatal(reason(err, NO_CHECK));
         }
       }
     },
     [token],
   );
 
-  return { view, fatal, notice, phase, round, pass };
+  return { view, fatal, notice, phase, round, pass, offline, reopen };
 }
 
 function useInTelegram(): boolean {
@@ -156,7 +181,7 @@ function CardLayout({ site, view, flow, inside, theme }: LayoutProps) {
             ) : null}
             {flow.notice ? (
               <p className="vf-warn" role="alert">
-                {flow.notice}
+                {t(flow.notice)}
               </p>
             ) : null}
           </section>
@@ -205,7 +230,13 @@ export function VerifyPage() {
             <p className="vf-sub" role="alert">
               {flow.fatal ? t(flow.fatal) : null}
             </p>
-            <BackToBot bot={flow.view?.back.bot ?? (site.bot_username ? `https://t.me/${site.bot_username}` : null)} inside={inside} className="vf-btn" />
+            {flow.offline ? (
+              <button type="button" className="vf-btn" onClick={flow.reopen}>
+                {t('Повторить')}
+              </button>
+            ) : (
+              <BackToBot bot={flow.view?.back.bot ?? (site.bot_username ? `https://t.me/${site.bot_username}` : null)} inside={inside} className="vf-btn" />
+            )}
           </section>
         </div>
       </main>

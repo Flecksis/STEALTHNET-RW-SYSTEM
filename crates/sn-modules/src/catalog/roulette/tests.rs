@@ -713,6 +713,46 @@ async fn антибот_в_режиме_запрета_не_даёт_беспл�
 }
 
 #[tokio::test]
+async fn отказ_антибота_в_рулетке_не_берёт_второе_соединение_с_базой() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let single = pooled(&db, 1, StdDuration::from_secs(2)).await;
+    let core = TestCore::new(&single);
+    let ctx = context(&single, &core, Currency::Usd);
+    save(
+        &ctx,
+        &config(vec![
+            sector(PrizeDraft::Balance { amount: "1".into() }, 1),
+            sector(PrizeDraft::Empty, 1),
+        ]),
+        None,
+    )
+    .await
+    .unwrap();
+    antibot(&single, serde_json::json!({ "mode": "block" })).await;
+    let player = client(&single).await;
+    suspect(&single, player).await;
+    let refused = spin(&ctx, player, Uuid::new_v4(), None).await;
+    assert!(
+        matches!(
+            refused,
+            Err(RouletteError::Rejected {
+                code: "roulette.no_spins",
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(antibot_actions(&single, player).await, ["roulette_denied"]);
+    let shown = state(&ctx, player).await.unwrap();
+    assert!(!shown.spins.free_ready);
+    assert_eq!(antibot_actions(&single, player).await, ["roulette_denied"]);
+    single.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn антибот_просит_подтвердить_перед_бесплатным_вращением() {
     let Some(db) = test_store().await else {
         return;

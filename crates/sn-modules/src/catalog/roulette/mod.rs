@@ -871,7 +871,39 @@ async fn spin_now(
     prefer: Option<SubscriptionId>,
 ) -> Result<SpinResult, RouletteError> {
     let guard = antibot::guard(ctx, client_id, Target::Roulette).await?;
-    let denied = Guard::denied(guard.as_ref());
+    let mut held = false;
+    let result = spin_guarded(
+        ctx,
+        client_id,
+        request_id,
+        prefer,
+        guard.as_ref(),
+        &mut held,
+    )
+    .await;
+    if held {
+        antibot::record(
+            ctx,
+            client_id,
+            guard.as_ref(),
+            antibot::Action::RouletteDenied,
+            target(),
+            None,
+        )
+        .await?;
+    }
+    result
+}
+
+async fn spin_guarded(
+    ctx: &ModuleContext,
+    client_id: ClientId,
+    request_id: Uuid,
+    prefer: Option<SubscriptionId>,
+    guard: Option<&Guard>,
+    held: &mut bool,
+) -> Result<SpinResult, RouletteError> {
+    let denied = Guard::denied(guard);
     let mut tx = ctx.store.begin().await?;
     tx.lock(LockSpace::Client, client_id.0).await?;
     if let Some(found) = store::spin_by_request(&mut tx, client_id, request_id).await? {
@@ -895,23 +927,13 @@ async fn spin_now(
         ));
     }
     let free = free_status(&mut tx, &config, client_id, now, denied).await?;
-    if free.held {
-        antibot::record(
-            ctx,
-            client_id,
-            guard.as_ref(),
-            antibot::Action::RouletteDenied,
-            target(),
-            None,
-        )
-        .await?;
-    }
-    if free.ready && Guard::asks(guard.as_ref()) {
+    *held = free.held;
+    if free.ready && Guard::asks(guard) {
         tx.rollback().await?;
         antibot::record(
             ctx,
             client_id,
-            guard.as_ref(),
+            guard,
             antibot::Action::RouletteAsked,
             target(),
             None,
@@ -1022,11 +1044,11 @@ async fn spin_now(
             }
         }
     }
-    if source == "free" && Guard::noted(guard.as_ref()) {
+    if source == "free" && Guard::noted(guard) {
         antibot::record(
             ctx,
             client_id,
-            guard.as_ref(),
+            guard,
             antibot::Action::RouletteNoted,
             serde_json::json!({
                 "target": Target::Roulette.as_str(),

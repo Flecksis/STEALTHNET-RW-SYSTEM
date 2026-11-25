@@ -21,15 +21,18 @@ impl<'c> TrialsRepo<'c> {
 
     pub async fn was_claimed(
         &mut self,
+        client_id: ClientId,
         identities: &[(IdentityKind, String)],
     ) -> StoreResult<bool> {
         let (kinds, values) = split(identities);
         Ok(sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM trial_claims t JOIN unnest($1::text[], $2::text[]) AS i(kind, value) \
-             ON t.kind = i.kind AND t.value = i.value)",
+                 ON t.kind = i.kind AND t.value = i.value) \
+                 OR EXISTS (SELECT 1 FROM trial_claims t WHERE t.client_id = $3)",
         )
         .bind(&kinds)
         .bind(&values)
+        .bind(client_id.0)
         .fetch_one(&mut *self.conn)
         .await?)
     }
@@ -46,6 +49,7 @@ impl<'c> TrialsRepo<'c> {
         let done = sqlx::query(
             "INSERT INTO trial_claims (kind, value, client_id) \
              SELECT kind, value, $3 FROM unnest($1::text[], $2::text[]) AS i(kind, value) \
+             WHERE NOT EXISTS (SELECT 1 FROM trial_claims t WHERE t.client_id = $3) \
              ON CONFLICT (kind, value) DO NOTHING",
         )
         .bind(&kinds)

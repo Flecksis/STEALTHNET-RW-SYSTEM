@@ -102,6 +102,11 @@ const fn a(code: &'static str, title: &'static str, area: Area) -> ActionLabel {
 pub const ACTIONS: &[ActionLabel] = &[
     a("client.block", "Клиент заблокирован", Area::Clients),
     a("client.unblock", "Клиент разблокирован", Area::Clients),
+    a(
+        "client.antibot_cleared",
+        "Отметка антибота снята",
+        Area::Clients,
+    ),
     a("client.deleted", "Клиент удалён", Area::Clients),
     a("client.note", "Изменена заметка о клиенте", Area::Clients),
     a(

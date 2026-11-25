@@ -166,6 +166,56 @@ async fn английский_текст_оператора_важнее_ста�
 }
 
 #[tokio::test]
+async fn отказ_антибота_и_кнопка_меню_по_английски() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    english_on(&services, Locale::Ru).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                sn_domain::settings::keys::TRIAL,
+                &serde_json::to_value(sn_domain::settings::TrialSettings::single(
+                    true,
+                    3,
+                    vec![sn_domain::ids::SquadId(uuid::Uuid::from_u128(1))],
+                    sn_domain::traffic::TrafficPolicy::UNLIMITED,
+                    1,
+                ))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    services.reload().await.unwrap();
+    services.set_remna(Some(Arc::new(sn_remnawave::fake::FakeRemnawave::new())));
+    antibot_mode(&services, "block").await;
+    handle_update(&ctx, english_text(1, 957, "/start")).await;
+    let client = client_of(&services, 957).await.unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sn_modules::catalog::antibot::store::save_mark(
+            &mut conn,
+            client.id,
+            &[sn_modules::catalog::antibot::signals::Signal::DisposableEmail],
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    }
+    handle_update(&ctx, english_callback(2, 957, "trial")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("The free trial isn't available for this account"),
+        "{text}"
+    );
+    assert_eq!(last_labels(&server).await, ["Main menu"]);
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn после_выключения_английского_клиент_снова_видит_русский() {
     let Some((db, services, server, ctx)) = setup().await else {
         return;

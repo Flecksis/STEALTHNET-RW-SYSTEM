@@ -249,6 +249,17 @@ fn document_body(page: &PublicPage) -> String {
     )
 }
 
+fn script_needed(locale: Locale) -> &'static str {
+    match locale {
+        Locale::Ru => {
+            "<noscript><p>Для работы сайта включите JavaScript в настройках браузера.</p></noscript>"
+        }
+        Locale::En => {
+            "<noscript><p>Please turn on JavaScript in your browser to use this site.</p></noscript>"
+        }
+    }
+}
+
 fn with_body(mut html: String, body: &str) -> String {
     match html.find(ROOT).or_else(|| html.find("</body>")) {
         Some(at) => html.insert_str(at, body),
@@ -484,7 +495,10 @@ async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) 
             escape_html(&style.path())
         ));
     }
-    let html = with_lang(inject(&template, &tags), locale);
+    let html = with_lang(
+        with_body(inject(&template, &tags), script_needed(locale)),
+        locale,
+    );
     let mut response = Html(html).into_response();
     protect(&mut response, state, path, REVALIDATE);
     response

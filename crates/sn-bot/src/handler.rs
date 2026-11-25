@@ -327,7 +327,7 @@ async fn run_with(
         return Ok(());
     }
     if !screen.text.is_empty() {
-        ctx.show(target, &screen).await?;
+        lang::scope(locale, ctx.show(target, &screen)).await?;
     }
     turn.session.save(&ctx.services, target.chat_id).await?;
     Ok(())
@@ -813,7 +813,7 @@ async fn trial_available(services: &Services, client: &Client) -> Result<bool, B
         .into_iter()
         .map(|i| (i.kind, i.value))
         .collect();
-    Ok(!conn.trials().was_claimed(&identities).await?)
+    Ok(!conn.trials().was_claimed(client.id, &identities).await?)
 }
 
 fn menu_button(c: &BotContent, install: &Install, key: &'static str) -> Option<Button> {
