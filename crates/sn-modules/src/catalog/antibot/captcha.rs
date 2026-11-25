@@ -14,6 +14,7 @@ pub const MAX_TOKEN: usize = 2048;
 pub const MAX_KEY: usize = 200;
 pub const HEALTH_KEY: &str = "antibot.captcha";
 pub const MAX_TURNSTILE_SITE_KEY: usize = 32;
+pub const MAX_DOMAINS: usize = 50;
 const TURNSTILE_TEST_SECRETS: [&str; 3] = [
     "1x0000000000000000000000000000000AA",
     "2x0000000000000000000000000000000AA",
@@ -22,6 +23,11 @@ const TURNSTILE_TEST_SECRETS: [&str; 3] = [
 const TURNSTILE_PREFIX: &str = "0x4";
 const YANDEX_SITE_PREFIX: &str = "ysc1_";
 const YANDEX_SECRET_PREFIX: &str = "ysc2_";
+const BAD_SECRET: &str = "секретный ключ не подошёл";
+const BROKEN: &str = "сервис проверки ответил ошибкой";
+const UNCLEAR: &str = "сервис проверки ответил непонятно";
+const WAVED: &str = "сервис пропустил посетителя без проверки";
+const PROBE_TOKEN: &str = "stealthnet-key-check";
 const TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const PROVIDER_OPTIONS: &[&str] = &["none", "turnstile", "yandex"];
@@ -107,6 +113,53 @@ pub fn clean_key(raw: &str) -> Option<String> {
     .then(|| key.to_string())
 }
 
+pub fn clean_host(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let bare = raw.split_once("://").map_or(raw, |(_, rest)| rest);
+    let bare = bare.split(['/', '?', '#']).next().unwrap_or_default();
+    let bare = bare.strip_prefix("*.").unwrap_or(bare);
+    let url = reqwest::Url::parse(&format!("https://{bare}")).ok()?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    let host = url.host_str()?.trim_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+pub fn parse_domains(raw: &str) -> Result<Vec<String>, String> {
+    let mut domains: Vec<String> = Vec::new();
+    for part in raw
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';'))
+        .filter(|part| !part.is_empty())
+    {
+        let host = clean_host(part)
+            .filter(|host| host.contains('.') || host == "localhost")
+            .ok_or_else(|| {
+                let shown: String = part.chars().take(60).collect();
+                format!("«{shown}» — не домен")
+            })?;
+        if !domains.contains(&host) {
+            domains.push(host);
+        }
+    }
+    if domains.len() > MAX_DOMAINS {
+        return Err(format!("не больше {MAX_DOMAINS} доменов"));
+    }
+    Ok(domains)
+}
+
+pub fn covered(domains: &[String], host: &str) -> bool {
+    domains.is_empty()
+        || clean_host(host).is_some_and(|host| {
+            domains.iter().any(|domain| {
+                host == *domain
+                    || host
+                        .strip_suffix(domain.as_str())
+                        .is_some_and(|rest| rest.ends_with('.'))
+            })
+        })
+}
+
 fn maker(key: &str) -> Provider {
     if key.starts_with(YANDEX_SITE_PREFIX) || key.starts_with(YANDEX_SECRET_PREFIX) {
         Provider::Yandex
@@ -168,6 +221,7 @@ pub struct Captcha {
     secret: String,
     pub trial: Scope,
     pub signup: bool,
+    pub domains: Vec<String>,
 }
 
 impl std::fmt::Debug for Captcha {
@@ -177,6 +231,7 @@ impl std::fmt::Debug for Captcha {
             .field("site_key", &self.site_key)
             .field("trial", &self.trial)
             .field("signup", &self.signup)
+            .field("domains", &self.domains)
             .finish_non_exhaustive()
     }
 }
@@ -195,6 +250,7 @@ impl Captcha {
             secret,
             trial: settings.captcha_trial,
             signup: settings.captcha_signup,
+            domains: settings.captcha_domains,
         })
     }
 
@@ -249,6 +305,7 @@ pub struct Expect<'a> {
 pub enum Outcome {
     Passed,
     Rejected(String),
+    Foreign(String),
     Unavailable(String),
 }
 
@@ -257,6 +314,8 @@ pub struct Health {
     pub at: DateTime<Utc>,
     pub provider: Provider,
     pub problem: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign: Option<String>,
 }
 
 pub async fn health(db: &mut impl Db) -> Result<Option<Health>, StoreError> {
@@ -266,25 +325,38 @@ pub async fn health(db: &mut impl Db) -> Result<Option<Health>, StoreError> {
 
 async fn remember(store: &Store, provider: Provider, outcome: &Outcome) -> Result<(), StoreError> {
     let mut conn = store.conn().await?;
-    match outcome {
-        Outcome::Unavailable(problem) => {
-            let health = Health {
-                at: Utc::now(),
-                provider,
-                problem: problem.clone(),
-            };
-            conn.bot_state()
-                .set(HEALTH_KEY, &serde_json::json!(health))
-                .await
-        }
-        Outcome::Passed | Outcome::Rejected(_) => {
+    let (problem, foreign) = match outcome {
+        Outcome::Unavailable(problem) => (problem.clone(), None),
+        Outcome::Foreign(host) => (
+            format!("ответ получен на домене {host}, его нет в поле «Домены»"),
+            Some(host.clone()),
+        ),
+        Outcome::Passed => {
             sqlx::query("DELETE FROM bot_state WHERE key = $1")
                 .bind(HEALTH_KEY)
                 .execute(conn.conn())
                 .await?;
-            Ok(())
+            return Ok(());
         }
-    }
+        Outcome::Rejected(_) => return recovered(&mut conn).await,
+    };
+    let health = Health {
+        at: Utc::now(),
+        provider,
+        problem,
+        foreign,
+    };
+    conn.bot_state()
+        .set(HEALTH_KEY, &serde_json::json!(health))
+        .await
+}
+
+pub async fn recovered(db: &mut impl Db) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM bot_state WHERE key = $1 AND value ->> 'foreign' IS NULL")
+        .bind(HEALTH_KEY)
+        .execute(db.conn())
+        .await?;
+    Ok(())
 }
 
 fn http() -> &'static reqwest::Client {
@@ -354,8 +426,14 @@ pub async fn verify(
         Provider::Yandex => yandex(&endpoints.yandex, captcha, token, ip).await,
         Provider::None => Outcome::Unavailable("капча не настроена".into()),
     };
-    if let Outcome::Unavailable(problem) = &outcome {
-        tracing::warn!(provider = captcha.provider.as_str(), %problem, "капча: проверка не выполнена");
+    match &outcome {
+        Outcome::Unavailable(problem) => {
+            tracing::warn!(provider = captcha.provider.as_str(), %problem, "капча: проверка не выполнена");
+        }
+        Outcome::Foreign(host) => {
+            tracing::warn!(provider = captcha.provider.as_str(), %host, "капча: ответ получен на чужом домене");
+        }
+        Outcome::Passed | Outcome::Rejected(_) => {}
     }
     if let Err(err) = remember(store, captcha.provider, &outcome).await {
         tracing::warn!(error = %err, "капча: состояние сервиса проверки не сохранено");
@@ -373,6 +451,23 @@ fn transport(err: &reqwest::Error) -> String {
     }
 }
 
+async fn ask<T: serde::de::DeserializeOwned>(
+    url: &str,
+    form: &[(&str, String)],
+) -> Result<(reqwest::StatusCode, T), String> {
+    let response = http()
+        .post(url)
+        .form(form)
+        .send()
+        .await
+        .map_err(|err| transport(&err))?;
+    let status = response.status();
+    match response.json().await {
+        Ok(reply) => Ok((status, reply)),
+        Err(_) => Err(format!("сервис проверки ответил HTTP {}", status.as_u16())),
+    }
+}
+
 #[derive(Deserialize)]
 struct TurnstileReply {
     success: bool,
@@ -382,6 +477,26 @@ struct TurnstileReply {
     action: Option<String>,
     #[serde(default)]
     cdata: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+}
+
+fn bad_secret(errors: &[String]) -> bool {
+    errors
+        .iter()
+        .any(|e| matches!(e.as_str(), "missing-input-secret" | "invalid-input-secret"))
+}
+
+fn broken(errors: &[String]) -> bool {
+    errors.is_empty() || errors.iter().any(|e| e == "internal-error")
+}
+
+fn passed_on(captcha: &Captcha, host: Option<&str>) -> Outcome {
+    let host = host.unwrap_or_default();
+    if covered(&captcha.domains, host) {
+        return Outcome::Passed;
+    }
+    Outcome::Foreign(clean_host(host).unwrap_or_else(|| "без имени".into()))
 }
 
 async fn turnstile(
@@ -399,30 +514,17 @@ async fn turnstile(
     if let Some(ip) = ip {
         form.push(("remoteip", ip.to_string()));
     }
-    let response = match http().post(url).form(&form).send().await {
-        Ok(response) => response,
-        Err(err) => return Outcome::Unavailable(transport(&err)),
-    };
-    let status = response.status();
-    let reply: TurnstileReply = match response.json().await {
-        Ok(reply) => reply,
-        Err(_) => {
-            return Outcome::Unavailable(format!(
-                "сервис проверки ответил HTTP {}",
-                status.as_u16()
-            ));
-        }
+    let reply: TurnstileReply = match ask(url, &form).await {
+        Ok((_, reply)) => reply,
+        Err(problem) => return Outcome::Unavailable(problem),
     };
     let errors = reply.errors.unwrap_or_default();
     if !reply.success {
-        if errors
-            .iter()
-            .any(|e| matches!(e.as_str(), "missing-input-secret" | "invalid-input-secret"))
-        {
-            return Outcome::Unavailable("секретный ключ не подошёл".into());
+        if bad_secret(&errors) {
+            return Outcome::Unavailable(BAD_SECRET.into());
         }
-        if errors.iter().any(|e| e == "internal-error") || errors.is_empty() {
-            return Outcome::Unavailable("сервис проверки ответил ошибкой".into());
+        if broken(&errors) {
+            return Outcome::Unavailable(BROKEN.into());
         }
         return Outcome::Rejected(errors.join(","));
     }
@@ -440,7 +542,10 @@ async fn turnstile(
     {
         return Outcome::Rejected("cdata".into());
     }
-    Outcome::Passed
+    if test_keys {
+        return Outcome::Passed;
+    }
+    passed_on(captcha, reply.hostname.as_deref())
 }
 
 #[derive(Deserialize)]
@@ -452,6 +557,14 @@ struct YandexReply {
     host: Option<String>,
 }
 
+impl YandexReply {
+    fn bad_secret(&self) -> bool {
+        let message = self.message.as_deref().unwrap_or_default().to_lowercase();
+        self.status == "failed"
+            && (message.contains("secret") || message.contains("authentication"))
+    }
+}
+
 async fn yandex(url: &str, captcha: &Captcha, token: &str, ip: Option<&str>) -> Outcome {
     let mut form = vec![
         ("secret", captcha.secret.clone()),
@@ -460,28 +573,81 @@ async fn yandex(url: &str, captcha: &Captcha, token: &str, ip: Option<&str>) -> 
     if let Some(ip) = ip {
         form.push(("ip", ip.to_string()));
     }
-    let response = match http().post(url).form(&form).send().await {
-        Ok(response) => response,
-        Err(err) => return Outcome::Unavailable(transport(&err)),
+    let (status, reply): (_, YandexReply) = match ask(url, &form).await {
+        Ok(answer) => answer,
+        Err(problem) => return Outcome::Unavailable(problem),
     };
-    let status = response.status();
-    let reply: Option<YandexReply> = response.json().await.ok();
-    let Some(reply) = reply else {
-        return Outcome::Unavailable(format!("сервис проверки ответил HTTP {}", status.as_u16()));
-    };
-    let message = reply.message.unwrap_or_default().to_lowercase();
-    if reply.status == "failed"
-        && (message.contains("secret") || message.contains("authentication"))
-    {
-        return Outcome::Unavailable("секретный ключ не подошёл".into());
+    if reply.bad_secret() {
+        return Outcome::Unavailable(BAD_SECRET.into());
     }
     if status != reqwest::StatusCode::OK {
         return Outcome::Unavailable(format!("сервис проверки ответил HTTP {}", status.as_u16()));
     }
     match reply.status.as_str() {
-        "ok" if reply.host.as_deref().is_some_and(|h| !h.trim().is_empty()) => Outcome::Passed,
-        "ok" => Outcome::Unavailable("сервис пропустил посетителя без проверки".into()),
+        "ok" if reply.host.as_deref().is_some_and(|h| !h.trim().is_empty()) => {
+            passed_on(captcha, reply.host.as_deref())
+        }
+        "ok" => Outcome::Unavailable(WAVED.into()),
         "failed" => Outcome::Rejected("failed".into()),
-        _ => Outcome::Unavailable("сервис проверки ответил непонятно".into()),
+        _ => Outcome::Unavailable(UNCLEAR.into()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Probe {
+    Accepted,
+    Refused,
+    Test,
+    Unavailable(String),
+}
+
+pub async fn probe(endpoints: &Endpoints, provider: Provider, secret: &str) -> Probe {
+    match provider {
+        Provider::Turnstile if TURNSTILE_TEST_SECRETS.contains(&secret) => Probe::Test,
+        Provider::Turnstile => {
+            let form = [
+                ("secret", secret.to_string()),
+                ("response", PROBE_TOKEN.to_string()),
+            ];
+            let reply: TurnstileReply = match ask(&endpoints.turnstile, &form).await {
+                Ok((_, reply)) => reply,
+                Err(problem) => return Probe::Unavailable(problem),
+            };
+            let errors = reply.errors.unwrap_or_default();
+            if reply.success {
+                Probe::Unavailable(UNCLEAR.into())
+            } else if bad_secret(&errors) {
+                Probe::Refused
+            } else if errors.iter().any(|e| {
+                matches!(
+                    e.as_str(),
+                    "invalid-input-response" | "timeout-or-duplicate"
+                )
+            }) {
+                Probe::Accepted
+            } else {
+                Probe::Unavailable(BROKEN.into())
+            }
+        }
+        Provider::Yandex => {
+            let form = [
+                ("secret", secret.to_string()),
+                ("token", PROBE_TOKEN.to_string()),
+            ];
+            let (status, reply): (_, YandexReply) = match ask(&endpoints.yandex, &form).await {
+                Ok(answer) => answer,
+                Err(problem) => return Probe::Unavailable(problem),
+            };
+            if reply.bad_secret() {
+                Probe::Refused
+            } else if status != reqwest::StatusCode::OK {
+                Probe::Unavailable(format!("сервис проверки ответил HTTP {}", status.as_u16()))
+            } else if reply.status == "failed" {
+                Probe::Accepted
+            } else {
+                Probe::Unavailable(WAVED.into())
+            }
+        }
+        Provider::None => Probe::Unavailable("капча не выбрана".into()),
     }
 }

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api } from '../../lib/api';
 import { dateTime } from '../../lib/format';
@@ -15,6 +15,7 @@ import {
   antibotLead,
   CAPTCHA_PROVIDERS,
   captchaAlert,
+  captchaProblem,
   failText,
   isOff,
   JOURNAL_FILTERS,
@@ -179,6 +180,7 @@ type FormState = {
   captcha_secret: string;
   captcha_trial: 'all' | 'suspicious';
   captcha_signup: boolean;
+  captcha_domains: string;
   site_address_day: string;
   site_network_day: string;
   site_minute: string;
@@ -211,6 +213,7 @@ function formOf(summary: AntibotSummary): FormState {
     captcha_secret: '',
     captcha_trial: s.captcha_trial ?? 'all',
     captcha_signup: s.captcha_signup ?? true,
+    captcha_domains: (s.captcha_domains ?? []).join(', '),
     site_address_day: String(s.site_address_day ?? 0),
     site_network_day: String(s.site_network_day ?? 0),
     site_minute: String(s.site_minute ?? 0),
@@ -218,6 +221,48 @@ function formOf(summary: AntibotSummary): FormState {
     telegram_ip: String(paces.telegram_ip),
     verify_ip: String(paces.verify_ip),
   };
+}
+
+function KeyCheck({ form, keep, busy }: { form: FormState; keep: boolean; busy: boolean }) {
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const typed = [form.captcha, form.captcha_site_key.trim(), form.captcha_secret.trim()].join('\n');
+  const latest = useRef(typed);
+  latest.current = typed;
+  useEffect(() => setResult(null), [typed]);
+
+  const check = async () => {
+    const asked = typed;
+    setChecking(true);
+    setResult(null);
+    let next: { ok: boolean; text: string };
+    try {
+      next = await api<{ ok: boolean; text: string }>(`${ANTIBOT}/captcha/check`, {
+        method: 'POST',
+        body: { provider: form.captcha, site_key: form.captcha_site_key.trim(), secret: form.captcha_secret.trim() || null },
+      });
+    } catch (err) {
+      next = { ok: false, text: failText(err, 'Проверить ключи не получилось') };
+    }
+    setChecking(false);
+    if (latest.current === asked) {
+      setResult(next);
+    }
+  };
+
+  const ready = form.captcha_site_key.trim() !== '' && (form.captcha_secret.trim() !== '' || keep);
+  return (
+    <div className="pt-keys">
+      <button type="button" className="btn-line hov" onClick={() => void check()} disabled={busy || checking || !ready}>
+        {checking ? 'Проверяем…' : 'Проверить ключи'}
+      </button>
+      {result ? (
+        <p className={result.ok ? 'cap' : 'err'} role={result.ok ? 'status' : 'alert'}>
+          {result.text}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function CaptchaFields({ form, summary, set, busy }: { form: FormState; summary: AntibotSummary; set: <K extends keyof FormState>(key: K, value: FormState[K]) => void; busy: boolean }) {
@@ -260,6 +305,12 @@ function CaptchaFields({ form, summary, set, busy }: { form: FormState; summary:
               <span className="cap">Хранится зашифрованным, нужен только серверу.</span>
             </label>
           </div>
+          <KeyCheck form={form} keep={keep} busy={busy} />
+          <label className="pf-field">
+            <span className="pf-label">Домены</span>
+            <input className="field" value={form.captcha_domains} onChange={(e) => set('captcha_domains', e.target.value)} placeholder={window.location.hostname} maxLength={2000} autoComplete="off" spellCheck={false} disabled={busy} />
+            <span className="cap">Через запятую, поддомены входят. Если заполнить, ответ капчи с другого домена не засчитывается. Пусто — не сверять.</span>
+          </label>
           <fieldset className="pt-modes">
             <legend className="pf-label">Кому капча перед пробным периодом</legend>
             <label className="pt-mode">
@@ -289,7 +340,7 @@ function CaptchaFields({ form, summary, set, busy }: { form: FormState; summary:
           </p>
           {problem ? (
             <p className="err" role="status">
-              {`Последняя проверка ${dateTime(problem.at)} не удалась: ${problem.problem}.`}
+              {captchaProblem(problem)}
             </p>
           ) : null}
         </>
@@ -380,6 +431,7 @@ function SettingsCard({ summary, onSaved, onClose, phone }: { summary: AntibotSu
       captcha_site_key: form.captcha_site_key.trim() || null,
       captcha_trial: form.captcha_trial,
       captcha_signup: form.captcha_signup,
+      captcha_domains: form.captcha_domains.trim() || null,
     };
     if (form.captcha_secret.trim()) {
       config.captcha_secret = form.captcha_secret.trim();

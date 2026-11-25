@@ -732,6 +732,81 @@ fn перепутанные_ключи_капчи_не_сохраняются() 
 }
 
 #[test]
+fn домены_капчи_разбираются_и_сверяются_вместе_с_поддоменами() {
+    assert_eq!(
+        captcha::parse_domains(
+            " https://LK.Example.com/login, *.shop.example;panel.example.org:8443\nмойвпн.рф. lk.example.com"
+        )
+        .unwrap(),
+        [
+            "lk.example.com",
+            "shop.example",
+            "panel.example.org",
+            "xn--b1anigci.xn--p1ai"
+        ]
+    );
+    assert!(captcha::parse_domains("  ,; ").unwrap().is_empty());
+    assert_eq!(captcha::parse_domains("localhost").unwrap(), ["localhost"]);
+    for bad in [
+        "example",
+        "user@example.com",
+        "https://",
+        "a b_c",
+        "exa mple",
+    ] {
+        assert!(
+            captcha::parse_domains(bad)
+                .unwrap_err()
+                .contains("не домен"),
+            "{bad}"
+        );
+    }
+    let many = (0..=captcha::MAX_DOMAINS)
+        .map(|n| format!("d{n}.example"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(captcha::parse_domains(&many).unwrap_err().contains("50"));
+    let domains = captcha::parse_domains("example.com, мойвпн.рф").unwrap();
+    for (host, fits) in [
+        ("example.com", true),
+        ("Example.COM.", true),
+        ("lk.example.com", true),
+        ("example.com:8080", true),
+        ("a.b.example.com", true),
+        ("xn--b1anigci.xn--p1ai", true),
+        ("мойвпн.рф", true),
+        ("evilexample.com", false),
+        ("example.com.evil.test", false),
+        ("example.org", false),
+        ("", false),
+        ("  ", false),
+    ] {
+        assert_eq!(captcha::covered(&domains, host), fits, "{host:?}");
+    }
+    assert!(captcha::covered(&[], "example.org"));
+    assert!(captcha::covered(&[], ""));
+    let parse =
+        |config: serde_json::Value| AntibotSettings::parse(&ModuleConfig::from_value(&config));
+    assert!(
+        parse(serde_json::json!({}))
+            .unwrap()
+            .captcha_domains
+            .is_empty()
+    );
+    assert_eq!(
+        parse(serde_json::json!({ "captcha_domains": "lk.example.com" }))
+            .unwrap()
+            .captcha_domains,
+        ["lk.example.com"]
+    );
+    assert!(
+        parse(serde_json::json!({ "captcha_domains": "не домен" }))
+            .unwrap_err()
+            .starts_with("Домены капчи: «")
+    );
+}
+
+#[test]
 fn при_смене_сервиса_капчи_секрет_вставляется_заново() {
     let turnstile = ModuleConfig::from_value(&serde_json::json!({
         "captcha": "turnstile",

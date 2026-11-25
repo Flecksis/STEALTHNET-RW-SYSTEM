@@ -56,6 +56,14 @@ pub(super) async fn limits(services: &Services, config: serde_json::Value) {
 }
 
 async fn captcha(services: &Services, admin: AdminId, config: serde_json::Value) {
+    save(services, admin, config).await.unwrap();
+}
+
+pub(super) async fn save(
+    services: &Services,
+    admin: AdminId,
+    config: serde_json::Value,
+) -> ServiceResult<()> {
     let mut all = serde_json::json!({
         "captcha": "turnstile",
         "captcha_site_key": "0x4AAAAAAAsite",
@@ -78,7 +86,7 @@ async fn captcha(services: &Services, admin: AdminId, config: serde_json::Value)
             admin,
         )
         .await
-        .unwrap();
+        .map(|_| ())
 }
 
 async fn forget_tries(services: &Services) {

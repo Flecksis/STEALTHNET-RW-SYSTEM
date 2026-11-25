@@ -311,3 +311,268 @@ async fn сайт_отдаёт_ключ_капчи_для_регистрации
     assert!(site["captcha"].is_null(), "{site}");
     h.db.cleanup().await;
 }
+
+async fn keys_stub(h: &Http) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/turnstile"))
+        .respond_with(|request: &wiremock::Request| {
+            let body = match form_value(&request.body, "secret").as_str() {
+                SECRET => json!({ "success": false, "error-codes": ["invalid-input-response"] }),
+                "0x4AAAAAAAbroken" => {
+                    json!({ "success": false, "error-codes": ["internal-error"] })
+                }
+                "0x4AAAAAAAdown" => {
+                    return ResponseTemplate::new(502).set_body_string("bad gateway");
+                }
+                _ => json!({ "success": false, "error-codes": ["invalid-input-secret"] }),
+            };
+            ResponseTemplate::new(200).set_body_json(body)
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/yandex"))
+        .respond_with(
+            |request: &wiremock::Request| match form_value(&request.body, "secret").as_str() {
+                "ysc2_good" => ResponseTemplate::new(200).set_body_json(
+                    json!({ "status": "failed", "message": "Invalid or expired Token." }),
+                ),
+                "ysc2_open" => ResponseTemplate::new(200)
+                    .set_body_json(json!({ "status": "ok", "message": "", "host": "" })),
+                "ysc2_down" => ResponseTemplate::new(500)
+                    .set_body_json(json!({ "status": "failed", "message": "" })),
+                _ => ResponseTemplate::new(403).set_body_json(
+                    json!({ "status": "failed", "message": "Authentication failed. Invalid secret." }),
+                ),
+            },
+        )
+        .mount(&server)
+        .await;
+    h.services().set_captcha_endpoints(Endpoints {
+        turnstile: format!("{}/turnstile", server.uri()),
+        yandex: format!("{}/yandex", server.uri()),
+    });
+    server
+}
+
+#[tokio::test]
+async fn кнопка_проверяет_секретный_ключ_у_сервиса_и_не_отдаёт_его() {
+    let Some(h) = super::site_limits::panel().await else {
+        return;
+    };
+    let owner = h.owner().await;
+    antibot_on(
+        &h,
+        json!({
+            "captcha": "turnstile",
+            "captcha_site_key": "0x4AAAAAAAsite-key",
+            "captcha_secret": SECRET,
+        }),
+    )
+    .await;
+    let server = keys_stub(&h).await;
+    let path = "/api/admin/m/antibot/captcha/check";
+    let ask = async |body: Value| h.write(Method::POST, path, &owner, body).await;
+    for (provider, site, secret, ok, needle) in [
+        ("turnstile", "0x4AAAAAAAsite-key", SECRET, true, "подошёл"),
+        ("turnstile", "0x4AAAAAAAsite-key", "", true, "подошёл"),
+        (
+            "turnstile",
+            "0x4AAAAAAAsite-key",
+            "0x4AAAAAAAwrong",
+            false,
+            "Cloudflare Turnstile не принимает",
+        ),
+        (
+            "turnstile",
+            "0x4AAAAAAAsite-key",
+            "0x4AAAAAAAbroken",
+            false,
+            "ответил ошибкой",
+        ),
+        (
+            "turnstile",
+            "0x4AAAAAAAsite-key",
+            "0x4AAAAAAAdown",
+            false,
+            "HTTP 502",
+        ),
+        (
+            "turnstile",
+            "1x00000000000000000000AA",
+            "1x0000000000000000000000000000000AA",
+            false,
+            "проверочный ключ",
+        ),
+        ("yandex", "ysc1_site", "ysc2_good", true, "подошёл"),
+        (
+            "yandex",
+            "ysc1_site",
+            "ysc2_wrong",
+            false,
+            "SmartCaptcha не принимает",
+        ),
+        ("yandex", "ysc1_site", "ysc2_open", false, "без проверки"),
+        ("yandex", "ysc1_site", "ysc2_down", false, "HTTP 500"),
+    ] {
+        let (status, body) = ask(json!({
+            "provider": provider, "site_key": site, "secret": secret
+        }))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{provider} {secret}: {body}");
+        assert_eq!(body["ok"], ok, "{provider} {secret}: {body}");
+        let text = body["text"].as_str().unwrap();
+        assert!(text.contains(needle), "{provider} {secret}: {text}");
+        assert!(
+            secret.is_empty() || !body.to_string().contains(secret),
+            "{body}"
+        );
+        assert!(!body.to_string().contains(SECRET), "{body}");
+    }
+    let asked = server.received_requests().await.unwrap().len();
+    assert_eq!(asked, 9);
+    for (body, needle) in [
+        (
+            json!({ "provider": "none", "site_key": "x", "secret": "y" }),
+            "Выберите капчу",
+        ),
+        (
+            json!({ "provider": "turnstile", "site_key": "", "secret": SECRET }),
+            "ключ сайта",
+        ),
+        (
+            json!({ "provider": "yandex", "site_key": "ysc1_site", "secret": "" }),
+            "секретный ключ",
+        ),
+        (
+            json!({ "provider": "yandex", "site_key": "ysc1_site", "secret": SECRET }),
+            "Cloudflare",
+        ),
+        (
+            json!({ "provider": "turnstile", "site_key": SECRET, "secret": SECRET }),
+            "один и тот же",
+        ),
+    ] {
+        let (status, reply) = ask(body.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {reply}");
+        let text = reply["error"]["message"].as_str().unwrap();
+        assert!(text.contains(needle), "{body}: {text}");
+        assert!(!reply.to_string().contains(SECRET), "{reply}");
+    }
+    assert_eq!(server.received_requests().await.unwrap().len(), asked);
+    let (status, _, _) = h
+        .send(
+            Method::POST,
+            path,
+            None,
+            Some(json!({ "provider": "turnstile", "site_key": "0x4AAAAAAAsite-key" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let mut last = StatusCode::OK;
+    for _ in 0..12 {
+        last = ask(json!({
+            "provider": "turnstile", "site_key": "0x4AAAAAAAsite-key", "secret": SECRET
+        }))
+        .await
+        .0;
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn удачная_проверка_ключей_снимает_сообщение_о_сбое_капчи() {
+    let Some(h) = super::site_limits::panel().await else {
+        return;
+    };
+    let owner = h.owner().await;
+    antibot_on(
+        &h,
+        json!({
+            "captcha": "turnstile",
+            "captcha_site_key": "0x4AAAAAAAsite-key",
+            "captcha_secret": SECRET,
+        }),
+    )
+    .await;
+    let _server = keys_stub(&h).await;
+    let fail = async |foreign: Option<&str>| {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.bot_state()
+            .set(
+                antibot::captcha::HEALTH_KEY,
+                &json!(antibot::captcha::Health {
+                    at: chrono::Utc::now(),
+                    provider: antibot::captcha::Provider::Turnstile,
+                    problem: "секретный ключ не подошёл".into(),
+                    foreign: foreign.map(str::to_string),
+                }),
+            )
+            .await
+            .unwrap();
+    };
+    let problem = async || {
+        let (_, _, view) = h
+            .send(
+                Method::GET,
+                "/api/admin/m/antibot/summary",
+                Some(&owner),
+                None,
+            )
+            .await;
+        view["captcha"]["problem"].clone()
+    };
+    let check = async |secret: &str| {
+        h.write(
+            Method::POST,
+            "/api/admin/m/antibot/captcha/check",
+            &owner,
+            json!({ "provider": "turnstile", "site_key": "0x4AAAAAAAsite-key", "secret": secret }),
+        )
+        .await
+        .1["ok"]
+            .clone()
+    };
+    fail(None).await;
+    assert_eq!(problem().await["problem"], "секретный ключ не подошёл");
+    assert_eq!(check("0x4AAAAAAAwrong").await, false);
+    assert_eq!(problem().await["problem"], "секретный ключ не подошёл");
+    assert_eq!(check("").await, true);
+    assert_eq!(problem().await, Value::Null);
+    fail(Some("evil.test")).await;
+    assert_eq!(check("").await, true);
+    assert_eq!(problem().await["foreign"], "evil.test");
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn проверять_ключи_может_только_тот_кто_меняет_модули() {
+    let Some(h) = super::site_limits::panel().await else {
+        return;
+    };
+    h.owner().await;
+    antibot_on(
+        &h,
+        json!({
+            "captcha": "turnstile",
+            "captcha_site_key": "0x4AAAAAAAsite-key",
+            "captcha_secret": SECRET,
+        }),
+    )
+    .await;
+    let server = keys_stub(&h).await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let (status, body) = h
+        .write(
+            Method::POST,
+            "/api/admin/m/antibot/captcha/check",
+            &support,
+            json!({ "provider": "turnstile", "site_key": "0x4AAAAAAAsite-key" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(server.received_requests().await.unwrap().is_empty());
+    h.db.cleanup().await;
+}

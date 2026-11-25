@@ -22,6 +22,7 @@ use sn_domain::settings::{
     TRIAL_NAME_MAX, TRIAL_VARIANTS_MAX, TopUpSettings, TrialSettings, TrialVariant, keys,
     secret_keys,
 };
+use sn_modules::catalog::antibot::{AntibotSettings, captcha};
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
 use sn_payments::{
@@ -1078,6 +1079,19 @@ pub fn mask_secret(secret: &str) -> String {
     let head: String = chars[..4].iter().collect();
     let tail: String = chars[chars.len() - 4..].iter().collect();
     format!("{head}…{tail}")
+}
+
+fn captcha_domains(config: &ModuleConfig, public_url: Option<&str>) -> Result<(), String> {
+    let settings = AntibotSettings::lenient(config);
+    if settings.captcha == captcha::Provider::None {
+        return Ok(());
+    }
+    match public_url.and_then(captcha::clean_host) {
+        Some(host) if !captcha::covered(&settings.captcha_domains, &host) => Err(format!(
+            "Домены капчи: добавьте домен панели {host}, иначе капчу на нём не пройдёт никто"
+        )),
+        _ => Ok(()),
+    }
 }
 
 pub fn webhook_env(public_url: Option<&str>, secret: &str) -> String {
@@ -2937,6 +2951,10 @@ impl<'a> SettingsOps<'a> {
                 }
                 other => ServiceError::rejected("modules.config", other.to_string()),
             })?;
+        if id == ModuleId::Antibot {
+            captcha_domains(&merged, self.services.settings().public_url.as_deref())
+                .map_err(|reason| ServiceError::rejected("modules.config", reason))?;
+        }
         for change in &changes {
             match change {
                 SecretChange::Set(key, value) => {

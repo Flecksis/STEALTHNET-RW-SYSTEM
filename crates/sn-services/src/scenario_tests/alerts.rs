@@ -2,6 +2,7 @@ use super::*;
 use crate::alerts::{AlertsUpdate, RouteInput};
 use sn_domain::alerts::AlertKind;
 use sn_domain::ids::TicketId;
+use sn_modules::catalog::antibot::{AntibotModule, captcha};
 
 async fn withdrawal(services: &Services, client: ClientId, minor: i64) {
     let mut conn = services.store().conn().await.unwrap();
@@ -617,5 +618,157 @@ async fn списания_с_карты_на_проверке_приходят_�
     assert_eq!(got.len(), 1, "{got:?}");
     assert!(got[0].html.contains("ждёт ручной проверки"));
     assert_eq!(got[0].path, "/admin/money#todo-orders");
+    env.db.cleanup().await;
+}
+
+async fn captcha_failed(
+    services: &Services,
+    at: DateTime<Utc>,
+    problem: &str,
+    foreign: Option<&str>,
+) {
+    let mut conn = services.store().conn().await.unwrap();
+    conn.bot_state()
+        .set(
+            captcha::HEALTH_KEY,
+            &serde_json::json!(captcha::Health {
+                at,
+                provider: captcha::Provider::Turnstile,
+                problem: problem.into(),
+                foreign: foreign.map(str::to_string),
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+async fn captcha_alerts(services: &Services) -> Vec<String> {
+    services
+        .alerts()
+        .collect()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|alert| alert.kind == AlertKind::Captcha)
+        .map(|alert| {
+            assert_eq!(alert.path, "/admin/clients/antibot");
+            alert.html
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn сбой_капчи_приходит_в_группу_не_чаще_раза_в_час() {
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(AntibotModule)];
+    let Some(env) = env_with(ModuleRegistry::new(modules).unwrap()).await else {
+        return;
+    };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let shown = || services.alerts().kinds().contains(&AlertKind::Captcha);
+    let at = |minutes: i64| start() + Duration::minutes(minutes);
+    assert!(!shown());
+    services
+        .settings_ops()
+        .toggle_module(ModuleId::Antibot, true, admin)
+        .await
+        .unwrap();
+    assert!(!shown());
+    captcha_failed(services, at(0), "сервис проверки не ответил вовремя", None).await;
+    assert!(captcha_alerts(services).await.is_empty());
+    services
+        .settings_ops()
+        .update_module_config(
+            ModuleId::Antibot,
+            &ModuleConfigUpdate {
+                config: serde_json::json!({
+                    "captcha": "turnstile",
+                    "captcha_site_key": "0x4AAAAAAAsite",
+                    "captcha_secret": "0x4AAAAAAAsecret-key",
+                })
+                .as_object()
+                .cloned()
+                .unwrap(),
+                clear: Vec::new(),
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(shown());
+    let first = captcha_alerts(services).await;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("<b>Капча антибота не работает</b>"));
+    assert!(first[0].contains("Cloudflare Turnstile: сервис проверки не ответил вовремя"));
+    assert!(first[0].contains("не чаще раза в час"));
+    assert!(captcha_alerts(services).await.is_empty());
+    env.clock.set(at(30));
+    captcha_failed(services, at(30), "секретный ключ не подошёл", None).await;
+    assert!(captcha_alerts(services).await.is_empty());
+    env.clock.set(at(59));
+    captcha_failed(services, at(59), "секретный ключ не подошёл", None).await;
+    assert!(captcha_alerts(services).await.is_empty());
+    env.clock.set(at(60));
+    let second = captcha_alerts(services).await;
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(second[0].contains("секретный ключ не подошёл"));
+    env.clock.set(at(121));
+    assert!(
+        captcha_alerts(services).await.is_empty(),
+        "о сбое часовой давности не напоминаем"
+    );
+    captcha_failed(
+        services,
+        at(121),
+        "ответ получен на домене <evil>.test, его нет в поле «Домены»",
+        Some("<evil>.test"),
+    )
+    .await;
+    services
+        .alerts()
+        .update(
+            &AlertsUpdate {
+                routes: vec![RouteInput {
+                    kind: AlertKind::Captcha,
+                    on: false,
+                    topic: Some("Капча".into()),
+                }],
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    assert!(captcha_alerts(services).await.is_empty());
+    services
+        .alerts()
+        .update(
+            &AlertsUpdate {
+                routes: vec![RouteInput {
+                    kind: AlertKind::Captcha,
+                    on: true,
+                    topic: Some("Капча".into()),
+                }],
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    let foreign = captcha_alerts(services).await;
+    assert_eq!(foreign.len(), 1, "{foreign:?}");
+    assert!(foreign[0].contains("<b>Капча пройдена на чужом домене</b>"));
+    assert!(
+        foreign[0].contains("домена &lt;evil&gt;.test нет в поле «Домены»"),
+        "{}",
+        foreign[0]
+    );
+    env.clock.set(at(300));
+    captcha_failed(services, at(300), "сервис проверки недоступен", None).await;
+    services
+        .settings_ops()
+        .toggle_module(ModuleId::Antibot, false, admin)
+        .await
+        .unwrap();
+    assert!(!shown());
+    assert!(captcha_alerts(services).await.is_empty());
     env.db.cleanup().await;
 }

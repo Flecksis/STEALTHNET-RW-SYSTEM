@@ -100,6 +100,18 @@
   color: var(--ink);
 }
 
+.pt-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.pt-keys p {
+  flex: 1 1 260px;
+  margin: 0;
+}
+
 .pt-code {
   display: block;
   margin-top: 8px;

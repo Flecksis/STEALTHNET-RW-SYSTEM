@@ -23,10 +23,11 @@ pub enum AlertKind {
     Backups,
     Bot,
     Proxy,
+    Captcha,
 }
 
 impl AlertKind {
-    pub const ALL: [AlertKind; 15] = [
+    pub const ALL: [AlertKind; 16] = [
         AlertKind::Support,
         AlertKind::Orders,
         AlertKind::Stars,
@@ -42,6 +43,7 @@ impl AlertKind {
         AlertKind::Backups,
         AlertKind::Bot,
         AlertKind::Proxy,
+        AlertKind::Captcha,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -61,6 +63,7 @@ impl AlertKind {
             AlertKind::Backups => "backups",
             AlertKind::Bot => "bot",
             AlertKind::Proxy => "proxy",
+            AlertKind::Captcha => "captcha",
         }
     }
 
@@ -81,6 +84,7 @@ impl AlertKind {
             AlertKind::Backups => "Резервные копии: сбои и восстановление",
             AlertKind::Bot => "Сбои вебхука и флуд в боте",
             AlertKind::Proxy => "Исходящий прокси: сбои и восстановление",
+            AlertKind::Captcha => "Капча антибота: сбои",
         }
     }
 
@@ -101,6 +105,7 @@ impl AlertKind {
             AlertKind::Backups => "Резервные копии",
             AlertKind::Bot => "Бот",
             AlertKind::Proxy => "Прокси",
+            AlertKind::Captcha => "Капча",
         }
     }
 }
@@ -241,5 +246,26 @@ mod tests {
             serde_json::json!("security")
         );
         assert!(AlertKind::ALL.contains(&AlertKind::Security));
+    }
+
+    #[test]
+    fn сбои_капчи_включены_по_умолчанию_и_идут_в_свою_тему() {
+        let saved: AlertsConfig = serde_json::from_value(serde_json::json!({
+            "chat_id": -100_500,
+            "forum": true,
+            "routes": {"proxy": {"on": false, "topic": "Прокси"}}
+        }))
+        .unwrap();
+        assert!(saved.route(AlertKind::Captcha).on);
+        assert_eq!(
+            saved.topic_for(AlertKind::Captcha).as_deref(),
+            Some("Капча")
+        );
+        assert_eq!(
+            serde_json::to_value(AlertKind::Captcha).unwrap(),
+            serde_json::json!("captcha")
+        );
+        assert!(AlertKind::ALL.contains(&AlertKind::Captcha));
+        assert_eq!(AlertKind::Captcha.as_str(), "captcha");
     }
 }

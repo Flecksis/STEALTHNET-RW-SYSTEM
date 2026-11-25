@@ -5,7 +5,7 @@ import '../form.css';
 import './admins.css';
 import { SettingsLayout } from './SettingsLayout';
 
-type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales' | 'security' | 'sync' | 'bot' | 'proxy';
+type Kind = 'support' | 'orders' | 'stars' | 'refunds' | 'withdrawals' | 'payments' | 'traffic' | 'nodes' | 'clients' | 'sales' | 'security' | 'sync' | 'bot' | 'proxy' | 'captcha';
 
 type KindView = { kind: Kind; title: string; default_topic: string; on: boolean; topic: string | null };
 
@@ -35,6 +35,7 @@ const ABOUT: Record<Kind, string> = {
   sync: 'Закончился или остановился перенос клиентов и подписок в Remnawave или забор из неё: сколько создано, исправлено и пропущено',
   bot: 'Telegram дольше 5 минут не может доставить обновления на вебхук бота, бот сам вернулся к опросу или вебхук снова работает; бот заблокировал аккаунты за флуд или отложил регистрации из-за наплыва новых аккаунтов',
   proxy: 'Исходящий прокси из «Настройки → Общие» две минуты не отвечает или снова заработал. Если Telegram идёт через этот прокси, сообщение о сбое бот пробует отправить напрямую',
+  captcha: 'Сервис капчи из «Антибота» не отвечает, не принял ключ или капчу прошли на домене не из списка. Не чаще одного сообщения в час',
 };
 
 function failText(err: unknown, fallback: string): string {

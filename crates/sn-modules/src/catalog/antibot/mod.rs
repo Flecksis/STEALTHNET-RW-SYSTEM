@@ -93,6 +93,7 @@ pub struct AntibotSettings {
     pub captcha_site_key: String,
     pub captcha_trial: Scope,
     pub captcha_signup: bool,
+    pub captcha_domains: Vec<String>,
     pub site_address_day: u32,
     pub site_network_day: u32,
     pub site_minute: u32,
@@ -118,6 +119,7 @@ impl Default for AntibotSettings {
             captcha_site_key: String::new(),
             captcha_trial: Scope::All,
             captcha_signup: true,
+            captcha_domains: Vec::new(),
             site_address_day: 0,
             site_network_day: 0,
             site_minute: 0,
@@ -226,6 +228,11 @@ impl AntibotSettings {
             },
             captcha_signup: config_flag(config, "captcha_signup")
                 .unwrap_or(defaults.captcha_signup),
+            captcha_domains: match config.text("captcha_domains") {
+                None => defaults.captcha_domains,
+                Some(raw) => captcha::parse_domains(raw)
+                    .map_err(|reason| format!("Домены капчи: {reason}"))?,
+            },
             site_address_day: whole(
                 config,
                 "site_address_day",
@@ -1006,7 +1013,7 @@ async fn check_answer(
     .await?;
     Ok(match outcome {
         captcha::Outcome::Passed => SignupCheck::Passed,
-        captcha::Outcome::Rejected(_) => SignupCheck::Failed,
+        captcha::Outcome::Rejected(_) | captcha::Outcome::Foreign(_) => SignupCheck::Failed,
         captcha::Outcome::Unavailable(_) => SignupCheck::Unavailable,
     })
 }
@@ -1433,6 +1440,12 @@ impl Module for AntibotModule {
                 "captcha_secret",
                 "Секретный ключ капчи",
                 "Хранится зашифрованным и нужен только серверу для проверки ответа",
+            )
+            .optional(),
+            SettingField::text(
+                "captcha_domains",
+                "Домены капчи",
+                "Через запятую, поддомены входят. Если заполнить, ответ капчи с другого домена не засчитывается; пусто — не сверять",
             )
             .optional(),
             SettingField::select(

@@ -14,6 +14,7 @@ use sn_domain::format;
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::settings::keys;
+use sn_modules::catalog::antibot::captcha;
 use sn_store::Db;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -48,6 +49,9 @@ const SECURITY_DAYS: i32 = 2;
 const BOT_WEBHOOK_CURSOR: &str = "alerts.cursor.bot_webhook";
 const PROXY_CURSOR: &str = "alerts.cursor.proxy";
 const BOT_PATH: &str = "/admin/settings/bot";
+const CAPTCHA_SENT: &str = "alerts.captcha";
+const CAPTCHA_QUIET_HOURS: i64 = 1;
+const CAPTCHA_PATH: &str = "/admin/clients/antibot";
 
 fn seen_key(kind: AlertKind) -> String {
     format!("alerts.seen.{}", kind.as_str())
@@ -467,6 +471,13 @@ fn summary(kind: AlertKind, rest: usize) -> Alert {
             ),
             crate::egress::PAGE_PATH,
         ),
+        AlertKind::Captcha => (
+            format!(
+                "Ещё {rest} {} капчи",
+                format::plural_ru(n, "сбой", "сбоя", "сбоев")
+            ),
+            CAPTCHA_PATH,
+        ),
     };
     Alert {
         kind,
@@ -489,6 +500,34 @@ fn charges_summary(rest: usize) -> Alert {
         ),
         path: CHARGES_PATH.to_string(),
     }
+}
+
+fn captcha_due(failed: DateTime<Utc>, sent: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    let quiet = Duration::hours(CAPTCHA_QUIET_HOURS);
+    now - failed < quiet && sent.is_none_or(|at| at > now || now - at >= quiet)
+}
+
+fn captcha_text(health: &captcha::Health) -> String {
+    let service = escape(health.provider.title());
+    let lines = match &health.foreign {
+        Some(host) => vec![
+            "<b>Капча пройдена на чужом домене</b>".to_string(),
+            format!(
+                "{service}: домена {} нет в поле «Домены» антибота, ответ не принят",
+                escape(host)
+            ),
+            "Если это ваш домен, добавьте его: иначе клиенты с него проверку не пройдут"
+                .to_string(),
+        ],
+        None => vec![
+            "<b>Капча антибота не работает</b>".to_string(),
+            format!("{service}: {}", escape(&cut(&health.problem, BODY_MAX))),
+            "Пока сервис не отвечает, пробный период и регистрация по почте с капчей не выдаются: клиенты видят просьбу повторить через минуту".to_string(),
+        ],
+    };
+    let mut lines = lines;
+    lines.push("О капче пишем не чаще раза в час".to_string());
+    lines.join("\n")
 }
 
 fn window_text(seconds: i64) -> String {
@@ -691,10 +730,12 @@ impl<'a> AlertsOps<'a> {
             .modules()
             .is_enabled(sn_domain::module::ModuleId::Limits);
         let proxy = self.services.egress().plan().active();
+        let captcha = self.captcha_on();
         AlertKind::ALL
             .into_iter()
             .filter(|kind| limits || *kind != AlertKind::Traffic)
             .filter(|kind| proxy || *kind != AlertKind::Proxy)
+            .filter(|kind| captcha || *kind != AlertKind::Captcha)
             .collect()
     }
 
@@ -917,7 +958,40 @@ impl<'a> AlertsOps<'a> {
         out.extend(self.backups(&config).await?);
         out.extend(self.bot_webhook(&config).await?);
         out.extend(self.proxy(&config).await?);
+        out.extend(self.captcha(&config).await?);
         Ok(out)
+    }
+
+    fn captcha_on(&self) -> bool {
+        captcha::active(&self.services.module_context()).is_some()
+    }
+
+    async fn captcha(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
+        if !config.route(AlertKind::Captcha).on || !self.captcha_on() {
+            return Ok(Vec::new());
+        }
+        let health = {
+            let mut conn = self.services.store().conn().await?;
+            captcha::health(&mut conn).await?
+        };
+        let Some(health) = health else {
+            return Ok(Vec::new());
+        };
+        let now = self.services.now();
+        let sent = self
+            .state(CAPTCHA_SENT)
+            .await?
+            .and_then(|v| serde_json::from_value(v).ok());
+        if !captcha_due(health.at, sent, now) {
+            return Ok(Vec::new());
+        }
+        self.put_state(CAPTCHA_SENT, &serde_json::json!(now))
+            .await?;
+        Ok(vec![Alert {
+            kind: AlertKind::Captcha,
+            html: captcha_text(&health),
+            path: CAPTCHA_PATH.to_string(),
+        }])
     }
 
     async fn proxy(&self, config: &AlertsConfig) -> ServiceResult<Vec<Alert>> {
@@ -1777,7 +1851,8 @@ impl<'a> AlertsOps<'a> {
             | AlertKind::Sales
             | AlertKind::Backups
             | AlertKind::Bot
-            | AlertKind::Proxy => {}
+            | AlertKind::Proxy
+            | AlertKind::Captcha => {}
         }
         Ok(items)
     }

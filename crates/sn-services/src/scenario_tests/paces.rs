@@ -1,5 +1,5 @@
 use super::email_change::{NO_PROOF, principal};
-use super::site_limits::{limits, register, site};
+use super::site_limits::{limits, register, save, site};
 use super::*;
 use crate::limits::IPV6_WIDE_BITS;
 use sn_domain::access::{ClientChannel, ClientPrincipal};
@@ -172,5 +172,66 @@ async fn с_порогом_по_почте_растёт_и_предел_отве
     limits(services, serde_json::json!({ "email_ip": 40 })).await;
     assert_eq!(services.limits().captcha().limit, 120);
     assert_eq!(rules::EMAIL_VERIFY_IP.limit, 20);
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn список_доменов_капчи_без_домена_панели_не_сохраняется() {
+    let Some((env, admin, _letters)) = site("password", false).await else {
+        return;
+    };
+    let services = &env.services;
+    save(
+        services,
+        admin,
+        serde_json::json!({ "captcha_domains": "shop.example" }),
+    )
+    .await
+    .unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                sn_domain::settings::keys::PUBLIC_URL,
+                &serde_json::json!("https://LK.example.com:8443/panel"),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    services.reload().await.unwrap();
+    let refused = save(
+        services,
+        admin,
+        serde_json::json!({ "captcha_domains": "shop.example, other.example" }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), "modules.config");
+    assert!(refused.to_string().contains("lk.example.com"), "{refused}");
+    for domains in ["", "lk.example.com", "shop.example, example.com"] {
+        save(
+            services,
+            admin,
+            serde_json::json!({ "captcha_domains": domains }),
+        )
+        .await
+        .unwrap();
+    }
+    save(
+        services,
+        admin,
+        serde_json::json!({ "captcha": "none", "captcha_domains": "shop.example" }),
+    )
+    .await
+    .unwrap();
+    let broken = save(
+        services,
+        admin,
+        serde_json::json!({ "captcha_domains": "lk.example.com, не-домен" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(broken.to_string().contains("не домен"), "{broken}");
     env.db.cleanup().await;
 }

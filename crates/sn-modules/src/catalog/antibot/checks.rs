@@ -430,7 +430,9 @@ pub async fn confirm(
             .await?;
             match outcome {
                 Outcome::Passed => {}
-                Outcome::Rejected(_) => return refuse(ctx, &row, false).await,
+                Outcome::Rejected(_) | Outcome::Foreign(_) => {
+                    return refuse(ctx, &row, false).await;
+                }
                 Outcome::Unavailable(_) => return Ok(Confirmation::Unavailable),
             }
         }

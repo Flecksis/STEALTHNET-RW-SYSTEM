@@ -1,6 +1,7 @@
 import { ApiError } from '../../lib/api';
 import { ago, count, dateTime, plural, traffic } from '../../lib/format';
 import type { Person } from '../home/model';
+import { captchaTrouble, type CaptchaTrouble } from './captchaText';
 import type { Paces, SiteLimits, SiteState } from './siteLimits';
 
 export const ANTIBOT = '/api/admin/m/antibot';
@@ -72,14 +73,17 @@ export type AntibotSettings = Partial<SiteLimits> & Partial<Paces> & {
   captcha_site_key: string;
   captcha_trial: 'all' | 'suspicious';
   captcha_signup: boolean;
+  captcha_domains?: string[];
 };
 
 export type CaptchaProvider = 'none' | 'turnstile' | 'yandex';
 
+export type CaptchaProblem = CaptchaTrouble & { at: string; provider: CaptchaProvider };
+
 export type CaptchaState = {
   secret_set: boolean;
   ready: boolean;
-  problem: { at: string; provider: CaptchaProvider; problem: string } | null;
+  problem: CaptchaProblem | null;
 };
 
 export type AntibotSummary = {
@@ -162,9 +166,13 @@ export function captchaAlert(summary: AntibotSummary): string | null {
     return 'Капча выбрана, но секретный ключ не читается: пробный период и регистрация идут без неё. Откройте «Настроить» и вставьте ключ заново.';
   }
   if (state.problem) {
-    return `Последняя проверка капчи ${dateTime(state.problem.at).toLowerCase()} не удалась: ${state.problem.problem}. Пока капча не отвечает, пробный период и регистрация по почте не выдаются.`;
+    return captchaProblem(state.problem);
   }
   return null;
+}
+
+export function captchaProblem(problem: CaptchaProblem): string {
+  return captchaTrouble(problem, dateTime(problem.at).toLowerCase());
 }
 
 export const JOURNAL_FILTERS: Array<[string, string]> = [

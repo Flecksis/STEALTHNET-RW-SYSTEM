@@ -1,6 +1,6 @@
 use super::*;
 
-async fn panel() -> Option<Http> {
+pub(super) async fn panel() -> Option<Http> {
     let http = http().await?;
     let services = Services::new(ServiceDeps {
         store: http.db.store.clone(),

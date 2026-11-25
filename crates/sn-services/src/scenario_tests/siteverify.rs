@@ -111,6 +111,8 @@ fn yandex(form: &Form) -> ResponseTemplate {
     }
     let body = if token.starts_with("nohost") {
         serde_json::json!({ "status": "ok", "message": "", "host": "" })
+    } else if token.starts_with("ok:port") {
+        serde_json::json!({ "status": "ok", "message": "", "host": "panel.example.com:8443" })
     } else if token.starts_with("ok") {
         serde_json::json!({ "status": "ok", "message": "", "host": "panel.example.com" })
     } else if token.starts_with("secret") {

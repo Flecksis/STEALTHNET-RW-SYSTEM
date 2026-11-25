@@ -1,7 +1,8 @@
+use super::captcha::{self, Probe, Provider};
 use super::store::{self, JournalFilter, JournalItem, MarkItem, Summary};
 use super::{AntibotSettings, active, signups};
 use crate::catalog::web::{Admin, ClientAddr, WebError};
-use crate::context::ModuleContext;
+use crate::context::{ModuleContext, RateLimit};
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -17,14 +18,114 @@ pub fn admin(ctx: ModuleContext) -> Router {
         .route("/marks", get(marks))
         .route("/marks/{client_id}", get(mark))
         .route("/marks/{client_id}/clear", post(clear))
+        .route("/captcha/check", post(check_captcha))
         .with_state(ctx)
+}
+
+const KEY_CHECKS: RateLimit = RateLimit {
+    scope: "antibot_key_checks",
+    limit: 20,
+    window_seconds: 600,
+};
+
+#[derive(Deserialize)]
+struct KeyCheck {
+    provider: Provider,
+    #[serde(default)]
+    site_key: String,
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+#[derive(Serialize)]
+struct KeyCheckView {
+    ok: bool,
+    text: String,
+}
+
+fn bad_key(text: impl Into<String>) -> WebError {
+    WebError::rejected("antibot.captcha_key", text)
+}
+
+async fn check_captcha(
+    State(ctx): State<ModuleContext>,
+    admin: Admin,
+    Json(body): Json<KeyCheck>,
+) -> Result<Json<KeyCheckView>, WebError> {
+    admin.require(Permission::Modules)?;
+    if body.provider == Provider::None {
+        return Err(bad_key("Выберите капчу"));
+    }
+    let site_key = captcha::clean_key(&body.site_key).ok_or_else(|| {
+        bad_key("Укажите ключ сайта: латинские буквы, цифры, точка, дефис и подчёркивание")
+    })?;
+    let typed = body
+        .secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty());
+    let secret = match typed {
+        Some(raw) => captcha::clean_key(raw),
+        None => {
+            let config = ctx.core.module_config(sn_domain::module::ModuleId::Antibot);
+            let saved = AntibotSettings::lenient(&config).captcha == body.provider;
+            config
+                .text("captcha_secret")
+                .filter(|_| saved)
+                .and_then(captcha::clean_key)
+        }
+    }
+    .ok_or_else(|| {
+        bad_key("Укажите секретный ключ: латинские буквы, цифры, точка, дефис и подчёркивание")
+    })?;
+    captcha::check_keys(body.provider, &site_key, &secret).map_err(bad_key)?;
+    if let Some(made) = captcha::foreign(body.provider, &secret) {
+        return Err(bad_key(captcha::foreign_text(body.provider, made)));
+    }
+    if !ctx
+        .core
+        .within_rate_limit(KEY_CHECKS, &admin.0.admin_id.0.to_string())
+        .await?
+    {
+        return Err(WebError::new(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "antibot.captcha_checks",
+            "Проверок ключей — не больше 20 за 10 минут. Попробуйте позже",
+        ));
+    }
+    let outcome = captcha::probe(&ctx.core.captcha_endpoints(), body.provider, &secret).await;
+    if outcome == Probe::Accepted {
+        let mut conn = ctx.store.conn().await?;
+        captcha::recovered(&mut conn).await?;
+    }
+    Ok(Json(match outcome {
+        Probe::Accepted => KeyCheckView {
+            ok: true,
+            text: "Секретный ключ подошёл. Ключ сайта и список доменов проверяет браузер: откройте вход на сайт и пройдите капчу".into(),
+        },
+        Probe::Refused => KeyCheckView {
+            ok: false,
+            text: format!(
+                "{} не принимает этот секретный ключ. Скопируйте его ещё раз",
+                body.provider.title()
+            ),
+        },
+        Probe::Test => KeyCheckView {
+            ok: false,
+            text: "Это проверочный ключ Cloudflare: он отвечает всем одинаково и никого не проверяет. Вставьте настоящий".into(),
+        },
+        Probe::Unavailable(problem) => KeyCheckView {
+            ok: false,
+            text: format!("Проверить не получилось: {problem}. Сервис капчи должен открываться с сервера панели"),
+        },
+    }))
 }
 
 #[derive(Serialize)]
 struct CaptchaState {
     secret_set: bool,
     ready: bool,
-    problem: Option<super::captcha::Health>,
+    problem: Option<captcha::Health>,
 }
 
 #[derive(Serialize)]
@@ -76,10 +177,10 @@ async fn site_state(
 fn captcha_state(
     ctx: &ModuleContext,
     settings: &AntibotSettings,
-    health: Option<super::captcha::Health>,
+    health: Option<captcha::Health>,
 ) -> CaptchaState {
     let config = ctx.core.module_config(sn_domain::module::ModuleId::Antibot);
-    let ready = super::captcha::Captcha::of(&config).is_some();
+    let ready = captcha::Captcha::of(&config).is_some();
     CaptchaState {
         secret_set: config.text("captcha_secret").is_some(),
         ready,
@@ -96,12 +197,12 @@ async fn summary(
     let mut conn = ctx.store.conn().await?;
     let settings = active(&mut conn).await?.unwrap_or_default();
     let counts = store::summary(&mut conn).await?;
-    let health = super::captcha::health(&mut conn).await?;
-    let captcha = captcha_state(&ctx, &settings, health);
+    let health = captcha::health(&mut conn).await?;
+    let state = captcha_state(&ctx, &settings, health);
     let site = site_state(&mut conn, address).await?;
     Ok(Json(SummaryView {
         settings,
-        captcha,
+        captcha: state,
         site,
         counts,
     }))

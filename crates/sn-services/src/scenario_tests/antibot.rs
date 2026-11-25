@@ -537,6 +537,16 @@ async fn captcha_on(services: &Services, provider: &str, trial: &str) {
 }
 
 async fn captcha_with(services: &Services, provider: &str, trial: &str, secret: &str) {
+    captcha_on_domains(services, provider, trial, secret, "").await;
+}
+
+async fn captcha_on_domains(
+    services: &Services,
+    provider: &str,
+    trial: &str,
+    secret: &str,
+    domains: &str,
+) {
     services
         .modules()
         .set_config(
@@ -548,6 +558,7 @@ async fn captcha_with(services: &Services, provider: &str, trial: &str, secret: 
                 "captcha_site_key": if provider == "yandex" { "ysc1_site-key" } else { "0x4AAAAAAAsite-key" },
                 "captcha_secret": secret,
                 "captcha_trial": trial,
+                "captcha_domains": domains,
             })),
             None,
         )
@@ -808,6 +819,152 @@ async fn ответ_turnstile_без_привязки_к_действию_и_к�
     );
     checkout
         .confirm_trial(tester, &challenge.token, captcha("bare-2"), None)
+        .await
+        .unwrap();
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn ответ_капчи_с_чужого_домена_не_принимается_когда_домены_заданы() {
+    let Some(kit) = antibot_kit().await else {
+        return;
+    };
+    let services = &kit.services;
+    let _stub = siteverify(services).await;
+    let health = async || {
+        let mut conn = services.store().conn().await.unwrap();
+        antibot::captcha::health(&mut conn).await.unwrap()
+    };
+    let mut id = 1_020_000_000;
+    for (provider, secret) in [
+        ("turnstile", "0x4AAAAAAAsecret-key"),
+        ("yandex", "ysc2_secret-key"),
+    ] {
+        for (domains, fits) in [
+            ("", true),
+            ("panel.example.com", true),
+            ("https://example.com/", true),
+            ("other.example, evil.test", false),
+            ("lk.panel.example.com", false),
+        ] {
+            id += 1;
+            captcha_on_domains(services, provider, "all", secret, domains).await;
+            let client = fresh(services, id, Some("calm_user")).await;
+            let challenge = services
+                .checkout()
+                .trial_challenge(client, Surface::Web, None)
+                .await
+                .unwrap();
+            let good = match widget(&challenge).cdata {
+                Some(cdata) => format!("ok:trial:{cdata}"),
+                None => format!("ok:{id}"),
+            };
+            if fits {
+                services
+                    .checkout()
+                    .confirm_trial(client, &challenge.token, captcha(&good), None)
+                    .await
+                    .unwrap();
+                assert_eq!(health().await, None, "{provider} {domains}");
+                continue;
+            }
+            assert_eq!(
+                trial_code(services, client, &challenge.token, captcha(&good)).await,
+                antibot::FAILED,
+                "{provider} {domains}"
+            );
+            let seen = health().await.unwrap();
+            assert_eq!(seen.foreign.as_deref(), Some("panel.example.com"));
+            assert!(
+                seen.problem.contains("panel.example.com") && seen.problem.contains("«Домены»"),
+                "{}",
+                seen.problem
+            );
+            assert_eq!(
+                trial_code(services, client, &challenge.token, captcha("bad-answer")).await,
+                antibot::FAILED
+            );
+            assert!(health().await.unwrap().foreign.is_some());
+            assert_eq!(
+                trial_code(
+                    services,
+                    client,
+                    &challenge.token,
+                    captcha(&format!("down-{id}"))
+                )
+                .await,
+                antibot::UNAVAILABLE
+            );
+            assert_eq!(health().await.unwrap().foreign, None);
+            assert_eq!(
+                trial_code(
+                    services,
+                    client,
+                    &challenge.token,
+                    captcha(&format!("bad-{id}"))
+                )
+                .await,
+                antibot::FAILED
+            );
+            assert_eq!(health().await, None);
+        }
+    }
+    captcha_on_domains(
+        services,
+        "yandex",
+        "all",
+        "ysc2_secret-key",
+        "lk.example.org",
+    )
+    .await;
+    let lost = fresh(services, 1_029_000_000, Some("calm_user")).await;
+    let challenge = services
+        .checkout()
+        .trial_challenge(lost, Surface::Web, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        trial_code(services, lost, &challenge.token, captcha("ok:lost")).await,
+        antibot::FAILED
+    );
+    assert!(health().await.unwrap().foreign.is_some());
+    captcha_on_domains(
+        services,
+        "yandex",
+        "all",
+        "ysc2_secret-key",
+        "panel.example.com",
+    )
+    .await;
+    let ported = fresh(services, 1_030_000_000, Some("calm_user")).await;
+    let challenge = services
+        .checkout()
+        .trial_challenge(ported, Surface::Web, None)
+        .await
+        .unwrap();
+    services
+        .checkout()
+        .confirm_trial(ported, &challenge.token, captcha("ok:port"), None)
+        .await
+        .unwrap();
+    assert_eq!(health().await, None);
+    captcha_on_domains(
+        services,
+        "turnstile",
+        "all",
+        "1x0000000000000000000000000000000AA",
+        "lk.example.org",
+    )
+    .await;
+    let tester = fresh(services, 1_040_000_000, Some("tester")).await;
+    let challenge = services
+        .checkout()
+        .trial_challenge(tester, Surface::Web, None)
+        .await
+        .unwrap();
+    services
+        .checkout()
+        .confirm_trial(tester, &challenge.token, captcha("bare-test"), None)
         .await
         .unwrap();
     kit.db.cleanup().await;
