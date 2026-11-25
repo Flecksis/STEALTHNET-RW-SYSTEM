@@ -15,7 +15,7 @@ function failText(err: unknown, fallback: string): string {
 }
 
 export function MiniConnect() {
-  const { site, view, ready, setView, devices, setDevices } = useMini();
+  const { me, site, view, ready, setView, devices, setDevices } = useMini();
   const [ask, setAsk] = useState('');
   const [reissued, setReissued] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -122,6 +122,8 @@ export function MiniConnect() {
   }
 
   const devCount = devices?.length ?? view.subscription.mirror.devices_count ?? 0;
+  const works = view.status !== 'expired' && view.status !== 'blocked' && me.client.status !== 'blocked';
+  const sold = me.options !== false && works && (view.tariff?.devices.extra?.max ?? 0) > 0;
 
   return (
     <main className="mn-page connect">
@@ -166,7 +168,7 @@ export function MiniConnect() {
           <h2>
             {limit ? t('Устройства {count} из {limit}', { count: devCount, limit }) : t('Устройства {count}', { count: devCount })}
           </h2>
-          <Link to="/app/plans" className="mn-link" aria-label={t('Добавить устройство')}>
+          <Link to={sold ? '/app/addons?kind=devices' : '/app/plans'} className="mn-link" aria-label={t('Добавить устройство')}>
             {t('Добавить')}
           </Link>
         </div>
